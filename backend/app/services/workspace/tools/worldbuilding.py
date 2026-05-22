@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import WorldbuildingEntry
-from ..types import WorkspaceActionDependencies
 from ..utils import (
     WORLD_DIMENSIONS,
     find_worldbuilding_by_title_or_id,
@@ -20,7 +19,6 @@ async def create_worldbuilding_entry(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    deps: WorkspaceActionDependencies,
 ) -> dict:
     dimension = str(args.get("dimension") or "culture").strip()
     if dimension not in WORLD_DIMENSIONS:
@@ -66,7 +64,6 @@ async def update_worldbuilding_entry(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    deps: WorkspaceActionDependencies,
 ) -> dict:
     entry = find_worldbuilding_by_title_or_id(db, project_id, args.get("id") or args.get("title"))
     if not entry:
@@ -87,3 +84,16 @@ async def update_worldbuilding_entry(
         "data": worldbuilding_payload(entry),
     }
 
+
+async def delete_worldbuilding_entry(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    entry = find_worldbuilding_by_title_or_id(db, project_id, args.get("id") or args.get("title"))
+    if not entry:
+        return {"tool": "delete_worldbuilding_entry", "status": "skipped", "detail": "未找到世界观条目"}
+    title = entry.title
+    db.delete(entry)
+    db.flush()
+    return {"tool": "delete_worldbuilding_entry", "status": "ok", "detail": f"已删除世界观：{title}"}

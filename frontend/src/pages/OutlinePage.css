@@ -36,14 +36,26 @@
 }
 
 .outline-ai-panel {
-  min-width: 280px;
   max-height: calc(100vh - 80px);
   overflow-y: auto;
   padding: 14px;
   position: sticky;
-  resize: horizontal;
   top: 12px;
-  width: clamp(300px, 24vw, 620px);
+}
+
+.outline-ai-resize-handle {
+  bottom: 0;
+  cursor: col-resize;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 5px;
+  z-index: 10;
+}
+
+.outline-ai-resize-handle:hover,
+.outline-ai-panel-dragging .outline-ai-resize-handle {
+  background: #1677ff;
 }
 
 .outline-panel-head,
@@ -180,9 +192,11 @@
   }
 
   .outline-ai-panel {
-    min-width: 0;
-    resize: none;
-    width: auto;
+    width: auto !important;
+  }
+
+  .outline-ai-resize-handle {
+    display: none;
   }
 
   .outline-grid {

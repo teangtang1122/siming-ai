@@ -38,63 +38,6 @@ class DialogueBattleRequest(BaseModel):
     context_chapters: int = Field(5, ge=0, le=20)
 
 
-class RewriteRequest(BaseModel):
-    """Request for rewriting selected text."""
-    text: str = Field(..., min_length=1, description="Original text to rewrite")
-    style: Optional[str] = Field(None, description="Target style: vivid/concise/serious/humorous/poetic")
-    prompt: Optional[str] = Field(None, description="Additional rewrite instructions")
-    model: Optional[str] = Field(None)
-    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(None, ge=1)
-
-
-class ExpandRequest(BaseModel):
-    """Request for expanding selected text."""
-    text: str = Field(..., min_length=1, description="Original text to expand")
-    prompt: Optional[str] = Field(None, description="What to expand on")
-    model: Optional[str] = Field(None)
-    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(None, ge=1)
-
-
-class ContinueRequest(BaseModel):
-    """Request for continuing from selected text."""
-    text: str = Field(..., min_length=1, description="Text to continue from")
-    prompt: Optional[str] = Field(None, description="Direction for continuation")
-    chapter_id: Optional[str] = Field(None)
-    outline_node_id: Optional[str] = Field(None)
-    model: Optional[str] = Field(None)
-    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(None, ge=1)
-    context_chapters: int = Field(5, ge=0, le=20)
-
-
-class ConflictSuggestRequest(BaseModel):
-    """Request for plot conflict suggestions."""
-    prompt: Optional[str] = Field(None, max_length=500, description="Optional direction for conflict type")
-    chapter_id: Optional[str] = Field(None, description="Target chapter for conflict analysis")
-    outline_node_id: Optional[str] = Field(None)
-    model: Optional[str] = Field(None)
-    temperature: Optional[float] = Field(0.8, ge=0.0, le=2.0)
-
-
-class ConflictAdoptRequest(BaseModel):
-    """Request for adopting a plot conflict suggestion into the outline."""
-    outline_node_id: str = Field(..., description="Parent outline node for the adopted conflict")
-    type: Optional[str] = Field(None, max_length=50)
-    title: str = Field(..., min_length=1, max_length=200)
-    description: str = Field(..., min_length=1)
-    suggested_outcome: Optional[str] = None
-    involved_characters: list[str] = Field(default_factory=list)
-    involved_character_ids: list[str] = Field(default_factory=list)
-
-
-class CharacterChangesRequest(BaseModel):
-    """Request for detecting character changes after a chapter."""
-    model: Optional[str] = Field(None)
-    temperature: Optional[float] = Field(0.3, ge=0.0, le=2.0)
-
-
 class StoryAssistantRequest(BaseModel):
     """Request for the autonomous story assistant."""
 
@@ -141,6 +84,8 @@ class WorkspaceAssistantRequest(BaseModel):
     conversation_id: Optional[str] = None
     selected_outline_node_id: Optional[str] = None
     selected_character_id: Optional[str] = None
+    selected_text: Optional[str] = Field(None, description="User-selected text in the editor")
+    selected_text_chapter_id: Optional[str] = Field(None, description="Chapter ID the selected text belongs to")
     model: Optional[str] = None
     temperature: Optional[float] = Field(0.3, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(None, ge=1)

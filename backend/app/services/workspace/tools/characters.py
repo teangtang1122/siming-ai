@@ -8,7 +8,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import Character, CharacterVersion
-from ..types import WorkspaceActionDependencies
 from ..utils import character_payload, find_character_by_name_or_id
 
 
@@ -16,7 +15,6 @@ async def create_character(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    deps: WorkspaceActionDependencies,
 ) -> dict:
     name = str(args.get("name") or "").strip()
     if not name:
@@ -48,7 +46,6 @@ async def update_character(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    deps: WorkspaceActionDependencies,
 ) -> dict:
     character = find_character_by_name_or_id(db, project_id, args.get("id") or args.get("name"))
     if not character:
@@ -77,3 +74,16 @@ async def update_character(
         "data": character_payload(character),
     }
 
+
+async def delete_character(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    character = find_character_by_name_or_id(db, project_id, args.get("id") or args.get("name"))
+    if not character:
+        return {"tool": "delete_character", "status": "skipped", "detail": "未找到角色"}
+    name = character.name
+    db.delete(character)
+    db.flush()
+    return {"tool": "delete_character", "status": "ok", "detail": f"已删除角色：{name}"}

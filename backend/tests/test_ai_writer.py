@@ -101,82 +101,6 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()["data"]["id"]
 
-    @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_continue_rejects_cross_project_outline_node(self, mock_chat):
-        project_a = self.create_project("Project A")
-        project_b = self.create_project("Project B")
-        foreign_outline_id = self.create_outline_node(project_b, "Foreign Outline")
-
-        response = self.client.post(
-            f"{API_PREFIX}/projects/{project_a}/ai/continue",
-            json={
-                "text": "one two",
-                "outline_node_id": foreign_outline_id,
-            },
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("当前作品", response.json()["message"])
-        mock_chat.assert_not_awaited()
-
-    def test_conflict_adopt_creates_child_outline_node_and_links_characters(self):
-        project_id = self.create_project("Conflict Project")
-        parent_id = self.create_outline_node(project_id, "第一章")
-        character_id = self.create_character(project_id, "林澈")
-
-        response = self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/ai/conflict-adopt",
-            json={
-                "outline_node_id": parent_id,
-                "type": "personality",
-                "title": "师徒反目",
-                "description": "林澈发现师父隐瞒旧案。",
-                "suggested_outcome": "二人暂时决裂，留下复合伏笔。",
-                "involved_characters": ["林澈"],
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        node = response.json()["data"]["outline_node"]
-        self.assertEqual(node["parent_id"], parent_id)
-        self.assertEqual(node["node_type"], "section")
-        self.assertIn("林澈发现师父", node["summary"])
-        self.assertEqual(node["linked_characters"][0]["id"], character_id)
-
-        db = SessionLocal()
-        try:
-            created = db.query(OutlineNode).filter(OutlineNode.id == node["id"]).first()
-            self.assertIsNotNone(created)
-            self.assertEqual(created.parent_id, parent_id)
-            self.assertEqual(
-                db.query(OutlineNodeCharacter)
-                .filter(
-                    OutlineNodeCharacter.outline_node_id == node["id"],
-                    OutlineNodeCharacter.character_id == character_id,
-                )
-                .count(),
-                1,
-            )
-        finally:
-            db.close()
-
-    def test_conflict_adopt_rejects_cross_project_outline_node(self):
-        project_a = self.create_project("Project A")
-        project_b = self.create_project("Project B")
-        foreign_outline_id = self.create_outline_node(project_b, "Foreign Outline")
-
-        response = self.client.post(
-            f"{API_PREFIX}/projects/{project_a}/ai/conflict-adopt",
-            json={
-                "outline_node_id": foreign_outline_id,
-                "title": "不应采纳",
-                "description": "跨作品大纲节点不能被使用。",
-            },
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("当前作品", response.json()["message"])
-
     def test_workspace_update_outline_uses_current_project_title_when_id_is_foreign(self):
         project_a = self.create_project("Project A")
         project_b = self.create_project("Project B")
@@ -303,7 +227,57 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertNotIn("not bound to a Session", response.text)
 
     @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_character_change_detection_filters_foreign_ids_and_records_evolution(self, mock_chat):
+    def test_workspace_stream_repairs_invalid_json_and_executes_create_chapter(self, mock_chat):
+        project_id = self.create_project("Workspace Repair Project")
+        outline_id = self.create_outline_node(project_id, "第152章 黑潮漫过石阶")
+        bad_json = (
+            '{"reply":"已创建第152章。","done":true,"actions":[{"tool":"create_chapter","arguments":'
+            '{"title":"第152章 黑潮漫过石阶","content":"张虎听见有人喊："第二道防线！" 他握紧剑。",'
+            f'"outline_node_id":"{outline_id}","summary":"青云宗第二道防线告破。","involved_characters":[]}}]}}'
+        )
+        repaired = {
+            "reply": "已创建第152章。",
+            "done": True,
+            "actions": [{
+                "tool": "create_chapter",
+                "arguments": {
+                    "title": "第152章 黑潮漫过石阶",
+                    "content": "张虎听见有人喊：“第二道防线！” 他握紧剑。",
+                    "outline_node_id": outline_id,
+                    "summary": "青云宗第二道防线告破。",
+                    "involved_characters": [],
+                },
+            }],
+            "needs_confirmation": False,
+        }
+        mock_chat.side_effect = [
+            {"content": bad_json},
+            {"content": json.dumps(repaired, ensure_ascii=False)},
+        ]
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "你没有成功创建第152章，请重新创建",
+                "auto_apply": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("json_repair", response.text)
+        self.assertIn("create_chapter", response.text)
+
+        db = SessionLocal()
+        try:
+            chapter = db.query(Chapter).filter(Chapter.project_id == project_id).one()
+            self.assertEqual(chapter.title, "第152章 黑潮漫过石阶")
+            self.assertEqual(chapter.outline_node_id, outline_id)
+            self.assertIn("第二道防线", chapter.content)
+        finally:
+            db.close()
+
+    @patch("app.services.workspace.tools.analysis.LLMGateway.chat_completion", new_callable=AsyncMock)
+    def test_workspace_character_change_detection_filters_foreign_ids_and_records_evolution(self, mock_chat):
         project_a = self.create_project("Project A")
         project_b = self.create_project("Project B")
         chapter_id = self.create_chapter(project_a, "林澈在风中悟出御风术。")
@@ -332,9 +306,17 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             ], ensure_ascii=False)
         }
 
-        response = self.client.post(f"{API_PREFIX}/projects/{project_a}/ai/character-changes/{chapter_id}", json={})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["total"], 1)
+        db = SessionLocal()
+        try:
+            result = asyncio.run(_execute_workspace_action(db, project_a, {
+                "tool": "detect_character_changes",
+                "arguments": {"chapter_id": chapter_id},
+            }))
+            db.commit()
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["data"]["total"], 1)
+        finally:
+            db.close()
 
         db = SessionLocal()
         try:

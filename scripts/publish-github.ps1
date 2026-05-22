@@ -8,7 +8,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$ExePath = Join-Path $Root "release\NovelWritingAgent.exe"
+$AppName = "Moshu"
+$LegacyAppName = "NovelWritingAgent"
+$ExePath = Join-Path $Root "release\$AppName.exe"
+$LegacyExePath = Join-Path $Root "release\$LegacyAppName.exe"
 $ManifestPath = Join-Path $Root "release\update.json"
 $ShaPath = Join-Path $Root "release\sha256.txt"
 
@@ -31,7 +34,7 @@ try {
   $status = git status --porcelain
   if ($status) {
     git add .
-    git commit -m "Update NovelWritingAgent"
+    git commit -m "Update Moshu"
   }
 
   $remote = git remote get-url origin 2>$null
@@ -47,22 +50,28 @@ try {
   }
 
   if (-not (git tag --list $Tag)) {
-    git tag -a $Tag -m "NovelWritingAgent $Tag"
+    git tag -a $Tag -m "Moshu $Tag"
   }
   git push origin $Tag
 
   if (-not (Test-Path $ExePath)) {
     & (Join-Path $Root "build-exe.bat")
   }
+  if (-not (Test-Path $LegacyExePath)) {
+    Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
+  }
 
   $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
-  Set-Content -LiteralPath $ShaPath -Encoding UTF8 -Value "$sha  NovelWritingAgent.exe"
+  Set-Content -LiteralPath $ShaPath -Encoding UTF8 -Value @(
+    "$sha  $AppName.exe",
+    "$sha  $LegacyAppName.exe"
+  )
 
   gh release view $Tag -R $Repo 1>$null 2>$null
   if ($LASTEXITCODE -ne 0) {
-    gh release create $Tag -R $Repo --title $Tag --notes "NovelWritingAgent $Tag"
+    gh release create $Tag -R $Repo --title $Tag --notes "Moshu $Tag"
   }
-  gh release upload $Tag -R $Repo $ExePath $ShaPath $ManifestPath --clobber
+  gh release upload $Tag -R $Repo $ExePath $LegacyExePath $ShaPath $ManifestPath --clobber
 } finally {
   Pop-Location
 }

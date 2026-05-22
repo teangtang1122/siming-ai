@@ -1,1 +1,1 @@
-"""Test suite for the novel-writing-agent backend API."""
+"""Test suite for the Moshu backend API."""

@@ -1,4 +1,4 @@
-"""Packaged desktop launcher for Novel Writing AI Agent."""
+"""Packaged desktop launcher for 墨枢 (Moshu)."""
 from __future__ import annotations
 
 import os
@@ -11,18 +11,33 @@ from pathlib import Path
 import uvicorn
 
 
-APP_NAME = "NovelWritingAgent"
+APP_NAME = "Moshu"
+LEGACY_APP_NAME = "NovelWritingAgent"
 DEFAULT_PORT = 8765
 
 
 def _app_home() -> Path:
-    env_home = os.environ.get("NOVEL_AGENT_HOME")
+    env_home = os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
     if env_home:
         return Path(env_home).expanduser().resolve()
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        return Path(local_app_data) / APP_NAME
-    return Path.home() / f".{APP_NAME}"
+        base = Path(local_app_data)
+    else:
+        base = Path.home()
+    current = base / APP_NAME
+    legacy = base / LEGACY_APP_NAME
+    legacy_dot = Path.home() / f".{LEGACY_APP_NAME}"
+    # If legacy has a real DB but current is empty/missing, keep using legacy
+    for legacy_dir in (legacy, legacy_dot):
+        if not legacy_dir.exists():
+            continue
+        legacy_db = legacy_dir / "novel_agent.db"
+        current_db = current / "novel_agent.db"
+        if legacy_db.exists() and legacy_db.stat().st_size > 0:
+            if not current_db.exists() or current_db.stat().st_size < legacy_db.stat().st_size:
+                return legacy_dir
+    return current
 
 
 def _find_free_port(start: int = DEFAULT_PORT, attempts: int = 50) -> int:
@@ -37,6 +52,8 @@ def _find_free_port(start: int = DEFAULT_PORT, attempts: int = 50) -> int:
 def _prepare_environment(port: int) -> Path:
     home = _app_home()
     home.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MOSHU_HOME", str(home))
+    os.environ.setdefault("MOSHU_KEY_FILE", str(home / ".crypto_key"))
     os.environ.setdefault("NOVEL_AGENT_HOME", str(home))
     os.environ.setdefault("NOVEL_AGENT_KEY_FILE", str(home / ".crypto_key"))
     os.environ["DATABASE_URL"] = f"sqlite:///{(home / 'novel_agent.db').as_posix()}"

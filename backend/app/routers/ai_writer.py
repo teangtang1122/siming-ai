@@ -45,22 +45,22 @@ from ..services.context_builders import (
     _count_words,
     _get_outline_node_or_404,
 )
-from ..prompts.text_operations import (
-    build_continue_messages,
-    build_expand_messages,
-    build_rewrite_messages,
+from ..prompts.workspace_assistant import (
+    build_workspace_assistant_system_prompt,
+    build_workspace_assistant_initial_user_message,
+    format_tool_result_message,
+    format_previous_search_context,
+    _compress_search_result,
+    MAX_ITERATIONS,
 )
-from ..prompts.workspace_assistant import build_workspace_assistant_messages
 from ..services.style_rules import (
     STYLE_OPTIONS,
-    STYLE_PROMPTS,
     _build_style_context,
     _detect_forbidden_sentence_violations,
     _repair_assistant_parsed_style,
     _repair_forbidden_sentence_text,
 )
 from ..services.workspace import (
-    WorkspaceActionDependencies,
     _character_payload,
     _find_character_by_name_or_id,
     _find_outline_by_title_or_id,
@@ -71,12 +71,6 @@ from ..schemas.ai_writer import (
     NarratorGenerateRequest,
     CharacterDialogueRequest,
     DialogueBattleRequest,
-    RewriteRequest,
-    ExpandRequest,
-    ContinueRequest,
-    ConflictSuggestRequest,
-    ConflictAdoptRequest,
-    CharacterChangesRequest,
     StoryAssistantRequest,
     AssistantConversationCreate,
     AssistantConversationUpdate,
@@ -106,29 +100,65 @@ def _get_character_or_404(db: Session, project_id: str, character_id: str) -> Ch
 
 def _strip_json_fences(text: str) -> str:
     value = (text or "").strip()
-    if value.startswith("```json"):
-        value = value[7:]
-    elif value.startswith("```"):
-        value = value[3:]
-    if value.endswith("```"):
-        value = value[:-3]
+    # Remove markdown code fences
+    for _ in range(2):
+        if value.startswith("```json"):
+            value = value[7:]
+        elif value.startswith("```"):
+            value = value[3:]
+        if value.endswith("```"):
+            value = value[:-3]
     return value.strip()
 
 
 def _parse_json_object(text: str) -> Optional[dict]:
     cleaned = _strip_json_fences(text)
-    candidates = [cleaned]
     start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start >= 0 and end > start:
-        candidates.append(cleaned[start:end + 1])
-    for candidate in candidates:
+    if start < 0:
+        return None
+    # Try progressively shrinking from the end to handle trailing garbage
+    # (LLMs sometimes add extra brackets, newlines, or commentary after the JSON)
+    for end_offset in range(len(cleaned), start + 1, -1):
+        end = cleaned.rfind("}", start, end_offset)
+        if end < 0:
+            continue
+        candidate = cleaned[start:end + 1]
         try:
-            parsed = json.loads(candidate)
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
+            parsed = json.loads(candidate, strict=False)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
             continue
     return None
+
+
+WORKSPACE_JSON_REPAIR_SYSTEM_PROMPT = (
+    "你是JSON修复器，只修复语法，不改写正文，不增删工具动作。"
+    "输入是小说项目助手返回的近似JSON，可能因为章节正文里的引号、换行或尾随文本导致无法解析。"
+    "请把它修复为一个可被 json.loads 解析的合法JSON对象。"
+    "必须保留 reply、done、actions、needs_confirmation 字段；actions 内的工具名和参数必须尽量原样保留。"
+    "只输出JSON对象，不要Markdown，不要解释。"
+)
+
+
+async def _repair_workspace_json_output(raw_text: str, model: Optional[str]) -> Optional[dict]:
+    """Repair near-JSON workspace assistant output once before dropping actions."""
+    if not raw_text.strip():
+        return None
+    try:
+        result = await LLMGateway.chat_completion(
+            messages=[
+                {"role": "system", "content": WORKSPACE_JSON_REPAIR_SYSTEM_PROMPT},
+                {"role": "user", "content": raw_text[:120_000]},
+            ],
+            model=model,
+            temperature=0,
+            timeout=90,
+            retry=0,
+        )
+    except Exception:
+        return None
+    return _parse_json_object(result.get("content", ""))
 
 
 def _assistant_heuristic_plan(message: str) -> dict:
@@ -520,6 +550,60 @@ def _assistant_history_from_messages(
     return _assistant_history_text(history, limit=limit)
 
 
+def _previous_search_context_from_messages(
+    db: Session,
+    conversation_id: str,
+    before_message_id: Optional[str] = None,
+) -> str:
+    """Extract and merge persisted search results from ALL prior assistant messages in this conversation."""
+    messages = (
+        db.query(AssistantMessage)
+        .filter(
+            AssistantMessage.conversation_id == conversation_id,
+            AssistantMessage.role == "assistant",
+            AssistantMessage.status.in_({"completed", "running"}),
+        )
+        .order_by(AssistantMessage.created_at.desc())
+        .all()
+    )
+    # Merge by tool, deduplicate data entries by id, keep most recent
+    merged: dict[str, dict] = {}
+    seen_ids: dict[str, set] = {}  # tool -> set of seen entry ids
+    for message in messages:
+        if before_message_id and message.id == before_message_id:
+            continue
+        if not message.payload_json:
+            continue
+        try:
+            payload = json.loads(message.payload_json)
+        except Exception:
+            continue
+        ctx = payload.get("searched_context")
+        if not isinstance(ctx, list):
+            continue
+        for group in ctx:
+            if not isinstance(group, dict):
+                continue
+            tool = str(group.get("tool") or "?")
+            data = group.get("data")
+            if not isinstance(data, list):
+                continue
+            if tool not in merged:
+                merged[tool] = {"tool": tool, "detail": str(group.get("detail") or ""), "data": []}
+                seen_ids[tool] = set()
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                eid = entry.get("id", "")
+                if eid and eid in seen_ids[tool]:
+                    continue
+                if eid:
+                    seen_ids[tool].add(eid)
+                merged[tool]["data"].append(entry)
+    all_search_results = list(merged.values())
+    return format_previous_search_context(all_search_results)
+
+
 def _assistant_title_from_message(message: str) -> str:
     title = " ".join((message or "").strip().split())
     if not title:
@@ -527,23 +611,29 @@ def _assistant_title_from_message(message: str) -> str:
     return title[:36] + ("..." if len(title) > 36 else "")
 
 
-def _workspace_action_dependencies() -> WorkspaceActionDependencies:
-    return WorkspaceActionDependencies(
-        get_project=_get_project_or_404,
-        detect_forbidden_sentence_violations=_detect_forbidden_sentence_violations,
-        repair_forbidden_sentence_text=_repair_forbidden_sentence_text,
-        finalize_assistant_chapter=_finalize_assistant_chapter,
-        create_assistant_chapter=_create_assistant_chapter,
-    )
-
-
 async def _execute_workspace_action(db: Session, project_id: str, action: dict) -> dict:
-    return await execute_workspace_action(
-        db,
-        project_id,
-        action,
-        _workspace_action_dependencies(),
-    )
+    """Execute a workspace tool action, with pre-flight forbidden-pattern check for chapter creation."""
+    tool = str(action.get("tool") or "").strip()
+    args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+
+    if tool == "create_chapter" and args.get("content"):
+        project = _get_project_or_404(db, project_id)
+        violations = _detect_forbidden_sentence_violations(str(args.get("content")), project)
+        if violations:
+            try:
+                model = str(args.get("model") or "") or None
+                repaired, before, remaining = await _repair_forbidden_sentence_text(
+                    str(args.get("content")),
+                    project,
+                    model,
+                    None,
+                )
+                args = {**args, "content": repaired}
+                action = {**action, "arguments": args}
+            except Exception:
+                pass
+
+    return await execute_workspace_action(db, project_id, action)
 
 
 def _is_affirmative_confirmation(text: str) -> bool:
@@ -979,338 +1069,6 @@ async def generate_dialogue_battle(
     )
 
 
-# ---------------------------------------------------------------------------
-# Rewrite
-# ---------------------------------------------------------------------------
-
-@router.post("/projects/{project_id}/ai/rewrite")
-async def rewrite_text(project_id: str, payload: RewriteRequest, db: Session = Depends(get_db)):
-    project = _get_project_or_404(db, project_id)
-    style_ctx = _build_style_context(project)
-    style_instruction = STYLE_PROMPTS.get(payload.style, "") if payload.style else ""
-
-    messages = build_rewrite_messages(
-        style_context=style_ctx,
-        style_instruction=style_instruction,
-        prompt=payload.prompt,
-        text=payload.text,
-    )
-    result = await LLMGateway.chat_completion(
-        messages=messages,
-        model=payload.model,
-        temperature=payload.temperature or 0.7,
-        max_tokens=payload.max_tokens,
-    )
-    rewritten, violations, remaining = await _repair_forbidden_sentence_text(
-        result.get("content", ""),
-        project,
-        payload.model,
-        payload.max_tokens,
-    )
-    return ApiResponse.success(data={
-        "original": payload.text,
-        "rewritten": rewritten,
-        "style": payload.style,
-        "model": result.get("model"),
-        "usage": result.get("usage"),
-        "style_violations": violations,
-        "style_remaining_violations": remaining,
-    })
-
-
-# ---------------------------------------------------------------------------
-# Expand
-# ---------------------------------------------------------------------------
-
-@router.post("/projects/{project_id}/ai/expand")
-async def expand_text(project_id: str, payload: ExpandRequest, db: Session = Depends(get_db)):
-    project = _get_project_or_404(db, project_id)
-    style_ctx = _build_style_context(project)
-
-    messages = build_expand_messages(
-        style_context=style_ctx,
-        prompt=payload.prompt,
-        text=payload.text,
-    )
-    result = await LLMGateway.chat_completion(
-        messages=messages,
-        model=payload.model,
-        temperature=payload.temperature or 0.7,
-        max_tokens=payload.max_tokens,
-    )
-    expanded, violations, remaining = await _repair_forbidden_sentence_text(
-        result.get("content", ""),
-        project,
-        payload.model,
-        payload.max_tokens,
-    )
-    return ApiResponse.success(data={
-        "original": payload.text,
-        "expanded": expanded,
-        "model": result.get("model"),
-        "usage": result.get("usage"),
-        "style_violations": violations,
-        "style_remaining_violations": remaining,
-    })
-
-
-# ---------------------------------------------------------------------------
-# Continue
-# ---------------------------------------------------------------------------
-
-@router.post("/projects/{project_id}/ai/continue")
-async def continue_text(project_id: str, payload: ContinueRequest, db: Session = Depends(get_db)):
-    project = _get_project_or_404(db, project_id)
-    _get_outline_node_or_404(db, project_id, payload.outline_node_id)
-    style_ctx = _build_style_context(project)
-    summaries = _build_recent_summaries(db, project_id, payload.context_chapters)
-    outline_ctx = _build_outline_context(db, project_id, payload.outline_node_id)
-
-    messages = build_continue_messages(
-        style_context=style_ctx,
-        outline_context=outline_ctx,
-        summaries=summaries,
-        prompt=payload.prompt,
-        text=payload.text,
-    )
-    result = await LLMGateway.chat_completion(
-        messages=messages,
-        model=payload.model,
-        temperature=payload.temperature or 0.7,
-        max_tokens=payload.max_tokens,
-    )
-    continuation, violations, remaining = await _repair_forbidden_sentence_text(
-        result.get("content", ""),
-        project,
-        payload.model,
-        payload.max_tokens,
-    )
-    return ApiResponse.success(data={
-        "previous": payload.text[-200:] if len(payload.text) > 200 else payload.text,
-        "continuation": continuation,
-        "model": result.get("model"),
-        "usage": result.get("usage"),
-        "style_violations": violations,
-        "style_remaining_violations": remaining,
-    })
-
-
-# ---------------------------------------------------------------------------
-# Conflict suggestions
-# ---------------------------------------------------------------------------
-
-@router.post("/projects/{project_id}/ai/conflict-suggest")
-async def conflict_suggest(project_id: str, payload: ConflictSuggestRequest, db: Session = Depends(get_db)):
-    project = _get_project_or_404(db, project_id)
-    _get_outline_node_or_404(db, project_id, payload.outline_node_id)
-    outline_ctx = _build_outline_context(db, project_id, payload.outline_node_id)
-    summaries = _build_recent_summaries(db, project_id, 5)
-
-    characters = (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .order_by(Character.updated_at.desc())
-        .limit(10)
-        .all()
-    )
-    char_context = "\n".join(
-        f"- {c.name}（{c.role_type or '未分类'}）: {(c.personality or '')[:200]}"
-        for c in characters
-    ) or "暂无角色。"
-
-    relationships = (
-        db.query(CharacterRelationship)
-        .filter(CharacterRelationship.project_id == project_id)
-        .limit(20)
-        .all()
-    )
-    rel_context = "\n".join(
-        f"- {r.character_a_id[:8]} ↔ {r.character_b_id[:8]}: {r.relationship_type}"
-        for r in relationships
-    ) or "暂无已知关系。"
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位资深小说情节编辑，专精于戏剧冲突设计。你深谙「没有冲突就没有故事」的原则，能为任何剧情阶段注入恰到好处的张力。\n\n"
-                "【任务】\n"
-                "根据当前剧情状态，分析并设计3种不同类型的冲突方案，每种类型提供一个具体建议。\n\n"
-                "【冲突类型定义】\n"
-                "- personality（人物冲突）：角色之间的矛盾——目标对立、价值观碰撞、误解、背叛、竞争。此类型必须指定两个以上具体角色名。\n"
-                "- faction（势力冲突）：组织或阵营之间的对抗——门派争斗、国家战争、阶级对立、资源争夺。此类型必须明确对立的双方。\n"
-                "- inner（内心冲突）：角色内在的挣扎——道德困境、欲望与责任的拉扯、自我认同的危机、创伤后应激。此类型聚焦单一角色的心理层面。\n\n"
-                "【设计原则】\n"
-                "1. 每个冲突必须基于已有的角色、关系和世界观设定——不能凭空创造不存在的新势力或新人物。\n"
-                "2. 每个冲突必须有清晰的起因（为什么现在爆发）、过程（冲突如何升级）和可行方向（如何解决或恶化）。\n"
-                "3. tension_level（张力等级）的判断标准：low=可缓和的分歧、medium=需要做出选择的矛盾、high=不可调和的对抗。\n"
-                "4. 冲突建议应具体可落地——详细描述冲突场景而非抽象概念。\n\n"
-                "【禁止事项】\n"
-                "- 禁止建议与已有剧情和角色设定矛盾或重复的冲突。\n"
-                "- 禁止引入【角色列表】中不存在的角色。\n"
-                "- 禁止输出JSON以外的任何内容。\n\n"
-                "【输出格式】\n"
-                "只输出JSON对象，格式：\n"
-                "{\"conflicts\":[{\"type\":\"personality|faction|inner\",\"title\":\"\",\"description\":\"\",\"involved_characters\":[\"\"],\"tension_level\":\"low|medium|high\",\"suggested_outcome\":\"\"}]}"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"作品：{project.title}\n"
-                f"简介：{project.description or '暂无'}\n\n"
-                f"【当前大纲】\n{outline_ctx}\n\n"
-                f"【前文摘要】\n{summaries}\n\n"
-                f"【角色列表】\n{char_context}\n\n"
-                f"【已知关系】\n{rel_context}\n\n"
-                f"{'用户倾向: ' + payload.prompt if payload.prompt else ''}\n\n"
-                "请分析并提供3种情节冲突建议。"
-            ),
-        },
-    ]
-    result = await LLMGateway.chat_completion(
-        messages=messages,
-        model=payload.model,
-        temperature=payload.temperature or 0.8,
-    )
-
-    suggestion_text = result.get("content", "")
-    parsed = None
-    try:
-        parsed = json.loads(suggestion_text.strip().removeprefix("```json").removesuffix("```").strip())
-    except json.JSONDecodeError:
-        parsed = None
-
-    return ApiResponse.success(data={
-        "conflicts": parsed.get("conflicts", []) if parsed else [],
-        "raw_text": suggestion_text,
-        "model": result.get("model"),
-        "usage": result.get("usage"),
-    })
-
-
-def _conflict_child_type(parent: OutlineNode) -> str:
-    if parent.node_type == "volume":
-        return "chapter"
-    return "section"
-
-
-def _next_child_sort_order(db: Session, project_id: str, parent_id: str) -> int:
-    last_child = (
-        db.query(OutlineNode)
-        .filter(OutlineNode.project_id == project_id, OutlineNode.parent_id == parent_id)
-        .order_by(OutlineNode.sort_order.desc(), OutlineNode.created_at.desc())
-        .first()
-    )
-    return (last_child.sort_order + 1) if last_child else 0
-
-
-def _resolve_conflict_character_ids(
-    db: Session,
-    project_id: str,
-    names: list[str],
-    character_ids: list[str],
-) -> list[str]:
-    resolved: list[str] = []
-    seen: set[str] = set()
-    for character_id in character_ids:
-        character = (
-            db.query(Character)
-            .filter(Character.id == character_id, Character.project_id == project_id)
-            .first()
-        )
-        if not character:
-            raise ValidationError("采纳冲突建议时，关联角色必须属于当前作品")
-        if character.id not in seen:
-            resolved.append(character.id)
-            seen.add(character.id)
-
-    clean_names = {name.strip() for name in names if name and name.strip()}
-    if clean_names:
-        characters = (
-            db.query(Character)
-            .filter(Character.project_id == project_id, Character.name.in_(clean_names))
-            .all()
-        )
-        for character in characters:
-            if character.id not in seen:
-                resolved.append(character.id)
-                seen.add(character.id)
-    return resolved
-
-
-def _adopted_outline_node_payload(node: OutlineNode) -> dict:
-    return {
-        "id": node.id,
-        "project_id": node.project_id,
-        "parent_id": node.parent_id,
-        "node_type": node.node_type,
-        "title": node.title,
-        "summary": node.summary,
-        "status": node.status,
-        "sort_order": node.sort_order,
-        "linked_characters": [
-            {
-                "id": link.character.id,
-                "name": link.character.name,
-                "role_type": link.character.role_type,
-                "role_in_scene": link.role_in_scene,
-            }
-            for link in node.linked_characters
-            if link.character is not None
-        ],
-    }
-
-
-@router.post("/projects/{project_id}/ai/conflict-adopt")
-def adopt_conflict_suggestion(
-    project_id: str,
-    payload: ConflictAdoptRequest,
-    db: Session = Depends(get_db),
-):
-    """Adopt a generated conflict suggestion as a child outline node."""
-    _get_project_or_404(db, project_id)
-    parent = _get_outline_node_or_404(db, project_id, payload.outline_node_id)
-    if parent is None:
-        raise ValidationError("采纳冲突建议时必须提供父级大纲节点")
-
-    summary_parts = [payload.description.strip()]
-    if payload.suggested_outcome and payload.suggested_outcome.strip():
-        summary_parts.append(f"建议走向：{payload.suggested_outcome.strip()}")
-    if payload.type and payload.type.strip():
-        summary_parts.append(f"冲突类型：{payload.type.strip()}")
-
-    node = OutlineNode(
-        project_id=project_id,
-        parent_id=parent.id,
-        node_type=_conflict_child_type(parent),
-        title=payload.title.strip(),
-        summary="\n".join(summary_parts),
-        status="pending",
-        sort_order=_next_child_sort_order(db, project_id, parent.id),
-    )
-    db.add(node)
-    db.flush()
-
-    for character_id in _resolve_conflict_character_ids(
-        db,
-        project_id,
-        payload.involved_characters,
-        payload.involved_character_ids,
-    ):
-        node.linked_characters.append(
-            OutlineNodeCharacter(character_id=character_id, role_in_scene="conflict")
-        )
-
-    db.commit()
-    db.refresh(node)
-    return ApiResponse.success(
-        data={"outline_node": _adopted_outline_node_payload(node)},
-        message="冲突建议已采纳为大纲节点",
-    )
-
-
-# ---------------------------------------------------------------------------
 # Autonomous story assistant
 # ---------------------------------------------------------------------------
 
@@ -1464,7 +1222,7 @@ async def story_assistant(
         {
             "role": "system",
             "content": (
-                "你是小说写作助手的工具调度器。你要根据用户消息判断接下来需要读取哪些项目资料，"
+                "你是墨枢的工具调度器。你要根据用户消息判断接下来需要读取哪些项目资料，"
                 "以及是否需要让角色AI参与扮演、是否可能创建新章节。只输出JSON对象。\n"
                 "可用工具：read_recent_summaries, read_outline, read_worldbuilding, read_characters, "
                 "read_relationships, read_chapter_detail, roleplay_characters。\n"
@@ -1575,7 +1333,7 @@ async def story_assistant(
         {
             "role": "system",
             "content": (
-                "你是一个会使用项目资料的小说写作总控AI。你已经拿到了后端工具读取出的资料和角色AI扮演结果。"
+                "你是墨枢的总控AI。你已经拿到了后端工具读取出的资料和角色AI扮演结果。"
                 "请完成用户需求：可以判断剧情是否合理、指出矛盾、建议补充世界观、预测后续发展，或生成可导入的新章节草稿。\n\n"
                 "要求：\n"
                 "1. 只基于给定资料推断，不要无依据改写既有设定。\n"
@@ -1806,7 +1564,7 @@ async def story_assistant_stream(
                 {
                     "role": "system",
                     "content": (
-                        "你是小说写作助手的工具调度器。你要根据用户消息判断接下来需要读取哪些项目资料，"
+                        "你是墨枢的工具调度器。你要根据用户消息判断接下来需要读取哪些项目资料，"
                         "以及是否需要让角色AI参与扮演、是否可能创建新章节。只输出JSON对象。\n"
                         "可用工具：read_recent_summaries, read_outline, read_worldbuilding, read_characters, "
                         "read_relationships, read_chapter_detail, roleplay_characters。\n"
@@ -1973,7 +1731,7 @@ async def story_assistant_stream(
                 {
                     "role": "system",
                     "content": (
-                        "你是一个会使用项目资料的小说写作总控AI。你已经拿到了后端工具读取出的资料和角色AI扮演结果。"
+                        "你是墨枢的总控AI。你已经拿到了后端工具读取出的资料和角色AI扮演结果。"
                         "请完成用户需求：可以判断剧情是否合理、指出矛盾、建议补充世界观、预测后续发展，或生成可导入的新章节草稿。\n\n"
                         "要求：\n"
                         "1. 只基于给定资料推断，不要无依据改写既有设定。\n"
@@ -2181,21 +1939,50 @@ async def story_assistant_stream(
     )
 
 
+# ---------------------------------------------------------------------------
+# Agentic workspace assistant helpers
+# ---------------------------------------------------------------------------
+
+SEARCH_TOOLS = {
+    "list_characters", "list_worldbuilding", "list_chapters",
+    "search_characters", "search_chapters", "search_outline",
+    "search_outline_tree", "search_worldbuilding", "search_relationships",
+}
+
+
+def _trim_context_if_needed(messages: list[dict], max_chars: int = 800_000) -> list[dict]:
+    total = sum(len(str(m.get("content", ""))) for m in messages)
+    if total <= max_chars:
+        return messages
+    kept = messages[:2]
+    recent = messages[-6:] if len(messages) > 6 else messages[2:]
+    return kept + recent
+
+
 @router.post("/projects/{project_id}/ai/workspace-assistant/stream")
 async def workspace_assistant_stream(
     project_id: str,
     payload: WorkspaceAssistantRequest,
     db: Session = Depends(get_db),
 ):
-    """Conversational assistant for outline and character management with tool actions."""
+    """Conversational assistant with multi-turn agentic loop — search → reason → act."""
     _get_project_or_404(db, project_id)
 
     async def event_generator():
         conversation = None
-        user_message = None
-        assistant_message = None
+        user_msg_db = None
+        assistant_msg_db = None
         tool_logs: list[dict] = []
+        # Declared at function scope so GeneratorExit recovery can access them
+        final_reply = ""
+        all_actions: list[dict] = []
+        applied_actions: list[dict] = []
+        searched_context: list[dict] = []
+        final_model = ""
+        final_usage = None
+        parsed_fallback: dict = {}
         try:
+            # --- Phase 1: Setup ---
             selected_node = _find_outline_by_title_or_id(db, project_id, payload.selected_outline_node_id)
             selected_character = (
                 _find_character_by_name_or_id(db, project_id, payload.selected_character_id)
@@ -2218,7 +2005,7 @@ async def workspace_assistant_stream(
             conversation.updated_at = datetime.utcnow()
 
             created_at = datetime.utcnow()
-            user_message = AssistantMessage(
+            user_msg_db = AssistantMessage(
                 conversation_id=conversation.id,
                 role="user",
                 content=payload.message,
@@ -2226,111 +2013,261 @@ async def workspace_assistant_stream(
                 created_at=created_at,
                 updated_at=created_at,
             )
-            assistant_message = AssistantMessage(
+            assistant_msg_db = AssistantMessage(
                 conversation_id=conversation.id,
                 role="assistant",
-                content="正在读取项目资料...",
+                content="正在分析需求...",
                 status="running",
                 payload_json=json.dumps({"tool_logs": []}, ensure_ascii=False),
                 created_at=created_at + timedelta(microseconds=1),
                 updated_at=created_at + timedelta(microseconds=1),
             )
-            db.add(user_message)
-            db.add(assistant_message)
+            db.add(user_msg_db)
+            db.add(assistant_msg_db)
             db.commit()
             db.refresh(conversation)
-            db.refresh(user_message)
-            db.refresh(assistant_message)
+            db.refresh(user_msg_db)
+            db.refresh(assistant_msg_db)
 
             yield _sse_event({
                 "type": "conversation",
                 "conversation": _assistant_conversation_to_dict(conversation),
-                "user_message": _assistant_message_to_dict(user_message),
-                "assistant_message": _assistant_message_to_dict(assistant_message),
+                "user_message": _assistant_message_to_dict(user_msg_db),
+                "assistant_message": _assistant_message_to_dict(assistant_msg_db),
             })
 
-            yield _sse_event({"type": "status", "message": "正在读取大纲、角色、世界观和章节摘要", "tool": "read_project_context"})
+            # --- Phase 2: Build minimal initial messages ---
             project = _get_project_or_404(db, project_id)
-            selected_node = _find_outline_by_title_or_id(db, project_id, payload.selected_outline_node_id)
-            selected_character = (
-                _find_character_by_name_or_id(db, project_id, payload.selected_character_id)
-                if payload.selected_character_id
-                else None
-            )
-            outline_context = _build_outline_overview(db, project_id, limit=260)
-            character_context = _build_character_catalog(db, project_id, limit=40)
-            world_context = _build_world_context(db, project_id)
             style_context = _build_style_context(project)
-            summaries = _build_recent_summaries(db, project_id, limit=8)
-            selected_context = []
+            selected_context: list[str] = []
             if selected_node:
                 selected_context.append(f"当前选中大纲：{json.dumps(_outline_node_payload(selected_node), ensure_ascii=False)}")
             if selected_character:
                 selected_context.append(f"当前选中角色：{json.dumps(_character_payload(selected_character), ensure_ascii=False)}")
-            log = {"tool": "read_project_context", "status": "ok", "detail": "已读取项目上下文"}
-            tool_logs.append(log)
-            yield _sse_event({"type": "tool", **log})
+            if payload.selected_text and payload.selected_text.strip():
+                chapter_label = ""
+                if payload.selected_text_chapter_id:
+                    chapter = db.query(Chapter).filter(Chapter.id == payload.selected_text_chapter_id, Chapter.project_id == project_id).first()
+                    if chapter:
+                        chapter_label = f"，来自章节「{chapter.title}」"
+                selected_context.append(f"用户选中了以下文本{chapter_label}：\n```\n{payload.selected_text.strip()}\n```")
 
-            history_text = _assistant_history_from_messages(db, conversation.id, before_message_id=user_message.id, limit=8)
+            history_text = _assistant_history_from_messages(db, conversation.id, before_message_id=user_msg_db.id, limit=8)
             if history_text == "暂无对话历史。":
                 history_text = _assistant_history_text(payload.history)
 
-            messages = build_workspace_assistant_messages(
+            previous_search_context = _previous_search_context_from_messages(db, conversation.id, before_message_id=user_msg_db.id)
+
+            system_prompt = build_workspace_assistant_system_prompt(
                 scope=payload.scope,
+                outline_batch_count=payload.outline_batch_count,
+                auto_apply=payload.auto_apply,
+            )
+            initial_user = build_workspace_assistant_initial_user_message(
                 project_title=project.title,
                 project_description=project.description,
                 style_context=style_context,
                 history_text=history_text,
                 selected_context=selected_context,
-                outline_context=outline_context,
-                character_context=character_context,
-                world_context=world_context,
-                summaries=summaries,
+                previous_search_context=previous_search_context,
                 outline_batch_count=payload.outline_batch_count,
                 auto_apply=payload.auto_apply,
                 user_message=payload.message,
             )
+            messages: list[dict] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": initial_user},
+            ]
 
-            yield _sse_event({"type": "status", "message": "正在让模型决定是否调用工具", "tool": "planner"})
-            result = await LLMGateway.chat_completion(
-                messages=messages,
-                model=payload.model,
-                temperature=payload.temperature or 0.3,
-                max_tokens=payload.max_tokens,
-                timeout=300,
-                retry=1,
-            )
-            parsed = _parse_json_object(result.get("content", "")) or {
-                "reply": result.get("content", ""),
-                "actions": [],
-                "needs_confirmation": False,
-            }
-            actions = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
-            if _chapter_action_needs_outline_confirmation(db, project_id, actions, payload.message):
-                actions = []
-                parsed["actions"] = []
-                parsed["needs_confirmation"] = True
-                reply = str(parsed.get("reply") or "").strip()
+            # --- Phase 3: Agentic loop ---
+            yield _sse_event({"type": "status", "message": "AI 助手开始分析和检索资料...", "tool": "agent_loop"})
+
+            searched_queries: set[tuple] = set()
+            parsed_fallback = {}
+
+            for iteration in range(1, MAX_ITERATIONS + 1):
+                yield _sse_event({
+                    "type": "iteration_start",
+                    "iteration": iteration,
+                    "message": f"第 {iteration}/{MAX_ITERATIONS} 轮推理",
+                })
+
+                messages = _trim_context_if_needed(messages)
+                result = await LLMGateway.chat_completion(
+                    messages=messages,
+                    model=payload.model,
+                    temperature=payload.temperature or 0.3,
+                    max_tokens=payload.max_tokens,
+                    timeout=300,
+                    retry=1,
+                )
+                raw_content = result.get("content", "")
+                parsed = _parse_json_object(raw_content)
+                if parsed is None:
+                    yield _sse_event({
+                        "type": "status",
+                        "message": "模型返回的工具JSON格式不合法，正在自动修复",
+                        "tool": "json_repair",
+                    })
+                    parsed = await _repair_workspace_json_output(raw_content, payload.model)
+                    if parsed is not None:
+                        tool_logs.append({"tool": "json_repair", "status": "ok", "detail": "已修复模型工具JSON"})
+                        yield _sse_event({"type": "tool", **tool_logs[-1]})
+                    else:
+                        tool_logs.append({"tool": "json_repair", "status": "error", "detail": "模型输出无法解析，未执行写入工具"})
+                        yield _sse_event({"type": "tool", **tool_logs[-1]})
+                parsed = parsed or {
+                    "reply": "模型返回的工具格式不合法，已停止执行写入。请重试一次，或让助手先生成较短章节。",
+                    "done": True,
+                    "actions": [],
+                    "needs_confirmation": False,
+                }
+                parsed_fallback = parsed
+                final_model = result.get("model") or ""
+                final_usage = result.get("usage")
+
+                is_done = bool(parsed.get("done", True))
+                actions: list[dict] = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
+                reply_part = str(parsed.get("reply") or "")
+
+                if reply_part:
+                    yield _sse_event({"type": "thinking", "content": reply_part, "iteration": iteration})
+
+                # Split search vs write actions
+                search_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") in SEARCH_TOOLS]
+                write_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") not in SEARCH_TOOLS]
+
+                # Reject write actions in non-final iterations
+                if not is_done and write_actions:
+                    yield _sse_event({
+                        "type": "status",
+                        "message": f"跳过 {len(write_actions)} 个写入工具（非最终轮次）",
+                        "tool": "skip_write_actions",
+                    })
+                    write_actions = []
+
+                yield _sse_event({
+                    "type": "tool",
+                    "tool": "planner",
+                    "status": "ok",
+                    "detail": f"第 {iteration} 轮：{'完成分析' if is_done else '需要更多信息'}，{len(search_actions)} 个搜索，{len(write_actions)} 个写入",
+                })
+
+                # If done and no more search needed, break
+                if is_done:
+                    all_actions = write_actions
+                    final_reply = reply_part
+                    yield _sse_event({
+                        "type": "iteration_end",
+                        "iteration": iteration,
+                        "message": "分析完成，准备执行最终操作",
+                    })
+                    break
+
+                # Execute search actions
+                if search_actions:
+                    search_results: list[dict] = []
+                    for action in search_actions[:8]:
+                        tool_name = str(action.get("tool") or "search")
+                        args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+
+                        # Dedup
+                        dedup_key = (tool_name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+                        if dedup_key in searched_queries:
+                            yield _sse_event({
+                                "type": "search_result",
+                                "tool": tool_name,
+                                "result": {"tool": tool_name, "status": "skipped", "detail": "已查询过，见上文结果", "data": []},
+                                "iteration": iteration,
+                            })
+                            continue
+                        searched_queries.add(dedup_key)
+
+                        yield _sse_event({
+                            "type": "search_start",
+                            "tool": tool_name,
+                            "args": args,
+                            "iteration": iteration,
+                        })
+                        try:
+                            action_result = await execute_workspace_action(db, project_id, action)
+                        except Exception as exc:
+                            action_result = {"tool": tool_name, "status": "error", "detail": str(exc), "data": []}
+                        search_results.append(action_result)
+                        tool_logs.append({
+                            "tool": action_result.get("tool") or tool_name,
+                            "status": action_result.get("status") or "ok",
+                            "detail": action_result.get("detail") or "",
+                        })
+                        yield _sse_event({
+                            "type": "search_result",
+                            "tool": tool_name,
+                            "result": action_result,
+                            "iteration": iteration,
+                        })
+
+                    # Accumulate compressed search results for cross-turn persistence
+                    for action_result in search_results:
+                        compressed = _compress_search_result(action_result)
+                        if compressed:
+                            searched_context.append(compressed)
+
+                    # Feed results back into messages
+                    messages.append({"role": "assistant", "content": json.dumps(parsed, ensure_ascii=False)})
+                    messages.append({"role": "user", "content": format_tool_result_message(iteration, search_results)})
+
+                yield _sse_event({
+                    "type": "iteration_end",
+                    "iteration": iteration,
+                    "message": f"第 {iteration} 轮完成，{'获得 ' + str(len(search_actions)) + ' 条搜索结果' if search_actions else '未请求搜索'}",
+                })
+
+                if iteration == MAX_ITERATIONS:
+                    yield _sse_event({
+                        "type": "status",
+                        "message": f"已达到 {MAX_ITERATIONS} 轮搜索上限，基于已有信息给出最终回复",
+                        "tool": "max_iterations",
+                    })
+                    all_actions = []
+                    final_reply = parsed.get("reply", "") or "已分析完毕。"
+                    break
+            else:
+                # Loop completed without break (shouldn't happen, but guard)
+                all_actions = []
+                final_reply = parsed.get("reply", "") or "已分析完毕。"
+
+            # --- Phase 4: Final write action execution ---
+            needs_conf = False
+            if all_actions and _chapter_action_needs_outline_confirmation(db, project_id, all_actions, payload.message):
+                all_actions = []
+                needs_conf = True
+                reply = final_reply.strip()
                 if "是否" not in reply and "确认" not in reply:
-                    reply = (
+                    final_reply = (
                         f"{reply}\n\n" if reply else ""
-                    ) + f"我会先按接下来 {payload.outline_batch_count} 章给出大纲方向，请你确认是否按这个方向发展；确认后我再写入大纲、角色/世界观变更，并创建新章节。"
-                parsed["reply"] = reply
-            log = {"tool": "planner", "status": "ok", "detail": f"模型提出 {len(actions)} 个工具动作"}
-            tool_logs.append(log)
-            yield _sse_event({"type": "tool", **log})
+                    ) + f"我会先按接下来 {payload.outline_batch_count} 章给出大纲方向，请你确认是否按这个方向发展。"
 
-            applied_actions = []
-            if payload.auto_apply and actions:
-                for action in actions[:12]:
-                    if not isinstance(action, dict):
-                        continue
+            if payload.auto_apply and all_actions:
+                created_outline_ids_by_title: dict[str, str] = {}
+                for action in all_actions[:12]:
                     tool = str(action.get("tool") or "tool")
+                    args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+                    if tool in {"create_chapter", "update_chapter"}:
+                        outline_title = str(args.get("outline_node_title") or args.get("outline_title") or "").strip()
+                        if outline_title and outline_title in created_outline_ids_by_title:
+                            args["outline_node_id"] = created_outline_ids_by_title[outline_title]
+                            action["arguments"] = args
                     yield _sse_event({"type": "status", "message": f"正在执行工具：{tool}", "tool": tool})
                     try:
                         action_result = await _execute_workspace_action(db, project_id, action)
                     except Exception as exc:
                         action_result = {"tool": tool, "status": "error", "detail": str(exc)}
+                    if tool == "create_outline_node" and action_result.get("status") == "ok":
+                        data = action_result.get("data") if isinstance(action_result.get("data"), dict) else {}
+                        title = str(data.get("title") or args.get("title") or "").strip()
+                        node_id = str(data.get("id") or "").strip()
+                        if title and node_id:
+                            created_outline_ids_by_title[title] = node_id
                     applied_actions.append(action_result)
                     tool_logs.append({
                         "tool": action_result.get("tool") or tool,
@@ -2339,45 +2276,76 @@ async def workspace_assistant_stream(
                     })
                     yield _sse_event({"type": "tool", **tool_logs[-1]})
                 db.commit()
-            elif actions:
+            elif all_actions:
                 log = {"tool": "auto_apply", "status": "skipped", "detail": "自动执行已关闭"}
                 tool_logs.append(log)
                 yield _sse_event({"type": "tool", **log})
 
+            # --- Phase 5: Finalize ---
             response_payload = {
-                "reply": str(parsed.get("reply") or "已完成。"),
-                "actions": actions,
+                "reply": final_reply or "已完成。",
+                "actions": all_actions,
                 "applied_actions": applied_actions,
                 "tool_logs": tool_logs,
+                "searched_context": searched_context,
                 "scope": payload.scope,
-                "model": result.get("model"),
-                "usage": result.get("usage"),
+                "model": final_model,
+                "usage": final_usage,
             }
-            assistant_message.content = response_payload["reply"]
-            assistant_message.payload_json = json.dumps(response_payload, ensure_ascii=False)
-            assistant_message.status = "completed"
-            assistant_message.updated_at = datetime.utcnow()
+            assistant_msg_db.content = response_payload["reply"]
+            assistant_msg_db.payload_json = json.dumps(response_payload, ensure_ascii=False)
+            assistant_msg_db.status = "completed"
+            assistant_msg_db.updated_at = datetime.utcnow()
             conversation.updated_at = datetime.utcnow()
             db.commit()
-            db.refresh(assistant_message)
+            db.refresh(assistant_msg_db)
             db.refresh(conversation)
-            response_payload["message"] = _assistant_message_to_dict(assistant_message)
+            response_payload["message"] = _assistant_message_to_dict(assistant_msg_db)
             response_payload["conversation"] = _assistant_conversation_to_dict(conversation)
             yield _sse_event({"type": "complete", "data": response_payload})
             yield _sse_event("[DONE]")
+        except (GeneratorExit, asyncio.CancelledError):
+            # Client disconnected during streaming — finish critical work silently
+            if all_actions and payload.auto_apply:
+                for action in all_actions[:12]:
+                    tool = str(action.get("tool") or "tool")
+                    try:
+                        action_result = await _execute_workspace_action(db, project_id, action)
+                    except Exception:
+                        action_result = {"tool": tool, "status": "error", "detail": "后台执行失败"}
+                    applied_actions.append(action_result)
+                db.commit()
+            if assistant_msg_db:
+                reply = final_reply or parsed_fallback.get("reply", "") or "已分析完毕。"
+                assistant_msg_db.content = reply
+                assistant_msg_db.payload_json = json.dumps({
+                    "reply": reply,
+                    "actions": all_actions,
+                    "applied_actions": applied_actions,
+                    "tool_logs": tool_logs,
+                    "searched_context": searched_context,
+                    "scope": payload.scope,
+                    "model": final_model,
+                    "usage": final_usage,
+                }, ensure_ascii=False)
+                assistant_msg_db.status = "completed"
+                assistant_msg_db.updated_at = datetime.utcnow()
+                if conversation:
+                    conversation.updated_at = datetime.utcnow()
+                db.commit()
         except LLMError as exc:
-            if assistant_message:
-                assistant_message.content = str(exc)
-                assistant_message.status = "error"
-                assistant_message.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
+            if assistant_msg_db:
+                assistant_msg_db.content = str(exc)
+                assistant_msg_db.status = "error"
+                assistant_msg_db.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
                 db.commit()
             yield _sse_event({"type": "error", "message": str(exc)})
             yield _sse_event("[DONE]")
         except Exception as exc:
-            if assistant_message:
-                assistant_message.content = f"服务器错误: {exc}"
-                assistant_message.status = "error"
-                assistant_message.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
+            if assistant_msg_db:
+                assistant_msg_db.content = f"服务器错误: {exc}"
+                assistant_msg_db.status = "error"
+                assistant_msg_db.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
                 db.commit()
             yield _sse_event({"type": "error", "message": f"服务器错误: {exc}"})
             yield _sse_event("[DONE]")
@@ -2386,185 +2354,4 @@ async def workspace_assistant_stream(
         event_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
-
-
-# ---------------------------------------------------------------------------
-# Character change detection after chapter
-# ---------------------------------------------------------------------------
-
-@router.post("/projects/{project_id}/ai/character-changes/{chapter_id}")
-async def detect_character_changes(
-    project_id: str,
-    chapter_id: str,
-    payload: CharacterChangesRequest,
-    db: Session = Depends(get_db),
-):
-    _get_project_or_404(db, project_id)
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id, Chapter.project_id == project_id).first()
-    if not chapter:
-        raise NotFoundError("章节不存在")
-
-    characters = (
-        db.query(Character)
-        .filter(Character.project_id == project_id, Character.is_evolution_tracked == True)
-        .all()
-    )
-    if not characters:
-        return ApiResponse.success(data={"changes": [], "total": 0}, message="没有开启追踪的角色")
-
-    character_by_id = {c.id: c for c in characters}
-    char_payload = [
-        {
-            "id": c.id,
-            "name": c.name,
-            "personality": c.personality,
-            "abilities": c.abilities,
-            "background": c.background,
-            "role_type": c.role_type,
-        }
-        for c in characters
-    ]
-
-    chapter_text = chapter.content or ""
-    if len(chapter_text) > 8000:
-        chapter_text = chapter_text[:8000] + "\n...(后续内容已截断)"
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位小说角色设定追踪编辑，专精于检测角色在剧情推进中发生的可记录变化。你理解角色弧光理论——角色应随着经历而成长、改变或恶化。\n\n"
-                "【任务】\n"
-                "分析新章节内容，对比当前角色档案，检测每个角色发生的所有可记录变化。\n\n"
-                "【变化类型定义与判断标准】\n"
-                "- skill（技能/能力变化）：角色习得新技能、失去旧能力、能力显著增强或减弱。判断标准：原文明确描写了学习/失去/变化的过程或结果。\n"
-                "- experience（重要经历）：角色经历了改变其认知、地位或命运的重大事件。判断标准：该事件在原文中有明确的因果影响或情感冲击。\n"
-                "- relationship（关系变化）：角色与他人的关系发生了实质性改变——从陌生到熟悉、从友好到敌对、从平等变为从属等。判断标准：原文中有关系状态转变的具体描写。\n"
-                "- personality（性格成长）：角色的性格特征发生了可观察的演变——变得勇敢/懦弱、开朗/阴郁、果断/犹豫等。判断标准：角色的言行模式与旧档案描述有显著差异，且不是临时情绪反应。\n\n"
-                "【检测精度要求】\n"
-                "1. 区分永久变化与临时状态：角色因醉酒、被控制、极度恐惧等短暂状态下的行为改变不算性格变化。\n"
-                "2. 区分显性变化与隐性变化：有些变化是角色自己意识到的（显性），有些是读者能感知但角色尚未意识到的（隐性）。两种都应检测。\n"
-                "3. confidence 判断标准：\n"
-                "   - high：原文有明确语句支持该变化（如「从那以后，他变得...」、「他终于学会了...」）\n"
-                "   - medium：原文暗示了变化但未明说（多个场景表现出与旧档案不同的行为模式）\n"
-                "   - low：仅有模糊迹象，可能只是暂时状态或解读偏差\n"
-                "4. old_value 应从当前角色档案中提取对应字段的值，new_value 应从原文中提取具体描述。若旧档案中对应字段为空，old_value 填写「（档案中无记录）」。\n\n"
-                "【禁止事项】\n"
-                "- 禁止为没有发生变化的角色强行编造变化。无变化就输出空数组 []。\n"
-                "- 禁止将临时情绪波动标记为性格变化。\n"
-                "- 禁止将原文中未发生的事情标记为变化。\n"
-                "- 禁止输出JSON数组以外的任何内容。\n\n"
-                "【输出格式】\n"
-                "只输出JSON数组：\n"
-                "[{\"character_id\":\"\",\"character_name\":\"\",\"change_type\":\"skill|experience|relationship|personality\","
-                "\"field_name\":\"\",\"old_value\":\"\",\"new_value\":\"\",\"confidence\":\"high|medium|low\"}]\n"
-                "如果没有明显变化，输出 []。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"章节标题：{chapter.title}\n"
-                f"章节内容：\n{chapter_text}\n\n"
-                f"当前角色档案：\n{json.dumps(char_payload, ensure_ascii=False)}"
-            ),
-        },
-    ]
-    result = await LLMGateway.chat_completion(
-        messages=messages,
-        model=payload.model,
-        temperature=payload.temperature or 0.3,
-    )
-
-    changes_text = result.get("content", "")
-    changes = []
-    try:
-        changes = json.loads(changes_text.strip().removeprefix("```json").removesuffix("```").strip())
-    except json.JSONDecodeError:
-        pass
-
-    # Persist detected changes
-    saved_changes = []
-    touched_character_ids: set[str] = set()
-    allowed_change_types = {"skill", "experience", "relationship", "personality"}
-    default_field_by_type = {
-        "skill": "abilities",
-        "experience": "background",
-        "relationship": "background",
-        "personality": "personality",
-    }
-    allowed_fields = {"abilities", "personality", "background", "appearance"}
-    timeline_type_by_change = {
-        "skill": "skill_gain",
-        "experience": "key_decision",
-        "relationship": "relationship_change",
-        "personality": "emotional_turning_point",
-    }
-    if isinstance(changes, list):
-        for change in changes:
-            if not isinstance(change, dict):
-                continue
-            char_id = str(change.get("character_id", "")).strip()
-            if char_id not in character_by_id:
-                continue
-            change_type = str(change.get("change_type", "experience")).strip()
-            if change_type not in allowed_change_types:
-                change_type = "experience"
-            field_name = str(change.get("field_name") or default_field_by_type[change_type]).strip()
-            if field_name not in allowed_fields:
-                field_name = default_field_by_type[change_type]
-            old_val = str(change.get("old_value", ""))[:2000] if change.get("old_value") else None
-            new_val = str(change.get("new_value", ""))[:2000] if change.get("new_value") else None
-
-            log = CharacterChangeLog(
-                character_id=char_id,
-                chapter_id=chapter_id,
-                change_type=change_type,
-                field_name=field_name,
-                old_value=old_val,
-                new_value=new_val,
-                confirmed=False,
-            )
-            db.add(log)
-
-            if char_id not in touched_character_ids:
-                exists = (
-                    db.query(ChapterCharacter)
-                    .filter(
-                        ChapterCharacter.chapter_id == chapter_id,
-                        ChapterCharacter.character_id == char_id,
-                    )
-                    .first()
-                )
-                if not exists:
-                    db.add(ChapterCharacter(
-                        chapter_id=chapter_id,
-                        character_id=char_id,
-                        appearance_type="出场",
-                        description="AI角色演进检测识别到该角色在本章发生变化",
-                    ))
-                touched_character_ids.add(char_id)
-
-            db.add(CharacterTimeline(
-                character_id=char_id,
-                chapter_id=chapter_id,
-                event_description=new_val or f"{change.get('character_name', '')}发生{change_type}变化",
-                event_type=timeline_type_by_change[change_type],
-                emotional_state_change=new_val if change_type == "personality" else None,
-            ))
-            saved_changes.append({
-                "character_id": char_id,
-                "character_name": character_by_id[char_id].name,
-                "change_type": change_type,
-                "field_name": field_name,
-                "old_value": old_val,
-                "new_value": new_val,
-                "confidence": change.get("confidence", "medium"),
-            })
-
-    db.commit()
-    return ApiResponse.success(
-        data={"changes": saved_changes, "total": len(saved_changes)},
-        message=f"检测到 {len(saved_changes)} 处角色变化",
     )

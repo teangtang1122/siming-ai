@@ -1,6 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button, Layout, Menu } from 'antd'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useAppStore } from '../stores'
 import {
   BarChartOutlined,
   BookOutlined,
@@ -35,6 +36,20 @@ function ProjectWorkspace() {
   const [activeKey, setActiveKey] = useState<MenuKey>('writer')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const navigate = useNavigate()
+  const { projects, getProject } = useAppStore()
+
+  const projectTitle = useMemo(() => {
+    if (!projectId) return ''
+    const cached = projects.find((p) => p.id === projectId)
+    if (cached) return cached.title
+    return ''
+  }, [projectId, projects])
+
+  useEffect(() => {
+    if (projectId && !projectTitle) {
+      getProject(projectId)
+    }
+  }, [projectId, projectTitle, getProject])
 
   const menuItems = [
     { key: 'writer', icon: <BookOutlined />, label: '写作工作台' },
@@ -75,7 +90,7 @@ function ProjectWorkspace() {
             padding: sidebarCollapsed ? 8 : 16,
           }}
         >
-          {!sidebarCollapsed && <span>作品: {projectId?.slice(0, 8)}...</span>}
+          {!sidebarCollapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>作品: {projectTitle || (projectId ? projectId.slice(0, 8) + '...' : '')}</span>}
           <Button
             type="text"
             size="small"

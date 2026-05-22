@@ -1,6 +1,4 @@
-"""Worldbuilding CRUD, AI expansion, and conflict detection endpoints."""
-import json
-import re
+"""Worldbuilding CRUD and AI expansion endpoints."""
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -74,43 +72,6 @@ def _group_entries(entries: list[WorldbuildingEntry], dimension: Optional[str] =
         "grouped": grouped,
         "total": sum(len(items) for items in grouped.values()),
     }
-
-
-def _strip_json_fence(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
-    return match.group(1).strip() if match else text.strip()
-
-
-def _parse_conflicts(raw_text: str, valid_entry_ids: set[str]) -> list[dict]:
-    """Parse LLM conflict JSON and keep only conflicts that reference known entries."""
-    if not raw_text.strip():
-        return []
-
-    parsed = json.loads(_strip_json_fence(raw_text))
-    conflicts = parsed.get("conflicts", parsed if isinstance(parsed, list) else [])
-    if not isinstance(conflicts, list):
-        return []
-
-    normalized: list[dict] = []
-    for item in conflicts:
-        if not isinstance(item, dict):
-            continue
-        entry_a_id = item.get("entry_a_id") or item.get("entryAId")
-        entry_b_id = item.get("entry_b_id") or item.get("entryBId")
-        if entry_a_id not in valid_entry_ids or entry_b_id not in valid_entry_ids:
-            continue
-        normalized.append(
-            {
-                "entry_a_id": entry_a_id,
-                "entry_b_id": entry_b_id,
-                "dimension": item.get("dimension"),
-                "severity": item.get("severity", "medium"),
-                "summary": item.get("summary", "可能存在设定矛盾"),
-                "detail": item.get("detail") or item.get("reason") or "",
-            }
-        )
-    return normalized
-
 
 @router.get("/projects/{project_id}/worldbuilding")
 def list_worldbuilding_entries(
@@ -264,85 +225,6 @@ async def ai_expand_worldbuilding(
             "suggestion": result.get("content", ""),
             "model": result.get("model"),
             "usage": result.get("usage"),
-        }
-    )
-
-
-@router.get("/projects/{project_id}/worldbuilding/conflicts")
-async def detect_worldbuilding_conflicts(
-    project_id: str,
-    model: Optional[str] = Query(None, description="可选模型标识"),
-    db: Session = Depends(get_db),
-):
-    """Ask the LLM to detect possible conflicts between worldbuilding entries."""
-    _get_project_or_404(db, project_id)
-    entries = (
-        db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
-        .order_by(WorldbuildingEntry.dimension.asc(), WorldbuildingEntry.sort_order.asc())
-        .all()
-    )
-    if len(entries) < 2:
-        return ApiResponse.success(data={"items": [], "total": 0, "analysis": ""})
-
-    entry_payload = [
-        {
-            "id": entry.id,
-            "dimension": entry.dimension,
-            "dimension_label": DIMENSION_LABELS.get(entry.dimension, entry.dimension),
-            "title": entry.title,
-            "content": entry.content,
-        }
-        for entry in entries
-    ]
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位小说设定一致性审校专家，专精于检测世界观条目之间的逻辑矛盾、规则冲突和历史不一致。你的工作是像侦探一样逐条比对，而不是泛泛检查。\n\n"
-                "【检测维度】\n"
-                "- 逻辑矛盾：两个条目在因果或概念上互相冲突（如条目A说「灵气在千年前枯竭」，条目B说「五百年前的灵气大战改变了世界格局」）。\n"
-                "- 时间线冲突：两个条目中的时间先后顺序或年代标注互相矛盾。\n"
-                "- 规则冲突：两个条目对同一力量体系、魔法规则或世界法则给出了不同的描述。\n"
-                "- 势力关系冲突：两个条目对同一势力之间的关系给出了矛盾的定义（如A说X和Y是同盟，B说X和Y是敌对）。\n"
-                "- 种族文化冲突：两个条目对同一种族或文化的特征给出了不一致的描述。\n\n"
-                "【严重度判断标准】\n"
-                "- high：直接矛盾，无法通过任何合理方式调和，必须修改其中一个条目。\n"
-                "- medium：存在不一致但可以通过添加条件或限定词调和。\n"
-                "- low：措辞或细节上的细微差异，不影响整体逻辑。\n\n"
-                "【输出格式】\n"
-                "只输出JSON对象，不要输出解释、前缀或Markdown：\n"
-                "{\"conflicts\":[{\"entry_a_id\":\"\",\"entry_b_id\":\"\",\"dimension\":\"\",\"severity\":\"low|medium|high\",\"summary\":\"一句话摘要\",\"detail\":\"具体矛盾说明\"}]}\n"
-                "如果没有发现矛盾，输出 {\"conflicts\": []}。不要强行编造不存在的矛盾。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "请检查以下世界观条目之间是否存在逻辑矛盾、时间线冲突、"
-                "规则冲突、势力关系冲突或种族文化冲突。\n"
-                "返回 JSON 格式："
-                "{\"conflicts\":[{\"entry_a_id\":\"...\",\"entry_b_id\":\"...\","
-                "\"dimension\":\"...\",\"severity\":\"low|medium|high\","
-                "\"summary\":\"一句话摘要\",\"detail\":\"具体矛盾说明\"}]}\n\n"
-                f"条目列表：\n{json.dumps(entry_payload, ensure_ascii=False)}"
-            ),
-        },
-    ]
-    result = await LLMGateway.chat_completion(messages=messages, model=model, temperature=0.2)
-    analysis = result.get("content", "")
-    valid_entry_ids = {entry.id for entry in entries}
-
-    try:
-        conflicts = _parse_conflicts(analysis, valid_entry_ids)
-    except json.JSONDecodeError:
-        conflicts = []
-
-    return ApiResponse.success(
-        data={
-            "items": conflicts,
-            "total": len(conflicts),
-            "analysis": analysis,
         }
     )
 

@@ -4,9 +4,13 @@
 
 .worldbuilding-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 16px;
   align-items: start;
+}
+
+.worldbuilding-shell-ai-collapsed {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .worldbuilding-main,
@@ -29,7 +33,38 @@
 }
 
 .worldbuilding-side {
-  padding: 16px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  padding: 14px;
+  position: sticky;
+  top: 12px;
+}
+
+.worldbuilding-ai-resize-handle {
+  bottom: 0;
+  cursor: col-resize;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 5px;
+  z-index: 10;
+}
+
+.worldbuilding-ai-resize-handle:hover,
+.worldbuilding-side-dragging .worldbuilding-ai-resize-handle {
+  background: #1677ff;
+}
+
+.worldbuilding-ai-head {
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  position: static;
 }
 
 .worldbuilding-ai-run-log {
@@ -57,20 +92,24 @@
   white-space: nowrap;
 }
 
-.worldbuilding-row-conflict > td {
-  background: #fff7e6 !important;
-}
-
-.worldbuilding-conflict-item {
-  cursor: pointer;
-}
-
-.worldbuilding-conflict-item:hover {
-  background: #fafafa;
+.worldbuilding-content-scroll {
+  max-height: 360px;
+  overflow-y: auto;
 }
 
 @media (max-width: 1080px) {
-  .worldbuilding-shell {
+  .worldbuilding-shell,
+  .worldbuilding-shell-ai-collapsed {
     grid-template-columns: 1fr;
+  }
+
+  .worldbuilding-side {
+    max-height: none;
+    position: static;
+    width: auto !important;
+  }
+
+  .worldbuilding-ai-resize-handle {
+    display: none;
   }
 }

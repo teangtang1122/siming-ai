@@ -10,6 +10,7 @@ import {
 import { apiClient } from '../api/client'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { usePanelResize } from '../hooks/usePanelResize'
 import './CharactersPage.css'
 
 const { Text, Title } = Typography
@@ -100,6 +101,9 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [, setAiConfig] = useState<AIConfig | null>(null)
   const [aiConfigSaving, setAiConfigSaving] = useState(false)
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
+  const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
+    initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
+  })
 
   const fetchCharacters = useCallback(async (q?: string) => {
     setLoading(true)
@@ -460,7 +464,8 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         </main>
 
         {!aiPanelCollapsed && (
-          <aside className="characters-ai-panel">
+          <aside className={`characters-ai-panel${aiPanelDragging ? ' characters-ai-panel-dragging' : ''}`} style={{ width: aiPanelWidth }}>
+            <div className="characters-ai-resize-handle" onMouseDown={onAiPanelDrag} />
             <div className="characters-ai-head">
               <Title level={5} style={{ margin: 0 }}><RobotOutlined /> 项目助手</Title>
               <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setAiPanelCollapsed(true)} />

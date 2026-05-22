@@ -12,7 +12,8 @@ $FrontendDir = Join-Path $Root "frontend"
 $BuildDir = Join-Path $Root ".build"
 $VenvDir = Join-Path $BuildDir "packager-venv"
 $DistDir = Join-Path $Root "release"
-$AppName = "NovelWritingAgent"
+$AppName = "Moshu"
+$LegacyAppName = "NovelWritingAgent"
 $DefaultUpdateRepo = "teangtang1122/NovelWritingAgent"
 
 function Write-Step {
@@ -113,9 +114,16 @@ $ExePath = if ($OneDir) {
 $BackendPathForPython = $BackendDir.Replace("\", "\\")
 $Version = (& $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.version import APP_VERSION; print(APP_VERSION)").Trim()
 $Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
+$LegacyExePath = if ($OneDir) {
+  Join-Path (Join-Path $DistDir $AppName) "$LegacyAppName.exe"
+} else {
+  Join-Path $DistDir "$LegacyAppName.exe"
+}
+Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
 $Manifest = [ordered]@{
   version = $Version
   download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/$AppName.exe"
+  legacy_download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/$LegacyAppName.exe"
   sha256 = $Sha256
   repo = $DefaultUpdateRepo
 } | ConvertTo-Json -Depth 3
@@ -131,4 +139,5 @@ if ($OneDir) {
   Write-Host "Run: $(Join-Path (Join-Path $DistDir $AppName) "$AppName.exe")"
 } else {
   Write-Host "Executable: $ExePath"
+  Write-Host "Legacy-compatible alias: $LegacyExePath"
 }

@@ -31,6 +31,7 @@ import {
 import { apiClient } from '../api/client'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { usePanelResize } from '../hooks/usePanelResize'
 import './OutlinePage.css'
 
 const { Text, Title } = Typography
@@ -167,6 +168,9 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
   const [aiRunLogs, setAiRunLogs] = useState<AIRunLog[]>([])
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
+  const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
+    initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
+  })
 
   const selectedNode = useMemo(
     () => flat.find((node) => node.id === selectedId) || null,
@@ -619,7 +623,8 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         </main>
 
         {!aiPanelCollapsed && (
-          <aside className="outline-ai-panel">
+          <aside className={`outline-ai-panel${aiPanelDragging ? ' outline-ai-panel-dragging' : ''}`} style={{ width: aiPanelWidth }}>
+            <div className="outline-ai-resize-handle" onMouseDown={onAiPanelDrag} />
             <div className="outline-ai-head">
               <Title level={5} style={{ margin: 0 }}>
                 <RobotOutlined /> 项目助手

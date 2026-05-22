@@ -98,6 +98,8 @@ interface WorkspaceAssistantChatProps {
   scope: WorkspaceAssistantScope
   selectedOutlineNodeId?: string | null
   selectedCharacterId?: string | null
+  selectedText?: string
+  selectedTextChapterId?: string | null
   model?: string
   defaultModel?: string
   modelOptions: ModelOption[]
@@ -151,6 +153,8 @@ function WorkspaceAssistantChat({
   scope,
   selectedOutlineNodeId,
   selectedCharacterId,
+  selectedText,
+  selectedTextChapterId,
   model,
   defaultModel,
   modelOptions,
@@ -163,6 +167,7 @@ function WorkspaceAssistantChat({
   const [messages, setMessages] = useState<WorkspaceAssistantMessage[]>([])
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [currentIteration, setCurrentIteration] = useState(0)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [runLogs, setRunLogs] = useState<WorkspaceRunLog[]>([])
   const [temperature, setTemperature] = useState(0.3)
@@ -281,7 +286,9 @@ function WorkspaceAssistantChat({
         `/projects/${projectId}/ai/assistant/conversations/${conversationId}`,
       )
       setActiveConversationId(res.data.data.conversation.id)
-      setMessages(sortWorkspaceMessages((res.data.data.messages || []).map(toWorkspaceMessage)))
+      // The backend already returns persisted messages in conversation order.
+      // Re-sorting here can scramble older rows that share the same timestamp.
+      setMessages((res.data.data.messages || []).map(toWorkspaceMessage))
       upsertConversation(res.data.data.conversation)
       setInput('')
       setRunLogs([])
@@ -302,7 +309,7 @@ function WorkspaceAssistantChat({
     })
     return () => {
       mounted = false
-      abortRef.current?.abort()
+      // Don't abort on unmount — backend will finish processing and commit results
     }
   }, [fetchConversations, fetchProjectStyle, loadConversation])
 
@@ -344,6 +351,7 @@ function WorkspaceAssistantChat({
     }
 
     setGenerating(true)
+    setCurrentIteration(0)
     setRunLogs([{ key: `${Date.now()}-start`, tool: scope, status: 'running', message: '正在提交给AI助手' }])
     const controller = new AbortController()
     abortRef.current = controller
@@ -352,9 +360,9 @@ function WorkspaceAssistantChat({
       { role: 'user', content: userText, status: 'completed' },
       {
         role: 'assistant',
-        content: '正在读取项目资料并规划工具...',
+        content: '正在分析需求...',
         status: 'running',
-        data: createEmptyWorkspaceResponse([{ tool: scope, status: 'running', detail: '正在规划工具' }]),
+        data: createEmptyWorkspaceResponse([{ tool: scope, status: 'running', detail: 'AI 正在搜索和分析...' }]),
       },
     ])
     setInput('')
@@ -374,6 +382,8 @@ function WorkspaceAssistantChat({
           conversation_id: activeConversationId || undefined,
           selected_outline_node_id: selectedOutlineNodeId || undefined,
           selected_character_id: selectedCharacterId || undefined,
+          selected_text: selectedText || undefined,
+          selected_text_chapter_id: selectedTextChapterId || undefined,
           model: model || defaultModel || undefined,
           temperature,
           max_tokens: maxTokens || undefined,
@@ -423,6 +433,37 @@ function WorkspaceAssistantChat({
           const log = { tool: event.tool || 'tool', status: event.status || 'ok', detail }
           addRunLog({ tool: log.tool, status: log.status, message: `${log.tool}: ${detail}` })
           appendToolLog(log)
+        } else if (event.type === 'iteration_start') {
+          const iter = (event as { iteration: number; message: string }).iteration
+          setCurrentIteration(iter)
+          addRunLog({ tool: 'agent', status: 'running', message: (event as any).message || `第 ${iter} 轮推理` })
+        } else if (event.type === 'iteration_end') {
+          addRunLog({ tool: 'agent', status: 'ok', message: (event as any).message || '推理完成' })
+        } else if (event.type === 'search_start') {
+          const ev = event as { tool: string; args?: Record<string, unknown>; iteration: number }
+          const argsStr = JSON.stringify(ev.args || {}).slice(0, 80)
+          addRunLog({ tool: ev.tool, status: 'running', message: `正在搜索: ${argsStr}` })
+        } else if (event.type === 'search_result') {
+          const ev = event as { tool: string; result?: { detail?: string; status?: string }; iteration: number }
+          const detail = ev.result?.detail || '搜索完成'
+          const status = ev.result?.status || 'ok'
+          addRunLog({ tool: ev.tool, status, message: detail })
+          appendToolLog({ tool: ev.tool, status, detail })
+        } else if (event.type === 'thinking') {
+          const ev = event as { content: string; iteration: number }
+          setMessages((prev) => {
+            const next = [...prev]
+            const aiIdx = [...next].reverse().findIndex((item) => item.role === 'assistant')
+            if (aiIdx < 0) return prev
+            const realIdx = next.length - 1 - aiIdx
+            next[realIdx] = {
+              ...next[realIdx],
+              content: next[realIdx].content === '正在分析需求...'
+                ? ev.content
+                : next[realIdx].content + '\n' + ev.content,
+            }
+            return next
+          })
         } else if (event.type === 'complete') {
           const payload = event.data as WorkspaceAssistantResponse
           completed = true
@@ -697,7 +738,12 @@ function WorkspaceAssistantChat({
         )) : (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="直接提出需求，AI会读取项目资料并决定是否调用工具。" />
         )}
-        {generating && <Text type="secondary">AI助手正在读取资料并执行工具...</Text>}
+        {generating && (
+          <Text type="secondary">
+            AI 助手正在分析
+            {currentIteration > 0 ? `（第 ${currentIteration} 轮搜索推理）` : '...'}
+          </Text>
+        )}
       </div>
 
       <div className="workspace-assistant-composer">

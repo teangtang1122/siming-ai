@@ -1,12 +1,17 @@
 """Chapter workspace tools."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....database.models import Chapter
-from ..types import WorkspaceActionDependencies
+from ....database.models import (
+    Chapter,
+    ChapterCharacter,
+    ChapterSummary,
+    Character,
+)
 from ..utils import find_outline_by_title_or_id
 
 
@@ -16,90 +21,71 @@ def _character_names(value: object) -> list[str]:
     return [str(name) for name in value if name]
 
 
+def _link_chapter_characters(
+    db: Session,
+    project_id: str,
+    chapter_id: str,
+    names: list[str],
+    label: str,
+) -> None:
+    if not names:
+        return
+    characters = (
+        db.query(Character)
+        .filter(Character.project_id == project_id, Character.name.in_(names))
+        .all()
+    )
+    for character in characters:
+        db.add(ChapterCharacter(
+            chapter_id=chapter_id,
+            character_id=character.id,
+            appearance_type="涉及",
+            description=label,
+        ))
+
+
 async def create_chapter(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    deps: WorkspaceActionDependencies,
 ) -> dict:
     title = str(args.get("title") or "").strip()
     content = str(args.get("content") or "")
     if not title or not content.strip():
         return {"tool": "create_chapter", "status": "skipped", "detail": "章节标题或正文为空"}
 
-    project = deps.get_project(db, project_id)
-    violations = deps.detect_forbidden_sentence_violations(content, project)
-    if violations:
-        try:
-            model = str(args.get("model") or "") or None
-            content, before, remaining = await deps.repair_forbidden_sentence_text(
-                content,
-                project,
-                model,
-                None,
-            )
-        except Exception:
-            pass  # fall through with original content
-
     outline_node = None
     for ref in (args.get("outline_node_id"), args.get("outline_node_title"), args.get("outline_title")):
         outline_node = find_outline_by_title_or_id(db, project_id, ref)
         if outline_node:
             break
-    outline_node_id = outline_node.id if outline_node else None
 
-    existing = None
-    if outline_node_id:
-        existing = (
-            db.query(Chapter)
-            .filter(Chapter.project_id == project_id, Chapter.outline_node_id == outline_node_id)
-            .order_by(Chapter.created_at.desc())
-            .first()
-        ) or (
-            db.query(Chapter)
-            .filter(Chapter.project_id == project_id, Chapter.title == title)
-            .order_by(Chapter.created_at.desc())
-            .first()
-        )
-    if not existing:
-        existing = (
-            db.query(Chapter)
-            .filter(Chapter.project_id == project_id, Chapter.title == title)
-            .order_by(Chapter.created_at.desc())
-            .first()
-        )
-
-    involved_characters = _character_names(args.get("involved_characters"))
-    model = str(args.get("model") or "") or None
-    if existing:
-        existing = deps.finalize_assistant_chapter(
-            db,
-            existing,
-            title,
-            content,
-            str(args.get("summary") or ""),
-            involved_characters,
-            model,
-        )
-        return {
-            "tool": "create_chapter",
-            "status": "ok",
-            "detail": f"已更新章节：{existing.title}",
-            "data": {"id": existing.id, "title": existing.title},
-        }
-
-    chapter = deps.create_assistant_chapter(
-        db,
-        project_id,
-        title[:200],
-        content,
-        outline_node_id,
-        str(args.get("summary") or ""),
-        involved_characters,
-        model,
+    chapter = Chapter(
+        project_id=project_id,
+        outline_node_id=outline_node.id if outline_node else None,
+        title=title[:200],
+        content=content,
+        word_count=len(content),
+        current_version=1,
     )
-    if not chapter:
-        return {"tool": "create_chapter", "status": "skipped", "detail": "章节创建失败"}
+    db.add(chapter)
+    db.flush()
+
+    summary_text = str(args.get("summary") or "").strip()
+    if summary_text:
+        db.add(ChapterSummary(
+            chapter_id=chapter.id,
+            summary_text=summary_text[:20000],
+            token_count=len(summary_text),
+            ai_model=str(args.get("model") or "") or None,
+        ))
+
+    involved = _character_names(args.get("involved_characters"))
+    _link_chapter_characters(
+        db, project_id, chapter.id, involved,
+        f"由AI助手关联至章节「{title[:50]}」",
+    )
+
     return {
         "tool": "create_chapter",
         "status": "ok",
@@ -107,3 +93,116 @@ async def create_chapter(
         "data": {"id": chapter.id, "title": chapter.title},
     }
 
+
+async def update_chapter(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    chapter = None
+    for ref in (args.get("id"), args.get("chapter_id")):
+        text = str(ref or "").strip()
+        if text:
+            chapter = db.query(Chapter).filter(
+                Chapter.project_id == project_id, Chapter.id == text
+            ).first()
+            if chapter:
+                break
+    if not chapter:
+        title_ref = str(args.get("title") or args.get("chapter_title") or "").strip()
+        if title_ref:
+            chapter = db.query(Chapter).filter(
+                Chapter.project_id == project_id, Chapter.title == title_ref
+            ).order_by(Chapter.created_at.desc()).first()
+    if not chapter:
+        outline_node = None
+        for ref in (args.get("outline_node_id"), args.get("outline_node_title"), args.get("outline_title")):
+            outline_node = find_outline_by_title_or_id(db, project_id, ref)
+            if outline_node:
+                break
+        if outline_node:
+            chapter = (
+                db.query(Chapter)
+                .filter(Chapter.project_id == project_id, Chapter.outline_node_id == outline_node.id)
+                .order_by(Chapter.created_at.desc())
+                .first()
+            )
+    if not chapter:
+        return {"tool": "update_chapter", "status": "skipped", "detail": "未找到章节"}
+
+    if args.get("title"):
+        chapter.title = str(args.get("title")).strip()[:200]
+    if "content" in args:
+        chapter.content = str(args.get("content") or "")
+        chapter.word_count = len(chapter.content)
+
+    outline_node = None
+    for ref in (args.get("outline_node_id"), args.get("outline_node_title"), args.get("outline_title")):
+        outline_node = find_outline_by_title_or_id(db, project_id, ref)
+        if outline_node:
+            chapter.outline_node_id = outline_node.id
+            break
+
+    chapter.current_version = max(1, chapter.current_version or 1) + 1
+    chapter.updated_at = datetime.utcnow()
+
+    summary_text = str(args.get("summary") or "").strip()
+    if summary_text:
+        if chapter.summary:
+            chapter.summary.summary_text = summary_text[:20000]
+            chapter.summary.token_count = len(summary_text)
+            chapter.summary.updated_at = datetime.utcnow()
+            chapter.summary.ai_model = str(args.get("model") or "") or chapter.summary.ai_model
+        else:
+            db.add(ChapterSummary(
+                chapter_id=chapter.id,
+                summary_text=summary_text[:20000],
+                token_count=len(summary_text),
+                ai_model=str(args.get("model") or "") or None,
+            ))
+
+    if "involved_characters" in args:
+        db.query(ChapterCharacter).filter(ChapterCharacter.chapter_id == chapter.id).delete()
+        _link_chapter_characters(
+            db, project_id, chapter.id,
+            _character_names(args.get("involved_characters")),
+            f"由AI助手更新章节「{chapter.title[:50]}」",
+        )
+
+    return {
+        "tool": "update_chapter",
+        "status": "ok",
+        "detail": f"已更新章节：{chapter.title}",
+        "data": {"id": chapter.id, "title": chapter.title},
+    }
+
+
+async def delete_chapter(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    chapter = None
+    for ref in (args.get("id"), args.get("chapter_id")):
+        text = str(ref or "").strip()
+        if text:
+            chapter = db.query(Chapter).filter(
+                Chapter.project_id == project_id, Chapter.id == text
+            ).first()
+            if chapter:
+                break
+    if not chapter:
+        title_ref = str(args.get("title") or args.get("chapter_title") or "").strip()
+        if title_ref:
+            chapter = db.query(Chapter).filter(
+                Chapter.project_id == project_id, Chapter.title == title_ref
+            ).first()
+    if not chapter:
+        return {"tool": "delete_chapter", "status": "skipped", "detail": "未找到章节"}
+
+    title = chapter.title
+    db.query(ChapterCharacter).filter(ChapterCharacter.chapter_id == chapter.id).delete()
+    db.query(ChapterSummary).filter(ChapterSummary.chapter_id == chapter.id).delete()
+    db.delete(chapter)
+    db.flush()
+    return {"tool": "delete_chapter", "status": "ok", "detail": f"已删除章节：{title}"}

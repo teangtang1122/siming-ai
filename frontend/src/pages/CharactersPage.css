@@ -38,13 +38,25 @@
 
 .characters-ai-panel {
   max-height: calc(100vh - 80px);
-  min-width: 280px;
   overflow-y: auto;
   padding: 14px;
   position: sticky;
-  resize: horizontal;
   top: 12px;
-  width: clamp(300px, 24vw, 620px);
+}
+
+.characters-ai-resize-handle {
+  bottom: 0;
+  cursor: col-resize;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 5px;
+  z-index: 10;
+}
+
+.characters-ai-resize-handle:hover,
+.characters-ai-panel-dragging .characters-ai-resize-handle {
+  background: #1677ff;
 }
 
 .characters-sidebar-toolbar,
@@ -186,8 +198,10 @@
   }
 
   .characters-ai-panel {
-    min-width: 0;
-    resize: none;
-    width: auto;
+    width: auto !important;
+  }
+
+  .characters-ai-resize-handle {
+    display: none;
   }
 }

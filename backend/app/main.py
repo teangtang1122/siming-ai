@@ -45,8 +45,8 @@ Base.metadata.create_all(bind=engine)
 ensure_runtime_schema(engine)
 
 app = FastAPI(
-    title="Novel Writing AI Agent API",
-    description="Backend API for the novel writing AI agent tool.",
+    title="墨枢 API",
+    description="Backend API for the Moshu novel-writing tool.",
     version=APP_VERSION,
 )
 
@@ -83,7 +83,7 @@ async def root():
     """Health check endpoint."""
     if FRONTEND_DIST:
         return FileResponse(FRONTEND_DIST / "index.html")
-    return {"status": "ok", "service": "novel-writing-agent-api"}
+    return {"status": "ok", "service": "moshu-api"}
 
 
 @app.get("/health")

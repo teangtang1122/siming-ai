@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import OutlineNode
-from ..types import WorkspaceActionDependencies
 from ..utils import (
     find_outline_by_title_or_id,
     next_outline_sort_order,
@@ -20,7 +19,6 @@ async def create_outline_node(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    deps: WorkspaceActionDependencies,
 ) -> dict:
     parent_id = str(args.get("parent_id") or "").strip() or None
     parent_warning = ""
@@ -66,7 +64,6 @@ async def update_outline_node(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    deps: WorkspaceActionDependencies,
 ) -> dict:
     node_ref = (
         args.get("id")
@@ -100,3 +97,30 @@ async def update_outline_node(
         "data": outline_node_payload(node),
     }
 
+
+async def delete_outline_node(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    node_ref = (
+        args.get("id")
+        or args.get("node_id")
+        or args.get("outline_node_id")
+        or args.get("title")
+    )
+    node = find_outline_by_title_or_id(db, project_id, node_ref)
+    if not node:
+        return {"tool": "delete_outline_node", "status": "skipped", "detail": "未找到大纲节点"}
+    title = node.title
+    # Cascade-delete children
+    children = (
+        db.query(OutlineNode)
+        .filter(OutlineNode.project_id == project_id, OutlineNode.parent_id == node.id)
+        .all()
+    )
+    for child in children:
+        db.delete(child)
+    db.delete(node)
+    db.flush()
+    return {"tool": "delete_outline_node", "status": "ok", "detail": f"已删除大纲：{title}"}

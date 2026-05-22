@@ -10,7 +10,7 @@ from ...database.models import Chapter, Project
 
 
 @dataclass(frozen=True)
-class WorkspaceActionDependencies:
+class WorkspaceActionDependencies:  # deprecated — tools no longer accept deps
     get_project: Callable[[Session, str], Project]
     detect_forbidden_sentence_violations: Callable[[str, Project], list[dict]]
     repair_forbidden_sentence_text: Callable[
@@ -24,5 +24,6 @@ class WorkspaceActionDependencies:
     ]
 
 
-ToolHandler = Callable[[Session, str, dict, WorkspaceActionDependencies], Awaitable[dict]]
+# New-style handler: (db, project_id, args) → result dict
+ToolHandler = Callable[[Session, str, dict], Awaitable[dict]]
 

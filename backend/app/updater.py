@@ -15,8 +15,11 @@ from typing import Any
 from .version import APP_VERSION, DEFAULT_UPDATE_REPO
 
 
-USER_AGENT = f"NovelWritingAgent/{APP_VERSION}"
-EXE_NAME = "NovelWritingAgent.exe"
+USER_AGENT = f"Moshu/{APP_VERSION}"
+EXE_NAME = "Moshu.exe"
+LEGACY_EXE_NAME = "NovelWritingAgent.exe"
+COMPATIBLE_EXE_NAMES = {EXE_NAME.lower(), LEGACY_EXE_NAME.lower()}
+CHECKSUM_ASSET_NAMES = {"sha256.txt", f"{EXE_NAME.lower()}.sha256", f"{LEGACY_EXE_NAME.lower()}.sha256"}
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
@@ -34,7 +37,11 @@ def is_newer_version(latest: str, current: str = APP_VERSION) -> bool:
 
 
 def _github_token() -> str | None:
-    return os.environ.get("NOVEL_AGENT_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    return (
+        os.environ.get("MOSHU_GITHUB_TOKEN")
+        or os.environ.get("NOVEL_AGENT_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+    )
 
 
 def _request(url: str, timeout: float = 8.0) -> bytes:
@@ -57,7 +64,7 @@ def _request_json(url: str, timeout: float = 8.0) -> dict[str, Any]:
 def _manifest_from_url(url: str) -> dict[str, Any] | None:
     data = _request_json(url)
     version = str(data.get("version") or data.get("tag_name") or "").strip().removeprefix("v")
-    download_url = str(data.get("download_url") or data.get("url") or "").strip()
+    download_url = str(data.get("download_url") or data.get("url") or data.get("legacy_download_url") or "").strip()
     if not version or not download_url:
         return None
     return {
@@ -74,6 +81,7 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
     version = tag.removeprefix("v")
     assets = release.get("assets") if isinstance(release.get("assets"), list) else []
     exe_asset = None
+    legacy_exe_asset = None
     checksum_asset = None
     for asset in assets:
         if not isinstance(asset, dict):
@@ -81,8 +89,11 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
         name = str(asset.get("name") or "")
         if name.lower() == EXE_NAME.lower():
             exe_asset = asset
-        elif name.lower() in {"sha256.txt", f"{EXE_NAME.lower()}.sha256"}:
+        elif name.lower() == LEGACY_EXE_NAME.lower():
+            legacy_exe_asset = asset
+        elif name.lower() in CHECKSUM_ASSET_NAMES:
             checksum_asset = asset
+    exe_asset = exe_asset or legacy_exe_asset
     if not version or not exe_asset:
         return None
     sha256 = ""
@@ -102,10 +113,18 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
 
 
 def find_latest_update() -> dict[str, Any] | None:
-    if os.environ.get("NOVEL_AGENT_DISABLE_UPDATE") == "1":
+    if os.environ.get("MOSHU_DISABLE_UPDATE") == "1" or os.environ.get("NOVEL_AGENT_DISABLE_UPDATE") == "1":
         return None
-    manifest_url = os.environ.get("NOVEL_AGENT_UPDATE_MANIFEST_URL", "").strip()
-    repo = os.environ.get("NOVEL_AGENT_UPDATE_REPO", DEFAULT_UPDATE_REPO).strip()
+    manifest_url = (
+        os.environ.get("MOSHU_UPDATE_MANIFEST_URL")
+        or os.environ.get("NOVEL_AGENT_UPDATE_MANIFEST_URL")
+        or ""
+    ).strip()
+    repo = (
+        os.environ.get("MOSHU_UPDATE_REPO")
+        or os.environ.get("NOVEL_AGENT_UPDATE_REPO")
+        or DEFAULT_UPDATE_REPO
+    ).strip()
     try:
         manifest = _manifest_from_url(manifest_url) if manifest_url else _manifest_from_github_release(repo)
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
@@ -120,7 +139,7 @@ def find_latest_update() -> dict[str, Any] | None:
 def _download_update(manifest: dict[str, Any], updates_dir: Path) -> Path:
     updates_dir.mkdir(parents=True, exist_ok=True)
     version = str(manifest["version"]).strip().removeprefix("v")
-    target = updates_dir / f"NovelWritingAgent-{version}.exe"
+    target = updates_dir / f"Moshu-{version}.exe"
     data = _request(str(manifest["download_url"]), timeout=120)
     digest = hashlib.sha256(data).hexdigest().lower()
     expected = str(manifest.get("sha256") or "").strip().lower()
@@ -157,7 +176,7 @@ def apply_update_if_available(app_home: Path) -> bool:
     if not getattr(sys, "frozen", False):
         return False
     current_exe = Path(sys.executable).resolve()
-    if current_exe.name.lower() != EXE_NAME.lower():
+    if current_exe.name.lower() not in COMPATIBLE_EXE_NAMES:
         return False
     manifest = find_latest_update()
     if not manifest:

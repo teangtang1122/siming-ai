@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Button,
   Empty,
@@ -21,16 +21,19 @@ import {
   EnvironmentOutlined,
   GlobalOutlined,
   HistoryOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RobotOutlined,
   SaveOutlined,
   TeamOutlined,
   ThunderboltOutlined,
-  WarningOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { usePanelResize } from '../hooks/usePanelResize'
 import './WorldbuildingPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -57,21 +60,6 @@ interface WorldbuildingEntry {
 interface WorldbuildingListResponse {
   grouped: Record<Dimension, WorldbuildingEntry[]>
   total: number
-}
-
-interface ConflictItem {
-  entry_a_id: string
-  entry_b_id: string
-  dimension?: Dimension
-  severity: 'low' | 'medium' | 'high' | string
-  summary: string
-  detail: string
-}
-
-interface ConflictResponse {
-  items: ConflictItem[]
-  total: number
-  analysis?: string
 }
 
 interface DraftEntry {
@@ -125,9 +113,12 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   const [aiModel, setAiModel] = useState<string | undefined>()
   const [aiRunLogs, setAiRunLogs] = useState<AIRunLog[]>([])
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
+  const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
+    initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
+  })
 
-  const [conflicts, setConflicts] = useState<ConflictItem[]>([])
-  const [conflictLoading, setConflictLoading] = useState(false)
+  const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
+  const [expandedContentIds, setExpandedContentIds] = useState<Set<string>>(new Set())
 
   const fetchEntries = useCallback(async () => {
     setLoading(true)
@@ -154,15 +145,6 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   }, [aiModel, defaultModel])
 
   const currentEntries = entriesByDimension[activeDimension] || []
-
-  const conflictEntryIds = useMemo(() => {
-    const ids = new Set<string>()
-    conflicts.forEach((item) => {
-      ids.add(item.entry_a_id)
-      ids.add(item.entry_b_id)
-    })
-    return ids
-  }, [conflicts])
 
   const startCreate = () => {
     const nextSortOrder = currentEntries.length
@@ -227,7 +209,6 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     try {
       await apiClient.delete(`/projects/${projectId}/worldbuilding/${entryId}`)
       message.success('世界观条目已删除')
-      setConflicts((items) => items.filter((item) => item.entry_a_id !== entryId && item.entry_b_id !== entryId))
       fetchEntries()
     } catch (err: any) {
       message.error(err.message || '删除世界观条目失败')
@@ -295,51 +276,6 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     })
   }
 
-  const detectConflicts = async () => {
-    setConflictLoading(true)
-    setAiRunLogs([{
-      key: `${Date.now()}-conflict-start`,
-      tool: 'worldbuilding_conflicts',
-      status: 'running',
-      message: '正在读取全部世界观条目并检查矛盾',
-    }])
-    try {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-conflict-model`,
-        tool: 'worldbuilding_conflicts',
-        status: 'running',
-        message: `正在调用模型：${aiModel || defaultModel || '默认模型'}`,
-      }])
-      const res = await apiClient.get<ApiResponse<ConflictResponse>>(
-        `/projects/${projectId}/worldbuilding/conflicts`,
-        { model: aiModel || defaultModel || undefined },
-      )
-      const items = res.data.data.items || []
-      setConflicts(items)
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-conflict-done`,
-        tool: 'worldbuilding_conflicts',
-        status: 'ok',
-        message: `矛盾检查完成，发现 ${items.length} 处`,
-      }])
-      if (items.length > 0) {
-        message.warning(`检测到 ${items.length} 处可能的设定矛盾`)
-      } else {
-        message.success('暂未检测到明显设定矛盾')
-      }
-    } catch (err: any) {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-conflict-error`,
-        tool: 'worldbuilding_conflicts',
-        status: 'error',
-        message: err.message || '矛盾检测失败',
-      }])
-      message.error(err.message || '矛盾检测失败，请检查模型配置')
-    } finally {
-      setConflictLoading(false)
-    }
-  }
-
   const dataSource = creating
     ? [
         {
@@ -373,12 +309,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
             />
           )
         }
-        return (
-          <Space size={8}>
-            {conflictEntryIds.has(record.id) && <WarningOutlined style={{ color: '#fa8c16' }} />}
-            <Text strong>{record.title}</Text>
-          </Space>
-        )
+        return <Text strong>{record.title}</Text>
       },
     },
     {
@@ -397,10 +328,19 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
             />
           )
         }
-        return (
-          <Paragraph ellipsis={{ rows: 2, expandable: true, symbol: '展开' }} style={{ marginBottom: 0 }}>
-            {record.content}
-          </Paragraph>
+        const expanded = expandedContentIds.has(record.id)
+        return expanded ? (
+          <div>
+            <div className="worldbuilding-content-scroll">
+              <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>{record.content}</Paragraph>
+            </div>
+            <Button type="link" size="small" onClick={() => setExpandedContentIds((prev) => { const next = new Set(prev); next.delete(record.id); return next })}>收起</Button>
+          </div>
+        ) : (
+          <div>
+            <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0 }}>{record.content}</Paragraph>
+            <Button type="link" size="small" onClick={() => setExpandedContentIds((prev) => { const next = new Set(prev); next.add(record.id); return next })}>展开</Button>
+          </div>
         )
       },
     },
@@ -482,16 +422,18 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
 
   return (
     <div className="worldbuilding-page">
-      <div className="worldbuilding-shell">
+      <div className={`worldbuilding-shell${aiPanelCollapsed ? ' worldbuilding-shell-ai-collapsed' : ''}`}>
         <section className="worldbuilding-main">
           <div className="worldbuilding-toolbar">
             <Title level={4} style={{ margin: 0 }}>世界观</Title>
             <Space>
+              {aiPanelCollapsed && (
+                <Button icon={<MenuUnfoldOutlined />} onClick={() => setAiPanelCollapsed(false)}>
+                  AI 辅助
+                </Button>
+              )}
               <Button icon={<ReloadOutlined />} onClick={fetchEntries} loading={loading}>
                 刷新
-              </Button>
-              <Button icon={<WarningOutlined />} onClick={detectConflicts} loading={conflictLoading}>
-                检测矛盾
               </Button>
               <Button type="primary" icon={<PlusOutlined />} onClick={startCreate} disabled={!!editingId}>
                 新增条目
@@ -519,7 +461,6 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
                   dataSource={dataSource}
                   loading={loading}
                   pagination={false}
-                  rowClassName={(record) => (conflictEntryIds.has(record.id) ? 'worldbuilding-row-conflict' : '')}
                   locale={{
                     emptyText: (
                       <Empty
@@ -538,18 +479,25 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
           />
         </section>
 
-        <aside className="worldbuilding-side">
-          <WorkspaceAssistantChat
-            projectId={projectId}
-            scope="project"
-            model={aiModel}
-            defaultModel={defaultModel}
-            modelOptions={modelOptions}
-            modelsLoading={modelsLoading}
-            onModelChange={setAiModel}
-            onApplied={fetchEntries}
-          />
-        </aside>
+        {!aiPanelCollapsed && (
+          <aside className={`worldbuilding-side${aiPanelDragging ? ' worldbuilding-side-dragging' : ''}`} style={{ width: aiPanelWidth }}>
+            <div className="worldbuilding-ai-resize-handle" onMouseDown={onAiPanelDrag} />
+            <div className="worldbuilding-ai-head">
+              <Title level={5} style={{ margin: 0 }}><RobotOutlined /> 项目助手</Title>
+              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setAiPanelCollapsed(true)} />
+            </div>
+            <WorkspaceAssistantChat
+              projectId={projectId}
+              scope="project"
+              model={aiModel}
+              defaultModel={defaultModel}
+              modelOptions={modelOptions}
+              modelsLoading={modelsLoading}
+              onModelChange={setAiModel}
+              onApplied={fetchEntries}
+            />
+          </aside>
+        )}
       </div>
     </div>
   )

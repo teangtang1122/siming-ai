@@ -14,7 +14,6 @@ import {
   Space,
   Divider,
   Descriptions,
-  Collapse,
   InputNumber,
 } from 'antd'
 import {
@@ -31,7 +30,7 @@ import {
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 
-const { Title, Text } = Typography
+const { Title } = Typography
 
 interface ModelConfig {
   id: string
@@ -136,54 +135,6 @@ const defaultSafetyLimits = (provider?: string, model?: string) => {
     deconstruct_item_char_limit: limit,
   }
 }
-
-const AI_PROMPT_PRESETS = [
-  {
-    key: 'narrator',
-    label: '叙述者写作',
-    prompt: '你是一位专业的小说叙述者AI，负责场景描写、气氛渲染、动作刻画和剧情推进。你的写作风格应遵循作品设定、禁用句式和修辞限制，与既有世界观和角色设定保持一致。只输出叙述文本，避免元评论，直接输出正文。',
-  },
-  {
-    key: 'character',
-    label: '角色对话',
-    prompt: '你是小说中的指定角色。请以该角色的身份、性格、说话风格生成对话或内心独白，始终保持在角色内，结合角色档案、AI对话参数、关系网络、近期经历、当前大纲和前文摘要。',
-  },
-  {
-    key: 'battle',
-    label: '多角色对戏',
-    prompt: '你是当前回合发言角色。请基于场景、世界观、当前大纲、在场角色、关系网络、前序对话历史和角色近期经历做出连贯回应，只输出该角色的对话或行为。',
-  },
-  {
-    key: 'outline',
-    label: '大纲建议',
-    prompt: '你是小说写作AI Agent的大纲策划助手。请输出中文剧情摘要，强调冲突、行动、转折和悬念，保持与既有世界观和角色设定一致，不输出Markdown表格。',
-  },
-  {
-    key: 'worldbuilding',
-    label: '世界观扩展',
-    prompt: '你是小说写作AI Agent的叙述者世界观编辑。请帮助作者扩展设定，保持逻辑自洽、可用于后续剧情写作，输出具体可落地的中文细节，避免空泛建议。',
-  },
-  {
-    key: 'conflict',
-    label: '情节冲突',
-    prompt: '你是小说情节冲突设计顾问。请根据当前剧情状态分析并提供人物冲突、势力冲突、内心冲突等建议，只输出包含类型、标题、描述、涉及角色、张力等级和建议走向的JSON。',
-  },
-  {
-    key: 'rewrite',
-    label: '改写/扩写/续写',
-    prompt: '你是专业小说文本操作助手。改写时保留核心含义并改变表达；扩写时保留原文并增加环境、动作、心理或背景细节；续写时承接上文风格、禁用句式、修辞限制和剧情逻辑。',
-  },
-  {
-    key: 'character-evolution',
-    label: '角色演进检测',
-    prompt: '你是小说角色设定追踪助手。请分析新章节内容，检测角色发生的技能、经历、关系、性格变化，只输出结构化JSON数组；没有明显变化时输出空数组。',
-  },
-  {
-    key: 'import-deconstruct',
-    label: '导入校正/拆书',
-    prompt: '导入校正用于校验章节边界，输出章节标题和全文字符位置。拆书Map阶段分析角色、事件、节奏、爽点和技法；Reduce阶段聚合大纲结构、角色频率、情节节点和节奏曲线。',
-  },
-]
 
 function SettingsPage() {
   const navigate = useNavigate()
@@ -552,27 +503,6 @@ function SettingsPage() {
             </Button>
           </Form.Item>
         </Form>
-      </Card>
-
-      <Card title="AI提示词预设" style={{ marginTop: 16 }}>
-        <Text type="secondary">
-          这些是当前各AI模块使用的内置提示词摘要，便于核对每个模块的角色定位和输出约束。
-        </Text>
-        <Collapse
-          size="small"
-          style={{ marginTop: 12 }}
-          items={AI_PROMPT_PRESETS.map((item) => ({
-            key: item.key,
-            label: item.label,
-            children: (
-              <Input.TextArea
-                value={item.prompt}
-                readOnly
-                autoSize={{ minRows: 3, maxRows: 8 }}
-              />
-            ),
-          }))}
-        />
       </Card>
 
       <Modal

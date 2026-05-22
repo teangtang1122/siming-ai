@@ -62,7 +62,7 @@ def _build_world_context(db: Session, project_id: str, outline_node_id: Optional
     lines = []
     for entry in entries:
         dim_label = DIMENSION_LABELS.get(entry.dimension, entry.dimension)
-        lines.append(f"[{dim_label}] {entry.title}: {entry.content[:400]}")
+        lines.append(f"[{dim_label}] {entry.title}: {entry.content[:1200]}")
     return "\n".join(lines)
 
 
