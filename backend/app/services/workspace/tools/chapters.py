@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from ....database.models import (
     Chapter,
     ChapterCharacter,
+    CharacterChangeLog,
+    CharacterTimeline,
     ChapterSummary,
     Character,
 )
@@ -201,8 +203,30 @@ async def delete_chapter(
         return {"tool": "delete_chapter", "status": "skipped", "detail": "未找到章节"}
 
     title = chapter.title
+
+    # Revert character changes introduced in this chapter
+    change_logs = db.query(CharacterChangeLog).filter(
+        CharacterChangeLog.chapter_id == chapter.id, CharacterChangeLog.confirmed == True
+    ).all()
+    reverted: list[str] = []
+    for log_entry in change_logs:
+        character = db.query(Character).filter(Character.id == log_entry.character_id).first()
+        if character and log_entry.field_name in ("abilities", "personality", "background", "appearance"):
+            old_val = log_entry.old_value
+            if old_val and old_val != "（档案中无记录）":
+                setattr(character, log_entry.field_name, old_val)
+                reverted.append(character.name)
+    if reverted:
+        db.flush()
+
+    db.query(CharacterChangeLog).filter(CharacterChangeLog.chapter_id == chapter.id).delete()
+    db.query(CharacterTimeline).filter(CharacterTimeline.chapter_id == chapter.id).delete()
     db.query(ChapterCharacter).filter(ChapterCharacter.chapter_id == chapter.id).delete()
     db.query(ChapterSummary).filter(ChapterSummary.chapter_id == chapter.id).delete()
     db.delete(chapter)
     db.flush()
-    return {"tool": "delete_chapter", "status": "ok", "detail": f"已删除章节：{title}"}
+
+    detail = f"已删除章节：{title}"
+    if reverted:
+        detail += f"，已回退 {len(reverted)} 个角色的状态（{', '.join(reverted)}）"
+    return {"tool": "delete_chapter", "status": "ok", "detail": detail}

@@ -32,6 +32,10 @@ from app.routers.ai_writer import _execute_workspace_action
 API_PREFIX = "/api/v1"
 
 
+async def async_chunks(text: str):
+    yield text
+
+
 class AIWriterIsolationTestCase(unittest.TestCase):
     """AI writer endpoints must not accept outline nodes from another project."""
 
@@ -193,14 +197,15 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         roles = [item["role"] for item in response.json()["data"]["messages"]]
         self.assertEqual(roles, ["user", "assistant"])
 
-    @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_workspace_stream_selected_outline_with_links_does_not_detach(self, mock_chat):
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_selected_outline_with_links_does_not_detach(self, mock_stream):
         project_id = self.create_project("Workspace Project")
         outline_id = self.create_outline_node(project_id, "第151章 众生相")
         character_id = self.create_character(project_id, "特昂糖")
-        mock_chat.return_value = {
-            "content": json.dumps({"reply": "已读取当前大纲。", "actions": [], "needs_confirmation": False}, ensure_ascii=False)
-        }
+        mock_stream.return_value = async_chunks(json.dumps(
+            {"reply": "已读取当前大纲。", "done": True, "actions": [], "needs_confirmation": False},
+            ensure_ascii=False,
+        ))
 
         db = SessionLocal()
         try:
@@ -227,7 +232,8 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertNotIn("not bound to a Session", response.text)
 
     @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_workspace_stream_repairs_invalid_json_and_executes_create_chapter(self, mock_chat):
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_repairs_invalid_json_and_executes_create_chapter(self, mock_stream, mock_chat):
         project_id = self.create_project("Workspace Repair Project")
         outline_id = self.create_outline_node(project_id, "第152章 黑潮漫过石阶")
         bad_json = (
@@ -250,10 +256,8 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             }],
             "needs_confirmation": False,
         }
-        mock_chat.side_effect = [
-            {"content": bad_json},
-            {"content": json.dumps(repaired, ensure_ascii=False)},
-        ]
+        mock_stream.return_value = async_chunks(bad_json)
+        mock_chat.return_value = {"content": json.dumps(repaired, ensure_ascii=False)}
 
         response = self.client.post(
             f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",

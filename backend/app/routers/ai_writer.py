@@ -111,24 +111,81 @@ def _strip_json_fences(text: str) -> str:
     return value.strip()
 
 
+def _escape_json_string_values(text: str) -> str:
+    """Escape unescaped ASCII double-quotes inside JSON string values.
+
+    Scans the text tracking in-string / out-of-string state and escape mode.
+    When a double-quote appears inside a string and is NOT followed by a JSON
+    structural character (, } ] :), it is treated as an accidental unescaped
+    quote (e.g. from Chinese dialogue) and escaped as \\\".
+    """
+    result: list[str] = []
+    in_string = False
+    escape_next = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if not in_string:
+            result.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+        else:
+            if escape_next:
+                result.append(ch)
+                escape_next = False
+                i += 1
+            elif ch == '\\':
+                result.append(ch)
+                escape_next = True
+                i += 1
+            elif ch == '"':
+                # Potential string terminator — look ahead for structural char
+                ahead = i + 1
+                while ahead < len(text) and text[ahead].isspace():
+                    ahead += 1
+                if ahead >= len(text) or text[ahead] in ',}:]':
+                    # Real string terminator
+                    in_string = False
+                    result.append(ch)
+                else:
+                    # Unescaped quote inside string — escape it
+                    result.append('\\')
+                    result.append('"')
+                i += 1
+            else:
+                result.append(ch)
+                i += 1
+    return ''.join(result)
+
+
 def _parse_json_object(text: str) -> Optional[dict]:
     cleaned = _strip_json_fences(text)
-    start = cleaned.find("{")
-    if start < 0:
+
+    def _try_parse(candidate_text: str) -> Optional[dict]:
+        start = candidate_text.find("{")
+        if start < 0:
+            return None
+        for end_offset in range(len(candidate_text), start + 1, -1):
+            end = candidate_text.rfind("}", start, end_offset)
+            if end < 0:
+                continue
+            candidate = candidate_text[start:end + 1]
+            try:
+                parsed = json.loads(candidate, strict=False)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                continue
         return None
-    # Try progressively shrinking from the end to handle trailing garbage
-    # (LLMs sometimes add extra brackets, newlines, or commentary after the JSON)
-    for end_offset in range(len(cleaned), start + 1, -1):
-        end = cleaned.rfind("}", start, end_offset)
-        if end < 0:
-            continue
-        candidate = cleaned[start:end + 1]
-        try:
-            parsed = json.loads(candidate, strict=False)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, ValueError):
-            continue
+
+    parsed = _try_parse(cleaned)
+    if parsed is not None:
+        return parsed
+    # Escape unescaped quotes inside string values and retry
+    escaped = _escape_json_string_values(cleaned)
+    if escaped != cleaned:
+        return _try_parse(escaped)
     return None
 
 
@@ -2093,7 +2150,9 @@ async def workspace_assistant_stream(
                 })
 
                 messages = _trim_context_if_needed(messages)
-                result = await LLMGateway.chat_completion(
+                # Stream tokens to frontend while accumulating for JSON parsing
+                raw_buffer: list[str] = []
+                stream_gen = LLMGateway.stream_chat_completion(
                     messages=messages,
                     model=payload.model,
                     temperature=payload.temperature or 0.3,
@@ -2101,7 +2160,13 @@ async def workspace_assistant_stream(
                     timeout=300,
                     retry=1,
                 )
-                raw_content = result.get("content", "")
+                try:
+                    async for chunk in stream_gen:
+                        raw_buffer.append(chunk)
+                        yield _sse_event({"type": "thinking_delta", "delta": chunk})
+                except Exception as stream_err:
+                    yield _sse_event({"type": "status", "message": f"流式输出中断，尝试用已接收内容继续：{stream_err}", "tool": "stream_error"})
+                raw_content = "".join(raw_buffer)
                 parsed = _parse_json_object(raw_content)
                 if parsed is None:
                     yield _sse_event({
@@ -2123,8 +2188,8 @@ async def workspace_assistant_stream(
                     "needs_confirmation": False,
                 }
                 parsed_fallback = parsed
-                final_model = result.get("model") or ""
-                final_usage = result.get("usage")
+                final_model = payload.model or ""
+                final_usage = None
 
                 is_done = bool(parsed.get("done", True))
                 actions: list[dict] = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
@@ -2276,6 +2341,29 @@ async def workspace_assistant_stream(
                     })
                     yield _sse_event({"type": "tool", **tool_logs[-1]})
                 db.commit()
+
+                # Auto-refresh search context so next turn sees fresh data
+                refresh_tools: dict[str, str] = {}
+                for ar in applied_actions:
+                    tool = str(ar.get("tool") or "")
+                    if ar.get("status") != "ok":
+                        continue
+                    if tool in ("create_outline_node", "update_outline_node", "delete_outline_node"):
+                        refresh_tools["search_outline_tree"] = "{}"
+                    elif tool in ("create_character", "update_character", "delete_character"):
+                        refresh_tools["list_characters"] = "{}"
+                    elif tool in ("create_worldbuilding_entry", "update_worldbuilding_entry", "delete_worldbuilding_entry"):
+                        refresh_tools["list_worldbuilding"] = "{}"
+                    elif tool in ("create_chapter", "update_chapter", "delete_chapter"):
+                        refresh_tools["list_chapters"] = "{}"
+                for rt, rt_args in refresh_tools.items():
+                    try:
+                        rt_result = await execute_workspace_action(db, project_id, {"tool": rt, "arguments": json.loads(rt_args)})
+                        compressed = _compress_search_result(rt_result)
+                        if compressed:
+                            searched_context.append(compressed)
+                    except Exception:
+                        pass
             elif all_actions:
                 log = {"tool": "auto_apply", "status": "skipped", "detail": "自动执行已关闭"}
                 tool_logs.append(log)

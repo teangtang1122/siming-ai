@@ -449,8 +449,8 @@ function WorkspaceAssistantChat({
           const status = ev.result?.status || 'ok'
           addRunLog({ tool: ev.tool, status, message: detail })
           appendToolLog({ tool: ev.tool, status, detail })
-        } else if (event.type === 'thinking') {
-          const ev = event as { content: string; iteration: number }
+        } else if (event.type === 'thinking_delta') {
+          const ev = event as { delta: string }
           setMessages((prev) => {
             const next = [...prev]
             const aiIdx = [...next].reverse().findIndex((item) => item.role === 'assistant')
@@ -459,9 +459,20 @@ function WorkspaceAssistantChat({
             next[realIdx] = {
               ...next[realIdx],
               content: next[realIdx].content === '正在分析需求...'
-                ? ev.content
-                : next[realIdx].content + '\n' + ev.content,
+                ? ev.delta
+                : next[realIdx].content + ev.delta,
             }
+            return next
+          })
+        } else if (event.type === 'thinking') {
+          const ev = event as { content: string; iteration: number }
+          setMessages((prev) => {
+            const next = [...prev]
+            const aiIdx = [...next].reverse().findIndex((item) => item.role === 'assistant')
+            if (aiIdx < 0) return prev
+            const realIdx = next.length - 1 - aiIdx
+            // Replace raw streaming JSON with clean parsed reply
+            next[realIdx] = { ...next[realIdx], content: ev.content }
             return next
           })
         } else if (event.type === 'complete') {

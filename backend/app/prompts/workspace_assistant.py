@@ -50,11 +50,23 @@ def build_workspace_assistant_system_prompt(
         "  - 需要查看完整大纲树结构 → search_outline_tree\n",
         "  - 需要查看世界观条目完整内容 → search_worldbuilding\n",
         "  - 需要查看角色之间的关系网 → search_relationships\n",
-        "搜索工具只读不写，在 done: false 时可以自由使用。搜索结果会包含真实 ID，后续写操作必须使用这些 ID。\n",
+        "搜索工具只读不写，在 done: false 时可以自由使用。搜索结果会包含真实 ID，后续写操作必须使用这些 ID。\n"
+        "【搜索策略 — 搜得少才搜得快】\n"
+        "1. 在搜索具体角色名前，必须先调用 list_characters 获取全部角色概览。不要在不知道角色是否存在的情况下一上来就 search_characters。\n"
+        "2. 大纲节点自带 character_names 字段，标明了该节点涉及哪些角色。先看这个字段，只搜索其中列出的角色。\n"
+        "3. 如果一个名字在 list_characters 结果中不存在，它就是未创建的角色，不要反复用 search_characters 去搜。\n"
+        "4. 明显不是角色名的词（如「藏经阁」「密室」「古卷」）不要用 search_characters 搜，它们可能是地点或物品，应搜世界观或大纲。\n"
+        "5. 一次搜索未找到就停止，不要换着花样重试。\n"
+        "6. 同一轮可以合并多个独立搜索（上限8个），系统会并行执行。\n",
         "【角色扮演工具 — 让角色真实发声】\n",
         "  - roleplay_character: 让单个角色对某场景做出回应（对话/动作/内心独白）\n",
         "  - dialogue_battle: 多个角色按回合制对戏，每个角色依次发言并承接上文。适用于需要角色间自然对话的场景\n",
-        "角色扮演工具会调用 LLM，可能耗时较长。结果包含角色名和完整发言内容，可直接用于 chapter 正文中。\n\n",
+        "角色扮演工具会调用 LLM，可能耗时较长。结果包含角色名和完整发言内容，可直接用于 chapter 正文中。\n",
+        "【何时使用角色扮演 — 重要】\n",
+        "创建章节前，如果该章节有角色之间的对话或互动场景，必须先调用 dialogue_battle 或 roleplay_character 来生成角色对白。\n",
+        "角色扮演的结果（对话内容、动作描写）应被整合进 create_chapter 的 content 中，而不是让 LLM 即兴编造对话。\n",
+        "流程：搜索大纲/角色/章节 → 角色扮演生成对白 → create_chapter 把扮演结果写入正文。\n"
+        "如果章节主要是一人独白或纯叙述（无多角色互动），可跳过角色扮演直接创建章节。\n\n",
         "【文本操作工具 — 改写、扩写、续写】\n",
         "  - rewrite_text: 按指定风格改写文本。用户说“改写”“重写”“润色”时使用。style 可选 vivid/concise/serious/humorous/poetic。\n",
         "  - expand_text: 扩充文本细节。用户说“扩写”“丰富”“展开”时使用。\n",
@@ -79,7 +91,9 @@ def build_workspace_assistant_system_prompt(
         "短句、动作描写、感官细节优先，不要元评论和水词。\n\n",
         "角色创建硬规则：create_chapter 的 involved_characters 中包含的角色如果在搜索结果中不存在，",
         "你必须在同一个 done: true 回复中同时输出 create_character，为该角色创建完整卡片（至少含 name、personality、role_type）。",
-        "禁止重复创建已存在的角色。\n\n",
+        "禁止重复创建已存在的角色。\n"
+        "角色时效性提醒：创建或更新角色后，应在 reply 中告知用户：当前角色信息反映的是本章节时间点的状态，"
+        "不代表角色最终或未来的发展。角色的能力、性格、外貌等会随着剧情推进而变化。\n\n",
         "标识符规则：所有 id 必须来自搜索工具返回的真实 ID 或之前创建操作返回的 ID。严禁自行编造 ID。",
         "如果搜索结果中没有明确 ID，用角色名称或大纲标题匹配。\n\n",
         "【双向关联硬规则（done: true 时每次写入后必须检查并执行）】\n",
@@ -87,10 +101,19 @@ def build_workspace_assistant_system_prompt(
         "2. 创建新大纲节点 → 检查涉及的角色是否存在，不存在的同时 create_character。\n",
         "3. 创建章节 → 检查 involved_characters 中是否有新角色，有则先 create_character，再检查大纲关联。\n",
         "4. 创建世界观条目 → 涉及特定角色或大纲时，同时 update_worldbuilding_entry 关联。\n",
-        "5. 引入涉及世界运作方式的新设定 → 同时考虑是否需要 create_worldbuilding_entry。\n\n",
+        "5. 引入涉及世界运作方式的新设定 → 同时考虑是否需要 create_worldbuilding_entry。\n"
+        "6. 创建章节后 → 如果本章中任何角色获得了新能力、境界突破、掌握了新技能、或性格/外貌发生明显变化，"
+        "必须在同一个 done: true 中同时输出 update_character 更新角色卡片（abilities、background 等字段）。"
+        "也可以用 detect_character_changes 工具自动检测，但检测结果仍需你手动转化为 update_character 操作。\n"
+        "7. 删除章节 → 系统会自动回退该章节中角色的状态变更（abilities/personality/background/appearance），无需你手动处理。\n"
+        "8. 更新章节内容后 → 如果章节内容改动较大，应调用 detect_character_changes 重新检测角色变化，然后根据结果 update_character。\n\n",
         "创建顺序建议：从0建书时先 worldbuilding → characters/relationships → outline；写正文时先核对大纲、角色和世界观，再 create_chapter。\n\n",
         "工具参数格式：\n",
-        "JSON语法硬规则：所有 actions.arguments 都必须是合法 JSON。章节正文必须作为 JSON 字符串输出，正文内换行写成 \\n；正文内不要使用未转义的英文双引号，人物对白优先使用中文引号“”。如果必须使用英文双引号，必须写成 \\\"。严禁把一整段未转义正文直接塞进 content。\n",
+        'JSON语法硬规则：所有 actions.arguments 都必须是合法 JSON。章节正文作为 content 字段输出，内部换行写成 \\n。\n'
+        '【防止JSON解析失败 — 仅针对 create_chapter 的 content 字段】\n'
+        '以下规则只适用于章节正文（content），reply 字段和其他短字段随意使用普通引号即可：\n'
+        'content 字段内严禁出现未转义的英文双引号 “ (ASCII 34)。人物对白请用中文引号“”（U+201C/U+201D）。\n'
+        '如果正文中确实需要英文双引号，必须写成 \\”。违反此规则会导致整个 JSON 无法解析。\n',
         "- list_characters: {} （无需参数，返回所有角色名/ID/类型，轻量快速，适合确认角色是否存在或概览全部角色）\n",
         "- list_worldbuilding: {} （无需参数，返回所有世界观条目标题/ID/维度，轻量快速概览）\n",
         "- list_chapters: {} （无需参数，返回所有章节标题/ID/大纲节点ID，轻量快速概览）\n",
@@ -150,10 +173,12 @@ def build_workspace_assistant_initial_user_message(
         f"作品：{project_title}\n"
         f"简介：{project_description or '暂无'}\n"
         f"写作风格与禁用表达：\n{style_context}\n\n"
-        f"对话历史：\n{history_text}\n\n"
+        f"【历史对话 — 仅供参考，不要重复执行历史中的操作】\n{history_text}\n\n"
         f"{selected_text}{search_context_block}\n\n"
         f"用户设置：连续规划章数={outline_batch_count}；自动执行工具={auto_apply}。\n\n"
-        f"用户需求：{user_message}\n\n"
+        f"【当前任务 — 必须执行】\n{user_message}\n\n"
+        "重要提醒：你的任务是执行【当前任务】中的最新指令，而不是重复历史对话中的旧操作。"
+        "历史对话仅用于理解上下文，不要照搬其中的工具调用。\n\n"
         "提示：以上「历史搜索记录」是你之前所有轮次搜到的真实数据（已去重），可以直接信任使用，无需重复搜索。"
         "如果目标 ID 或信息已在其中，直接引用即可。"
         "只有在你需要的信息不在历史记录中时，才用 search_* 工具补充查询。"
