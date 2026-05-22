@@ -51,7 +51,7 @@ def _request(url: str, timeout: float = 8.0) -> bytes:
 
 
 def _request_json(url: str, timeout: float = 8.0) -> dict[str, Any]:
-    return json.loads(_request(url, timeout=timeout).decode("utf-8"))
+    return json.loads(_request(url, timeout=timeout).decode("utf-8-sig"))
 
 
 def _manifest_from_url(url: str) -> dict[str, Any] | None:

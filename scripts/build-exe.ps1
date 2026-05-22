@@ -124,7 +124,7 @@ $ManifestPath = if ($OneDir) {
 } else {
   Join-Path $DistDir "update.json"
 }
-Set-Content -LiteralPath $ManifestPath -Encoding UTF8 -Value $Manifest
+[System.IO.File]::WriteAllText($ManifestPath, $Manifest + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 Write-Host "Update manifest: $ManifestPath"
 if ($OneDir) {
   Write-Host "Executable folder: $(Join-Path $DistDir $AppName)"
