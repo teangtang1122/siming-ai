@@ -30,6 +30,28 @@ from ..database.models import (
     WorldbuildingEntry,
 )
 from ..database.session import get_db
+from ..prompts.text_operations import (
+    build_continue_messages,
+    build_expand_messages,
+    build_rewrite_messages,
+)
+from ..prompts.workspace_assistant import build_workspace_assistant_messages
+from ..services.style_rules import (
+    STYLE_OPTIONS,
+    STYLE_PROMPTS,
+    _build_style_context,
+    _detect_forbidden_sentence_violations,
+    _repair_assistant_parsed_style,
+    _repair_forbidden_sentence_text,
+)
+from ..services.workspace import (
+    WorkspaceActionDependencies,
+    _character_payload,
+    _find_character_by_name_or_id,
+    _find_outline_by_title_or_id,
+    _outline_node_payload,
+    execute_workspace_action,
+)
 from ..schemas.ai_writer import (
     NarratorGenerateRequest,
     CharacterDialogueRequest,
@@ -53,47 +75,6 @@ DIMENSION_LABELS = {
     "geography": "地理", "history": "历史", "factions": "势力",
     "power_system": "规则体系", "races": "种族", "culture": "文化",
 }
-
-STYLE_OPTIONS = ["vivid", "concise", "serious", "humorous", "poetic"]
-STYLE_PROMPTS = {
-    "vivid": "请用生动形象、富有画面感的语言改写。要求：优先使用具体动作、感官细节和场景调度制造画面感；不要依赖密集比喻或华丽排比；将抽象概括转化为具体场景。",
-    "concise": "请用简洁精炼的语言改写，去除冗余。要求：删除重复表述和空洞修饰词；合并可归并的句子；用精准动词和名词替代冗长形容结构；提高信息密度。",
-    "serious": "请用严肃庄重的语言改写。要求：句式规整，避免口语化和俏皮话；用词精准克制，不夸张不煽情；保持客观冷静的叙事距离。",
-    "humorous": "请用幽默诙谐的语言改写。要求：可运用反讽、夸张、反差、双关等手法；节奏轻快；幽默应为角色和剧情服务，而非单纯搞笑。",
-    "poetic": "请用富有诗意的语言改写。要求：注重语句的韵律感和节奏美；善用意象和留白；情感含蓄有层次，避免直白抒情。",
-}
-
-DEFAULT_FORBIDDEN_SENTENCE_PATTERNS = "\n".join([
-    "不是……是……",
-    "不是……而是……",
-    "不是……却是……",
-    "与其说……不如说……",
-])
-
-DEFAULT_RHETORIC_GUIDELINES = (
-    "克制使用比喻、拟人、排比等修辞，禁止连续堆叠比喻。"
-    "优先用具体动作、感官细节、因果推进和角色反应来表达画面与情绪。"
-    "非必要不使用抽象概念比喻；同一段落不要出现多个比喻。"
-)
-
-FORBIDDEN_SENTENCE_REGEXES = {
-    "不是……是……": [
-        r"(?<!是)不是[^。！？!?；;\n]{1,80}[，,、\s]*是[^。！？!?；;\n]{1,80}",
-        r"(?<!是)不是[^。！？!?；;\n]{1,80}[。！？!?；;]\s*是[^。！？!?；;\n]{1,80}",
-    ],
-    "不是……而是……": [
-        r"(?<!是)不是[^。！？!?；;\n]{1,120}而是[^。！？!?；;\n]{1,120}",
-        r"(?<!是)不是[^。！？!?；;\n]{1,80}[。！？!?；;]\s*而是[^。！？!?；;\n]{1,80}",
-    ],
-    "不是……却是……": [
-        r"(?<!是)不是[^。！？!?；;\n]{1,120}却是[^。！？!?；;\n]{1,120}",
-        r"(?<!是)不是[^。！？!?；;\n]{1,80}[。！？!?；;]\s*却是[^。！？!?；;\n]{1,80}",
-    ],
-    "与其说……不如说……": [
-        r"与其说[\s\S]{1,120}?不如说[\s\S]{1,120}?",
-    ],
-}
-
 
 def _get_project_or_404(db: Session, project_id: str) -> Project:
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -325,245 +306,6 @@ def _build_character_timeline(db: Session, character_id: str, limit: int = 10) -
         emo = f"（情感变化：{event.emotional_state_change}）" if event.emotional_state_change else ""
         lines.append(f"- [{event.event_type}] {event.event_description}{emo}")
     return "\n".join(lines)
-
-
-def _build_style_context(project: Project) -> str:
-    perspective_map = {
-        "first_person": "第一人称",
-        "third_person": "第三人称",
-        "omniscient": "上帝视角",
-    }
-    style_map = {
-        "natural": "自然",
-        "vivid": "华丽生动",
-        "concise": "白描简洁",
-        "serious": "严肃",
-        "humorous": "幽默",
-        "poetic": "诗意",
-    }
-    perspective = perspective_map.get(project.narrative_perspective, "第三人称")
-    style = style_map.get(project.writing_style, "自然")
-    forbidden_patterns = (project.forbidden_sentence_patterns or DEFAULT_FORBIDDEN_SENTENCE_PATTERNS).strip()
-    rhetoric_guidelines = (project.rhetoric_guidelines or DEFAULT_RHETORIC_GUIDELINES).strip()
-    parts = [f"叙事视角：{perspective}", f"文风偏好：{style}"]
-    if forbidden_patterns:
-        patterns = [line.strip() for line in forbidden_patterns.splitlines() if line.strip()]
-        if patterns:
-            parts.append("禁用句式：\n" + "\n".join(f"- {pattern}" for pattern in patterns))
-            parts.append("生成或改写时必须主动避开上述句式，包括同义变体和近似模板。")
-            parts.append(
-                "硬性句式检查：交付前必须自查并改掉所有禁用句式。"
-                "跨句变体也禁止，例如“不是A。是B。”、“不是A，而是B。”、“与其说A，不如说B。”。"
-            )
-    if rhetoric_guidelines:
-        parts.append(f"修辞限制：{rhetoric_guidelines}")
-    return "\n".join(parts)
-
-
-def _project_forbidden_patterns(project: Project) -> list[str]:
-    raw = (project.forbidden_sentence_patterns or DEFAULT_FORBIDDEN_SENTENCE_PATTERNS).strip()
-    return [line.strip() for line in raw.splitlines() if line.strip()]
-
-
-def _generic_forbidden_regex(pattern: str) -> Optional[str]:
-    if "……" not in pattern:
-        return None
-    pieces = [piece for piece in pattern.split("……") if piece]
-    if not pieces:
-        return None
-    return r"[\s\S]{0,80}?".join(re.escape(piece) for piece in pieces)
-
-
-def _forbidden_snippet(text: str, start: int, end: int, radius: int = 24) -> str:
-    left = max(0, start - radius)
-    right = min(len(text), end + radius)
-    snippet = text[left:right].replace("\n", "\\n")
-    if left > 0:
-        snippet = "..." + snippet
-    if right < len(text):
-        snippet += "..."
-    return snippet
-
-
-def _detect_forbidden_sentence_violations(text: str, project: Project) -> list[dict]:
-    if not text:
-        return []
-    violations: list[dict] = []
-    seen: set[tuple[str, int, int]] = set()
-    for pattern in _project_forbidden_patterns(project):
-        regexes = FORBIDDEN_SENTENCE_REGEXES.get(pattern, [])
-        generic = _generic_forbidden_regex(pattern)
-        if generic:
-            regexes = [*regexes, generic]
-        if not regexes and pattern in text:
-            start = text.find(pattern)
-            regexes = [re.escape(pattern)]
-        for regex in regexes:
-            for match in re.finditer(regex, text):
-                key = (pattern, match.start(), match.end())
-                if key in seen:
-                    continue
-                seen.add(key)
-                violations.append({
-                    "pattern": pattern,
-                    "snippet": _forbidden_snippet(text, match.start(), match.end()),
-                    "start": match.start(),
-                    "end": match.end(),
-                })
-                if len(violations) >= 20:
-                    return violations
-    return violations
-
-
-def _strip_plain_text_response(text: str) -> str:
-    value = (text or "").strip()
-    if value.startswith("```"):
-        value = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", value)
-        value = re.sub(r"\s*```$", "", value).strip()
-    return value
-
-
-def _repair_token_budget(text: str, requested_max_tokens: Optional[int]) -> int:
-    estimated = max(2048, int(len(text or "") * 1.8))
-    if requested_max_tokens:
-        estimated = max(estimated, requested_max_tokens)
-    return min(24000, estimated)
-
-
-def _mechanical_repair_forbidden_sentences(text: str) -> str:
-    """Last-resort cleanup for the built-in contrast templates."""
-
-    def clean_tail(value: str) -> str:
-        value = value.strip()
-        return value[1:] if value.startswith("在") and len(value) > 1 else value
-
-    def replace_not_is(match: re.Match) -> str:
-        left = match.group("left").strip()
-        right = clean_tail(match.group("right"))
-        return f"{left}并非关键，关键在于{right}"
-
-    def replace_rather(match: re.Match) -> str:
-        left = match.group("left").strip()
-        right = match.group("right").strip()
-        return f"{left}这个判断不够准确，{right}更贴近当前情况"
-
-    rules = [
-        (
-            r"(?<!是)不是(?P<left>[^。！？!?；;\n]{1,80})[，,、\s]*是(?P<right>[^。！？!?；;\n]{1,80})",
-            replace_not_is,
-        ),
-        (
-            r"(?<!是)不是(?P<left>[^。！？!?；;\n]{1,80})[。！？!?；;]\s*是(?P<right>[^。！？!?；;\n]{1,80})",
-            replace_not_is,
-        ),
-        (
-            r"(?<!是)不是(?P<left>[^。！？!?；;\n]{1,120})而是(?P<right>[^。！？!?；;\n]{1,120})",
-            replace_not_is,
-        ),
-        (
-            r"(?<!是)不是(?P<left>[^。！？!?；;\n]{1,120})却是(?P<right>[^。！？!?；;\n]{1,120})",
-            replace_not_is,
-        ),
-        (
-            r"与其说(?P<left>[\s\S]{1,120}?)不如说(?P<right>[\s\S]{1,120}?)",
-            replace_rather,
-        ),
-    ]
-    repaired = text
-    for regex, replacer in rules:
-        repaired = re.sub(regex, replacer, repaired)
-    return repaired
-
-
-async def _repair_forbidden_sentence_text(
-    text: str,
-    project: Project,
-    model: Optional[str],
-    max_tokens: Optional[int] = None,
-) -> tuple[str, list[dict], list[dict]]:
-    """Rewrite text only when it violates project-level forbidden sentence rules."""
-    before = _detect_forbidden_sentence_violations(text, project)
-    if not before:
-        return text, [], []
-
-    repaired = text
-    remaining = before
-    patterns = _project_forbidden_patterns(project)
-    for _attempt in range(2):
-        hit_list = "\n".join(
-            f"- {item['pattern']}：{item['snippet']}" for item in remaining[:12]
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是小说正文句式审校器。你的任务只做一件事："
-                    "在不改变剧情事实、角色行动、信息顺序、叙事视角和语气的前提下，"
-                    "删除或改写命中的禁用句式。"
-                    "不要解释，不要加标题，不要输出清单，只输出修订后的完整正文。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "禁用句式如下，包含跨句变体也禁止：\n"
-                    + "\n".join(f"- {pattern}" for pattern in patterns)
-                    + "\n\n已经命中的片段：\n"
-                    + hit_list
-                    + "\n\n请修订下面全文。要求：保留原有剧情、人物、设定和段落顺序；"
-                    "只把命中的句式改成普通因果、递进或判断句；避免大量比喻。\n\n"
-                    f"{repaired}"
-                ),
-            },
-        ]
-        result = await LLMGateway.chat_completion(
-            messages=messages,
-            model=model,
-            temperature=0.1,
-            max_tokens=_repair_token_budget(repaired, max_tokens),
-            retry=1,
-        )
-        candidate = _strip_plain_text_response(result.get("content", ""))
-        if candidate:
-            repaired = candidate
-        remaining = _detect_forbidden_sentence_violations(repaired, project)
-        if not remaining:
-            break
-    if remaining:
-        repaired = _mechanical_repair_forbidden_sentences(repaired)
-        remaining = _detect_forbidden_sentence_violations(repaired, project)
-    return repaired, before, remaining
-
-
-async def _repair_assistant_parsed_style(
-    parsed: dict,
-    project: Project,
-    model: Optional[str],
-    max_tokens: Optional[int] = None,
-) -> list[dict]:
-    """Repair visible assistant reply and generated chapter draft fields in-place."""
-    reports: list[dict] = []
-
-    async def repair_field(owner: dict, key: str, field_name: str) -> None:
-        value = str(owner.get(key) or "")
-        if not value.strip():
-            return
-        repaired, before, remaining = await _repair_forbidden_sentence_text(value, project, model, max_tokens)
-        if before:
-            owner[key] = repaired
-            reports.append({
-                "field": field_name,
-                "fixed": not remaining,
-                "violations": before[:8],
-                "remaining": remaining[:8],
-            })
-
-    await repair_field(parsed, "reply", "reply")
-    draft = parsed.get("chapter_draft")
-    if isinstance(draft, dict):
-        await repair_field(draft, "content", "chapter_draft.content")
-        await repair_field(draft, "summary", "chapter_draft.summary")
-    return reports
 
 
 def _count_words(text: str) -> int:
@@ -1124,357 +866,23 @@ def _assistant_title_from_message(message: str) -> str:
     return title[:36] + ("..." if len(title) > 36 else "")
 
 
-def _character_payload(character: Character) -> dict:
-    abilities: list[str] = []
-    if character.abilities:
-        try:
-            parsed = json.loads(character.abilities)
-            abilities = parsed if isinstance(parsed, list) else []
-        except Exception:
-            abilities = [part.strip() for part in character.abilities.split(",") if part.strip()]
-    return {
-        "id": character.id,
-        "name": character.name,
-        "appearance": character.appearance,
-        "personality": character.personality,
-        "background": character.background,
-        "abilities": abilities,
-        "role_type": character.role_type,
-        "current_version": character.current_version,
-    }
-
-
-def _outline_node_payload(node: OutlineNode) -> dict:
-    return {
-        "id": node.id,
-        "parent_id": node.parent_id,
-        "node_type": node.node_type,
-        "title": node.title,
-        "summary": node.summary,
-        "status": node.status,
-        "sort_order": node.sort_order,
-        "linked_characters": [
-            {"id": link.character.id, "name": link.character.name, "role_in_scene": link.role_in_scene}
-            for link in node.linked_characters
-            if link.character
-        ],
-    }
-
-
-WORLD_DIMENSIONS = {"geography", "history", "factions", "power_system", "races", "culture"}
-
-
-def _worldbuilding_payload(entry: WorldbuildingEntry) -> dict:
-    return {
-        "id": entry.id,
-        "dimension": entry.dimension,
-        "title": entry.title,
-        "content": entry.content,
-        "sort_order": entry.sort_order,
-    }
-
-
-def _find_worldbuilding_by_title_or_id(db: Session, project_id: str, value: object) -> Optional[WorldbuildingEntry]:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    return (
-        db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
-        .filter((WorldbuildingEntry.id == text) | (WorldbuildingEntry.title == text))
-        .first()
+def _workspace_action_dependencies() -> WorkspaceActionDependencies:
+    return WorkspaceActionDependencies(
+        get_project=_get_project_or_404,
+        detect_forbidden_sentence_violations=_detect_forbidden_sentence_violations,
+        repair_forbidden_sentence_text=_repair_forbidden_sentence_text,
+        finalize_assistant_chapter=_finalize_assistant_chapter,
+        create_assistant_chapter=_create_assistant_chapter,
     )
 
 
-def _find_character_by_name_or_id(db: Session, project_id: str, value: object) -> Optional[Character]:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    return (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .filter((Character.id == text) | (Character.name == text))
-        .first()
+async def _execute_workspace_action(db: Session, project_id: str, action: dict) -> dict:
+    return await execute_workspace_action(
+        db,
+        project_id,
+        action,
+        _workspace_action_dependencies(),
     )
-
-
-def _normalize_outline_lookup(value: object) -> str:
-    text = str(value or "").strip().lower()
-    if not text:
-        return ""
-    return re.sub(r"[\s:：,，.。;；!！?？()（）【】\[\]《》<>\"'“”‘’_-]+", "", text)
-
-
-def _find_outline_by_title_or_id(db: Session, project_id: str, value: object) -> Optional[OutlineNode]:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    base_query = (
-        db.query(OutlineNode)
-        .options(selectinload(OutlineNode.linked_characters).selectinload(OutlineNodeCharacter.character))
-        .filter(OutlineNode.project_id == project_id)
-    )
-    exact = (
-        base_query
-        .filter((OutlineNode.id == text) | (OutlineNode.title == text))
-        .order_by(OutlineNode.updated_at.desc())
-        .first()
-    )
-    if exact:
-        return exact
-    normalized = _normalize_outline_lookup(text)
-    if not normalized:
-        return None
-    candidates = (
-        base_query
-        .order_by(OutlineNode.updated_at.desc(), OutlineNode.sort_order.desc())
-        .all()
-    )
-    for node in candidates:
-        if _normalize_outline_lookup(node.title) == normalized:
-            return node
-    for node in candidates:
-        node_title = _normalize_outline_lookup(node.title)
-        if node_title and (normalized in node_title or node_title in normalized):
-            return node
-    return None
-
-
-def _character_ids_from_names(db: Session, project_id: str, names: object) -> list[str]:
-    if not isinstance(names, list):
-        return []
-    ids = []
-    for name in names:
-        character = _find_character_by_name_or_id(db, project_id, name)
-        if character and character.id not in ids:
-            ids.append(character.id)
-    return ids
-
-
-def _replace_outline_links_by_names(db: Session, project_id: str, node: OutlineNode, names: object) -> None:
-    ids = _character_ids_from_names(db, project_id, names)
-    if not ids:
-        return
-    node.linked_characters.clear()
-    db.flush()
-    for character_id in ids:
-        node.linked_characters.append(OutlineNodeCharacter(character_id=character_id, role_in_scene="AI关联"))
-
-
-def _next_outline_sort_order(db: Session, project_id: str, parent_id: Optional[str]) -> int:
-    last = (
-        db.query(OutlineNode)
-        .filter(OutlineNode.project_id == project_id, OutlineNode.parent_id == parent_id)
-        .order_by(OutlineNode.sort_order.desc(), OutlineNode.created_at.desc())
-        .first()
-    )
-    return (last.sort_order + 1) if last and last.sort_order is not None else 0
-
-
-def _next_worldbuilding_sort_order(db: Session, project_id: str, dimension: str) -> int:
-    last = (
-        db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id, WorldbuildingEntry.dimension == dimension)
-        .order_by(WorldbuildingEntry.sort_order.desc(), WorldbuildingEntry.created_at.desc())
-        .first()
-    )
-    return (last.sort_order + 1) if last and last.sort_order is not None else 0
-
-
-def _execute_workspace_action(db: Session, project_id: str, action: dict) -> dict:
-    tool = str(action.get("tool") or "").strip()
-    args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
-    if not tool:
-        return {"tool": "unknown", "status": "skipped", "detail": "工具名为空"}
-
-    if tool == "create_outline_node":
-        parent_id = str(args.get("parent_id") or "").strip() or None
-        parent_warning = ""
-        if parent_id:
-            parent = _find_outline_by_title_or_id(db, project_id, parent_id)
-            if parent:
-                parent_id = parent.id
-            else:
-                parent_id = None
-                parent_warning = "；未找到当前作品内的父级大纲，已作为根节点创建"
-        node_type = str(args.get("node_type") or "chapter")
-        if node_type not in {"volume", "chapter", "section"}:
-            node_type = "chapter"
-        title = str(args.get("title") or "").strip()
-        summary = str(args.get("summary") or "").strip()
-        if not title:
-            return {"tool": tool, "status": "skipped", "detail": "标题为空"}
-        node = OutlineNode(
-            project_id=project_id,
-            parent_id=parent_id,
-            node_type=node_type,
-            title=title[:200],
-            summary=summary,
-            status=str(args.get("status") or "pending"),
-            sort_order=int(args.get("sort_order") if args.get("sort_order") is not None else _next_outline_sort_order(db, project_id, parent_id)),
-        )
-        db.add(node)
-        db.flush()
-        _replace_outline_links_by_names(db, project_id, node, args.get("character_names"))
-        return {"tool": tool, "status": "ok", "detail": f"已创建大纲：{node.title}{parent_warning}", "data": _outline_node_payload(node)}
-
-    if tool == "update_outline_node":
-        node_ref = (
-            args.get("id")
-            or args.get("node_id")
-            or args.get("outline_node_id")
-            or args.get("current_title")
-            or args.get("old_title")
-            or args.get("outline_node_title")
-            or args.get("title")
-        )
-        node = _find_outline_by_title_or_id(db, project_id, node_ref)
-        if not node and args.get("title"):
-            node = _find_outline_by_title_or_id(db, project_id, args.get("title"))
-        if not node:
-            return {"tool": tool, "status": "skipped", "detail": "未找到当前作品内的大纲节点"}
-        if args.get("title"):
-            node.title = str(args.get("title")).strip()[:200]
-        if "summary" in args:
-            node.summary = str(args.get("summary") or "")
-        if args.get("status") in {"pending", "in_progress", "completed"}:
-            node.status = str(args.get("status"))
-        if args.get("node_type") in {"volume", "chapter", "section"}:
-            node.node_type = str(args.get("node_type"))
-        if "character_names" in args:
-            _replace_outline_links_by_names(db, project_id, node, args.get("character_names"))
-        node.updated_at = datetime.utcnow()
-        return {"tool": tool, "status": "ok", "detail": f"已更新大纲：{node.title}", "data": _outline_node_payload(node)}
-
-    if tool == "create_character":
-        name = str(args.get("name") or "").strip()
-        if not name:
-            return {"tool": tool, "status": "skipped", "detail": "角色名为空"}
-        character = Character(
-            project_id=project_id,
-            name=name[:100],
-            appearance=str(args.get("appearance") or "")[:4000],
-            personality=str(args.get("personality") or "")[:4000],
-            background=str(args.get("background") or "")[:8000],
-            abilities=json.dumps(args.get("abilities") if isinstance(args.get("abilities"), list) else [], ensure_ascii=False),
-            role_type=str(args.get("role_type") or "supporting"),
-            is_evolution_tracked=True,
-        )
-        db.add(character)
-        db.flush()
-        return {"tool": tool, "status": "ok", "detail": f"已创建角色：{character.name}", "data": _character_payload(character)}
-
-    if tool == "update_character":
-        character = _find_character_by_name_or_id(db, project_id, args.get("id") or args.get("name"))
-        if not character:
-            return {"tool": tool, "status": "skipped", "detail": "未找到角色"}
-        changed = False
-        for field, limit in [("appearance", 4000), ("personality", 4000), ("background", 8000), ("role_type", 100)]:
-            if field in args:
-                setattr(character, field, str(args.get(field) or "")[:limit])
-                changed = True
-        if "abilities" in args and isinstance(args.get("abilities"), list):
-            character.abilities = json.dumps(args.get("abilities"), ensure_ascii=False)
-            changed = True
-        if changed:
-            character.current_version = (character.current_version or 1) + 1
-            character.updated_at = datetime.utcnow()
-            db.add(CharacterVersion(
-                character_id=character.id,
-                version_number=character.current_version,
-                snapshot_data=json.dumps(_character_payload(character), ensure_ascii=False),
-                change_summary="AI助手调整角色档案",
-            ))
-        return {"tool": tool, "status": "ok", "detail": f"已更新角色：{character.name}", "data": _character_payload(character)}
-
-    if tool == "create_relationship":
-        source = _find_character_by_name_or_id(db, project_id, args.get("source") or args.get("from"))
-        target = _find_character_by_name_or_id(db, project_id, args.get("target") or args.get("to"))
-        if not source or not target or source.id == target.id:
-            return {"tool": tool, "status": "skipped", "detail": "关系角色无效"}
-        rel = CharacterRelationship(
-            project_id=project_id,
-            character_a_id=source.id,
-            character_b_id=target.id,
-            relationship_type=str(args.get("relationship_type") or "关联")[:100],
-            description=str(args.get("description") or "")[:4000],
-        )
-        db.add(rel)
-        db.flush()
-        return {"tool": tool, "status": "ok", "detail": f"已创建关系：{source.name} - {target.name}"}
-
-    if tool == "create_worldbuilding_entry":
-        dimension = str(args.get("dimension") or "culture").strip()
-        if dimension not in WORLD_DIMENSIONS:
-            dimension = "culture"
-        title = str(args.get("title") or "").strip()
-        content = str(args.get("content") or "").strip()
-        if not title or not content:
-            return {"tool": tool, "status": "skipped", "detail": "世界观标题或内容为空"}
-        if args.get("related_characters") or args.get("plot_usage") or args.get("constraints"):
-            extras = []
-            related = args.get("related_characters")
-            constraints = args.get("constraints")
-            if isinstance(related, list) and related:
-                extras.append("关联角色：" + "、".join(str(item) for item in related if item))
-            if args.get("plot_usage"):
-                extras.append("剧情用途：" + str(args.get("plot_usage")))
-            if isinstance(constraints, list) and constraints:
-                extras.append("限制条件：" + "；".join(str(item) for item in constraints if item))
-            if extras:
-                content = f"{content}\n\n" + "\n".join(extras)
-        entry = WorldbuildingEntry(
-            project_id=project_id,
-            dimension=dimension,
-            title=title[:200],
-            content=content[:12000],
-            sort_order=int(args.get("sort_order") if args.get("sort_order") is not None else _next_worldbuilding_sort_order(db, project_id, dimension)),
-        )
-        db.add(entry)
-        db.flush()
-        return {"tool": tool, "status": "ok", "detail": f"已创建世界观：{entry.title}", "data": _worldbuilding_payload(entry)}
-
-    if tool == "update_worldbuilding_entry":
-        entry = _find_worldbuilding_by_title_or_id(db, project_id, args.get("id") or args.get("title"))
-        if not entry:
-            return {"tool": tool, "status": "skipped", "detail": "未找到世界观条目"}
-        if args.get("dimension") in WORLD_DIMENSIONS:
-            entry.dimension = str(args.get("dimension"))
-        if args.get("title"):
-            entry.title = str(args.get("title")).strip()[:200]
-        if "content" in args:
-            entry.content = str(args.get("content") or "")[:12000]
-        if args.get("sort_order") is not None:
-            entry.sort_order = int(args.get("sort_order"))
-        entry.updated_at = datetime.utcnow()
-        return {"tool": tool, "status": "ok", "detail": f"已更新世界观：{entry.title}", "data": _worldbuilding_payload(entry)}
-
-    if tool == "create_chapter":
-        title = str(args.get("title") or "").strip()
-        content = str(args.get("content") or "")
-        if not title or not content.strip():
-            return {"tool": tool, "status": "skipped", "detail": "章节标题或正文为空"}
-        outline_node = None
-        for ref in (args.get("outline_node_id"), args.get("outline_node_title"), args.get("outline_title")):
-            outline_node = _find_outline_by_title_or_id(db, project_id, ref)
-            if outline_node:
-                break
-        outline_node_id = outline_node.id if outline_node else None
-        chapter = _create_assistant_chapter(
-            db,
-            project_id,
-            title[:200],
-            content,
-            outline_node_id,
-            str(args.get("summary") or ""),
-            [str(name) for name in (args.get("involved_characters") or []) if name] if isinstance(args.get("involved_characters"), list) else [],
-            str(args.get("model") or "") or None,
-        )
-        if not chapter:
-            return {"tool": tool, "status": "skipped", "detail": "章节创建失败"}
-        return {"tool": tool, "status": "ok", "detail": f"已创建章节：{chapter.title}", "data": {"id": chapter.id, "title": chapter.title}}
-
-    return {"tool": tool, "status": "skipped", "detail": "未知工具"}
 
 
 def _is_affirmative_confirmation(text: str) -> bool:
@@ -1920,28 +1328,12 @@ async def rewrite_text(project_id: str, payload: RewriteRequest, db: Session = D
     style_ctx = _build_style_context(project)
     style_instruction = STYLE_PROMPTS.get(payload.style, "") if payload.style else ""
 
-    system_prompt = (
-        "你是一位资深小说文字编辑，专精于文本改写——在不改变核心意思的前提下，重新组织语言、调整表达方式、提升文字质感。\n\n"
-        "【改写原则】\n"
-        "1. 核心意思必须完整保留：事件、情感走向、角色言行的事实层面不得改变。\n"
-        "2. 改变的是表达方式：句式结构、词汇选择、描写角度、详略比例。\n"
-        "3. 如果用户指定了风格倾向，严格按对应风格执行。\n"
-        "4. 改写后的文本应与【风格设定】中作品的叙事视角和文风偏好保持一致。\n\n"
-        "【禁止事项】\n"
-        "- 禁止新增原文没有的剧情事件、角色行动或对话内容。\n"
-        "- 禁止删除原文中的关键信息或情节节点。\n"
-        "- 禁止改变叙事视角（如将第一人称改为第三人称）或时态。\n"
-        "- 禁止输出任何解释、点评或元评论。只输出改写后的文本。\n"
-        "- 禁止以「改写如下」、「修改后的文本：」等引导语开头。\n\n"
-        "【质量判断】\n"
-        "- 好的改写：读起来像原文的「更好版本」——更流畅、更有力、更有风格，但信息不变。\n"
-        "- 失败的改写：改变了原意、丢失了信息、或只是替换了几个近义词。\n\n"
-        f"【风格设定】\n{style_ctx}"
+    messages = build_rewrite_messages(
+        style_context=style_ctx,
+        style_instruction=style_instruction,
+        prompt=payload.prompt,
+        text=payload.text,
     )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{style_instruction}\n{payload.prompt or '请改写以下文本：'}\n\n原文：\n{payload.text}"},
-    ]
     result = await LLMGateway.chat_completion(
         messages=messages,
         model=payload.model,
@@ -1974,29 +1366,11 @@ async def expand_text(project_id: str, payload: ExpandRequest, db: Session = Dep
     project = _get_project_or_404(db, project_id)
     style_ctx = _build_style_context(project)
 
-    system_prompt = (
-        "你是一位资深小说扩写编辑，专精于在不改变原文骨架的前提下增加血肉——让场景更丰满、角色更立体、情感更深刻。\n\n"
-        "【扩写原则】\n"
-        "1. 原文中的每一句话、每一个事件、每一处描写必须全部保留。扩写是「加法」不是「替换」。\n"
-        "2. 新增内容应自然地融入原文结构，而非集中堆砌在某一段落末尾。\n"
-        "3. 可扩展的维度：环境氛围（感官细节）、动作过程（分解步骤）、心理活动（情感层次）、对话（潜台词与回应）、背景插叙（适时回忆或交代）。\n"
-        "4. 扩展比例应均匀——不要将某一句放大十倍而其他部分原封不动。\n"
-        "5. 新增内容必须与【风格设定】中作品的叙事视角和文风保持一致。\n\n"
-        "【禁止事项】\n"
-        "- 禁止删减、改写或移动原文中的任何已有内容。\n"
-        "- 禁止添加原文未提及的新角色、新事件或新设定。\n"
-        "- 禁止改变原文的叙事人称、时态或视角。\n"
-        "- 禁止输出解释或元评论。只输出完整的扩写后文本。\n"
-        "- 禁止以「扩写如下」、「以下是扩写后的文本」等引导语开头。\n\n"
-        "【质量判断】\n"
-        "- 好的扩写：读起来原文像是一个「大纲」，扩写后才是「成稿」——细节充沛但结构不变。\n"
-        "- 失败的扩写：读起来像原文被拉长了——增加了字数但没有增加信息量或感染力。\n\n"
-        f"【风格设定】\n{style_ctx}"
+    messages = build_expand_messages(
+        style_context=style_ctx,
+        prompt=payload.prompt,
+        text=payload.text,
     )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{payload.prompt or '请扩写以下文本，增加更多细节：'}\n\n原文：\n{payload.text}"},
-    ]
     result = await LLMGateway.chat_completion(
         messages=messages,
         model=payload.model,
@@ -2031,31 +1405,13 @@ async def continue_text(project_id: str, payload: ContinueRequest, db: Session =
     summaries = _build_recent_summaries(db, project_id, payload.context_chapters)
     outline_ctx = _build_outline_context(db, project_id, payload.outline_node_id)
 
-    system_prompt = (
-        "你是一位资深小说续写师，专精于从给定文本的结尾处无缝衔接，让读者察觉不到作者切换的痕迹。\n\n"
-        "【续写原则】\n"
-        "1. 从原文结尾处最后一个场景、最后一句对话、最后一个动作的自然延伸处开始写，不跳时间、不切场景（除非原文结尾本身就是场景结束的节点）。\n"
-        "2. 严格承接上文：已出场角色的行为逻辑、情感状态、当前位置必须一致。已发生的剧情事实不可篡改或忽略。\n"
-        "3. 若【当前大纲】指定了本段落的剧情方向，续写应朝该方向推进，但不跳过必要的过渡。\n"
-        "4. 若【前文摘要】提供了更早的情节背景，确保因果链连贯——前面的伏笔可以在续写中发展，但不应立即全部收束。\n"
-        "5. 文风、叙事视角、语气应与【风格设定】保持一致，且与上文无缝衔接。\n\n"
-        "【禁止事项】\n"
-        "- 禁止重复原文中已经写过的内容。续写是「接着写」不是「改写」或「重述」。\n"
-        "- 禁止凭空引入上文和新【当前大纲】中均未提及的新角色、新设定或新冲突线。\n"
-        "- 禁止在开头使用「在上一段中」、「此前」、「回顾上文」等回顾性表述。直接进入新内容。\n"
-        "- 禁止改变叙事人称、时态或视角。\n"
-        "- 禁止输出解释或元评论。\n\n"
-        "【质量判断】\n"
-        "- 好的续写：读起来就像同一个作者接着写下去——情节推进合理、角色行为一致、文风统一。\n"
-        "- 失败的续写：读起来像另一个人写的同人——角色OOC、节奏突变、或引入不协调的新元素。\n\n"
-        f"【风格设定】\n{style_ctx}\n\n"
-        f"【当前大纲】\n{outline_ctx}\n\n"
-        f"【前文摘要】\n{summaries}"
+    messages = build_continue_messages(
+        style_context=style_ctx,
+        outline_context=outline_ctx,
+        summaries=summaries,
+        prompt=payload.prompt,
+        text=payload.text,
     )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{payload.prompt or '请从以下文本结尾处继续写：'}\n\n上文：\n{payload.text}\n\n请接着写下去："},
-    ]
     result = await LLMGateway.chat_completion(
         messages=messages,
         model=payload.model,
@@ -2565,7 +1921,7 @@ async def story_assistant(
                 "2. 如果发现用户想写的剧情会破坏角色动机、时间线或世界观规则，要明确指出并给出改法。\n"
                 "3. 如果世界观缺口会影响剧情成立，在 worldbuilding_suggestions 中给出可直接导入的设定条目。\n"
                 "4. 如果角色AI判断某角色应行动，把这些行动自然合并进建议或章节草稿。\n"
-                "5. 如果用户要求创建/写新章节，chapter_draft.content 必须是完整正文草稿，不是大纲。\n"
+                "5. 如果用户要求创建/写新章节，chapter_draft.content 必须是完整正文草稿，不是大纲。正文控制在1800-2500字，不超过3000字。\n"
                 "6. outline_node_id 必须从给定资料中【当前大纲节点】或【全局大纲概览】里显示的 [ID: xxx] 复制。如果资料中没有显示任何节点ID，或你不确定对应哪个节点，将 outline_node_id 设为空字符串 \"\"。严禁自行编造或猜测ID。\n"
                 "7. 只输出JSON对象。\n\n"
                 "输出格式：{\"reply\":\"给用户看的回答\","
@@ -3258,63 +2614,21 @@ async def workspace_assistant_stream(
             if history_text == "暂无对话历史。":
                 history_text = _assistant_history_text(payload.history)
 
-            available_tools = (
-                "create_worldbuilding_entry, update_worldbuilding_entry, create_character, update_character, "
-                "create_relationship, create_outline_node, update_outline_node, create_chapter"
+            messages = build_workspace_assistant_messages(
+                scope=payload.scope,
+                project_title=project.title,
+                project_description=project.description,
+                style_context=style_context,
+                history_text=history_text,
+                selected_context=selected_context,
+                outline_context=outline_context,
+                character_context=character_context,
+                world_context=world_context,
+                summaries=summaries,
+                outline_batch_count=payload.outline_batch_count,
+                auto_apply=payload.auto_apply,
+                user_message=payload.message,
             )
-            scope_label_map = {
-                "outline": "大纲规划",
-                "characters": "角色管理",
-                "worldbuilding": "世界观管理",
-                "project": "项目规划",
-            }
-            scope_label = scope_label_map.get(payload.scope, "项目规划")
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"你是小说项目的{scope_label}AI助手。你可以和用户对话，也可以在用户明确要求创建、调整、生成时调用工具修改项目。\n"
-                        f"可用工具：{available_tools}。\n"
-                        "所有模块共用同一套项目工具：世界观、大纲、角色、关系和章节都可以互相读取、互相创建。\n"
-                        "如果项目还没有世界观、角色或大纲，而用户要求从0开始写小说，你要先创建基础世界观、核心角色和前几个大纲节点，再建议或创建章节。\n"
-                        "你必须先判断用户是想咨询还是想执行变更。只有用户明确说创建、修改、调整、生成、补全、关联、写入、从0开始时，actions 才能非空。\n"
-                        "如果只是讨论，请 actions 输出空数组。\n\n"
-                        "章节创建硬规则：如果用户要写新章节，但当前资料里没有能直接对应的章节大纲ID，第一轮不要创建章节、不要写入工具动作；"
-                        "你必须先预测接下来大纲走向，按用户设置的连续规划章数给出大纲建议，并询问用户是否按这个方向发展。"
-                        "只有用户明确确认后，才能先 create_outline_node / update_character / create_worldbuilding_entry，再 create_chapter。"
-                        "如果用户否定方向，要询问接下来想怎么发展，等用户回答后再次给出大纲并询问。\n\n"
-                        "工具参数格式：\n"
-                        "- create_worldbuilding_entry: {\"dimension\":\"geography|history|factions|power_system|races|culture\",\"title\":\"\",\"content\":\"\",\"related_characters\":[\"可选\"],\"plot_usage\":\"可选\",\"constraints\":[\"可选\"],\"sort_order\":0}\n"
-                        "- update_worldbuilding_entry: {\"id\":\"条目ID或标题\",\"dimension\":\"可选\",\"title\":\"可选\",\"content\":\"可选\",\"sort_order\":0}\n"
-                        "- create_outline_node: {\"parent_id\":\"可空\",\"node_type\":\"volume|chapter|section\",\"title\":\"\",\"summary\":\"\",\"status\":\"pending|in_progress|completed\",\"character_names\":[\"\"]}\n"
-                        "- update_outline_node: {\"id\":\"大纲ID\",\"title\":\"可选\",\"summary\":\"可选\",\"status\":\"可选\",\"character_names\":[\"可选\"]}\n"
-                        "- create_character: {\"name\":\"\",\"appearance\":\"\",\"personality\":\"\",\"background\":\"\",\"abilities\":[\"\"],\"role_type\":\"protagonist|supporting|antagonist|mentor|other\"}\n"
-                        "- update_character: {\"id\":\"角色ID或角色名\",\"appearance\":\"可选\",\"personality\":\"可选\",\"background\":\"可选\",\"abilities\":[\"可选\"],\"role_type\":\"可选\"}\n"
-                        "- create_relationship: {\"source\":\"角色名或ID\",\"target\":\"角色名或ID\",\"relationship_type\":\"\",\"description\":\"\"}\n"
-                        "- create_chapter: {\"title\":\"\",\"content\":\"完整正文\",\"outline_node_id\":\"从大纲列表中的 [ID] 复制，不确定则为空字符串\",\"outline_node_title\":\"刚创建或已有的大纲标题，可选\",\"summary\":\"可选\",\"involved_characters\":[\"\"]}\n\n"
-                        "重要：outline_node_id、character id 等标识符必须从下方给定资料中直接复制，严禁自行编造。如果资料中没有明确的ID，请留空或使用角色名称匹配。\n\n"
-                        "创建顺序建议：从0建书时先 worldbuilding，再 characters/relationships，再 outline；写正文时先核对大纲、角色和世界观，再 create_chapter。\n"
-                        "只输出合法JSON对象，不要Markdown。格式："
-                        "{\"reply\":\"给用户看的回复\",\"actions\":[{\"tool\":\"工具名\",\"arguments\":{}}],\"needs_confirmation\":false}"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"作品：{project.title}\n"
-                        f"简介：{project.description or '暂无'}\n"
-                        f"写作风格与禁用表达：\n{style_context}\n\n"
-                        f"对话历史：\n{history_text}\n\n"
-                        f"{chr(10).join(selected_context) or '当前没有选中对象。'}\n\n"
-                        f"大纲：\n{outline_context}\n\n"
-                        f"角色：\n{character_context}\n\n"
-                        f"世界观：\n{world_context}\n\n"
-                        f"最近章节摘要：\n{summaries}\n\n"
-                        f"用户设置：连续规划章数={payload.outline_batch_count}；自动执行工具={payload.auto_apply}。\n\n"
-                        f"用户需求：{payload.message}"
-                    ),
-                },
-            ]
 
             yield _sse_event({"type": "status", "message": "正在让模型决定是否调用工具", "tool": "planner"})
             result = await LLMGateway.chat_completion(
@@ -3322,6 +2636,7 @@ async def workspace_assistant_stream(
                 model=payload.model,
                 temperature=payload.temperature or 0.3,
                 max_tokens=payload.max_tokens,
+                timeout=300,
                 retry=1,
             )
             parsed = _parse_json_object(result.get("content", "")) or {
@@ -3352,7 +2667,7 @@ async def workspace_assistant_stream(
                     tool = str(action.get("tool") or "tool")
                     yield _sse_event({"type": "status", "message": f"正在执行工具：{tool}", "tool": tool})
                     try:
-                        action_result = _execute_workspace_action(db, project_id, action)
+                        action_result = await _execute_workspace_action(db, project_id, action)
                     except Exception as exc:
                         action_result = {"tool": tool, "status": "error", "detail": str(exc)}
                     applied_actions.append(action_result)

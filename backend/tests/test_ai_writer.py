@@ -1,5 +1,6 @@
 """Regression tests for AI writing engine project isolation."""
 
+import asyncio
 import json
 import os
 import unittest
@@ -184,14 +185,14 @@ class AIWriterIsolationTestCase(unittest.TestCase):
 
         db = SessionLocal()
         try:
-            result = _execute_workspace_action(db, project_a, {
+            result = asyncio.run(_execute_workspace_action(db, project_a, {
                 "tool": "update_outline_node",
                 "arguments": {
                     "id": foreign_outline_id,
                     "title": "第151章 众生相",
                     "summary": "从归寂谷外的小人物视角展现死线回收。",
                 },
-            })
+            }))
             db.commit()
             self.assertEqual(result["status"], "ok")
             current = db.query(OutlineNode).filter(OutlineNode.id == current_outline_id).first()
@@ -209,7 +210,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
 
         db = SessionLocal()
         try:
-            result = _execute_workspace_action(db, project_a, {
+            result = asyncio.run(_execute_workspace_action(db, project_a, {
                 "tool": "create_chapter",
                 "arguments": {
                     "title": "第151章 众生相",
@@ -218,7 +219,7 @@ class AIWriterIsolationTestCase(unittest.TestCase):
                     "outline_node_title": "第151章 众生相",
                     "summary": "外界视角展现末日景象。",
                 },
-            })
+            }))
             db.commit()
             self.assertEqual(result["status"], "ok")
             chapter = db.query(Chapter).filter(Chapter.project_id == project_a).first()
