@@ -45,13 +45,6 @@ interface CharacterFormValues {
 
 interface CharactersPageProps { projectId: string }
 
-interface AIRunLog {
-  key: string
-  tool?: string
-  status?: string
-  message: string
-}
-
 const ROLE_OPTIONS = [
   { value: 'protagonist', label: '主角' }, { value: 'supporting', label: '配角' },
   { value: 'antagonist', label: '反派' }, { value: 'mentor', label: '导师' }, { value: 'other', label: '其他' },
@@ -92,11 +85,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [versions, setVersions] = useState<VersionItem[]>([])
   const [versionModalOpen, setVersionModalOpen] = useState(false)
   const [versionSnapshot, setVersionSnapshot] = useState<Record<string, unknown> | null>(null)
-  const [aiLoading, setAiLoading] = useState(false)
-  const [aiSuggestion, setAiSuggestion] = useState<Record<string, any> | null>(null)
-  const [aiRawText, setAiRawText] = useState('')
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
-  const [aiRunLogs, setAiRunLogs] = useState<AIRunLog[]>([])
   const [assistantModel, setAssistantModel] = useState<string | undefined>()
   const [, setAiConfig] = useState<AIConfig | null>(null)
   const [aiConfigSaving, setAiConfigSaving] = useState(false)
@@ -252,57 +241,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
     } catch (err: any) { message.error(err.message || '获取版本详情失败') }
   }
 
-  const generateAISuggestion = async (values: { name: string; brief?: string; model?: string }) => {
-    setAiLoading(true); setAiSuggestion(null); setAiRawText('')
-    setAiRunLogs([{
-      key: `${Date.now()}-start`,
-      tool: 'character_context',
-      status: 'running',
-      message: '正在读取世界观、已有角色和近期大纲',
-    }])
-    try {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-model`,
-        tool: 'character_ai',
-        status: 'running',
-        message: `正在调用模型：${values.model || '默认模型'}`,
-      }])
-      const res = await apiClient.post<ApiResponse<{ suggestion?: Record<string, any>; raw_text: string }>>(`/projects/${projectId}/characters/ai-suggest`, values)
-      setAiSuggestion(res.data.data.suggestion || null); setAiRawText(res.data.data.raw_text)
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-done`,
-        tool: 'character_ai',
-        status: 'ok',
-        message: res.data.data.suggestion ? '已解析角色档案 JSON' : '已返回原始文本，需手动检查格式',
-      }])
-    } catch (err: any) {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-error`,
-        tool: 'character_ai',
-        status: 'error',
-        message: err.message || 'AI 角色建议失败',
-      }])
-      message.error(err.message || 'AI 角色建议失败，请检查模型配置')
-    }
-    finally { setAiLoading(false) }
-  }
-
-  const fillSuggestion = () => {
-    if (!aiSuggestion) return
-    form.setFieldsValue({
-      name: aiSuggestion.name, appearance: aiSuggestion.appearance,
-      personality: aiSuggestion.personality, background: aiSuggestion.background,
-      abilities: Array.isArray(aiSuggestion.abilities) ? aiSuggestion.abilities : [],
-      role_type: aiSuggestion.role_type || 'supporting', is_evolution_tracked: true,
-    })
-  }
-
   const characterName = (id: string) => characters.find((item) => item.id === id)?.name || id.slice(0, 8)
-  void aiLoading
-  void aiRawText
-  void aiRunLogs
-  void generateAISuggestion
-  void fillSuggestion
 
   return (
     <div className="characters-page">

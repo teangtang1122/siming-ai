@@ -72,13 +72,6 @@ interface WorldbuildingPageProps {
   projectId: string
 }
 
-interface AIRunLog {
-  key: string
-  tool?: string
-  status?: string
-  message: string
-}
-
 const NEW_ROW_ID = '__new__'
 
 const DIMENSIONS: Array<{ key: Dimension; label: string; icon: JSX.Element }> = [
@@ -106,12 +99,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftEntry>({ title: '', content: '', sort_order: 0 })
 
-  const [aiDimension, setAiDimension] = useState<Dimension>('geography')
-  const [aiConcept, setAiConcept] = useState('')
-  const [aiSuggestion, setAiSuggestion] = useState('')
-  const [aiLoading, setAiLoading] = useState(false)
   const [aiModel, setAiModel] = useState<string | undefined>()
-  const [aiRunLogs, setAiRunLogs] = useState<AIRunLog[]>([])
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
     initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
@@ -213,67 +201,6 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     } catch (err: any) {
       message.error(err.message || '删除世界观条目失败')
     }
-  }
-
-  const generateSuggestion = async () => {
-    if (!aiConcept.trim()) {
-      message.warning('请输入概念或关键词')
-      return
-    }
-    setAiLoading(true)
-    setAiSuggestion('')
-    setAiRunLogs([{
-      key: `${Date.now()}-start`,
-      tool: 'worldbuilding_context',
-      status: 'running',
-      message: `正在读取${DIMENSIONS.find((item) => item.key === aiDimension)?.label || aiDimension}维度已有设定`,
-    }])
-    try {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-model`,
-        tool: 'worldbuilding_ai',
-        status: 'running',
-        message: `正在调用模型：${aiModel || defaultModel || '默认模型'}`,
-      }])
-      const res = await apiClient.post<ApiResponse<{
-        suggestion: string
-        dimension: Dimension
-        concept: string
-      }>>(`/projects/${projectId}/worldbuilding/ai-expand`, {
-        dimension: aiDimension,
-        concept: aiConcept.trim(),
-        model: aiModel || defaultModel || undefined,
-      })
-      setAiSuggestion(res.data.data.suggestion)
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-done`,
-        tool: 'worldbuilding_ai',
-        status: 'ok',
-        message: '世界观扩展建议已生成',
-      }])
-    } catch (err: any) {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-error`,
-        tool: 'worldbuilding_ai',
-        status: 'error',
-        message: err.message || 'AI 扩展失败',
-      }])
-      message.error(err.message || 'AI 扩展失败，请检查模型配置')
-    } finally {
-      setAiLoading(false)
-    }
-  }
-
-  const useSuggestionAsDraft = () => {
-    if (!aiSuggestion.trim()) return
-    setActiveDimension(aiDimension)
-    setCreating(true)
-    setEditingId(NEW_ROW_ID)
-    setDraft({
-      title: aiConcept.trim() || 'AI 设定建议',
-      content: aiSuggestion.trim(),
-      sort_order: (entriesByDimension[aiDimension] || []).length,
-    })
   }
 
   const dataSource = creating
@@ -413,12 +340,6 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     },
   ]
 
-  void setAiDimension
-  void setAiConcept
-  void aiLoading
-  void aiRunLogs
-  void generateSuggestion
-  void useSuggestionAsDraft
 
   return (
     <div className="worldbuilding-page">

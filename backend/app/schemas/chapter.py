@@ -62,16 +62,3 @@ class ChapterSnapshotItem(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class ChapterSnapshotDetail(ChapterSnapshotItem):
-    """Snapshot detail with full content."""
-
-    content: str
-
-
-class SnapshotDiffRequest(BaseModel):
-    """Optional request body for snapshot diff callers that prefer POST-like payloads."""
-
-    from_snapshot_id: str
-    to_snapshot_id: str

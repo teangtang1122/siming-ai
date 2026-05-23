@@ -14,8 +14,36 @@ import './WorkspaceAssistantChat.css'
 const { Paragraph, Text } = Typography
 const { TextArea } = Input
 
-const DEFAULT_FORBIDDEN_SENTENCE_PATTERNS = '不是……是……\n不是……而是……\n不是……却是……\n与其说……不如说……'
+const DEFAULT_FORBIDDEN_SENTENCE_PATTERNS = [
+  '不是……是……', '不是……而是……', '不是……却是……', '与其说……不如说……',
+  '在……中……', '在……时……', '随着……',
+  '仿佛……', '似乎……',
+  '只见……', '只听得……', '不由得……', '不禁……', '忍不住……',
+  '这一切都说明……', '从那天起……', '此后……',
+  '与此同时……', '另一方面……',
+  '很愤怒', '感到悲伤', '感到恐惧', '显得很……',
+  '他的眼中……', '她的心里……',
+  '深深地', '无比', '极其',
+  '一股……', '一种……的感觉', '令人……', '让人……',
+  '充满了', '充斥着',
+  '缓缓地', '默默地', '静静地', '淡淡地', '微微……',
+  '然而', '于是', '突然', '忽然', '终于', '其实',
+  '总之', '无论如何', '毋庸置疑', '某种程度上', '某种意义上',
+].join('\n')
+
 const DEFAULT_RHETORIC_GUIDELINES = '克制使用比喻、拟人、排比等修辞，禁止连续堆叠比喻。优先用具体动作、感官细节、因果推进和角色反应来表达画面与情绪。非必要不使用抽象概念比喻；同一段落不要出现多个比喻。'
+
+function mergeForbiddenPatterns(userPatterns: string): string {
+  const defaults = new Set(DEFAULT_FORBIDDEN_SENTENCE_PATTERNS.split('\n').map(s => s.trim()).filter(Boolean))
+  const user = userPatterns.split('\n').map(s => s.trim()).filter(Boolean)
+  const merged = new Set([...defaults, ...user])
+  return [...merged].join('\n')
+}
+
+function stripDefaults(patterns: string): string {
+  const defaults = new Set(DEFAULT_FORBIDDEN_SENTENCE_PATTERNS.split('\n').map(s => s.trim()).filter(Boolean))
+  return patterns.split('\n').map(s => s.trim()).filter(s => s && !defaults.has(s)).join('\n')
+}
 
 type WorkspaceAssistantScope = 'outline' | 'characters' | 'worldbuilding' | 'project'
 
@@ -183,6 +211,8 @@ function WorkspaceAssistantChat({
   const [writingStyle, setWritingStyle] = useState('natural')
   const [forbiddenSentencePatterns, setForbiddenSentencePatterns] = useState(DEFAULT_FORBIDDEN_SENTENCE_PATTERNS)
   const [rhetoricGuidelines, setRhetoricGuidelines] = useState(DEFAULT_RHETORIC_GUIDELINES)
+  const [shortSentences, setShortSentences] = useState(false)
+  const [customStylePrompt, setCustomStylePrompt] = useState('')
   const [styleSaving, setStyleSaving] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -197,11 +227,15 @@ function WorkspaceAssistantChat({
         writing_style: string
         forbidden_sentence_patterns?: string | null
         rhetoric_guidelines?: string | null
+        short_sentences?: boolean
+        custom_style_prompt?: string | null
       }>>(`/projects/${projectId}`)
       setNarrativePerspective(res.data.data.narrative_perspective || 'third_person')
       setWritingStyle(res.data.data.writing_style || 'natural')
-      setForbiddenSentencePatterns(res.data.data.forbidden_sentence_patterns || DEFAULT_FORBIDDEN_SENTENCE_PATTERNS)
+      setForbiddenSentencePatterns(mergeForbiddenPatterns(res.data.data.forbidden_sentence_patterns || ''))
       setRhetoricGuidelines(res.data.data.rhetoric_guidelines || DEFAULT_RHETORIC_GUIDELINES)
+      setShortSentences(res.data.data.short_sentences || false)
+      setCustomStylePrompt(res.data.data.custom_style_prompt || '')
     } catch {
       // Keep local defaults.
     }
@@ -212,14 +246,18 @@ function WorkspaceAssistantChat({
     nextStyle = writingStyle,
     nextForbidden = forbiddenSentencePatterns,
     nextRhetoric = rhetoricGuidelines,
+    nextShortSentences = shortSentences,
+    nextCustomStylePrompt = customStylePrompt,
   ) => {
     setStyleSaving(true)
     try {
       await apiClient.put(`/projects/${projectId}`, {
         narrative_perspective: nextPerspective,
         writing_style: nextStyle,
-        forbidden_sentence_patterns: nextForbidden,
+        forbidden_sentence_patterns: stripDefaults(nextForbidden),
         rhetoric_guidelines: nextRhetoric,
+        short_sentences: nextShortSentences,
+        custom_style_prompt: nextCustomStylePrompt,
       })
     } catch (err: any) {
       message.error(err.message || '保存写作风格失败')
@@ -658,12 +696,35 @@ function WorkspaceAssistantChat({
                     disabled={styleSaving}
                   />
                 </div>
+                <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <Text type="secondary">短句模式</Text>
+                  <Switch
+                    size="small"
+                    checked={shortSentences}
+                    onChange={(checked) => {
+                      setShortSentences(checked)
+                      saveProjectStyle(narrativePerspective, writingStyle, forbiddenSentencePatterns, rhetoricGuidelines, checked)
+                    }}
+                  />
+                </Space>
+                <div>
+                  <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>自定义风格提示词</Text>
+                  <TextArea
+                    size="small"
+                    value={customStylePrompt}
+                    onChange={(event) => setCustomStylePrompt(event.target.value)}
+                    onBlur={(event) => saveProjectStyle(narrativePerspective, writingStyle, forbiddenSentencePatterns, rhetoricGuidelines, shortSentences, event.target.value)}
+                    autoSize={{ minRows: 2, maxRows: 6 }}
+                    disabled={styleSaving}
+                    placeholder="追加到所有AI文案生成中的自定义指令"
+                  />
+                </div>
                 <Button
                   size="small"
                   onClick={() => {
                     setForbiddenSentencePatterns(DEFAULT_FORBIDDEN_SENTENCE_PATTERNS)
                     setRhetoricGuidelines(DEFAULT_RHETORIC_GUIDELINES)
-                    saveProjectStyle(narrativePerspective, writingStyle, DEFAULT_FORBIDDEN_SENTENCE_PATTERNS, DEFAULT_RHETORIC_GUIDELINES)
+                    saveProjectStyle(narrativePerspective, writingStyle, DEFAULT_FORBIDDEN_SENTENCE_PATTERNS, DEFAULT_RHETORIC_GUIDELINES, shortSentences, customStylePrompt)
                   }}
                 >
                   恢复默认表达限制

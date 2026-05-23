@@ -93,13 +93,6 @@ interface OutlinePageProps {
   projectId: string
 }
 
-interface AIRunLog {
-  key: string
-  tool?: string
-  status?: string
-  message: string
-}
-
 const NODE_TYPE_OPTIONS: Array<{ value: NodeType; label: string }> = [
   { value: 'volume', label: '卷' },
   { value: 'chapter', label: '章' },
@@ -159,14 +152,8 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [aiPrompt, setAiPrompt] = useState('')
-  const [aiSuggestion, setAiSuggestion] = useState('')
-  const [aiSuggestedNodes, setAiSuggestedNodes] = useState<Array<{ title: string; summary: string; node_type?: NodeType; character_names?: string[] }>>([])
-  const [aiLoading, setAiLoading] = useState(false)
   const [aiModel, setAiModel] = useState<string | undefined>()
-  const [aiSuggestionCount, setAiSuggestionCount] = useState(4)
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
-  const [aiRunLogs, setAiRunLogs] = useState<AIRunLog[]>([])
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
     initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
@@ -232,7 +219,6 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         sort_order: selectedNode.sort_order,
         character_ids: selectedNode.linked_characters.map((item) => item.id),
       })
-      setAiSuggestion('')
     }
     if (!creating && !selectedNode) {
       form.resetFields()
@@ -282,8 +268,6 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const startCreate = (parent?: OutlineNode | null) => {
     setCreating(true)
     setSelectedId(null)
-    setAiSuggestion('')
-    setAiSuggestedNodes([])
     const parentId = parent?.id || null
     const siblingCount = flat.filter((node) => (node.parent_id || null) === parentId).length
     form.setFieldsValue({
@@ -396,96 +380,8 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     }
   }
 
-  const generateAISuggestion = async () => {
-    setAiLoading(true)
-    setAiSuggestion('')
-    setAiSuggestedNodes([])
-    setAiRunLogs([{
-      key: `${Date.now()}-start`,
-      tool: 'outline_context',
-      status: 'running',
-      message: '正在读取当前大纲、同级节点、角色和世界观',
-    }])
-    try {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-model`,
-        tool: 'outline_ai',
-        status: 'running',
-        message: `正在调用模型：${aiModel || defaultModel || '默认模型'}`,
-      }])
-      const res = await apiClient.post<ApiResponse<{ suggestion: string; suggestions?: Array<{ title: string; summary: string; node_type?: NodeType; character_names?: string[] }> }>>(
-        `/projects/${projectId}/outline/ai-suggest`,
-        {
-          node_id: selectedId || undefined,
-          prompt: aiPrompt.trim() || undefined,
-          suggestion_count: aiSuggestionCount,
-          model: aiModel || defaultModel || undefined,
-        }
-      )
-      setAiSuggestion(res.data.data.suggestion)
-      setAiSuggestedNodes(res.data.data.suggestions || [])
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-done`,
-        tool: 'outline_ai',
-        status: 'ok',
-        message: `已生成 ${res.data.data.suggestions?.length || 0} 个连续大纲建议`,
-      }])
-    } catch (err: any) {
-      setAiRunLogs((prev) => [...prev, {
-        key: `${Date.now()}-error`,
-        tool: 'outline_ai',
-        status: 'error',
-        message: err.message || 'AI 摘要建议失败',
-      }])
-      message.error(err.message || 'AI 摘要建议失败，请检查模型配置')
-    } finally {
-      setAiLoading(false)
-    }
-  }
-
-  const fillAISuggestion = () => {
-    if (!aiSuggestion.trim()) return
-    form.setFieldValue('summary', aiSuggestion.trim())
-  }
-
-  const createSuggestedNodes = async () => {
-    if (aiSuggestedNodes.length === 0) return
-    const targetParentId = selectedNode
-      ? (selectedNode.node_type === 'volume' ? selectedNode.id : selectedNode.parent_id || null)
-      : null
-    const baseSort = flat.filter((node) => (node.parent_id || null) === targetParentId).length
-    try {
-      for (const [index, item] of aiSuggestedNodes.entries()) {
-        const characterIds = (item.character_names || [])
-          .map((name) => characters.find((character) => character.name === name)?.id)
-          .filter(Boolean) as string[]
-        await apiClient.post<ApiResponse<OutlineNode>>(`/projects/${projectId}/outline`, {
-          parent_id: targetParentId,
-          node_type: item.node_type || (selectedNode?.node_type === 'volume' ? 'chapter' : selectedNode?.node_type || 'chapter'),
-          title: item.title,
-          summary: item.summary,
-          status: 'pending',
-          sort_order: baseSort + index,
-          character_ids: characterIds,
-        })
-      }
-      message.success(`已创建 ${aiSuggestedNodes.length} 个连续大纲节点`)
-      setAiSuggestedNodes([])
-      fetchOutline()
-    } catch (err: any) {
-      message.error(err.message || '创建建议大纲失败')
-    }
-  }
-
   const selectedCharacterNames = selectedNode?.linked_characters.map((item) => item.name).join('、') || ''
   const editorTitle = creating ? '新建大纲节点' : selectedNode?.title || '大纲节点'
-  void aiLoading
-  void aiRunLogs
-  void setAiPrompt
-  void setAiSuggestionCount
-  void generateAISuggestion
-  void fillAISuggestion
-  void createSuggestedNodes
 
   return (
     <div className="outline-page">

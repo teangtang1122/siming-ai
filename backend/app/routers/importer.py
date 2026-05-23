@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from docx import Document as DocxDocument
 
 from ..ai.gateway import LLMGateway
+from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import Chapter, OutlineNode, Project
@@ -31,13 +32,6 @@ CHAPTER_TITLE_RE = re.compile(
     r"|Part\s+\d+[^\n]{0,60}"
     r")\s*$"
 )
-
-
-def _get_project_or_404(db: Session, project_id: str) -> Project:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise NotFoundError("作品不存在")
-    return project
 
 
 def _get_outline_node_or_404(db: Session, project_id: str, outline_node_id: Optional[str]) -> Optional[OutlineNode]:
@@ -70,7 +64,7 @@ def _parse_docx(raw: bytes) -> str:
 
 
 def _upload_file_response(project_id: str, file: UploadFile, db: Session):
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
 
     filename = file.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -103,12 +97,6 @@ def _upload_file_response(project_id: str, file: UploadFile, db: Session):
 @router.post("/projects/{project_id}/import/file")
 def import_file(project_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Upload a TXT or .docx file and return its parsed text content."""
-    return _upload_file_response(project_id, file, db)
-
-
-@router.post("/projects/{project_id}/import/upload")
-def upload_file(project_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Backward-compatible alias for file import."""
     return _upload_file_response(project_id, file, db)
 
 
@@ -342,7 +330,7 @@ async def import_preview(
     db: Session = Depends(get_db),
 ):
     """Return regex-first chapter split suggestions, optionally LLM-corrected."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     splits, method, needs_review, failed_blocks = await _build_split_preview(payload.text, payload.model)
     return ApiResponse.success(data={
         "splits": splits,
@@ -353,20 +341,10 @@ async def import_preview(
     }, message=f"识别到 {len(splits)} 个章节边界")
 
 
-@router.post("/projects/{project_id}/import/suggest-splits")
-async def suggest_splits(
-    project_id: str,
-    payload: ImportSplitRequest,
-    db: Session = Depends(get_db),
-):
-    """Backward-compatible alias for chapter split preview."""
-    return await import_preview(project_id, payload, db)
-
-
 @router.post("/projects/{project_id}/import/confirm")
 def confirm_import(project_id: str, payload: ConfirmImportRequest, db: Session = Depends(get_db)):
     """Save imported text as chapters based on split suggestions."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     _get_outline_node_or_404(db, project_id, payload.outline_node_id)
 
     created_chapters: list[Chapter] = []

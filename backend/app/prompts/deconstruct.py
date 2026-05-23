@@ -48,7 +48,7 @@ JSON_REPAIR_SYSTEM_PROMPT = (
 )
 
 
-def map_instructions() -> str:
+def map_instructions(options: dict) -> str:
     """Build map-phase instruction text for chunk analysis."""
     parts = [
         "【分块事实卡片要求】",

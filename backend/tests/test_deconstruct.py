@@ -48,7 +48,7 @@ class DeconstructTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()["data"]["id"]
 
-    @patch("app.routers.deconstruct.LLMGateway.chat_completion", new_callable=AsyncMock)
+    @patch("app.services.deconstruct.map_reduce.LLMGateway.chat_completion", new_callable=AsyncMock)
     def test_deconstruct_report_can_be_queried_and_imported(self, mock_chat):
         project_id = self.create_project()
         map_result = {

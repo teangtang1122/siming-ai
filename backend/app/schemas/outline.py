@@ -62,39 +62,3 @@ class OutlineReorderRequest(BaseModel):
     sort_order: Optional[list[str]] = None
 
 
-class OutlineAISuggestRequest(BaseModel):
-    """Schema for AI-assisted outline summary suggestion."""
-
-    node_id: Optional[str] = Field(None, description="Target outline node ID")
-    prompt: Optional[str] = Field(None, max_length=2000, description="Author instruction")
-    suggestion_count: int = Field(1, ge=1, le=8, description="Number of continuous outline nodes to suggest")
-    model: Optional[str] = Field(None, description="Optional model identifier")
-
-
-class LinkedCharacterResponse(BaseModel):
-    """Character information linked to an outline node."""
-
-    id: str
-    name: str
-    role_type: Optional[str]
-    role_in_scene: Optional[str]
-
-
-class OutlineNodeResponse(BaseModel):
-    """Outline node response."""
-
-    id: str
-    project_id: str
-    parent_id: Optional[str]
-    node_type: str
-    title: str
-    summary: Optional[str]
-    status: str
-    sort_order: int
-    linked_characters: list[LinkedCharacterResponse]
-    children: list["OutlineNodeResponse"] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: datetime
-
-
-OutlineNodeResponse.model_rebuild()

@@ -13,6 +13,8 @@ class ProjectBase(BaseModel):
     writing_style: Optional[str] = Field("natural", description="文风偏好")
     forbidden_sentence_patterns: Optional[str] = Field(None, description="禁用句式，每行一条")
     rhetoric_guidelines: Optional[str] = Field(None, description="修辞与比喻使用限制")
+    short_sentences: bool = Field(False, description="短句模式：以短句为主，减少长句和从句嵌套")
+    custom_style_prompt: Optional[str] = Field(None, description="自定义风格提示词，会追加到所有AI文案生成中")
     daily_word_goal: Optional[int] = Field(6000, ge=0, description="每日字数目标")
 
 
@@ -30,6 +32,8 @@ class ProjectUpdate(BaseModel):
     writing_style: Optional[str] = None
     forbidden_sentence_patterns: Optional[str] = None
     rhetoric_guidelines: Optional[str] = None
+    short_sentences: Optional[bool] = None
+    custom_style_prompt: Optional[str] = None
     daily_word_goal: Optional[int] = Field(None, ge=0)
 
 
@@ -43,6 +47,8 @@ class ProjectResponse(BaseModel):
     writing_style: str
     forbidden_sentence_patterns: Optional[str]
     rhetoric_guidelines: Optional[str]
+    short_sentences: bool
+    custom_style_prompt: Optional[str]
     daily_word_goal: int
     created_at: datetime
     updated_at: datetime

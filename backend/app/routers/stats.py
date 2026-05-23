@@ -6,20 +6,13 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..core.exceptions import NotFoundError
+from ..core.db_helpers import get_project_or_404
 from ..core.response import ApiResponse
 from ..database.models import Chapter, Project, WritingLog
 from ..database.session import get_db
-from ..schemas.stats import GoalUpdate, TodayStats, DailyStatsItem
+from ..schemas.stats import GoalUpdate
 
 router = APIRouter(tags=["stats"])
-
-
-def _get_project_or_404(db: Session, project_id: str) -> Project:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise NotFoundError("作品不存在")
-    return project
 
 
 def _get_or_create_today_log(db: Session, project_id: str) -> WritingLog:
@@ -50,7 +43,7 @@ def _compute_today_words(db: Session, project_id: str) -> int:
 @router.get("/projects/{project_id}/stats/today")
 def get_today_stats(project_id: str, db: Session = Depends(get_db)):
     """Get today's writing statistics."""
-    project = _get_project_or_404(db, project_id)
+    project = get_project_or_404(db, project_id)
     today = date.today()
     today_words = _compute_today_words(db, project_id)
 
@@ -86,7 +79,7 @@ def get_stats_history(
     db: Session = Depends(get_db),
 ):
     """Get historical daily writing statistics."""
-    project = _get_project_or_404(db, project_id)
+    project = get_project_or_404(db, project_id)
     start_date = date.today() - timedelta(days=days - 1)
 
     logs = (
@@ -127,7 +120,7 @@ def get_stats_history(
 @router.put("/projects/{project_id}/stats/goal")
 def set_daily_goal(project_id: str, payload: GoalUpdate, db: Session = Depends(get_db)):
     """Set the daily word count goal for a project."""
-    project = _get_project_or_404(db, project_id)
+    project = get_project_or_404(db, project_id)
     project.daily_word_goal = payload.daily_word_goal
     db.commit()
     return ApiResponse.success(

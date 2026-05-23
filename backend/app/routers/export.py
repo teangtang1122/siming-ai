@@ -16,6 +16,7 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import (
@@ -42,13 +43,6 @@ class ExportRequest(BaseModel):
     include_outline: bool = False
     include_characters: bool = False
     include_worldbuilding: bool = False
-
-
-def _get_project_or_404(db: Session, project_id: str) -> Project:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise NotFoundError("作品不存在")
-    return project
 
 
 def _build_chapter_text(chapter: Chapter) -> str:
@@ -181,7 +175,7 @@ def _generate_export_content(
     include_worldbuilding: bool = False,
 ) -> tuple[str, str]:
     """Generate export content. Returns (filename, content)."""
-    project = _get_project_or_404(db, project_id)
+    project = get_project_or_404(db, project_id)
     safe_title = project.title.replace("/", "_").replace("\\", "_")[:50]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{safe_title}_{timestamp}.txt"
@@ -232,7 +226,7 @@ def _generate_docx(
     include_worldbuilding: bool = False,
 ) -> tuple[str, io.BytesIO]:
     """Generate a Word (.docx) document. Returns (filename, BytesIO buffer)."""
-    project = _get_project_or_404(db, project_id)
+    project = get_project_or_404(db, project_id)
     safe_title = project.title.replace("/", "_").replace("\\", "_")[:50]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{safe_title}_{timestamp}.docx"
@@ -386,7 +380,7 @@ def _generate_pdf(
     include_worldbuilding: bool = False,
 ) -> tuple[str, io.BytesIO]:
     """Generate a PDF document with Chinese text (CID font, UTF-16BE). Returns (filename, BytesIO buffer)."""
-    project = _get_project_or_404(db, project_id)
+    project = get_project_or_404(db, project_id)
     safe_title = project.title.replace("/", "_").replace("\\", "_")[:50]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{safe_title}_{timestamp}.pdf"
@@ -674,7 +668,7 @@ def download_export(project_id: str, file_id: str):
 @router.get("/projects/{project_id}/export/word-count")
 def export_word_count_report(project_id: str, db: Session = Depends(get_db)):
     """Get a word count summary for all chapters."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     chapters = _ordered_chapters(db, project_id)
     items = [
         {

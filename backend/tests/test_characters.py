@@ -9,10 +9,8 @@ Covers:
   - AI suggestion endpoint with mocked LLM Gateway
 """
 
-import json
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
@@ -259,45 +257,6 @@ class TestCharacterRelationships(CharacterTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("当前作品", response.json()["message"])
-
-
-class TestCharacterAISuggest(CharacterTestCase):
-    """AI suggestion endpoint test."""
-
-    @patch("app.routers.characters.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_ai_suggest_returns_profile_suggestion(self, mock_chat):
-        project_id = self.create_project()
-        self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/worldbuilding",
-            json={"dimension": "culture", "title": "风祭", "content": "边城每年举行风祭。"},
-        )
-        suggestion = {
-            "name": "林澈",
-            "appearance": "旧青衫，灰眸。",
-            "personality": "沉稳而执拗。",
-            "background": "风祭幸存者。",
-            "abilities": ["御风"],
-            "role_type": "protagonist",
-            "relationship_hooks": ["与风祭失踪案相关"],
-            "growth_arc": "从逃避真相到承担守城责任。",
-        }
-        mock_chat.return_value = {
-            "content": json.dumps(suggestion, ensure_ascii=False),
-            "model": "openai:gpt-4o",
-            "usage": {"total_tokens": 100},
-        }
-
-        response = self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/characters/ai-suggest",
-            json={"name": "林澈", "brief": "边城少年"},
-        )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()["data"]
-        self.assertEqual(data["name"], "林澈")
-        self.assertEqual(data["suggestion"]["background"], "风祭幸存者。")
-        self.assertEqual(data["model"], "openai:gpt-4o")
-        mock_chat.assert_awaited_once()
 
 
 if __name__ == "__main__":

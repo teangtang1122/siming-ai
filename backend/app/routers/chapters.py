@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import Chapter, ChapterSnapshot, OutlineNode, Project, WritingLog
@@ -16,19 +17,11 @@ from ..schemas.chapter import (
     ChapterCreate,
     ChapterDetail,
     ChapterListItem,
-    ChapterSnapshotDetail,
     ChapterSnapshotItem,
     ChapterUpdate,
 )
 
 router = APIRouter(tags=["chapters"])
-
-
-def _get_project_or_404(db: Session, project_id: str) -> Project:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise NotFoundError("作品不存在")
-    return project
 
 
 def _get_chapter_or_404(db: Session, project_id: str, chapter_id: str) -> Chapter:
@@ -189,12 +182,6 @@ def _snapshot_to_item(snapshot: ChapterSnapshot) -> dict:
     return ChapterSnapshotItem.model_validate(snapshot).model_dump(mode="json")
 
 
-def _snapshot_to_detail(snapshot: ChapterSnapshot) -> dict:
-    data = _snapshot_to_item(snapshot)
-    data["content"] = snapshot.content
-    return ChapterSnapshotDetail(**data).model_dump(mode="json")
-
-
 def _create_snapshot(chapter: Chapter, trigger_type: str) -> ChapterSnapshot:
     return ChapterSnapshot(
         chapter_id=chapter.id,
@@ -235,7 +222,7 @@ def _diff_snapshots(from_snapshot: ChapterSnapshot, to_snapshot: ChapterSnapshot
 @router.get("/projects/{project_id}/chapters")
 def list_chapters(project_id: str, db: Session = Depends(get_db)):
     """Get chapter list ordered by outline tree structure."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     outline_context = _outline_sort_context(_load_outline_nodes(db, project_id))
     chapters = db.query(Chapter).filter(Chapter.project_id == project_id).all()
 
@@ -253,7 +240,7 @@ def list_chapters(project_id: str, db: Session = Depends(get_db)):
 @router.post("/projects/{project_id}/chapters")
 def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depends(get_db)):
     """Create a chapter linked to an optional outline node."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     _get_outline_node_or_404(db, project_id, payload.outline_node_id)
     chapter = Chapter(
         project_id=project_id,
@@ -273,7 +260,7 @@ def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depend
 @router.get("/projects/{project_id}/chapters/{chapter_id}")
 def get_chapter_detail(project_id: str, chapter_id: str, db: Session = Depends(get_db)):
     """Get chapter detail with full content."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     outline_context = _outline_sort_context(_load_outline_nodes(db, project_id))
     return ApiResponse.success(data=_chapter_to_detail(chapter, outline_context))
@@ -287,7 +274,7 @@ def save_chapter(
     db: Session = Depends(get_db),
 ):
     """Save chapter fields and create a version snapshot in the same transaction."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     update_data = payload.model_dump(exclude_unset=True)
     trigger_type = update_data.pop("trigger_type", "manual_save")
@@ -317,7 +304,7 @@ def save_chapter(
 @router.delete("/projects/{project_id}/chapters/{chapter_id}")
 def delete_chapter(project_id: str, chapter_id: str, db: Session = Depends(get_db)):
     """Delete a chapter and its snapshots."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     db.delete(chapter)
     db.commit()
@@ -327,7 +314,7 @@ def delete_chapter(project_id: str, chapter_id: str, db: Session = Depends(get_d
 @router.get("/projects/{project_id}/chapters/{chapter_id}/snapshots")
 def list_chapter_snapshots(project_id: str, chapter_id: str, db: Session = Depends(get_db)):
     """Get version snapshot history for a chapter."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     snapshots = (
         db.query(ChapterSnapshot)
@@ -348,25 +335,13 @@ def diff_chapter_snapshots(
     db: Session = Depends(get_db),
 ):
     """Compare two snapshots and return line-based diff marks."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     _get_chapter_or_404(db, project_id, chapter_id)
     from_snapshot = _get_snapshot_or_404(db, project_id, chapter_id, from_snapshot_id)
     to_snapshot = _get_snapshot_or_404(db, project_id, chapter_id, to_snapshot_id)
     return ApiResponse.success(data=_diff_snapshots(from_snapshot, to_snapshot))
 
 
-@router.get("/projects/{project_id}/chapters/{chapter_id}/snapshots/{snapshot_id}")
-def get_chapter_snapshot(
-    project_id: str,
-    chapter_id: str,
-    snapshot_id: str,
-    db: Session = Depends(get_db),
-):
-    """Get one historical chapter snapshot with full content."""
-    _get_project_or_404(db, project_id)
-    _get_chapter_or_404(db, project_id, chapter_id)
-    snapshot = _get_snapshot_or_404(db, project_id, chapter_id, snapshot_id)
-    return ApiResponse.success(data=_snapshot_to_detail(snapshot))
 
 
 @router.post("/projects/{project_id}/chapters/{chapter_id}/restore/{snapshot_id}")
@@ -377,7 +352,7 @@ def restore_chapter_snapshot(
     db: Session = Depends(get_db),
 ):
     """Restore a chapter to a snapshot and create a new restore snapshot."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     snapshot = _get_snapshot_or_404(db, project_id, chapter_id, snapshot_id)
     old_word_count = chapter.word_count or _count_words(chapter.content or "")

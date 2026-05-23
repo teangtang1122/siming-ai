@@ -67,31 +67,6 @@
   position: static;
 }
 
-.worldbuilding-ai-run-log {
-  background: #fff;
-  border: 1px solid #e6f4ff;
-  border-radius: 6px;
-  margin-top: 12px;
-  max-height: 150px;
-  overflow-y: auto;
-  padding: 10px;
-}
-
-.worldbuilding-ai-run-log-item {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-  min-width: 0;
-}
-
-.worldbuilding-ai-run-log-item .ant-typography:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .worldbuilding-content-scroll {
   max-height: 360px;
   overflow-y: auto;

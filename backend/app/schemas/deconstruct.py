@@ -29,19 +29,3 @@ class DeconstructImportRequest(BaseModel):
     import_worldbuilding: bool = Field(False, description="Import extracted worldbuilding entries")
 
 
-class DeconstructResponse(BaseModel):
-    """Complete deconstruct analysis result."""
-    id: str
-    title: Optional[str]
-    structure: dict  # extracted chapter/volume structure
-    plot_nodes: list[dict]  # key plot events
-    characters: list[dict]  # extracted characters with frequency
-    highlights: list[dict]  # high-point distribution
-    rhythm_curve: Optional[list[dict]]  # pacing data points
-    patterns: Optional[list[dict]]  # writing patterns identified
-    golden_three: Optional[dict]  # first-three-chapters hook analysis
-    worldbuilding_entries: Optional[list[dict]]  # extracted worldbuilding entries
-    raw_map_results: Optional[list[dict]]  # intermediate chunk analysis
-    total_chunks: int
-    total_words: int
-    created_at: str

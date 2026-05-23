@@ -10,6 +10,8 @@ export interface Project {
   writing_style: string
   forbidden_sentence_patterns?: string | null
   rhetoric_guidelines?: string | null
+  short_sentences: boolean
+  custom_style_prompt?: string | null
   daily_word_goal: number
   created_at: string
   updated_at: string

@@ -7,6 +7,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..ai.gateway import LLMGateway
+from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import (
@@ -24,7 +25,6 @@ from ..database.models import (
 from ..database.session import get_db
 from ..schemas.character import (
     CharacterAIConfigUpdate,
-    CharacterAISuggestRequest,
     CharacterCreate,
     CharacterResponse,
     CharacterUpdate,
@@ -51,24 +51,6 @@ def _dumps_list(value: Optional[list[str]]) -> Optional[str]:
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False)
-
-
-def _get_project_or_404(db: Session, project_id: str) -> Project:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise NotFoundError("作品不存在")
-    return project
-
-
-def _get_character_or_404(db: Session, project_id: str, character_id: str) -> Character:
-    character = (
-        db.query(Character)
-        .filter(Character.id == character_id, Character.project_id == project_id)
-        .first()
-    )
-    if not character:
-        raise NotFoundError("角色不存在")
-    return character
 
 
 def _character_to_dict(character: Character) -> dict:
@@ -106,41 +88,6 @@ def _snapshot_character(character: Character) -> dict:
     }
 
 
-def _apply_change_log_to_character(character: Character, log: CharacterChangeLog) -> bool:
-    """Apply a confirmed change log to a character profile when supported."""
-    if not log.new_value:
-        return False
-
-    if log.field_name == "abilities":
-        abilities = _loads_list(character.abilities)
-        try:
-            parsed = json.loads(log.new_value)
-        except json.JSONDecodeError:
-            parsed = [log.new_value]
-        if isinstance(parsed, str):
-            parsed = [parsed]
-        if not isinstance(parsed, list):
-            return False
-        changed = False
-        for item in parsed:
-            value = str(item).strip()
-            if value and value not in abilities:
-                abilities.append(value)
-                changed = True
-        if changed:
-            character.abilities = json.dumps(abilities, ensure_ascii=False)
-        return changed
-
-    if log.field_name == "personality":
-        character.personality = log.new_value[:2000]
-        return True
-    if log.field_name == "background":
-        character.background = log.new_value[:5000]
-        return True
-    if log.field_name == "appearance":
-        character.appearance = log.new_value[:2000]
-        return True
-    return False
 
 
 def _create_character_version(
@@ -202,7 +149,7 @@ def _get_appearances(db: Session, character_id: str) -> dict:
 @router.get("/projects/{project_id}/characters")
 def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depends(get_db)):
     """Get project character list."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     query = db.query(Character).filter(Character.project_id == project_id)
     if q:
         keyword = f"%{q}%"
@@ -223,7 +170,7 @@ def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depe
 @router.post("/projects/{project_id}/characters")
 def create_character(project_id: str, payload: CharacterCreate, db: Session = Depends(get_db)):
     """Create a character."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     character = Character(
         project_id=project_id,
         name=payload.name,
@@ -243,7 +190,7 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
 @router.get("/projects/{project_id}/characters/relationships")
 def get_relationship_network(project_id: str, db: Session = Depends(get_db)):
     """Get all character relationship network data for a project."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     characters = db.query(Character).filter(Character.project_id == project_id).all()
     relationships = (
         db.query(CharacterRelationship)
@@ -274,115 +221,11 @@ def get_relationship_network(project_id: str, db: Session = Depends(get_db)):
     return ApiResponse.success(data={"nodes": nodes, "edges": edges, "total": len(edges)})
 
 
-@router.post("/projects/{project_id}/characters/ai-suggest")
-async def ai_suggest_character(
-    project_id: str,
-    payload: CharacterAISuggestRequest,
-    db: Session = Depends(get_db),
-):
-    """Generate a full character profile suggestion from worldbuilding context."""
-    project = _get_project_or_404(db, project_id)
-    world_entries = (
-        db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
-        .order_by(WorldbuildingEntry.dimension.asc(), WorldbuildingEntry.sort_order.asc())
-        .limit(20)
-        .all()
-    )
-    world_context = "\n".join(
-        f"- [{entry.dimension}] {entry.title}: {entry.content[:500]}" for entry in world_entries
-    ) or "暂无世界观设定。"
-    existing_characters = (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .order_by(Character.updated_at.desc())
-        .limit(24)
-        .all()
-    )
-    outline_nodes = (
-        db.query(OutlineNode)
-        .filter(OutlineNode.project_id == project_id)
-        .order_by(OutlineNode.updated_at.desc())
-        .limit(24)
-        .all()
-    )
-    existing_character_context = "\n".join(
-        f"- {character.name} ({character.role_type or '未分类'}): "
-        f"{(character.personality or character.background or '')[:260]}"
-        for character in existing_characters
-    ) or "暂无已有角色。"
-    outline_context = "\n".join(
-        f"- [{node.node_type}] {node.title}: {(node.summary or '')[:240]}"
-        for node in outline_nodes
-    ) or "暂无大纲。"
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位资深角色设计师，专精于为小说作品创建有深度、可冲突、可演进的角色。你信奉「好角色不是一张属性表，而是一台矛盾发动机」——每个角色都应有内在的欲望与恐惧、优势与弱点、公开面具与隐藏自我。\n\n"
-                "【任务】\n"
-                "基于世界观设定和作者设想，生成一份完整的角色档案JSON。\n\n"
-                "【角色设计原则】\n"
-                "1. 可写作：角色的性格、背景和能力必须提供足够的戏剧素材——让作者能立刻想到该角色能参与什么样的场景。\n"
-                "2. 可冲突：角色之间应有天然的对立或互补——relationship_hooks 必须具体到「与XX的关系可能因XX事件而产生XX变化」。\n"
-                "3. 可演进：growth_arc 不是一句空话——必须写出角色在故事开始时是什么状态、最终可能成长为什么状态、推动成长的关键因素是什么。\n\n"
-                "【各字段质量要求】\n"
-                "- name：角色姓名，应与世界观的文化背景一致。\n"
-                "- appearance：具体的外貌特征——年龄、身高体型、标志性特征、穿着风格。不得只写「年轻」「好看」。\n"
-                "- personality：至少包含1个显著优点+1个显著缺点+1个隐藏特质。优缺点之间最好有因果关系（如「勇敢」可能源于「缺乏对危险的判断力」）。\n"
-                "- background：身份出身、关键经历、当前目标、不为人知的秘密。背景应与世界观设定协调。\n"
-                "- abilities：具体能力或技能列表，每种能力都要暗示其限制。没有限制的强大会破坏戏剧平衡。\n"
-                "- role_type：从 protagonist/supporting/antagonist/other 中选择。\n"
-                "- relationship_hooks：与其他角色的潜在关系，每条都要包含关系类型、情感基础、可能的冲突点。\n"
-                "- growth_arc：一句话概括角色成长线——从什么状态开始，经历什么转折，成长为什么状态。\n\n"
-                "【禁止事项】\n"
-                "- 禁止生成模板化角色——每个角色都必须有独特的特征组合，避免「冷酷的外表下有一颗温柔的心」之类的套话。\n"
-                "- 禁止输出与世界观矛盾的角色设定。\n"
-                "- 禁止在 JSON 外输出任何内容——包括 Markdown、解释文字或引导语。\n"
-                "- 禁止生成没有缺点的「完美角色」或没有优点的「纯反派」。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"作品标题：{project.title}\n"
-                f"作品简介：{project.description or '暂无'}\n"
-                f"世界观摘要：\n{world_context}\n\n"
-                f"已有角色，避免重复并补足关系钩子：\n{existing_character_context}\n\n"
-                f"已有/近期大纲，角色要能服务接下来剧情：\n{outline_context}\n\n"
-                f"角色名称：{payload.name}\n"
-                f"简要设想：{payload.brief or '暂无'}\n\n"
-                "请输出 JSON："
-                "{\"name\":\"\",\"appearance\":\"\",\"personality\":\"\",\"background\":\"\","
-                "\"abilities\":[\"\"],\"role_type\":\"protagonist|supporting|antagonist|other\","
-                "\"relationship_hooks\":[\"\"],\"growth_arc\":\"\"}"
-            ),
-        },
-    ]
-    result = await LLMGateway.chat_completion(messages=messages, model=payload.model, temperature=0.7)
-    suggestion_text = result.get("content", "")
-    parsed = None
-    try:
-        parsed = json.loads(suggestion_text.strip().removeprefix("```json").removesuffix("```").strip())
-    except json.JSONDecodeError:
-        parsed = None
-    return ApiResponse.success(
-        data={
-            "name": payload.name,
-            "brief": payload.brief,
-            "suggestion": parsed,
-            "raw_text": suggestion_text,
-            "model": result.get("model"),
-            "usage": result.get("usage"),
-        }
-    )
-
-
 @router.get("/projects/{project_id}/characters/{character_id}")
 def get_character_detail(project_id: str, character_id: str, db: Session = Depends(get_db)):
     """Get character detail with current version and appearance records."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     data = _character_to_dict(character)
     data["appearances"] = _get_appearances(db, character.id)
     return ApiResponse.success(data=data)
@@ -396,8 +239,8 @@ def update_character(
     db: Session = Depends(get_db),
 ):
     """Update character fields and create a version snapshot."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     update_data = payload.model_dump(exclude_unset=True)
     change_summary = update_data.pop("change_summary", None)
     if not update_data:
@@ -426,8 +269,8 @@ def update_character(
 @router.delete("/projects/{project_id}/characters/{character_id}")
 def delete_character(project_id: str, character_id: str, db: Session = Depends(get_db)):
     """Delete a character and its relationships."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     db.query(CharacterRelationship).filter(
         CharacterRelationship.project_id == project_id,
         or_(
@@ -443,8 +286,8 @@ def delete_character(project_id: str, character_id: str, db: Session = Depends(g
 @router.get("/projects/{project_id}/characters/{character_id}/versions")
 def list_character_versions(project_id: str, character_id: str, db: Session = Depends(get_db)):
     """Get character version history."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     versions = (
         db.query(CharacterVersion)
         .filter(CharacterVersion.character_id == character.id)
@@ -466,8 +309,8 @@ def get_character_version(
     db: Session = Depends(get_db),
 ):
     """Get a historical character version detail."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     version = (
         db.query(CharacterVersion)
         .filter(CharacterVersion.id == version_id, CharacterVersion.character_id == character.id)
@@ -488,8 +331,8 @@ def update_character_relationships(
     db: Session = Depends(get_db),
 ):
     """Replace all relationships connected to the current character."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     target_ids = {item.target_character_id for item in payload.relationships}
     if character.id in target_ids:
         raise ValidationError("角色不能与自身建立关系")
@@ -525,11 +368,48 @@ def update_character_relationships(
     return get_relationship_network(project_id, db)
 
 
+def _apply_change_log_to_character(character: Character, log: CharacterChangeLog) -> bool:
+    """Apply a confirmed change log to a character profile when supported."""
+    if not log.new_value:
+        return False
+
+    if log.field_name == "abilities":
+        abilities = _loads_list(character.abilities)
+        try:
+            parsed = json.loads(log.new_value)
+        except json.JSONDecodeError:
+            parsed = [log.new_value]
+        if isinstance(parsed, str):
+            parsed = [parsed]
+        if not isinstance(parsed, list):
+            return False
+        changed = False
+        for item in parsed:
+            value = str(item).strip()
+            if value and value not in abilities:
+                abilities.append(value)
+                changed = True
+        if changed:
+            character.abilities = json.dumps(abilities, ensure_ascii=False)
+        return changed
+
+    if log.field_name == "personality":
+        character.personality = log.new_value[:2000]
+        return True
+    if log.field_name == "background":
+        character.background = log.new_value[:5000]
+        return True
+    if log.field_name == "appearance":
+        character.appearance = log.new_value[:2000]
+        return True
+    return False
+
+
 @router.get("/projects/{project_id}/characters/{character_id}/ai-config")
 def get_character_ai_config(project_id: str, character_id: str, db: Session = Depends(get_db)):
     """Get a character's AI dialogue configuration."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     config = character.ai_config
     if not config:
         from ..database.models import CharacterAIConfig
@@ -559,8 +439,8 @@ def update_character_ai_config(
     db: Session = Depends(get_db),
 ):
     """Update a character's AI dialogue configuration."""
-    _get_project_or_404(db, project_id)
-    character = _get_character_or_404(db, project_id, character_id)
+    get_project_or_404(db, project_id)
+    character = get_character_or_404(db, project_id, character_id)
     from ..database.models import CharacterAIConfig
     config = character.ai_config
     if not config:
@@ -601,7 +481,7 @@ def list_change_logs(
     db: Session = Depends(get_db),
 ):
     """List character change logs, filterable by chapter/character/confirmed status."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     query = (
         db.query(CharacterChangeLog)
         .join(Character, CharacterChangeLog.character_id == Character.id)
@@ -640,7 +520,7 @@ def list_change_logs(
 @router.put("/projects/{project_id}/characters/change-logs/{log_id}/confirm")
 def confirm_change_log(project_id: str, log_id: str, db: Session = Depends(get_db)):
     """Confirm a detected character change and apply it to the character."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     log = (
         db.query(CharacterChangeLog)
         .join(Character, CharacterChangeLog.character_id == Character.id)
@@ -672,7 +552,7 @@ def confirm_change_log(project_id: str, log_id: str, db: Session = Depends(get_d
 @router.delete("/projects/{project_id}/characters/change-logs/{log_id}")
 def reject_change_log(project_id: str, log_id: str, db: Session = Depends(get_db)):
     """Reject (delete) a detected character change."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     log = (
         db.query(CharacterChangeLog)
         .join(Character, CharacterChangeLog.character_id == Character.id)
@@ -698,7 +578,7 @@ def batch_confirm_change_logs(
     db: Session = Depends(get_db),
 ):
     """Batch confirm or reject all unconfirmed change logs matching the filters."""
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     if action not in ("confirm", "reject"):
         raise ValidationError("action must be 'confirm' or 'reject'")
 
@@ -724,11 +604,8 @@ def batch_confirm_change_logs(
                     f"确认角色变化：{log.change_type}",
                     source_chapter_id=log.chapter_id,
                 )
-        msg = f"已确认 {len(logs)} 条变更"
-    else:
-        for log in logs:
-            db.delete(log)
-        msg = f"已拒绝 {len(logs)} 条变更"
 
     db.commit()
-    return ApiResponse.success(message=msg)
+    return ApiResponse.success(message=f"已{ '确认' if action == 'confirm' else '拒绝' } {len(logs)} 条变更记录")
+
+

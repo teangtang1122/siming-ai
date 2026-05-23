@@ -15,7 +15,9 @@ from .tools import (
     delete_outline_node,
     delete_relationship,
     delete_worldbuilding_entry,
+    design_plot,
     detect_character_changes,
+    detect_forbidden_patterns,
     detect_worldbuilding_conflicts,
     dialogue_battle,
     expand_text,
@@ -71,7 +73,9 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "expand_text": expand_text,
     "continue_text": continue_text,
     "suggest_conflicts": suggest_conflicts,
+    "design_plot": design_plot,
     "detect_character_changes": detect_character_changes,
+    "detect_forbidden_patterns": detect_forbidden_patterns,
     "detect_worldbuilding_conflicts": detect_worldbuilding_conflicts,
 }
 

@@ -12,7 +12,7 @@ AVAILABLE_WORKSPACE_TOOLS = (
     "create_chapter, update_chapter, delete_chapter, "
     "roleplay_character, dialogue_battle, "
     "rewrite_text, expand_text, continue_text, "
-    "suggest_conflicts, detect_character_changes, detect_worldbuilding_conflicts"
+    "suggest_conflicts, design_plot, detect_character_changes, detect_worldbuilding_conflicts, detect_forbidden_patterns"
 )
 
 SCOPE_LABELS = {
@@ -107,7 +107,7 @@ def build_workspace_assistant_system_prompt(
         "也可以用 detect_character_changes 工具自动检测，但检测结果仍需你手动转化为 update_character 操作。\n"
         "7. 删除章节 → 系统会自动回退该章节中角色的状态变更（abilities/personality/background/appearance），无需你手动处理。\n"
         "8. 更新章节内容后 → 如果章节内容改动较大，应调用 detect_character_changes 重新检测角色变化，然后根据结果 update_character。\n\n",
-        "创建顺序建议：从0建书时先 worldbuilding → characters/relationships → outline；写正文时先核对大纲、角色和世界观，再 create_chapter。\n\n",
+        "创建顺序建议：从0建书时先 worldbuilding → characters/relationships → outline；写正文时按 Phase 1→2→3 流程（design_plot → roleplay → create_chapter），新章节和更新章节都必须遵守。\n\n",
         "工具参数格式：\n",
         'JSON语法硬规则：所有 actions.arguments 都必须是合法 JSON。章节正文作为 content 字段输出，内部换行写成 \\n。\n'
         '【防止JSON解析失败 — 仅针对 create_chapter 的 content 字段】\n'

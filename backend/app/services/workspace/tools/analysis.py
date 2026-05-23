@@ -22,6 +22,7 @@ from ....services.context_builders import (
     _build_outline_context,
     _build_recent_summaries,
 )
+from ....services.style_rules import _detect_forbidden_sentence_violations
 
 
 async def suggest_conflicts(
@@ -458,5 +459,30 @@ async def detect_worldbuilding_conflicts(
             "conflicts": conflicts,
             "total": len(conflicts),
             "model": result.get("model"),
+        },
+    }
+
+
+async def detect_forbidden_patterns(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    text = str(args.get("text") or "").strip()
+    if not text:
+        return {"tool": "detect_forbidden_patterns", "status": "skipped", "detail": "缺少要检测的文本（text）", "data": {"violations": [], "total": 0}}
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return {"tool": "detect_forbidden_patterns", "status": "skipped", "detail": "项目不存在", "data": {}}
+
+    violations = _detect_forbidden_sentence_violations(text, project)
+    return {
+        "tool": "detect_forbidden_patterns",
+        "status": "ok",
+        "detail": f"检测到 {len(violations)} 处禁用句式" if violations else "未检测到禁用句式",
+        "data": {
+            "violations": violations,
+            "total": len(violations),
         },
     }

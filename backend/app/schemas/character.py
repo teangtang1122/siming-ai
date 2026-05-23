@@ -64,12 +64,6 @@ class CharacterVersionItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class CharacterVersionDetail(CharacterVersionItem):
-    """Character version detail with snapshot data."""
-
-    snapshot_data: dict
-
-
 class RelationshipInput(BaseModel):
     """Relationship from the current character to another character."""
 
@@ -82,14 +76,6 @@ class RelationshipUpdate(BaseModel):
     """Schema for replacing a character's relationships."""
 
     relationships: list[RelationshipInput] = Field(default_factory=list)
-
-
-class CharacterAISuggestRequest(BaseModel):
-    """Schema for AI-assisted character suggestion."""
-
-    name: str = Field(..., min_length=1, max_length=100, description="角色名称")
-    brief: Optional[str] = Field(None, max_length=1000, description="角色简要设想")
-    model: Optional[str] = Field(None, description="可选模型标识")
 
 
 class CharacterAIConfigUpdate(BaseModel):
@@ -105,18 +91,3 @@ class CharacterAIConfigUpdate(BaseModel):
     custom_system_prompt: Optional[str] = Field(None, description="自定义额外系统提示词")
 
 
-class CharacterAIConfigResponse(BaseModel):
-    """Character AI dialogue config response."""
-
-    model_config = {"protected_namespaces": ()}
-
-    id: str
-    character_id: str
-    tone_style: str
-    catchphrases: list[str]
-    verbosity: str
-    emotion_tendency: str
-    model_override: Optional[str]
-    custom_system_prompt: Optional[str]
-    created_at: datetime
-    updated_at: datetime

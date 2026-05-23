@@ -13,7 +13,9 @@ from ....database.models import (
     CharacterTimeline,
     ChapterSummary,
     Character,
+    Project,
 )
+from ....services.style_rules import _repair_forbidden_sentence_text
 from ..utils import find_outline_by_title_or_id
 
 
@@ -56,6 +58,14 @@ async def create_chapter(
     if not title or not content.strip():
         return {"tool": "create_chapter", "status": "skipped", "detail": "章节标题或正文为空"}
 
+    involved = _character_names(args.get("involved_characters"))
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if project and content.strip():
+        content, _violations, _remaining = await _repair_forbidden_sentence_text(
+            content, project, str(args.get("model") or "") or None
+        )
+
     outline_node = None
     for ref in (args.get("outline_node_id"), args.get("outline_node_title"), args.get("outline_title")):
         outline_node = find_outline_by_title_or_id(db, project_id, ref)
@@ -82,7 +92,6 @@ async def create_chapter(
             ai_model=str(args.get("model") or "") or None,
         ))
 
-    involved = _character_names(args.get("involved_characters"))
     _link_chapter_characters(
         db, project_id, chapter.id, involved,
         f"由AI助手关联至章节「{title[:50]}」",
@@ -135,7 +144,13 @@ async def update_chapter(
     if args.get("title"):
         chapter.title = str(args.get("title")).strip()[:200]
     if "content" in args:
-        chapter.content = str(args.get("content") or "")
+        new_content = str(args.get("content") or "")
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if project and new_content.strip():
+            new_content, _violations, _remaining = await _repair_forbidden_sentence_text(
+                new_content, project, str(args.get("model") or "") or None
+            )
+        chapter.content = new_content
         chapter.word_count = len(chapter.content)
 
     outline_node = None

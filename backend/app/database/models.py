@@ -27,6 +27,8 @@ class Project(Base):
     writing_style = Column(String(50), default="natural")  # FR-007
     forbidden_sentence_patterns = Column(Text, nullable=True)
     rhetoric_guidelines = Column(Text, nullable=True)
+    short_sentences = Column(Boolean, default=False)
+    custom_style_prompt = Column(Text, nullable=True)
     daily_word_goal = Column(Integer, default=6000)  # FR-011
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

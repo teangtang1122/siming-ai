@@ -9,10 +9,8 @@ Covers:
   - Conflict detection endpoint with mocked LLM Gateway
 """
 
-import json
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
@@ -157,86 +155,6 @@ class TestWorldbuildingCRUD(WorldbuildingTestCase):
         items = response.json()["data"]["grouped"]["geography"]
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["title"], "A大陆")
-
-
-class TestWorldbuildingAI(WorldbuildingTestCase):
-    """AI expansion and conflict detection tests with mocked LLM calls."""
-
-    @patch("app.routers.worldbuilding.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_ai_expand_returns_suggestion(self, mock_chat):
-        project_id = self.create_project()
-        mock_chat.return_value = {
-            "content": "灵力潮汐会周期性改变各地灵脉强度，引发宗门迁徙与资源争夺。",
-            "model": "openai:gpt-4o",
-            "usage": {"total_tokens": 42},
-        }
-
-        response = self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/worldbuilding/ai-expand",
-            json={"dimension": "power_system", "concept": "灵力潮汐"},
-        )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()["data"]
-        self.assertEqual(data["dimension"], "power_system")
-        self.assertEqual(data["concept"], "灵力潮汐")
-        self.assertIn("灵力潮汐", data["suggestion"])
-        mock_chat.assert_awaited_once()
-
-    @patch("app.routers.worldbuilding.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_conflict_detection_returns_marked_pairs(self, mock_chat):
-        project_id = self.create_project()
-        first = self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/worldbuilding",
-            json={"dimension": "history", "title": "开国时间", "content": "王朝建立于三百年前。"},
-        ).json()["data"]
-        second = self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/worldbuilding",
-            json={"dimension": "history", "title": "王朝寿命", "content": "王朝只有一百年历史。"},
-        ).json()["data"]
-        mock_chat.return_value = {
-            "content": json.dumps(
-                {
-                    "conflicts": [
-                        {
-                            "entry_a_id": first["id"],
-                            "entry_b_id": second["id"],
-                            "dimension": "history",
-                            "severity": "high",
-                            "summary": "王朝建立时间互相冲突",
-                            "detail": "一个条目称三百年前建国，另一个条目称只有一百年历史。",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            ),
-            "model": "openai:gpt-4o",
-            "usage": None,
-        }
-
-        response = self.client.get(f"{API_PREFIX}/projects/{project_id}/worldbuilding/conflicts")
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()["data"]
-        self.assertEqual(data["total"], 1)
-        self.assertEqual(data["items"][0]["entry_a_id"], first["id"])
-        self.assertEqual(data["items"][0]["entry_b_id"], second["id"])
-        self.assertEqual(data["items"][0]["severity"], "high")
-        mock_chat.assert_awaited_once()
-
-    def test_conflict_detection_with_less_than_two_entries_skips_llm(self):
-        project_id = self.create_project()
-        self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/worldbuilding",
-            json={"dimension": "culture", "title": "祭典", "content": "一年一次。"},
-        )
-
-        with patch("app.routers.worldbuilding.LLMGateway.chat_completion", new_callable=AsyncMock) as mock_chat:
-            response = self.client.get(f"{API_PREFIX}/projects/{project_id}/worldbuilding/conflicts")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["total"], 0)
-        mock_chat.assert_not_called()
 
 
 if __name__ == "__main__":

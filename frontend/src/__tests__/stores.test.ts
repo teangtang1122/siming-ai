@@ -88,6 +88,8 @@ function makeProject(overrides: Partial<Record<string, unknown>> = {}) {
     tags: '["标签1"]',
     narrative_perspective: 'third_person',
     writing_style: 'natural',
+    short_sentences: false,
+    custom_style_prompt: null,
     daily_word_goal: 6000,
     created_at: '2025-01-01T00:00:00Z',
     updated_at: '2025-01-15T00:00:00Z',

@@ -15,7 +15,7 @@ from .core.exceptions import (
 )
 from .database.session import engine, Base
 from .database.migrations import ensure_runtime_schema
-from .routers import projects, config, llm, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer
+from .routers import projects, config, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer
 from .version import APP_VERSION
 
 settings = get_settings()
@@ -66,7 +66,6 @@ app.add_middleware(
 # Register routers
 app.include_router(projects.router, prefix="/api/v1")
 app.include_router(config.router, prefix="/api/v1")
-app.include_router(llm.router, prefix="/api/v1")
 app.include_router(worldbuilding.router, prefix="/api/v1")
 app.include_router(characters.router, prefix="/api/v1")
 app.include_router(outline.router, prefix="/api/v1")

@@ -2,8 +2,9 @@
 from .chapters import create_chapter, delete_chapter, update_chapter
 from .characters import create_character, delete_character, update_character
 from .outline import create_outline_node, delete_outline_node, update_outline_node
+from .plot import design_plot
 from .relationships import create_relationship, delete_relationship, update_relationship
-from .analysis import detect_character_changes, detect_worldbuilding_conflicts, suggest_conflicts
+from .analysis import detect_character_changes, detect_forbidden_patterns, detect_worldbuilding_conflicts, suggest_conflicts
 from .roleplay import dialogue_battle, roleplay_character
 from .text_operations import continue_text, expand_text, rewrite_text
 from .search import (
@@ -54,6 +55,8 @@ __all__ = [
     "expand_text",
     "continue_text",
     "suggest_conflicts",
+    "design_plot",
     "detect_character_changes",
     "detect_worldbuilding_conflicts",
+    "detect_forbidden_patterns",
 ]

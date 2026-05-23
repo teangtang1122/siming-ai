@@ -213,41 +213,5 @@ class TestOutlineReorder(OutlineTestCase):
         self.assertEqual(response.status_code, 400)
 
 
-class TestOutlineAISuggest(OutlineTestCase):
-    """AI suggestion tests."""
-
-    @patch("app.routers.outline.LLMGateway.chat_completion", new_callable=AsyncMock)
-    def test_ai_suggest_returns_summary(self, mock_chat):
-        project_id = self.create_project()
-        character = self.create_character(project_id)
-        self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/worldbuilding",
-            json={"dimension": "culture", "title": "Wind Festival", "content": "The city holds it yearly."},
-        )
-        chapter = self.create_node(
-            project_id,
-            "Storm at the Gate",
-            "chapter",
-            character_ids=[character["id"]],
-        )
-        mock_chat.return_value = {
-            "content": "Lin Che discovers the festival hides a siege signal and must choose between flight and defense.",
-            "model": "openai:gpt-4o",
-            "usage": {"total_tokens": 88},
-        }
-
-        response = self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/outline/ai-suggest",
-            json={"node_id": chapter["id"], "prompt": "Add a stronger turning point."},
-        )
-        self.assertEqual(response.status_code, 200)
-
-        data = response.json()["data"]
-        self.assertEqual(data["node_id"], chapter["id"])
-        self.assertIn("Lin Che", data["suggestion"])
-        self.assertEqual(data["model"], "openai:gpt-4o")
-        mock_chat.assert_awaited_once()
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -14,7 +14,7 @@ import httpx
 from ..database.session import get_db
 from ..database.models import APIConfig
 from ..schemas.config import (
-    APIConfigCreate, APIConfigItem, APIConfigDetail, GlobalModelSetting,
+    APIConfigCreate, GlobalModelSetting,
     ModelListRequest, ConnectionTestRequest,
 )
 from ..core.response import ApiResponse
@@ -274,16 +274,6 @@ async def test_connection(payload: ConnectionTestRequest):
         raise LLMError(f"Anthropic API 返回错误: HTTP {e.response.status_code}")
     except asyncio.TimeoutError:
         raise LLMError("请求超时，请稍后重试")
-
-
-@router.get("/config/models/{provider}")
-def get_model_config(provider: str, db: Session = Depends(get_db)):
-    """Get a specific provider config (with masked API key)."""
-    config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
-    if not config:
-        raise NotFoundError(f"未找到提供商 '{provider}' 的配置")
-
-    return ApiResponse.success(data=_config_payload(config, include_masked_key=True))
 
 
 @router.delete("/config/models/{provider}")

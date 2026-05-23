@@ -22,12 +22,64 @@ DEFAULT_FORBIDDEN_SENTENCE_PATTERNS = "\n".join([
     "不是……而是……",
     "不是……却是……",
     "与其说……不如说……",
+    "在……中……",
+    "在……时……",
+    "随着……",
+    "仿佛……",
+    "似乎……",
+    "只见……",
+    "只听得……",
+    "不由得……",
+    "不禁……",
+    "忍不住……",
+    "这一切都说明……",
+    "从那天起……",
+    "此后……",
+    "与此同时……",
+    "另一方面……",
+    "很愤怒",
+    "感到悲伤",
+    "感到恐惧",
+    "显得很……",
+    "他的眼中……",
+    "她的心里……",
+    "深深地",
+    "无比",
+    "极其",
+    "一股……",
+    "一种……的感觉",
+    "令人……",
+    "让人……",
+    "充满了",
+    "充斥着",
+    "缓缓地",
+    "默默地",
+    "静静地",
+    "淡淡地",
+    "微微……",
+    "然而",
+    "于是",
+    "突然",
+    "忽然",
+    "终于",
+    "其实",
+    "总之",
+    "无论如何",
+    "毋庸置疑",
+    "某种程度上",
+    "某种意义上",
 ])
 
 DEFAULT_RHETORIC_GUIDELINES = (
     "克制使用比喻、拟人、排比等修辞，禁止连续堆叠比喻。"
     "优先用具体动作、感官细节、因果推进和角色反应来表达画面与情绪。"
     "非必要不使用抽象概念比喻；同一段落不要出现多个比喻。"
+    "禁止以下AI模型高频套话：'仿佛在诉说着什么'、'似乎预示着什么'、'一股莫名的…'、"
+    "'在那一刻仿佛…'、'内心涌起一股…'。"
+    "禁止用'显得''表现出''呈现出'等外部观察动词代替描写——直接写角色的具体言行。"
+    "禁止用'进行''展开''发起'等虚动词代替具体动作。"
+    "禁止情感标签：不要出现'很愤怒''感到悲伤''充满恐惧''显得紧张'——用角色的身体反应和具体行动代替。"
+    "禁止旁白式过渡：不要写'这一切都说明''从那天起''此后''与此同时'。"
 )
 
 FORBIDDEN_SENTENCE_REGEXES = {
@@ -46,8 +98,170 @@ FORBIDDEN_SENTENCE_REGEXES = {
     "与其说……不如说……": [
         r"与其说[\s\S]{1,120}?不如说[\s\S]{1,120}?",
     ],
+    "在……中……": [
+        r"在[^。；，]{2,30}中[，,\s]*[^。]{2,60}",
+    ],
+    "在……时……": [
+        r"在[^。；，]{2,30}时[，,\s]*[^。]{2,60}",
+    ],
+    "随着……": [
+        r"[，。！？\n]随着[^。]{5,80}",
+        r"^随着[^。]{5,80}",
+    ],
+    "仿佛……": [
+        r"仿佛[^。！？]{4,60}",
+    ],
+    "似乎……": [
+        r"似乎[^。！？]{4,60}",
+    ],
+    "只见……": [
+        r"只见[^。]{2,60}",
+    ],
+    "只听得……": [
+        r"只听得[^。]{2,60}",
+    ],
+    "不由得……": [
+        r"不由得[^。]{2,40}",
+    ],
+    "不禁……": [
+        r"不禁[^。]{2,40}",
+    ],
+    "忍不住……": [
+        r"忍不住[^。]{2,40}",
+    ],
+    "这一切都说明……": [
+        r"这一切都说明[^。]{2,80}",
+    ],
+    "从那天起……": [
+        r"从那天起[^。]{2,80}",
+    ],
+    "此后……": [
+        r"此后[，,][^。]{2,80}",
+        r"此后[^。]{2,60}",
+    ],
+    "与此同时……": [
+        r"与此同时[，,][^。]{2,80}",
+        r"与此同时[^。]{2,60}",
+    ],
+    "另一方面……": [
+        r"另一方面[，,][^。]{2,80}",
+    ],
+    "很愤怒": [
+        r"很愤怒",
+    ],
+    "感到悲伤": [
+        r"感到悲伤",
+    ],
+    "感到恐惧": [
+        r"感到恐惧",
+    ],
+    "显得很……": [
+        r"显得很[^。]{1,30}",
+    ],
+    "他的眼中……": [
+        r"他的眼中[^。]{2,60}",
+        r"她的眼中[^。]{2,60}",
+    ],
+    "她的心里……": [
+        r"她的心里[^。]{2,60}",
+        r"他的心里[^。]{2,60}",
+    ],
+    "深深地": [
+        r"深深地[^。]{1,30}",
+    ],
+    "无比": [
+        r"无比[^。]{1,30}",
+    ],
+    "极其": [
+        r"极其[^。]{1,30}",
+    ],
+    "一股……": [
+        r"一股[^。]{1,30}",
+    ],
+    "一种……的感觉": [
+        r"一种[^。]{1,30}的感觉",
+    ],
+    "令人……": [
+        r"令人[^。]{1,20}",
+    ],
+    "让人……": [
+        r"让人[^。]{1,20}",
+    ],
+    "充满了": [
+        r"充满了[^。]{1,30}",
+    ],
+    "充斥着": [
+        r"充斥着[^。]{1,30}",
+    ],
+    "缓缓地": [
+        r"缓缓地",
+    ],
+    "默默地": [
+        r"默默地",
+    ],
+    "静静地": [
+        r"静静地",
+    ],
+    "淡淡地": [
+        r"淡淡地",
+    ],
+    "微微……": [
+        r"微微[一][^。]{1,20}",
+        r"微微[^一。]{1,10}",
+    ],
+    "然而": [
+        r"[，。！？\n]然而[^。]{2,60}",
+        r"^然而[^。]{2,60}",
+    ],
+    "于是": [
+        r"[，。！？\n]于是[^。]{2,60}",
+    ],
+    "突然": [
+        r"突然[^。]{2,50}",
+    ],
+    "忽然": [
+        r"忽然[^。]{2,50}",
+    ],
+    "终于": [
+        r"终于[^。]{2,40}",
+    ],
+    "其实": [
+        r"[，。！？\n]其实[^。]{2,60}",
+    ],
+    "总之": [
+        r"总之[，,][^。]{2,60}",
+    ],
+    "无论如何": [
+        r"无论如何[^。]{2,60}",
+    ],
+    "毋庸置疑": [
+        r"毋庸置疑[^。]{2,60}",
+    ],
+    "某种程度上": [
+        r"某种程度上[^。]{2,60}",
+    ],
+    "某种意义上": [
+        r"某种意义上[^。]{2,60}",
+    ],
 }
 
+
+
+def effective_forbidden_patterns(project: Project) -> str:
+    """Merge system defaults with user-customized forbidden patterns."""
+    default_patterns = {line.strip() for line in DEFAULT_FORBIDDEN_SENTENCE_PATTERNS.splitlines() if line.strip()}
+    user_forbidden = (project.forbidden_sentence_patterns or "").strip()
+    user_patterns = {line.strip() for line in user_forbidden.splitlines() if line.strip()} if user_forbidden else set()
+    merged = default_patterns | user_patterns
+    return "\n".join(sorted(merged, key=lambda x: (x not in default_patterns, x)))
+
+
+def effective_rhetoric_guidelines(project: Project) -> str:
+    """Append system default rhetoric guidelines to user's custom ones."""
+    user_rhetoric = (project.rhetoric_guidelines or "").strip()
+    if user_rhetoric:
+        return f"{user_rhetoric}\n{DEFAULT_RHETORIC_GUIDELINES}"
+    return DEFAULT_RHETORIC_GUIDELINES
 
 
 def _build_style_context(project: Project) -> str:
@@ -66,9 +280,46 @@ def _build_style_context(project: Project) -> str:
     }
     perspective = perspective_map.get(project.narrative_perspective, "第三人称")
     style = style_map.get(project.writing_style, "自然")
-    forbidden_patterns = (project.forbidden_sentence_patterns or DEFAULT_FORBIDDEN_SENTENCE_PATTERNS).strip()
-    rhetoric_guidelines = (project.rhetoric_guidelines or DEFAULT_RHETORIC_GUIDELINES).strip()
+    forbidden_patterns = effective_forbidden_patterns(project)
+    rhetoric_guidelines = effective_rhetoric_guidelines(project)
     parts = [f"叙事视角：{perspective}", f"文风偏好：{style}"]
+    # Lens-based narration rules — the most fundamental constraint
+    parts.append(
+        "镜头叙事规则（铁律）：你的叙述镜头必须始终锁定在场景主要角色的五感范围内。"
+        "只写这个角色当下能看到、听到、闻到、触到、感受到的东西。"
+        "（1）禁止跳到其他角色的内心——你不在谁的脑子里，就不能写谁的想法和感受。"
+        "（2）禁止上帝视角交代背景——如果角色当下不知道某件事，读者也不能知道。"
+        "（3）禁止描写角色视线之外发生的事——没有'与此同时'，没有镜头切走。"
+        "（4）禁止装饰性环境描写——不要写'阳光透过树叶''微风吹过''空气中有淡淡的花香'之类与剧情无关的感官填充。"
+        "天气、光线、温度只在影响角色行动或情绪转折时才能写，且不超过一句。"
+        "（5）禁止外貌和服饰堆砌——角色出场时不要从头发写到鞋子。只需一个标志性特征。其余在后续动作中零散带出。"
+        "（6）禁止分解动作——不要'他伸出手，握住门把，转动，然后推开'。只写'他推开门'。"
+        "不推动剧情的细节一律删除。描写必须同时完成三件事之一：推动剧情、揭示角色、制造紧张。三者都不占的句子砍掉。"
+    )
+    # Anti-AI-flavor core rules
+    parts.append(
+        "去AI味硬规则：你写的是中文通俗小说，不是作文、不是论文、不是新闻稿。"
+        "严禁以下AI模型高频语言习惯："
+        "（1）禁用'在……中/时/后'句式开头的长状语——拆成独立短句或用动作承接；"
+        "（2）禁用'随着……'开头——直接切进场景和动作；"
+        "（3）禁用'仿佛''似乎''好像'等模糊化修饰——态度要确定，不要模棱两可；"
+        "（4）禁用'只见''只听得''只感觉'等古典说书套话；"
+        "（5）禁用'不由得''不禁''忍不住'等自动反应——改写成具体动作或内心独白；"
+        "（6）禁用'进行''展开''发起'等虚动词——用精确动词替换；"
+        "（7）禁止元评论：不要出现'可以说''不得不说''值得一说的'等写作者视角的点评；"
+        "（8）禁止概括性总结句——如'这一切都说明……''从那天起……''此后……'，直接把场景切到下一幕，不用旁白过渡；"
+        "（9）禁止情感标签——不要写'他很愤怒''她感到悲伤'，用动作、表情、呼吸、对话来呈现情绪；"
+        "（10）禁止外貌堆砌——不要一次性描述角色的完整外貌，分散在动作和互动中逐步带出，且只写当前镜头能自然观察到的那部分；"
+        "（11）禁止装饰性细节——不要为了'画面感'而添加无用的环境描写、感官填充、或气氛渲染。"
+        "每一句环境描写都必须直接服务于当前场景的功能需求（暗示危险、反映角色心境、提供关键信息），否则删掉；"
+        "（12）禁止连续动作分解——不要把一个简单动作拆成多个步骤。'他走向门口'，不要写'他站起身，迈开步子，穿过房间，来到门前'。"
+    )
+    if getattr(project, "short_sentences", False):
+        parts.append(
+            "短句模式（硬性要求）：以短句为主，平均句长控制在15-25字。"
+            "避免多层从句嵌套；一个句子只讲一件事。多用句号，少用逗号连接多个分句。"
+            "人物对白用简短口语，不要写长篇独白。叙事句优先主谓宾结构。"
+        )
     if forbidden_patterns:
         patterns = [line.strip() for line in forbidden_patterns.splitlines() if line.strip()]
         if patterns:
@@ -80,6 +331,9 @@ def _build_style_context(project: Project) -> str:
             )
     if rhetoric_guidelines:
         parts.append(f"修辞限制：{rhetoric_guidelines}")
+    custom = (project.custom_style_prompt or "").strip()
+    if custom:
+        parts.append(f"【用户自定义风格要求 — 必须遵守】\n{custom}")
     return "\n".join(parts)
 
 
@@ -154,7 +408,7 @@ def _repair_token_budget(text: str, requested_max_tokens: Optional[int]) -> int:
 
 
 def _mechanical_repair_forbidden_sentences(text: str) -> str:
-    """Last-resort cleanup for the built-in contrast templates."""
+    """Last-resort cleanup for the built-in contrast and AI-cliché templates."""
 
     def clean_tail(value: str) -> str:
         value = value.strip()
@@ -170,7 +424,11 @@ def _mechanical_repair_forbidden_sentences(text: str) -> str:
         right = match.group("right").strip()
         return f"{left}这个判断不够准确，{right}更贴近当前情况"
 
+    def remove_prefix(match: re.Match) -> str:
+        return match.group("after") if match.group("after") else match.group(0)
+
     rules = [
+        # Original contrast patterns
         (
             r"(?<!是)不是(?P<left>[^。！？!?；;\n]{1,80})[，,、\s]*是(?P<right>[^。！？!?；;\n]{1,80})",
             replace_not_is,
@@ -190,6 +448,66 @@ def _mechanical_repair_forbidden_sentences(text: str) -> str:
         (
             r"与其说(?P<left>[\s\S]{1,120}?)不如说(?P<right>[\s\S]{1,120}?)",
             replace_rather,
+        ),
+        # AI cliché repairs — strip filler prefixes
+        (
+            r"只见(?P<after>[^。！？!?\n]{2,})",
+            lambda m: m.group("after").strip(),
+        ),
+        (
+            r"只听得(?P<after>[^。！？!?\n]{2,})",
+            lambda m: m.group("after").strip(),
+        ),
+        (
+            r"不由得(?P<after>[^。！？!?\n]{2,})",
+            lambda m: f"暗自{m.group('after').strip()}",
+        ),
+        (
+            r"不禁(?P<after>[^。！？!?\n]{2,})",
+            lambda m: f"默默{m.group('after').strip()}",
+        ),
+        # Strip omniscient transitions
+        (
+            r"这一切都说明[，,]?\s*",
+            lambda m: "",
+        ),
+        (
+            r"从那天起[，,]?\s*",
+            lambda m: "",
+        ),
+        (
+            r"与此同时[，,]?\s*",
+            lambda m: "",
+        ),
+        (
+            r"另一方面[，,]?\s*",
+            lambda m: "",
+        ),
+        # Defuse emotion labels
+        (
+            r"很愤怒",
+            lambda m: "攥紧了拳头",
+        ),
+        (
+            r"感到悲伤",
+            lambda m: "喉头发紧",
+        ),
+        (
+            r"感到恐惧",
+            lambda m: "后背发凉",
+        ),
+        (
+            r"显得很(?P<after>[^。，,]{1,10})",
+            lambda m: f"{m.group('after').strip()}",
+        ),
+        # Defuse eye-of-god framing
+        (
+            r"[他她]的眼中[，,]?\s*",
+            lambda m: "",
+        ),
+        (
+            r"[他她]的心里[，,]?\s*",
+            lambda m: "",
         ),
     ]
     repaired = text
