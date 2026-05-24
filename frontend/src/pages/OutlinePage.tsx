@@ -21,17 +21,12 @@ import {
   DeleteOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
   PlusOutlined,
   ReloadOutlined,
-  RobotOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
-import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
-import { useModelOptions } from '../hooks/useModelOptions'
-import { usePanelResize } from '../hooks/usePanelResize'
+import { useAiPanelContext } from '../contexts/AiPanelContext'
 import './OutlinePage.css'
 
 const { Text, Title } = Typography
@@ -152,12 +147,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [aiModel, setAiModel] = useState<string | undefined>()
-  const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
-  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
-  const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
-    initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
-  })
+  const { setAiContext, refreshKey } = useAiPanelContext()
 
   const selectedNode = useMemo(
     () => flat.find((node) => node.id === selectedId) || null,
@@ -202,11 +192,18 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     fetchCharacters()
   }, [fetchCharacters, fetchOutline])
 
+  // Sync outline node selection to AI context
   useEffect(() => {
-    if (!aiModel && defaultModel) {
-      setAiModel(defaultModel)
+    setAiContext({ selectedOutlineNodeId: selectedId })
+  }, [selectedId, setAiContext])
+
+  // Refresh data when AI applies changes
+  useEffect(() => {
+    if (refreshKey > 0) {
+      fetchOutline()
+      fetchCharacters()
     }
-  }, [aiModel, defaultModel])
+  }, [refreshKey])
 
   useEffect(() => {
     if (!creating && selectedNode) {
@@ -385,7 +382,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
 
   return (
     <div className="outline-page">
-      <div className={`outline-shell${aiPanelCollapsed ? ' outline-shell-ai-collapsed' : ''}`}>
+      <div className="outline-shell">
         <aside className="outline-tree-panel">
           <div className="outline-panel-head">
             <Title level={4} style={{ margin: 0 }}>
@@ -441,11 +438,6 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               )}
             </div>
             <Space>
-              {aiPanelCollapsed && (
-                <Button icon={<MenuUnfoldOutlined />} onClick={() => setAiPanelCollapsed(false)}>
-                  AI 辅助
-                </Button>
-              )}
               {!creating && selectedId && (
                 <Popconfirm
                   title="删除大纲节点"
@@ -518,31 +510,6 @@ function OutlinePage({ projectId }: OutlinePageProps) {
 
         </main>
 
-        {!aiPanelCollapsed && (
-          <aside className={`outline-ai-panel${aiPanelDragging ? ' outline-ai-panel-dragging' : ''}`} style={{ width: aiPanelWidth }}>
-            <div className="outline-ai-resize-handle" onMouseDown={onAiPanelDrag} />
-            <div className="outline-ai-head">
-              <Title level={5} style={{ margin: 0 }}>
-                <RobotOutlined /> 项目助手
-              </Title>
-              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setAiPanelCollapsed(true)} />
-            </div>
-            <WorkspaceAssistantChat
-              projectId={projectId}
-              scope="project"
-              selectedOutlineNodeId={selectedId}
-              model={aiModel}
-              defaultModel={defaultModel}
-              modelOptions={modelOptions}
-              modelsLoading={modelsLoading}
-              onModelChange={setAiModel}
-              onApplied={() => {
-                fetchOutline()
-                fetchCharacters()
-              }}
-            />
-          </aside>
-        )}
       </div>
     </div>
   )

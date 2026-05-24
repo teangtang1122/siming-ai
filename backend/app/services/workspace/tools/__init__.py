@@ -1,10 +1,13 @@
 """Workspace tool handlers grouped by domain."""
+from .chapter_writer import chapter_writer
 from .chapters import create_chapter, delete_chapter, update_chapter
+from .character_writer import character_writer
 from .characters import create_character, delete_character, update_character
 from .outline import create_outline_node, delete_outline_node, update_outline_node
+from .outline_writer import outline_writer
 from .plot import design_plot
 from .relationships import create_relationship, delete_relationship, update_relationship
-from .analysis import detect_character_changes, detect_forbidden_patterns, detect_worldbuilding_conflicts, suggest_conflicts
+from .analysis import detect_character_changes, detect_forbidden_patterns, detect_new_worldbuilding, detect_worldbuilding_conflicts, evaluate_chapter, suggest_conflicts
 from .roleplay import dialogue_battle, roleplay_character
 from .text_operations import continue_text, expand_text, rewrite_text
 from .search import (
@@ -18,13 +21,20 @@ from .search import (
     search_relationships,
     search_worldbuilding,
 )
+from .memory import forget, recall, remember
+from .web_search import web_search
 from .worldbuilding import (
     create_worldbuilding_entry,
     delete_worldbuilding_entry,
     update_worldbuilding_entry,
 )
+from .worldbuilding_writer import worldbuilding_writer
 
 __all__ = [
+    "chapter_writer",
+    "character_writer",
+    "outline_writer",
+    "worldbuilding_writer",
     "create_chapter",
     "update_chapter",
     "delete_chapter",
@@ -57,6 +67,12 @@ __all__ = [
     "suggest_conflicts",
     "design_plot",
     "detect_character_changes",
+    "detect_new_worldbuilding",
     "detect_worldbuilding_conflicts",
     "detect_forbidden_patterns",
+    "evaluate_chapter",
+    "web_search",
+    "remember",
+    "recall",
+    "forget",
 ]

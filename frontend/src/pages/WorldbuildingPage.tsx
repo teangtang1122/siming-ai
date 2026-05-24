@@ -10,6 +10,7 @@ import {
   Tag,
   Typography,
   message,
+  Modal,
   Popconfirm,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -21,19 +22,14 @@ import {
   EnvironmentOutlined,
   GlobalOutlined,
   HistoryOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
   PlusOutlined,
   ReloadOutlined,
-  RobotOutlined,
   SaveOutlined,
   TeamOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
-import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
-import { useModelOptions } from '../hooks/useModelOptions'
-import { usePanelResize } from '../hooks/usePanelResize'
+import { useAiPanelContext } from '../contexts/AiPanelContext'
 import './WorldbuildingPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -99,14 +95,9 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftEntry>({ title: '', content: '', sort_order: 0 })
 
-  const [aiModel, setAiModel] = useState<string | undefined>()
-  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
-  const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
-    initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
-  })
+  const { refreshKey } = useAiPanelContext()
 
-  const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
-  const [expandedContentIds, setExpandedContentIds] = useState<Set<string>>(new Set())
+  const [contentModal, setContentModal] = useState<WorldbuildingEntry | null>(null)
 
   const fetchEntries = useCallback(async () => {
     setLoading(true)
@@ -126,11 +117,12 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     fetchEntries()
   }, [fetchEntries])
 
+  // Refresh data when AI applies changes
   useEffect(() => {
-    if (!aiModel && defaultModel) {
-      setAiModel(defaultModel)
+    if (refreshKey > 0) {
+      fetchEntries()
     }
-  }, [aiModel, defaultModel])
+  }, [refreshKey])
 
   const currentEntries = entriesByDimension[activeDimension] || []
 
@@ -255,18 +247,10 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
             />
           )
         }
-        const expanded = expandedContentIds.has(record.id)
-        return expanded ? (
-          <div>
-            <div className="worldbuilding-content-scroll">
-              <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>{record.content}</Paragraph>
-            </div>
-            <Button type="link" size="small" onClick={() => setExpandedContentIds((prev) => { const next = new Set(prev); next.delete(record.id); return next })}>收起</Button>
-          </div>
-        ) : (
+        return (
           <div>
             <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0 }}>{record.content}</Paragraph>
-            <Button type="link" size="small" onClick={() => setExpandedContentIds((prev) => { const next = new Set(prev); next.add(record.id); return next })}>展开</Button>
+            <Button type="link" size="small" onClick={() => setContentModal(record)}>展开</Button>
           </div>
         )
       },
@@ -343,16 +327,11 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
 
   return (
     <div className="worldbuilding-page">
-      <div className={`worldbuilding-shell${aiPanelCollapsed ? ' worldbuilding-shell-ai-collapsed' : ''}`}>
+      <div className="worldbuilding-shell">
         <section className="worldbuilding-main">
           <div className="worldbuilding-toolbar">
             <Title level={4} style={{ margin: 0 }}>世界观</Title>
             <Space>
-              {aiPanelCollapsed && (
-                <Button icon={<MenuUnfoldOutlined />} onClick={() => setAiPanelCollapsed(false)}>
-                  AI 辅助
-                </Button>
-              )}
               <Button icon={<ReloadOutlined />} onClick={fetchEntries} loading={loading}>
                 刷新
               </Button>
@@ -399,27 +378,20 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
             }))}
           />
         </section>
-
-        {!aiPanelCollapsed && (
-          <aside className={`worldbuilding-side${aiPanelDragging ? ' worldbuilding-side-dragging' : ''}`} style={{ width: aiPanelWidth }}>
-            <div className="worldbuilding-ai-resize-handle" onMouseDown={onAiPanelDrag} />
-            <div className="worldbuilding-ai-head">
-              <Title level={5} style={{ margin: 0 }}><RobotOutlined /> 项目助手</Title>
-              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setAiPanelCollapsed(true)} />
-            </div>
-            <WorkspaceAssistantChat
-              projectId={projectId}
-              scope="project"
-              model={aiModel}
-              defaultModel={defaultModel}
-              modelOptions={modelOptions}
-              modelsLoading={modelsLoading}
-              onModelChange={setAiModel}
-              onApplied={fetchEntries}
-            />
-          </aside>
-        )}
       </div>
+
+      <Modal
+        title={contentModal?.title}
+        open={!!contentModal}
+        onCancel={() => setContentModal(null)}
+        footer={null}
+        width={720}
+        style={{ top: 32 }}
+      >
+        <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+          {contentModal?.content}
+        </div>
+      </Modal>
     </div>
   )
 }

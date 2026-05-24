@@ -8,6 +8,7 @@ from typing import Optional
 from sqlalchemy.orm import Session, selectinload
 
 from ..core.exceptions import ValidationError
+from ..core.utils import count_words as _count_words
 from ..database.models import (
     Chapter,
     ChapterSummary,
@@ -237,13 +238,6 @@ def _build_character_timeline(db: Session, character_id: str, limit: int = 10) -
         emo = f"（情感变化：{event.emotional_state_change}）" if event.emotional_state_change else ""
         lines.append(f"- [{event.event_type}] {event.event_description}{emo}")
     return "\n".join(lines)
-
-def _count_words(text: str) -> int:
-    cjk_chars = re.findall(r"[\u4e00-\u9fff]", text or "")
-    without_cjk = re.sub(r"[\u4e00-\u9fff]", " ", text or "")
-    latin_words = re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", without_cjk)
-    return len(cjk_chars) + len(latin_words)
-
 def _build_outline_overview(db: Session, project_id: str, limit: int = 60) -> str:
     nodes = (
         db.query(OutlineNode)

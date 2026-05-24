@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json as _json
 import re as _re
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -18,6 +19,13 @@ from ....database.models import (
     Project,
     WorldbuildingEntry,
 )
+from ....prompts.analysis_prompts import (
+    build_character_change_messages,
+    build_conflict_suggestion_messages,
+    build_new_worldbuilding_messages,
+    build_worldbuilding_conflict_messages,
+)
+from ....prompts.chapter_evaluation_prompts import build_chapter_evaluation_messages
 from ....services.context_builders import (
     _build_outline_context,
     _build_recent_summaries,
@@ -68,45 +76,15 @@ async def suggest_conflicts(
         for r in relationships
     ) or "暂无已知关系。"
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位资深小说情节编辑，专精于戏剧冲突设计。你深谙「没有冲突就没有故事」的原则，能为任何剧情阶段注入恰到好处的张力。\n\n"
-                "【任务】\n"
-                "根据当前剧情状态，分析并设计3种不同类型的冲突方案，每种类型提供一个具体建议。\n\n"
-                "【冲突类型定义】\n"
-                "- personality（人物冲突）：角色之间的矛盾——目标对立、价值观碰撞、误解、背叛、竞争。此类型必须指定两个以上具体角色名。\n"
-                "- faction（势力冲突）：组织或阵营之间的对抗——门派争斗、国家战争、阶级对立、资源争夺。此类型必须明确对立的双方。\n"
-                "- inner（内心冲突）：角色内在的挣扎——道德困境、欲望与责任的拉扯、自我认同的危机、创伤后应激。此类型聚焦单一角色的心理层面。\n\n"
-                "【设计原则】\n"
-                "1. 每个冲突必须基于已有的角色、关系和世界观设定——不能凭空创造不存在的新势力或新人物。\n"
-                "2. 每个冲突必须有清晰的起因（为什么现在爆发）、过程（冲突如何升级）和可行方向（如何解决或恶化）。\n"
-                "3. tension_level（张力等级）的判断标准：low=可缓和的分歧、medium=需要做出选择的矛盾、high=不可调和的对抗。\n"
-                "4. 冲突建议应具体可落地——详细描述冲突场景而非抽象概念。\n\n"
-                "【禁止事项】\n"
-                "- 禁止建议与已有剧情和角色设定矛盾或重复的冲突。\n"
-                "- 禁止引入【角色列表】中不存在的角色。\n"
-                "- 禁止输出JSON以外的任何内容。\n\n"
-                "【输出格式】\n"
-                "只输出JSON对象，格式：\n"
-                '{"conflicts":[{"type":"personality|faction|inner","title":"","description":"","involved_characters":[""],"tension_level":"low|medium|high","suggested_outcome":""}]}'
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"作品：{project.title}\n"
-                f"简介：{project.description or '暂无'}\n\n"
-                f"【当前大纲】\n{outline_ctx}\n\n"
-                f"【前文摘要】\n{summaries}\n\n"
-                f"【角色列表】\n{char_context}\n\n"
-                f"【已知关系】\n{rel_context}\n\n"
-                f"{'用户倾向: ' + prompt if prompt else ''}\n\n"
-                "请分析并提供3种情节冲突建议。"
-            ),
-        },
-    ]
+    messages = build_conflict_suggestion_messages(
+        project_title=project.title,
+        project_description=project.description or "",
+        outline_ctx=outline_ctx,
+        summaries=summaries,
+        char_context=char_context,
+        rel_context=rel_context,
+        prompt=prompt or "",
+    )
 
     model = str(args.get("model") or "") or None
     temperature = float(args.get("temperature") or 0.8)
@@ -146,13 +124,33 @@ async def detect_character_changes(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    chapter_id = str(args.get("chapter_id") or "").strip()
-    if not chapter_id:
-        return {"tool": "detect_character_changes", "status": "skipped", "detail": "缺少章节ID（chapter_id）", "data": []}
+    """Detect character changes from chapter content.
 
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id, Chapter.project_id == project_id).first()
-    if not chapter:
-        return {"tool": "detect_character_changes", "status": "skipped", "detail": "章节不存在", "data": []}
+    Two modes:
+    - content+title: detect changes against current character states, return only (no DB writes).
+      Used before create_chapter so Agent can apply changes via update_character.
+    - chapter_id: detect and save change logs / timeline entries to DB.
+    """
+    chapter_title: str = ""
+    chapter_text: str = ""
+    chapter_id: str = ""
+
+    raw_content = str(args.get("content") or "").strip()
+    if raw_content:
+        chapter_text = raw_content
+        chapter_title = str(args.get("title") or args.get("chapter_title") or "").strip() or "未命名章节"
+    else:
+        chapter_id = str(args.get("chapter_id") or "").strip()
+        if not chapter_id:
+            return {"tool": "detect_character_changes", "status": "skipped", "detail": "缺少章节ID或正文内容", "data": []}
+        chapter = db.query(Chapter).filter(Chapter.id == chapter_id, Chapter.project_id == project_id).first()
+        if not chapter:
+            return {"tool": "detect_character_changes", "status": "skipped", "detail": "章节不存在", "data": []}
+        chapter_title = chapter.title
+        chapter_text = chapter.content or ""
+
+    if not chapter_text.strip():
+        return {"tool": "detect_character_changes", "status": "skipped", "detail": "章节正文为空", "data": []}
 
     characters = (
         db.query(Character)
@@ -175,51 +173,14 @@ async def detect_character_changes(
         for c in characters
     ]
 
-    chapter_text = chapter.content or ""
     if len(chapter_text) > 8000:
         chapter_text = chapter_text[:8000] + "\n...(后续内容已截断)"
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位小说角色设定追踪编辑，专精于检测角色在剧情推进中发生的可记录变化。你理解角色弧光理论——角色应随着经历而成长、改变或恶化。\n\n"
-                "【任务】\n"
-                "分析新章节内容，对比当前角色档案，检测每个角色发生的所有可记录变化。\n\n"
-                "【变化类型定义与判断标准】\n"
-                "- skill（技能/能力变化）：角色习得新技能、失去旧能力、能力显著增强或减弱。判断标准：原文明确描写了学习/失去/变化的过程或结果。\n"
-                "- experience（重要经历）：角色经历了改变其认知、地位或命运的重大事件。判断标准：该事件在原文中有明确的因果影响或情感冲击。\n"
-                "- relationship（关系变化）：角色与他人的关系发生了实质性改变——从陌生到熟悉、从友好到敌对、从平等变为从属等。判断标准：原文中有关系状态转变的具体描写。\n"
-                "- personality（性格成长）：角色的性格特征发生了可观察的演变——变得勇敢/懦弱、开朗/阴郁、果断/犹豫等。判断标准：角色的言行模式与旧档案描述有显著差异，且不是临时情绪反应。\n\n"
-                "【检测精度要求】\n"
-                "1. 区分永久变化与临时状态：角色因醉酒、被控制、极度恐惧等短暂状态下的行为改变不算性格变化。\n"
-                "2. 区分显性变化与隐性变化：有些变化是角色自己意识到的（显性），有些是读者能感知但角色尚未意识到的（隐性）。两种都应检测。\n"
-                "3. confidence 判断标准：\n"
-                "   - high：原文有明确语句支持该变化（如「从那以后，他变得...」、「他终于学会了...」）\n"
-                "   - medium：原文暗示了变化但未明说（多个场景表现出与旧档案不同的行为模式）\n"
-                "   - low：仅有模糊迹象，可能只是暂时状态或解读偏差\n"
-                "4. old_value 应从当前角色档案中提取对应字段的值，new_value 应从原文中提取具体描述。若旧档案中对应字段为空，old_value 填写「（档案中无记录）」。\n\n"
-                "【禁止事项】\n"
-                "- 禁止为没有发生变化的角色强行编造变化。无变化就输出空数组 []。\n"
-                "- 禁止将临时情绪波动标记为性格变化。\n"
-                "- 禁止将原文中未发生的事情标记为变化。\n"
-                "- 禁止输出JSON数组以外的任何内容。\n\n"
-                "【输出格式】\n"
-                "只输出JSON数组：\n"
-                '[{"character_id":"","character_name":"","change_type":"skill|experience|relationship|personality",'
-                '"field_name":"","old_value":"","new_value":"","confidence":"high|medium|low"}]\n'
-                "如果没有明显变化，输出 []。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"章节标题：{chapter.title}\n"
-                f"章节内容：\n{chapter_text}\n\n"
-                f"当前角色档案：\n{_json.dumps(char_payload, ensure_ascii=False)}"
-            ),
-        },
-    ]
+    messages = build_character_change_messages(
+        chapter_title=chapter_title,
+        chapter_text=chapter_text,
+        char_payload=_json.dumps(char_payload, ensure_ascii=False),
+    )
 
     model = str(args.get("model") or "") or None
     temperature = float(args.get("temperature") or 0.3)
@@ -242,7 +203,6 @@ async def detect_character_changes(
     except _json.JSONDecodeError:
         pass
 
-    saved_changes = []
     allowed_change_types = {"skill", "experience", "relationship", "personality"}
     default_field_by_type = {
         "skill": "abilities",
@@ -258,6 +218,7 @@ async def detect_character_changes(
         "personality": "emotional_turning_point",
     }
 
+    detected_changes: list[dict] = []
     if isinstance(changes, list):
         for change in changes:
             if not isinstance(change, dict):
@@ -273,21 +234,9 @@ async def detect_character_changes(
                 field_name = default_field_by_type[change_type]
             old_val = str(change.get("old_value", ""))[:2000] if change.get("old_value") else None
             new_val = str(change.get("new_value", ""))[:2000] if change.get("new_value") else None
-
-            log = CharacterChangeLog(
-                character_id=char_id,
-                chapter_id=chapter_id,
-                change_type=change_type,
-                field_name=field_name,
-                old_value=old_val,
-                new_value=new_val,
-                confirmed=False,
-            )
-            db.add(log)
-            db.flush()
             confidence = str(change.get("confidence", "medium") or "medium")
-            saved_changes.append({
-                "id": log.id,
+
+            detected_changes.append({
                 "character_id": char_id,
                 "character_name": character_by_id[char_id].name,
                 "change_type": change_type,
@@ -297,41 +246,55 @@ async def detect_character_changes(
                 "confidence": confidence,
             })
 
-            char = character_by_id[char_id]
-            existing_chapter_char = (
-                db.query(ChapterCharacter)
-                .filter(
-                    ChapterCharacter.chapter_id == chapter_id,
-                    ChapterCharacter.character_id == char_id,
-                )
-                .first()
-            )
-            if not existing_chapter_char:
-                db.add(ChapterCharacter(
-                    chapter_id=chapter_id,
+            # Persist logs only when chapter is already saved
+            if chapter_id:
+                log = CharacterChangeLog(
                     character_id=char_id,
-                    appearance_type="AI演化追踪",
-                    description=f"检测到{change_type}变化，可信度：{confidence}",
+                    chapter_id=chapter_id,
+                    change_type=change_type,
+                    field_name=field_name,
+                    old_value=old_val,
+                    new_value=new_val,
+                    confirmed=False,
+                )
+                db.add(log)
+                db.flush()
+
+                existing_chapter_char = (
+                    db.query(ChapterCharacter)
+                    .filter(
+                        ChapterCharacter.chapter_id == chapter_id,
+                        ChapterCharacter.character_id == char_id,
+                    )
+                    .first()
+                )
+                if not existing_chapter_char:
+                    db.add(ChapterCharacter(
+                        chapter_id=chapter_id,
+                        character_id=char_id,
+                        appearance_type="AI演化追踪",
+                        description=f"检测到{change_type}变化，可信度：{confidence}",
+                    ))
+
+                timeline_type = timeline_type_by_change.get(change_type, "key_decision")
+                db.add(CharacterTimeline(
+                    character_id=char_id,
+                    chapter_id=chapter_id,
+                    event_type=timeline_type,
+                    event_description=f"[{change_type}] {field_name}: {new_val or '见原文'}",
+                    emotional_state_change=new_val if change_type == "personality" else None,
                 ))
 
-            timeline_type = timeline_type_by_change.get(change_type, "key_decision")
-            db.add(CharacterTimeline(
-                character_id=char_id,
-                chapter_id=chapter_id,
-                event_type=timeline_type,
-                event_description=f"[{change_type}] {field_name}: {new_val or '见原文'}",
-                emotional_state_change=new_val if change_type == "personality" else None,
-            ))
-
-    db.commit()
+    if chapter_id:
+        db.commit()
 
     return {
         "tool": "detect_character_changes",
         "status": "ok",
-        "detail": f"检测到 {len(saved_changes)} 处角色变化",
+        "detail": f"检测到 {len(detected_changes)} 处角色变化",
         "data": {
-            "changes": saved_changes,
-            "total": len(saved_changes),
+            "changes": detected_changes,
+            "total": len(detected_changes),
         },
     }
 
@@ -371,40 +334,9 @@ async def detect_worldbuilding_conflicts(
         }
         for entry in entries
     ]
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位小说设定一致性审校专家，专精于检测世界观条目之间的逻辑矛盾、规则冲突和历史不一致。你的工作是像侦探一样逐条比对，而不是泛泛检查。\n\n"
-                "【检测维度】\n"
-                "- 逻辑矛盾：两个条目在因果或概念上互相冲突（如条目A说「灵气在千年前枯竭」，条目B说「五百年前的灵气大战改变了世界格局」）。\n"
-                "- 时间线冲突：两个条目中的时间先后顺序或年代标注互相矛盾。\n"
-                "- 规则冲突：两个条目对同一力量体系、魔法规则或世界法则给出了不同的描述。\n"
-                "- 势力关系冲突：两个条目对同一势力之间的关系给出了矛盾的定义（如A说X和Y是同盟，B说X和Y是敌对）。\n"
-                "- 种族文化冲突：两个条目对同一种族或文化的特征给出了不一致的描述。\n\n"
-                "【严重度判断标准】\n"
-                "- high：直接矛盾，无法通过任何合理方式调和，必须修改其中一个条目。\n"
-                "- medium：存在不一致但可以通过添加条件或限定词调和。\n"
-                "- low：措辞或细节上的细微差异，不影响整体逻辑。\n\n"
-                "【输出格式】\n"
-                "只输出JSON对象，不要输出解释、前缀或Markdown：\n"
-                '{"conflicts":[{"entry_a_id":"","entry_b_id":"","dimension":"","severity":"low|medium|high","summary":"一句话摘要","detail":"具体矛盾说明"}]}\n'
-                "如果没有发现矛盾，输出 {\"conflicts\": []}。不要强行编造不存在的矛盾。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "请检查以下世界观条目之间是否存在逻辑矛盾、时间线冲突、"
-                "规则冲突、势力关系冲突或种族文化冲突。\n"
-                "返回 JSON 格式："
-                '{"conflicts":[{"entry_a_id":"...","entry_b_id":"...",'
-                '"dimension":"...","severity":"low|medium|high",'
-                '"summary":"一句话摘要","detail":"具体矛盾说明"}]}\n\n'
-                f"条目列表：\n{_json.dumps(entry_payload, ensure_ascii=False)}"
-            ),
-        },
-    ]
+    messages = build_worldbuilding_conflict_messages(
+        entry_payload=_json.dumps(entry_payload, ensure_ascii=False),
+    )
 
     model = str(args.get("model") or "") or None
     temperature = float(args.get("temperature") or 0.2)
@@ -463,6 +395,88 @@ async def detect_worldbuilding_conflicts(
     }
 
 
+async def detect_new_worldbuilding(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Detect new worldbuilding concepts from chapter content.
+
+    Compares chapter text against existing worldbuilding entries and returns
+    suggested new entries for settings the chapter introduces but aren't yet
+    recorded in the database. Read-only — no DB writes.
+    """
+    chapter_text = str(args.get("content") or "").strip()
+    chapter_title = str(args.get("title") or "").strip() or "未命名章节"
+
+    if not chapter_text:
+        return {"tool": "detect_new_worldbuilding", "status": "skipped", "detail": "缺少章节正文（content）", "data": {"entries": [], "total": 0}}
+
+    # Build lightweight summary of existing entries for the LLM
+    entries = (
+        db.query(WorldbuildingEntry)
+        .filter(WorldbuildingEntry.project_id == project_id)
+        .order_by(WorldbuildingEntry.dimension.asc())
+        .all()
+    )
+    existing_summary = "\n".join(
+        f"- [{DIMENSION_LABELS.get(e.dimension, e.dimension)}] {e.title}: {(e.content or '')[:150]}"
+        for e in entries
+    ) if entries else "暂无已有世界观设定。"
+
+    if len(chapter_text) > 8000:
+        chapter_text = chapter_text[:8000] + "\n...(后续内容已截断)"
+
+    messages = build_new_worldbuilding_messages(
+        chapter_title=chapter_title,
+        chapter_text=chapter_text,
+        existing_entries_summary=existing_summary,
+    )
+
+    model = str(args.get("model") or "") or None
+    temperature = float(args.get("temperature") or 0.3)
+
+    try:
+        result = await LLMGateway.chat_completion(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            timeout=120,
+            retry=1,
+        )
+    except Exception as exc:
+        return {"tool": "detect_new_worldbuilding", "status": "error", "detail": f"LLM 调用失败：{exc}", "data": []}
+
+    raw = result.get("content", "")
+    entries_list = []
+    try:
+        clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
+        parsed = _json.loads(clean)
+        raw_entries = parsed.get("entries", [])
+        if isinstance(raw_entries, list):
+            for item in raw_entries:
+                if not isinstance(item, dict):
+                    continue
+                entries_list.append({
+                    "title": str(item.get("title", "")).strip(),
+                    "dimension": str(item.get("dimension", "culture")).strip(),
+                    "content_hint": str(item.get("content_hint", "")).strip(),
+                    "relevance": str(item.get("relevance", "medium")).strip(),
+                })
+    except (_json.JSONDecodeError, AttributeError):
+        entries_list = []
+
+    return {
+        "tool": "detect_new_worldbuilding",
+        "status": "ok",
+        "detail": f"发现 {len(entries_list)} 个新设定建议" if entries_list else "未发现需要新建的设定",
+        "data": {
+            "entries": entries_list,
+            "total": len(entries_list),
+        },
+    }
+
+
 async def detect_forbidden_patterns(
     db: Session,
     project_id: str,
@@ -485,4 +499,79 @@ async def detect_forbidden_patterns(
             "violations": violations,
             "total": len(violations),
         },
+    }
+
+
+async def evaluate_chapter(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Evaluate chapter quality using an 8-dimension 80-point rubric.
+
+    Accepts either a chapter_id (for saved chapters) or raw content+title
+    (for evaluating chapter_writer output before persisting).
+    """
+    chapter_title: str = ""
+    chapter_content: str = ""
+
+    raw_content = str(args.get("content") or "").strip()
+    if raw_content:
+        chapter_content = raw_content
+        chapter_title = str(args.get("title") or args.get("chapter_title") or "").strip() or "未命名章节"
+    else:
+        chapter_id = str(args.get("chapter_id") or "").strip()
+        if not chapter_id:
+            return {"tool": "evaluate_chapter", "status": "skipped", "detail": "缺少章节ID或正文内容", "data": {}}
+        chapter = db.query(Chapter).filter(Chapter.id == chapter_id, Chapter.project_id == project_id).first()
+        if not chapter:
+            return {"tool": "evaluate_chapter", "status": "skipped", "detail": "章节不存在", "data": {}}
+        if not (chapter.content or "").strip():
+            return {"tool": "evaluate_chapter", "status": "skipped", "detail": "章节正文为空", "data": {}}
+        chapter_title = chapter.title
+        chapter_content = chapter.content
+
+    messages = build_chapter_evaluation_messages(
+        chapter_title=chapter_title,
+        chapter_content=chapter_content,
+    )
+
+    model = str(args.get("model") or "") or None
+    try:
+        result = await LLMGateway.chat_completion(
+            messages=messages,
+            model=model,
+            temperature=0.2,
+            timeout=120,
+            retry=1,
+        )
+    except Exception as exc:
+        return {"tool": "evaluate_chapter", "status": "error", "detail": f"LLM 调用失败：{exc}", "data": {}}
+
+    raw = result.get("content", "")
+    parsed = None
+    try:
+        clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
+        parsed = _json.loads(clean)
+    except (_json.JSONDecodeError, AttributeError):
+        parsed = None
+
+    if not parsed:
+        return {"tool": "evaluate_chapter", "status": "error", "detail": "评估结果解析失败", "data": {"raw": raw[:500]}}
+
+    # Persist to DB when evaluating a saved chapter
+    if not raw_content:
+        try:
+            chapter.quality_score = parsed.get("total_score")
+            chapter.quality_detail = _json.dumps(parsed, ensure_ascii=False)
+            chapter.quality_evaluated_at = datetime.utcnow()
+            db.flush()
+        except Exception:
+            pass
+
+    return {
+        "tool": "evaluate_chapter",
+        "status": "ok",
+        "detail": f"总分 {parsed.get('total_score', 0)}/80 — {parsed.get('overall_assessment', '')[:80]}",
+        "data": parsed,
     }

@@ -18,15 +18,19 @@ class BaseAdapter(ABC):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         extra_body: Optional[dict] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[str | dict] = None,
     ) -> dict:
         """Non-streaming chat completion.
 
         Returns:
             {
-                "content": str,
+                "content": str | None,
                 "model": str,
-                "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+                "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int},
+                "tool_calls": list[dict] | None
             }
+            tool_calls entries: {"id": str, "type": "function", "function": {"name": str, "arguments": str}}
         """
         ...
 
@@ -39,7 +43,31 @@ class BaseAdapter(ABC):
         max_tokens: Optional[int] = None,
         extra_body: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
-        """Streaming chat completion — yields token chunks."""
+        """Streaming chat completion — yields text token chunks only.
+
+        This method is for text-only streaming. It does NOT surface tool calls.
+        When tools are needed, use stream_chat_completion_with_tools() instead.
+        """
+        ...
+
+    @abstractmethod
+    async def stream_chat_completion_with_tools(
+        self,
+        messages: list[dict],
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        extra_body: Optional[dict] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[str | dict] = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Streaming chat completion with tool call support.
+
+        Yields chunks of the form:
+            {"type": "content_delta", "delta": str}
+            {"type": "tool_call_delta", "index": int, "id": str, "name": str | None, "arguments_delta": str}
+            {"type": "done", "finish_reason": str, "usage": dict | None}
+        """
         ...
 
     @property

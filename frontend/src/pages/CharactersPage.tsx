@@ -4,13 +4,12 @@ import {
   Popconfirm, Select, Space, Tag, Timeline, Typography, message,
 } from 'antd'
 import {
-  DeleteOutlined, HistoryOutlined, PlusOutlined, RobotOutlined,
-  SaveOutlined, SettingOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined,
+  DeleteOutlined, HistoryOutlined, PlusOutlined,
+  SaveOutlined, SettingOutlined, TeamOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
-import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
+import { useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
-import { usePanelResize } from '../hooks/usePanelResize'
 import './CharactersPage.css'
 
 const { Text, Title } = Typography
@@ -71,7 +70,6 @@ const EMOTION_OPTIONS = [
 
 function CharactersPage({ projectId }: CharactersPageProps) {
   const [form] = Form.useForm<CharacterFormValues>()
-  const [aiForm] = Form.useForm<{ name: string; brief?: string; model?: string }>()
   const [relationshipForm] = Form.useForm<{ target_character_id: string; relationship_type: string; description?: string }>()
   const [aiConfigForm] = Form.useForm<AIConfig>()
 
@@ -85,14 +83,10 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [versions, setVersions] = useState<VersionItem[]>([])
   const [versionModalOpen, setVersionModalOpen] = useState(false)
   const [versionSnapshot, setVersionSnapshot] = useState<Record<string, unknown> | null>(null)
-  const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
-  const [assistantModel, setAssistantModel] = useState<string | undefined>()
   const [, setAiConfig] = useState<AIConfig | null>(null)
   const [aiConfigSaving, setAiConfigSaving] = useState(false)
-  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
-  const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
-    initialWidth: Math.min(620, Math.max(300, window.innerWidth * 0.24)),
-  })
+  const { setAiContext, refreshKey } = useAiPanelContext()
+  const { modelOptions, loading: modelsLoading } = useModelOptions()
 
   const fetchCharacters = useCallback(async (q?: string) => {
     setLoading(true)
@@ -143,12 +137,23 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
   useEffect(() => { fetchCharacters(); fetchNetwork() }, [fetchCharacters, fetchNetwork])
 
+  // Sync character selection to AI context
   useEffect(() => {
-    if (defaultModel && !aiForm.getFieldValue('model')) {
-      aiForm.setFieldValue('model', defaultModel)
-      setAssistantModel(defaultModel)
+    setAiContext({ selectedCharacterId: selectedId })
+  }, [selectedId, setAiContext])
+
+  // Refresh data when AI applies changes
+  useEffect(() => {
+    if (refreshKey > 0) {
+      fetchCharacters(keyword)
+      fetchNetwork()
+      if (selectedId) {
+        fetchDetail(selectedId)
+        fetchVersions(selectedId)
+        fetchAIConfig(selectedId)
+      }
     }
-  }, [aiForm, defaultModel])
+  }, [refreshKey])
 
   useEffect(() => {
     if (selectedId) { fetchDetail(selectedId); fetchVersions(selectedId); fetchAIConfig(selectedId) }
@@ -245,7 +250,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
   return (
     <div className="characters-page">
-      <div className={`characters-shell${aiPanelCollapsed ? ' characters-shell-ai-collapsed' : ''}`}>
+      <div className="characters-shell">
         <aside className="characters-sidebar">
           <div className="characters-sidebar-toolbar">
             <div className="characters-sidebar-head">
@@ -275,11 +280,6 @@ function CharactersPage({ projectId }: CharactersPageProps) {
               {selectedDetail && <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>}
             </div>
             <Space>
-              {aiPanelCollapsed && (
-                <Button icon={<MenuUnfoldOutlined />} onClick={() => setAiPanelCollapsed(false)}>
-                  AI 辅助
-                </Button>
-              )}
               {selectedId && (
                 <Popconfirm title="删除角色" description="该角色的关系、版本和出场记录也会被删除。" okText="删除" cancelText="取消"
                   okButtonProps={{ danger: true, autoInsertSpace: false }} cancelButtonProps={{ autoInsertSpace: false }} onConfirm={deleteCharacter}>
@@ -402,37 +402,6 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
         </main>
 
-        {!aiPanelCollapsed && (
-          <aside className={`characters-ai-panel${aiPanelDragging ? ' characters-ai-panel-dragging' : ''}`} style={{ width: aiPanelWidth }}>
-            <div className="characters-ai-resize-handle" onMouseDown={onAiPanelDrag} />
-            <div className="characters-ai-head">
-              <Title level={5} style={{ margin: 0 }}><RobotOutlined /> 项目助手</Title>
-              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setAiPanelCollapsed(true)} />
-            </div>
-            <WorkspaceAssistantChat
-              projectId={projectId}
-              scope="project"
-              selectedCharacterId={selectedId}
-              model={assistantModel}
-              defaultModel={defaultModel}
-              modelOptions={modelOptions}
-              modelsLoading={modelsLoading}
-              onModelChange={(value) => {
-                setAssistantModel(value)
-                aiForm.setFieldValue('model', value)
-              }}
-              onApplied={() => {
-                fetchCharacters(keyword)
-                fetchNetwork()
-                if (selectedId) {
-                  fetchDetail(selectedId)
-                  fetchVersions(selectedId)
-                  fetchAIConfig(selectedId)
-                }
-              }}
-            />
-          </aside>
-        )}
       </div>
 
       <Modal title="角色版本快照" open={versionModalOpen} onCancel={() => setVersionModalOpen(false)} footer={null} width={720}>

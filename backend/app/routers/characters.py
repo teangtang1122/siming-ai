@@ -6,144 +6,35 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..ai.gateway import LLMGateway
 from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import (
     Chapter,
-    ChapterCharacter,
     Character,
     CharacterChangeLog,
     CharacterRelationship,
     CharacterVersion,
-    OutlineNode,
-    OutlineNodeCharacter,
-    Project,
-    WorldbuildingEntry,
 )
 from ..database.session import get_db
 from ..schemas.character import (
     CharacterAIConfigUpdate,
     CharacterCreate,
-    CharacterResponse,
     CharacterUpdate,
     CharacterVersionItem,
     RelationshipUpdate,
 )
+from ..services.character_service import (
+    apply_change_log_to_character,
+    character_to_dict,
+    create_character_version,
+    dumps_list,
+    get_appearances,
+    loads_list,
+    snapshot_character,
+)
 
 router = APIRouter(tags=["characters"])
-
-
-def _loads_list(raw: Optional[str]) -> list[str]:
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return [str(item) for item in parsed]
-    except json.JSONDecodeError:
-        return [part.strip() for part in raw.split(",") if part.strip()]
-    return []
-
-
-def _dumps_list(value: Optional[list[str]]) -> Optional[str]:
-    if value is None:
-        return None
-    return json.dumps(value, ensure_ascii=False)
-
-
-def _character_to_dict(character: Character) -> dict:
-    data = CharacterResponse(
-        id=character.id,
-        project_id=character.project_id,
-        name=character.name,
-        appearance=character.appearance,
-        personality=character.personality,
-        background=character.background,
-        abilities=_loads_list(character.abilities),
-        role_type=character.role_type,
-        current_version=character.current_version,
-        is_evolution_tracked=character.is_evolution_tracked,
-        created_at=character.created_at,
-        updated_at=character.updated_at,
-    )
-    return data.model_dump(mode="json")
-
-
-def _snapshot_character(character: Character) -> dict:
-    return {
-        "id": character.id,
-        "project_id": character.project_id,
-        "name": character.name,
-        "appearance": character.appearance,
-        "personality": character.personality,
-        "background": character.background,
-        "abilities": _loads_list(character.abilities),
-        "role_type": character.role_type,
-        "current_version": character.current_version,
-        "is_evolution_tracked": character.is_evolution_tracked,
-        "created_at": character.created_at.isoformat() if character.created_at else None,
-        "updated_at": character.updated_at.isoformat() if character.updated_at else None,
-    }
-
-
-
-
-def _create_character_version(
-    db: Session,
-    character: Character,
-    change_summary: str,
-    source_chapter_id: Optional[str] = None,
-) -> None:
-    character.current_version = (character.current_version or 1) + 1
-    db.flush()
-    db.add(CharacterVersion(
-        character_id=character.id,
-        version_number=character.current_version,
-        snapshot_data=json.dumps(_snapshot_character(character), ensure_ascii=False),
-        change_summary=change_summary,
-        source_chapter_id=source_chapter_id,
-    ))
-
-
-def _get_appearances(db: Session, character_id: str) -> dict:
-    outline_rows = (
-        db.query(OutlineNode, OutlineNodeCharacter)
-        .join(OutlineNodeCharacter, OutlineNodeCharacter.outline_node_id == OutlineNode.id)
-        .filter(OutlineNodeCharacter.character_id == character_id)
-        .order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc())
-        .all()
-    )
-    chapter_rows = (
-        db.query(Chapter, ChapterCharacter)
-        .join(ChapterCharacter, ChapterCharacter.chapter_id == Chapter.id)
-        .filter(ChapterCharacter.character_id == character_id)
-        .order_by(Chapter.updated_at.desc())
-        .all()
-    )
-    return {
-        "outline_nodes": [
-            {
-                "id": node.id,
-                "title": node.title,
-                "node_type": node.node_type,
-                "status": node.status,
-                "role_in_scene": link.role_in_scene,
-            }
-            for node, link in outline_rows
-        ],
-        "chapters": [
-            {
-                "id": chapter.id,
-                "title": chapter.title,
-                "word_count": chapter.word_count,
-                "appearance_type": link.appearance_type,
-                "description": link.description,
-            }
-            for chapter, link in chapter_rows
-        ],
-    }
 
 
 @router.get("/projects/{project_id}/characters")
@@ -163,7 +54,7 @@ def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depe
             )
         )
     characters = query.order_by(Character.updated_at.desc()).all()
-    items = [_character_to_dict(character) for character in characters]
+    items = [character_to_dict(character) for character in characters]
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
 
@@ -177,14 +68,14 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
         appearance=payload.appearance,
         personality=payload.personality,
         background=payload.background,
-        abilities=_dumps_list(payload.abilities),
+        abilities=dumps_list(payload.abilities),
         role_type=payload.role_type,
         is_evolution_tracked=payload.is_evolution_tracked,
     )
     db.add(character)
     db.commit()
     db.refresh(character)
-    return ApiResponse.success(data=_character_to_dict(character), message="角色创建成功")
+    return ApiResponse.success(data=character_to_dict(character), message="角色创建成功")
 
 
 @router.get("/projects/{project_id}/characters/relationships")
@@ -226,8 +117,8 @@ def get_character_detail(project_id: str, character_id: str, db: Session = Depen
     """Get character detail with current version and appearance records."""
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    data = _character_to_dict(character)
-    data["appearances"] = _get_appearances(db, character.id)
+    data = character_to_dict(character)
+    data["appearances"] = get_appearances(db, character.id)
     return ApiResponse.success(data=data)
 
 
@@ -248,7 +139,7 @@ def update_character(
 
     for field, value in update_data.items():
         if field == "abilities":
-            character.abilities = _dumps_list(value)
+            character.abilities = dumps_list(value)
         else:
             setattr(character, field, value)
 
@@ -257,13 +148,13 @@ def update_character(
     snapshot = CharacterVersion(
         character_id=character.id,
         version_number=character.current_version,
-        snapshot_data=json.dumps(_snapshot_character(character), ensure_ascii=False),
+        snapshot_data=json.dumps(snapshot_character(character), ensure_ascii=False),
         change_summary=change_summary or "手动更新角色档案",
     )
     db.add(snapshot)
     db.commit()
     db.refresh(character)
-    return ApiResponse.success(data=_character_to_dict(character), message="角色更新成功")
+    return ApiResponse.success(data=character_to_dict(character), message="角色更新成功")
 
 
 @router.delete("/projects/{project_id}/characters/{character_id}")
@@ -368,43 +259,6 @@ def update_character_relationships(
     return get_relationship_network(project_id, db)
 
 
-def _apply_change_log_to_character(character: Character, log: CharacterChangeLog) -> bool:
-    """Apply a confirmed change log to a character profile when supported."""
-    if not log.new_value:
-        return False
-
-    if log.field_name == "abilities":
-        abilities = _loads_list(character.abilities)
-        try:
-            parsed = json.loads(log.new_value)
-        except json.JSONDecodeError:
-            parsed = [log.new_value]
-        if isinstance(parsed, str):
-            parsed = [parsed]
-        if not isinstance(parsed, list):
-            return False
-        changed = False
-        for item in parsed:
-            value = str(item).strip()
-            if value and value not in abilities:
-                abilities.append(value)
-                changed = True
-        if changed:
-            character.abilities = json.dumps(abilities, ensure_ascii=False)
-        return changed
-
-    if log.field_name == "personality":
-        character.personality = log.new_value[:2000]
-        return True
-    if log.field_name == "background":
-        character.background = log.new_value[:5000]
-        return True
-    if log.field_name == "appearance":
-        character.appearance = log.new_value[:2000]
-        return True
-    return False
-
-
 @router.get("/projects/{project_id}/characters/{character_id}/ai-config")
 def get_character_ai_config(project_id: str, character_id: str, db: Session = Depends(get_db)):
     """Get a character's AI dialogue configuration."""
@@ -421,7 +275,7 @@ def get_character_ai_config(project_id: str, character_id: str, db: Session = De
         "id": config.id,
         "character_id": config.character_id,
         "tone_style": config.tone_style or "neutral",
-        "catchphrases": _loads_list(config.catchphrases),
+        "catchphrases": loads_list(config.catchphrases),
         "verbosity": config.verbosity or "moderate",
         "emotion_tendency": config.emotion_tendency or "neutral",
         "model_override": config.model_override,
@@ -450,7 +304,7 @@ def update_character_ai_config(
 
     update_data = payload.model_dump(exclude_unset=True)
     if "catchphrases" in update_data:
-        config.catchphrases = _dumps_list(update_data.pop("catchphrases"))
+        config.catchphrases = dumps_list(update_data.pop("catchphrases"))
     for field, value in update_data.items():
         setattr(config, field, value)
 
@@ -460,7 +314,7 @@ def update_character_ai_config(
         "id": config.id,
         "character_id": config.character_id,
         "tone_style": config.tone_style or "neutral",
-        "catchphrases": _loads_list(config.catchphrases),
+        "catchphrases": loads_list(config.catchphrases),
         "verbosity": config.verbosity or "moderate",
         "emotion_tendency": config.emotion_tendency or "neutral",
         "model_override": config.model_override,
@@ -537,8 +391,8 @@ def confirm_change_log(project_id: str, log_id: str, db: Session = Depends(get_d
         raise NotFoundError("角色不存在")
 
     log.confirmed = True
-    if _apply_change_log_to_character(character, log):
-        _create_character_version(
+    if apply_change_log_to_character(character, log):
+        create_character_version(
             db,
             character,
             f"确认角色变化：{log.change_type}",
@@ -597,8 +451,8 @@ def batch_confirm_change_logs(
         for log in logs:
             log.confirmed = True
             character = db.query(Character).filter(Character.id == log.character_id).first()
-            if character and _apply_change_log_to_character(character, log):
-                _create_character_version(
+            if character and apply_change_log_to_character(character, log):
+                create_character_version(
                     db,
                     character,
                     f"确认角色变化：{log.change_type}",
@@ -607,5 +461,3 @@ def batch_confirm_change_logs(
 
     db.commit()
     return ApiResponse.success(message=f"已{ '确认' if action == 'confirm' else '拒绝' } {len(logs)} 条变更记录")
-
-

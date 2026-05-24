@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Empty, Input, InputNumber, Popover, Select, Space, Switch, Tag, Typography, message } from 'antd'
 import {
   DeleteOutlined,
+  DownOutlined,
   PlusOutlined,
   ReloadOutlined,
   SendOutlined,
@@ -201,6 +202,7 @@ function WorkspaceAssistantChat({
   const [temperature, setTemperature] = useState(0.3)
   const [maxTokens, setMaxTokens] = useState<number | null>(null)
   const [autoApply, setAutoApply] = useState(true)
+  const [showAllRunLogs, setShowAllRunLogs] = useState(false)
   const [showSelectionTag, setShowSelectionTag] = useState(true)
 
   useEffect(() => {
@@ -214,7 +216,20 @@ function WorkspaceAssistantChat({
   const [shortSentences, setShortSentences] = useState(false)
   const [customStylePrompt, setCustomStylePrompt] = useState('')
   const [styleSaving, setStyleSaving] = useState(false)
+  const messagesRef = useRef<HTMLDivElement | null>(null)
+  const [showScrollBottom, setShowScrollBottom] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesRef.current
+    if (!el) return
+    const threshold = el.scrollHeight - el.clientHeight - 60
+    setShowScrollBottom(el.scrollTop < threshold)
+  }, [])
+
+  const scrollToBottom = () => {
+    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+  }
 
   const conversationScope = 'project'
   const scopeLabel = '项目助手'
@@ -335,6 +350,7 @@ function WorkspaceAssistantChat({
       upsertConversation(res.data.data.conversation)
       setInput('')
       setRunLogs([])
+      setShowAllRunLogs(false)
     } catch (err: any) {
       message.error(err.message || '加载对话失败')
     } finally {
@@ -363,6 +379,7 @@ function WorkspaceAssistantChat({
     setMessages([])
     setInput('')
     setRunLogs([])
+    setShowAllRunLogs(false)
   }
 
   const deleteConversation = async (conversationId: string) => {
@@ -396,6 +413,7 @@ function WorkspaceAssistantChat({
     setGenerating(true)
     setCurrentIteration(0)
     setRunLogs([{ key: `${Date.now()}-start`, tool: scope, status: 'running', message: '正在提交给AI助手' }])
+    setShowAllRunLogs(false)
     const controller = new AbortController()
     abortRef.current = controller
     setMessages((prev) => [
@@ -766,8 +784,19 @@ function WorkspaceAssistantChat({
 
       {runLogs.length > 0 && (
         <div className="workspace-assistant-run-log">
-          <Text type="secondary" style={{ fontSize: 12 }}>运行过程</Text>
-          {runLogs.map((log) => (
+          <div className="workspace-assistant-run-log-header">
+            <Text type="secondary" style={{ fontSize: 12 }}>运行过程</Text>
+            {runLogs.length > 3 && (
+              <button
+                type="button"
+                className="workspace-assistant-run-log-toggle"
+                onClick={() => setShowAllRunLogs((prev) => !prev)}
+              >
+                {showAllRunLogs ? `收起（仅显示最新3条）` : `展开全部（${runLogs.length}条）`}
+              </button>
+            )}
+          </div>
+          {(showAllRunLogs ? runLogs : runLogs.slice(-3)).map((log) => (
             <div className="workspace-assistant-run-log-item" key={log.key}>
               <Tag color={log.status === 'ok' ? 'green' : log.status === 'error' ? 'red' : log.status === 'skipped' ? 'orange' : 'blue'}>
                 {log.status || 'running'}
@@ -779,7 +808,12 @@ function WorkspaceAssistantChat({
         </div>
       )}
 
-      <div className="workspace-assistant-messages">
+      <div className="workspace-assistant-messages" ref={messagesRef} onScroll={handleMessagesScroll}>
+        {showScrollBottom && (
+          <button type="button" className="workspace-assistant-scroll-bottom" onClick={scrollToBottom} title="滚动到底部">
+            <DownOutlined />
+          </button>
+        )}
         {messages.length > 0 ? messages.map((item, index) => (
           <div key={`${item.role}-${item.id || index}`} className={`workspace-assistant-message workspace-assistant-${item.role}`}>
             <Tag color={item.role === 'user' ? 'default' : item.status === 'error' ? 'red' : item.status === 'aborted' ? 'orange' : 'blue'}>
@@ -788,20 +822,6 @@ function WorkspaceAssistantChat({
             <Paragraph style={{ marginTop: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>
               {item.content}
             </Paragraph>
-            {item.data?.tool_logs && item.data.tool_logs.length > 0 && (
-              <div className="workspace-assistant-tools">
-                <Text type="secondary" style={{ fontSize: 12 }}>工具调用：</Text>
-                {item.data.tool_logs.map((log, logIndex) => (
-                  <div className="workspace-assistant-tool-row" key={`${log.tool}-${logIndex}`}>
-                    <Tag color={log.status === 'ok' ? 'green' : log.status === 'error' ? 'red' : log.status === 'skipped' ? 'orange' : log.status === 'running' ? 'blue' : 'default'}>
-                      {log.status || 'ok'}
-                    </Tag>
-                    {log.tool && <Text code>{log.tool}</Text>}
-                    {log.detail && <Text type="secondary">{log.detail}</Text>}
-                  </div>
-                ))}
-              </div>
-            )}
             {item.data?.applied_actions && item.data.applied_actions.length > 0 && (
               <Space wrap size={4}>
                 {item.data.applied_actions.map((action, actionIndex) => (

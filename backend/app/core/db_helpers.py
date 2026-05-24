@@ -1,8 +1,12 @@
 """Shared database query helpers used by routers."""
+from __future__ import annotations
+
+from typing import Optional
+
 from sqlalchemy.orm import Session
 
-from .exceptions import NotFoundError
-from ..database.models import Character, Project
+from .exceptions import NotFoundError, ValidationError
+from ..database.models import Character, OutlineNode, Project
 
 
 def get_project_or_404(db: Session, project_id: str) -> Project:
@@ -21,3 +25,16 @@ def get_character_or_404(db: Session, project_id: str, character_id: str) -> Cha
     if not character:
         raise NotFoundError("角色不存在")
     return character
+
+
+def get_outline_node_or_404(db: Session, project_id: str, outline_node_id: Optional[str]) -> Optional[OutlineNode]:
+    if not outline_node_id:
+        return None
+    node = (
+        db.query(OutlineNode)
+        .filter(OutlineNode.id == outline_node_id, OutlineNode.project_id == project_id)
+        .first()
+    )
+    if not node:
+        raise ValidationError("关联大纲节点必须属于当前作品")
+    return node

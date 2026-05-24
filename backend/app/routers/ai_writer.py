@@ -54,12 +54,17 @@ from ..prompts.workspace_assistant import (
     _compress_search_result,
     MAX_ITERATIONS,
 )
+from ..prompts.style_prompts import build_style_context
 from ..services.style_rules import (
     STYLE_OPTIONS,
-    _build_style_context,
     _detect_forbidden_sentence_violations,
     _repair_assistant_parsed_style,
     _repair_forbidden_sentence_text,
+)
+from ..services.workspace.tool_schemas import (
+    ALL_TOOL_SCHEMAS,
+    SEARCH_TOOL_NAMES,
+    WRITE_TOOL_NAMES,
 )
 from ..services.workspace import (
     _character_payload,
@@ -327,7 +332,7 @@ async def _assistant_character_roleplay(
                 f"【角色AI设定】\n{_build_character_ai_context(character)}\n\n"
                 f"【关系网】\n{_build_character_relationships(db, project_id, character.id)}\n\n"
                 f"【近期经历】\n{_build_character_timeline(db, character.id)}\n\n"
-                f"【作品文风约束】\n{_build_style_context(project)}\n\n"
+                f"【作品文风约束】\n{build_style_context(project)}\n\n"
                 f"【当前大纲】\n{outline_ctx}\n\n"
                 f"【前文摘要】\n{summaries}"
             ),
@@ -884,18 +889,6 @@ async def delete_assistant_conversation(
 # Agentic workspace assistant helpers
 # ---------------------------------------------------------------------------
 
-# Tools allowed during information-gathering rounds (done: false).
-# Search tools + analysis/roleplay tools that don't modify project data.
-INFO_TOOLS = {
-    "list_characters", "list_worldbuilding", "list_chapters",
-    "search_characters", "search_chapters", "search_outline",
-    "search_outline_tree", "search_worldbuilding", "search_relationships",
-    "design_plot", "suggest_conflicts",
-    "roleplay_character", "dialogue_battle",
-    "detect_worldbuilding_conflicts", "detect_forbidden_patterns",
-    "rewrite_text", "expand_text", "continue_text",
-}
-
 
 def _trim_context_if_needed(messages: list[dict], max_chars: int = 800_000) -> list[dict]:
     total = sum(len(str(m.get("content", ""))) for m in messages)
@@ -985,7 +978,7 @@ async def workspace_assistant_stream(
 
             # --- Phase 2: Build minimal initial messages ---
             project = get_project_or_404(db, project_id)
-            style_context = _build_style_context(project)
+            style_context = build_style_context(project, concise=True)
             selected_context: list[str] = []
             if selected_node:
                 selected_context.append(f"当前选中大纲：{json.dumps(_outline_node_payload(selected_node), ensure_ascii=False)}")
@@ -1031,6 +1024,7 @@ async def workspace_assistant_stream(
 
             searched_queries: set[tuple] = set()
             parsed_fallback = {}
+            use_function_calling = True
 
             for iteration in range(1, MAX_ITERATIONS + 1):
                 yield _sse_event({
@@ -1040,156 +1034,354 @@ async def workspace_assistant_stream(
                 })
 
                 messages = _trim_context_if_needed(messages)
-                # Stream tokens to frontend while accumulating for JSON parsing
-                raw_buffer: list[str] = []
-                stream_gen = LLMGateway.stream_chat_completion(
-                    messages=messages,
-                    model=payload.model,
-                    temperature=payload.temperature or 0.3,
-                    max_tokens=payload.max_tokens,
-                    timeout=300,
-                    retry=1,
-                )
-                try:
-                    async for chunk in stream_gen:
-                        raw_buffer.append(chunk)
-                        yield _sse_event({"type": "thinking_delta", "delta": chunk})
-                except Exception as stream_err:
-                    yield _sse_event({"type": "status", "message": f"流式输出中断，尝试用已接收内容继续：{stream_err}", "tool": "stream_error"})
-                raw_content = "".join(raw_buffer)
-                parsed = _parse_json_object(raw_content)
-                if parsed is None:
+
+                if use_function_calling:
+                    # --- Function calling path ---
+                    content_buffer: list[str] = []
+                    tool_call_buffers: dict[int, dict] = {}
+                    fc_error = None
+                    reasoning_buffer = ""
+                    try:
+                        stream_gen = LLMGateway.stream_chat_completion_with_tools(
+                            messages=messages,
+                            model=payload.model,
+                            temperature=payload.temperature or 0.3,
+                            max_tokens=payload.max_tokens,
+                            timeout=300,
+                            retry=1,
+                            tools=ALL_TOOL_SCHEMAS,
+                            tool_choice="auto",
+                        )
+                        async for chunk in stream_gen:
+                            if chunk["type"] == "content_delta":
+                                content_buffer.append(chunk["delta"])
+                                yield _sse_event({"type": "thinking_delta", "delta": chunk["delta"]})
+                            elif chunk["type"] == "reasoning_delta":
+                                reasoning_buffer += chunk["delta"]
+                            elif chunk["type"] == "tool_call_delta":
+                                idx = chunk["index"]
+                                if idx not in tool_call_buffers:
+                                    tool_call_buffers[idx] = {"id": chunk.get("id", ""), "name": "", "arguments": ""}
+                                buf = tool_call_buffers[idx]
+                                if chunk.get("id"):
+                                    buf["id"] = chunk["id"]
+                                if chunk.get("name"):
+                                    buf["name"] = chunk["name"]
+                                    yield _sse_event({
+                                        "type": "tool_call",
+                                        "tool": chunk["name"],
+                                        "args": {},
+                                    })
+                                if chunk.get("arguments_delta"):
+                                    buf["arguments"] += chunk["arguments_delta"]
+                            elif chunk["type"] == "done":
+                                if not reasoning_buffer:
+                                    reasoning_buffer = chunk.get("reasoning_content", "")
+                    except LLMError as e:
+                        fc_error = e
+                        if "API Key" in str(e) or "提供商" in str(e):
+                            raise
+                    except Exception as e:
+                        fc_error = e
+
+                    if fc_error is not None:
+                        use_function_calling = False
+                        err_msg = str(fc_error)
+                        err_type = type(fc_error).__name__
+                        yield _sse_event({
+                            "type": "status",
+                            "message": f"Function calling 失败（{err_type}: {err_msg}），回退到 JSON 模式。",
+                            "tool": "fallback_json",
+                        })
+
+                if not use_function_calling:
+                    # --- JSON fallback path ---
+                    raw_buffer: list[str] = []
+                    stream_gen = LLMGateway.stream_chat_completion(
+                        messages=messages,
+                        model=payload.model,
+                        temperature=payload.temperature or 0.3,
+                        max_tokens=payload.max_tokens,
+                        timeout=300,
+                        retry=1,
+                    )
+                    try:
+                        async for chunk in stream_gen:
+                            raw_buffer.append(chunk)
+                            yield _sse_event({"type": "thinking_delta", "delta": chunk})
+                    except Exception as stream_err:
+                        yield _sse_event({"type": "status", "message": f"流式输出中断，尝试用已接收内容继续：{stream_err}", "tool": "stream_error"})
+                    raw_content = "".join(raw_buffer)
+                    parsed = _parse_json_object(raw_content)
+                    if parsed is None:
+                        yield _sse_event({
+                            "type": "status",
+                            "message": "模型返回的工具JSON格式不合法，正在自动修复",
+                            "tool": "json_repair",
+                        })
+                        parsed = await _repair_workspace_json_output(raw_content, payload.model)
+                        if parsed is not None:
+                            tool_logs.append({"tool": "json_repair", "status": "ok", "detail": "已修复模型工具JSON"})
+                            yield _sse_event({"type": "tool", **tool_logs[-1]})
+                        else:
+                            tool_logs.append({"tool": "json_repair", "status": "error", "detail": "模型输出无法解析，未执行写入工具"})
+                            yield _sse_event({"type": "tool", **tool_logs[-1]})
+                    parsed = parsed or {
+                        "reply": "模型返回的工具格式不合法，已停止执行写入。请重试一次，或让助手先生成较短章节。",
+                        "done": True,
+                        "actions": [],
+                        "needs_confirmation": False,
+                    }
+                    parsed_fallback = parsed
+                    final_model = payload.model or ""
+                    final_usage = None
+
+                    is_done = bool(parsed.get("done", True))
+                    actions: list[dict] = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
+                    reply_part = str(parsed.get("reply") or "")
+
+                    if reply_part:
+                        yield _sse_event({"type": "thinking", "content": reply_part, "iteration": iteration})
+
+                    search_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") in SEARCH_TOOL_NAMES]
+                    write_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") in WRITE_TOOL_NAMES]
+
+                    if not is_done and write_actions:
+                        yield _sse_event({
+                            "type": "status",
+                            "message": f"跳过 {len(write_actions)} 个写入工具（非最终轮次）",
+                            "tool": "skip_write_actions",
+                        })
+                        write_actions = []
+
                     yield _sse_event({
-                        "type": "status",
-                        "message": "模型返回的工具JSON格式不合法，正在自动修复",
-                        "tool": "json_repair",
+                        "type": "tool",
+                        "tool": "planner",
+                        "status": "ok",
+                        "detail": f"第 {iteration} 轮：{'完成分析' if is_done else '需要更多信息'}，{len(search_actions)} 个搜索，{len(write_actions)} 个写入",
                     })
-                    parsed = await _repair_workspace_json_output(raw_content, payload.model)
-                    if parsed is not None:
-                        tool_logs.append({"tool": "json_repair", "status": "ok", "detail": "已修复模型工具JSON"})
-                        yield _sse_event({"type": "tool", **tool_logs[-1]})
-                    else:
-                        tool_logs.append({"tool": "json_repair", "status": "error", "detail": "模型输出无法解析，未执行写入工具"})
-                        yield _sse_event({"type": "tool", **tool_logs[-1]})
-                parsed = parsed or {
-                    "reply": "模型返回的工具格式不合法，已停止执行写入。请重试一次，或让助手先生成较短章节。",
-                    "done": True,
-                    "actions": [],
-                    "needs_confirmation": False,
-                }
-                parsed_fallback = parsed
-                final_model = payload.model or ""
-                final_usage = None
 
-                is_done = bool(parsed.get("done", True))
-                actions: list[dict] = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
-                reply_part = str(parsed.get("reply") or "")
+                    if is_done:
+                        all_actions = write_actions
+                        final_reply = reply_part
+                        yield _sse_event({
+                            "type": "iteration_end",
+                            "iteration": iteration,
+                            "message": "分析完成，准备执行最终操作",
+                        })
+                        break
 
-                if reply_part:
-                    yield _sse_event({"type": "thinking", "content": reply_part, "iteration": iteration})
+                    # Execute search actions (JSON path)
+                    if search_actions:
+                        search_results: list[dict] = []
+                        for action in search_actions[:8]:
+                            tool_name = str(action.get("tool") or "search")
+                            args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
 
-                # Split search vs write actions
-                search_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") in INFO_TOOLS]
-                write_actions = [a for a in actions if isinstance(a, dict) and a.get("tool") not in INFO_TOOLS]
+                            dedup_key = (tool_name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+                            if dedup_key in searched_queries:
+                                yield _sse_event({
+                                    "type": "search_result",
+                                    "tool": tool_name,
+                                    "result": {"tool": tool_name, "status": "skipped", "detail": "已查询过，见上文结果", "data": []},
+                                    "iteration": iteration,
+                                })
+                                continue
+                            searched_queries.add(dedup_key)
 
-                # Reject write actions in non-final iterations
-                if not is_done and write_actions:
+                            yield _sse_event({
+                                "type": "search_start",
+                                "tool": tool_name,
+                                "args": args,
+                                "iteration": iteration,
+                            })
+                            try:
+                                action_result = await execute_workspace_action(db, project_id, action)
+                            except Exception as exc:
+                                action_result = {"tool": tool_name, "status": "error", "detail": str(exc), "data": []}
+                            search_results.append(action_result)
+                            tool_logs.append({
+                                "tool": action_result.get("tool") or tool_name,
+                                "status": action_result.get("status") or "ok",
+                                "detail": action_result.get("detail") or "",
+                            })
+                            yield _sse_event({
+                                "type": "search_result",
+                                "tool": tool_name,
+                                "result": action_result,
+                                "iteration": iteration,
+                            })
+
+                        for action_result in search_results:
+                            compressed = _compress_search_result(action_result)
+                            if compressed:
+                                searched_context.append(compressed)
+
+                        messages.append({"role": "assistant", "content": json.dumps(parsed, ensure_ascii=False)})
+                        messages.append({"role": "user", "content": format_tool_result_message(iteration, search_results)})
+
                     yield _sse_event({
-                        "type": "status",
-                        "message": f"跳过 {len(write_actions)} 个写入工具（非最终轮次）",
-                        "tool": "skip_write_actions",
+                        "type": "iteration_end",
+                        "iteration": iteration,
+                        "message": f"第 {iteration} 轮完成，{'获得 ' + str(len(search_actions)) + ' 条搜索结果' if search_actions else '未请求搜索'}",
                     })
-                    write_actions = []
+
+                    if iteration == MAX_ITERATIONS:
+                        yield _sse_event({
+                            "type": "status",
+                            "message": f"已达到 {MAX_ITERATIONS} 轮搜索上限，基于已有信息给出最终回复",
+                            "tool": "max_iterations",
+                        })
+                        all_actions = []
+                        final_reply = parsed.get("reply", "") or "已分析完毕。"
+                        break
+                    continue
+
+                # --- Function calling: process accumulated tool calls ---
+                reply_text = "".join(content_buffer)
+                if reply_text:
+                    yield _sse_event({"type": "thinking", "content": reply_text, "iteration": iteration})
+
+                # Build tool_calls list from accumulated buffers
+                tool_calls: list[dict] = []
+                for idx in sorted(tool_call_buffers.keys()):
+                    buf = tool_call_buffers[idx]
+                    if not buf["name"]:
+                        continue
+                    try:
+                        args = json.loads(buf["arguments"]) if buf["arguments"].strip() else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    tool_calls.append({
+                        "id": buf["id"],
+                        "type": "function",
+                        "function": {
+                            "name": buf["name"],
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    })
+
+                se_names = SEARCH_TOOL_NAMES
+                wr_names = WRITE_TOOL_NAMES
 
                 yield _sse_event({
                     "type": "tool",
                     "tool": "planner",
                     "status": "ok",
-                    "detail": f"第 {iteration} 轮：{'完成分析' if is_done else '需要更多信息'}，{len(search_actions)} 个搜索，{len(write_actions)} 个写入",
+                    "detail": f"第 {iteration} 轮：{len(tool_calls)} 个工具调用（{len([t for t in tool_calls if t['function']['name'] in se_names])} 个搜索，{len([t for t in tool_calls if t['function']['name'] in wr_names])} 个写入）",
                 })
 
-                # If done and no more search needed, break
-                if is_done:
-                    all_actions = write_actions
-                    final_reply = reply_part
+                # Agent decides it's done — no tool calls, just text
+                if not tool_calls:
+                    if iteration <= 2 and reply_text.strip():
+                        # Guard: agent stopped too early with a text reply
+                        _asst_msg: dict = {"role": "assistant", "content": reply_text}
+                        if reasoning_buffer:
+                            _asst_msg["reasoning_content"] = reasoning_buffer
+                        messages.append(_asst_msg)
+                        messages.append({"role": "user", "content": "信息还不足够，请继续搜索。先查相关章节正文和大纲上下文，不要急于给出最终回复。"})
+                        yield _sse_event({
+                            "type": "iteration_end",
+                            "iteration": iteration,
+                            "message": "信息不足，要求继续搜索",
+                        })
+                        continue
+                    # Agent is truly done
+                    final_reply = reply_text
+                    final_model = payload.model or ""
+                    final_usage = None
                     yield _sse_event({
                         "type": "iteration_end",
                         "iteration": iteration,
-                        "message": "分析完成，准备执行最终操作",
+                        "message": "Agent 判断任务完成",
                     })
                     break
 
-                # Execute search actions
-                if search_actions:
-                    search_results: list[dict] = []
-                    for action in search_actions[:8]:
-                        tool_name = str(action.get("tool") or "search")
-                        args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+                # Agent called tools — execute ALL of them (search and write alike)
+                all_results: list[dict] = []
+                for tc in tool_calls[:12]:
+                    tool_name = tc["function"]["name"]
+                    try:
+                        tc_args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        tc_args = {}
 
-                        # Dedup
-                        dedup_key = (tool_name, json.dumps(args, ensure_ascii=False, sort_keys=True))
-                        if dedup_key in searched_queries:
-                            yield _sse_event({
-                                "type": "search_result",
-                                "tool": tool_name,
-                                "result": {"tool": tool_name, "status": "skipped", "detail": "已查询过，见上文结果", "data": []},
-                                "iteration": iteration,
-                            })
-                            continue
-                        searched_queries.add(dedup_key)
-
-                        yield _sse_event({
-                            "type": "search_start",
-                            "tool": tool_name,
-                            "args": args,
-                            "iteration": iteration,
-                        })
-                        try:
-                            action_result = await execute_workspace_action(db, project_id, action)
-                        except Exception as exc:
-                            action_result = {"tool": tool_name, "status": "error", "detail": str(exc), "data": []}
-                        search_results.append(action_result)
-                        tool_logs.append({
-                            "tool": action_result.get("tool") or tool_name,
-                            "status": action_result.get("status") or "ok",
-                            "detail": action_result.get("detail") or "",
-                        })
+                    dedup_key = (tool_name, json.dumps(tc_args, ensure_ascii=False, sort_keys=True))
+                    is_write = tool_name in wr_names
+                    action_type = "write" if is_write else "search"
+                    if tool_name in se_names and dedup_key in searched_queries:
                         yield _sse_event({
                             "type": "search_result",
                             "tool": tool_name,
-                            "result": action_result,
+                            "result": {"tool": tool_name, "status": "skipped", "detail": "已查询过，见上文结果", "data": []},
                             "iteration": iteration,
                         })
+                        all_results.append({"tool": tool_name, "status": "skipped", "detail": "已查询过", "data": []})
+                        continue
+                    searched_queries.add(dedup_key)
 
-                    # Accumulate compressed search results for cross-turn persistence
-                    for action_result in search_results:
+                    yield _sse_event({
+                        "type": f"{action_type}_start",
+                        "tool": tool_name,
+                        "args": tc_args,
+                        "iteration": iteration,
+                    })
+
+                    action = {"tool": tool_name, "arguments": tc_args}
+                    try:
+                        action_result = await execute_workspace_action(db, project_id, action)
+                    except Exception as exc:
+                        action_result = {"tool": tool_name, "status": "error", "detail": str(exc), "data": []}
+
+                    all_results.append(action_result)
+                    tool_logs.append({
+                        "tool": action_result.get("tool") or tool_name,
+                        "status": action_result.get("status") or "ok",
+                        "detail": action_result.get("detail") or "",
+                    })
+                    yield _sse_event({
+                        "type": f"{action_type}_result",
+                        "tool": tool_name,
+                        "result": action_result,
+                        "iteration": iteration,
+                    })
+
+                for action_result in all_results:
+                    if action_result.get("tool") in se_names:
                         compressed = _compress_search_result(action_result)
                         if compressed:
                             searched_context.append(compressed)
 
-                    # Feed results back into messages
-                    messages.append({"role": "assistant", "content": json.dumps(parsed, ensure_ascii=False)})
-                    messages.append({"role": "user", "content": format_tool_result_message(iteration, search_results)})
+                # Feed results back as tool_result messages
+                assistant_tool_calls = [
+                    {"id": tc["id"], "type": "function", "function": tc["function"]}
+                    for tc in tool_calls
+                ]
+                _asst_msg = {
+                    "role": "assistant",
+                    "content": reply_text or None,
+                    "tool_calls": assistant_tool_calls,
+                }
+                if reasoning_buffer:
+                    _asst_msg["reasoning_content"] = reasoning_buffer
+                messages.append(_asst_msg)
+                for tc, ar in zip(tool_calls, all_results):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(ar, ensure_ascii=False),
+                    })
 
                 yield _sse_event({
                     "type": "iteration_end",
                     "iteration": iteration,
-                    "message": f"第 {iteration} 轮完成，{'获得 ' + str(len(search_actions)) + ' 条搜索结果' if search_actions else '未请求搜索'}",
+                    "message": f"第 {iteration} 轮完成，执行了 {len(tool_calls)} 个工具",
                 })
-
-                if iteration == MAX_ITERATIONS:
-                    yield _sse_event({
-                        "type": "status",
-                        "message": f"已达到 {MAX_ITERATIONS} 轮搜索上限，基于已有信息给出最终回复",
-                        "tool": "max_iterations",
-                    })
-                    all_actions = []
-                    final_reply = parsed.get("reply", "") or "已分析完毕。"
-                    break
+                # No continue here — loop naturally goes to next iteration
             else:
                 # Loop completed without break (shouldn't happen, but guard)
                 all_actions = []
-                final_reply = parsed.get("reply", "") or "已分析完毕。"
+                final_reply = "已分析完毕。"
 
             # --- Phase 4: Final write action execution ---
             needs_conf = False

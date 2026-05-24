@@ -196,6 +196,9 @@ class Chapter(Base):
     content = Column(Text, nullable=False, default="")
     word_count = Column(Integer, default=0)
     current_version = Column(Integer, default=1)
+    quality_score = Column(Integer, nullable=True)
+    quality_detail = Column(Text, nullable=True)
+    quality_evaluated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -380,3 +383,20 @@ class AssistantMessage(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     conversation = relationship("AssistantConversation", back_populates="messages")
+
+
+# ---------------------------------------------------------------------------
+# 20. assistant_memories — 智能体持久记忆表
+# ---------------------------------------------------------------------------
+class AssistantMemory(Base):
+    __tablename__ = "assistant_memories"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    category = Column(String(30), nullable=False, default="note")  # preference/search_result/note/fact
+    key = Column(String(200), nullable=False)
+    value = Column(Text, nullable=False)
+    source = Column(String(50), nullable=True)  # e.g., "web_search", "user", "assistant"
+    importance = Column(Integer, nullable=False, default=5)  # 0-10
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

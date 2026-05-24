@@ -4,18 +4,13 @@
 
 .outline-shell {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr) auto;
+  grid-template-columns: 360px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
-.outline-shell-ai-collapsed {
-  grid-template-columns: 360px minmax(0, 1fr);
-}
-
 .outline-tree-panel,
-.outline-editor,
-.outline-ai-panel {
+.outline-editor {
   border: 1px solid #f0f0f0;
   border-radius: 6px;
   background: #fff;
@@ -35,32 +30,8 @@
   padding: 16px;
 }
 
-.outline-ai-panel {
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
-  padding: 14px;
-  position: sticky;
-  top: 12px;
-}
-
-.outline-ai-resize-handle {
-  bottom: 0;
-  cursor: col-resize;
-  left: 0;
-  position: absolute;
-  top: 0;
-  width: 5px;
-  z-index: 10;
-}
-
-.outline-ai-resize-handle:hover,
-.outline-ai-panel-dragging .outline-ai-resize-handle {
-  background: #1677ff;
-}
-
 .outline-panel-head,
-.outline-editor-head,
-.outline-ai-head {
+.outline-editor-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -121,29 +92,14 @@
   gap: 12px;
 }
 
-.outline-ai-head {
-  border-bottom: 1px solid #f0f0f0;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
-}
-
 @media (max-width: 1180px) {
   .outline-shell {
     grid-template-columns: 1fr;
   }
 
-  .outline-ai-panel,
   .outline-tree-panel {
     max-height: none;
     position: static;
-  }
-
-  .outline-ai-panel {
-    width: auto !important;
-  }
-
-  .outline-ai-resize-handle {
-    display: none;
   }
 
   .outline-grid {
@@ -157,8 +113,7 @@
   }
 
   .outline-panel-head,
-  .outline-editor-head,
-  .outline-ai-head {
+  .outline-editor-head {
     align-items: flex-start;
     flex-direction: column;
   }

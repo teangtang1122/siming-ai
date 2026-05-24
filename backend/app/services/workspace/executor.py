@@ -4,6 +4,8 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from .tools import (
+    chapter_writer,
+    character_writer,
     continue_text,
     create_chapter,
     create_character,
@@ -18,12 +20,15 @@ from .tools import (
     design_plot,
     detect_character_changes,
     detect_forbidden_patterns,
+    detect_new_worldbuilding,
     detect_worldbuilding_conflicts,
+    evaluate_chapter,
     dialogue_battle,
     expand_text,
     list_characters,
     list_chapters,
     list_worldbuilding,
+    outline_writer,
     rewrite_text,
     roleplay_character,
     search_characters,
@@ -38,11 +43,20 @@ from .tools import (
     update_outline_node,
     update_relationship,
     update_worldbuilding_entry,
+    web_search,
+    worldbuilding_writer,
+    forget,
+    recall,
+    remember,
 )
 from .types import ToolHandler
 
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
+    "chapter_writer": chapter_writer,
+    "character_writer": character_writer,
+    "outline_writer": outline_writer,
+    "worldbuilding_writer": worldbuilding_writer,
     "create_chapter": create_chapter,
     "update_chapter": update_chapter,
     "delete_chapter": delete_chapter,
@@ -75,8 +89,14 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "suggest_conflicts": suggest_conflicts,
     "design_plot": design_plot,
     "detect_character_changes": detect_character_changes,
+    "detect_new_worldbuilding": detect_new_worldbuilding,
     "detect_forbidden_patterns": detect_forbidden_patterns,
     "detect_worldbuilding_conflicts": detect_worldbuilding_conflicts,
+    "evaluate_chapter": evaluate_chapter,
+    "web_search": web_search,
+    "remember": remember,
+    "recall": recall,
+    "forget": forget,
 }
 
 

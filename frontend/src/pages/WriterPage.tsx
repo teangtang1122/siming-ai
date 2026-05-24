@@ -21,16 +21,11 @@ import {
   HistoryOutlined,
   PlusOutlined,
   ReloadOutlined,
-  RobotOutlined,
   RollbackOutlined,
   SaveOutlined,
-              MenuFoldOutlined,
-  MenuUnfoldOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
-import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
-import { useModelOptions } from '../hooks/useModelOptions'
-import { usePanelResize } from '../hooks/usePanelResize'
+import { useAiPanelContext } from '../contexts/AiPanelContext'
 import './WriterPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -155,12 +150,8 @@ function WriterPage({ projectId }: WriterPageProps) {
   const [toSnapshotId, setToSnapshotId] = useState<string | undefined>()
   const [diff, setDiff] = useState<DiffResponse | null>(null)
 
-  const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
-  const [aiModel, setAiModel] = useState<string | undefined>()
-  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
-  const { width: aiPanelWidth, onDragHandleMouseDown: onAiPanelDrag, dragging: aiPanelDragging } = usePanelResize({
-    initialWidth: Math.min(560, Math.max(280, window.innerWidth * 0.24)),
-  })
+  const { setAiContext, refreshKey } = useAiPanelContext()
+
   const editorSelectionRef = useRef<{ start: number; end: number } | null>(null)
   const [selectedText, setSelectedText] = useState('')
   const [selectedTextChapterId, setSelectedTextChapterId] = useState<string | null>(null)
@@ -253,12 +244,6 @@ function WriterPage({ projectId }: WriterPageProps) {
   }, [fetchChapters, fetchOutline])
 
   useEffect(() => {
-    if (!aiModel && defaultModel) {
-      setAiModel(defaultModel)
-    }
-  }, [aiModel, defaultModel])
-
-  useEffect(() => {
     if (selectedId) {
       fetchDetail(selectedId)
 
@@ -269,6 +254,24 @@ function WriterPage({ projectId }: WriterPageProps) {
       form.resetFields()
     }
   }, [creating, fetchDetail, form, selectedId])
+
+  // Sync selections to AI context
+  useEffect(() => {
+    setAiContext({
+      selectedOutlineNodeId: form.getFieldValue('outline_node_id') || null,
+      selectedText,
+      selectedTextChapterId,
+    })
+  }, [form.getFieldValue('outline_node_id'), selectedText, selectedTextChapterId, setAiContext])
+
+  // Refresh data when AI applies changes
+  useEffect(() => {
+    if (refreshKey > 0) {
+      fetchChapters()
+      fetchOutline()
+      if (selectedId) fetchDetail(selectedId)
+    }
+  }, [refreshKey])
 
   const startCreate = () => {
     setCreating(true)
@@ -353,7 +356,7 @@ function WriterPage({ projectId }: WriterPageProps) {
 
   return (
     <div className="writer-page">
-      <div className={`writer-shell${aiPanelCollapsed ? ' writer-shell-ai-collapsed' : ''}`}>
+      <div className="writer-shell">
         {/* ── Left: Chapter List ── */}
         <aside className="writer-chapter-panel">
           <div className="writer-panel-head">
@@ -405,11 +408,6 @@ function WriterPage({ projectId }: WriterPageProps) {
               )}
             </div>
             <Space>
-              {aiPanelCollapsed && (
-                <Button icon={<MenuUnfoldOutlined />} onClick={() => setAiPanelCollapsed(false)}>
-                  AI 助手
-                </Button>
-              )}
               {selectedId && !creating && (
                 <>
                   <Popconfirm title="删除章节" description="版本历史和出场记录也会一并删除。" okText="删除" cancelText="取消"
@@ -519,42 +517,6 @@ function WriterPage({ projectId }: WriterPageProps) {
           </section>
         </main>
 
-        {/* ── Right: AI Assistant ── */}
-        {!aiPanelCollapsed && (
-        <aside className={`writer-ai-panel${aiPanelDragging ? ' writer-ai-panel-dragging' : ''}`} style={{ width: aiPanelWidth }}>
-          <div className="writer-ai-resize-handle" onMouseDown={onAiPanelDrag} />
-          <div className="writer-ai-head">
-            <Title level={5} style={{ margin: 0 }}><RobotOutlined /> 项目助手</Title>
-            <Button
-              type="text"
-              size="small"
-              icon={<MenuFoldOutlined />}
-              onClick={() => setAiPanelCollapsed(true)}
-            />
-          </div>
-
-          <WorkspaceAssistantChat
-            projectId={projectId}
-            scope="project"
-            selectedOutlineNodeId={form.getFieldValue('outline_node_id') || undefined}
-            selectedText={selectedText}
-            selectedTextChapterId={selectedTextChapterId}
-            model={aiModel}
-            defaultModel={defaultModel}
-            modelOptions={modelOptions}
-            modelsLoading={modelsLoading}
-            onModelChange={setAiModel}
-            onApplied={() => {
-              fetchChapters()
-              fetchOutline()
-              if (selectedId) {
-                fetchDetail(selectedId)
-              }
-            }}
-          />
-
-        </aside>
-        )}
       </div>
     </div>
   )

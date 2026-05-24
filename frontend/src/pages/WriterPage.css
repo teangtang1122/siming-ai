@@ -4,18 +4,13 @@
 
 .writer-shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) auto;
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
 
-.writer-shell-ai-collapsed {
-  grid-template-columns: 260px minmax(0, 1fr);
-}
-
 .writer-chapter-panel,
-.writer-editor,
-.writer-ai-panel {
+.writer-editor {
   border: 1px solid #f0f0f0;
   border-radius: 6px;
   background: #fff;
@@ -35,43 +30,13 @@
   padding: 16px;
 }
 
-.writer-ai-panel {
-  padding: 14px;
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
-  position: sticky;
-  top: 12px;
-}
-
-.writer-ai-resize-handle {
-  bottom: 0;
-  cursor: col-resize;
-  left: 0;
-  position: absolute;
-  top: 0;
-  width: 5px;
-  z-index: 10;
-}
-
-.writer-ai-resize-handle:hover,
-.writer-ai-panel-dragging .writer-ai-resize-handle {
-  background: #1677ff;
-}
-
 .writer-panel-head,
 .writer-editor-head,
-.writer-history-head,
-.writer-ai-head {
+.writer-history-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.writer-ai-head {
-  border-bottom: 1px solid #f0f0f0;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
 }
 
 .writer-panel-head {
@@ -197,10 +162,6 @@
 
 @media (max-width: 1480px) {
   .writer-shell {
-    grid-template-columns: 240px minmax(0, 1fr) auto;
-  }
-
-  .writer-shell-ai-collapsed {
     grid-template-columns: 240px minmax(0, 1fr);
   }
 }
@@ -208,16 +169,6 @@
 @media (max-width: 1280px) {
   .writer-shell {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .writer-ai-panel {
-    max-height: none;
-    position: static;
-    width: auto !important;
-  }
-
-  .writer-ai-resize-handle {
-    display: none;
   }
 
   .writer-form-grid,

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json as _json
-import re as _re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -16,6 +15,7 @@ from ....database.models import (
     Project,
     WorldbuildingEntry,
 )
+from ....prompts.plot_prompts import build_plot_design_messages
 from ....services.context_builders import (
     _build_outline_context,
     _build_outline_overview,
@@ -23,7 +23,108 @@ from ....services.context_builders import (
     _build_scene_characters_context,
     _build_world_context,
 )
-from ....services.style_rules import _build_style_context
+from ....prompts.style_prompts import build_style_context
+
+PLOT_DESIGN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "design_plot_output",
+        "description": "提交本章节的完整剧情设计方案，包含场景拆解、角色行为、冲突张力、情绪曲线等。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scenes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"},
+                            "time": {"type": "string"},
+                            "characters": {"type": "array", "items": {"type": "string"}},
+                            "core_event": {"type": "string"},
+                            "goal": {"type": "string"},
+                            "dialogue_direction": {"type": "string"},
+                        },
+                        "required": ["location", "time", "characters", "core_event", "goal"],
+                    },
+                },
+                "character_actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "character_name": {"type": "string"},
+                            "motivation": {"type": "string"},
+                            "action": {"type": "string"},
+                            "outcome": {"type": "string"},
+                        },
+                        "required": ["character_name", "motivation", "action", "outcome"],
+                    },
+                },
+                "conflicts": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["character", "environment", "inner"]},
+                        "description": {"type": "string"},
+                        "escalation": {"type": "string"},
+                        "stakes": {"type": "string"},
+                    },
+                    "required": ["type", "description"],
+                },
+                "emotional_arc": {
+                    "type": "object",
+                    "properties": {
+                        "start": {"type": "string"},
+                        "turning_points": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"event": {"type": "string"}, "emotion_shift": {"type": "string"}},
+                                "required": ["event", "emotion_shift"],
+                            },
+                        },
+                        "end": {"type": "string"},
+                    },
+                    "required": ["start", "end"],
+                },
+                "consistency_check": {
+                    "type": "object",
+                    "properties": {
+                        "outline_alignment": {"type": "string"},
+                        "worldbuilding_compliance": {"type": "string"},
+                        "character_consistency": {"type": "string"},
+                        "timeline_check": {"type": "string"},
+                        "potential_issues": {"type": "string"},
+                    },
+                },
+                "new_characters_needed": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "identity": {"type": "string"},
+                            "reason": {"type": "string"},
+                            "core_traits": {"type": "string"},
+                            "suggested_actor": {"type": "string"},
+                        },
+                        "required": ["name", "identity", "reason"],
+                    },
+                },
+                "engagement_assessment": {
+                    "type": "object",
+                    "properties": {
+                        "hooks": {"type": "array", "items": {"type": "string"}},
+                        "reader_appeal": {"type": "string"},
+                        "strengthening_suggestions": {"type": "string"},
+                    },
+                },
+                "summary": {"type": "string", "description": "本章剧情一句话总结"},
+            },
+            "required": ["scenes", "conflicts", "emotional_arc", "engagement_assessment", "summary"],
+        },
+    },
+}
 
 
 async def design_plot(
@@ -59,7 +160,7 @@ async def design_plot(
     scene_chars = _build_scene_characters_context(db, project_id, outline_node_id)
 
     # Context: style
-    style_ctx = _build_style_context(project)
+    style_ctx = build_style_context(project)
 
     # Context: involved characters detail
     char_details: list[str] = []
@@ -121,73 +222,24 @@ async def design_plot(
                 for ch in existing
             )
 
-    # Build previous plot feedback for iteration
-    iteration_context = ""
-    if feedback and previous_plot:
-        iteration_context = (
-            "【上一轮剧情设计】（需要修改）\n"
-            f"{_json.dumps(previous_plot, ensure_ascii=False, indent=2)}\n\n"
-            f"【修改意见】\n{feedback}\n\n"
-            "请根据修改意见重新设计剧情。\n\n"
-        )
+    previous_plot_json = _json.dumps(previous_plot, ensure_ascii=False, indent=2) if previous_plot else ""
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一位资深小说剧情设计师，专精于设计引人入胜、逻辑自洽的章节剧情。你设计的情节不是流水账——每一场戏都必须同时推动剧情、揭示角色或制造紧张。\n\n"
-                "【任务】\n"
-                "根据提供的大纲、角色、世界观和前文摘要，设计本章节的详细剧情。你的设计将被ReAct智能体审核，通过后才会交给角色扮演工具和写手工具去执行。\n\n"
-                "【设计维度 — 必须逐项完成】\n"
-                "1. 场景拆解（scenes）：将本章拆分为 3-5 个连续场景，每个场景包含：地点、时间、出场角色、核心事件、场景目标（这场戏完成了什么）。\n"
-                "2. 角色行为设计（character_actions）：每个出场角色在本章中的关键动作和动机——他们想要什么？为此做了什么？结果如何？\n"
-                "3. 冲突与张力（conflicts）：本章的核心矛盾——角色间的冲突、角色与环境的冲突、或角色内心的冲突。描述冲突如何升级或转折。\n"
-                "4. 情绪曲线（emotional_arc）：本章的情绪走向——从哪里开始（如平静/紧张/悲伤），经历什么转折，在哪里结束。标注情绪转折的关键事件。\n"
-                "5. 设定一致性检查（consistency_check）：逐项核对——是否与已有大纲冲突？是否违反世界观规则？角色行为是否符合其性格和动机？是否有时间线矛盾？\n"
-                "6. 新角色需求（new_characters_needed）：本章是否引入了新角色？如有，列出角色名、身份、出现原因、核心特征。如无，说明为什么现有角色已足够。\n"
-                "7. 吸引力评估（engagement_assessment）：本章的看点是什么（悬念/反转/情感冲击/智斗/动作场面等）？读者为什么想要继续读下去？如果觉得不够，提出强化建议。\n\n"
-                "【设计原则】\n"
-                "- 每一个场景都必须回答'这段戏推动或改变或揭示了什么'。\n"
-                "- 角色的每个行为必须有动机支撑——不要为了剧情需要而让角色做不符合性格的事。\n"
-                "- 冲突必须具体、可感知——读者不需要通过分析来意识到'这里应该很紧张'。\n"
-                "- 如果上一轮设计被指出问题，本轮必须针对性地修正，而不是在原方案上微调措辞。\n"
-                "- 不要设计装饰性场景（如'角色A在花园散步思考'）——除非散步的内容推动剧情。\n\n"
-                "【禁止事项】\n"
-                "- 禁止输出泛泛的'本章围绕XX展开'式概括。每个场景都要有具体的动作和对话方向。\n"
-                "- 禁止忽略已有章节——如果大纲节点下已有章节，新剧情必须承接上文。\n"
-                "- 禁止设计超出当前大纲节点范围的内容。\n"
-                "- 禁止凭空创造世界观中不存在的设定。\n"
-                "- 禁止输出JSON以外的任何内容。\n\n"
-                "【输出格式】\n"
-                '{"scenes":[{"location":"","time":"","characters":[""],"core_event":"","goal":"","dialogue_direction":"该场景的对话方向或关键对话主题"}],'
-                '"character_actions":[{"character_name":"","motivation":"","action":"","outcome":""}],'
-                '"conflicts":{"type":"character|environment|inner","description":"","escalation":"冲突如何升级或转折","stakes":"如果处理不好会怎样"},'
-                '"emotional_arc":{"start":"","turning_points":[{"event":"","emotion_shift":""}],"end":""},'
-                '"consistency_check":{"outline_alignment":"","worldbuilding_compliance":"","character_consistency":"","timeline_check":"","potential_issues":""},'
-                '"new_characters_needed":[{"name":"","identity":"","reason":"","core_traits":"","suggested_actor":"如果需要角色扮演，建议选哪个已有角色与之对话"}],'
-                '"engagement_assessment":{"hooks":[""],"reader_appeal":"","strengthening_suggestions":""},'
-                '"summary":"本章剧情一句话总结"}'
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"作品：{project.title}\n"
-                f"简介：{project.description or '暂无'}\n\n"
-                f"【完整大纲树】\n{outline_overview}\n\n"
-                f"【当前大纲节点】\n{outline_ctx}\n\n"
-                f"【世界观设定】\n{world_ctx}\n\n"
-                f"【前文摘要】\n{summaries}\n\n"
-                f"【该大纲下已有章节】\n{existing_chapters_text}\n\n"
-                f"【场景已有角色】\n{scene_chars}\n\n"
-                f"【本章涉及角色详情】\n{char_detail_text}\n\n"
-                f"【作品文风约束】\n{style_ctx}\n\n"
-                f"{'【用户要求】' + requirements if requirements else ''}\n\n"
-                f"{iteration_context}"
-                f"请为大纲节点设计本章的详细剧情。"
-            ),
-        },
-    ]
+    messages = build_plot_design_messages(
+        project_title=project.title,
+        project_description=project.description or "",
+        outline_overview=outline_overview,
+        outline_ctx=outline_ctx,
+        world_ctx=world_ctx,
+        summaries=summaries,
+        existing_chapters_text=existing_chapters_text,
+        scene_chars=scene_chars,
+        involved_characters_text=char_detail_text,
+        style_ctx=style_ctx,
+        requirements=requirements,
+        feedback=feedback,
+        previous_plot=previous_plot_json,
+        genre_hint=project.description or "",
+    )
 
     model = str(args.get("model") or "") or None
     temperature = float(args.get("temperature") or 0.8)
@@ -199,27 +251,37 @@ async def design_plot(
             temperature=temperature,
             timeout=120,
             retry=1,
+            tools=[PLOT_DESIGN_TOOL],
+            tool_choice="required",
         )
     except Exception as exc:
         return {"tool": "design_plot", "status": "error", "detail": f"LLM 调用失败：{exc}", "data": {}}
 
-    plot_text = result.get("content", "")
-    parsed = None
-    try:
-        cleaned = plot_text.strip()
-        fence_match = _re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=_re.DOTALL | _re.IGNORECASE)
-        if fence_match:
-            cleaned = fence_match.group(1).strip()
-        parsed = _json.loads(cleaned)
-    except (_json.JSONDecodeError, AttributeError):
-        parsed = None
+    tool_calls = result.get("tool_calls") or []
+    if not tool_calls:
+        return {
+            "tool": "design_plot",
+            "status": "error",
+            "detail": "LLM 返回的剧情设计无法解析",
+            "data": {"raw": str(result.get("content", ""))[:2000]},
+        }
 
-    if not parsed or not isinstance(parsed, dict):
+    try:
+        parsed = _json.loads(tool_calls[0]["function"]["arguments"])
+    except (_json.JSONDecodeError, AttributeError):
         return {
             "tool": "design_plot",
             "status": "error",
             "detail": "LLM 返回的剧情设计无法解析为JSON",
-            "data": {"raw": plot_text[:2000]},
+            "data": {"raw": tool_calls[0].get("function", {}).get("arguments", "")[:2000]},
+        }
+
+    if not isinstance(parsed, dict):
+        return {
+            "tool": "design_plot",
+            "status": "error",
+            "detail": "LLM 返回的剧情设计无法解析为JSON",
+            "data": {"raw": _json.dumps(parsed, ensure_ascii=False)[:2000]},
         }
 
     scenes = parsed.get("scenes", [])

@@ -16,9 +16,9 @@ from ....services.context_builders import (
     _build_outline_context,
     _build_recent_summaries,
 )
+from ....prompts.style_prompts import build_style_context
 from ....services.style_rules import (
     STYLE_PROMPTS,
-    _build_style_context,
     _repair_forbidden_sentence_text,
 )
 
@@ -39,7 +39,7 @@ async def rewrite_text(
     if not project:
         return {"tool": "rewrite_text", "status": "skipped", "detail": "项目不存在", "data": {}}
 
-    style_ctx = _build_style_context(project)
+    style_ctx = build_style_context(project)
     style_instruction = STYLE_PROMPTS.get(style, "") if style else ""
 
     messages = build_rewrite_messages(
@@ -101,7 +101,7 @@ async def expand_text(
     if not project:
         return {"tool": "expand_text", "status": "skipped", "detail": "项目不存在", "data": {}}
 
-    style_ctx = _build_style_context(project)
+    style_ctx = build_style_context(project)
 
     messages = build_expand_messages(
         style_context=style_ctx,
@@ -161,7 +161,7 @@ async def continue_text(
     if not project:
         return {"tool": "continue_text", "status": "skipped", "detail": "项目不存在", "data": {}}
 
-    style_ctx = _build_style_context(project)
+    style_ctx = build_style_context(project)
     summaries = _build_recent_summaries(db, project_id, limit=5)
     outline_ctx = _build_outline_context(db, project_id, outline_node_id) if outline_node_id else "无指定大纲节点。"
 

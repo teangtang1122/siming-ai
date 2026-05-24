@@ -109,19 +109,24 @@ class LLMGateway:
         timeout: Optional[int] = None,
         retry: int = MAX_RETRIES,
         extra_body: Optional[dict] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[str | dict] = None,
     ) -> dict:
         """Unified non-streaming chat completion with timeout and retry.
-        
+
         Args:
-            messages: List of {"role": "system|user|assistant", "content": "..."}
+            messages: List of {"role": "system|user|assistant|tool", "content": "..."}.
+                      tool messages need "tool_call_id" for the matched call.
             model: Model identifier, e.g. "openai:gpt-4o" or "gpt-4o"
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             timeout: Request timeout in seconds (default 120)
             retry: Max retry attempts (default 3)
-        
+            tools: OpenAI-format function definitions [{"type":"function","function":{...}}, ...]
+            tool_choice: "auto" | "none" | {"type":"function","function":{"name":"x"}}
+
         Returns:
-            {"content": str, "model": str, "usage": dict}
+            {"content": str | None, "model": str, "usage": dict, "tool_calls": list[dict] | None}
         """
         provider, model_name = cls._parse_model(model)
         config = cls._load_config(provider)
@@ -141,6 +146,8 @@ class LLMGateway:
                         temperature=temperature,
                         max_tokens=max_tokens,
                         extra_body=extra_body,
+                        tools=tools,
+                        tool_choice=tool_choice,
                     ),
                     timeout=timeout_seconds,
                 )
@@ -171,9 +178,10 @@ class LLMGateway:
         retry: int = MAX_RETRIES,
         extra_body: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
-        """Unified streaming chat completion with timeout and retry.
+        """Unified streaming chat completion — text-only, no tool calls surfaced.
 
-        Yields token chunks. On failure, raises LLMError.
+        Yields text token chunks. For tools support, use stream_chat_completion_with_tools().
+        On failure, raises LLMError.
         """
         provider, model_name = cls._parse_model(model)
         config = cls._load_config(provider)
@@ -195,6 +203,71 @@ class LLMGateway:
                     extra_body=extra_body,
                 )
                 # Use asyncio.wait_for on each iteration
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(gen.__anext__(), timeout=timeout_seconds)
+                        yield chunk
+                    except asyncio.TimeoutError:
+                        raise LLMError(f"流式请求超时（{timeout_seconds}秒）")
+                    except StopAsyncIteration:
+                        break
+                return
+            except asyncio.TimeoutError:
+                last_error = LLMError(f"请求超时（{timeout_seconds}秒）")
+            except LLMError as e:
+                last_error = e
+                if "API Key 无效" in str(e):
+                    raise e
+            except Exception as e:
+                last_error = LLMError(f"流式调用失败: {e}")
+
+            if attempt < retry:
+                await asyncio.sleep(1 * attempt)
+
+        raise last_error or LLMError("流式请求失败，已达最大重试次数")
+
+    @classmethod
+    async def stream_chat_completion_with_tools(
+        cls,
+        messages: list[dict],
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
+        retry: int = MAX_RETRIES,
+        extra_body: Optional[dict] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[str | dict] = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Unified streaming chat completion with tool call support.
+
+        Yields structured chunks:
+            {"type": "content_delta", "delta": str}
+            {"type": "tool_call_delta", "index": int, "id": str, "name": str | None, "arguments_delta": str}
+            {"type": "done", "finish_reason": str, "usage": dict | None}
+
+        Tool call arguments arrive as incremental deltas. Accumulate them client-side.
+        """
+        provider, model_name = cls._parse_model(model)
+        config = cls._load_config(provider)
+        api_key = decrypt(config.api_key_encrypted)
+        adapter_cls = cls._get_adapter(provider)
+        adapter = adapter_cls(api_key=api_key, base_url=config.base_url_override)
+
+        timeout_seconds = timeout or DEFAULT_TIMEOUT
+        last_error = None
+
+        for attempt in range(1, retry + 1):
+            try:
+                gen = adapter.stream_chat_completion_with_tools(
+                    messages=messages,
+                    model=model_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    extra_body=extra_body,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
                 while True:
                     try:
                         chunk = await asyncio.wait_for(gen.__anext__(), timeout=timeout_seconds)
