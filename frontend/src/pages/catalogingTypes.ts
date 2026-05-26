@@ -50,6 +50,49 @@ export interface CatalogingCandidate {
   error?: string | null
 }
 
+export interface CatalogingFact {
+  id: string
+  job_id?: string
+  chapter_run_id: string
+  chapter_id: string
+  fact_type: string
+  payload: Record<string, unknown>
+  confidence?: number | null
+  evidence?: string | null
+  sort_order?: number | null
+  status?: string | null
+  error?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface CharacterSnapshot {
+  id: string
+  name: string
+  aliases?: string[]
+  appearance?: string | null
+  personality?: string | null
+  background?: string | null
+  abilities?: string[]
+  role_type?: string | null
+  life_status?: string | null
+  current_location?: string | null
+  realm_or_level?: string | null
+  physical_state?: string | null
+  mental_state?: string | null
+  current_goal?: string | null
+  active_conflict?: string | null
+  abilities_state?: string | null
+  items_or_assets?: string | null
+}
+
+export interface CharacterMergePreview {
+  candidate: CatalogingCandidate
+  payload: Record<string, unknown>
+  primary?: CharacterSnapshot | null
+  secondary?: CharacterSnapshot | null
+}
+
 export const catalogingStatusColor: Record<string, string> = {
   queued: 'default',
   running: 'processing',

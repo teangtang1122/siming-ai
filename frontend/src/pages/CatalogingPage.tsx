@@ -8,6 +8,7 @@ import CatalogingSidebar from './CatalogingSidebar'
 import type {
   ApiResponse,
   CatalogingCandidate,
+  CatalogingFact,
   CatalogingJob,
   CatalogingMode,
   CatalogingRun,
@@ -19,6 +20,17 @@ interface CatalogingPageProps {
   projectId: string
 }
 
+const finishedRunStatuses = new Set(['completed', 'completed_with_warnings', 'skipped_by_user'])
+
+const candidateRunId = (job: CatalogingJob | null, runs: CatalogingRun[]) => {
+  if (!job) return undefined
+  const chapterId = job.blocked_chapter_id || job.current_chapter_id
+  if (chapterId) {
+    return runs.find((run) => run.chapter_id === chapterId)?.id
+  }
+  return runs.find((run) => !finishedRunStatuses.has(run.status))?.id
+}
+
 function CatalogingPage({ projectId }: CatalogingPageProps) {
   const [mode, setMode] = useState<CatalogingMode>('auto')
   const [chapters, setChapters] = useState<ChapterItem[]>([])
@@ -27,6 +39,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   const [job, setJob] = useState<CatalogingJob | null>(null)
   const [runs, setRuns] = useState<CatalogingRun[]>([])
   const [candidates, setCandidates] = useState<CatalogingCandidate[]>([])
+  const [facts, setFacts] = useState<CatalogingFact[]>([])
   const [candidateDrafts, setCandidateDrafts] = useState<Record<string, string>>({})
   const [candidateStatusFilter, setCandidateStatusFilter] = useState<string>('all')
   const [newCandidateType, setNewCandidateType] = useState<string>('chapter_summary')
@@ -66,10 +79,19 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     setJob(res.data.data.job)
     setMode(res.data.data.job.execution_mode)
     setRuns(res.data.data.runs)
+    return res.data.data
   }, [projectId])
 
-  const fetchCandidates = useCallback(async (jobId: string) => {
-    const res = await apiClient.get<ApiResponse<{ items: CatalogingCandidate[]; total: number }>>(`/projects/${projectId}/cataloging/${jobId}/candidates`)
+  const fetchCandidates = useCallback(async (jobId: string, chapterRunId?: string) => {
+    if (!chapterRunId) {
+      setCandidates([])
+      setCandidateDrafts({})
+      return
+    }
+    const res = await apiClient.get<ApiResponse<{ items: CatalogingCandidate[]; total: number }>>(
+      `/projects/${projectId}/cataloging/${jobId}/candidates`,
+      { chapter_run_id: chapterRunId },
+    )
     setCandidates(res.data.data.items)
     setCandidateDrafts((current) => {
       const next = { ...current }
@@ -80,10 +102,23 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     })
   }, [projectId])
 
+  const fetchFacts = useCallback(async (jobId: string, chapterRunId?: string) => {
+    if (!chapterRunId) {
+      setFacts([])
+      return
+    }
+    const res = await apiClient.get<ApiResponse<{ items: CatalogingFact[]; total: number }>>(
+      `/projects/${projectId}/cataloging/${jobId}/facts`,
+      { chapter_run_id: chapterRunId },
+    )
+    setFacts(res.data.data.items || [])
+  }, [projectId])
+
   const loadJob = useCallback(async (jobId: string) => {
-    await fetchJob(jobId)
-    await fetchCandidates(jobId)
-  }, [fetchCandidates, fetchJob])
+    const data = await fetchJob(jobId)
+    const runId = candidateRunId(data.job, data.runs)
+    await Promise.all([fetchCandidates(jobId, runId), fetchFacts(jobId, runId)])
+  }, [fetchCandidates, fetchFacts, fetchJob])
 
   const handleStreamEvent = useCallback((raw: string) => {
     let event: any
@@ -93,6 +128,11 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       return
     }
 
+    if (['chapter_started', 'chapter_completed', 'completed'].includes(event.type)) {
+      setCandidates([])
+      setCandidateDrafts({})
+      setFacts([])
+    }
     if (event.job) setJob(event.job)
     if (event.run) {
       setRuns((current) => {
@@ -115,6 +155,22 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
         ...current,
         [event.candidate.id]: current[event.candidate.id] || safeStringify(event.candidate.payload),
       }))
+    }
+    if (event.type === 'fact_extracted' && event.fact && event.run) {
+      setFacts((current) => [
+        ...current,
+        {
+          id: `stream-${event.run.id}-${current.length}`,
+          job_id: event.job?.id,
+          chapter_run_id: event.run.id,
+          chapter_id: event.run.chapter_id,
+          fact_type: event.fact.fact_type,
+          payload: event.fact.payload || {},
+          confidence: event.fact.confidence,
+          evidence: event.fact.evidence,
+          status: 'active',
+        },
+      ])
     }
 
     const label = event.message || event.detail || event.error || event.type
@@ -196,8 +252,10 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     setLoading(true)
     try {
       await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/apply-pending`)
+      setCandidates([])
+      setCandidateDrafts({})
+      setFacts([])
       await fetchJob(job.id)
-      await fetchCandidates(job.id)
       streamJob(job.id)
     } catch (err: any) {
       message.error(err.message || '写入失败')
@@ -229,11 +287,28 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     setLoading(true)
     try {
       await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/retry-current`)
-      await fetchJob(job.id)
-      await fetchCandidates(job.id)
+      const data = await fetchJob(job.id)
+      const runId = candidateRunId(data.job, data.runs)
+      await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
       streamJob(job.id)
     } catch (err: any) {
       message.error(err.message || '重试失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const rerunResolutionCurrent = async () => {
+    if (!job) return
+    setLoading(true)
+    try {
+      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/rerun-resolution-current`)
+      const data = await fetchJob(job.id)
+      const runId = candidateRunId(data.job, data.runs)
+      await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
+      streamJob(job.id)
+    } catch (err: any) {
+      message.error(err.message || '重跑第二阶段失败')
     } finally {
       setLoading(false)
     }
@@ -244,8 +319,9 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     setLoading(true)
     try {
       await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/recover-current`)
-      await fetchJob(job.id)
-      await fetchCandidates(job.id)
+      const data = await fetchJob(job.id)
+      const runId = candidateRunId(data.job, data.runs)
+      await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
       message.success('当前章节已转入人工确认')
     } catch (err: any) {
       message.error(err.message || '转入人工确认失败')
@@ -342,6 +418,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
         streaming={streaming}
         onApplyPending={applyPending}
         onRetryCurrent={retryCurrent}
+        onRerunResolutionCurrent={rerunResolutionCurrent}
         onRecoverCurrent={recoverCurrent}
         onSkipCurrent={skipCurrent}
         onPauseCurrentJob={pauseCurrentJob}
@@ -364,8 +441,10 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
         </Col>
         <Col span={18}>
           <CatalogingCandidatesPanel
+            projectId={projectId}
             job={job}
             visibleCandidates={visibleCandidates}
+            facts={facts}
             candidateDrafts={candidateDrafts}
             candidateStatusFilter={candidateStatusFilter}
             newCandidateType={newCandidateType}

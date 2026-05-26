@@ -6,6 +6,8 @@ export const catalogingCandidateTypeOptions = [
   { value: 'character_update', label: '更新角色' },
   { value: 'character_state_update', label: '角色当前状态' },
   { value: 'character_timeline', label: '角色时间线' },
+  { value: 'character_relationship', label: '角色关系' },
+  { value: 'character_merge_candidate', label: '角色合并候选' },
   { value: 'worldbuilding_create', label: '新增世界观' },
   { value: 'worldbuilding_update', label: '更新世界观' },
   { value: 'worldbuilding_timeline', label: '世界观时间线' },

@@ -20,6 +20,7 @@ def character_snapshot(character: Character | None) -> dict | None:
     return {
         "id": character.id,
         "name": character.name,
+        "aliases": [item.alias for item in (character.aliases or []) if item.alias],
         "appearance": character.appearance,
         "personality": character.personality,
         "background": character.background,
@@ -34,6 +35,13 @@ def character_snapshot(character: Character | None) -> dict | None:
         "active_conflict": character.active_conflict,
         "abilities_state": character.abilities_state,
         "items_or_assets": character.items_or_assets,
+        "ai_config": {
+            "tone_style": character.ai_config.tone_style,
+            "catchphrases": _parse_list(character.ai_config.catchphrases),
+            "verbosity": character.ai_config.verbosity,
+            "emotion_tendency": character.ai_config.emotion_tendency,
+            "custom_system_prompt": character.ai_config.custom_system_prompt,
+        } if character.ai_config else None,
     }
 
 
@@ -56,10 +64,13 @@ def outline_snapshot(node: OutlineNode | None) -> dict | None:
     return {
         "id": node.id,
         "title": node.title,
+        "node_type": node.node_type,
+        "parent_id": node.parent_id,
         "summary": node.summary,
         "status": node.status,
         "source_chapter_id": node.source_chapter_id,
         "actual_summary": node.actual_summary,
+        "planned_summary": node.planned_summary,
     }
 
 
@@ -68,3 +79,15 @@ def chapter_change_title(chapter: Chapter, summary: Any) -> str:
     if len(detail) > 80:
         detail = detail[:80] + "..."
     return f"《{chapter.title}》：{detail or '信息更新'}"
+
+
+def _parse_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    except Exception:
+        return []
+    return []

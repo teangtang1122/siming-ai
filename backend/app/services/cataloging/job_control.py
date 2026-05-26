@@ -5,7 +5,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from ...database.models import CatalogingApplyLog, CatalogingCandidate, CatalogingChapterRun, CatalogingJob
+from ...database.models import CatalogingApplyLog, CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
 
 
 TERMINAL_RUN_STATUSES = {"completed", "completed_with_warnings", "skipped_by_user"}
@@ -44,11 +44,30 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
     if candidate_ids:
         db.query(CatalogingApplyLog).filter(CatalogingApplyLog.candidate_id.in_(candidate_ids)).delete(synchronize_session=False)
         db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(synchronize_session=False)
+    db.query(CatalogingFact).filter(CatalogingFact.chapter_run_id == run.id).delete(synchronize_session=False)
     run.status = "pending"
     run.started_at = None
     run.completed_at = None
     run.error = None
     run.raw_output = None
+    job.status = "running"
+    job.current_chapter_id = run.chapter_id
+    job.blocked_chapter_id = None
+    job.error = None
+    refresh_job_progress(db, job)
+
+
+def reset_run_for_resolution_retry(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> None:
+    candidate_ids = [
+        row.id
+        for row in db.query(CatalogingCandidate.id).filter(CatalogingCandidate.chapter_run_id == run.id).all()
+    ]
+    if candidate_ids:
+        db.query(CatalogingApplyLog).filter(CatalogingApplyLog.candidate_id.in_(candidate_ids)).delete(synchronize_session=False)
+        db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(synchronize_session=False)
+    run.status = "pending"
+    run.completed_at = None
+    run.error = None
     job.status = "running"
     job.current_chapter_id = run.chapter_id
     job.blocked_chapter_id = None

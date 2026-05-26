@@ -20,6 +20,9 @@ interface Character {
   id: string; project_id: string; name: string; appearance?: string
   personality?: string; background?: string; abilities: string[]
   role_type?: string; current_version: number; is_evolution_tracked: boolean
+  life_status?: string; current_location?: string; realm_or_level?: string
+  physical_state?: string; mental_state?: string; current_goal?: string
+  active_conflict?: string; abilities_state?: string; items_or_assets?: string
   created_at: string; updated_at: string
   appearances?: {
     outline_nodes: Array<{ id: string; title: string; node_type: string; role_in_scene?: string }>
@@ -40,6 +43,9 @@ interface AIConfig {
 interface CharacterFormValues {
   name: string; role_type?: string; appearance?: string; personality?: string
   background?: string; abilities?: string[]; is_evolution_tracked?: boolean
+  life_status?: string; current_location?: string; realm_or_level?: string
+  physical_state?: string; mental_state?: string; current_goal?: string
+  active_conflict?: string; abilities_state?: string; items_or_assets?: string
 }
 
 interface CharactersPageProps { projectId: string }
@@ -114,6 +120,15 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         name: res.data.data.name, role_type: res.data.data.role_type,
         appearance: res.data.data.appearance, personality: res.data.data.personality,
         background: res.data.data.background, abilities: res.data.data.abilities || [],
+        life_status: res.data.data.life_status,
+        current_location: res.data.data.current_location,
+        realm_or_level: res.data.data.realm_or_level,
+        physical_state: res.data.data.physical_state,
+        mental_state: res.data.data.mental_state,
+        current_goal: res.data.data.current_goal,
+        active_conflict: res.data.data.active_conflict,
+        abilities_state: res.data.data.abilities_state,
+        items_or_assets: res.data.data.items_or_assets,
         is_evolution_tracked: res.data.data.is_evolution_tracked,
       })
     } catch (err: any) { message.error(err.message || '获取角色详情失败') }
@@ -305,6 +320,24 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             <Form.Item name="abilities" label="能力">
               <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入能力后回车" />
             </Form.Item>
+            <Divider orientation="left" plain>当前状态</Divider>
+            <div className="characters-three-col">
+              <Form.Item name="life_status" label="生死状态"><Input placeholder="alive / dead / unknown，或中文描述" /></Form.Item>
+              <Form.Item name="current_location" label="当前位置"><Input placeholder="角色当前所处地点" /></Form.Item>
+              <Form.Item name="realm_or_level" label="境界/等级"><Input placeholder="修为、等级、身份层级" /></Form.Item>
+            </div>
+            <div className="characters-two-col">
+              <Form.Item name="physical_state" label="身体状况"><Input.TextArea rows={3} placeholder="伤势、疾病、体力、异常状态" /></Form.Item>
+              <Form.Item name="mental_state" label="心理状态"><Input.TextArea rows={3} placeholder="情绪、压力、执念、恐惧、决心" /></Form.Item>
+            </div>
+            <div className="characters-two-col">
+              <Form.Item name="current_goal" label="当前目标"><Input.TextArea rows={3} placeholder="本阶段想达成什么" /></Form.Item>
+              <Form.Item name="active_conflict" label="当前冲突"><Input.TextArea rows={3} placeholder="正在面对的矛盾、敌人、阻碍" /></Form.Item>
+            </div>
+            <div className="characters-two-col">
+              <Form.Item name="abilities_state" label="能力当前状态"><Input.TextArea rows={3} placeholder="能力是否受限、增强、失控、冷却" /></Form.Item>
+              <Form.Item name="items_or_assets" label="持有物/资源"><Input.TextArea rows={3} placeholder="法器、线索、资源、伤药、人脉" /></Form.Item>
+            </div>
             <Form.Item name="is_evolution_tracked" label="动态演进追踪">
               <Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} />
             </Form.Item>

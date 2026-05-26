@@ -114,6 +114,12 @@
   gap: 16px;
 }
 
+.characters-three-col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
 .characters-ai-result {
   background: #fafafa;
   border: 1px solid #f0f0f0;
@@ -126,7 +132,8 @@
 
 @media (max-width: 1080px) {
   .characters-shell,
-  .characters-two-col {
+  .characters-two-col,
+  .characters-three-col {
     grid-template-columns: 1fr;
   }
 

@@ -18,6 +18,8 @@ APPLY_ORDER = {
     "character_update": 31,
     "character_state_update": 32,
     "character_timeline": 33,
+    "character_relationship": 34,
+    "character_merge_candidate": 35,
     "worldbuilding_create": 40,
     "worldbuilding_update": 41,
     "worldbuilding_timeline": 42,
@@ -28,5 +30,5 @@ VALID_ITEM_TYPES = set(APPLY_ORDER)
 
 WORLD_DIMENSIONS = {"geography", "history", "factions", "power_system", "races", "culture"}
 
-CATALOGING_MAX_TOKENS = 12000
+CATALOGING_MAX_TOKENS = 20000
 CATALOGING_TIMEOUT_SECONDS = 240

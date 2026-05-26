@@ -103,6 +103,12 @@ class Character(Base):
     project = relationship("Project", back_populates="characters")
     versions = relationship("CharacterVersion", back_populates="character", cascade="all, delete-orphan")
     ai_config = relationship("CharacterAIConfig", back_populates="character", uselist=False, cascade="all, delete-orphan")
+    aliases = relationship(
+        "CharacterAlias",
+        back_populates="character",
+        cascade="all, delete-orphan",
+        foreign_keys="CharacterAlias.character_id",
+    )
     timeline_events = relationship("CharacterTimeline", back_populates="character", cascade="all, delete-orphan")
     change_logs = relationship("CharacterChangeLog", back_populates="character", cascade="all, delete-orphan")
     chapter_appearances = relationship("ChapterCharacter", back_populates="character", cascade="all, delete-orphan")
@@ -148,6 +154,25 @@ class CharacterAIConfig(Base):
 # ---------------------------------------------------------------------------
 # 6. character_relationships — 角色关系表
 # ---------------------------------------------------------------------------
+class CharacterAlias(Base):
+    __tablename__ = "character_aliases"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    character_id = Column(String(36), ForeignKey("characters.id", ondelete="CASCADE"), nullable=False)
+    alias = Column(String(200), nullable=False)
+    alias_type = Column(String(50), nullable=False, default="alias")
+    description = Column(Text, nullable=True)
+    confidence = Column(Float, nullable=True)
+    source_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    merged_character_id = Column(String(36), ForeignKey("characters.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    character = relationship("Character", back_populates="aliases", foreign_keys=[character_id])
+    merged_character = relationship("Character", foreign_keys=[merged_character_id])
+
+
 class CharacterRelationship(Base):
     __tablename__ = "character_relationships"
 
@@ -507,6 +532,29 @@ class CatalogingChapterRun(Base):
     job = relationship("CatalogingJob", back_populates="chapter_runs")
     chapter = relationship("Chapter")
     candidates = relationship("CatalogingCandidate", back_populates="chapter_run", cascade="all, delete-orphan")
+    facts = relationship("CatalogingFact", back_populates="chapter_run", cascade="all, delete-orphan")
+
+
+class CatalogingFact(Base):
+    __tablename__ = "cataloging_facts"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    job_id = Column(String(36), ForeignKey("cataloging_jobs.id", ondelete="CASCADE"), nullable=False)
+    chapter_run_id = Column(String(36), ForeignKey("cataloging_chapter_runs.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)
+    fact_type = Column(String(50), nullable=False)
+    raw_payload = Column(Text, nullable=False)
+    confidence = Column(Float, nullable=True)
+    evidence = Column(Text, nullable=True)
+    sort_order = Column(Integer, default=0)
+    status = Column(String(30), nullable=False, default="active")
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    chapter_run = relationship("CatalogingChapterRun", back_populates="facts")
+    chapter = relationship("Chapter")
 
 
 class CatalogingCandidate(Base):

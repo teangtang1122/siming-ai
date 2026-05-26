@@ -16,7 +16,14 @@ from ...database.models import CatalogingApplyLog, CatalogingCandidate, Catalogi
 from .candidate_io import candidate_payload, candidate_to_dict
 from .chapter_link_ops import apply_chapter_link
 from .chapter_ops import apply_chapter_summary
-from .character_ops import apply_character_create, apply_character_state, apply_character_timeline, apply_character_update
+from .character_ops import (
+    apply_character_create,
+    apply_character_relationship,
+    apply_character_state,
+    apply_character_timeline,
+    apply_character_update,
+)
+from .character_merge_ops import apply_character_merge_candidate
 from .constants import APPLY_ORDER
 from .outline_ops import apply_outline
 from .worldbuilding_ops import apply_worldbuilding, apply_worldbuilding_timeline
@@ -78,6 +85,8 @@ def _handler_for(item_type: str) -> ApplyHandler:
         "character_update": apply_character_update,
         "character_state_update": apply_character_state,
         "character_timeline": apply_character_timeline,
+        "character_relationship": apply_character_relationship,
+        "character_merge_candidate": apply_character_merge_candidate,
         "worldbuilding_timeline": apply_worldbuilding_timeline,
         "chapter_link": apply_chapter_link,
         "outline_create": lambda db, candidate, chapter, payload: apply_outline(db, candidate, chapter, payload, True),

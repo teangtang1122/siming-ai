@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob
+from ..database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
 from ..database.session import get_db
 from ..schemas.cataloging import (
     CatalogingCandidateBulkUpdate,
@@ -21,7 +21,7 @@ from ..schemas.cataloging import (
     CatalogingStartRequest,
 )
 from ..services.cataloging.applier import apply_candidates_for_run
-from ..services.cataloging.candidate_io import candidate_to_dict
+from ..services.cataloging.candidate_io import candidate_payload, candidate_to_dict
 from ..services.cataloging.job_control import (
     cancel_job,
     first_blocking_run,
@@ -29,11 +29,15 @@ from ..services.cataloging.job_control import (
     pause_job,
     refresh_job_progress,
     reset_run_for_retry,
+    reset_run_for_resolution_retry,
     resume_job,
 )
+from ..services.cataloging.fact_store import fact_to_dict, load_facts_for_run
+from ..services.cataloging.lookups import find_character_by_name_or_id
 from ..services.cataloging.manual_ops import create_manual_candidate, has_usable_chapter_summary, recover_failed_run_for_review
 from ..services.cataloging.model_selection import default_cataloging_model
 from ..services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
+from ..services.cataloging.snapshots import character_snapshot
 
 router = APIRouter(tags=["cataloging"])
 
@@ -133,6 +137,45 @@ def list_cataloging_candidates(
         query = query.filter(CatalogingCandidate.item_type == item_type)
     candidates = query.order_by(CatalogingCandidate.created_at.asc()).all()
     return ApiResponse.success(data={"items": [candidate_to_dict(item) for item in candidates], "total": len(candidates)})
+
+
+@router.get("/projects/{project_id}/cataloging/{job_id}/facts")
+def list_cataloging_facts(
+    project_id: str,
+    job_id: str,
+    chapter_run_id: str | None = Query(None),
+    fact_type: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    get_project_or_404(db, project_id)
+    job = _get_job_or_404(db, project_id, job_id)
+    query = db.query(CatalogingFact).filter(CatalogingFact.job_id == job.id)
+    if chapter_run_id:
+        query = query.filter(CatalogingFact.chapter_run_id == chapter_run_id)
+    if fact_type:
+        query = query.filter(CatalogingFact.fact_type == fact_type)
+    facts = query.order_by(CatalogingFact.sort_order.asc(), CatalogingFact.created_at.asc()).all()
+    return ApiResponse.success(data={"items": [fact_to_dict(item) for item in facts], "total": len(facts)})
+
+
+@router.get("/projects/{project_id}/cataloging/candidates/{candidate_id}/merge-preview")
+def get_character_merge_candidate_preview(project_id: str, candidate_id: str, db: Session = Depends(get_db)):
+    get_project_or_404(db, project_id)
+    candidate = _get_candidate_or_404(db, project_id, candidate_id)
+    if candidate.item_type != "character_merge_candidate":
+        raise ValidationError("只有角色合并候选项可以查看合并预览")
+
+    payload = candidate_payload(candidate)
+    primary_name = payload.get("primary_name") or payload.get("canonical_name")
+    secondary_name = payload.get("secondary_name")
+    primary = find_character_by_name_or_id(db, project_id, primary_name)
+    secondary = find_character_by_name_or_id(db, project_id, secondary_name)
+    return ApiResponse.success(data={
+        "candidate": candidate_to_dict(candidate),
+        "payload": payload,
+        "primary": character_snapshot(primary),
+        "secondary": character_snapshot(secondary),
+    })
 
 
 @router.patch("/projects/{project_id}/cataloging/candidates/{candidate_id}")
@@ -267,6 +310,28 @@ def retry_current_cataloging_chapter(project_id: str, job_id: str, db: Session =
     reset_run_for_retry(db, job, run)
     db.commit()
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已重置，准备重试")
+
+
+@router.post("/projects/{project_id}/cataloging/{job_id}/rerun-resolution-current")
+def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Session = Depends(get_db)):
+    get_project_or_404(db, project_id)
+    job = _get_job_or_404(db, project_id, job_id)
+    run = first_blocking_run(db, job)
+    if not run:
+        run = (
+            db.query(CatalogingChapterRun)
+            .filter(CatalogingChapterRun.job_id == job.id)
+            .filter(CatalogingChapterRun.status.in_(["extracting", "awaiting_confirmation", "failed"]))
+            .order_by(CatalogingChapterRun.chapter_order.asc())
+            .first()
+        )
+    if not run:
+        raise ValidationError("当前没有可重跑第二阶段的章节")
+    if not load_facts_for_run(db, run):
+        raise ValidationError("当前章节没有已保存事实，请使用完整重试")
+    reset_run_for_resolution_retry(db, job, run)
+    db.commit()
+    return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="已保留事实并重置第二阶段")
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/recover-current")

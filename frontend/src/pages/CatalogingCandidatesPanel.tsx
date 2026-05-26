@@ -1,15 +1,18 @@
-import { Alert, Button, Card, Divider, Input, List, Select, Space, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Collapse, Divider, Input, List, Select, Space, Tag, Typography } from 'antd'
 import { CheckOutlined, CloseOutlined, SaveOutlined } from '@ant-design/icons'
+import CatalogingMergePreview from './CatalogingMergePreview'
 import { catalogingCandidateStatusOptions, catalogingCandidateTypeOptions } from './catalogingOptions'
-import type { CatalogingCandidate, CatalogingJob } from './catalogingTypes'
+import type { CatalogingCandidate, CatalogingFact, CatalogingJob } from './catalogingTypes'
 import { catalogingStatusColor, safeStringify } from './catalogingTypes'
 
 const { Text } = Typography
 const { TextArea } = Input
 
 interface CatalogingCandidatesPanelProps {
+  projectId: string
   job: CatalogingJob | null
   visibleCandidates: CatalogingCandidate[]
+  facts: CatalogingFact[]
   candidateDrafts: Record<string, string>
   candidateStatusFilter: string
   newCandidateType: string
@@ -25,8 +28,10 @@ interface CatalogingCandidatesPanelProps {
 }
 
 function CatalogingCandidatesPanel({
+  projectId,
   job,
   visibleCandidates,
+  facts,
   candidateDrafts,
   candidateStatusFilter,
   newCandidateType,
@@ -43,6 +48,16 @@ function CatalogingCandidatesPanel({
   return (
     <>
       <Card title="候选写入项" size="small">
+        <Collapse
+          size="small"
+          style={{ marginBottom: 12 }}
+          items={[{
+            key: 'facts',
+            label: `第一阶段事实（${facts.length}）`,
+            children: <CatalogingFactsList facts={facts} />,
+          }]}
+        />
+
         <Space style={{ marginBottom: 12 }}>
           <Select
             size="small"
@@ -107,6 +122,15 @@ function CatalogingCandidatesPanel({
                 {item.evidence && <Text type="secondary">依据：{item.evidence}</Text>}
                 {item.error && <div><Text type="danger">{item.error}</Text></div>}
                 <Divider style={{ margin: '8px 0' }} />
+                {item.item_type === 'character_merge_candidate' && (
+                  <CatalogingMergePreview
+                    projectId={projectId}
+                    candidate={item}
+                    draft={candidateDrafts[item.id] || safeStringify(item.payload)}
+                    disabled={['applying', 'applied'].includes(item.status)}
+                    onDraftChange={onCandidateDraftChange}
+                  />
+                )}
                 <TextArea
                   value={candidateDrafts[item.id] || safeStringify(item.payload)}
                   autoSize={{ minRows: 4, maxRows: 12 }}
@@ -125,6 +149,32 @@ function CatalogingCandidatesPanel({
         </div>
       </Card>
     </>
+  )
+}
+
+function CatalogingFactsList({ facts }: { facts: CatalogingFact[] }) {
+  if (!facts.length) {
+    return <Text type="secondary">当前章节还没有可回看的第一阶段事实。</Text>
+  }
+  return (
+    <List
+      size="small"
+      dataSource={facts}
+      renderItem={(item) => (
+        <List.Item>
+          <Space direction="vertical" style={{ width: '100%' }} size={6}>
+            <Space wrap>
+              <Tag color="purple">{item.fact_type}</Tag>
+              {typeof item.confidence === 'number' && <Text type="secondary">置信度 {Math.round(item.confidence * 100)}%</Text>}
+              {item.status && <Tag>{item.status}</Tag>}
+            </Space>
+            {item.evidence && <Text type="secondary">依据：{item.evidence}</Text>}
+            {item.error && <Text type="danger">{item.error}</Text>}
+            <TextArea value={safeStringify(item.payload)} autoSize={{ minRows: 2, maxRows: 8 }} readOnly />
+          </Space>
+        </List.Item>
+      )}
+    />
   )
 }
 

@@ -10,19 +10,28 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import Character, OutlineNode, WorldbuildingEntry
+from ...database.models import Character, CharacterAlias, OutlineNode, WorldbuildingEntry
 
 
 def find_character_by_name_or_id(db: Session, project_id: str, value: Any) -> Character | None:
     text = str(value or "").strip()
     if not text:
         return None
-    return (
+    character = (
         db.query(Character)
         .filter(Character.project_id == project_id)
         .filter((Character.id == text) | (Character.name == text))
         .first()
     )
+    if character:
+        return character
+    alias = (
+        db.query(CharacterAlias)
+        .filter(CharacterAlias.project_id == project_id, CharacterAlias.alias == text)
+        .order_by(CharacterAlias.updated_at.desc())
+        .first()
+    )
+    return alias.character if alias else None
 
 
 def find_worldbuilding_by_title_or_id(db: Session, project_id: str, value: Any) -> WorldbuildingEntry | None:

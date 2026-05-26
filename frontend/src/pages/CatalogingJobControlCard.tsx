@@ -11,6 +11,7 @@ interface CatalogingJobControlCardProps {
   streaming: boolean
   onApplyPending: () => void
   onRetryCurrent: () => void
+  onRerunResolutionCurrent: () => void
   onRecoverCurrent: () => void
   onSkipCurrent: () => void
   onPauseCurrentJob: () => void
@@ -25,6 +26,7 @@ function CatalogingJobControlCard({
   streaming,
   onApplyPending,
   onRetryCurrent,
+  onRerunResolutionCurrent,
   onRecoverCurrent,
   onSkipCurrent,
   onPauseCurrentJob,
@@ -49,6 +51,9 @@ function CatalogingJobControlCard({
           </Button>
           <Button disabled={!['paused_on_failure', 'waiting_confirmation'].includes(job.status)} onClick={onRetryCurrent}>
             重试当前章节
+          </Button>
+          <Button disabled={!['paused_on_failure', 'waiting_confirmation'].includes(job.status)} onClick={onRerunResolutionCurrent}>
+            只重跑第二阶段
           </Button>
           <Button disabled={job.status !== 'paused_on_failure'} onClick={onRecoverCurrent}>
             使用候选项确认
