@@ -1,5 +1,6 @@
 import { Alert, Button, Card, Collapse, Divider, Input, List, Select, Space, Tag, Typography } from 'antd'
 import { CheckOutlined, CloseOutlined, SaveOutlined } from '@ant-design/icons'
+import CatalogingCandidatePayloadEditor from './CatalogingCandidatePayloadEditor'
 import CatalogingMergePreview from './CatalogingMergePreview'
 import { catalogingCandidateStatusOptions, catalogingCandidateTypeOptions } from './catalogingOptions'
 import type { CatalogingCandidate, CatalogingFact, CatalogingJob } from './catalogingTypes'
@@ -131,12 +132,14 @@ function CatalogingCandidatesPanel({
                     onDraftChange={onCandidateDraftChange}
                   />
                 )}
-                <TextArea
-                  value={candidateDrafts[item.id] || safeStringify(item.payload)}
-                  autoSize={{ minRows: 4, maxRows: 12 }}
-                  onChange={(event) => onCandidateDraftChange(item.id, event.target.value)}
-                  disabled={['applying', 'applied'].includes(item.status)}
-                />
+                {item.item_type !== 'character_merge_candidate' && (
+                  <CatalogingCandidatePayloadEditor
+                    candidate={item}
+                    draft={candidateDrafts[item.id] || safeStringify(item.payload)}
+                    disabled={['applying', 'applied'].includes(item.status)}
+                    onDraftChange={onCandidateDraftChange}
+                  />
+                )}
               </Card>
             </List.Item>
           )}

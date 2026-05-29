@@ -13,6 +13,7 @@ class CharacterBase(BaseModel):
     personality: Optional[str] = Field(None, description="性格描述")
     background: Optional[str] = Field(None, description="背景故事")
     abilities: Optional[list[str]] = Field(None, description="能力/技能列表")
+    aliases: Optional[list[str]] = Field(None, description="别名/称呼列表")
     role_type: Optional[str] = Field(None, max_length=50, description="角色类型")
     is_evolution_tracked: bool = Field(True, description="是否开启自动追踪")
 
@@ -40,6 +41,7 @@ class CharacterUpdate(BaseModel):
     personality: Optional[str] = None
     background: Optional[str] = None
     abilities: Optional[list[str]] = None
+    aliases: Optional[list[str]] = None
     role_type: Optional[str] = Field(None, max_length=50)
     life_status: Optional[str] = Field(None, max_length=50)
     current_location: Optional[str] = Field(None, max_length=200)
@@ -64,6 +66,7 @@ class CharacterResponse(BaseModel):
     personality: Optional[str]
     background: Optional[str]
     abilities: list[str]
+    aliases: list[str]
     role_type: Optional[str]
     life_status: Optional[str]
     current_location: Optional[str]
@@ -107,6 +110,17 @@ class RelationshipUpdate(BaseModel):
     """Schema for replacing a character's relationships."""
 
     relationships: list[RelationshipInput] = Field(default_factory=list)
+
+
+class CharacterMergeRequest(BaseModel):
+    """Request for previewing or applying a duplicate-character merge."""
+
+    primary_id: str = Field(..., description="保留的主角色ID")
+    secondary_id: str = Field(..., description="被合并的重复角色ID")
+    canonical_name: Optional[str] = Field(None, max_length=100, description="合并后的主名称")
+    aliases: list[str] = Field(default_factory=list, description="合并后的别名/称呼")
+    confidence_reason: Optional[str] = Field(None, description="合并依据")
+    background_append: Optional[str] = Field(None, description="补充写入背景的身份合并说明")
 
 
 class CharacterAIConfigUpdate(BaseModel):

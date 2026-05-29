@@ -37,6 +37,7 @@ from app.services.cataloging.orchestrator import create_cataloging_job
 from app.services.cataloging import orchestrator as cataloging_orchestrator
 from app.services.cataloging.background_compactor import merge_background
 from app.services.cataloging.worldbuilding_ops import _normalize_dimension
+from app.services.character_merge_service import build_character_merge_preview, find_duplicate_character_candidates, merge_characters
 
 
 class CatalogingServiceTestCase(unittest.TestCase):
@@ -276,6 +277,51 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_character_aliases_prevent_duplicate_cards(self):
+        db = self.Session()
+        try:
+            project = Project(title="Alias Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第二章 吐纳", content="糖糖在陆家见到爷爷。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            for index, payload in enumerate([
+                {"name": "特昂糖/陆糖", "aliases": ["糖糖"], "role_type": "protagonist"},
+                {"name": "陆糖", "current_location": "陆家府邸"},
+                {"name": "爷爷", "role_type": "mentor"},
+                {"name": "陆老爷子", "background": "陆家长辈，负责教导特昂糖吐纳。"},
+            ]):
+                db.add(CatalogingCandidate(
+                    job_id=job.id,
+                    chapter_run_id=run.id,
+                    project_id=project.id,
+                    chapter_id=chapter.id,
+                    item_type="character_state_update" if payload.get("current_location") else "character_create",
+                    raw_payload=json.dumps(payload, ensure_ascii=False),
+                    sort_order=index,
+                ))
+            db.commit()
+
+            apply_candidates_for_run(db, job, run)
+
+            characters = db.query(Character).order_by(Character.name.asc()).all()
+            self.assertEqual(len(characters), 2)
+            sugar = next(item for item in characters if item.name == "特昂糖")
+            elder = next(item for item in characters if item.name == "陆老爷子")
+            self.assertEqual(sugar.current_location, "陆家府邸")
+            sugar_aliases = [item.alias for item in db.query(CharacterAlias).filter(CharacterAlias.character_id == sugar.id).all()]
+            elder_aliases = [item.alias for item in db.query(CharacterAlias).filter(CharacterAlias.character_id == elder.id).all()]
+            self.assertIn("陆糖", sugar_aliases)
+            self.assertIn("特昂糖/陆糖", sugar_aliases)
+            self.assertIn("糖糖", sugar_aliases)
+            self.assertIn("爷爷", elder_aliases)
+        finally:
+            db.close()
+
     def test_character_merge_candidate_marks_alias_and_merges_background(self):
         db = self.Session()
         try:
@@ -316,6 +362,45 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertIn("合并到", secondary.background)
             aliases = db.query(CharacterAlias).filter(CharacterAlias.character_id == primary.id).all()
             self.assertIn("Black Cloak", [alias.alias for alias in aliases])
+        finally:
+            db.close()
+
+    def test_manual_character_merge_preview_and_apply_moves_links(self):
+        db = self.Session()
+        try:
+            project = Project(title="Manual Merge Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第三章", content="爷爷就是陆老爷子。")
+            primary = Character(project_id=project.id, name="陆老爷子", role_type="mentor", background="陆家长辈。")
+            secondary = Character(project_id=project.id, name="爷爷", role_type="mentor", background="教导特昂糖吐纳。")
+            db.add_all([chapter, primary, secondary])
+            db.flush()
+            from app.database.models import ChapterCharacter, CharacterRelationship, CharacterTimeline
+            db.add_all([
+                ChapterCharacter(chapter_id=chapter.id, character_id=secondary.id, appearance_type="出场", description="爷爷教导糖糖"),
+                CharacterTimeline(character_id=secondary.id, chapter_id=chapter.id, event_description="决定教特昂糖吐纳", event_type="decision"),
+                CharacterRelationship(project_id=project.id, character_a_id=secondary.id, character_b_id=primary.id, relationship_type="同一人", description="称呼不同"),
+            ])
+            db.commit()
+
+            duplicates = find_duplicate_character_candidates(db, project.id)
+            self.assertTrue(any(item["primary"]["id"] == primary.id and item["secondary"]["id"] == secondary.id for item in duplicates))
+
+            preview = build_character_merge_preview(db, project.id, primary.id, secondary.id, {"aliases": ["爷爷"]})
+            self.assertEqual(preview["stats"]["secondary_chapter_appearances"], 1)
+            self.assertIn("爷爷", preview["aliases"])
+
+            merge_characters(db, project.id, primary.id, secondary.id, {"aliases": ["爷爷"], "confidence_reason": "同一人物不同称呼"})
+            db.commit()
+
+            self.assertEqual(secondary.role_type, "merged_alias")
+            self.assertEqual(db.query(ChapterCharacter).filter(ChapterCharacter.character_id == secondary.id).count(), 0)
+            self.assertEqual(db.query(ChapterCharacter).filter(ChapterCharacter.character_id == primary.id).count(), 1)
+            self.assertEqual(db.query(CharacterTimeline).filter(CharacterTimeline.character_id == primary.id).count(), 1)
+            self.assertEqual(db.query(CharacterRelationship).filter(CharacterRelationship.character_a_id == secondary.id).count(), 0)
+            aliases = [item.alias for item in db.query(CharacterAlias).filter(CharacterAlias.character_id == primary.id).all()]
+            self.assertIn("爷爷", aliases)
         finally:
             db.close()
 

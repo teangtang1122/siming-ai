@@ -12,6 +12,7 @@ from ..core.response import ApiResponse
 from ..database.models import (
     Chapter,
     Character,
+    CharacterAlias,
     CharacterChangeLog,
     CharacterRelationship,
     CharacterVersion,
@@ -20,6 +21,7 @@ from ..database.session import get_db
 from ..schemas.character import (
     CharacterAIConfigUpdate,
     CharacterCreate,
+    CharacterMergeRequest,
     CharacterUpdate,
     CharacterVersionItem,
     RelationshipUpdate,
@@ -32,6 +34,12 @@ from ..services.character_service import (
     get_appearances,
     loads_list,
     snapshot_character,
+    sync_character_aliases,
+)
+from ..services.character_merge_service import (
+    build_character_merge_preview,
+    find_duplicate_character_candidates,
+    merge_characters,
 )
 
 router = APIRouter(tags=["characters"])
@@ -41,9 +49,19 @@ router = APIRouter(tags=["characters"])
 def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depends(get_db)):
     """Get project character list."""
     get_project_or_404(db, project_id)
-    query = db.query(Character).filter(Character.project_id == project_id)
+    query = (
+        db.query(Character)
+        .filter(Character.project_id == project_id)
+        .filter(or_(Character.role_type.is_(None), Character.role_type != "merged_alias"))
+    )
     if q:
         keyword = f"%{q}%"
+        alias_ids = [
+            row.character_id
+            for row in db.query(CharacterAlias.character_id)
+            .filter(CharacterAlias.project_id == project_id, CharacterAlias.alias.like(keyword))
+            .all()
+        ]
         query = query.filter(
             or_(
                 Character.name.like(keyword),
@@ -51,6 +69,7 @@ def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depe
                 Character.personality.like(keyword),
                 Character.background.like(keyword),
                 Character.role_type.like(keyword),
+                Character.id.in_(alias_ids) if alias_ids else False,
             )
         )
     characters = query.order_by(Character.updated_at.desc()).all()
@@ -82,6 +101,8 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
         is_evolution_tracked=payload.is_evolution_tracked,
     )
     db.add(character)
+    db.flush()
+    sync_character_aliases(db, character, payload.aliases)
     db.commit()
     db.refresh(character)
     return ApiResponse.success(data=character_to_dict(character), message="角色创建成功")
@@ -91,7 +112,13 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
 def get_relationship_network(project_id: str, db: Session = Depends(get_db)):
     """Get all character relationship network data for a project."""
     get_project_or_404(db, project_id)
-    characters = db.query(Character).filter(Character.project_id == project_id).all()
+    characters = (
+        db.query(Character)
+        .filter(Character.project_id == project_id)
+        .filter(or_(Character.role_type.is_(None), Character.role_type != "merged_alias"))
+        .all()
+    )
+    visible_ids = {character.id for character in characters}
     relationships = (
         db.query(CharacterRelationship)
         .filter(CharacterRelationship.project_id == project_id)
@@ -117,8 +144,59 @@ def get_relationship_network(project_id: str, db: Session = Depends(get_db)):
             "created_at": relationship.created_at.isoformat() if relationship.created_at else None,
         }
         for relationship in relationships
+        if relationship.character_a_id in visible_ids and relationship.character_b_id in visible_ids
     ]
     return ApiResponse.success(data={"nodes": nodes, "edges": edges, "total": len(edges)})
+
+
+@router.get("/projects/{project_id}/characters/duplicates")
+def list_duplicate_character_candidates(project_id: str, db: Session = Depends(get_db)):
+    """Find likely duplicate character cards for manual review."""
+    get_project_or_404(db, project_id)
+    return ApiResponse.success(data={"items": find_duplicate_character_candidates(db, project_id)})
+
+
+@router.post("/projects/{project_id}/characters/merge-preview")
+def preview_character_merge(
+    project_id: str,
+    payload: CharacterMergeRequest,
+    db: Session = Depends(get_db),
+):
+    """Preview how two character cards will be merged."""
+    get_project_or_404(db, project_id)
+    try:
+        data = build_character_merge_preview(
+            db,
+            project_id,
+            payload.primary_id,
+            payload.secondary_id,
+            payload.model_dump(exclude_unset=True),
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return ApiResponse.success(data=data)
+
+
+@router.post("/projects/{project_id}/characters/merge")
+def merge_duplicate_characters(
+    project_id: str,
+    payload: CharacterMergeRequest,
+    db: Session = Depends(get_db),
+):
+    """Merge a duplicate character into a primary character card."""
+    get_project_or_404(db, project_id)
+    try:
+        result = merge_characters(
+            db,
+            project_id,
+            payload.primary_id,
+            payload.secondary_id,
+            payload.model_dump(exclude_unset=True),
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    db.commit()
+    return ApiResponse.success(data=result, message="角色已合并")
 
 
 @router.get("/projects/{project_id}/characters/{character_id}")
@@ -149,6 +227,8 @@ def update_character(
     for field, value in update_data.items():
         if field == "abilities":
             character.abilities = dumps_list(value)
+        elif field == "aliases":
+            sync_character_aliases(db, character, value)
         else:
             setattr(character, field, value)
 

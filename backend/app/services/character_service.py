@@ -10,6 +10,7 @@ from ..database.models import (
     Chapter,
     ChapterCharacter,
     Character,
+    CharacterAlias,
     CharacterChangeLog,
     CharacterVersion,
     OutlineNode,
@@ -45,6 +46,7 @@ def character_to_dict(character: Character) -> dict:
         personality=character.personality,
         background=character.background,
         abilities=loads_list(character.abilities),
+        aliases=character_aliases(character),
         role_type=character.role_type,
         life_status=character.life_status,
         current_location=character.current_location,
@@ -65,6 +67,40 @@ def character_to_dict(character: Character) -> dict:
     return data.model_dump(mode="json")
 
 
+def character_aliases(character: Character) -> list[str]:
+    return [alias.alias for alias in (character.aliases or []) if alias.alias]
+
+
+def sync_character_aliases(db: Session, character: Character, aliases: Optional[list[str]]) -> None:
+    if aliases is None:
+        return
+    cleaned = []
+    seen = set()
+    for item in aliases:
+        text = str(item or "").strip()
+        if not text or text == character.name or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text[:200])
+
+    existing = {
+        item.alias: item
+        for item in db.query(CharacterAlias).filter(CharacterAlias.character_id == character.id).all()
+        if item.alias_type == "alias"
+    }
+    for alias, row in existing.items():
+        if alias not in seen:
+            db.delete(row)
+    for alias in cleaned:
+        if alias not in existing:
+            db.add(CharacterAlias(
+                project_id=character.project_id,
+                character_id=character.id,
+                alias=alias,
+                alias_type="alias",
+            ))
+
+
 def snapshot_character(character: Character) -> dict:
     return {
         "id": character.id,
@@ -74,6 +110,7 @@ def snapshot_character(character: Character) -> dict:
         "personality": character.personality,
         "background": character.background,
         "abilities": loads_list(character.abilities),
+        "aliases": character_aliases(character),
         "role_type": character.role_type,
         "life_status": character.life_status,
         "current_location": character.current_location,

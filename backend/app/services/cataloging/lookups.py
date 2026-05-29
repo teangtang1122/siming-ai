@@ -11,10 +11,31 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import Character, CharacterAlias, OutlineNode, WorldbuildingEntry
+from .name_utils import normalize_name_key, split_character_name
 
 
 def find_character_by_name_or_id(db: Session, project_id: str, value: Any) -> Character | None:
     text = str(value or "").strip()
+    if not text:
+        return None
+    for term in [text, *split_character_name(text)]:
+        character = _find_character_exact(db, project_id, term)
+        if character:
+            return character
+    normalized = normalize_name_key(text)
+    if normalized:
+        for character in db.query(Character).filter(Character.project_id == project_id).all():
+            if normalize_name_key(character.name) == normalized:
+                return character
+            if normalized in {normalize_name_key(part) for part in split_character_name(character.name)}:
+                return character
+            for alias in character.aliases or []:
+                if normalize_name_key(alias.alias) == normalized:
+                    return character
+    return None
+
+
+def _find_character_exact(db: Session, project_id: str, text: str) -> Character | None:
     if not text:
         return None
     character = (

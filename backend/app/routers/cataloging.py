@@ -37,7 +37,7 @@ from ..services.cataloging.lookups import find_character_by_name_or_id
 from ..services.cataloging.manual_ops import create_manual_candidate, has_usable_chapter_summary, recover_failed_run_for_review
 from ..services.cataloging.model_selection import default_cataloging_model
 from ..services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
-from ..services.cataloging.snapshots import character_snapshot
+from ..services.character_merge_service import build_character_merge_preview
 
 router = APIRouter(tags=["cataloging"])
 
@@ -170,11 +170,15 @@ def get_character_merge_candidate_preview(project_id: str, candidate_id: str, db
     secondary_name = payload.get("secondary_name")
     primary = find_character_by_name_or_id(db, project_id, primary_name)
     secondary = find_character_by_name_or_id(db, project_id, secondary_name)
+    preview = None
+    if primary and secondary and primary.id != secondary.id:
+        preview = build_character_merge_preview(db, project_id, primary.id, secondary.id, payload)
     return ApiResponse.success(data={
         "candidate": candidate_to_dict(candidate),
         "payload": payload,
-        "primary": character_snapshot(primary),
-        "secondary": character_snapshot(secondary),
+        "primary": preview["primary"] if preview else None,
+        "secondary": preview["secondary"] if preview else None,
+        "preview": preview,
     })
 
 

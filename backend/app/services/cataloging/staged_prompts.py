@@ -54,7 +54,7 @@ CATALOGING_RESOLUTION_SYSTEM_PROMPT = """你是“作品建档”的第二阶段
 3. summary 写清楚目标、冲突、转折、结果、钩子、涉及角色。
 
 角色要求：
-1. 新角色或旧卡信息不足时，输出 character_create 或 character_update。
+1. 新角色或旧卡信息不足时，输出 character_create 或 character_update。角色有多个称呼时，name 放最稳定的主名称，aliases 放其它称呼、昵称、尊称、亲属称呼或隐藏身份名。
 2. 背景故事 background 必须写成“以什么身份做过什么事”的经历档案，不要只写一句身份简介。
    对已有角色输出 character_update 时，background 不要只写本章新增片段，而要结合相关旧角色卡输出一版压缩后的完整背景：保留出身、身份、关键经历、长期动机、核心冲突和隐藏身份，删除重复流水账；本章一次性行动应写入 character_timeline，不要塞进 background。
    custom_system_prompt 也要输出可直接替换旧提示词的完整版本，不要输出“补充几句”的增量片段。
@@ -74,8 +74,8 @@ CATALOGING_RESOLUTION_SYSTEM_PROMPT = """你是“作品建档”的第二阶段
 - chapter_summary：{"summary_text": "...", "key_events": ["..."], "characters": ["..."], "worldbuilding": ["..."], "outline_hint": "..."}
 - outline_create：{"title": "...", "summary": "...", "actual_summary": "...", "planned_summary": "...", "node_type": "chapter|section|volume", "parent_title": "...", "status": "completed", "related_characters": ["..."]}
 - outline_update：{"title": "...", "summary": "...", "actual_summary": "...", "status": "completed", "related_characters": ["..."]}
-- character_create：{"name": "...", "role_type": "...", "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
-- character_update：{"name": "...", "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
+- character_create：{"name": "...", "aliases": ["..."], "role_type": "...", "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
+- character_update：{"name": "...", "aliases": ["..."], "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
 - character_state_update：{"name": "...", "life_status": "alive|dead|unknown", "current_location": "...", "realm_or_level": "...", "physical_state": "...", "mental_state": "...", "current_goal": "...", "active_conflict": "...", "abilities_state": "...", "items_or_assets": "..."}
 - character_timeline：{"name": "...", "event_description": "...", "event_type": "appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event", "emotional_state_change": "..."}
 - character_relationship：{"source_name": "...", "target_name": "...", "relationship_type": "...", "description": "..."}

@@ -16,10 +16,12 @@ from ...database.models import (
     CharacterTimeline,
     CharacterVersion,
 )
+from .alias_ops import ensure_character_alias
 from .background_compactor import merge_background
 from .links import link_chapter_character
 from .lookups import find_character_by_name_or_id
 from .merge import merge_json_list, merge_short_text, merge_text
+from .name_utils import derived_character_aliases, split_character_name
 from .snapshots import character_snapshot, chapter_change_title
 
 
@@ -54,6 +56,7 @@ CHARACTER_CHANGE_LABELS = {
     "background": "背景",
     "role_type": "角色定位",
     "abilities": "能力",
+    "aliases": "别名",
     "custom_system_prompt": "角色扮演提示词",
     "tone_style": "语气风格",
     "catchphrases": "口头禅",
@@ -72,36 +75,48 @@ CHARACTER_CHANGE_LABELS = {
 
 
 def apply_character_create(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
-    name = str(payload.get("name") or "").strip()
+    name, aliases = _identity_from_payload(payload)
     if not name:
         raise ValueError("角色名为空")
-    character = find_character_by_name_or_id(db, chapter.project_id, name)
+    character = _find_character_by_identity(db, chapter.project_id, [name, *aliases])
     old = character_snapshot(character) if character else None
     if not character:
         character = Character(project_id=chapter.project_id, name=name[:100], current_version=1, is_evolution_tracked=True)
         db.add(character)
         db.flush()
+    else:
+        if character.name != name:
+            aliases.append(character.name)
+        _rename_character_if_safe(db, character, name)
     fill_character_fields(db, character, chapter, payload)
+    _write_character_aliases(db, character, chapter, aliases)
     ensure_character_version(db, character, chapter, payload, old is None)
     link_chapter_character(db, chapter, character, str(payload.get("role_in_scene") or "出场"))
     return _character_result(character, old, f"角色已写入: {character.name}")
 
 
 def apply_character_update(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
-    character = find_character_by_name_or_id(db, chapter.project_id, payload.get("id") or payload.get("name"))
+    name, aliases = _identity_from_payload(payload)
+    lookup_terms = [payload.get("id"), name, *aliases]
+    character = _find_character_by_identity(db, chapter.project_id, lookup_terms)
     if not character:
         return apply_character_create(db, candidate, chapter, payload)
     old = character_snapshot(character)
+    if character.name != name:
+        aliases.append(character.name)
+    _rename_character_if_safe(db, character, name)
     fill_character_fields(db, character, chapter, payload)
+    _write_character_aliases(db, character, chapter, aliases)
     ensure_character_version(db, character, chapter, payload, False)
     link_chapter_character(db, chapter, character, str(payload.get("role_in_scene") or "提及"))
     return _character_result(character, old, f"角色已更新: {character.name}")
 
 
 def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
-    character = find_character_by_name_or_id(db, chapter.project_id, payload.get("id") or payload.get("name"))
+    name, aliases = _identity_from_payload(payload)
+    character = _find_character_by_identity(db, chapter.project_id, [payload.get("id"), name, *aliases])
     if not character:
-        character = Character(project_id=chapter.project_id, name=str(payload.get("name") or "未命名角色")[:100], current_version=1)
+        character = Character(project_id=chapter.project_id, name=(name or "未命名角色")[:100], current_version=1)
         db.add(character)
         db.flush()
     old = character_snapshot(character)
@@ -115,6 +130,7 @@ def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: 
     character.last_seen_chapter_id = chapter.id
     character.last_updated_chapter_id = chapter.id
     character.updated_at = datetime.utcnow()
+    _write_character_aliases(db, character, chapter, aliases)
     if changed:
         ensure_character_version(db, character, chapter, payload, False)
     link_chapter_character(db, chapter, character, "状态变化")
@@ -223,6 +239,7 @@ def fill_character_fields(db: Session, character: Character, chapter: Chapter, p
                 setattr(character, field, merge_text(getattr(character, field), payload.get(field), chapter, limit=8000))
     if isinstance(payload.get("abilities"), list):
         character.abilities = merge_json_list(character.abilities, payload["abilities"])
+    _write_character_aliases(db, character, chapter, _aliases_from_payload(payload, character.name))
     for field in CHARACTER_STATE_FIELDS:
         if field in payload and payload.get(field) not in (None, ""):
             setattr(character, field, _replacement_text(payload.get(field), STATE_FIELD_LIMITS.get(field, 2000)))
@@ -276,6 +293,83 @@ def _update_ai_config(db: Session, character: Character, payload: dict[str, Any]
         config.emotion_tendency = str(payload.get("emotion_tendency"))[:100]
     if isinstance(payload.get("catchphrases"), list):
         config.catchphrases = json.dumps([str(item) for item in payload["catchphrases"]], ensure_ascii=False)
+
+
+def _identity_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
+    raw_name = str(payload.get("name") or payload.get("primary_name") or "").strip()
+    parts = split_character_name(raw_name)
+    canonical = parts[0] if parts else raw_name
+    aliases = _aliases_from_payload(payload, canonical)
+    if raw_name and raw_name != canonical:
+        aliases.append(raw_name)
+    aliases.extend(parts[1:])
+    aliases.extend(derived_character_aliases(canonical))
+    return canonical, _dedupe_aliases(canonical, aliases)
+
+
+def _aliases_from_payload(payload: dict[str, Any], canonical_name: str | None = None) -> list[str]:
+    aliases: list[str] = []
+    raw_aliases = payload.get("aliases")
+    if isinstance(raw_aliases, list):
+        for item in raw_aliases:
+            aliases.extend(split_character_name(str(item)))
+            text = str(item or "").strip()
+            if text:
+                aliases.append(text)
+    elif raw_aliases:
+        aliases.extend(split_character_name(str(raw_aliases)))
+    if payload.get("alias"):
+        aliases.extend(split_character_name(str(payload.get("alias"))))
+    aliases.extend(derived_character_aliases(canonical_name))
+    return _dedupe_aliases(canonical_name, aliases)
+
+
+def _dedupe_aliases(canonical_name: str | None, aliases: list[str]) -> list[str]:
+    canonical = str(canonical_name or "").strip()
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for alias in aliases:
+        text = str(alias or "").strip()
+        if not text or text == canonical or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    return cleaned
+
+
+def _find_character_by_identity(db: Session, project_id: str, values: list[Any]) -> Character | None:
+    for value in values:
+        character = find_character_by_name_or_id(db, project_id, value)
+        if character:
+            return character
+    return None
+
+
+def _write_character_aliases(db: Session, character: Character, chapter: Chapter, aliases: list[str]) -> None:
+    for alias in _dedupe_aliases(character.name, aliases):
+        ensure_character_alias(
+            db,
+            character,
+            alias,
+            chapter,
+            alias_type="alias",
+            description=f"建档识别到的角色别名/称呼：{alias}",
+        )
+
+
+def _rename_character_if_safe(db: Session, character: Character, canonical_name: str | None) -> None:
+    name = str(canonical_name or "").strip()
+    if not name or character.name == name:
+        return
+    existing = (
+        db.query(Character)
+        .filter(Character.project_id == character.project_id, Character.name == name, Character.id != character.id)
+        .first()
+    )
+    old_parts = split_character_name(character.name)
+    should_rename = len(old_parts) > 1 or character.name in derived_character_aliases(name)
+    if not existing and should_rename:
+        character.name = name[:100]
 
 
 def _replacement_text(value: Any, limit: int) -> str | None:

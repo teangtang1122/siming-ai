@@ -18,7 +18,7 @@ interface ApiResponse<T> { code: number; message: string; data: T }
 
 interface Character {
   id: string; project_id: string; name: string; appearance?: string
-  personality?: string; background?: string; abilities: string[]
+  personality?: string; background?: string; abilities: string[]; aliases?: string[]
   role_type?: string; current_version: number; is_evolution_tracked: boolean
   life_status?: string; current_location?: string; realm_or_level?: string
   physical_state?: string; mental_state?: string; current_goal?: string
@@ -33,6 +33,23 @@ interface Character {
 interface RelationshipEdge { id: string; from: string; to: string; relationship_type: string; description?: string }
 interface RelationshipNetwork { nodes: Array<{ id: string; name: string; role_type?: string }>; edges: RelationshipEdge[]; total: number }
 interface VersionItem { id: string; character_id: string; version_number: number; change_summary?: string; created_at: string }
+interface DuplicateCandidate {
+  primary: { id: string; name: string; aliases?: string[]; role_type?: string; current_version?: number }
+  secondary: { id: string; name: string; aliases?: string[]; role_type?: string; current_version?: number }
+  canonical_name: string
+  aliases: string[]
+  score: number
+  reasons: string[]
+}
+interface MergePreview {
+  primary: Character
+  secondary: Character
+  canonical_name: string
+  aliases: string[]
+  reason: string
+  stats: Record<string, number>
+  merged_preview: { name: string; aliases: string[]; background?: string; appearance?: string; personality?: string; abilities?: string[] }
+}
 
 interface AIConfig {
   id?: string; character_id?: string; tone_style: string; catchphrases: string[]
@@ -42,10 +59,19 @@ interface AIConfig {
 
 interface CharacterFormValues {
   name: string; role_type?: string; appearance?: string; personality?: string
-  background?: string; abilities?: string[]; is_evolution_tracked?: boolean
+  background?: string; abilities?: string[]; aliases?: string[]; is_evolution_tracked?: boolean
   life_status?: string; current_location?: string; realm_or_level?: string
   physical_state?: string; mental_state?: string; current_goal?: string
   active_conflict?: string; abilities_state?: string; items_or_assets?: string
+}
+
+interface CharacterMergeFormValues {
+  primary_id: string
+  secondary_id: string
+  canonical_name?: string
+  aliases?: string[]
+  confidence_reason?: string
+  background_append?: string
 }
 
 interface CharactersPageProps { projectId: string }
@@ -78,6 +104,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [form] = Form.useForm<CharacterFormValues>()
   const [relationshipForm] = Form.useForm<{ target_character_id: string; relationship_type: string; description?: string }>()
   const [aiConfigForm] = Form.useForm<AIConfig>()
+  const [mergeForm] = Form.useForm<CharacterMergeFormValues>()
 
   const [characters, setCharacters] = useState<Character[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -91,6 +118,13 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [versionSnapshot, setVersionSnapshot] = useState<Record<string, unknown> | null>(null)
   const [, setAiConfig] = useState<AIConfig | null>(null)
   const [aiConfigSaving, setAiConfigSaving] = useState(false)
+  const [duplicateModalOpen, setDuplicateModalOpen] = useState(false)
+  const [duplicates, setDuplicates] = useState<DuplicateCandidate[]>([])
+  const [duplicatesLoading, setDuplicatesLoading] = useState(false)
+  const [mergeModalOpen, setMergeModalOpen] = useState(false)
+  const [mergePreview, setMergePreview] = useState<MergePreview | null>(null)
+  const [mergePreviewLoading, setMergePreviewLoading] = useState(false)
+  const [mergeApplying, setMergeApplying] = useState(false)
   const { setAiContext, refreshKey } = useAiPanelContext()
   const { modelOptions, loading: modelsLoading } = useModelOptions()
 
@@ -120,6 +154,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         name: res.data.data.name, role_type: res.data.data.role_type,
         appearance: res.data.data.appearance, personality: res.data.data.personality,
         background: res.data.data.background, abilities: res.data.data.abilities || [],
+        aliases: res.data.data.aliases || [],
         life_status: res.data.data.life_status,
         current_location: res.data.data.current_location,
         realm_or_level: res.data.data.realm_or_level,
@@ -189,7 +224,12 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const saveCharacter = async (values: CharacterFormValues) => {
     setSaving(true)
     try {
-      const payload = { ...values, abilities: values.abilities || [], is_evolution_tracked: values.is_evolution_tracked ?? true }
+      const payload = {
+        ...values,
+        abilities: values.abilities || [],
+        aliases: values.aliases || [],
+        is_evolution_tracked: values.is_evolution_tracked ?? true,
+      }
       if (selectedId) {
         const res = await apiClient.put<ApiResponse<Character>>(`/projects/${projectId}/characters/${selectedId}`, { ...payload, change_summary: '前端手动保存角色档案' })
         setSelectedId(res.data.data.id); message.success('角色已保存')
@@ -263,6 +303,92 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
   const characterName = (id: string) => characters.find((item) => item.id === id)?.name || id.slice(0, 8)
 
+  const fetchDuplicates = async () => {
+    setDuplicatesLoading(true)
+    try {
+      const res = await apiClient.get<ApiResponse<{ items: DuplicateCandidate[] }>>(`/projects/${projectId}/characters/duplicates`)
+      setDuplicates(res.data.data.items)
+      setDuplicateModalOpen(true)
+    } catch (err: any) { message.error(err.message || '查找重复角色失败') }
+    finally { setDuplicatesLoading(false) }
+  }
+
+  const openMergeModal = async (values?: Partial<CharacterMergeFormValues>) => {
+    const nextValues = {
+      primary_id: values?.primary_id || selectedId || characters[0]?.id,
+      secondary_id: values?.secondary_id || characters.find((item) => item.id !== (values?.primary_id || selectedId))?.id,
+      canonical_name: values?.canonical_name,
+      aliases: values?.aliases || [],
+      confidence_reason: values?.confidence_reason || '用户确认的重复角色合并',
+      background_append: values?.background_append,
+    }
+    mergeForm.setFieldsValue(nextValues)
+    setMergeModalOpen(true)
+    if (nextValues.primary_id && nextValues.secondary_id) await refreshMergePreview(nextValues as CharacterMergeFormValues)
+  }
+
+  const openMergeFromDuplicate = async (item: DuplicateCandidate) => {
+    await openMergeModal({
+      primary_id: item.primary.id,
+      secondary_id: item.secondary.id,
+      canonical_name: item.canonical_name,
+      aliases: item.aliases,
+      confidence_reason: item.reasons.join('；') || '疑似重复角色',
+    })
+  }
+
+  const refreshMergePreview = async (values?: CharacterMergeFormValues) => {
+    const payload = values || mergeForm.getFieldsValue()
+    if (!payload.primary_id || !payload.secondary_id) {
+      message.warning('请选择主角色和被合并角色')
+      return
+    }
+    if (payload.primary_id === payload.secondary_id) {
+      message.warning('主角色和被合并角色不能相同')
+      return
+    }
+    setMergePreviewLoading(true)
+    try {
+      const res = await apiClient.post<ApiResponse<MergePreview>>(`/projects/${projectId}/characters/merge-preview`, {
+        ...payload,
+        aliases: payload.aliases || [],
+      })
+      setMergePreview(res.data.data)
+      if (!payload.canonical_name) {
+        mergeForm.setFieldValue('canonical_name', res.data.data.canonical_name)
+      }
+      if (!payload.aliases || payload.aliases.length === 0) {
+        mergeForm.setFieldValue('aliases', res.data.data.aliases)
+      }
+    } catch (err: any) { message.error(err.message || '生成合并预览失败') }
+    finally { setMergePreviewLoading(false) }
+  }
+
+  const applyMerge = async () => {
+    const payload = mergeForm.getFieldsValue()
+    if (!payload.primary_id || !payload.secondary_id || payload.primary_id === payload.secondary_id) {
+      message.warning('请选择两张不同的角色卡')
+      return
+    }
+    setMergeApplying(true)
+    try {
+      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/characters/merge`, {
+        ...payload,
+        aliases: payload.aliases || [],
+      })
+      message.success('角色已合并')
+      setMergeModalOpen(false)
+      setDuplicateModalOpen(false)
+      setMergePreview(null)
+      setSelectedId(payload.primary_id)
+      fetchCharacters(keyword)
+      fetchNetwork()
+      fetchVersions(payload.primary_id)
+      fetchDetail(payload.primary_id)
+    } catch (err: any) { message.error(err.message || '合并角色失败') }
+    finally { setMergeApplying(false) }
+  }
+
   return (
     <div className="characters-page">
       <div className="characters-shell">
@@ -270,7 +396,10 @@ function CharactersPage({ projectId }: CharactersPageProps) {
           <div className="characters-sidebar-toolbar">
             <div className="characters-sidebar-head">
               <Title level={4} style={{ margin: 0 }}><TeamOutlined /> 角色</Title>
-              <Button type="primary" icon={<PlusOutlined />} onClick={startCreate} />
+              <Space>
+                <Button onClick={fetchDuplicates} loading={duplicatesLoading}>查重</Button>
+                <Button type="primary" icon={<PlusOutlined />} onClick={startCreate} />
+              </Space>
             </div>
             <Input.Search placeholder="搜索角色" allowClear value={keyword}
               onChange={(event) => setKeyword(event.target.value)} onSearch={(value) => fetchCharacters(value)} />
@@ -282,7 +411,11 @@ function CharactersPage({ projectId }: CharactersPageProps) {
                 <List.Item className={`characters-list-item${item.id === selectedId ? ' characters-list-item-active' : ''}`}
                   onClick={() => setSelectedId(item.id)}>
                   <List.Item.Meta title={<span className="characters-name-text" title={item.name}>{item.name}</span>}
-                    description={<Space size={6} wrap><Tag>{item.role_type || '未分类'}</Tag><Text type="secondary">v{item.current_version}</Text></Space>} />
+                    description={<Space size={6} wrap>
+                      <Tag>{item.role_type || '未分类'}</Tag>
+                      <Text type="secondary">v{item.current_version}</Text>
+                      {(item.aliases || []).slice(0, 2).map((alias) => <Tag key={alias} color="blue">{alias}</Tag>)}
+                    </Space>} />
                 </List.Item>
               )} />
           </div>
@@ -293,6 +426,11 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             <div>
               <Title level={4} style={{ margin: 0 }}>{selectedDetail ? selectedDetail.name : '新角色'}</Title>
               {selectedDetail && <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>}
+              {selectedDetail && selectedDetail.aliases && selectedDetail.aliases.length > 0 && (
+                <div className="characters-alias-row">
+                  {selectedDetail.aliases.map((alias) => <Tag key={alias} color="blue">{alias}</Tag>)}
+                </div>
+              )}
             </div>
             <Space>
               {selectedId && (
@@ -314,6 +452,9 @@ function CharactersPage({ projectId }: CharactersPageProps) {
                 <Select options={ROLE_OPTIONS} placeholder="选择角色类型" />
               </Form.Item>
             </div>
+            <Form.Item name="aliases" label="别名/称呼">
+              <Select mode="tags" tokenSeparators={[',', '，', '/', '、']} placeholder="输入别名、昵称、尊称或隐藏身份后回车" />
+            </Form.Item>
             <Form.Item name="appearance" label="外貌"><Input.TextArea rows={3} placeholder="外貌、衣着、气质、辨识特征" /></Form.Item>
             <Form.Item name="personality" label="性格"><Input.TextArea rows={3} placeholder="核心性格、弱点、行为模式" /></Form.Item>
             <Form.Item name="background" label="背景故事"><Input.TextArea rows={4} placeholder="出身、经历、秘密、目标" /></Form.Item>
@@ -439,6 +580,94 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
       <Modal title="角色版本快照" open={versionModalOpen} onCancel={() => setVersionModalOpen(false)} footer={null} width={720}>
         <pre className="characters-ai-result">{versionSnapshot ? JSON.stringify(versionSnapshot, null, 2) : ''}</pre>
+      </Modal>
+
+      <Modal title="疑似重复角色" open={duplicateModalOpen} onCancel={() => setDuplicateModalOpen(false)} footer={[
+        <Button key="manual" onClick={() => openMergeModal()}>手动选择合并</Button>,
+        <Button key="close" onClick={() => setDuplicateModalOpen(false)}>关闭</Button>,
+      ]} width={820}>
+        <List
+          loading={duplicatesLoading}
+          dataSource={duplicates}
+          locale={{ emptyText: '暂未发现明显重复角色。仍可手动选择两张角色卡合并。' }}
+          renderItem={(item) => (
+            <List.Item actions={[<Button key="merge" type="primary" onClick={() => openMergeFromDuplicate(item)}>预览合并</Button>]}>
+              <List.Item.Meta
+                title={<Space wrap>
+                  <Text strong>{item.primary.name}</Text>
+                  <Text type="secondary">←</Text>
+                  <Text>{item.secondary.name}</Text>
+                  <Tag color="blue">{Math.round(item.score * 100)}%</Tag>
+                </Space>}
+                description={<Space direction="vertical" size={4}>
+                  <Text type="secondary">依据：{item.reasons.join('；') || '名称/别名相似'}</Text>
+                  <Text type="secondary">合并后别名：{item.aliases.join('、') || '无'}</Text>
+                </Space>} />
+            </List.Item>
+          )}
+        />
+      </Modal>
+
+      <Modal
+        title="合并重复角色"
+        open={mergeModalOpen}
+        onCancel={() => setMergeModalOpen(false)}
+        onOk={applyMerge}
+        okText="确认合并"
+        confirmLoading={mergeApplying}
+        width={920}
+      >
+        <Form form={mergeForm} layout="vertical">
+          <div className="characters-two-col">
+            <Form.Item name="primary_id" label="保留主角色" rules={[{ required: true, message: '请选择主角色' }]}>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                options={characters.map((item) => ({ value: item.id, label: `${item.name}${item.aliases?.length ? `（${item.aliases.join('、')}）` : ''}` }))}
+                onChange={() => setMergePreview(null)}
+              />
+            </Form.Item>
+            <Form.Item name="secondary_id" label="被合并角色" rules={[{ required: true, message: '请选择被合并角色' }]}>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                options={characters.map((item) => ({ value: item.id, label: `${item.name}${item.aliases?.length ? `（${item.aliases.join('、')}）` : ''}` }))}
+                onChange={() => setMergePreview(null)}
+              />
+            </Form.Item>
+          </div>
+          <Form.Item name="canonical_name" label="合并后主名称">
+            <Input placeholder="默认使用主角色名称" />
+          </Form.Item>
+          <Form.Item name="aliases" label="合并后别名/称呼">
+            <Select mode="tags" tokenSeparators={[',', '，', '/', '、']} placeholder="被合并角色名会自动加入别名" />
+          </Form.Item>
+          <Form.Item name="confidence_reason" label="合并依据">
+            <Input.TextArea rows={2} placeholder="例如：同一家庭关系、同一出场身份、名字/称呼互相对应" />
+          </Form.Item>
+          <Button loading={mergePreviewLoading} onClick={() => refreshMergePreview()} style={{ marginBottom: 12 }}>刷新预览</Button>
+        </Form>
+
+        {mergePreview && (
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Descriptions size="small" bordered column={2}>
+              <Descriptions.Item label="主角色">{mergePreview.primary.name}</Descriptions.Item>
+              <Descriptions.Item label="被合并角色">{mergePreview.secondary.name}</Descriptions.Item>
+              <Descriptions.Item label="迁移章节出场">{mergePreview.stats.secondary_chapter_appearances || 0}</Descriptions.Item>
+              <Descriptions.Item label="迁移大纲关联">{mergePreview.stats.secondary_outline_links || 0}</Descriptions.Item>
+              <Descriptions.Item label="迁移时间线">{mergePreview.stats.secondary_timeline_events || 0}</Descriptions.Item>
+              <Descriptions.Item label="迁移关系">{mergePreview.stats.secondary_relationships || 0}</Descriptions.Item>
+            </Descriptions>
+            <Descriptions title="合并后预览" size="small" bordered column={1}>
+              <Descriptions.Item label="名称">{mergePreview.merged_preview.name}</Descriptions.Item>
+              <Descriptions.Item label="别名">{mergePreview.merged_preview.aliases?.join('、') || '无'}</Descriptions.Item>
+              <Descriptions.Item label="能力">{mergePreview.merged_preview.abilities?.join('、') || '无'}</Descriptions.Item>
+              <Descriptions.Item label="外貌">{mergePreview.merged_preview.appearance || '无'}</Descriptions.Item>
+              <Descriptions.Item label="性格">{mergePreview.merged_preview.personality || '无'}</Descriptions.Item>
+              <Descriptions.Item label="背景">{mergePreview.merged_preview.background || '无'}</Descriptions.Item>
+            </Descriptions>
+          </Space>
+        )}
       </Modal>
     </div>
   )

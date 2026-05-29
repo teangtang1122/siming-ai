@@ -102,6 +102,10 @@
   margin-bottom: 16px;
 }
 
+.characters-alias-row {
+  margin-top: 6px;
+}
+
 .characters-section {
   border-top: 1px solid #f0f0f0;
   margin-top: 16px;
