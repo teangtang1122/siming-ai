@@ -180,6 +180,21 @@ def diff_chapter_snapshots(
     return ApiResponse.success(data=diff_snapshots(from_snapshot, to_snapshot))
 
 
+@router.get("/projects/{project_id}/chapters/{chapter_id}/snapshots/{snapshot_id}")
+def get_chapter_snapshot_detail(
+    project_id: str,
+    chapter_id: str,
+    snapshot_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get one chapter snapshot including its saved content."""
+    get_project_or_404(db, project_id)
+    snapshot = _get_snapshot_or_404(db, project_id, chapter_id, snapshot_id)
+    data = snapshot_to_item(snapshot)
+    data["content"] = snapshot.content or ""
+    return ApiResponse.success(data=data)
+
+
 @router.post("/projects/{project_id}/chapters/{chapter_id}/restore/{snapshot_id}")
 def restore_chapter_snapshot(
     project_id: str,

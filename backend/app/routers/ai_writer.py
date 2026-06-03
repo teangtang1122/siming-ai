@@ -14,6 +14,7 @@ from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
 from ..database.models import (
+    AssistantMemory,
     Chapter,
     ChapterCharacter,
     ChapterSnapshot,
@@ -24,6 +25,8 @@ from ..database.models import (
     CharacterTimeline,
     AssistantConversation,
     AssistantMessage,
+    AssistantRun,
+    AssistantRunStep,
     OutlineNode,
     OutlineNodeCharacter,
     Project,
@@ -51,14 +54,18 @@ from ..prompts.workspace_assistant import (
     build_workspace_assistant_initial_user_message,
     format_tool_result_message,
     format_previous_search_context,
+    format_memory_context,
     redact_tool_result_for_model,
     _compress_search_result,
     MAX_ITERATIONS,
 )
+from ..services.agent.prompt_builder import build_system_prompt, get_workspace_pack, inject_assistant_mode
+from ..services.skills.service import select_relevant_skills, build_skill_prompt_section
 from ..prompts.style_prompts import build_style_context
 from ..services.style_rules import (
     STYLE_OPTIONS,
     _detect_forbidden_sentence_violations,
+    _mechanical_repair_forbidden_sentences,
     _repair_assistant_parsed_style,
     _repair_forbidden_sentence_text,
 )
@@ -74,6 +81,21 @@ from ..services.workspace import (
     _outline_node_payload,
     execute_workspace_action,
 )
+from ..services.workspace.run_log import (
+    create_assistant_run,
+    finish_run_step,
+    mark_assistant_run,
+    run_payload,
+    start_run_step,
+    step_payload,
+)
+from ..services.workspace.run_recovery import (
+    generate_idempotency_key,
+    retry_step,
+    resume_from_step,
+    resume_run,
+)
+from ..services.agent.bridge import detect_and_stream_plan
 from ..schemas.ai_writer import WorkspaceAssistantRequest
 
 router = APIRouter(tags=["ai-writer"])
@@ -651,8 +673,14 @@ def _assistant_title_from_message(message: str) -> str:
     return title[:36] + ("..." if len(title) > 36 else "")
 
 
-async def _execute_workspace_action(db: Session, project_id: str, action: dict) -> dict:
+async def _execute_workspace_action(
+    db: Session,
+    project_id: str,
+    action: dict,
+    assistant_mode: str = "quality",
+) -> dict:
     """Execute a workspace tool action, with pre-flight forbidden-pattern check for chapter creation."""
+    action = inject_assistant_mode(action, assistant_mode)
     tool = str(action.get("tool") or "").strip()
     args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
 
@@ -884,6 +912,168 @@ async def delete_assistant_conversation(
     return ApiResponse.success(message="助手对话已删除")
 
 
+def _maybe_json(text: Optional[str]):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+@router.get("/projects/{project_id}/ai/assistant/runs")
+async def list_assistant_runs(
+    project_id: str,
+    conversation_id: Optional[str] = None,
+    limit: int = 30,
+    db: Session = Depends(get_db),
+):
+    """List durable workspace-assistant execution runs."""
+    get_project_or_404(db, project_id)
+    limit = max(1, min(limit, 100))
+    query = db.query(AssistantRun).filter(AssistantRun.project_id == project_id)
+    if conversation_id:
+        query = query.filter(AssistantRun.conversation_id == conversation_id)
+    runs = query.order_by(AssistantRun.created_at.desc()).limit(limit).all()
+    return ApiResponse.success(data={
+        "items": [run_payload(run) for run in runs],
+        "total": len(runs),
+    })
+
+
+@router.get("/projects/{project_id}/ai/assistant/runs/{run_id}")
+async def get_assistant_run(
+    project_id: str,
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get one workspace-assistant execution run with all step records."""
+    run = (
+        db.query(AssistantRun)
+        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
+        .first()
+    )
+    if not run:
+        raise NotFoundError("助手任务不存在")
+    steps = (
+        db.query(AssistantRunStep)
+        .filter(AssistantRunStep.run_id == run.id)
+        .order_by(AssistantRunStep.created_at.asc(), AssistantRunStep.id.asc())
+        .all()
+    )
+    return ApiResponse.success(data={
+        "run": run_payload(run),
+        "steps": [
+            {
+                **step_payload(step),
+                "request": _maybe_json(step.request_json),
+                "result": _maybe_json(step.result_json),
+            }
+            for step in steps
+        ],
+    })
+
+
+@router.post("/projects/{project_id}/ai/assistant/runs/{run_id}/steps/{step_id}/retry")
+async def retry_assistant_run_step(
+    project_id: str,
+    run_id: str,
+    step_id: str,
+    db: Session = Depends(get_db),
+):
+    """Retry a failed workspace assistant run step (preserves original)."""
+    get_project_or_404(db, project_id)
+    run = (
+        db.query(AssistantRun)
+        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
+        .first()
+    )
+    if not run:
+        raise NotFoundError("助手任务不存在")
+    try:
+        result = await retry_step(db, run.id, step_id)
+    except ValueError as exc:
+        raise ValidationError(str(exc))
+    return ApiResponse.success(data=result)
+
+
+@router.post("/projects/{project_id}/ai/assistant/runs/{run_id}/steps/{step_id}/resume-from")
+async def resume_from_assistant_run_step(
+    project_id: str,
+    run_id: str,
+    step_id: str,
+    db: Session = Depends(get_db),
+):
+    """Retry a step and continue with downstream failed steps."""
+    get_project_or_404(db, project_id)
+    run = (
+        db.query(AssistantRun)
+        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
+        .first()
+    )
+    if not run:
+        raise NotFoundError("助手任务不存在")
+    try:
+        results = await resume_from_step(db, run.id, step_id)
+    except ValueError as exc:
+        raise ValidationError(str(exc))
+    return ApiResponse.success(data=results)
+
+
+@router.post("/projects/{project_id}/ai/assistant/runs/{run_id}/resume")
+async def resume_assistant_run(
+    project_id: str,
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Retry all unresolved error steps in a run."""
+    get_project_or_404(db, project_id)
+    run = (
+        db.query(AssistantRun)
+        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
+        .first()
+    )
+    if not run:
+        raise NotFoundError("助手任务不存在")
+    try:
+        results = await resume_run(db, run.id)
+    except ValueError as exc:
+        raise ValidationError(str(exc))
+    return ApiResponse.success(data=results)
+
+
+# ---------------------------------------------------------------------------
+# Memory management API
+# ---------------------------------------------------------------------------
+
+
+@router.get("/projects/{project_id}/ai/assistant/memories")
+async def list_assistant_memories(
+    project_id: str,
+    category: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """List saved memories for a project."""
+    get_project_or_404(db, project_id)
+    from ..services.workspace.tools.memory import list_memories
+    result = await list_memories(db, project_id, {"category": category or "", "limit": limit})
+    return ApiResponse.success(data=result.get("data", []))
+
+
+@router.delete("/projects/{project_id}/ai/assistant/memories/{memory_id}")
+async def delete_assistant_memory(
+    project_id: str,
+    memory_id: str,
+    db: Session = Depends(get_db),
+):
+    """Delete a single memory by ID."""
+    get_project_or_404(db, project_id)
+    from ..services.workspace.tools.memory import forget
+    result = await forget(db, project_id, {"id": memory_id})
+    if result.get("status") == "error":
+        raise NotFoundError(result.get("detail", "记忆不存在"))
+    return ApiResponse.success(message=result.get("detail", "已删除"))
 
 
 # ---------------------------------------------------------------------------
@@ -910,9 +1100,25 @@ async def workspace_assistant_stream(
     get_project_or_404(db, project_id)
 
     async def event_generator():
+        # --- Plan path: detect intent and delegate to plan orchestrator ---
+        plan_gen = await detect_and_stream_plan(
+            db, project_id,
+            message=payload.message,
+            conversation_id=payload.conversation_id,
+            scope=payload.scope,
+            model=payload.model,
+            assistant_mode=payload.assistant_mode,
+        )
+        if plan_gen is not None:
+            async for event in plan_gen:
+                yield event
+            return
+
+        # --- Fallback: old agentic loop ---
         conversation = None
         user_msg_db = None
         assistant_msg_db = None
+        assistant_run = None
         tool_logs: list[dict] = []
         # Declared at function scope so GeneratorExit recovery can access them
         final_reply = ""
@@ -969,6 +1175,16 @@ async def workspace_assistant_stream(
             db.refresh(conversation)
             db.refresh(user_msg_db)
             db.refresh(assistant_msg_db)
+            assistant_run = create_assistant_run(
+                db,
+                project_id=project_id,
+                conversation_id=conversation.id,
+                user_message_id=user_msg_db.id,
+                assistant_message_id=assistant_msg_db.id,
+                scope=payload.scope,
+                assistant_mode=payload.assistant_mode,
+                model=payload.model,
+            )
 
             yield _sse_event({
                 "type": "conversation",
@@ -976,6 +1192,7 @@ async def workspace_assistant_stream(
                 "user_message": _assistant_message_to_dict(user_msg_db),
                 "assistant_message": _assistant_message_to_dict(assistant_msg_db),
             })
+            yield _sse_event({"type": "run", "run": run_payload(assistant_run)})
 
             # --- Phase 2: Build minimal initial messages ---
             project = get_project_or_404(db, project_id)
@@ -999,12 +1216,61 @@ async def workspace_assistant_stream(
 
             previous_search_context = _previous_search_context_from_messages(db, conversation.id, before_message_id=user_msg_db.id)
 
-            system_prompt = build_workspace_assistant_system_prompt(
+            # --- Two-phase memory recall ---
+            from ..services.workspace.tools.memory import normalize_category
+            _FIXED_CATS = ["user_preference", "writing_style", "workflow_preference", "preference"]
+            _RELATED_CATS = ["project_fact", "research_note", "fact", "search_result", "note"]
+
+            fixed_memories = (
+                db.query(AssistantMemory)
+                .filter(AssistantMemory.project_id == project_id, AssistantMemory.category.in_(_FIXED_CATS))
+                .order_by(AssistantMemory.importance.desc(), AssistantMemory.updated_at.desc())
+                .limit(10).all()
+            )
+
+            related_memories: list = []
+            query_terms = re.findall(r"[一-鿿]{2,12}|[A-Za-z][A-Za-z0-9_-]{2,30}", payload.message or "")
+            if query_terms:
+                rq = db.query(AssistantMemory).filter(
+                    AssistantMemory.project_id == project_id, AssistantMemory.category.in_(_RELATED_CATS)
+                )
+                for term in query_terms[:5]:
+                    rq = rq.filter(AssistantMemory.key.ilike(f"%{term}%") | AssistantMemory.value.ilike(f"%{term}%"))
+                related_memories = rq.order_by(AssistantMemory.importance.desc()).limit(10).all()
+
+            seen_ids = {m.id for m in fixed_memories}
+            all_mem = [
+                {"category": normalize_category(m.category), "key": m.key, "value": m.value, "importance": m.importance}
+                for m in fixed_memories
+            ] + [
+                {"category": normalize_category(m.category), "key": m.key, "value": m.value, "importance": m.importance}
+                for m in related_memories if m.id not in seen_ids
+            ]
+            memory_context = format_memory_context(all_mem)
+
+            system_prompt = build_system_prompt(
+                get_workspace_pack(payload.assistant_mode),
                 scope=payload.scope,
                 outline_batch_count=payload.outline_batch_count,
                 auto_apply=payload.auto_apply,
-                mode=payload.assistant_mode,
             )
+
+            # --- Skill selection and injection ---
+            matched_skills = select_relevant_skills(db, project_id, payload.message, payload.scope)
+            skill_prompt_section, skill_info = build_skill_prompt_section(matched_skills)
+            if skill_prompt_section:
+                system_prompt = build_system_prompt(
+                    get_workspace_pack(payload.assistant_mode),
+                    skill_prompts=skill_prompt_section,
+                    scope=payload.scope,
+                    outline_batch_count=payload.outline_batch_count,
+                    auto_apply=payload.auto_apply,
+                )
+            if skill_info:
+                yield _sse_event({
+                    "type": "skills_matched",
+                    "skills": skill_info,
+                })
             initial_user = build_workspace_assistant_initial_user_message(
                 project_title=project.title,
                 project_description=project.description,
@@ -1012,6 +1278,7 @@ async def workspace_assistant_stream(
                 history_text=history_text,
                 selected_context=selected_context,
                 previous_search_context=previous_search_context,
+                memory_context=memory_context,
                 outline_batch_count=payload.outline_batch_count,
                 auto_apply=payload.auto_apply,
                 user_message=payload.message,
@@ -1121,12 +1388,23 @@ async def workspace_assistant_stream(
                             "message": "模型返回的工具JSON格式不合法，正在自动修复",
                             "tool": "json_repair",
                         })
+                        repair_step = start_run_step(
+                            db,
+                            assistant_run,
+                            step_type="repair",
+                            tool="json_repair",
+                            iteration=iteration,
+                            request={"raw_length": len(raw_content), "raw_preview": raw_content[:1000]},
+                            detail="模型返回的工具JSON格式不合法，正在自动修复",
+                        )
                         parsed = await _repair_workspace_json_output(raw_content, payload.model)
                         if parsed is not None:
                             tool_logs.append({"tool": "json_repair", "status": "ok", "detail": "已修复模型工具JSON"})
+                            finish_run_step(db, repair_step, status="ok", result={"keys": list(parsed.keys())}, detail="已修复模型工具JSON")
                             yield _sse_event({"type": "tool", **tool_logs[-1]})
                         else:
                             tool_logs.append({"tool": "json_repair", "status": "error", "detail": "模型输出无法解析，未执行写入工具"})
+                            finish_run_step(db, repair_step, status="error", detail="模型输出无法解析，未执行写入工具", error="parse_failed")
                             yield _sse_event({"type": "tool", **tool_logs[-1]})
                     parsed = parsed or {
                         "reply": "模型返回的工具格式不合法，已停止执行写入。请重试一次，或让助手先生成较短章节。",
@@ -1182,6 +1460,16 @@ async def workspace_assistant_stream(
 
                             dedup_key = (tool_name, json.dumps(args, ensure_ascii=False, sort_keys=True))
                             if dedup_key in searched_queries:
+                                skipped_step = start_run_step(
+                                    db,
+                                    assistant_run,
+                                    step_type="search",
+                                    tool=tool_name,
+                                    iteration=iteration,
+                                    request=args,
+                                    detail="已查询过，见上文结果",
+                                )
+                                finish_run_step(db, skipped_step, status="skipped", result={"detail": "已查询过"})
                                 yield _sse_event({
                                     "type": "search_result",
                                     "tool": tool_name,
@@ -1191,16 +1479,35 @@ async def workspace_assistant_stream(
                                 continue
                             searched_queries.add(dedup_key)
 
+                            step = start_run_step(
+                                db,
+                                assistant_run,
+                                step_type="search",
+                                tool=tool_name,
+                                iteration=iteration,
+                                request=args,
+                            )
                             yield _sse_event({
                                 "type": "search_start",
                                 "tool": tool_name,
                                 "args": args,
                                 "iteration": iteration,
+                                "step_id": step.id if step else None,
                             })
                             try:
-                                action_result = await execute_workspace_action(db, project_id, action)
+                                action_result = await execute_workspace_action(
+                                    db, project_id, inject_assistant_mode(action, payload.assistant_mode)
+                                )
                             except Exception as exc:
                                 action_result = {"tool": tool_name, "status": "error", "detail": str(exc), "data": []}
+                            finish_run_step(
+                                db,
+                                step,
+                                status=str(action_result.get("status") or "ok"),
+                                result=action_result,
+                                detail=str(action_result.get("detail") or ""),
+                                error=str(action_result.get("detail") or "") if action_result.get("status") == "error" else None,
+                            )
                             search_results.append(action_result)
                             tool_logs.append({
                                 "tool": action_result.get("tool") or tool_name,
@@ -1212,6 +1519,7 @@ async def workspace_assistant_stream(
                                 "tool": tool_name,
                                 "result": action_result,
                                 "iteration": iteration,
+                                "step_id": step.id if step else None,
                             })
 
                         for action_result in search_results:
@@ -1312,28 +1620,59 @@ async def workspace_assistant_stream(
                     is_write = tool_name in wr_names
                     action_type = "write" if is_write else "search"
                     if tool_name in se_names and dedup_key in searched_queries:
+                        skipped_step = start_run_step(
+                            db,
+                            assistant_run,
+                            step_type=action_type,
+                            tool=tool_name,
+                            iteration=iteration,
+                            request=tc_args,
+                            detail="已查询过，见上文结果",
+                        )
+                        finish_run_step(db, skipped_step, status="skipped", result={"detail": "已查询过"})
                         yield _sse_event({
                             "type": "search_result",
                             "tool": tool_name,
                             "result": {"tool": tool_name, "status": "skipped", "detail": "已查询过，见上文结果", "data": []},
                             "iteration": iteration,
+                            "step_id": skipped_step.id if skipped_step else None,
                         })
                         all_results.append({"tool": tool_name, "status": "skipped", "detail": "已查询过", "data": []})
                         continue
                     searched_queries.add(dedup_key)
 
+                    action = {"tool": tool_name, "arguments": tc_args}
+                    _idem_key = generate_idempotency_key(db, tool_name, project_id, tc_args) if is_write else None
+                    step = start_run_step(
+                        db,
+                        assistant_run,
+                        step_type=action_type,
+                        tool=tool_name,
+                        iteration=iteration,
+                        request=tc_args,
+                        idempotency_key=_idem_key,
+                    )
                     yield _sse_event({
                         "type": f"{action_type}_start",
                         "tool": tool_name,
                         "args": tc_args,
                         "iteration": iteration,
+                        "step_id": step.id if step else None,
                     })
-
-                    action = {"tool": tool_name, "arguments": tc_args}
                     try:
-                        action_result = await execute_workspace_action(db, project_id, action)
+                        action_result = await execute_workspace_action(
+                            db, project_id, inject_assistant_mode(action, payload.assistant_mode)
+                        )
                     except Exception as exc:
                         action_result = {"tool": tool_name, "status": "error", "detail": str(exc), "data": []}
+                    finish_run_step(
+                        db,
+                        step,
+                        status=str(action_result.get("status") or "ok"),
+                        result=action_result,
+                        detail=str(action_result.get("detail") or ""),
+                        error=str(action_result.get("detail") or "") if action_result.get("status") == "error" else None,
+                    )
 
                     all_results.append(action_result)
                     tool_logs.append({
@@ -1346,6 +1685,7 @@ async def workspace_assistant_stream(
                         "tool": tool_name,
                         "result": action_result,
                         "iteration": iteration,
+                        "step_id": step.id if step else None,
                     })
 
                 for action_result in all_results:
@@ -1406,11 +1746,32 @@ async def workspace_assistant_stream(
                         if outline_title and outline_title in created_outline_ids_by_title:
                             args["outline_node_id"] = created_outline_ids_by_title[outline_title]
                             action["arguments"] = args
-                    yield _sse_event({"type": "status", "message": f"正在执行工具：{tool}", "tool": tool})
+                    idem_key = generate_idempotency_key(db, tool, project_id, args) if tool in ("create_chapter", "create_character", "create_outline_node", "create_worldbuilding_entry", "create_relationship") else None
+                    step = start_run_step(
+                        db,
+                        assistant_run,
+                        step_type="write",
+                        tool=tool,
+                        iteration=MAX_ITERATIONS + 1,
+                        request=args,
+                        detail="最终写入操作",
+                        idempotency_key=idem_key,
+                    )
+                    yield _sse_event({"type": "status", "message": f"正在执行工具：{tool}", "tool": tool, "step_id": step.id if step else None})
                     try:
-                        action_result = await _execute_workspace_action(db, project_id, action)
+                        action_result = await _execute_workspace_action(
+                            db, project_id, action, assistant_mode=payload.assistant_mode
+                        )
                     except Exception as exc:
                         action_result = {"tool": tool, "status": "error", "detail": str(exc)}
+                    finish_run_step(
+                        db,
+                        step,
+                        status=str(action_result.get("status") or "ok"),
+                        result=action_result,
+                        detail=str(action_result.get("detail") or ""),
+                        error=str(action_result.get("detail") or "") if action_result.get("status") == "error" else None,
+                    )
                     if tool == "create_outline_node" and action_result.get("status") == "ok":
                         data = action_result.get("data") if isinstance(action_result.get("data"), dict) else {}
                         title = str(data.get("title") or args.get("title") or "").strip()
@@ -1423,7 +1784,7 @@ async def workspace_assistant_stream(
                         "status": action_result.get("status") or "ok",
                         "detail": action_result.get("detail") or "",
                     })
-                    yield _sse_event({"type": "tool", **tool_logs[-1]})
+                    yield _sse_event({"type": "tool", **tool_logs[-1], "step_id": step.id if step else None})
                 db.commit()
 
                 # Auto-refresh search context so next turn sees fresh data
@@ -1441,17 +1802,40 @@ async def workspace_assistant_stream(
                     elif tool in ("create_chapter", "update_chapter", "delete_chapter"):
                         refresh_tools["list_chapters"] = "{}"
                 for rt, rt_args in refresh_tools.items():
+                    step = start_run_step(
+                        db,
+                        assistant_run,
+                        step_type="refresh",
+                        tool=rt,
+                        iteration=MAX_ITERATIONS + 2,
+                        request=json.loads(rt_args),
+                        detail="写入后刷新轻量上下文",
+                    )
                     try:
-                        rt_result = await execute_workspace_action(db, project_id, {"tool": rt, "arguments": json.loads(rt_args)})
+                        rt_result = await execute_workspace_action(
+                            db, project_id,
+                            inject_assistant_mode({"tool": rt, "arguments": json.loads(rt_args)}, payload.assistant_mode)
+                        )
+                        finish_run_step(db, step, status=str(rt_result.get("status") or "ok"), result=rt_result, detail=str(rt_result.get("detail") or ""))
                         compressed = _compress_search_result(rt_result)
                         if compressed:
                             searched_context.append(compressed)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        finish_run_step(db, step, status="error", detail="写入后刷新失败", error=str(exc))
             elif all_actions:
                 log = {"tool": "auto_apply", "status": "skipped", "detail": "自动执行已关闭"}
                 tool_logs.append(log)
-                yield _sse_event({"type": "tool", **log})
+                step = start_run_step(
+                    db,
+                    assistant_run,
+                    step_type="write",
+                    tool="auto_apply",
+                    iteration=MAX_ITERATIONS + 1,
+                    request={"actions": all_actions},
+                    detail=log["detail"],
+                )
+                finish_run_step(db, step, status="skipped", result=log, detail=log["detail"])
+                yield _sse_event({"type": "tool", **log, "step_id": step.id if step else None})
 
             # --- Phase 5: Finalize ---
             failed_logs = [
@@ -1477,12 +1861,73 @@ async def workspace_assistant_stream(
                 "model": final_model,
                 "usage": final_usage,
             }
+            if assistant_run:
+                response_payload["run"] = run_payload(assistant_run)
             assistant_msg_db.content = response_payload["reply"]
             assistant_msg_db.payload_json = json.dumps(response_payload, ensure_ascii=False)
             assistant_msg_db.status = "completed"
             assistant_msg_db.updated_at = datetime.utcnow()
             conversation.updated_at = datetime.utcnow()
             db.commit()
+            mark_assistant_run(db, assistant_run, status="completed", phase="completed", final_reply=final_reply_for_save)
+
+            # --- Auto-extract memories from conversation (fire-and-forget) ---
+            if final_reply and payload.message:
+                _pid, _umsg, _areply = project_id, payload.message, final_reply_for_save
+
+                async def _extract_and_save_memories():
+                    from ..database.session import SessionLocal as _SL
+                    from ..prompts.packs.memory_extraction import PACK as _MP
+                    from ..services.workspace.tools.memory import remember as _rem
+                    _db = _SL()
+                    try:
+                        _conv = f"用户：{_umsg}\n助手：{_areply}"
+                        _resp = await LLMGateway.chat_completion(
+                            messages=[{"role": "system", "content": _MP.build_system_prompt()},
+                                      {"role": "user", "content": _conv}],
+                            model=None, temperature=0.2, max_tokens=2000,
+                        )
+                        _raw = _resp.get("content", "")
+                        try:
+                            _items = json.loads(_raw)
+                        except (json.JSONDecodeError, TypeError):
+                            _m = re.search(r"\[.*\]", _raw, re.DOTALL)
+                            _items = json.loads(_m.group()) if _m else []
+                        if not isinstance(_items, list):
+                            return
+                        saved = 0
+                        for item in _items:
+                            if saved >= 5:
+                                break
+                            _k = str(item.get("key") or "").strip()
+                            _v = str(item.get("value") or "").strip()
+                            _ev = str(item.get("evidence") or "").strip()
+                            _cat = str(item.get("category") or "").strip()
+                            _imp = int(item.get("importance") or 0)
+                            if not _k or not _v or not _ev or _imp < 7 or _ev not in _umsg:
+                                continue
+                            await _rem(_db, _pid, {
+                                "key": _k, "value": _v, "category": _cat,
+                                "importance": _imp, "source": "auto_extract",
+                            })
+                            saved += 1
+                    except NotFoundError:
+                        # No configured model: memory extraction is optional and should not
+                        # turn a successful assistant reply into noisy server logs.
+                        pass
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception("memory auto-extract failed")
+                    finally:
+                        _db.close()
+
+                asyncio.create_task(_extract_and_save_memories())
+
+            if assistant_run:
+                db.refresh(assistant_run)
+                response_payload["run"] = run_payload(assistant_run)
+                assistant_msg_db.payload_json = json.dumps(response_payload, ensure_ascii=False)
+                db.commit()
             db.refresh(assistant_msg_db)
             db.refresh(conversation)
             response_payload["message"] = _assistant_message_to_dict(assistant_msg_db)
@@ -1495,7 +1940,9 @@ async def workspace_assistant_stream(
                 for action in all_actions[:12]:
                     tool = str(action.get("tool") or "tool")
                     try:
-                        action_result = await _execute_workspace_action(db, project_id, action)
+                        action_result = await _execute_workspace_action(
+                            db, project_id, action, assistant_mode=payload.assistant_mode
+                        )
                     except Exception:
                         action_result = {"tool": tool, "status": "error", "detail": "后台执行失败"}
                     applied_actions.append(action_result)
@@ -1518,12 +1965,20 @@ async def workspace_assistant_stream(
                 if conversation:
                     conversation.updated_at = datetime.utcnow()
                 db.commit()
+            mark_assistant_run(
+                db,
+                assistant_run,
+                status="completed",
+                phase="client_disconnected",
+                final_reply=final_reply or parsed_fallback.get("reply", "") or "已分析完毕。",
+            )
         except LLMError as exc:
             if assistant_msg_db:
                 assistant_msg_db.content = str(exc)
                 assistant_msg_db.status = "error"
                 assistant_msg_db.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
                 db.commit()
+            mark_assistant_run(db, assistant_run, status="error", phase="llm_error", error=str(exc))
             yield _sse_event({"type": "error", "message": str(exc)})
             yield _sse_event("[DONE]")
         except Exception as exc:
@@ -1532,6 +1987,7 @@ async def workspace_assistant_stream(
                 assistant_msg_db.status = "error"
                 assistant_msg_db.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
                 db.commit()
+            mark_assistant_run(db, assistant_run, status="error", phase="server_error", error=str(exc))
             yield _sse_event({"type": "error", "message": f"服务器错误: {exc}"})
             yield _sse_event("[DONE]")
 

@@ -1,6 +1,7 @@
 """Workspace tool handlers grouped by domain."""
 from .chapter_writer import chapter_writer
 from .chapters import create_chapter, delete_chapter, update_chapter
+from .context_preview import preview_writing_context
 from .character_writer import character_writer
 from .characters import create_character, delete_character, update_character
 from .outline import create_outline_node, delete_outline_node, update_outline_node
@@ -21,8 +22,9 @@ from .search import (
     search_relationships,
     search_worldbuilding,
 )
-from .memory import forget, recall, remember
+from .memory import forget, list_memories, recall, remember
 from .web_search import web_search
+from .rag_tools import search_context, preview_rag_context, explain_context_selection
 from .worldbuilding import (
     create_worldbuilding_entry,
     delete_worldbuilding_entry,
@@ -32,6 +34,7 @@ from .worldbuilding_writer import worldbuilding_writer
 
 __all__ = [
     "chapter_writer",
+    "preview_writing_context",
     "character_writer",
     "outline_writer",
     "worldbuilding_writer",
@@ -75,4 +78,5 @@ __all__ = [
     "remember",
     "recall",
     "forget",
+    "list_memories",
 ]

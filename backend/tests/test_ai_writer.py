@@ -19,11 +19,17 @@ from app.database.models import (
     CharacterChangeLog,
     CharacterTimeline,
     CharacterVersion,
+    AgentPlan,
+    AgentPlanStep,
     AssistantConversation,
     AssistantMessage,
+    AssistantRun,
+    AssistantRunStep,
+    APIConfig,
     OutlineNode,
     OutlineNodeCharacter,
     Project,
+    Skill,
 )
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
@@ -55,8 +61,13 @@ class AIWriterIsolationTestCase(unittest.TestCase):
     def setUp(self):
         db = SessionLocal()
         try:
+            db.query(AssistantRunStep).delete()
+            db.query(AssistantRun).delete()
+            db.query(AgentPlanStep).delete()
+            db.query(AgentPlan).delete()
             db.query(AssistantMessage).delete()
             db.query(AssistantConversation).delete()
+            db.query(APIConfig).delete()
             db.query(CharacterTimeline).delete()
             db.query(CharacterChangeLog).delete()
             db.query(ChapterCharacter).delete()
@@ -233,9 +244,25 @@ class AIWriterIsolationTestCase(unittest.TestCase):
 
     @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
-    def test_workspace_stream_repairs_invalid_json_and_executes_create_chapter(self, mock_stream, mock_chat):
+    def test_workspace_stream_plan_executes_create_chapter(self, mock_stream, mock_chat):
         project_id = self.create_project("Workspace Repair Project")
         outline_id = self.create_outline_node(project_id, "第152章 黑潮漫过石阶")
+        db = SessionLocal()
+        try:
+            db.add(Skill(
+                project_id=project_id,
+                name="Plan Skill",
+                description="Plan path skill injection regression marker",
+                trigger_examples=json.dumps(["152"], ensure_ascii=False),
+                system_prompt="PLAN_SKILL_MARKER",
+                scope="writing",
+                priority=999,
+                enabled=True,
+                is_builtin=False,
+            ))
+            db.commit()
+        finally:
+            db.close()
         bad_json = (
             '{"reply":"已创建第152章。","done":true,"actions":[{"tool":"create_chapter","arguments":'
             '{"title":"第152章 黑潮漫过石阶","content":"张虎听见有人喊："第二道防线！" 他握紧剑。",'
@@ -268,8 +295,12 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertIn("json_repair", response.text)
+        self.assertIn("plan_created", response.text)
+        self.assertIn("skills_matched", response.text)
+        self.assertIn("Plan Skill", response.text)
+        self.assertIn("chapter_writer", response.text)
         self.assertIn("create_chapter", response.text)
+        self.assertNotIn("json_repair", response.text)
 
         db = SessionLocal()
         try:
@@ -277,8 +308,18 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             self.assertEqual(chapter.title, "第152章 黑潮漫过石阶")
             self.assertEqual(chapter.outline_node_id, outline_id)
             self.assertIn("第二道防线", chapter.content)
+            plan = db.query(AgentPlan).filter(AgentPlan.project_id == project_id).one()
+            steps = db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
+            self.assertEqual(plan.status, "completed")
+            self.assertTrue(any(step.tool == "chapter_writer" and step.status == "ok" for step in steps))
+            self.assertTrue(any(step.tool == "create_chapter" and step.status == "ok" for step in steps))
+            writer_step = next(step for step in steps if step.tool == "chapter_writer")
+            self.assertIn("PLAN_SKILL_MARKER", writer_step.args_json)
         finally:
             db.close()
+
+        runs_response = self.client.get(f"{API_PREFIX}/projects/{project_id}/ai/assistant/runs")
+        self.assertEqual(runs_response.status_code, 200)
 
     @patch("app.services.workspace.tools.analysis.LLMGateway.chat_completion", new_callable=AsyncMock)
     def test_workspace_character_change_detection_filters_foreign_ids_and_records_evolution(self, mock_chat):

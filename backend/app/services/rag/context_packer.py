@@ -1,0 +1,489 @@
+"""RAG context packer: budget-aware context assembly with explanations."""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from ...database.models import (
+    Chapter,
+    ChapterSummary,
+    Character,
+    OutlineNode,
+    RagChunk,
+    WorldbuildingEntry,
+)
+from ..context_builders import (
+    _build_character_context,
+    _build_character_relationships,
+    _build_outline_context,
+    _build_recent_summaries,
+    _build_world_context,
+    _chapter_order_number,
+)
+from .indexer import detect_fts5_available, ensure_indexed
+from .retriever import SearchResult, search_chunks
+
+
+@dataclass
+class ContextBudget:
+    """Char budget for context packing. Not token budget — no tokenizer in v1."""
+    max_system_chars: int = 0       # fixed, not adjustable
+    max_input_chars: int = 0        # current user message
+    max_chapter_chars: int = 5000
+    max_summary_chars: int = 3000
+    max_character_chars: int = 6000
+    max_worldbuilding_chars: int = 8000
+    max_memory_chars: int = 2000
+    max_outline_chars: int = 2000
+    reserve_chars: int = 4000
+
+    @property
+    def total_chars(self) -> int:
+        return (
+            self.max_system_chars + self.max_input_chars + self.max_chapter_chars
+            + self.max_summary_chars + self.max_character_chars + self.max_worldbuilding_chars
+            + self.max_memory_chars + self.max_outline_chars + self.reserve_chars
+        )
+
+    def can_fit(self, used_chars: int, addition_chars: int) -> bool:
+        total_budget = (
+            self.max_chapter_chars + self.max_summary_chars + self.max_character_chars
+            + self.max_worldbuilding_chars + self.max_memory_chars + self.max_outline_chars
+        )
+        return used_chars + addition_chars <= total_budget
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "max_chapter_chars": self.max_chapter_chars,
+            "max_summary_chars": self.max_summary_chars,
+            "max_character_chars": self.max_character_chars,
+            "max_worldbuilding_chars": self.max_worldbuilding_chars,
+            "max_memory_chars": self.max_memory_chars,
+            "max_outline_chars": self.max_outline_chars,
+            "reserve_chars": self.reserve_chars,
+        }
+
+
+@dataclass
+class ContextSection:
+    category: str
+    title: str
+    content: str
+    source_type: str
+    source_id: str
+    chunk_ids: list[str]
+    selection_reason: str
+    score: float
+    used_chars: int
+
+
+@dataclass
+class PackedContext:
+    sections: list[ContextSection]
+    total_used_chars: int
+    budget: dict[str, int]
+    used_chars: dict[str, int]
+    explanations: list[str]
+    warnings: list[str]
+    fts_available: bool
+
+
+# ---------------------------------------------------------------------------
+# Section builders
+# ---------------------------------------------------------------------------
+
+def _pack_outline(
+    db: Session,
+    project_id: str,
+    outline_node_id: str | None,
+    budget: ContextBudget,
+) -> tuple[ContextSection | None, str]:
+    """Build outline context section."""
+    if not outline_node_id:
+        return None, ""
+
+    ctx = _build_outline_context(db, project_id, outline_node_id)
+    if not ctx or "暂无" in ctx:
+        return None, ctx
+
+    used = min(len(ctx), budget.max_outline_chars)
+    if len(ctx) > budget.max_outline_chars:
+        ctx = ctx[:budget.max_outline_chars] + "..."
+
+    return ContextSection(
+        category="outline",
+        title="当前大纲节点",
+        content=ctx,
+        source_type="outline",
+        source_id=outline_node_id,
+        chunk_ids=[],
+        selection_reason="当前写作目标大纲节点",
+        score=100.0,
+        used_chars=used,
+    ), ctx
+
+
+def _pack_summaries(
+    db: Session,
+    project_id: str,
+    budget: ContextBudget,
+) -> ContextSection:
+    """Build recent summaries section."""
+    ctx = _build_recent_summaries(db, project_id, limit=5)
+    if "暂无" in ctx:
+        return ContextSection(
+            category="summary",
+            title="近期章节摘要",
+            content="暂无前文章节摘要。",
+            source_type="chapter_summary",
+            source_id="",
+            chunk_ids=[],
+            selection_reason="自动选取最近5章摘要",
+            score=0.0,
+            used_chars=0,
+        )
+
+    used = min(len(ctx), budget.max_summary_chars)
+    if len(ctx) > budget.max_summary_chars:
+        ctx = ctx[:budget.max_summary_chars] + "..."
+
+    return ContextSection(
+        category="summary",
+        title="近期章节摘要",
+        content=ctx,
+        source_type="chapter_summary",
+        source_id="",
+        chunk_ids=[],
+        selection_reason="自动选取最近5章摘要",
+        score=90.0,
+        used_chars=used,
+    )
+
+
+def _pack_worldbuilding(
+    db: Session,
+    project_id: str,
+    outline_node_id: str | None,
+    requirements: str,
+    budget: ContextBudget,
+    rag_available: bool,
+) -> tuple[ContextSection, list[SearchResult]]:
+    """Build worldbuilding section, using RAG when available and entries > 50."""
+    rag_attempted = False
+    rag_results: list[SearchResult] = []
+
+    if rag_available:
+        entry_count = db.query(WorldbuildingEntry).filter(
+            WorldbuildingEntry.project_id == project_id,
+        ).count()
+        if entry_count > 50:
+            rag_attempted = True
+            rag_results = search_chunks(
+                db, project_id, requirements,
+                source_types=["worldbuilding"],
+                limit=32,
+            )
+
+    if rag_attempted and rag_results:
+        sections_text: list[str] = []
+        total_used = 0
+        chunk_ids: list[str] = []
+        for r in rag_results:
+            if total_used + len(r.content) > budget.max_worldbuilding_chars:
+                break
+            sections_text.append(f"[score={r.score:.1f}, {r.reason}] {r.title}: {r.content[:850]}")
+            total_used += len(r.content)
+            chunk_ids.append(r.chunk_id)
+
+        content = "\n".join(sections_text)
+        return ContextSection(
+            category="worldbuilding",
+            title="世界观设定",
+            content=content,
+            source_type="worldbuilding",
+            source_id="",
+            chunk_ids=chunk_ids,
+            selection_reason=f"RAG检索({len(rag_results)}条命中，{len(chunk_ids)}条入选)",
+            score=sum(r.score for r in rag_results[:len(chunk_ids)]),
+            used_chars=total_used,
+        ), rag_results
+
+    if rag_attempted and not rag_results:
+        # RAG was tried but found nothing — fall through to legacy with clear reason
+        ctx = _build_world_context(db, project_id, outline_node_id, query_context=requirements)
+        used = min(len(ctx), budget.max_worldbuilding_chars)
+        if len(ctx) > budget.max_worldbuilding_chars:
+            ctx = ctx[:budget.max_worldbuilding_chars] + "..."
+        return ContextSection(
+            category="worldbuilding",
+            title="世界观设定",
+            content=ctx,
+            source_type="worldbuilding",
+            source_id="",
+            chunk_ids=[],
+            selection_reason="RAG检索无命中，回退传统关键词筛选",
+            score=80.0,
+            used_chars=used,
+        ), rag_results
+
+    # Traditional path (entries <= 50 or RAG unavailable)
+    ctx = _build_world_context(db, project_id, outline_node_id, query_context=requirements)
+    used = min(len(ctx), budget.max_worldbuilding_chars)
+    if len(ctx) > budget.max_worldbuilding_chars:
+        ctx = ctx[:budget.max_worldbuilding_chars] + "..."
+
+    entry_count = db.query(WorldbuildingEntry).filter(
+        WorldbuildingEntry.project_id == project_id,
+    ).count()
+    return ContextSection(
+        category="worldbuilding",
+        title="世界观设定",
+        content=ctx,
+        source_type="worldbuilding",
+        source_id="",
+        chunk_ids=[],
+        selection_reason=f"传统关键词筛选（{entry_count}条）",
+        score=80.0,
+        used_chars=used,
+    ), rag_results
+
+
+def _pack_characters(
+    db: Session,
+    project_id: str,
+    outline_node_id: str | None,
+    requirements: str,
+    budget: ContextBudget,
+    rag_available: bool,
+) -> tuple[ContextSection, list[SearchResult]]:
+    """Build character section with RAG when available."""
+    rag_results: list[SearchResult] = []
+
+    if rag_available and requirements:
+        rag_results = search_chunks(
+            db, project_id, requirements,
+            source_types=["character"],
+            limit=10,
+        )
+
+    if rag_results:
+        sections_text: list[str] = []
+        total_used = 0
+        chunk_ids: list[str] = []
+        seen_sources: set[str] = set()
+        for r in rag_results:
+            if total_used + len(r.content) > budget.max_character_chars:
+                break
+            if r.source_id not in seen_sources:
+                sections_text.append(f"[{r.title}] {r.content[:1200]}")
+                total_used += len(r.content)
+                chunk_ids.append(r.chunk_id)
+                seen_sources.add(r.source_id)
+
+        content = "\n\n".join(sections_text)
+        return ContextSection(
+            category="characters",
+            title="相关角色",
+            content=content,
+            source_type="character",
+            source_id="",
+            chunk_ids=chunk_ids,
+            selection_reason=f"RAG检索({len(rag_results)}条命中，{len(chunk_ids)}个角色入选)",
+            score=sum(r.score for r in rag_results[:len(chunk_ids)]),
+            used_chars=total_used,
+        ), rag_results
+
+    if outline_node_id:
+        node = db.query(OutlineNode).filter(OutlineNode.id == outline_node_id).first()
+        if node:
+            from ...database.models import OutlineNodeCharacter
+            links = (
+                db.query(OutlineNodeCharacter)
+                .filter(OutlineNodeCharacter.outline_node_id == outline_node_id)
+                .all()
+            )
+            parts: list[str] = []
+            total_used = 0
+            for link in links:
+                char = link.character if link else None
+                if not char:
+                    continue
+                char_ctx = _build_character_context(char)
+                rels_ctx = _build_character_relationships(db, project_id, char.id)
+                section = f"{char_ctx}\n{rels_ctx}"
+                if total_used + len(section) > budget.max_character_chars:
+                    break
+                parts.append(section)
+                total_used += len(section)
+
+            if parts:
+                content = "\n\n".join(parts)
+                return ContextSection(
+                    category="characters",
+                    title="场景角色",
+                    content=content,
+                    source_type="character",
+                    source_id="",
+                    chunk_ids=[],
+                    selection_reason="大纲节点关联角色",
+                    score=95.0,
+                    used_chars=total_used,
+                ), []
+
+    return ContextSection(
+        category="characters",
+        title="相关角色",
+        content="暂无相关角色。",
+        source_type="character",
+        source_id="",
+        chunk_ids=[],
+        selection_reason="未找到相关角色",
+        score=0.0,
+        used_chars=0,
+    ), []
+
+
+def _pack_pinned(
+    db: Session,
+    pinned_chunk_ids: list[str],
+    budget: ContextBudget,
+    used_chars: int,
+) -> tuple[list[ContextSection], int]:
+    """Force-include pinned chunks."""
+    if not pinned_chunk_ids:
+        return [], used_chars
+
+    sections: list[ContextSection] = []
+    for cid in pinned_chunk_ids:
+        chunk = db.query(RagChunk).filter(RagChunk.id == cid).first()
+        if not chunk:
+            continue
+        section = ContextSection(
+            category="pinned",
+            title=f"固定: {chunk.title or chunk.source_type}",
+            content=chunk.content or "",
+            source_type=chunk.source_type,
+            source_id=chunk.source_id,
+            chunk_ids=[cid],
+            selection_reason="用户固定选取",
+            score=999.0,
+            used_chars=len(chunk.content or ""),
+        )
+        sections.append(section)
+        used_chars += len(chunk.content or "")
+
+    return sections, used_chars
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def pack_context(
+    db: Session,
+    project_id: str,
+    outline_node_id: str | None = None,
+    requirements: str = "",
+    budget: ContextBudget | None = None,
+    pinned_chunk_ids: list[str] | None = None,
+    include_categories: set[str] | None = None,
+) -> PackedContext:
+    """Budget-aware context assembly with full explanations.
+
+    Args:
+        include_categories: If provided, only build sections for these categories.
+            None (default) builds all categories. Valid values:
+            "outline", "summary", "characters", "worldbuilding", "pinned".
+    """
+    if budget is None:
+        budget = ContextBudget()
+
+    fts_available = detect_fts5_available(db)
+    rag_available = fts_available or True  # LIKE fallback always available
+
+    sections: list[ContextSection] = []
+    explanations: list[str] = []
+    warnings: list[str] = []
+    used_by_category: dict[str, int] = {}
+
+    def _should_include(category: str) -> bool:
+        return include_categories is None or category in include_categories
+
+    # 1. Outline (priority 1)
+    if _should_include("outline"):
+        outline_section, outline_ctx = _pack_outline(db, project_id, outline_node_id, budget)
+        if outline_section:
+            sections.append(outline_section)
+            used_by_category["outline"] = outline_section.used_chars
+            explanations.append(f"大纲节点：{outline_section.selection_reason}")
+
+    # 2. Recent summaries
+    if _should_include("summary"):
+        summary_section = _pack_summaries(db, project_id, budget)
+        sections.append(summary_section)
+        used_by_category["summary"] = summary_section.used_chars
+        explanations.append(f"章节摘要：{summary_section.selection_reason}")
+
+    # 3. Characters
+    if _should_include("characters"):
+        char_section, char_rag = _pack_characters(db, project_id, outline_node_id, requirements, budget, rag_available)
+        sections.append(char_section)
+        used_by_category["characters"] = char_section.used_chars
+        explanations.append(f"角色：{char_section.selection_reason}")
+
+    # 4. Worldbuilding
+    if _should_include("worldbuilding"):
+        wb_section, wb_rag = _pack_worldbuilding(db, project_id, outline_node_id, requirements, budget, rag_available)
+        sections.append(wb_section)
+        used_by_category["worldbuilding"] = wb_section.used_chars
+        explanations.append(f"世界观：{wb_section.selection_reason}")
+
+    # 5. Pinned chunks (force-include)
+    total_used = sum(used_by_category.values())
+    if pinned_chunk_ids and _should_include("pinned"):
+        pinned_sections, total_used = _pack_pinned(db, pinned_chunk_ids, budget, total_used)
+        sections.extend(pinned_sections)
+        used_by_category["pinned"] = sum(s.used_chars for s in pinned_sections)
+        explanations.append(f"固定选取：{len(pinned_sections)}个内容块")
+
+    total_used_chars = sum(s.used_chars for s in sections)
+
+    # --- Warnings ---
+    if not fts_available:
+        warnings.append("FTS5不可用，使用LIKE降级搜索。建议升级SQLite版本。")
+    if total_used_chars > budget.total_chars - budget.reserve_chars:
+        warnings.append(f"上下文已接近预算上限({total_used_chars}/{budget.total_chars - budget.reserve_chars}字符)。")
+    if not outline_node_id and _should_include("outline"):
+        warnings.append("未指定大纲节点，上下文可能不够精准。")
+
+    # RAG miss warnings — only for included categories
+    if _should_include("worldbuilding"):
+        wb_section = next((s for s in sections if s.category == "worldbuilding"), None)
+        if wb_section:
+            wb_count = db.query(WorldbuildingEntry).filter(
+                WorldbuildingEntry.project_id == project_id,
+            ).count()
+            if wb_count > 50:
+                reason = wb_section.selection_reason
+                if "RAG检索无命中" in reason:
+                    warnings.append(f"世界观有 {wb_count} 条，RAG检索未命中任何设定，已回退传统筛选。")
+                elif "RAG检索" in reason and wb_section.used_chars < 200:
+                    warnings.append("RAG检索世界观命中过少，上下文可能不充分。")
+
+    if _should_include("characters"):
+        char_section = next((s for s in sections if s.category == "characters"), None)
+        if char_section and char_section.used_chars == 0:
+            warnings.append("未找到任何相关角色信息。")
+
+    return PackedContext(
+        sections=sections,
+        total_used_chars=total_used_chars,
+        budget=budget.to_dict(),
+        used_chars=used_by_category,
+        explanations=explanations,
+        warnings=warnings,
+        fts_available=fts_available,
+    )

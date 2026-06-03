@@ -1,6 +1,8 @@
 """API config CRUD, global default model, model listing, and connection test endpoints."""
 import asyncio
+import json
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from openai import (
     AsyncOpenAI,
     APIError as OpenAIAPIError,
@@ -10,7 +12,9 @@ from openai import (
 from sqlalchemy.orm import Session
 
 import httpx
+from pydantic import BaseModel, Field
 
+from ..ai.gateway import LLMGateway
 from ..database.session import get_db
 from ..database.models import APIConfig
 from ..schemas.config import (
@@ -18,11 +22,20 @@ from ..schemas.config import (
     ModelListRequest, ConnectionTestRequest,
 )
 from ..core.response import ApiResponse
-from ..core.exceptions import NotFoundError, ValidationError, LLMError
+from ..core.exceptions import AppException, NotFoundError, ValidationError, LLMError
 from ..core.crypto import encrypt, decrypt
 from ..core.model_limits import limits_payload
 
 router = APIRouter(tags=["config"])
+
+
+class ChatCompletionRequest(BaseModel):
+    """OpenAI-style chat completion request for compatibility/testing."""
+    messages: list[dict] = Field(..., min_length=1)
+    model: str | None = None
+    temperature: float = Field(0.7, ge=0, le=2.0)
+    max_tokens: int | None = Field(None, ge=1)
+    extra_body: dict | None = None
 
 PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
@@ -177,6 +190,15 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
     )
 
 
+@router.get("/config/models/{provider}")
+def get_model_config_detail(provider: str, db: Session = Depends(get_db)):
+    """Get one provider config with a masked API key for legacy callers."""
+    config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
+    if not config:
+        raise NotFoundError(f"Provider config '{provider}' not found")
+    return ApiResponse.success(data=_config_payload(config, include_masked_key=True))
+
+
 async def _list_openai_compatible_models(api_key: str, base_url: str, provider: str) -> list[dict]:
     """Fetch model list from an OpenAI-compatible API."""
     client = AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -285,6 +307,55 @@ async def test_connection(payload: ConnectionTestRequest):
         raise LLMError(f"Anthropic API 返回错误: HTTP {e.response.status_code}")
     except asyncio.TimeoutError:
         raise LLMError("请求超时，请稍后重试")
+
+
+@router.post("/chat/completion")
+async def chat_completion(payload: ChatCompletionRequest):
+    """Compatibility endpoint for direct non-streaming LLM calls."""
+    try:
+        result = await LLMGateway.chat_completion(
+            messages=payload.messages,
+            model=payload.model,
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens,
+            extra_body=payload.extra_body,
+        )
+    except AppException as exc:
+        # Keep this direct gateway endpoint as an LLM boundary. Older callers
+        # expect provider/config resolution failures to be 502-level errors.
+        raise LLMError(exc.message)
+    return ApiResponse.success(data=result)
+
+
+@router.post("/chat/completion/stream")
+async def chat_completion_stream(payload: ChatCompletionRequest):
+    """Compatibility endpoint for direct streaming LLM calls."""
+
+    async def _events():
+        try:
+            async for chunk in LLMGateway.stream_chat_completion(
+                messages=payload.messages,
+                model=payload.model,
+                temperature=payload.temperature,
+                max_tokens=payload.max_tokens,
+                extra_body=payload.extra_body,
+            ):
+                data = json.dumps(
+                    {"type": "token", "content": chunk},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                yield f"data: {data}\n\n"
+        except AppException as exc:
+            data = json.dumps(
+                {"type": "error", "message": exc.message},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            yield f"data: {data}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_events(), media_type="text/event-stream")
 
 
 @router.delete("/config/models/{provider}")

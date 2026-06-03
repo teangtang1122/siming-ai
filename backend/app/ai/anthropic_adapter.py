@@ -116,6 +116,8 @@ def _parse_anthropic_response(response) -> tuple[str, list[dict] | None]:
 class AnthropicAdapter(BaseAdapter):
     """Adapter for Anthropic Claude API."""
 
+    _convert_messages = staticmethod(_convert_messages_for_anthropic)
+
     @property
     def provider_name(self) -> str:
         return "anthropic"

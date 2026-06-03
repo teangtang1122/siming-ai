@@ -36,6 +36,13 @@ async def create_outline_node(
     summary = str(args.get("summary") or "").strip()
     if not title:
         return {"tool": "create_outline_node", "status": "skipped", "detail": "标题为空"}
+
+    from ..run_recovery import generate_idempotency_key, check_idempotency
+    _idem_key = generate_idempotency_key(db, "create_outline_node", project_id, args)
+    if _idem_key:
+        _existing = check_idempotency(db, project_id, _idem_key)
+        if _existing:
+            return _existing
     node = OutlineNode(
         project_id=project_id,
         parent_id=parent_id,

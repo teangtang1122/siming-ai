@@ -19,6 +19,13 @@ async def create_character(
     name = str(args.get("name") or "").strip()
     if not name:
         return {"tool": "create_character", "status": "skipped", "detail": "角色名为空"}
+
+    from ..run_recovery import generate_idempotency_key, check_idempotency
+    _idem_key = generate_idempotency_key(db, "create_character", project_id, args)
+    if _idem_key:
+        _existing = check_idempotency(db, project_id, _idem_key)
+        if _existing:
+            return _existing
     background_parts = [str(args.get("background") or "").strip()]
     for label, key in [("说话风格", "speech_style"), ("当前动机", "motivation"), ("核心冲突", "conflict")]:
         value = str(args.get(key) or "").strip()

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Empty, Input, InputNumber, Popover, Select, Space, Switch, Tag, Typography, message } from 'antd'
+import { Button, Empty, Input, InputNumber, Modal, Popover, Select, Space, Switch, Tag, Tooltip, Typography, message } from 'antd'
 import {
   DeleteOutlined,
   DownOutlined,
+  InfoCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   SendOutlined,
@@ -10,6 +11,9 @@ import {
   StopOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import AgentPlanView, { type AgentPlanViewState, type AgentPlanStepView } from './AgentPlanView'
+import { ContextPreviewPanel } from './ContextPreviewPanel'
+import { AssistantMemoryModal } from './AssistantMemoryModal'
 import './WorkspaceAssistantChat.css'
 
 const { Paragraph, Text } = Typography
@@ -64,6 +68,8 @@ interface WorkspaceToolLog {
   tool?: string
   status?: string
   detail?: string
+  stepId?: string
+  data?: Record<string, unknown>
 }
 
 interface WorkspaceAction {
@@ -87,6 +93,7 @@ interface WorkspaceAssistantResponse {
   actions?: WorkspaceAction[]
   applied_actions?: WorkspaceToolLog[]
   tool_logs: WorkspaceToolLog[]
+  run?: WorkspaceAssistantRun
   scope?: string
   model?: string | null
   usage?: unknown
@@ -121,6 +128,34 @@ interface WorkspaceRunLog {
   tool?: string
   status?: string
   message: string
+  stepId?: string
+  attemptNo?: number
+  retryOfStepId?: string | null
+  resolvedStepId?: string | null
+}
+
+interface WorkspaceAssistantRun {
+  id: string
+  status: string
+  phase?: string | null
+  current_iteration?: number
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+interface WorkspaceAssistantRunStep {
+  id: string
+  run_id: string
+  step_type?: string | null
+  tool?: string | null
+  status?: string | null
+  detail?: string | null
+  error?: string | null
+}
+
+interface WorkspaceAssistantRunDetail {
+  run: WorkspaceAssistantRun
+  steps: WorkspaceAssistantRunStep[]
 }
 
 interface WorkspaceAssistantChatProps {
@@ -143,6 +178,14 @@ const createEmptyWorkspaceResponse = (toolLogs: WorkspaceToolLog[] = []): Worksp
   actions: [],
   applied_actions: [],
   tool_logs: toolLogs,
+})
+
+const runStepToLog = (step: WorkspaceAssistantRunStep): WorkspaceRunLog => ({
+  key: step.id,
+  tool: step.tool || step.step_type || 'step',
+  status: step.status || 'running',
+  message: step.detail || step.error || step.tool || step.step_type || '步骤',
+  stepId: step.id,
 })
 
 const messageTime = (message: WorkspaceAssistantMessage) => {
@@ -200,12 +243,17 @@ function WorkspaceAssistantChat({
 
   const [historyLoading, setHistoryLoading] = useState(false)
   const [runLogs, setRunLogs] = useState<WorkspaceRunLog[]>([])
+  const [currentRun, setCurrentRun] = useState<WorkspaceAssistantRun | null>(null)
   const [temperature, setTemperature] = useState(0.3)
   const [maxTokens, setMaxTokens] = useState<number | null>(null)
   const [autoApply, setAutoApply] = useState(true)
   const [assistantMode, setAssistantMode] = useState<WorkspaceAssistantMode>('fast')
   const [showAllRunLogs, setShowAllRunLogs] = useState(false)
   const [showSelectionTag, setShowSelectionTag] = useState(true)
+  const [retryingStepId, setRetryingStepId] = useState<string | null>(null)
+  const [currentPlan, setCurrentPlan] = useState<AgentPlanViewState | null>(null)
+  const [retryingPlanKey, setRetryingPlanKey] = useState<string | null>(null)
+  const [detailStep, setDetailStep] = useState<{ id: string; tool?: string; request?: unknown; result?: unknown; error?: string; attempt_no?: number } | null>(null)
 
   useEffect(() => {
     setShowSelectionTag(true)
@@ -220,7 +268,9 @@ function WorkspaceAssistantChat({
   const [styleSaving, setStyleSaving] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
+  const [matchedSkills, setMatchedSkills] = useState<Array<{ name: string; description?: string; truncated?: boolean; warnings?: string[]; recommended_tools?: string[]; injected?: boolean }>>([])
   const abortRef = useRef<AbortController | null>(null)
+  const [memoryModalOpen, setMemoryModalOpen] = useState(false)
 
   const handleMessagesScroll = useCallback(() => {
     const el = messagesRef.current
@@ -300,6 +350,16 @@ function WorkspaceAssistantChat({
     })
   }
 
+  const refreshRunLogs = useCallback(async (runId: string) => {
+    const res = await apiClient.get<ApiResponse<WorkspaceAssistantRunDetail>>(
+      `/projects/${projectId}/ai/assistant/runs/${runId}`,
+    )
+    const detail = res.data.data
+    setCurrentRun(detail.run || null)
+    setRunLogs((detail.steps || []).map(runStepToLog))
+    return detail
+  }, [projectId])
+
   const updateLatestAssistant = (updater: (message: WorkspaceAssistantMessage) => WorkspaceAssistantMessage) => {
     setMessages((prev) => {
       const next = [...prev]
@@ -314,12 +374,22 @@ function WorkspaceAssistantChat({
   const appendToolLog = (log: WorkspaceToolLog, content?: string) => {
     updateLatestAssistant((item) => {
       const data = item.data || createEmptyWorkspaceResponse()
+      const shouldExposeAction =
+        log.status === 'ok'
+        && !!log.data
+        && (log.tool === 'chapter_writer' || log.tool === 'preview_writing_context')
       return {
         ...item,
         content: content || item.content,
         data: {
           ...data,
           tool_logs: [...(data.tool_logs || []), log],
+          applied_actions: shouldExposeAction
+            ? [
+                ...(data.applied_actions || []),
+                { tool: log.tool, status: log.status, detail: log.detail, data: log.data },
+              ]
+            : data.applied_actions,
         },
       }
     })
@@ -348,17 +418,24 @@ function WorkspaceAssistantChat({
       setActiveConversationId(res.data.data.conversation.id)
       // The backend already returns persisted messages in conversation order.
       // Re-sorting here can scramble older rows that share the same timestamp.
-      setMessages((res.data.data.messages || []).map(toWorkspaceMessage))
+      const loadedMessages = (res.data.data.messages || []).map(toWorkspaceMessage)
+      setMessages(loadedMessages)
+      const lastRun = [...loadedMessages].reverse().find((item) => item.role === 'assistant' && item.data?.run)?.data?.run || null
       upsertConversation(res.data.data.conversation)
       setInput('')
       setRunLogs([])
       setShowAllRunLogs(false)
+      if (lastRun) {
+        await refreshRunLogs(lastRun.id)
+      } else {
+        setCurrentRun(null)
+      }
     } catch (err: any) {
       message.error(err.message || '加载对话失败')
     } finally {
       setHistoryLoading(false)
     }
-  }, [projectId])
+  }, [projectId, refreshRunLogs])
 
   useEffect(() => {
     let mounted = true
@@ -381,6 +458,8 @@ function WorkspaceAssistantChat({
     setMessages([])
     setInput('')
     setRunLogs([])
+    setCurrentRun(null)
+    setCurrentPlan(null)
     setShowAllRunLogs(false)
   }
 
@@ -405,6 +484,319 @@ function WorkspaceAssistantChat({
     updateLatestAssistant((item) => ({ ...item, content: '已停止生成。', status: 'aborted' }))
   }
 
+  const retryStep = async (stepId: string, tool: string) => {
+    if (!currentRun) return
+    setRetryingStepId(stepId)
+    try {
+      const res = await apiClient.post<ApiResponse<{
+        id: string
+        status: string
+        tool?: string
+        detail?: string
+        attempt_no?: number
+        retry_of_step_id?: string
+        resolved_step_id?: string
+      }>>(
+        `/projects/${projectId}/ai/assistant/runs/${currentRun.id}/steps/${stepId}/retry`,
+      )
+      const data = res.data.data
+      await refreshRunLogs(currentRun.id)
+      // Add the new retry step to run logs
+      addRunLog({
+        tool: tool,
+        status: data.status || 'ok',
+        message: `重试 #${data.attempt_no || 1}: ${data.detail || (data.status === 'error' ? '重试失败' : '重试成功')}`,
+        stepId: data.id,
+        attemptNo: data.attempt_no || 1,
+        retryOfStepId: data.retry_of_step_id,
+      })
+      // Mark original step as resolved in run logs
+      if (data.status !== 'error') {
+        setRunLogs((prev) =>
+          prev.map((log) =>
+            log.stepId === stepId
+              ? { ...log, resolvedStepId: data.id }
+              : log
+          )
+        )
+      }
+      if (data.status === 'error') {
+        message.error(data.detail || `「${tool}」重试失败`)
+      } else {
+        message.success(`「${tool}」重试成功`)
+      }
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || err.message || '重试失败')
+    } finally {
+      setRetryingStepId(null)
+    }
+  }
+
+  const resumeFromStep = async (stepId: string, tool: string) => {
+    if (!currentRun) return
+    setRetryingStepId(stepId)
+    try {
+      const res = await apiClient.post<ApiResponse<Array<{
+        id: string
+        status: string
+        tool?: string
+        detail?: string
+        attempt_no?: number
+        retry_of_step_id?: string
+      }>>>(
+        `/projects/${projectId}/ai/assistant/runs/${currentRun.id}/steps/${stepId}/resume-from`,
+      )
+      const results = res.data.data
+      await refreshRunLogs(currentRun.id)
+      for (const r of results) {
+        addRunLog({
+          tool: r.tool || tool,
+          status: r.status || 'ok',
+          message: `重试 #${r.attempt_no || 1}: ${r.detail || (r.status === 'error' ? '失败' : '成功')}`,
+          stepId: r.id,
+          attemptNo: r.attempt_no || 1,
+          retryOfStepId: r.retry_of_step_id,
+        })
+      }
+      const failed = results.filter((r) => r.status === 'error')
+      if (failed.length > 0) {
+        message.warning(`从该步骤继续完成，${failed.length} 个步骤仍然失败`)
+      } else {
+        message.success('从该步骤继续执行完成')
+      }
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || err.message || '继续执行失败')
+    } finally {
+      setRetryingStepId(null)
+    }
+  }
+
+  const resumeRun = async () => {
+    if (!currentRun) return
+    setRetryingStepId('all')
+    try {
+      const res = await apiClient.post<ApiResponse<Array<{
+        id: string
+        status: string
+        tool?: string
+        detail?: string
+        attempt_no?: number
+      }>>>(
+        `/projects/${projectId}/ai/assistant/runs/${currentRun.id}/resume`,
+      )
+      const results = res.data.data
+      await refreshRunLogs(currentRun.id)
+      for (const r of results) {
+        addRunLog({
+          tool: r.tool || 'step',
+          status: r.status || 'ok',
+          message: `重试 #${r.attempt_no || 1}: ${r.detail || (r.status === 'error' ? '失败' : '成功')}`,
+          stepId: r.id,
+          attemptNo: r.attempt_no || 1,
+        })
+      }
+      const failed = results.filter((r) => r.status === 'error')
+      if (failed.length > 0) {
+        message.warning(`重试完成，${failed.length} 个步骤仍然失败`)
+      } else {
+        message.success('所有失败步骤已重试成功')
+      }
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || err.message || '重试失败')
+    } finally {
+      setRetryingStepId(null)
+    }
+  }
+
+  const retryPlanStep = async (stepKey: string) => {
+    if (!currentPlan) return
+    setRetryingPlanKey(stepKey)
+    try {
+      const res = await apiClient.post<ApiResponse<Record<string, unknown>>>(
+        `/projects/${projectId}/ai/agent/plans/${currentPlan.plan_id}/steps/${stepKey}/retry`,
+      )
+      const data = res.data.data
+      setCurrentPlan((prev) => {
+        if (!prev) return null
+        return {
+          ...prev,
+          steps: prev.steps.map((s) =>
+            s.step_key === stepKey
+              ? {
+                  ...s,
+                  status: (data.status as AgentPlanStepView['status']) || 'ok',
+                  detail: data.detail as string | undefined,
+                  error: data.error as string | undefined,
+                  attempt_no: (data.attempt_no as number) || 1,
+                }
+              : s
+          ),
+        }
+      })
+      addRunLog({
+        tool: (data.tool as string) || stepKey,
+        status: (data.status as string) || 'ok',
+        message: `重试: ${data.detail || (data.status === 'error' ? '失败' : '成功')}`,
+      })
+      if (data.status === 'error') {
+        message.error((data.detail as string) || `步骤「${stepKey}」重试失败`)
+      } else {
+        message.success(`步骤「${stepKey}」重试成功`)
+      }
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || err.message || '重试失败')
+    } finally {
+      setRetryingPlanKey(null)
+    }
+  }
+
+  const handlePlanSseFrame = (frame: string) => {
+    const data = frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s?/, ''))
+      .join('\n')
+    if (!data || data === '[DONE]') return
+    const event = JSON.parse(data)
+    if (event.type === 'step_start') {
+      const ev = event as { step_key: string; tool: string }
+      setCurrentPlan((prev) => {
+        if (!prev) return null
+        return {
+          ...prev,
+          steps: prev.steps.map((s) =>
+            s.step_key === ev.step_key ? { ...s, status: 'running' as const } : s
+          ),
+        }
+      })
+    } else if (event.type === 'step_result') {
+      const ev = event as {
+        step_key: string
+        tool: string
+        status: string
+        detail?: string
+        error?: string
+        data?: Record<string, unknown>
+      }
+      setCurrentPlan((prev) => {
+        if (!prev) return null
+        return {
+          ...prev,
+          steps: prev.steps.map((s) =>
+            s.step_key === ev.step_key
+              ? { ...s, status: (ev.status as AgentPlanStepView['status']) || 'ok', detail: ev.detail, error: ev.error }
+              : s
+          ),
+        }
+      })
+      addRunLog({ tool: ev.tool, status: ev.status, message: ev.detail || ev.tool })
+      appendToolLog({ tool: ev.tool, status: ev.status, detail: ev.detail, data: ev.data })
+    } else if (event.type === 'step_skip') {
+      const ev = event as { step_key: string }
+      setCurrentPlan((prev) => {
+        if (!prev) return null
+        return {
+          ...prev,
+          steps: prev.steps.map((s) =>
+            s.step_key === ev.step_key ? { ...s, status: 'skipped' as const } : s
+          ),
+        }
+      })
+    } else if (event.type === 'step_blocked') {
+      const ev = event as { step_key: string; detail?: string }
+      setCurrentPlan((prev) => {
+        if (!prev) return null
+        return {
+          ...prev,
+          steps: prev.steps.map((s) =>
+            s.step_key === ev.step_key ? { ...s, status: 'blocked' as const, detail: ev.detail } : s
+          ),
+        }
+      })
+    } else if (event.type === 'plan_end') {
+      const ev = event as { status: string; error?: string }
+      setCurrentPlan((prev) => prev ? { ...prev, status: (ev.status as AgentPlanViewState['status']) || 'completed' } : null)
+      addRunLog({
+        tool: 'plan',
+        status: ev.status === 'completed' ? 'ok' : 'error',
+        message: ev.status === 'completed' ? '计划执行完成' : (ev.error || '计划执行失败'),
+      })
+    }
+  }
+
+  const streamPlanRequest = async (url: string) => {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    if (!res.ok || !res.body) {
+      const errText = await res.text().catch(() => '')
+      throw new Error(errText || `HTTP ${res.status}`)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const frames = buffer.split(/\r?\n\r?\n/)
+      buffer = frames.pop() || ''
+      for (const frame of frames) {
+        if (frame.trim()) handlePlanSseFrame(frame)
+      }
+    }
+    buffer += decoder.decode()
+    if (buffer.trim()) handlePlanSseFrame(buffer)
+  }
+
+  const resumeFromPlanStep = async (stepKey: string) => {
+    if (!currentPlan) return
+    setRetryingPlanKey(stepKey)
+    try {
+      await streamPlanRequest(
+        `/api/v1/projects/${projectId}/ai/agent/plans/${currentPlan.plan_id}/steps/${stepKey}/resume-from/stream`,
+      )
+      message.success('从该步骤继续执行完成')
+    } catch (err: any) {
+      message.error(err.message || '继续执行失败')
+    } finally {
+      setRetryingPlanKey(null)
+    }
+  }
+
+  const retryAllPlanSteps = async () => {
+    if (!currentPlan) return
+    setRetryingPlanKey('__all__')
+    try {
+      await streamPlanRequest(
+        `/api/v1/projects/${projectId}/ai/agent/plans/${currentPlan.plan_id}/resume/stream`,
+      )
+      message.success('重试完成')
+    } catch (err: any) {
+      message.error(err.message || '重试失败')
+    } finally {
+      setRetryingPlanKey(null)
+    }
+  }
+
+  const showStepDetail = async (stepId: string) => {
+    if (!currentRun) return
+    try {
+      const res = await apiClient.get<ApiResponse<{
+        run: unknown
+        steps: Array<{ id: string; tool?: string; request?: unknown; result?: unknown; error?: string; attempt_no?: number; status?: string }>
+      }>>(`/projects/${projectId}/ai/assistant/runs/${currentRun.id}`)
+      const step = (res.data.data.steps || []).find((s) => s.id === stepId)
+      if (step) {
+        setDetailStep(step)
+      }
+    } catch {
+      message.error('获取步骤详情失败')
+    }
+  }
+
   const sendMessage = async () => {
     const userText = input.trim()
     if (!userText) {
@@ -414,7 +806,10 @@ function WorkspaceAssistantChat({
 
     setGenerating(true)
     setRunLogs([{ key: `${Date.now()}-start`, tool: scope, status: 'running', message: '正在提交给AI助手' }])
+    setCurrentRun(null)
+    setCurrentPlan(null)
     setShowAllRunLogs(false)
+    setMatchedSkills([])
     const controller = new AbortController()
     abortRef.current = controller
     setMessages((prev) => [
@@ -486,16 +881,20 @@ function WorkspaceAssistantChat({
             }
             return sortWorkspaceMessages([...prev, toWorkspaceMessage(persistedUser), toWorkspaceMessage(persistedAssistant)])
           })
+        } else if (event.type === 'run') {
+          const run = event.run as WorkspaceAssistantRun
+          setCurrentRun(run)
+          addRunLog({ tool: 'run', status: run.status || 'running', message: `任务已创建：${run.id.slice(0, 8)}` })
         } else if (event.type === 'status') {
           const detail = event.message || '正在执行'
-          const log = { tool: event.tool || scope, status: 'running', detail }
-          addRunLog({ tool: log.tool, status: log.status, message: detail })
+          const log = { tool: event.tool || scope, status: 'running', detail, stepId: event.step_id }
+          addRunLog({ tool: log.tool, status: log.status, message: detail, stepId: event.step_id })
           appendToolLog(log, `正在执行：${detail}`)
         } else if (event.type === 'tool') {
           const detail = event.detail || event.message || event.tool
-          const log = { tool: event.tool || 'tool', status: event.status || 'ok', detail }
+          const log = { tool: event.tool || 'tool', status: event.status || 'ok', detail, stepId: event.step_id }
           if (log.tool !== 'planner') {
-            addRunLog({ tool: log.tool, status: log.status, message: `${log.tool}: ${detail}` })
+            addRunLog({ tool: log.tool, status: log.status, message: `${log.tool}: ${detail}`, stepId: event.step_id })
           }
           appendToolLog(log)
         } else if (event.type === 'iteration_start') {
@@ -503,15 +902,100 @@ function WorkspaceAssistantChat({
         } else if (event.type === 'iteration_end') {
           // silently track, don't show in run log
         } else if (event.type === 'search_start') {
-          const ev = event as { tool: string; args?: Record<string, unknown>; iteration: number }
+          const ev = event as { tool: string; args?: Record<string, unknown>; iteration: number; step_id?: string }
           const argsStr = JSON.stringify(ev.args || {}).slice(0, 80)
-          addRunLog({ tool: ev.tool, status: 'running', message: `正在搜索: ${argsStr}` })
+          addRunLog({ tool: ev.tool, status: 'running', message: `正在搜索: ${argsStr}`, stepId: ev.step_id })
         } else if (event.type === 'search_result') {
-          const ev = event as { tool: string; result?: { detail?: string; status?: string }; iteration: number }
+          const ev = event as { tool: string; result?: { detail?: string; status?: string }; iteration: number; step_id?: string }
           const detail = ev.result?.detail || '搜索完成'
           const status = ev.result?.status || 'ok'
-          addRunLog({ tool: ev.tool, status, message: detail })
-          appendToolLog({ tool: ev.tool, status, detail })
+          addRunLog({ tool: ev.tool, status, message: detail, stepId: ev.step_id })
+          appendToolLog({ tool: ev.tool, status, detail, stepId: ev.step_id })
+        } else if (event.type === 'plan_created') {
+          const ev = event as { plan_id: string; plan_name: string; steps: Array<{ step_key: string; tool: string; status: string; label?: string }> }
+          setCurrentPlan({
+            plan_id: ev.plan_id,
+            plan_name: ev.plan_name,
+            status: 'running',
+            steps: ev.steps.map((s) => ({
+              step_key: s.step_key,
+              tool: s.tool,
+              status: (s.status as AgentPlanStepView['status']) || 'pending',
+              label: s.label,
+            })),
+          })
+          addRunLog({ tool: 'plan', status: 'running', message: `计划「${ev.plan_name}」已创建，${ev.steps.length} 个步骤` })
+        } else if (event.type === 'plan_start') {
+          setCurrentPlan((prev) => prev ? { ...prev, status: 'running' } : null)
+        } else if (event.type === 'step_start') {
+          const ev = event as { step_key: string; tool: string; attempt_no?: number }
+          setCurrentPlan((prev) => {
+            if (!prev) return null
+            return {
+              ...prev,
+              steps: prev.steps.map((s) =>
+                s.step_key === ev.step_key
+                  ? { ...s, status: 'running' as const, attempt_no: ev.attempt_no }
+                  : s
+              ),
+            }
+          })
+          addRunLog({ tool: ev.tool, status: 'running', message: `执行: ${ev.tool}` })
+        } else if (event.type === 'step_result') {
+          const ev = event as { step_key: string; tool: string; status: string; detail?: string; error?: string; data?: Record<string, unknown> }
+          setCurrentPlan((prev) => {
+            if (!prev) return null
+            return {
+              ...prev,
+              steps: prev.steps.map((s) =>
+                s.step_key === ev.step_key
+                  ? { ...s, status: (ev.status as AgentPlanStepView['status']) || 'ok', detail: ev.detail, error: ev.error }
+                  : s
+              ),
+            }
+          })
+          addRunLog({ tool: ev.tool, status: ev.status, message: ev.detail || (ev.status === 'ok' ? '完成' : '失败') })
+          appendToolLog({ tool: ev.tool, status: ev.status, detail: ev.detail, data: ev.data })
+        } else if (event.type === 'step_skip') {
+          const ev = event as { step_key: string; tool: string; status: string }
+          setCurrentPlan((prev) => {
+            if (!prev) return null
+            return {
+              ...prev,
+              steps: prev.steps.map((s) =>
+                s.step_key === ev.step_key ? { ...s, status: 'skipped' as const } : s
+              ),
+            }
+          })
+        } else if (event.type === 'step_blocked') {
+          const ev = event as { step_key: string; tool: string; detail?: string }
+          setCurrentPlan((prev) => {
+            if (!prev) return null
+            return {
+              ...prev,
+              steps: prev.steps.map((s) =>
+                s.step_key === ev.step_key
+                  ? { ...s, status: 'blocked' as const, detail: ev.detail }
+                  : s
+              ),
+            }
+          })
+        } else if (event.type === 'plan_end') {
+          const ev = event as { plan_id: string; status: string; error?: string }
+          setCurrentPlan((prev) => {
+            if (!prev) return null
+            return { ...prev, status: (ev.status as AgentPlanViewState['status']) || 'completed' }
+          })
+          addRunLog({
+            tool: 'plan',
+            status: ev.status === 'completed' ? 'ok' : 'error',
+            message: ev.status === 'completed' ? '计划执行完成' : (ev.error || '计划执行失败'),
+          })
+        } else if (event.type === 'no_plan') {
+          // No plan detected, fell back to old flow — handled by subsequent events
+        } else if (event.type === 'skills_matched') {
+          const ev = event as { skills: Array<{ name: string; description?: string; truncated?: boolean; warnings?: string[]; recommended_tools?: string[]; injected?: boolean }> }
+          setMatchedSkills(ev.skills || [])
         } else if (event.type === 'thinking_delta') {
           const ev = event as { delta: string }
           setMessages((prev) => {
@@ -541,6 +1025,7 @@ function WorkspaceAssistantChat({
         } else if (event.type === 'complete') {
           const payload = event.data as WorkspaceAssistantResponse
           completed = true
+          if (payload.run) setCurrentRun(payload.run)
           upsertConversation(payload.conversation)
           setMessages((prev) => {
             const next = [...prev]
@@ -767,6 +1252,7 @@ function WorkspaceAssistantChat({
           >
             <Button size="small" icon={<SettingOutlined />} />
           </Popover>
+          <Button size="small" onClick={() => setMemoryModalOpen(true)}>记忆</Button>
           <Button size="small" icon={<ReloadOutlined />} loading={historyLoading} onClick={fetchConversations} />
           <Button size="small" type="primary" icon={<PlusOutlined />} onClick={startNewConversation}>新对话</Button>
         </Space>
@@ -797,10 +1283,39 @@ function WorkspaceAssistantChat({
         )}
       </div>
 
-      {runLogs.length > 0 && (
+      {currentPlan && (
+        <div style={{ padding: '0 12px' }}>
+          <AgentPlanView
+            plan={currentPlan}
+            onRetryStep={retryPlanStep}
+            onResumeFromStep={resumeFromPlanStep}
+            onRetryAll={retryAllPlanSteps}
+            retryingKey={retryingPlanKey}
+          />
+        </div>
+      )}
+
+      {runLogs.length > 0 && !currentPlan && (
         <div className="workspace-assistant-run-log">
           <div className="workspace-assistant-run-log-header">
-            <Text type="secondary" style={{ fontSize: 12 }}>运行过程</Text>
+            <Space size={6}>
+              <Text type="secondary" style={{ fontSize: 12 }}>运行过程</Text>
+              {currentRun && (
+                <Tag color={currentRun.status === 'completed' ? 'green' : currentRun.status === 'error' ? 'red' : 'blue'}>
+                  {currentRun.status} #{currentRun.id.slice(0, 8)}
+                </Tag>
+              )}
+              {runLogs.some((l) => l.status === 'error' && !l.resolvedStepId) && (
+                <Button
+                  size="small"
+                  loading={retryingStepId === 'all'}
+                  disabled={retryingStepId !== null}
+                  onClick={resumeRun}
+                >
+                  重试全部失败步骤
+                </Button>
+              )}
+            </Space>
             {runLogs.length > 3 && (
               <button
                 type="button"
@@ -813,11 +1328,47 @@ function WorkspaceAssistantChat({
           </div>
           {(showAllRunLogs ? runLogs : runLogs.slice(-3)).map((log) => (
             <div className="workspace-assistant-run-log-item" key={log.key}>
-              <Tag color={log.status === 'ok' ? 'green' : log.status === 'error' ? 'red' : log.status === 'skipped' ? 'orange' : 'blue'}>
-                {log.status || 'running'}
+              <Tag color={
+                log.status === 'ok' && log.resolvedStepId ? 'blue' :
+                log.status === 'ok' ? 'green' :
+                log.status === 'error' && log.resolvedStepId ? 'green' :
+                log.status === 'error' ? 'red' :
+                log.status === 'skipped' ? 'orange' : 'blue'
+              }>
+                {log.status === 'error' && log.resolvedStepId ? '已解决' :
+                 log.attemptNo && log.attemptNo > 1 ? `重试 #${log.attemptNo}` :
+                 log.status || 'running'}
               </Tag>
               {log.tool && <Text code>{log.tool}</Text>}
               <Text>{log.message}</Text>
+              {log.status === 'error' && !log.resolvedStepId && log.stepId && currentRun && (
+                <Space size={4}>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<ReloadOutlined />}
+                    loading={retryingStepId === log.stepId}
+                    disabled={retryingStepId !== null}
+                    onClick={() => retryStep(log.stepId!, log.tool || 'tool')}
+                    title="仅重试此步骤"
+                  >重试</Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    loading={retryingStepId === log.stepId}
+                    disabled={retryingStepId !== null}
+                    onClick={() => resumeFromStep(log.stepId!, log.tool || 'tool')}
+                    title="重试此步骤并继续后续步骤"
+                  >从这里继续</Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<InfoCircleOutlined />}
+                    onClick={() => showStepDetail(log.stepId!)}
+                    title="查看详情"
+                  >详情</Button>
+                </Space>
+              )}
             </div>
           ))}
         </div>
@@ -837,6 +1388,24 @@ function WorkspaceAssistantChat({
             <Paragraph style={{ marginTop: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>
               {item.content}
             </Paragraph>
+            {item.data?.applied_actions?.map((action, i) => {
+              if (action.tool === 'chapter_writer' && action.data?.context_snapshot) {
+                return <ContextPreviewPanel key={`ctx-${i}`} snapshot={action.data.context_snapshot as any} />
+              }
+              if (action.tool === 'preview_writing_context' && action.data?.rag_sections) {
+                return (
+                  <ContextPreviewPanel
+                    key={`ctx-${i}`}
+                    ragSections={action.data.rag_sections as any}
+                    explanations={action.data.explanations as any}
+                    warnings={action.data.warnings as any}
+                    totalUsedChars={action.data.total_used_chars as number}
+                    ragUsed={action.data.rag_used as boolean}
+                  />
+                )
+              }
+              return null
+            })}
             {item.data?.applied_actions && item.data.applied_actions.length > 0 && (
               <Space wrap size={4}>
                 {item.data.applied_actions.map((action, actionIndex) => (
@@ -855,6 +1424,20 @@ function WorkspaceAssistantChat({
             AI 助手正在分析
             {'...'}
           </Text>
+        )}
+        {matchedSkills.length > 0 && (
+          <div style={{ marginBottom: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>已激活技能：</Text>
+            <Space size={[4, 4]} wrap>
+              {matchedSkills.map((s) => (
+                <Tooltip key={s.name} title={s.truncated ? `${s.description || ''}（提示词已截断）` : s.description}>
+                  <Tag color={s.injected === false ? 'default' : 'blue'} style={{ fontSize: 11 }}>
+                    {s.name}{s.truncated ? ' ⚠' : ''}
+                  </Tag>
+                </Tooltip>
+              ))}
+            </Space>
+          </div>
         )}
       </div>
 
@@ -894,6 +1477,53 @@ function WorkspaceAssistantChat({
           )}
         </div>
       </div>
+
+      <Modal
+        title="步骤详情"
+        open={!!detailStep}
+        onCancel={() => setDetailStep(null)}
+        footer={null}
+        width={640}
+      >
+        {detailStep && (
+          <div>
+            <p><strong>步骤 ID：</strong>{detailStep.id}</p>
+            <p><strong>工具：</strong>{detailStep.tool || '-'}</p>
+            {detailStep.attempt_no && detailStep.attempt_no > 1 && (
+              <p><strong>尝试次数：</strong>第 {detailStep.attempt_no} 次</p>
+            )}
+            {detailStep.request !== undefined && detailStep.request !== null && (
+              <div>
+                <Text strong>请求参数：</Text>
+                <pre style={{ background: '#f5f5f5', padding: 8, borderRadius: 4, maxHeight: 200, overflow: 'auto', fontSize: 12 }}>
+                  {JSON.stringify(detailStep.request, null, 2)}
+                </pre>
+              </div>
+            )}
+            {detailStep.result !== undefined && detailStep.result !== null && (
+              <div>
+                <Text strong>执行结果：</Text>
+                <pre style={{ background: '#f5f5f5', padding: 8, borderRadius: 4, maxHeight: 300, overflow: 'auto', fontSize: 12 }}>
+                  {JSON.stringify(detailStep.result, null, 2)}
+                </pre>
+              </div>
+            )}
+            {detailStep.error && (
+              <div>
+                <Text strong type="danger">错误信息：</Text>
+                <pre style={{ background: '#fff2f0', padding: 8, borderRadius: 4, maxHeight: 200, overflow: 'auto', fontSize: 12, color: '#cf1322' }}>
+                  {detailStep.error}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+      <AssistantMemoryModal
+        projectId={projectId}
+        open={memoryModalOpen}
+        onClose={() => setMemoryModalOpen(false)}
+      />
     </section>
   )
 }

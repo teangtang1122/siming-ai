@@ -61,9 +61,17 @@ async def create_chapter(
         provided_content=content,
         draft_id=str(args.get("draft_id") or args.get("content_ref") or "").strip() or None,
         outline_node_id=str(args.get("outline_node_id") or "").strip() or None,
+        db=db,
     )
     if not title or not content.strip():
         return {"tool": "create_chapter", "status": "skipped", "detail": "章节标题或正文为空"}
+
+    from ..run_recovery import generate_idempotency_key, check_idempotency
+    _idem_key = generate_idempotency_key(db, "create_chapter", project_id, args)
+    if _idem_key:
+        _existing = check_idempotency(db, project_id, _idem_key)
+        if _existing:
+            return _existing
 
     involved = _character_names(args.get("involved_characters"))
 
@@ -158,6 +166,7 @@ async def update_chapter(
             provided_content=new_content,
             draft_id=str(args.get("draft_id") or args.get("content_ref") or "").strip() or None,
             outline_node_id=str(args.get("outline_node_id") or "").strip() or None,
+            db=db,
         )
         project = db.query(Project).filter(Project.id == project_id).first()
         skip_style_repair = bool(args.get("skip_style_repair") or args.get("skip_forbidden_repair"))

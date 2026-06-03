@@ -19,6 +19,13 @@ async def create_relationship(
     target = find_character_by_name_or_id(db, project_id, args.get("target") or args.get("to"))
     if not source or not target or source.id == target.id:
         return {"tool": "create_relationship", "status": "skipped", "detail": "关系角色无效"}
+
+    from ..run_recovery import generate_idempotency_key, check_idempotency
+    _idem_key = generate_idempotency_key(db, "create_relationship", project_id, args)
+    if _idem_key:
+        _existing = check_idempotency(db, project_id, _idem_key)
+        if _existing:
+            return _existing
     rel = CharacterRelationship(
         project_id=project_id,
         character_a_id=source.id,

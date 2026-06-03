@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Text, Integer, DateTime, Boolean, ForeignKey, Date, Float,
+    Index,
 )
 from sqlalchemy.orm import relationship
 from .session import Base
@@ -42,7 +43,12 @@ class Project(Base):
     writing_logs = relationship("WritingLog", back_populates="project", cascade="all, delete-orphan")
     deconstruction_reports = relationship("DeconstructionReport", back_populates="project", cascade="all, delete-orphan")
     assistant_conversations = relationship("AssistantConversation", back_populates="project", cascade="all, delete-orphan")
+    assistant_runs = relationship("AssistantRun", back_populates="project", cascade="all, delete-orphan")
     cataloging_jobs = relationship("CatalogingJob", back_populates="project", cascade="all, delete-orphan")
+    agent_plans = relationship("AgentPlan", back_populates="project", cascade="all, delete-orphan")
+    rag_documents = relationship("RagDocument", cascade="all, delete-orphan")
+    rag_chunks = relationship("RagChunk", cascade="all, delete-orphan")
+    skills = relationship("Skill", back_populates="project", cascade="all, delete-orphan")
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +492,72 @@ class AssistantMessage(Base):
 
 
 # ---------------------------------------------------------------------------
-# 20. assistant_memories — 智能体持久记忆表
+# 20. assistant_runs — 写作助手执行任务表
+# ---------------------------------------------------------------------------
+class AssistantRun(Base):
+    __tablename__ = "assistant_runs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(String(36), ForeignKey("assistant_conversations.id", ondelete="CASCADE"), nullable=True)
+    user_message_id = Column(String(36), ForeignKey("assistant_messages.id", ondelete="SET NULL"), nullable=True)
+    assistant_message_id = Column(String(36), ForeignKey("assistant_messages.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(30), nullable=False, default="running")
+    phase = Column(String(50), nullable=True)
+    scope = Column(String(50), nullable=True)
+    assistant_mode = Column(String(20), nullable=True)
+    model = Column(String(200), nullable=True)
+    current_iteration = Column(Integer, default=0)
+    error = Column(Text, nullable=True)
+    final_reply = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    project = relationship("Project", back_populates="assistant_runs")
+    steps = relationship("AssistantRunStep", back_populates="run", cascade="all, delete-orphan")
+
+
+class AssistantRunStep(Base):
+    __tablename__ = "assistant_run_steps"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    run_id = Column(String(36), ForeignKey("assistant_runs.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    step_type = Column(String(50), nullable=False, default="tool")
+    tool = Column(String(100), nullable=True)
+    status = Column(String(30), nullable=False, default="running")
+    iteration = Column(Integer, default=0)
+    request_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    detail = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # --- Recovery / retry fields ---
+    retry_of_step_id = Column(String(36), ForeignKey("assistant_run_steps.id", ondelete="SET NULL"), nullable=True)
+    resolved_step_id = Column(String(36), ForeignKey("assistant_run_steps.id", ondelete="SET NULL"), nullable=True)
+    attempt_no = Column(Integer, default=1, nullable=False)
+    depends_on_step_ids = Column(Text, nullable=True)       # JSON array of step IDs
+    output_refs = Column(Text, nullable=True)                # JSON object: {resource_type: resource_id}
+    planned_next_steps = Column(Text, nullable=True)         # JSON array of tool names
+    idempotency_key = Column(String(200), nullable=True)
+
+    run = relationship("AssistantRun", back_populates="steps")
+    retry_of = relationship("AssistantRunStep", remote_side="AssistantRunStep.id", foreign_keys=[retry_of_step_id])
+    resolved_by = relationship("AssistantRunStep", remote_side="AssistantRunStep.id", foreign_keys=[resolved_step_id])
+
+    __table_args__ = (
+        Index("ix_run_steps_idempotency_key", "idempotency_key"),
+        Index("ix_run_steps_run_iteration", "run_id", "iteration"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 21. assistant_memories — 智能体持久记忆表
 # ---------------------------------------------------------------------------
 class CatalogingJob(Base):
     __tablename__ = "cataloging_jobs"
@@ -606,10 +677,191 @@ class AssistantMemory(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
-    category = Column(String(30), nullable=False, default="note")  # preference/search_result/note/fact
+    category = Column(String(30), nullable=False, default="user_preference")  # user_preference/project_fact/writing_style/research_note/workflow_preference
     key = Column(String(200), nullable=False)
     value = Column(Text, nullable=False)
     source = Column(String(50), nullable=True)  # e.g., "web_search", "user", "assistant"
     importance = Column(Integer, nullable=False, default=5)  # 0-10
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# 22. chapter_drafts — 章节草稿持久化表（支持重启后重试）
+# ---------------------------------------------------------------------------
+class ChapterDraft(Base):
+    __tablename__ = "chapter_drafts"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(200), nullable=False, default="")
+    outline_node_id = Column(String(36), nullable=True)
+    content = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# 23. rag_documents — RAG 索引文档跟踪表
+# ---------------------------------------------------------------------------
+class RagDocument(Base):
+    __tablename__ = "rag_documents"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    source_type = Column(String(30), nullable=False)  # chapter/chapter_summary/outline/character/character_timeline/worldbuilding/assistant_memory
+    source_id = Column(String(36), nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    chunk_count = Column(Integer, nullable=False, default=0)
+    indexed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_rag_doc_project_source", "project_id", "source_type", "source_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 24. rag_chunks — RAG 可搜索内容块
+# ---------------------------------------------------------------------------
+class RagChunk(Base):
+    __tablename__ = "rag_chunks"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    document_id = Column(String(36), ForeignKey("rag_documents.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    source_type = Column(String(30), nullable=False)
+    source_id = Column(String(36), nullable=False)
+    chunk_index = Column(Integer, nullable=False, default=0)
+    title = Column(String(300), nullable=False, default="")
+    content = Column(Text, nullable=False, default="")
+    metadata_json = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_rag_chunk_project", "project_id"),
+        Index("ix_rag_chunk_source", "project_id", "source_type", "source_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 25. rag_links — RAG 块间可选关联（v1 仅存储，不参与排序）
+# ---------------------------------------------------------------------------
+class RagLink(Base):
+    __tablename__ = "rag_links"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    source_chunk_id = Column(String(36), nullable=False)
+    target_chunk_id = Column(String(36), nullable=False)
+    link_type = Column(String(30), nullable=False, default="references")  # references/contradicts/depends_on
+    confidence = Column(Float, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# 26. agent_plans — 智能体执行计划表
+# ---------------------------------------------------------------------------
+class AgentPlan(Base):
+    __tablename__ = "agent_plans"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(String(36), ForeignKey("assistant_conversations.id", ondelete="SET NULL"), nullable=True)
+    assistant_run_id = Column(String(36), ForeignKey("assistant_runs.id", ondelete="SET NULL"), nullable=True)
+    assistant_message_id = Column(String(36), ForeignKey("assistant_messages.id", ondelete="SET NULL"), nullable=True)
+    name = Column(String(100), nullable=False)  # fast_chapter / quality_chapter / cataloging_init
+    status = Column(String(30), nullable=False, default="pending")  # pending/running/completed/error/cancelled
+    graph_json = Column(Text, nullable=False)  # serialized PlanGraph
+    model = Column(String(200), nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    project = relationship("Project", back_populates="agent_plans")
+    steps = relationship("AgentPlanStep", back_populates="plan", cascade="all, delete-orphan")
+    conversation = relationship("AssistantConversation", foreign_keys=[conversation_id])
+    assistant_run = relationship("AssistantRun", foreign_keys=[assistant_run_id])
+
+
+# ---------------------------------------------------------------------------
+# 27. agent_plan_steps — 智能体执行计划步骤表
+# ---------------------------------------------------------------------------
+class AgentPlanStep(Base):
+    __tablename__ = "agent_plan_steps"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    plan_id = Column(String(36), ForeignKey("agent_plans.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    step_key = Column(String(50), nullable=False)
+    tool = Column(String(100), nullable=False)
+    args_json = Column(Text, nullable=True)
+    depends_on_json = Column(Text, nullable=True)  # JSON array of step_keys
+    status = Column(String(30), nullable=False, default="pending")  # pending/blocked/running/ok/error/skipped
+    retry_policy = Column(String(20), nullable=False, default="none")
+    idempotency_key = Column(String(200), nullable=True)
+    result_json = Column(Text, nullable=True)
+    output_refs = Column(Text, nullable=True)  # JSON: {"draft_id": "...", "chapter_id": "..."}
+    detail = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    attempt_no = Column(Integer, default=1, nullable=False)
+    retry_of_step_id = Column(String(36), ForeignKey("agent_plan_steps.id", ondelete="SET NULL"), nullable=True)
+    resolved_step_id = Column(String(36), ForeignKey("agent_plan_steps.id", ondelete="SET NULL"), nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    plan = relationship("AgentPlan", back_populates="steps")
+    retry_of = relationship("AgentPlanStep", remote_side="AgentPlanStep.id", foreign_keys=[retry_of_step_id])
+    resolved_by = relationship("AgentPlanStep", remote_side="AgentPlanStep.id", foreign_keys=[resolved_step_id])
+
+    __table_args__ = (
+        Index("ix_agent_plan_steps_plan_key", "plan_id", "step_key", unique=True),
+        Index("ix_agent_plan_steps_idempotency", "idempotency_key"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 38. skills — 技能表
+# ---------------------------------------------------------------------------
+class Skill(Base):
+    __tablename__ = "skills"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    builtin_key = Column(String(50), nullable=True)  # e.g. "continue_writing"
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    trigger_examples = Column(Text, nullable=True)  # JSON array of keyword strings
+    system_prompt = Column(Text, nullable=False)
+    recommended_tools = Column(Text, nullable=True)  # JSON array of tool names
+    scope = Column(String(30), default="global")  # global|project|writing|outline|characters|worldbuilding|cataloging|research
+    priority = Column(Integer, default=0)
+    enabled = Column(Boolean, default=True)
+    is_builtin = Column(Boolean, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="skills")
+
+    __table_args__ = (
+        Index("ix_skills_project_name", "project_id", "name", unique=True),
+    )
+
+
+class SkillVersion(Base):
+    __tablename__ = "skill_versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    skill_id = Column(String(36), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(200), nullable=False)
+    change_summary = Column(Text, nullable=True)
+    snapshot_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    skill = relationship("Skill")
+
+    __table_args__ = (
+        Index("ix_skill_versions_skill_created", "skill_id", "created_at"),
+    )

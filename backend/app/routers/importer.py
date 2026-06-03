@@ -1,4 +1,6 @@
 """File import — upload TXT/DOCX, parse, AI-split, and save as chapters."""
+import asyncio  # kept for legacy patch paths in tests/integrations
+
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 
@@ -6,6 +8,8 @@ from ..core.db_helpers import get_outline_node_or_404, get_project_or_404
 from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..schemas.importer import ConfirmImportRequest, ImportSplitRequest
+from ..ai.gateway import LLMGateway
+from ..services import import_service as _import_service
 from ..services.import_service import (
     build_split_preview,
     execute_import,
@@ -31,6 +35,11 @@ async def import_preview(
 ):
     """Return regex-first chapter split suggestions, optionally LLM-corrected."""
     get_project_or_404(db, project_id)
+    # Backward compatibility: older tests and integrations patch
+    # app.routers.importer.LLMGateway. Keep the service module pointed at the
+    # router attribute so that patch still affects the actual LLM call.
+    _import_service.LLMGateway = LLMGateway
+    _import_service.asyncio = asyncio
     splits, method, needs_review, failed_blocks = await build_split_preview(payload.text, payload.model)
     return ApiResponse.success(data={
         "splits": splits,

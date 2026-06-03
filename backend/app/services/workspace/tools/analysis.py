@@ -141,6 +141,7 @@ async def detect_character_changes(
         provided_content=str(args.get("content") or "").strip(),
         draft_id=str(args.get("draft_id") or args.get("content_ref") or "").strip() or None,
         outline_node_id=str(args.get("outline_node_id") or "").strip() or None,
+        db=db,
     ).strip()
     if raw_content:
         chapter_text = raw_content
@@ -417,6 +418,7 @@ async def detect_new_worldbuilding(
         provided_content=str(args.get("content") or "").strip(),
         draft_id=str(args.get("draft_id") or args.get("content_ref") or "").strip() or None,
         outline_node_id=str(args.get("outline_node_id") or "").strip() or None,
+        db=db,
     ).strip()
     chapter_title = str(args.get("title") or "").strip() or "未命名章节"
 
@@ -539,6 +541,7 @@ async def evaluate_chapter(
         provided_content=str(args.get("content") or "").strip(),
         draft_id=str(args.get("draft_id") or args.get("content_ref") or "").strip() or None,
         outline_node_id=str(args.get("outline_node_id") or "").strip() or None,
+        db=db,
     ).strip()
     if raw_content:
         chapter_content = raw_content

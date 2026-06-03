@@ -27,6 +27,13 @@ async def create_worldbuilding_entry(
     content = str(args.get("content") or "").strip()
     if not title or not content:
         return {"tool": "create_worldbuilding_entry", "status": "skipped", "detail": "世界观标题或内容为空"}
+
+    from ..run_recovery import generate_idempotency_key, check_idempotency
+    _idem_key = generate_idempotency_key(db, "create_worldbuilding_entry", project_id, args)
+    if _idem_key:
+        _existing = check_idempotency(db, project_id, _idem_key)
+        if _existing:
+            return _existing
     if args.get("related_characters") or args.get("plot_usage") or args.get("constraints"):
         extras = []
         related = args.get("related_characters")

@@ -84,3 +84,32 @@ def ensure_runtime_schema(engine: Engine) -> None:
                     f"{column.name} {col_sql}{nullable}{default_clause}"
                 )
                 conn.execute(text(sql))
+
+            # --- Create missing indexes ---
+            existing_indexes = {idx["name"] for idx in inspector.get_indexes(table_name)}
+            for index in table.indexes:
+                if index.name in existing_indexes:
+                    continue
+                cols = ", ".join(c.name for c in index.columns)
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index.name} ON {table_name} ({cols})"))
+
+    # --- RAG FTS5 virtual table (try/except, never fail startup) ---
+    try:
+        with engine.begin() as fts_conn:
+            inspector = inspect(fts_conn)
+            existing_tables = inspector.get_table_names()
+            if "rag_chunks_fts" not in existing_tables:
+                fts_conn.execute(text(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5("
+                    "chunk_id UNINDEXED, "
+                    "project_id UNINDEXED, "
+                    "source_type UNINDEXED, "
+                    "title, "
+                    "content, "
+                    "metadata_json, "
+                    "tokenize='unicode61'"
+                    ")"
+                ))
+    except Exception:
+        # FTS5 not available in this SQLite build — retriever will fall back to LIKE
+        pass

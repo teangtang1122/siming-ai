@@ -18,6 +18,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
+  BulbOutlined,
 } from '@ant-design/icons'
 import WorldbuildingPage from './WorldbuildingPage'
 import CharactersPage from './CharactersPage'
@@ -29,6 +30,7 @@ import DeconstructPage from './DeconstructPage'
 import VisualizationPage from './VisualizationPage'
 import ImportPage from './ImportPage'
 import CatalogingPage from './CatalogingPage'
+import SkillsPage from './SkillsPage'
 import AiSidePanel from '../components/AiSidePanel'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 import { AiPanelProvider, useAiPanelContext } from '../contexts/AiPanelContext'
@@ -37,7 +39,7 @@ import { usePanelResize } from '../hooks/usePanelResize'
 
 const { Sider, Content } = Layout
 
-type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'settings' | 'dashboard'
+type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'settings' | 'dashboard' | 'skills'
 
 function AiPanelColumn() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -130,6 +132,7 @@ function ProjectWorkspace() {
     { key: 'stats', icon: <BarChartOutlined />, label: '统计追踪' },
     { key: 'deconstruct', icon: <ThunderboltOutlined />, label: '拆书分析' },
     { key: 'cataloging', icon: <DatabaseOutlined />, label: '作品建档' },
+    { key: 'skills', icon: <BulbOutlined />, label: '技能管理' },
     { key: 'import', icon: <FileAddOutlined />, label: '内容导入' },
     { key: 'visualization', icon: <ApartmentOutlined />, label: '可视化' },
     { key: 'export', icon: <ExportOutlined />, label: '导出' },
@@ -211,6 +214,8 @@ function ProjectWorkspace() {
               <VisualizationPage projectId={projectId} />
             ) : activeKey === 'import' && projectId ? (
               <ImportPage projectId={projectId} />
+            ) : activeKey === 'skills' && projectId ? (
+              <SkillsPage projectId={projectId} />
             ) : (
             <div style={{ fontSize: 18, color: '#999', textAlign: 'center', marginTop: 100 }}>
               选择左侧菜单开始

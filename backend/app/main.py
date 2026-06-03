@@ -13,9 +13,11 @@ from .core.exceptions import (
     validation_exception_handler,
     general_exception_handler,
 )
-from .database.session import engine, Base
+from .database.backup import backup_sqlite_database
+from .database.session import Base, SessionLocal, engine
 from .database.migrations import ensure_runtime_schema
-from .routers import projects, config, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging
+from .routers import projects, config, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging, agent, skill
+from .services.workspace.run_log import mark_interrupted_assistant_runs
 from .version import APP_VERSION
 
 settings = get_settings()
@@ -40,9 +42,13 @@ def _find_frontend_dist() -> Path | None:
 
 FRONTEND_DIST = _find_frontend_dist()
 
-# Create database tables
+# Create database tables. For packaged users with existing local data, create a
+# copy before runtime schema sync so a failed migration never strands the only DB.
+backup_sqlite_database(settings.database_url, reason=f"pre-{APP_VERSION}")
 Base.metadata.create_all(bind=engine)
 ensure_runtime_schema(engine)
+with SessionLocal() as db:
+    mark_interrupted_assistant_runs(db)
 
 app = FastAPI(
     title="墨枢 API",
@@ -76,6 +82,8 @@ app.include_router(export.router, prefix="/api/v1")
 app.include_router(deconstruct.router, prefix="/api/v1")
 app.include_router(importer.router, prefix="/api/v1")
 app.include_router(cataloging.router, prefix="/api/v1")
+app.include_router(agent.router, prefix="/api/v1")
+app.include_router(skill.router, prefix="/api/v1")
 
 
 @app.get("/")

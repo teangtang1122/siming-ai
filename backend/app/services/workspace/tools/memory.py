@@ -1,11 +1,46 @@
-"""Memory tools — persistent remember / recall / forget for the workspace assistant."""
+"""Memory tools — persistent remember / recall / forget / list_memories for the workspace assistant."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from ....database.models import AssistantMemory
+from ....services.rag.indexer import refresh_source_index, delete_source_index
+
+VALID_CATEGORIES = {
+    "user_preference", "project_fact", "writing_style", "research_note", "workflow_preference",
+}
+
+LEGACY_CATEGORY_MAP = {
+    "preference": "user_preference",
+    "fact": "project_fact",
+    "search_result": "research_note",
+    "note": "project_fact",
+}
+
+# Reverse map: for recall/list queries, include legacy values alongside new ones
+_COMPAT_CATEGORIES = {
+    "user_preference": ["user_preference", "preference"],
+    "project_fact": ["project_fact", "fact", "note"],
+    "writing_style": ["writing_style"],
+    "research_note": ["research_note", "search_result"],
+    "workflow_preference": ["workflow_preference"],
+}
+
+
+def normalize_category(cat: str) -> str:
+    """Map legacy category names to the new canonical set."""
+    cat = (cat or "").strip()
+    if cat in VALID_CATEGORIES:
+        return cat
+    return LEGACY_CATEGORY_MAP.get(cat, "user_preference")
+
+
+def _compatible_categories(category: str) -> list[str]:
+    """Return all DB values that should match a given canonical category."""
+    return _COMPAT_CATEGORIES.get(category, [category])
 
 
 async def remember(
@@ -21,11 +56,9 @@ async def remember(
     if len(value) > 4000:
         value = value[:4000]
 
-    category = str(args.get("category") or "note").strip()
-    if category not in {"preference", "search_result", "note", "fact"}:
-        category = "note"
-
+    category = normalize_category(args.get("category"))
     importance = max(0, min(10, int(args.get("importance") or 5)))
+    source = str(args.get("source") or "assistant")[:50]
 
     # Upsert: if a memory with the same project_id + key exists, update it
     existing = (
@@ -40,7 +73,8 @@ async def remember(
         existing.value = value
         existing.category = category
         existing.importance = importance
-        existing.source = str(args.get("source") or "assistant")[:50]
+        existing.source = source
+        refresh_source_index(db, project_id, "assistant_memory", existing.id)
         db.commit()
         return {
             "tool": "remember",
@@ -54,10 +88,12 @@ async def remember(
         category=category,
         key=key,
         value=value,
-        source=str(args.get("source") or "assistant")[:50],
+        source=source,
         importance=importance,
     )
     db.add(memory)
+    db.flush()
+    refresh_source_index(db, project_id, "assistant_memory", memory.id)
     db.commit()
     return {
         "tool": "remember",
@@ -85,8 +121,9 @@ async def recall(
             AssistantMemory.key.ilike(f"%{query}%")
             | AssistantMemory.value.ilike(f"%{query}%")
         )
-    if category and category in {"preference", "search_result", "note", "fact"}:
-        base = base.filter(AssistantMemory.category == category)
+    if category:
+        compat = _compatible_categories(normalize_category(category))
+        base = base.filter(AssistantMemory.category.in_(compat))
 
     memories = (
         base.order_by(AssistantMemory.importance.desc(), AssistantMemory.updated_at.desc())
@@ -96,7 +133,7 @@ async def recall(
     data = [
         {
             "id": m.id,
-            "category": m.category,
+            "category": normalize_category(m.category),
             "key": m.key,
             "value": m.value,
             "source": m.source,
@@ -128,22 +165,68 @@ async def forget(
         ).first()
         if not memory:
             return {"tool": "forget", "status": "error", "detail": "未找到该记忆"}
+        delete_source_index(db, project_id, "assistant_memory", memory.id)
         db.delete(memory)
         db.commit()
         return {"tool": "forget", "status": "ok", "detail": f"已删除记忆「{memory.key}」"}
 
     if key:
-        deleted = (
+        targets = (
             db.query(AssistantMemory)
             .filter(
                 AssistantMemory.project_id == project_id,
                 AssistantMemory.key == key,
             )
-            .delete()
+            .all()
         )
+        for m in targets:
+            delete_source_index(db, project_id, "assistant_memory", m.id)
+            db.delete(m)
         db.commit()
-        if deleted:
-            return {"tool": "forget", "status": "ok", "detail": f"已删除 {deleted} 条匹配「{key}」的记忆"}
+        if targets:
+            return {"tool": "forget", "status": "ok", "detail": f"已删除 {len(targets)} 条匹配「{key}」的记忆"}
         return {"tool": "forget", "status": "ok", "detail": f"没有匹配「{key}」的记忆"}
 
     return {"tool": "forget", "status": "error", "detail": "需要提供 id 或 key"}
+
+
+async def list_memories(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """List memories with optional category filter."""
+    category = str(args.get("category") or "").strip()
+    limit = max(1, min(int(args.get("limit") or 30), 100))
+
+    base = db.query(AssistantMemory).filter(
+        AssistantMemory.project_id == project_id,
+    )
+    if category:
+        compat = _compatible_categories(normalize_category(category))
+        base = base.filter(AssistantMemory.category.in_(compat))
+
+    memories = (
+        base.order_by(AssistantMemory.importance.desc(), AssistantMemory.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    data = [
+        {
+            "id": m.id,
+            "category": normalize_category(m.category),
+            "key": m.key,
+            "value": m.value,
+            "source": m.source,
+            "importance": m.importance,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+        }
+        for m in memories
+    ]
+    return {
+        "tool": "list_memories",
+        "status": "ok",
+        "detail": f"共 {len(data)} 条记忆" if data else "暂无记忆",
+        "data": data,
+    }

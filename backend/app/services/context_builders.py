@@ -15,6 +15,7 @@ from ..database.models import (
     ChapterSummary,
     ChapterWorldbuilding,
     Character,
+    CharacterAlias,
     CharacterRelationship,
     CharacterTimeline,
     OutlineNode,
@@ -63,6 +64,77 @@ def _get_outline_node_or_404(
 
 
 # ---------------------------------------------------------------------------
+# Shared character resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_characters_with_aliases(
+    db: Session,
+    project_id: str,
+    outline_node_id: str | None,
+    involved_names: list[str],
+    limit: int,
+) -> tuple[list[Character], dict[str, str]]:
+    """Resolve characters by outline node links, name, and alias.
+
+    Priority: outline node linked characters → direct name match → alias match.
+    Returns (characters, resolved_aliases) where resolved_aliases maps
+    alias -> canonical character name for any name matched via alias.
+    """
+    found: list[Character] = []
+    seen: set[str] = set()
+    resolved_aliases: dict[str, str] = {}
+
+    # Pass 1: outline node linked characters
+    if outline_node_id:
+        links = (
+            db.query(OutlineNodeCharacter)
+            .join(OutlineNode, OutlineNode.id == OutlineNodeCharacter.outline_node_id)
+            .filter(
+                OutlineNode.project_id == project_id,
+                OutlineNodeCharacter.outline_node_id == outline_node_id,
+            )
+            .all()
+        )
+        for link in links:
+            if link.character and link.character.id not in seen:
+                found.append(link.character)
+                seen.add(link.character.id)
+
+    # Pass 2: direct name match
+    matched_names: set[str] = set()
+    for name in involved_names:
+        character = (
+            db.query(Character)
+            .filter(Character.project_id == project_id, Character.name == name)
+            .first()
+        )
+        if character and character.id not in seen:
+            found.append(character)
+            seen.add(character.id)
+            matched_names.add(name)
+
+    # Pass 3: alias match for unmatched names
+    unmatched_names = [n for n in involved_names if n not in matched_names]
+    if unmatched_names:
+        aliases = (
+            db.query(CharacterAlias)
+            .filter(
+                CharacterAlias.project_id == project_id,
+                CharacterAlias.alias.in_(unmatched_names),
+            )
+            .all()
+        )
+        for alias in aliases:
+            char = alias.character
+            if char and char.id not in seen:
+                found.append(char)
+                seen.add(char.id)
+                resolved_aliases[alias.alias] = char.name
+
+    return found[:limit], resolved_aliases
+
+
+# ---------------------------------------------------------------------------
 # Context builders
 # ---------------------------------------------------------------------------
 
@@ -72,7 +144,32 @@ def _build_world_context(
     outline_node_id: Optional[str] = None,
     query_context: str = "",
     max_entries: int = WORLD_CONTEXT_MAX_ENTRIES,
+    use_rag: bool = False,
 ) -> str:
+    # Optional RAG branch: when entries > 50 and RAG is available, use FTS search
+    if use_rag and query_context:
+        try:
+            from .rag.retriever import search_chunks
+            entry_count = db.query(WorldbuildingEntry).filter(
+                WorldbuildingEntry.project_id == project_id
+            ).count()
+            if entry_count > 50:
+                results = search_chunks(
+                    db, project_id, query_context,
+                    source_types=["worldbuilding"],
+                    limit=max_entries,
+                )
+                if results:
+                    lines = [f"已从 {entry_count} 条世界观中通过RAG检索筛选 {len(results)} 条："]
+                    for r in results:
+                        dim = (r.metadata or {}).get("dimension", "")
+                        dim_label = DIMENSION_LABELS.get(dim, dim)
+                        content = r.content[:WORLD_CONTEXT_ENTRY_CHAR_LIMIT]
+                        lines.append(f"[RAG命中, score={r.score:.1f}][{dim_label}] {r.title}: {content}")
+                    return "\n".join(lines)
+        except Exception:
+            pass  # Fall through to legacy logic
+
     all_entries = (
         db.query(WorldbuildingEntry)
         .filter(WorldbuildingEntry.project_id == project_id)
@@ -534,6 +631,7 @@ def _build_recent_chapter_details(
 
 __all__ = [
     "_get_outline_node_or_404",
+    "_resolve_characters_with_aliases",
     "_build_world_context",
     "_chinese_number_to_int",
     "_chapter_order_number",
