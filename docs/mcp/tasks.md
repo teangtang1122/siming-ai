@@ -209,8 +209,8 @@
 
 ### MCP-0204 - Implement RAG Context Resource
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/mcp/resources.py`
   - `backend/app/services/rag/`
@@ -460,3 +460,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0201: `py -m pytest backend/tests/test_mcp_resources.py -q` — 27 passed. Tests cover: all 11 URI patterns parse correctly, invalid URIs return None, build_uri roundtrips, list_resource_uris returns 7 index URIs, all resource types have descriptions.
 - MCP-0202: `py -m pytest backend/tests/test_mcp_resources.py -q` — 38 passed. Added read_resource dispatcher and 11 resource readers (projects, chapters, characters, worldbuilding, outline, relationships). Tests verify index and detail reads with mock DB, and not-found returns error JSON.
 - MCP-0203: `py -m pytest backend/tests/test_mcp_resources.py -q` — 39 passed. Chapter detail reader now includes linked summary, outline node, characters (via ChapterCharacter), and worldbuilding (via ChapterWorldbuilding). Test verifies all linked metadata is present.
+- MCP-0204: `py -m pytest backend/tests/test_mcp_resources.py -q` — 42 passed. Added rag_search resource URI (moshu://projects/{id}/rag/search?q=...), auto-indexes on first query, returns chunks with scores and selection reasons. Tests verify query parsing, missing query error, and search results.

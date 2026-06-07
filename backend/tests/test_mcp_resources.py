@@ -3,7 +3,7 @@ import json
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -425,6 +425,42 @@ class ReadResourceTest(unittest.TestCase):
         self.assertIsNotNone(result)
         data = json.loads(result.text)
         self.assertIn("error", data)
+
+    def test_rag_search_missing_query_returns_error(self):
+        db = MagicMock()
+        result = read_resource(db, "moshu://projects/p1/rag/search")
+        self.assertIsNotNone(result)
+        data = json.loads(result.text)
+        self.assertIn("error", data)
+
+    def test_rag_search_with_query(self):
+        mock_chunk = MagicMock()
+        mock_chunk.chunk_id = "chunk1"
+        mock_chunk.source_type = "chapter"
+        mock_chunk.source_id = "ch1"
+        mock_chunk.title = "Chapter 1"
+        mock_chunk.content = "Some content"
+        mock_chunk.score = 0.95
+        mock_chunk.reason = "keyword match"
+
+        with patch("app.services.rag.retriever.search_chunks", return_value=[mock_chunk]), \
+             patch("app.services.rag.indexer.project_has_chunks", return_value=True):
+            db = MagicMock()
+            result = read_resource(db, "moshu://projects/p1/rag/search?q=test&limit=5")
+            self.assertIsNotNone(result)
+            data = json.loads(result.text)
+            self.assertEqual(data["query"], "test")
+            self.assertEqual(data["total"], 1)
+            self.assertEqual(data["results"][0]["chunk_id"], "chunk1")
+
+    def test_rag_search_uri_parses_query_params(self):
+        r = parse_uri("moshu://projects/p1/rag/search?q=hello&limit=10")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.resource_type, "rag_search")
+        self.assertEqual(r.project_id, "p1")
+        self.assertIsNotNone(r.query_params)
+        self.assertEqual(r.query_params["q"], "hello")
+        self.assertEqual(r.query_params["limit"], "10")
 
 
 if __name__ == "__main__":

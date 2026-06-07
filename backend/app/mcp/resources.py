@@ -37,6 +37,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^moshu://projects/([^/]+)/outline$"), "outline_index"),
     (re.compile(r"^moshu://projects/([^/]+)/outline/([^/]+)$"), "outline_detail"),
     (re.compile(r"^moshu://projects/([^/]+)/relationships$"), "relationships"),
+    (re.compile(r"^moshu://projects/([^/]+)/rag/search(?:\?.*)?$"), "rag_search"),
 ]
 
 
@@ -47,6 +48,7 @@ class ParsedUri:
     resource_type: str
     project_id: str = ""
     entity_id: str = ""
+    query_params: dict[str, str] | None = None
 
 
 def parse_uri(uri: str) -> ParsedUri | None:
@@ -58,8 +60,20 @@ def parse_uri(uri: str) -> ParsedUri | None:
     Returns:
         ParsedUri with resource_type and extracted IDs, or None if no match.
     """
+    # Extract query string before matching
+    query_params: dict[str, str] | None = None
+    if "?" in uri:
+        base, qs = uri.split("?", 1)
+        query_params = {}
+        for part in qs.split("&"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                query_params[k] = v
+    else:
+        base = uri
+
     for pattern, resource_type in _PATTERNS:
-        m = pattern.match(uri)
+        m = pattern.match(uri)  # match against full URI (pattern includes optional ?)
         if m:
             groups = m.groups()
             project_id = groups[0] if len(groups) >= 1 else ""
@@ -69,6 +83,7 @@ def parse_uri(uri: str) -> ParsedUri | None:
                 resource_type=resource_type,
                 project_id=project_id,
                 entity_id=entity_id,
+                query_params=query_params,
             )
     return None
 
@@ -108,6 +123,7 @@ _RESOURCE_DESCRIPTIONS: dict[str, str] = {
     "outline_index": "Outline tree structure",
     "outline_detail": "Outline node with summary",
     "relationships": "Character relationships",
+    "rag_search": "RAG search results across indexed content",
 }
 
 
@@ -169,6 +185,7 @@ def read_resource(db: Any, uri: str) -> ResourceContent | None:
         "outline_index": _read_outline_index,
         "outline_detail": _read_outline_detail,
         "relationships": _read_relationships,
+        "rag_search": _read_rag_search,
     }
 
     reader = dispatch.get(parsed.resource_type)
@@ -428,3 +445,54 @@ def _read_relationships(db: Any, parsed: ParsedUri) -> ResourceContent:
     ]
     return ResourceContent(uri=parsed.uri, mime_type="application/json",
                            text=json.dumps({"relationships": items, "total": len(items)}, ensure_ascii=False))
+
+
+def _read_rag_search(db: Any, parsed: ParsedUri) -> ResourceContent:
+    """RAG search resource — returns search results by query parameter.
+
+    URI format: moshu://projects/{id}/rag/search?q=keyword&limit=20
+    """
+    import json
+    from app.services.rag.retriever import search_chunks
+    from app.services.rag.indexer import project_has_chunks, reindex_project_types
+
+    query = (parsed.query_params or {}).get("q", "").strip()
+    if not query:
+        return ResourceContent(
+            uri=parsed.uri, mime_type="application/json",
+            text=json.dumps({"error": "Missing query parameter 'q'"}),
+        )
+
+    limit = int((parsed.query_params or {}).get("limit", "20"))
+    limit = max(1, min(limit, 50))
+
+    # Auto-index if needed
+    auto_indexed = False
+    if not project_has_chunks(db, parsed.project_id):
+        reindex_project_types(db, parsed.project_id)
+        auto_indexed = True
+
+    results = search_chunks(db, parsed.project_id, query, limit=limit)
+
+    data = {
+        "query": query,
+        "auto_indexed": auto_indexed,
+        "results": [
+            {
+                "chunk_id": r.chunk_id,
+                "source_type": r.source_type,
+                "source_id": r.source_id,
+                "title": r.title,
+                "content": r.content[:2000],
+                "score": round(r.score, 2),
+                "reason": r.reason,
+            }
+            for r in results
+        ],
+        "total": len(results),
+    }
+    return ResourceContent(
+        uri=parsed.uri,
+        mime_type="application/json",
+        text=json.dumps(data, ensure_ascii=False),
+    )
