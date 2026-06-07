@@ -24,8 +24,8 @@
 
 ### MCP-0001 - Write MCP Architecture Spec
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `docs/mcp/spec.md`
 - Goal:
@@ -450,3 +450,4 @@ Append verified completions here. Keep entries short and factual.
 ### 2026-06-07
 
 - Created initial MCP task board.
+- MCP-0001: `Get-Content docs/mcp/spec.md` — file exists, 10 sections, 14 `moshu://` references. `Get-Content docs/mcp/tasks.md | Select-String "MCP-0001"` — status `[x]`, owner `Claude Code`.
