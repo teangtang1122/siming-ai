@@ -105,3 +105,27 @@ set MOSHU_DISABLE_UPDATE=1
 ```bat
 build-exe.bat -OneDir
 ```
+
+## MCP Server
+
+打包后的 exe 包含 MCP Server 入口。MCP 客户端（如 Claude Desktop、Cursor）可通过 stdio 方式连接：
+
+```json
+{
+  "mcpServers": {
+    "moshu": {
+      "command": "C:\\path\\to\\Moshu.exe",
+      "args": ["--mcp-server"],
+      "env": {}
+    }
+  }
+}
+```
+
+如果从源码运行：
+
+```bat
+python scripts/moshu-mcp-server.py --project-id YOUR_PROJECT_ID
+```
+
+MCP Server 默认为只读模式，仅暴露查询和分析工具。

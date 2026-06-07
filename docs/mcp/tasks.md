@@ -149,8 +149,8 @@
 
 ### MCP-0105 - Add Stdio MCP Server Entrypoint
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `scripts/moshu-mcp-server.py`
   - `PACKAGING.md`
@@ -456,3 +456,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0102: `py -m pytest backend/tests/test_mcp_adapter.py -q` — 19 passed. Tests confirm: 8 required readonly tools present, no write/delete/generator tools in readonly list, schema conversion correct, permission tier mapping correct. Fixed import paths (removed `backend.` prefix) in adapter.py/permissions.py/server.py.
 - MCP-0103: `py -m pytest backend/tests/test_mcp_permissions.py -q` — 22 passed, 70 subtests. Tests confirm: read/analysis/web tools allowed, create/update/delete/merge/import/start/run/export tools denied, generator tools denied, secret-pattern tools denied at any tier.
 - MCP-0104: `py -m pytest backend/tests/test_mcp_adapter.py tests/test_mcp_permissions.py tests/test_mcp_server_tools.py -q` — 61 passed, 70 subtests. Tests confirm: execute_tool validates tool existence and permission, calls execute_workspace_action, returns structured result (status/detail/data/warnings), truncates large content, handles exceptions. server.py handle_message wired to async execution path.
+- MCP-0105: `py scripts/moshu-mcp-server.py --help` — exits 0, shows usage. `py -m pytest backend/tests/test_mcp_entrypoint.py -q` — 4 passed. PACKAGING.md updated with MCP Server section.
