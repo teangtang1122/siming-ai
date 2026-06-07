@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.services.workspace.registry import ToolDef, registry
-from backend.app.mcp.schemas import McpTool, McpToolResult, tool_def_to_mcp_tool, make_json_result, make_text_result
-from backend.app.mcp.permissions import filter_tools, is_allowed
+from app.services.workspace.registry import ToolDef, registry
+from app.mcp.schemas import McpTool, McpToolResult, tool_def_to_mcp_tool, make_json_result, make_text_result
+from app.mcp.permissions import filter_tools, is_allowed
 
 
 def list_mcp_tools(

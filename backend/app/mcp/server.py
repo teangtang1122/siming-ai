@@ -11,8 +11,8 @@ import json
 import sys
 from typing import Any, TextIO
 
-from backend.app.mcp.adapter import list_mcp_tools, is_tool_allowed, get_tool_def
-from backend.app.mcp.schemas import McpToolResult, make_text_result, make_json_result
+from app.mcp.adapter import list_mcp_tools, is_tool_allowed, get_tool_def
+from app.mcp.schemas import McpToolResult, make_text_result, make_json_result
 
 # ── MCP protocol constants ───────────────────────────────────────────────
 

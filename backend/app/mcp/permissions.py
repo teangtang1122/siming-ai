@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from backend.app.services.workspace.registry import ToolDef
+from app.services.workspace.registry import ToolDef
 
 # ── Tier assignment by tool_type ─────────────────────────────────────────
 

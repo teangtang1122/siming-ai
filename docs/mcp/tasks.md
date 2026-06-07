@@ -93,8 +93,8 @@
 
 ### MCP-0102 - Convert ToolRegistry Entries To MCP Tool Definitions
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/mcp/adapter.py`
   - `backend/app/mcp/schemas.py`
@@ -453,3 +453,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0001: `Get-Content docs/mcp/spec.md` — file exists, 10 sections, 14 `moshu://` references. `Get-Content docs/mcp/tasks.md | Select-String "MCP-0001"` — status `[x]`, owner `Claude Code`.
 - MCP-0002: `Get-Content docs/mcp/security.md` — file exists, 9 sections. Covers all dangerous tool families (create/update/delete/merge/import/start/run/set/apply/pause/resume/cancel/rerun/ensure/reset/export/forget), secret deny-list, confirmation-token model, stdio-only binding. `Get-Content docs/mcp/tasks.md | Select-String "MCP-0002"` — status `[x]`, owner `Claude Code`.
 - MCP-0101: `py -m compileall backend/app/mcp` — all 5 modules compile (server.py, adapter.py, schemas.py, permissions.py, __init__.py). No workspace tool handlers modified.
+- MCP-0102: `py -m pytest backend/tests/test_mcp_adapter.py -q` — 19 passed. Tests confirm: 8 required readonly tools present, no write/delete/generator tools in readonly list, schema conversion correct, permission tier mapping correct. Fixed import paths (removed `backend.` prefix) in adapter.py/permissions.py/server.py.
