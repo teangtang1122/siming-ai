@@ -1,0 +1,452 @@
+# MCP Development Task Board
+
+> Project: Moshu / 墨枢
+>
+> Purpose: add MCP support in a strict, auditable, incremental workflow.
+>
+> Status legend:
+> - `[ ]` not started
+> - `[-]` in progress
+> - `[x]` completed and verified
+> - `[!]` blocked, with blocker written under the task
+
+## Strict Execution Rules
+
+1. Claim exactly one task by changing `[ ]` to `[-]` and writing your name or handle.
+2. Stay inside the listed file scope. If you must touch another area, write the reason in this file before editing.
+3. Every completed task must include verification commands and results.
+4. Mark `[x]` only when you are certain the task is complete. Do not guess or bulk mark tasks.
+5. Each verified function should be committed and pushed separately.
+6. Security boundary: MCP must never expose API keys, model secrets, tokens, or secret-management APIs.
+7. Dangerous write tools must be denied by default until an explicit confirmation layer exists.
+
+## Phase 0 - Specification And Safety
+
+### MCP-0001 - Write MCP Architecture Spec
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `docs/mcp/spec.md`
+- Goal:
+  - Define the first MCP version: Moshu as an MCP Server.
+  - Define supported transport, local database access, tool naming, resource URI format, prompt names, and versioning.
+  - Explicitly state that MCP Client integration is a later phase.
+- Required content:
+  - `moshu://` resource URI scheme.
+  - Tool exposure tiers: `readonly`, `draft`, `write_confirmed`.
+  - Error contract for permission denied, project not found, tool failed.
+  - Compatibility plan for the existing `ToolRegistry`.
+- Verification:
+  - `Get-Content docs/mcp/spec.md`
+  - Reviewer can implement Phase 1 from the spec without asking for hidden assumptions.
+
+### MCP-0002 - Write MCP Security Policy
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `docs/mcp/security.md`
+- Goal:
+  - Define MCP security rules before writing server code.
+- Required content:
+  - Never expose API key/model secret CRUD.
+  - Default mode is readonly.
+  - `create_*`, `update_*`, `delete_*`, merge, import, and deconstruct-import tools are denied until permission policy is implemented.
+  - Confirmation-token model for future write tools.
+  - Localhost binding and stdio-only recommendation for first release.
+- Verification:
+  - `Get-Content docs/mcp/security.md`
+  - Security doc names every dangerous tool family.
+
+### MCP-0003 - Keep This Task Board Current
+
+- Status: `[-]`
+- Owner: Codex
+- File scope:
+  - `docs/mcp/tasks.md`
+- Goal:
+  - Create the task board and make it usable for multiple implementers.
+- Verification:
+  - `Test-Path docs/mcp/tasks.md`
+  - `Get-Content docs/mcp/tasks.md | Select-String "MCP-0001"`
+
+## Phase 1 - MCP Server Readonly Core
+
+### MCP-0101 - Add MCP Package Skeleton
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/__init__.py`
+  - `backend/app/mcp/server.py`
+  - `backend/app/mcp/adapter.py`
+  - `backend/app/mcp/schemas.py`
+  - `backend/app/mcp/permissions.py`
+- Goal:
+  - Create importable MCP backend package without wiring behavior yet.
+- Implementation notes:
+  - Keep modules small.
+  - Do not modify workspace tool handlers.
+- Verification:
+  - `py -m compileall backend/app/mcp`
+
+### MCP-0102 - Convert ToolRegistry Entries To MCP Tool Definitions
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/adapter.py`
+  - `backend/app/mcp/schemas.py`
+  - `backend/tests/test_mcp_adapter.py`
+- Goal:
+  - Convert internal `ToolDef` entries into MCP-compatible tool metadata.
+- Expose first:
+  - `list_projects`
+  - `get_project_info`
+  - `search_chapters`
+  - `search_characters`
+  - `search_worldbuilding`
+  - `search_outline`
+  - `search_context`
+  - `preview_writing_context`
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_adapter.py -q`
+  - Test confirms no write/delete tools appear.
+
+### MCP-0103 - Implement Readonly Permission Filter
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/permissions.py`
+  - `backend/tests/test_mcp_permissions.py`
+- Goal:
+  - Enforce readonly MCP exposure independent of LLM instructions.
+- Required behavior:
+  - Allow safe read/analysis tools listed in MCP-0102.
+  - Deny `create_*`, `update_*`, `delete_*`, `merge_duplicate_characters`, `import_*`, `start_*`, `run_*`.
+  - Deny all API key/model secret/config secret tools even if they are later registered.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_permissions.py -q`
+
+### MCP-0104 - Implement MCP Tool Execution Wrapper
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/server.py`
+  - `backend/app/mcp/adapter.py`
+  - `backend/tests/test_mcp_server_tools.py`
+- Goal:
+  - Execute allowed MCP tools through existing `execute_workspace_action`.
+- Required behavior:
+  - Validate project_id when required.
+  - Return structured result with `status`, `detail`, `data`, `warnings`.
+  - Redact large content or expose refs when possible.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_server_tools.py -q`
+
+### MCP-0105 - Add Stdio MCP Server Entrypoint
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `scripts/moshu-mcp-server.py`
+  - `PACKAGING.md`
+  - `backend/tests/test_mcp_entrypoint.py`
+- Goal:
+  - Add a local stdio server entrypoint for MCP clients.
+- Verification:
+  - `py scripts/moshu-mcp-server.py --help`
+  - `py -m pytest backend/tests/test_mcp_entrypoint.py -q`
+
+## Phase 2 - MCP Resources
+
+### MCP-0201 - Define Resource URI Scheme
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/resources.py`
+  - `backend/tests/test_mcp_resources.py`
+- Goal:
+  - Define and parse stable Moshu resource URIs.
+- URI examples:
+  - `moshu://projects`
+  - `moshu://projects/{project_id}`
+  - `moshu://projects/{project_id}/chapters`
+  - `moshu://projects/{project_id}/chapters/{chapter_id}`
+  - `moshu://projects/{project_id}/characters`
+  - `moshu://projects/{project_id}/worldbuilding`
+  - `moshu://projects/{project_id}/outline`
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_resources.py -q`
+
+### MCP-0202 - Implement Project And Index Resources
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/resources.py`
+  - `backend/tests/test_mcp_resources.py`
+- Goal:
+  - Read project, chapter list, character list, worldbuilding list, and outline list via resources.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_resources.py -q`
+
+### MCP-0203 - Implement Chapter Detail Resource
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/resources.py`
+  - `backend/tests/test_mcp_resources.py`
+- Goal:
+  - Read chapter content, summary, linked outline, linked characters, and linked worldbuilding.
+- Verification:
+  - Test confirms linked metadata is included.
+
+### MCP-0204 - Implement RAG Context Resource
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/resources.py`
+  - `backend/app/services/rag/`
+  - `backend/tests/test_mcp_resources.py`
+- Goal:
+  - Expose selected RAG context by query without exposing unrelated full project data.
+- Verification:
+  - Test query returns expected chunks and selection reasons.
+
+## Phase 3 - MCP Prompts
+
+### MCP-0301 - Expose Writing Context Prompt
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/prompts.py`
+  - `backend/tests/test_mcp_prompts.py`
+- Goal:
+  - Add `moshu_writing_context` prompt.
+- Required behavior:
+  - Inputs: `project_id`, optional `chapter_number`, optional `outline_node_id`, optional `requirements`.
+  - Output: compact prompt containing outline, recent summaries, relevant characters, worldbuilding, and warnings.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_prompts.py -q`
+
+### MCP-0302 - Expose Continuity Check Prompt
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/prompts.py`
+  - `backend/tests/test_mcp_prompts.py`
+- Goal:
+  - Add `moshu_continuity_check` prompt for OOC and setting-conflict review.
+- Verification:
+  - Test prompt includes character state and worldbuilding constraints.
+
+### MCP-0303 - Expose Fanfic Draft Prompt
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/prompts.py`
+  - `backend/tests/test_mcp_prompts.py`
+- Goal:
+  - Add `moshu_fanfic_draft` prompt for external AI clients writing derivative chapters.
+- Verification:
+  - Test prompt includes anti-OOC and no-secret rules.
+
+## Phase 4 - Controlled Write Tools
+
+### MCP-0401 - Add Draft Permission Tier
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/permissions.py`
+  - `backend/app/mcp/adapter.py`
+  - `backend/tests/test_mcp_permissions.py`
+- Goal:
+  - Allow generator tools that do not write to database.
+- First allowed draft tools:
+  - `chapter_writer`
+  - `outline_writer`
+  - `character_writer`
+  - `worldbuilding_writer`
+  - `rewrite_text`
+  - `expand_text`
+  - `continue_text`
+- Verification:
+  - Draft tools execute.
+  - Database row counts do not change.
+
+### MCP-0402 - Add Confirmed Write Token Flow
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/permissions.py`
+  - `backend/app/mcp/server.py`
+  - `backend/tests/test_mcp_write_confirmation.py`
+- Goal:
+  - Prepare future write access with explicit confirmation token.
+- Required behavior:
+  - Missing token denies write.
+  - Invalid token denies write.
+  - Valid token allows only the exact tool/action it was issued for.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_write_confirmation.py -q`
+
+## Phase 5 - MCP Client Integration
+
+### MCP-0501 - Add MCP Server Config Model
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/database/models.py`
+  - `backend/app/schemas/mcp.py`
+  - `backend/tests/test_mcp_client_config.py`
+- Goal:
+  - Store external MCP server configs.
+- Fields:
+  - `id`, `project_id`, `name`, `transport`, `command`, `url`, `enabled`, `status`, `last_error`, timestamps.
+- Verification:
+  - Runtime schema creates table.
+
+### MCP-0502 - Add MCP Client Management API
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/routers/mcp.py`
+  - `backend/app/services/mcp_client/`
+  - `backend/tests/test_mcp_client_api.py`
+- Goal:
+  - CRUD external MCP server configs and test connection.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_client_api.py -q`
+
+### MCP-0503 - Register External MCP Tools Into Workspace Agent
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/services/mcp_client/`
+  - `backend/app/services/workspace/registry.py`
+  - `backend/tests/test_mcp_client_tools.py`
+- Goal:
+  - Expose external MCP tools as `mcp.{server_name}.{tool_name}`.
+- Verification:
+  - Agent tool list includes enabled external MCP tools.
+
+### MCP-0504 - Add MCP Settings Page
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `frontend/src/pages/McpPage.tsx`
+  - `frontend/src/pages/ProjectWorkspace.tsx`
+  - `frontend/src/api/`
+- Goal:
+  - UI for adding external MCP servers, testing connection, viewing tools/resources.
+- Verification:
+  - `cd frontend; npm run build`
+
+## Phase 6 - Agent And Scheduler Integration
+
+### MCP-0601 - Teach Workspace Prompts When To Use MCP
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/prompts/packs/workspace_fast.py`
+  - `backend/app/prompts/packs/workspace_quality.py`
+  - `backend/tests/test_prompt_packs.py`
+- Goal:
+  - Update assistant behavior so MCP tools are used for external resources, web search, file systems, and cross-app workflows.
+- Verification:
+  - Prompt pack tests pass.
+
+### MCP-0602 - Make Scheduled Tasks Use Agent Tool Chain
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/services/scheduler/engine.py`
+  - `backend/app/services/agent/`
+  - `backend/tests/test_scheduler_agent_execution.py`
+- Goal:
+  - Scheduled tasks should execute through the Agent/tool chain, not a one-shot LLM call.
+- Verification:
+  - Scheduled task can call a mocked MCP/search tool and persist tool logs.
+
+### MCP-0603 - Add MCP Tool Run Logs
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/services/workspace/run_log.py`
+  - `backend/app/services/scheduler/`
+  - `frontend/src/pages/ScheduledTasksPage.tsx`
+- Goal:
+  - Show MCP server/tool name, arguments summary, status, and error details in run logs.
+- Verification:
+  - Frontend displays run logs after task execution.
+
+## Phase 7 - Release Readiness
+
+### MCP-0701 - Documentation
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `README.md`
+  - `PACKAGING.md`
+  - `docs/mcp/*.md`
+- Goal:
+  - Document how to run Moshu MCP Server from local exe/source.
+- Verification:
+  - Fresh user can configure an MCP client using docs only.
+
+### MCP-0702 - Packaging
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `build-exe.bat`
+  - `scripts/`
+  - `release/`
+- Goal:
+  - Ensure packaged app includes MCP server entrypoint and required dependencies.
+- Verification:
+  - Build exe.
+  - Run MCP entrypoint from packaged artifact.
+
+### MCP-0703 - Full Regression
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - all touched areas
+- Required commands:
+  - `py -m pytest backend/tests -q`
+  - `cd frontend; npm run build`
+- Release criteria:
+  - Tests pass.
+  - Frontend builds.
+  - No API key/model secret tools exposed through MCP.
+  - MCP readonly server can be used by an external MCP client.
+
+## Completion Log
+
+Append verified completions here. Keep entries short and factual.
+
+### 2026-06-07
+
+- Created initial MCP task board.
