@@ -297,16 +297,104 @@ class ReadResourceTest(unittest.TestCase):
         ch.title = "Chapter 1"
         ch.content = "Once upon a time..."
         ch.word_count = 1000
-        ch.outline_node_id = "n1"
+        ch.outline_node_id = None
+        ch.summary = None
+
+        def query_side_effect(model):
+            q = MagicMock()
+            q.filter.return_value = q
+            if model.__name__ == "Chapter":
+                q.first.return_value = ch
+            else:
+                q.first.return_value = None
+                q.all.return_value = []
+            return q
+
         db = MagicMock()
-        query_mock = MagicMock()
-        query_mock.filter.return_value = query_mock
-        query_mock.first.return_value = ch
-        db.query.return_value = query_mock
+        db.query.side_effect = query_side_effect
         result = read_resource(db, "moshu://projects/p1/chapters/ch1")
         self.assertIsNotNone(result)
         data = json.loads(result.text)
         self.assertEqual(data["content"], "Once upon a time...")
+
+    def test_chapter_detail_with_linked_metadata(self):
+        """Chapter detail should include summary, outline, characters, and worldbuilding."""
+        ch = MagicMock()
+        ch.id = "ch1"
+        ch.title = "Chapter 1"
+        ch.content = "Text"
+        ch.word_count = 100
+        ch.outline_node_id = "n1"
+
+        # Mock summary
+        summary = MagicMock()
+        summary.summary_text = "A summary"
+        summary.key_events = '["event1"]'
+        ch.summary = summary
+
+        # Mock outline node
+        node = MagicMock()
+        node.id = "n1"
+        node.title = "Act 1"
+        node.summary = "The beginning"
+        node.node_type = "chapter"
+
+        # Mock character link
+        char_link = MagicMock()
+        char_link.character_id = "c1"
+        char_link.appearance_type = "出场"
+
+        char = MagicMock()
+        char.id = "c1"
+        char.name = "Hero"
+        char.role_type = "protagonist"
+
+        # Mock worldbuilding link
+        wb_link = MagicMock()
+        wb_link.worldbuilding_entry_id = "w1"
+
+        wb_entry = MagicMock()
+        wb_entry.id = "w1"
+        wb_entry.title = "Kingdom"
+        wb_entry.dimension = "geography"
+
+        # Set up query chain
+        def query_side_effect(model):
+            q = MagicMock()
+            q.filter.return_value = q
+            if model.__name__ == "Chapter":
+                q.first.return_value = ch
+            elif model.__name__ == "OutlineNode":
+                q.first.return_value = node
+            elif model.__name__ == "ChapterCharacter":
+                q.all.return_value = [char_link]
+            elif model.__name__ == "Character":
+                q.first.return_value = char
+            elif model.__name__ == "ChapterWorldbuilding":
+                q.all.return_value = [wb_link]
+            elif model.__name__ == "WorldbuildingEntry":
+                q.first.return_value = wb_entry
+            else:
+                q.first.return_value = None
+                q.all.return_value = []
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = query_side_effect
+
+        result = read_resource(db, "moshu://projects/p1/chapters/ch1")
+        self.assertIsNotNone(result)
+        data = json.loads(result.text)
+
+        # Verify linked metadata
+        self.assertIn("summary", data)
+        self.assertEqual(data["summary"]["text"], "A summary")
+        self.assertIn("outline_node", data)
+        self.assertEqual(data["outline_node"]["title"], "Act 1")
+        self.assertIn("characters", data)
+        self.assertEqual(data["characters"][0]["name"], "Hero")
+        self.assertIn("worldbuilding", data)
+        self.assertEqual(data["worldbuilding"][0]["title"], "Kingdom")
 
     def test_character_detail(self):
         char = MagicMock()

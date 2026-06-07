@@ -197,8 +197,8 @@
 
 ### MCP-0203 - Implement Chapter Detail Resource
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/mcp/resources.py`
   - `backend/tests/test_mcp_resources.py`
@@ -459,3 +459,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0105: `py scripts/moshu-mcp-server.py --help` — exits 0, shows usage. `py -m pytest backend/tests/test_mcp_entrypoint.py -q` — 4 passed. PACKAGING.md updated with MCP Server section.
 - MCP-0201: `py -m pytest backend/tests/test_mcp_resources.py -q` — 27 passed. Tests cover: all 11 URI patterns parse correctly, invalid URIs return None, build_uri roundtrips, list_resource_uris returns 7 index URIs, all resource types have descriptions.
 - MCP-0202: `py -m pytest backend/tests/test_mcp_resources.py -q` — 38 passed. Added read_resource dispatcher and 11 resource readers (projects, chapters, characters, worldbuilding, outline, relationships). Tests verify index and detail reads with mock DB, and not-found returns error JSON.
+- MCP-0203: `py -m pytest backend/tests/test_mcp_resources.py -q` — 39 passed. Chapter detail reader now includes linked summary, outline node, characters (via ChapterCharacter), and worldbuilding (via ChapterWorldbuilding). Test verifies all linked metadata is present.

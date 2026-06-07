@@ -229,7 +229,11 @@ def _read_chapters_index(db: Any, parsed: ParsedUri) -> ResourceContent:
 
 def _read_chapter_detail(db: Any, parsed: ParsedUri) -> ResourceContent:
     import json
-    from app.database.models import Chapter
+    from app.database.models import (
+        Chapter, ChapterSummary, OutlineNode,
+        ChapterCharacter, Character,
+        ChapterWorldbuilding, WorldbuildingEntry,
+    )
     chapter = db.query(Chapter).filter(
         Chapter.project_id == parsed.project_id,
         Chapter.id == parsed.entity_id,
@@ -237,13 +241,68 @@ def _read_chapter_detail(db: Any, parsed: ParsedUri) -> ResourceContent:
     if not chapter:
         return ResourceContent(uri=parsed.uri, mime_type="application/json",
                                text=json.dumps({"error": "Chapter not found"}))
-    data = {
+
+    data: dict[str, Any] = {
         "id": chapter.id,
         "title": chapter.title,
         "content": chapter.content,
         "word_count": chapter.word_count,
         "outline_node_id": chapter.outline_node_id,
     }
+
+    # Linked summary
+    if chapter.summary:
+        data["summary"] = {
+            "text": chapter.summary.summary_text,
+            "key_events": chapter.summary.key_events,
+        }
+
+    # Linked outline node
+    if chapter.outline_node_id:
+        node = db.query(OutlineNode).filter(OutlineNode.id == chapter.outline_node_id).first()
+        if node:
+            data["outline_node"] = {
+                "id": node.id,
+                "title": node.title,
+                "summary": node.summary,
+                "node_type": node.node_type,
+            }
+
+    # Linked characters
+    char_links = db.query(ChapterCharacter).filter(
+        ChapterCharacter.chapter_id == chapter.id
+    ).all()
+    if char_links:
+        characters = []
+        for link in char_links:
+            char = db.query(Character).filter(Character.id == link.character_id).first()
+            if char:
+                characters.append({
+                    "id": char.id,
+                    "name": char.name,
+                    "role_type": char.role_type,
+                    "appearance_type": link.appearance_type,
+                })
+        data["characters"] = characters
+
+    # Linked worldbuilding
+    wb_links = db.query(ChapterWorldbuilding).filter(
+        ChapterWorldbuilding.chapter_id == chapter.id
+    ).all()
+    if wb_links:
+        worldbuilding = []
+        for link in wb_links:
+            entry = db.query(WorldbuildingEntry).filter(
+                WorldbuildingEntry.id == link.worldbuilding_entry_id
+            ).first()
+            if entry:
+                worldbuilding.append({
+                    "id": entry.id,
+                    "title": entry.title,
+                    "dimension": entry.dimension,
+                })
+        data["worldbuilding"] = worldbuilding
+
     return ResourceContent(uri=parsed.uri, mime_type="application/json",
                            text=json.dumps(data, ensure_ascii=False))
 
