@@ -416,8 +416,8 @@
 
 ### MCP-0702 - Packaging
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `build-exe.bat`
   - `scripts/`
@@ -474,3 +474,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0602: `py -m pytest tests/test_scheduler_agent_execution.py -q` — 5 passed. Updated scheduler engine._run_task_prompt to use stream_chat_completion_with_tools with agent tool-calling loop. Tool calls executed through execute_workspace_action, tool_policy filters available schemas.
 - MCP-0603: `py -m pytest tests/test_mcp_server_tools.py tests/test_mcp_adapter.py -q` — 39 passed. Added _log_mcp_tool_call to adapter.py — logs tool name, project_id, status, and args summary via standard logger on every MCP tool execution (success or failure). Logging is non-blocking and never breaks tool execution.
 - MCP-0701: README.md updated with MCP Server section (source/exe usage, client config, feature summary). PACKAGING.md already had MCP section from MCP-0105.
+- MCP-0702: launcher.py updated with --mcp-server flag support. When invoked with --mcp-server, runs MCP stdio server instead of web app. Compiles successfully.

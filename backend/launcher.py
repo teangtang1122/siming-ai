@@ -64,7 +64,33 @@ def _prepare_environment(port: int) -> Path:
     return home
 
 
+def _run_mcp_server() -> None:
+    """Run the MCP server over stdio."""
+    import argparse
+    parser = argparse.ArgumentParser(prog="mcp-server")
+    parser.add_argument("--mcp-server", action="store_true", help="Run MCP server over stdio")
+    parser.add_argument("--project-id", default="", help="Default project ID")
+    args, _ = parser.parse_known_args()
+
+    home = _app_home()
+    os.environ.setdefault("MOSHU_HOME", str(home))
+
+    from app.database.session import SessionLocal
+    from app.mcp.server import serve_stdio
+
+    db = SessionLocal()
+    try:
+        serve_stdio(db=db, project_id=args.project_id, allowed_tiers={"readonly"})
+    finally:
+        db.close()
+
+
 def main() -> None:
+    # Check for MCP server mode
+    if "--mcp-server" in sys.argv:
+        _run_mcp_server()
+        return
+
     port = _find_free_port()
     home = _prepare_environment(port)
     from app.updater import apply_update_if_available
