@@ -375,8 +375,8 @@
 
 ### MCP-0602 - Make Scheduled Tasks Use Agent Tool Chain
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/services/scheduler/engine.py`
   - `backend/app/services/agent/`
@@ -471,3 +471,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0503: `py -m pytest tests/test_mcp_client_tools.py -q` — 15 passed. Added mcp_client/registry.py with register_external_tool, unregister_server_tools, external_tool_name, parse_external_tool_name. External tools registered as mcp.{server_name}.{tool_name} in workspace ToolRegistry. Tests verify registration, idempotency, unregistration, and cross-server isolation.
 - MCP-0504: `cd frontend; npm run build` — built in 5.34s. Added McpPage.tsx with CRUD table (name, transport, address, status, enabled toggle), add modal (stdio/http), delete confirmation, test connection button.
 - MCP-0601: `py -m pytest tests/test_prompt_packs.py -q` — 70 passed. Added MCP tool guidance section to workspace_fast.py and workspace_quality.py prompt packs. Instructs assistant to use mcp.* tools for external data sources and cross-app workflows.
+- MCP-0602: `py -m pytest tests/test_scheduler_agent_execution.py -q` — 5 passed. Updated scheduler engine._run_task_prompt to use stream_chat_completion_with_tools with agent tool-calling loop. Tool calls executed through execute_workspace_action, tool_policy filters available schemas.

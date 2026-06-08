@@ -81,13 +81,15 @@ def _execute_task(task_id: str) -> None:
 
 
 def _run_task_prompt(db: Session, task: ScheduledTask) -> str:
-    """Run a task by executing its prompt through the workspace assistant.
+    """Run a task through the agent tool chain.
 
-    This is a simplified version that calls the LLM directly with the task prompt.
-    Runs in a background thread — uses asyncio.run() to call the async LLM gateway.
+    Uses the LLM with tool-calling support so the agent can search project
+    data, call analysis tools, and persist results — not just a single LLM call.
     """
     import asyncio
     from ...ai.gateway import LLMGateway
+    from ...services.workspace.executor import execute_workspace_action
+    from ...services.workspace.registry import registry
 
     # Build system prompt with tool policy
     system_parts = ["你是一个定时任务执行助手。请根据用户的提示完成任务。"]
@@ -99,20 +101,81 @@ def _run_task_prompt(db: Session, task: ScheduledTask) -> str:
         {"role": "user", "content": task.prompt},
     ]
 
-    async def _call_llm() -> str:
-        result = await LLMGateway.chat_completion(
-            messages=messages,
-            model=None,  # Use default model
-            temperature=0.3,
-            max_tokens=4000,
-            timeout=120,
-        )
-        return result.get("content", "")
+    # Determine allowed tools
+    tool_policy_set = set(task.tool_policy) if task.tool_policy else None
+    tool_schemas = registry.get_schemas()
+    if tool_policy_set:
+        tool_schemas = [
+            t for t in tool_schemas
+            if t["function"]["name"] in tool_policy_set
+        ]
+
+    tool_logs: list[dict[str, Any]] = []
+
+    async def _run_agent_loop() -> str:
+        """Execute the agent loop with tool calling."""
+        max_turns = 10
+        final_content = ""
+
+        for turn in range(max_turns):
+            result = await LLMGateway.stream_chat_completion_with_tools(
+                messages=messages,
+                tools=tool_schemas,
+                model=None,
+                temperature=0.3,
+                max_tokens=4000,
+                timeout=120,
+            )
+
+            content = result.get("content", "")
+            tool_calls = result.get("tool_calls", [])
+
+            if not tool_calls:
+                final_content = content
+                break
+
+            # Append assistant message with tool calls
+            messages.append({
+                "role": "assistant",
+                "content": content,
+                "tool_calls": tool_calls,
+            })
+
+            # Execute each tool call
+            for tc in tool_calls:
+                tool_name = tc.get("function", {}).get("name", "")
+                import json
+                try:
+                    args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {}
+
+                # Execute through workspace executor
+                tool_result = await execute_workspace_action(
+                    db, task.project_id,
+                    {"tool": tool_name, "arguments": args},
+                )
+
+                # Log the tool call
+                tool_logs.append({
+                    "tool": tool_name,
+                    "args_summary": str(args)[:200],
+                    "status": tool_result.get("status", "unknown"),
+                })
+
+                # Append tool result to messages
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": json.dumps(tool_result, ensure_ascii=False)[:4000],
+                })
+
+        return final_content or "任务执行完成"
 
     try:
-        return asyncio.run(_call_llm())
+        return asyncio.run(_run_agent_loop())
     except Exception as exc:
-        raise RuntimeError(f"LLM execution failed: {exc}") from exc
+        raise RuntimeError(f"Agent execution failed: {exc}") from exc
 
 
 def check_and_run_tasks() -> None:
