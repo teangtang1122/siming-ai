@@ -261,5 +261,81 @@ class FilterToolsTest(unittest.TestCase):
         self.assertIn("evaluate_chapter", readonly_names)
 
 
+class DraftTierTest(unittest.TestCase):
+    """Verify that draft tools are allowed when draft tier is enabled."""
+
+    def test_generator_tools_allowed_in_draft(self):
+        """Generator tools must be allowed when draft tier is enabled."""
+        draft_tools = [
+            "chapter_writer", "outline_writer", "character_writer",
+            "worldbuilding_writer", "rewrite_text", "expand_text",
+            "continue_text", "roleplay_character", "dialogue_battle",
+        ]
+        for name in draft_tools:
+            with self.subTest(name=name):
+                td = registry.get(name)
+                self.assertIsNotNone(td, f"Tool not found: {name}")
+                self.assertTrue(
+                    is_allowed(td, allowed_tiers={"readonly", "draft"}),
+                    f"Draft tool denied: {name} (tier={get_tier(td)})",
+                )
+
+    def test_draft_tools_still_denied_in_readonly(self):
+        """Draft tools must still be denied when only readonly is enabled."""
+        for name in ["chapter_writer", "rewrite_text", "remember"]:
+            with self.subTest(name=name):
+                td = registry.get(name)
+                self.assertIsNotNone(td)
+                self.assertFalse(
+                    is_allowed(td, allowed_tiers={"readonly"}),
+                    f"Draft tool allowed in readonly mode: {name}",
+                )
+
+    def test_write_tools_still_denied_in_draft(self):
+        """Write tools must remain denied even when draft tier is enabled."""
+        write_tools = [
+            "create_project", "delete_chapter", "update_character",
+            "merge_duplicate_characters", "import_text_as_chapters",
+        ]
+        for name in write_tools:
+            with self.subTest(name=name):
+                td = registry.get(name)
+                self.assertIsNotNone(td)
+                self.assertFalse(
+                    is_allowed(td, allowed_tiers={"readonly", "draft"}),
+                    f"Write tool allowed in draft mode: {name}",
+                )
+
+    def test_secret_tools_still_denied_in_draft(self):
+        """Secret tools remain denied even with all tiers."""
+        secret_td = ToolDef(
+            name="get_api_key",
+            description="Get API key",
+            input_schema={},
+            tool_type="read",
+        )
+        self.assertFalse(
+            is_allowed(secret_td, allowed_tiers={"readonly", "draft"}),
+        )
+
+    def test_draft_filter_returns_correct_set(self):
+        """filter_tools with draft tier returns readonly + draft tools."""
+        all_names = registry.all_names()
+        all_defs = [registry.get(n) for n in all_names]
+        all_defs = [d for d in all_defs if d is not None]
+
+        filtered = filter_tools(all_defs, allowed_tiers={"readonly", "draft"})
+        tiers = {get_tier(td) for td in filtered}
+        self.assertIn("readonly", tiers)
+        self.assertIn("draft", tiers)
+        self.assertNotIn("write_confirmed", tiers)
+
+    def test_remember_is_draft(self):
+        """remember tool should be in draft tier."""
+        td = registry.get("remember")
+        self.assertIsNotNone(td)
+        self.assertEqual(get_tier(td), "draft")
+
+
 if __name__ == "__main__":
     unittest.main()

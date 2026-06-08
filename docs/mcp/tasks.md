@@ -265,8 +265,8 @@
 
 ### MCP-0401 - Add Draft Permission Tier
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/mcp/permissions.py`
   - `backend/app/mcp/adapter.py`
@@ -464,3 +464,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0301: `py -m pytest backend/tests/test_mcp_prompts.py -q` — 19 passed. Implemented moshu_writing_context, moshu_continuity_check, moshu_fanfic_draft prompts with DB-backed rendering. Tests verify prompt listing, arg metadata, content sections (outline/summaries/characters/worldbuilding/warnings), and error handling.
 - MCP-0302: Covered by MCP-0301 implementation. moshu_continuity_check prompt in prompts.py renders character states and worldbuilding constraints. Test `RenderContinuityCheckTest` verifies content includes Hero and "No time travel".
 - MCP-0303: Covered by MCP-0301 implementation. moshu_fanfic_draft prompt in prompts.py includes anti-OOC and no-secret rules. Test `RenderFanficDraftTest` verifies content includes "anti-OOC" and "API key".
+- MCP-0401: `py -m pytest backend/tests/test_mcp_permissions.py -q` — 28 passed, 87 subtests. Draft tier tests verify: generator tools allowed when draft enabled, write tools still denied in draft mode, secret tools still denied, filter_tools returns readonly+draft but not write_confirmed. Draft tools (chapter_writer, outline_writer, etc.) are tool_type=generator → draft tier; handlers produce in-memory content only, no DB writes.
