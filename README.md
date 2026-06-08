@@ -294,6 +294,53 @@ MOSHU_GITHUB_TOKEN=...
 
 并且新目录还没有有效数据库，启动器会自动继续使用旧数据目录，保证旧 exe 产生的数据可以被新版本直接读取。
 
+## MCP Server
+
+墨枢内置 MCP (Model Context Protocol) Server，允许外部 AI 客户端（如 Claude Desktop、Cursor）直接读取项目数据。
+
+### 从源码运行
+
+```bash
+python scripts/moshu-mcp-server.py --project-id YOUR_PROJECT_ID
+```
+
+### MCP 客户端配置
+
+在 Claude Desktop 的 `claude_desktop_config.json` 中添加：
+
+```json
+{
+  "mcpServers": {
+    "moshu": {
+      "command": "python",
+      "args": ["scripts/moshu-mcp-server.py", "--project-id", "YOUR_PROJECT_ID"],
+      "cwd": "D:\\AI\\agent"
+    }
+  }
+}
+```
+
+或使用打包后的 exe：
+
+```json
+{
+  "mcpServers": {
+    "moshu": {
+      "command": "C:\\path\\to\\Moshu.exe",
+      "args": ["--mcp-server"]
+    }
+  }
+}
+```
+
+### 功能
+
+- **只读模式**（默认）：暴露查询和分析工具，不修改项目数据
+- **资源**：通过 `moshu://` URI 访问项目、章节、角色、世界观、大纲
+- **提示词**：提供 `moshu_writing_context`、`moshu_continuity_check`、`moshu_fanfic_draft` 等结构化提示词
+
+详细文档见 `docs/mcp/spec.md` 和 `docs/mcp/security.md`。
+
 ## 发布到 GitHub
 
 确保已经安装并登录 GitHub CLI：
