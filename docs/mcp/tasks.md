@@ -334,8 +334,8 @@
 
 ### MCP-0503 - Register External MCP Tools Into Workspace Agent
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/services/mcp_client/`
   - `backend/app/services/workspace/registry.py`
@@ -468,3 +468,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0402: `py -m pytest tests/test_mcp_write_confirmation.py -q` — 19 passed. Full MCP suite: 151 passed, 87 subtests. Token flow: issue_confirmation_token creates scoped single-use tokens, validate_confirmation_token checks tool match/usage/expiry, execute_tool denies write_confirmed tools without valid token, read tools work without token.
 - MCP-0501: `py -m pytest tests/test_mcp_client_config.py -q` — 9 passed. Added McpServerConfig model (id, project_id, name, transport, command, url, enabled, status, last_error, timestamps) and Pydantic schemas (Create, Update, Read). Project relationship added.
 - MCP-0502: `py -m pytest tests/test_mcp_client_api.py -q` — 3 passed. Added CRUD router at /projects/{project_id}/mcp-servers (list, create, get, update, delete, test-connection). Connection test endpoint stubbed.
+- MCP-0503: `py -m pytest tests/test_mcp_client_tools.py -q` — 15 passed. Added mcp_client/registry.py with register_external_tool, unregister_server_tools, external_tool_name, parse_external_tool_name. External tools registered as mcp.{server_name}.{tool_name} in workspace ToolRegistry. Tests verify registration, idempotency, unregistration, and cross-server isolation.
