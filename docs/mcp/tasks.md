@@ -224,8 +224,8 @@
 
 ### MCP-0301 - Expose Writing Context Prompt
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/mcp/prompts.py`
   - `backend/tests/test_mcp_prompts.py`
@@ -239,8 +239,8 @@
 
 ### MCP-0302 - Expose Continuity Check Prompt
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/mcp/prompts.py`
   - `backend/tests/test_mcp_prompts.py`
@@ -251,8 +251,8 @@
 
 ### MCP-0303 - Expose Fanfic Draft Prompt
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/mcp/prompts.py`
   - `backend/tests/test_mcp_prompts.py`
@@ -461,3 +461,6 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0202: `py -m pytest backend/tests/test_mcp_resources.py -q` — 38 passed. Added read_resource dispatcher and 11 resource readers (projects, chapters, characters, worldbuilding, outline, relationships). Tests verify index and detail reads with mock DB, and not-found returns error JSON.
 - MCP-0203: `py -m pytest backend/tests/test_mcp_resources.py -q` — 39 passed. Chapter detail reader now includes linked summary, outline node, characters (via ChapterCharacter), and worldbuilding (via ChapterWorldbuilding). Test verifies all linked metadata is present.
 - MCP-0204: `py -m pytest backend/tests/test_mcp_resources.py -q` — 42 passed. Added rag_search resource URI (moshu://projects/{id}/rag/search?q=...), auto-indexes on first query, returns chunks with scores and selection reasons. Tests verify query parsing, missing query error, and search results.
+- MCP-0301: `py -m pytest backend/tests/test_mcp_prompts.py -q` — 19 passed. Implemented moshu_writing_context, moshu_continuity_check, moshu_fanfic_draft prompts with DB-backed rendering. Tests verify prompt listing, arg metadata, content sections (outline/summaries/characters/worldbuilding/warnings), and error handling.
+- MCP-0302: Covered by MCP-0301 implementation. moshu_continuity_check prompt in prompts.py renders character states and worldbuilding constraints. Test `RenderContinuityCheckTest` verifies content includes Hero and "No time travel".
+- MCP-0303: Covered by MCP-0301 implementation. moshu_fanfic_draft prompt in prompts.py includes anti-OOC and no-secret rules. Test `RenderFanficDraftTest` verifies content includes "anti-OOC" and "API key".
