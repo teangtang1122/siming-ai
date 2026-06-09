@@ -23,22 +23,25 @@ _CONTENT_TRUNCATE_LIMIT = 12000
 def list_mcp_tools(
     *,
     allowed_tiers: set[str] | None = None,
+    permission_pack: str | None = None,
 ) -> list[McpTool]:
-    """Return MCP-formatted tool list, filtered by permission tier.
+    """Return MCP-formatted tool list, filtered by permission tier or pack.
 
     Args:
-        allowed_tiers: Tier names to allow. Defaults to {"readonly"}.
+        allowed_tiers: Tier names to allow (legacy). Defaults to {"readonly"}.
+        permission_pack: Permission pack name. If set, overrides allowed_tiers.
     """
-    if allowed_tiers is None:
-        allowed_tiers = {"readonly"}
-
-    all_defs: list[ToolDef] = []
-    for name in registry.all_names():
-        td = registry.get(name)
-        if td is not None:
-            all_defs.append(td)
-
-    allowed_defs = filter_tools(all_defs, allowed_tiers=allowed_tiers)
+    if permission_pack:
+        allowed_defs = registry.list_for_mcp(permission_pack=permission_pack)
+    else:
+        if allowed_tiers is None:
+            allowed_tiers = {"readonly"}
+        all_defs: list[ToolDef] = []
+        for name in registry.all_names():
+            td = registry.get(name)
+            if td is not None:
+                all_defs.append(td)
+        allowed_defs = filter_tools(all_defs, allowed_tiers=allowed_tiers)
 
     result: list[McpTool] = []
     for td in allowed_defs:
@@ -56,11 +59,23 @@ def get_tool_def(name: str) -> ToolDef | None:
     return registry.get(name)
 
 
-def is_tool_allowed(name: str, *, allowed_tiers: set[str] | None = None) -> bool:
-    """Check whether a tool is allowed under the given tiers."""
+def is_tool_allowed(
+    name: str,
+    *,
+    allowed_tiers: set[str] | None = None,
+    permission_pack: str | None = None,
+) -> bool:
+    """Check whether a tool is allowed under the given tiers or pack."""
     td = registry.get(name)
     if td is None:
         return False
+
+    if permission_pack:
+        if not td.expose_to_mcp:
+            return False
+        allowed_tools = registry.list_for_mcp(permission_pack=permission_pack)
+        return td in allowed_tools
+
     return is_allowed(td, allowed_tiers=allowed_tiers)
 
 
