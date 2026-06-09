@@ -615,8 +615,8 @@
 
 ### MCP-0808 - Provide Claude Code / Codex Operating Prompt And Config Docs
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `docs/mcp/claude-code-codex-client.md`
   - `README.md`
@@ -722,3 +722,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0805: `py -m pytest tests/test_mcp_tool_run_events.py -q` — 12 passed. Updated adapter.execute_tool to accept run_id, strip it from arguments, and auto-log tool_start/tool_result events via run_service.add_event. Added _build_args_summary for safe argument truncation. Telemetry failures never break tool execution.
 - MCP-0806: `npm run build` — built in 5.20s. Added ExternalAgentRunPanel.tsx with collapsible run list, event timeline, status badges, SSE live updates, cancel button, draft preview. Added types/agentRun.ts with TypeScript interfaces.
 - MCP-0807: `py -m pytest tests/test_external_agent_confirmed_writes.py -q` — 7 passed. Added write_requests.py (request_write, confirm_write, reject_write) and router endpoints (POST write-requests, POST confirm, POST reject). Supports 8 write types. Confirmation issues single-use token via existing permissions layer.
+- MCP-0808: Created docs/mcp/claude-code-codex-client.md with source/exe MCP config, 8-step operating rules, available tools table, troubleshooting section, security notes. README.md updated with Claude Code / Codex integration reference.

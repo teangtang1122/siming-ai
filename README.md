@@ -341,6 +341,10 @@ python scripts/moshu-mcp-server.py --project-id YOUR_PROJECT_ID
 
 详细文档见 `docs/mcp/spec.md` 和 `docs/mcp/security.md`。
 
+### Claude Code / Codex 集成
+
+墨枢支持通过 MCP 让 Claude Code 或 Codex 直接操作项目数据，并在 Web UI 中实时显示外部 Agent 的工作进度。详见 `docs/mcp/claude-code-codex-client.md`。
+
 ## 发布到 GitHub
 
 确保已经安装并登录 GitHub CLI：
