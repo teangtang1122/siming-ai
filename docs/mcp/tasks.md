@@ -934,8 +934,8 @@
 
 ### MCP-0909 - Update Claude Code / Codex Client Docs For Permission Packs
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `docs/mcp/claude-code-codex-client.md`
   - `README.md`
@@ -1028,3 +1028,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0906: `npm run build` — built in 4.81s. Added ExternalAgentPermissionPanel.tsx with pack toggle cards, risk badges, tool list drawer, permanent deny-list notice, trusted local mode toggle with warning, confirmation toggles. Added types/externalAgentSettings.ts with pack definitions.
 - MCP-0907: `py -m pytest tests/test_tool_catalog_api.py -q` — 5 passed. Added tools router with GET /tools/catalog and GET /projects/{project_id}/tools/exposed endpoints. Registered in main.py. Catalog returns all tools from single registry source; exposed endpoint filters by project's enabled packs.
 - MCP-0908: `py scripts/check-tool-registry.py` — PASS, 106 tools checked. `py -m pytest tests/test_tool_registry_lint.py -q` — 8 passed. Added linter script that checks every tool has description, schema, handler, tool_type, permission_tags, risk_level, exposure flags. Rejects secret-looking tools exposed to MCP. Added docs/mcp/tool-authoring.md with copyable checklist.
+- MCP-0909: Updated docs/mcp/claude-code-codex-client.md with Permission Packs section: pack definitions, hierarchy, how to enable, trusted local mode rules, troubleshooting for "tool not listed".

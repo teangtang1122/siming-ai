@@ -203,6 +203,61 @@ Arguments: {
 | `expand_text` | Expand text details |
 | `continue_text` | Continue writing |
 
+## Permission Packs
+
+By default, Claude Code / Codex only has **readonly** access to your project. You can grant broader permissions through the Moshu UI.
+
+### Available Packs
+
+| Pack | What It Allows | Risk |
+|------|---------------|------|
+| **只读协作** (readonly_collaboration) | Search chapters, characters, worldbuilding, outline. Read project info. | Safe |
+| **草稿生成** (draft_generation) | Use AI to generate chapter content, outline, characters. Content stays in memory. | Low |
+| **项目写入** (project_writing) | Create and update chapters, characters, outline, worldbuilding in the database. | Medium |
+| **项目管理** (project_management) | Manage project settings, import/export, scheduled tasks, skills. | High |
+| **可信本地维护** (trusted_local_maintenance) | Delete and merge operations. Only in trusted local mode. | Destructive |
+
+### Pack Hierarchy
+
+Packs form a hierarchy — enabling a higher pack automatically enables all lower packs:
+
+```
+只读协作 ⊂ 草稿生成 ⊂ 项目写入 ⊂ 项目管理 ⊂ 可信本地维护
+```
+
+### How to Enable More Packs
+
+1. Open Moshu web UI
+2. Go to your project
+3. Find the "外部 Agent 权限设置" panel
+4. Toggle the packs you want to enable
+5. Confirm the changes
+
+### Trusted Local Mode
+
+Trusted local mode allows Claude Code / Codex to skip write confirmations for project content. **Only enable this on machines you control.**
+
+Requirements:
+- You must explicitly enable it in project settings
+- The MCP client must connect via stdio or localhost
+- The client name must be in your trusted client list
+
+When enabled:
+- Project write tools work without confirmation tokens
+- Project management tools become available
+- Destructive tools still require confirmation
+- All writes are audited
+
+### Why Is a Tool Not Listed?
+
+If a tool you expect is not available:
+
+1. **Project ID missing** — Make sure you're using `--project-id YOUR_PROJECT_ID`
+2. **Permission pack disabled** — Check project settings in Moshu UI
+3. **Tool marked internal-only** — Some tools are only for the internal assistant
+4. **Secret deny-list** — API key/model secret tools are permanently blocked
+5. **Schema validation failure** — Check linter: `python scripts/check-tool-registry.py`
+
 ## Troubleshooting
 
 ### Wrong Database Path
