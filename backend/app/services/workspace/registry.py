@@ -1789,6 +1789,25 @@ def _register_all() -> None:
         handler=finish_agent_run,
     ))
 
+    # ── External Writing Tools ───────────────────────────────────────────
+    from .tools.external_writing import (
+        prepare_external_writing_context,
+    )
+
+    _r(ToolDef(
+        name="prepare_external_writing_context",
+        description="Build a complete writing context package for external agents. API-free: does not call LLM. Returns prompt pack, outline, characters, worldbuilding, summaries, quality rubric, and forbidden patterns.",
+        input_schema={
+            "outline_node_id": {"type": "string", "description": "Target outline node ID"},
+            "mode": {"type": "string", "description": "Writing mode: quality|fast"},
+            "include_prompt_pack": {"type": "boolean", "description": "Include public prompt pack (default true)"},
+            "requirements": {"type": "string", "description": "Additional writing requirements"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=prepare_external_writing_context,
+    ))
+
     # ── Prompt Pack Tools ────────────────────────────────────────────────
     from .tools.prompt_packs import (
         list_prompt_packs,
