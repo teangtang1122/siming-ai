@@ -871,8 +871,8 @@
 
 ### MCP-0907 - Add Frontend Tool Catalog From Registry
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/routers/tools.py`
   - `backend/app/main.py`
@@ -1026,3 +1026,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0904: `py -m pytest tests/test_external_agent_permission_settings.py -q` — 7 passed. Added ExternalAgentSettings model (project_id, enabled_packs, trusted_local_enabled, trusted_local_clients, require_confirmation_for_writes/destructive). Schema with safe defaults (readonly_collaboration only). API endpoints: GET/PUT /external-agent/settings.
 - MCP-0905: `py -m pytest tests/test_mcp_permission_pack_enforcement.py -q` — 18 passed. Updated adapter.list_mcp_tools and is_tool_allowed to support permission_pack parameter. Tests verify: readonly pack has read tools only, draft adds generators, project_writing adds create/update, trusted adds delete. Pack hierarchy: readonly ⊂ draft ⊂ writing ⊂ management ⊂ trusted. No secret tools in any pack.
 - MCP-0906: `npm run build` — built in 4.81s. Added ExternalAgentPermissionPanel.tsx with pack toggle cards, risk badges, tool list drawer, permanent deny-list notice, trusted local mode toggle with warning, confirmation toggles. Added types/externalAgentSettings.ts with pack definitions.
+- MCP-0907: `py -m pytest tests/test_tool_catalog_api.py -q` — 5 passed. Added tools router with GET /tools/catalog and GET /projects/{project_id}/tools/exposed endpoints. Registered in main.py. Catalog returns all tools from single registry source; exposed endpoint filters by project's enabled packs.
