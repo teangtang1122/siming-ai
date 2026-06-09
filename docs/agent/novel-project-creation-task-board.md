@@ -399,8 +399,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0302 - Add API-Free New Novel Brief Tool
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0103
   - NOVEL-0301

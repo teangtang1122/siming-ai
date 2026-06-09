@@ -1799,6 +1799,9 @@ def _register_all() -> None:
     from .tools.external_story_updates import (
         apply_external_story_updates,
     )
+    from .tools.novel_creation import (
+        start_novel_creation_session,
+    )
 
     _r(ToolDef(
         name="prepare_external_writing_context",
@@ -1875,6 +1878,22 @@ def _register_all() -> None:
         risk_level="medium",
         estimated_cost="free",
         handler=apply_external_story_updates,
+    ))
+
+    # ── Novel Creation Tools ─────────────────────────────────────────────
+    _r(ToolDef(
+        name="start_novel_creation_session",
+        description="Start a new novel creation session. API-free. Returns interview checklist and prompt pack.",
+        input_schema={
+            "mode": {"type": "string", "description": "internal_llm|external_agent"},
+            "user_brief": {"type": "string", "description": "User's novel brief"},
+            "target_audience": {"type": "string", "description": "Target audience"},
+            "genre": {"type": "string", "description": "Novel genre"},
+            "platform": {"type": "string", "description": "Publishing platform"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=start_novel_creation_session,
     ))
 
     # ── Prompt Pack Tools ────────────────────────────────────────────────
