@@ -1792,6 +1792,8 @@ def _register_all() -> None:
     # ── External Writing Tools ───────────────────────────────────────────
     from .tools.external_writing import (
         prepare_external_writing_context,
+        save_external_chapter_draft,
+        get_external_chapter_draft,
     )
 
     _r(ToolDef(
@@ -1806,6 +1808,35 @@ def _register_all() -> None:
         tool_type="read",
         estimated_cost="free",
         handler=prepare_external_writing_context,
+    ))
+
+    _r(ToolDef(
+        name="save_external_chapter_draft",
+        description="Save an externally generated chapter draft. API-free. Returns draft_id/content_ref for use with create_chapter.",
+        input_schema={
+            "content": {"type": "string", "description": "Chapter content to save"},
+            "title": {"type": "string", "description": "Chapter title"},
+            "outline_node_id": {"type": "string", "description": "Linked outline node ID"},
+            "source_agent": {"type": "string", "description": "Source agent name (e.g. claude-code)"},
+            "quality_review_json": {"type": "string", "description": "Optional quality review JSON"},
+        },
+        required=["content"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=save_external_chapter_draft,
+    ))
+
+    _r(ToolDef(
+        name="get_external_chapter_draft",
+        description="Get a saved chapter draft by ID. API-free.",
+        input_schema={
+            "draft_id": {"type": "string", "description": "Draft ID to retrieve"},
+            "content_ref": {"type": "string", "description": "Alias for draft_id"},
+        },
+        required=["draft_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=get_external_chapter_draft,
     ))
 
     # ── Prompt Pack Tools ────────────────────────────────────────────────

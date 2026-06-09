@@ -288,8 +288,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0202 - Add External Draft Storage
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0201
 - File scope:
@@ -830,3 +830,4 @@ Append completed-task evidence here. Use one entry per task:
 - NOVEL-0104: `py -m pytest tests/test_workspace_prompt_pack_integration.py -q` — 4 passed. Added inject_public_prompt_pack_section() to prompt_builder.py. Appends public pack title/version/summary/rubric/forbidden_patterns to system prompt. Gracefully handles missing pack or DB errors.
 - NOVEL-0105: `py -m pytest tests/test_prompt_pack_rag.py -q` — 5 passed. Added _index_prompt_pack and _index_method_card to RAG indexer. Updated reindex_project_types to handle prompt_pack and method_card source types. Prompt packs indexed with scope/version metadata.
 - NOVEL-0201: `py -m pytest tests/test_external_writing_context.py -q` — 5 passed. Added prepare_external_writing_context tool (API-free). Returns prompt pack, outline, characters, relationships, worldbuilding, recent summaries, quality rubric, forbidden patterns, warnings, next tool suggestions. Registered in readonly_collaboration pack.
+- NOVEL-0202: `py -m pytest tests/test_external_draft_storage.py -q` — 8 passed. Added save_external_chapter_draft and get_external_chapter_draft tools (API-free). Wraps existing generated_drafts module. Returns draft_id/content_ref for use with create_chapter. Registered in readonly_collaboration pack.

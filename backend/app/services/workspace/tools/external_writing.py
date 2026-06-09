@@ -201,3 +201,103 @@ async def prepare_external_writing_context(
         "detail": f"Context prepared: {len(result['characters'])} characters, {len(result['worldbuilding'])} worldbuilding, {len(result['recent_summaries'])} recent chapters",
         "data": result,
     }
+
+
+async def save_external_chapter_draft(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Save an externally generated chapter draft.
+
+    API-free: stores draft content server-side and returns draft_id/content_ref.
+    The draft can later be passed to create_chapter via draft_id.
+    """
+    from app.services.workspace.generated_drafts import store_chapter_draft
+
+    content = str(args.get("content") or "").strip()
+    if not content:
+        return {
+            "tool": "save_external_chapter_draft",
+            "status": "skipped",
+            "detail": "content is required",
+            "data": None,
+        }
+
+    title = str(args.get("title") or "").strip()
+    outline_node_id = str(args.get("outline_node_id") or "").strip() or None
+    source_agent = str(args.get("source_agent") or "external").strip()
+    quality_review_json = args.get("quality_review_json")
+
+    draft_id = store_chapter_draft(
+        project_id=project_id,
+        content=content,
+        title=title,
+        outline_node_id=outline_node_id,
+        db=db,
+    )
+
+    return {
+        "tool": "save_external_chapter_draft",
+        "status": "ok",
+        "detail": f"Draft saved: {len(content)} chars",
+        "data": {
+            "draft_id": draft_id,
+            "content_ref": draft_id,
+            "title": title,
+            "word_count": len(content),
+            "source_agent": source_agent,
+        },
+    }
+
+
+async def get_external_chapter_draft(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Get a saved chapter draft by ID.
+
+    API-free: reads from draft storage.
+    """
+    from app.services.workspace.generated_drafts import get_chapter_draft
+
+    draft_id = str(args.get("draft_id") or args.get("content_ref") or "").strip()
+    if not draft_id:
+        return {
+            "tool": "get_external_chapter_draft",
+            "status": "skipped",
+            "detail": "draft_id is required",
+            "data": None,
+        }
+
+    draft = get_chapter_draft(draft_id)
+    if not draft:
+        return {
+            "tool": "get_external_chapter_draft",
+            "status": "skipped",
+            "detail": f"Draft not found: {draft_id}",
+            "data": None,
+        }
+
+    # Verify project ownership
+    if draft.get("project_id") != project_id:
+        return {
+            "tool": "get_external_chapter_draft",
+            "status": "skipped",
+            "detail": "Draft does not belong to this project",
+            "data": None,
+        }
+
+    return {
+        "tool": "get_external_chapter_draft",
+        "status": "ok",
+        "detail": f"Draft: {draft.get('title', 'Untitled')}",
+        "data": {
+            "draft_id": draft_id,
+            "title": draft.get("title"),
+            "content": draft.get("content"),
+            "outline_node_id": draft.get("outline_node_id"),
+            "word_count": len(draft.get("content", "")),
+        },
+    }
