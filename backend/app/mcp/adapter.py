@@ -136,6 +136,62 @@ def _log_mcp_tool_call(
         pass
 
 
+def _log_run_tool_event(
+    db: Any,
+    run_id: str,
+    event_type: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    status: str = "ok",
+    detail: str = "",
+) -> None:
+    """Log a tool_start or tool_result event to an external Agent run.
+
+    This is a best-effort operation — failures are logged but never
+    break tool execution.
+    """
+    try:
+        from app.services.external_agent.run_service import add_event
+
+        # Build safe argument summary (no full content)
+        args_summary = _build_args_summary(arguments)
+
+        payload = {
+            "tool": tool_name,
+            "args_summary": args_summary,
+        }
+        if detail:
+            payload["detail"] = detail[:500]
+
+        add_event(
+            db, run_id, event_type,
+            status=status,
+            message=f"{tool_name}: {detail[:100]}" if detail else tool_name,
+            payload_json=json.dumps(payload, ensure_ascii=False),
+        )
+    except Exception:
+        # Telemetry must never break tool execution
+        pass
+
+
+def _build_args_summary(arguments: dict[str, Any]) -> str:
+    """Build a safe, truncated summary of tool arguments.
+
+    Large content fields are replaced with placeholders.
+    """
+    summary_parts = []
+    for key, value in arguments.items():
+        if isinstance(value, str) and len(value) > 100:
+            summary_parts.append(f"{key}: [{len(value)} chars]")
+        elif isinstance(value, (list, dict)):
+            summary_parts.append(f"{key}: [{type(value).__name__}]")
+        else:
+            summary_parts.append(f"{key}: {value}")
+    result = ", ".join(summary_parts)
+    return result[:300] if len(result) > 300 else result
+
+
 async def execute_tool(
     db: Any,
     project_id: str,
@@ -143,6 +199,7 @@ async def execute_tool(
     arguments: dict[str, Any],
     *,
     allowed_tiers: set[str] | None = None,
+    run_id: str | None = None,
 ) -> McpToolResult:
     """Execute an allowed MCP tool and return a structured MCP result.
 
@@ -152,6 +209,7 @@ async def execute_tool(
         tool_name: Name of the tool to call.
         arguments: Tool arguments dict.
         allowed_tiers: Permission tiers to allow.
+        run_id: Optional external Agent run ID for automatic telemetry.
 
     Returns:
         McpToolResult with structured content.
@@ -174,6 +232,12 @@ async def execute_tool(
             is_error=True,
         )
 
+    # Extract run_id from arguments if present (out-of-band MCP argument)
+    if not run_id:
+        run_id = arguments.pop("run_id", None)
+    else:
+        arguments.pop("run_id", None)  # Strip if passed explicitly
+
     # Check confirmation token for write_confirmed tools
     from app.mcp.permissions import get_tier, validate_confirmation_token
     if get_tier(td) == "write_confirmed":
@@ -188,6 +252,10 @@ async def execute_tool(
                 }),
                 is_error=True,
             )
+
+    # Log tool_start event if run_id is provided
+    if run_id:
+        _log_run_tool_event(db, run_id, "tool_start", tool_name, arguments, status="running")
 
     # Execute through the existing workspace executor
     try:
@@ -205,6 +273,14 @@ async def execute_tool(
             detail=raw_result.get("detail", ""),
         )
 
+        # Log tool_result event if run_id is provided
+        if run_id:
+            _log_run_tool_event(
+                db, run_id, "tool_result", tool_name, arguments,
+                status=raw_result.get("status", "ok"),
+                detail=raw_result.get("detail", ""),
+            )
+
         return _format_tool_result(raw_result)
     except Exception as exc:
         logger.exception("MCP tool execution failed: %s", tool_name)
@@ -215,6 +291,14 @@ async def execute_tool(
             status="error",
             detail=str(exc)[:500],
         )
+
+        # Log tool_result error event if run_id is provided
+        if run_id:
+            _log_run_tool_event(
+                db, run_id, "tool_result", tool_name, arguments,
+                status="error",
+                detail=str(exc)[:500],
+            )
 
         return make_text_result(
             json.dumps({
