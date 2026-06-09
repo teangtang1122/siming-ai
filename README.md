@@ -301,7 +301,7 @@ MOSHU_GITHUB_TOKEN=...
 ### 从源码运行
 
 ```bash
-python scripts/moshu-mcp-server.py --project-id YOUR_PROJECT_ID
+python scripts/moshu-mcp-server.py --permission-pack project_management
 ```
 
 ### MCP 客户端配置
@@ -313,7 +313,7 @@ python scripts/moshu-mcp-server.py --project-id YOUR_PROJECT_ID
   "mcpServers": {
     "moshu": {
       "command": "python",
-      "args": ["scripts/moshu-mcp-server.py", "--project-id", "YOUR_PROJECT_ID"],
+      "args": ["scripts/moshu-mcp-server.py", "--permission-pack", "project_management"],
       "cwd": "D:\\AI\\agent"
     }
   }
@@ -327,7 +327,7 @@ python scripts/moshu-mcp-server.py --project-id YOUR_PROJECT_ID
   "mcpServers": {
     "moshu": {
       "command": "C:\\path\\to\\Moshu.exe",
-      "args": ["--mcp-server"]
+      "args": ["--mcp-server", "--permission-pack", "project_management"]
     }
   }
 }

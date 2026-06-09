@@ -2,6 +2,10 @@
 
 > This guide shows how to connect Claude Code or Codex to Moshu through MCP, enabling the external Agent to read project data and report progress to the Moshu web UI.
 
+By default, Moshu MCP can run without binding to a single project. In that mode,
+external agents should first call `list_projects`, then pass the selected
+`project_id`/`id` to project-scoped tools.
+
 ## Prerequisites
 
 - Moshu installed (from source or packaged exe)
@@ -21,8 +25,8 @@ Add to your MCP client configuration:
       "command": "python",
       "args": [
         "scripts/moshu-mcp-server.py",
-        "--project-id",
-        "YOUR_PROJECT_ID"
+        "--permission-pack",
+        "project_management"
       ],
       "cwd": "D:\\AI\\agent"
     }
@@ -37,17 +41,33 @@ Add to your MCP client configuration:
   "mcpServers": {
     "moshu": {
       "command": "C:\\path\\to\\Moshu.exe",
-      "args": ["--mcp-server", "--project-id", "YOUR_PROJECT_ID"]
+      "args": ["--mcp-server", "--permission-pack", "project_management"]
     }
   }
 }
 ```
+
+If you want to bind the MCP server to one default project, add
+`--project-id YOUR_PROJECT_ID`. This is optional; without it, Claude Code/Codex
+can see all projects through `list_projects`.
 
 ### Finding Your Project ID
 
 1. Open Moshu in your browser
 2. Go to your project
 3. The project ID is in the URL: `http://localhost:8765/projects/YOUR_PROJECT_ID/...`
+
+## Permission Packs
+
+- `readonly_collaboration`: read/search/analysis tools only.
+- `draft_generation`: readonly tools plus draft generators.
+- `project_writing`: can create/update chapters, characters, outline, worldbuilding.
+- `project_management`: project CRUD, import/export, scheduler and skill management.
+- `trusted_local_maintenance`: also exposes destructive tools such as delete/merge.
+
+For normal local Claude Code/Codex use, `project_management` is the practical
+default: it can list all projects, create new projects, write content, manage
+skills, and export data, while destructive tools remain outside the pack.
 
 ## Operating Rules for External Agents
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from typing import Any
 
 from app.services.workspace.registry import ToolDef, registry
@@ -18,6 +19,22 @@ logger = logging.getLogger(__name__)
 
 # Maximum character count before content is truncated in MCP responses.
 _CONTENT_TRUNCATE_LIMIT = 12000
+
+
+def _add_project_id_argument(tool: McpTool) -> McpTool:
+    """Expose a universal project_id override for MCP clients.
+
+    Workspace handlers receive project_id out-of-band from the internal UI. MCP
+    clients often operate globally, so they need an explicit way to target a
+    project after calling list_projects.
+    """
+    schema = deepcopy(tool.input_schema)
+    properties = schema.setdefault("properties", {})
+    properties.setdefault("project_id", {
+        "type": "string",
+        "description": "Optional target project ID. Use after calling list_projects. If omitted, the MCP server default project is used.",
+    })
+    return McpTool(name=tool.name, description=tool.description, input_schema=schema)
 
 
 def list_mcp_tools(
@@ -45,12 +62,12 @@ def list_mcp_tools(
 
     result: list[McpTool] = []
     for td in allowed_defs:
-        result.append(tool_def_to_mcp_tool(
+        result.append(_add_project_id_argument(tool_def_to_mcp_tool(
             name=td.name,
             description=td.description,
             input_schema=td.input_schema,
             required=td.required or None,
-        ))
+        )))
     return result
 
 
@@ -214,6 +231,7 @@ async def execute_tool(
     arguments: dict[str, Any],
     *,
     allowed_tiers: set[str] | None = None,
+    permission_pack: str | None = None,
     run_id: str | None = None,
 ) -> McpToolResult:
     """Execute an allowed MCP tool and return a structured MCP result.
@@ -224,6 +242,7 @@ async def execute_tool(
         tool_name: Name of the tool to call.
         arguments: Tool arguments dict.
         allowed_tiers: Permission tiers to allow.
+        permission_pack: Permission pack name. If set, overrides allowed_tiers.
         run_id: Optional external Agent run ID for automatic telemetry.
 
     Returns:
@@ -241,21 +260,24 @@ async def execute_tool(
         )
 
     # Validate permission
-    if not is_tool_allowed(tool_name, allowed_tiers=allowed_tiers):
+    if not is_tool_allowed(tool_name, allowed_tiers=allowed_tiers, permission_pack=permission_pack):
         return make_text_result(
             json.dumps({"status": "denied", "detail": f"Permission denied: {tool_name}"}),
             is_error=True,
         )
 
-    # Extract run_id from arguments if present (out-of-band MCP argument)
+    # Extract project_id/run_id from arguments if present (out-of-band MCP arguments)
+    effective_project_id = str(arguments.pop("project_id", "") or project_id or "").strip()
     if not run_id:
         run_id = arguments.pop("run_id", None)
     else:
         arguments.pop("run_id", None)  # Strip if passed explicitly
 
-    # Check confirmation token for write_confirmed tools
+    # Check confirmation token for legacy write tiers and explicitly sensitive tools.
+    # Permission packs allow non-destructive write tools directly, but destructive tools
+    # still require a confirmation token when exposed by the trusted pack.
     from app.mcp.permissions import get_tier, validate_confirmation_token
-    if get_tier(td) == "write_confirmed":
+    if (get_tier(td) == "write_confirmed" and not permission_pack) or td.requires_confirmation:
         token_str = arguments.pop("confirmation_token", "")
         is_valid, reason = validate_confirmation_token(token_str, tool_name)
         if not is_valid:
@@ -277,13 +299,13 @@ async def execute_tool(
         from app.services.workspace.executor import execute_workspace_action
         raw_result = await execute_workspace_action(
             db,
-            project_id,
+            effective_project_id,
             {"tool": tool_name, "arguments": arguments},
         )
 
         # Log the MCP tool call
         _log_mcp_tool_call(
-            db, project_id, tool_name, arguments,
+            db, effective_project_id, tool_name, arguments,
             status=raw_result.get("status", "ok"),
             detail=raw_result.get("detail", ""),
         )
@@ -302,7 +324,7 @@ async def execute_tool(
 
         # Log the failure
         _log_mcp_tool_call(
-            db, project_id, tool_name, arguments,
+            db, effective_project_id, tool_name, arguments,
             status="error",
             detail=str(exc)[:500],
         )

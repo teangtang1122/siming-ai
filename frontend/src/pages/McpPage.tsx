@@ -21,6 +21,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import ExternalAgentPermissionPanel from '../components/ExternalAgentPermissionPanel'
 
 const { Title, Text } = Typography
 
@@ -198,7 +199,16 @@ function McpPage({ projectId }: McpPageProps) {
         </Space>
       </div>
 
-      <Card>
+      <ExternalAgentPermissionPanel projectId={projectId} />
+
+      <Card
+        title={
+          <Space>
+            <ApiOutlined />
+            <span>MCP 服务配置</span>
+          </Space>
+        }
+      >
         <Table
           dataSource={servers}
           columns={columns}

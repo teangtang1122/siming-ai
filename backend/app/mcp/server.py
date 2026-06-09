@@ -53,6 +53,7 @@ def handle_message(
     db: Any = None,
     project_id: str = "",
     allowed_tiers: set[str] | None = None,
+    permission_pack: str | None = None,
 ) -> str:
     """Process one JSON-RPC message and return the response string.
 
@@ -61,6 +62,7 @@ def handle_message(
         db: SQLAlchemy session (required for tools/call).
         project_id: Current project ID (required for tools/call).
         allowed_tiers: Permission tiers to allow. Defaults to {"readonly"}.
+        permission_pack: Permission pack name. If set, overrides allowed_tiers.
 
     Returns:
         JSON-RPC response string.
@@ -80,9 +82,9 @@ def handle_message(
     if method == "initialize":
         return _handle_initialize(msg_id, params)
     elif method == "tools/list":
-        return _handle_tools_list(msg_id, allowed_tiers)
+        return _handle_tools_list(msg_id, allowed_tiers, permission_pack)
     elif method == "tools/call":
-        return _handle_tools_call(msg_id, params, db, project_id, allowed_tiers)
+        return _handle_tools_call(msg_id, params, db, project_id, allowed_tiers, permission_pack)
     elif method == "ping":
         return _jsonrpc_result(msg_id, {})
     else:
@@ -104,9 +106,9 @@ def _handle_initialize(msg_id: Any, params: dict) -> str:
     return _jsonrpc_result(msg_id, result)
 
 
-def _handle_tools_list(msg_id: Any, allowed_tiers: set[str]) -> str:
+def _handle_tools_list(msg_id: Any, allowed_tiers: set[str], permission_pack: str | None = None) -> str:
     """Handle tools/list request."""
-    tools = list_mcp_tools(allowed_tiers=allowed_tiers)
+    tools = list_mcp_tools(allowed_tiers=allowed_tiers, permission_pack=permission_pack)
     tool_dicts = []
     for t in tools:
         tool_dicts.append({
@@ -123,6 +125,7 @@ async def _handle_tools_call_async(
     db: Any,
     project_id: str,
     allowed_tiers: set[str],
+    permission_pack: str | None = None,
 ) -> str:
     """Handle tools/call request — async version for actual execution."""
     tool_name = params.get("name", "")
@@ -142,11 +145,19 @@ async def _handle_tools_call_async(
     result = await execute_tool(
         db, project_id, tool_name, arguments,
         allowed_tiers=allowed_tiers,
+        permission_pack=permission_pack,
     )
     return _jsonrpc_result(msg_id, _tool_result_to_dict(result))
 
 
-def _handle_tools_call(msg_id: Any, params: dict, db: Any, project_id: str, allowed_tiers: set[str]) -> str:
+def _handle_tools_call(
+    msg_id: Any,
+    params: dict,
+    db: Any,
+    project_id: str,
+    allowed_tiers: set[str],
+    permission_pack: str | None = None,
+) -> str:
     """Handle tools/call request — sync wrapper.
 
     When called from serve_stdio (async context), delegates to the async version.
@@ -172,6 +183,7 @@ def _handle_tools_call(msg_id: Any, params: dict, db: Any, project_id: str, allo
         result = asyncio.run(execute_tool(
             db, project_id, tool_name, arguments,
             allowed_tiers=allowed_tiers,
+            permission_pack=permission_pack,
         ))
     except RuntimeError:
         # If there's already a running event loop, use nest_asyncio or fallback
@@ -179,6 +191,7 @@ def _handle_tools_call(msg_id: Any, params: dict, db: Any, project_id: str, allo
         result = loop.run_until_complete(execute_tool(
             db, project_id, tool_name, arguments,
             allowed_tiers=allowed_tiers,
+            permission_pack=permission_pack,
         ))
     return _jsonrpc_result(msg_id, _tool_result_to_dict(result))
 
@@ -196,6 +209,7 @@ def serve_stdio(
     db: Any = None,
     project_id: str = "",
     allowed_tiers: set[str] | None = None,
+    permission_pack: str | None = None,
 ) -> None:
     """Run the MCP server over stdio (blocking).
 
@@ -205,6 +219,7 @@ def serve_stdio(
         db: SQLAlchemy session for tool execution.
         project_id: Default project ID.
         allowed_tiers: Permission tiers to allow. Defaults to {"readonly"}.
+        permission_pack: Permission pack name. If set, overrides allowed_tiers.
     """
     if allowed_tiers is None:
         allowed_tiers = {"readonly"}
@@ -221,6 +236,7 @@ def serve_stdio(
             db=db,
             project_id=project_id,
             allowed_tiers=allowed_tiers,
+            permission_pack=permission_pack,
         )
         stdout.write(response + "\n")
         stdout.flush()

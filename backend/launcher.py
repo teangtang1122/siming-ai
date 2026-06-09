@@ -74,7 +74,23 @@ def _run_mcp_server() -> None:
     import argparse
     parser = argparse.ArgumentParser(prog="mcp-server")
     parser.add_argument("--mcp-server", action="store_true", help="Run MCP server over stdio")
-    parser.add_argument("--project-id", default="", help="Default project ID")
+    parser.add_argument(
+        "--project-id",
+        default="",
+        help="Optional default project ID. Omit it to allow global project browsing.",
+    )
+    parser.add_argument(
+        "--permission-pack",
+        default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "readonly_collaboration"),
+        choices=[
+            "readonly_collaboration",
+            "draft_generation",
+            "project_writing",
+            "project_management",
+            "trusted_local_maintenance",
+        ],
+        help="MCP permission pack to expose.",
+    )
     args, _ = parser.parse_known_args()
 
     _prepare_data_environment()
@@ -84,7 +100,7 @@ def _run_mcp_server() -> None:
 
     db = SessionLocal()
     try:
-        serve_stdio(db=db, project_id=args.project_id, allowed_tiers={"readonly"})
+        serve_stdio(db=db, project_id=args.project_id, permission_pack=args.permission_pack)
     finally:
         db.close()
 

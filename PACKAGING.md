@@ -115,7 +115,7 @@ build-exe.bat -OneDir
   "mcpServers": {
     "moshu": {
       "command": "C:\\path\\to\\Moshu.exe",
-      "args": ["--mcp-server"],
+      "args": ["--mcp-server", "--permission-pack", "project_management"],
       "env": {}
     }
   }
@@ -125,7 +125,7 @@ build-exe.bat -OneDir
 如果从源码运行：
 
 ```bat
-python scripts/moshu-mcp-server.py --project-id YOUR_PROJECT_ID
+python scripts/moshu-mcp-server.py --permission-pack project_management
 ```
 
 MCP Server 默认为只读模式，仅暴露查询和分析工具。

@@ -39,6 +39,16 @@ class EntrypointHelpTest(unittest.TestCase):
         )
         self.assertIn("--project-id", result.stdout)
 
+    def test_help_contains_permission_pack(self):
+        result = subprocess.run(
+            [sys.executable, _SCRIPT, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertIn("--permission-pack", result.stdout)
+        self.assertIn("project_management", result.stdout)
+
 
 class EntrypointBadArgsTest(unittest.TestCase):
     """Verify the entrypoint rejects invalid arguments."""

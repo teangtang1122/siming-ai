@@ -189,6 +189,52 @@ class ExecuteToolConfirmationTest(unittest.TestCase):
             ))
             self.assertFalse(result.is_error)
 
+    @patch("app.services.workspace.executor.execute_workspace_action", new_callable=AsyncMock)
+    def test_project_management_pack_allows_create_project_without_token(self, mock_exec):
+        mock_exec.return_value = {
+            "tool": "create_project",
+            "status": "ok",
+            "detail": "Created",
+            "data": {"id": "p2"},
+        }
+        mock_db = MagicMock()
+        result = asyncio.run(execute_tool(
+            mock_db, "", "create_project",
+            {"title": "test"},
+            permission_pack="project_management",
+        ))
+        self.assertFalse(result.is_error)
+        mock_exec.assert_called_once()
+
+    @patch("app.services.workspace.executor.execute_workspace_action", new_callable=AsyncMock)
+    def test_mcp_project_id_argument_overrides_default_project(self, mock_exec):
+        mock_exec.return_value = {
+            "tool": "list_chapters",
+            "status": "ok",
+            "detail": "Found",
+            "data": {"items": []},
+        }
+        mock_db = MagicMock()
+        result = asyncio.run(execute_tool(
+            mock_db, "default-project", "list_chapters",
+            {"project_id": "target-project"},
+            permission_pack="readonly_collaboration",
+        ))
+        self.assertFalse(result.is_error)
+        self.assertEqual(mock_exec.call_args.args[1], "target-project")
+
+    def test_trusted_pack_destructive_tool_still_requires_token(self):
+        mock_db = MagicMock()
+        result = asyncio.run(execute_tool(
+            mock_db, "", "delete_project",
+            {"id": "p2"},
+            permission_pack="trusted_local_maintenance",
+        ))
+        self.assertTrue(result.is_error)
+        parsed = json.loads(result.content[0]["text"])
+        self.assertEqual(parsed["status"], "denied")
+        self.assertEqual(parsed["reason"], "confirmation_required")
+
 
 if __name__ == "__main__":
     unittest.main()

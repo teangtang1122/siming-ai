@@ -2,12 +2,14 @@
 """Moshu MCP Server — stdio entrypoint for MCP clients.
 
 Usage:
-    python scripts/moshu-mcp-server.py [--project-id ID]
+    python scripts/moshu-mcp-server.py [--project-id ID] [--permission-pack PACK]
 
 This script starts a stdio-based MCP server that exposes Moshu workspace
 tools to MCP clients such as Claude Desktop, Cursor, and other editors.
 
-The server defaults to readonly mode. Only read/analysis tools are exposed.
+The server defaults to readonly collaboration mode. Omit --project-id to let
+external agents list and choose among all projects. Project-scoped tools can
+still receive a project_id/id argument when needed.
 
 Environment variables:
     DATABASE_URL — override the database connection string.
@@ -67,7 +69,19 @@ def main() -> None:
     parser.add_argument(
         "--project-id",
         default="",
-        help="Default project ID for tool execution. If omitted, tools that require a project will return an error unless the client provides one.",
+        help="Optional default project ID for tool execution. Omit it for global project browsing; pass project_id/id in individual tool calls when needed.",
+    )
+    parser.add_argument(
+        "--permission-pack",
+        default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "readonly_collaboration"),
+        choices=[
+            "readonly_collaboration",
+            "draft_generation",
+            "project_writing",
+            "project_management",
+            "trusted_local_maintenance",
+        ],
+        help="MCP permission pack to expose. Use project_management to allow project creation/skills/tasks/export; trusted_local_maintenance also exposes destructive tools.",
     )
     parser.add_argument(
         "--verbose",
@@ -97,7 +111,7 @@ def main() -> None:
         serve_stdio(
             db=db,
             project_id=args.project_id,
-            allowed_tiers={"readonly"},
+            permission_pack=args.permission_pack,
         )
     finally:
         db.close()
