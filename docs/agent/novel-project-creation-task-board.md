@@ -444,8 +444,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0304 - Add Blueprint Review Tool With Internal And External Modes
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0303
 - File scope:

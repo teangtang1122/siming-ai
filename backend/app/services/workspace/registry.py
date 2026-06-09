@@ -1802,6 +1802,7 @@ def _register_all() -> None:
     from .tools.novel_creation import (
         start_novel_creation_session,
         draft_novel_blueprint,
+        review_novel_blueprint,
     )
 
     _r(ToolDef(
@@ -1909,6 +1910,20 @@ def _register_all() -> None:
         tool_type="read",
         estimated_cost="free",
         handler=draft_novel_blueprint,
+    ))
+
+    _r(ToolDef(
+        name="review_novel_blueprint",
+        description="Review novel blueprints. Supports internal_llm and external_agent modes.",
+        input_schema={
+            "session_id": {"type": "string", "description": "Creation session ID"},
+            "execution_mode": {"type": "string", "description": "internal_llm|external_agent"},
+            "blueprint": {"type": "object", "description": "Blueprint to review (optional, saves to session)"},
+        },
+        required=["session_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=review_novel_blueprint,
     ))
 
     # ── Prompt Pack Tools ────────────────────────────────────────────────

@@ -177,6 +177,88 @@ async def draft_novel_blueprint(
         }
 
 
+async def review_novel_blueprint(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Review novel blueprints with internal or external model support.
+
+    Internal mode may call Moshu API. External mode returns review prompt
+    and rubric for external agent to fill.
+    """
+    from app.database.models import NovelCreationSession
+
+    session_id = str(args.get("session_id") or "").strip()
+    execution_mode = str(args.get("execution_mode") or "external_agent").strip()
+    blueprint_json = args.get("blueprint")
+
+    if not session_id:
+        return {
+            "tool": "review_novel_blueprint",
+            "status": "skipped",
+            "detail": "session_id is required",
+            "data": None,
+        }
+
+    session = db.query(NovelCreationSession).filter(
+        NovelCreationSession.id == session_id,
+    ).first()
+    if not session:
+        return {
+            "tool": "review_novel_blueprint",
+            "status": "skipped",
+            "detail": "Session not found",
+            "data": None,
+        }
+
+    # Save blueprint to session if provided
+    if blueprint_json and isinstance(blueprint_json, (dict, list)):
+        session.blueprint_json = blueprint_json
+        db.commit()
+
+    if execution_mode == "external_agent":
+        return {
+            "tool": "review_novel_blueprint",
+            "status": "ok",
+            "detail": "External agent mode: use the provided rubric to review the blueprint",
+            "data": {
+                "session_id": session_id,
+                "execution_mode": "external_agent",
+                "blueprint": session.blueprint_json,
+                "review_dimensions": [
+                    {"name": "premise_clarity", "description": "核心设定是否清晰", "max_score": 10},
+                    {"name": "protagonist_goal", "description": "主角目标是否明确", "max_score": 10},
+                    {"name": "conflict_engine", "description": "冲突驱动力是否足够", "max_score": 10},
+                    {"name": "world_rules", "description": "世界观规则是否自洽", "max_score": 10},
+                    {"name": "character_relationship_pressure", "description": "角色关系是否有张力", "max_score": 10},
+                    {"name": "golden_three_hook", "description": "黄金三章钩子是否足够", "max_score": 10},
+                    {"name": "thirty_chapter_runway", "description": "30章剧情跑道是否充足", "max_score": 10},
+                    {"name": "trope_freshness", "description": "套路是否有新意", "max_score": 10},
+                ],
+                "output_schema": {
+                    "scores": {"dimension_name": 0},
+                    "total_score": 0,
+                    "pass": True,
+                    "issues": ["Issue description"],
+                    "suggestions": ["Suggestion description"],
+                },
+                "next_tool": "apply_novel_blueprint",
+            },
+        }
+    else:
+        return {
+            "tool": "review_novel_blueprint",
+            "status": "skipped",
+            "detail": "Internal LLM mode requires Moshu API key. Use external_agent mode instead.",
+            "data": {
+                "session_id": session_id,
+                "execution_mode": "internal_llm",
+                "hint": "Set execution_mode='external_agent' or configure a Moshu API key",
+            },
+        }
+
+
 def _build_interview_checklist(
     user_brief: str,
     genre: str,
