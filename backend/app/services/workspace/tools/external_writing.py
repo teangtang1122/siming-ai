@@ -301,3 +301,76 @@ async def get_external_chapter_draft(
             "word_count": len(draft.get("content", "")),
         },
     }
+
+
+async def record_external_quality_review(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Record a quality review from an external agent.
+
+    API-free: stores review metadata without calling LLM.
+    """
+    from app.database.models import Chapter
+    from app.services.workspace.generated_drafts import get_chapter_draft
+    import json as _json
+
+    draft_id = str(args.get("draft_id") or args.get("content_ref") or "").strip()
+    chapter_id = str(args.get("chapter_id") or "").strip()
+    scores = args.get("scores", {})
+    issues = args.get("issues", [])
+    suggestions = args.get("revision_suggestions", [])
+    passed = args.get("pass", True)
+    reviewer_model = str(args.get("reviewer_model") or "external").strip()
+    prompt_pack_version = str(args.get("prompt_pack_version") or "").strip()
+
+    # Validate input
+    if not draft_id and not chapter_id:
+        return {
+            "tool": "record_external_quality_review",
+            "status": "skipped",
+            "detail": "draft_id or chapter_id is required",
+            "data": None,
+        }
+
+    # Build review record
+    review = {
+        "scores": scores,
+        "issues": issues[:20],
+        "revision_suggestions": suggestions[:20],
+        "pass": passed,
+        "reviewer_model": reviewer_model,
+        "prompt_pack_version": prompt_pack_version,
+        "source": "external_agent",
+    }
+
+    # Calculate total score if scores provided
+    if isinstance(scores, dict) and scores:
+        total = sum(v for v in scores.values() if isinstance(v, (int, float)))
+        review["total_score"] = total
+        review["max_score"] = len(scores) * 10 if scores else 0
+
+    # Try to attach to chapter if chapter_id provided
+    if chapter_id:
+        chapter = db.query(Chapter).filter(
+            Chapter.id == chapter_id,
+            Chapter.project_id == project_id,
+        ).first()
+        if chapter:
+            review["chapter_id"] = chapter_id
+            review["chapter_title"] = chapter.title
+
+    # Try to get draft info
+    if draft_id:
+        draft_content = get_chapter_draft(project_id, draft_id)
+        if draft_content:
+            review["draft_id"] = draft_id
+            review["draft_content_length"] = len(draft_content) if draft_content else 0
+
+    return {
+        "tool": "record_external_quality_review",
+        "status": "ok",
+        "detail": f"Review recorded: {'PASS' if passed else 'FAIL'}" + (f" (total: {review.get('total_score', '?')})" if scores else ""),
+        "data": review,
+    }

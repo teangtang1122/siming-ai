@@ -1794,6 +1794,7 @@ def _register_all() -> None:
         prepare_external_writing_context,
         save_external_chapter_draft,
         get_external_chapter_draft,
+        record_external_quality_review,
     )
 
     _r(ToolDef(
@@ -1837,6 +1838,25 @@ def _register_all() -> None:
         tool_type="read",
         estimated_cost="free",
         handler=get_external_chapter_draft,
+    ))
+
+    _r(ToolDef(
+        name="record_external_quality_review",
+        description="Record a quality review from an external agent. API-free. Stores review scores, issues, and suggestions.",
+        input_schema={
+            "draft_id": {"type": "string", "description": "Draft ID to review"},
+            "content_ref": {"type": "string", "description": "Alias for draft_id"},
+            "chapter_id": {"type": "string", "description": "Chapter ID to review"},
+            "scores": {"type": "object", "description": "Score dict: {dimension: score}"},
+            "issues": {"type": "array", "items": {"type": "string"}, "description": "List of issues found"},
+            "revision_suggestions": {"type": "array", "items": {"type": "string"}, "description": "Suggested revisions"},
+            "pass": {"type": "boolean", "description": "Whether the review passes"},
+            "reviewer_model": {"type": "string", "description": "Model that did the review"},
+            "prompt_pack_version": {"type": "string", "description": "Prompt pack version used"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=record_external_quality_review,
     ))
 
     # ── Prompt Pack Tools ────────────────────────────────────────────────
