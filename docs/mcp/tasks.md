@@ -906,8 +906,8 @@
 
 ### MCP-0908 - Add New Tool Authoring Checklist And Linter
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `scripts/check-tool-registry.py`
   - `docs/mcp/tool-authoring.md`
@@ -1027,3 +1027,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0905: `py -m pytest tests/test_mcp_permission_pack_enforcement.py -q` — 18 passed. Updated adapter.list_mcp_tools and is_tool_allowed to support permission_pack parameter. Tests verify: readonly pack has read tools only, draft adds generators, project_writing adds create/update, trusted adds delete. Pack hierarchy: readonly ⊂ draft ⊂ writing ⊂ management ⊂ trusted. No secret tools in any pack.
 - MCP-0906: `npm run build` — built in 4.81s. Added ExternalAgentPermissionPanel.tsx with pack toggle cards, risk badges, tool list drawer, permanent deny-list notice, trusted local mode toggle with warning, confirmation toggles. Added types/externalAgentSettings.ts with pack definitions.
 - MCP-0907: `py -m pytest tests/test_tool_catalog_api.py -q` — 5 passed. Added tools router with GET /tools/catalog and GET /projects/{project_id}/tools/exposed endpoints. Registered in main.py. Catalog returns all tools from single registry source; exposed endpoint filters by project's enabled packs.
+- MCP-0908: `py scripts/check-tool-registry.py` — PASS, 106 tools checked. `py -m pytest tests/test_tool_registry_lint.py -q` — 8 passed. Added linter script that checks every tool has description, schema, handler, tool_type, permission_tags, risk_level, exposure flags. Rejects secret-looking tools exposed to MCP. Added docs/mcp/tool-authoring.md with copyable checklist.
