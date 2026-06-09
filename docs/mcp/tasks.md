@@ -443,6 +443,245 @@
   - No API key/model secret tools exposed through MCP.
   - MCP readonly server can be used by an external MCP client.
 
+## Phase 8 - External Agent Live Session
+
+> Purpose: let Claude Code, Codex, and other external MCP clients operate Moshu projects while Moshu users can watch the run in the web UI.
+>
+> Strict rule for this phase: no hidden chain-of-thought is requested, stored, or displayed. Only explicit plans, tool calls, progress messages, selected context, draft chunks, warnings, and committed writes may be shown.
+
+### MCP-0801 - Define External Agent Live Session Spec
+
+- Status: `[x]`
+- Owner: Claude Code
+- File scope:
+  - `docs/mcp/external-agent-live-session.md`
+  - `docs/mcp/tasks.md`
+- Goal:
+  - Define the first version of the external Agent observability protocol.
+  - Specify how Claude Code / Codex starts a run, reports progress, streams draft content, calls Moshu tools, requests confirmed writes, and finishes the run.
+- Required content:
+  - Run lifecycle: `created`, `running`, `waiting_confirmation`, `failed`, `cancelled`, `completed`.
+  - Event types: `plan`, `progress`, `tool_start`, `tool_result`, `context_selected`, `draft_chunk`, `draft_ready`, `write_requested`, `write_committed`, `warning`, `error`, `run_finished`.
+  - Event payload size limits and truncation rules.
+  - No-secret rules: API keys, model keys, auth tokens, local credentials, and raw confirmation tokens must never be displayed in events.
+  - Frontend rendering contract: timeline, latest status, draft preview, tool log, confirmation requests.
+  - Backward compatibility: existing internal project assistant SSE must keep working.
+- Verification:
+  - `Test-Path docs/mcp/external-agent-live-session.md`
+  - Reviewer can implement MCP-0802 through MCP-0807 from the spec without asking for hidden assumptions.
+
+### MCP-0802 - Add Agent Run Persistence Model
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/database/models.py`
+  - `backend/app/database/migrations.py`
+  - `backend/app/schemas/agent_run.py`
+  - `backend/tests/test_external_agent_runs.py`
+- Goal:
+  - Persist external Agent runs and their events so the frontend can show live and historical runs.
+- Required behavior:
+  - Add `AgentRun` fields: `id`, `project_id`, `source`, `client_name`, `title`, `status`, `current_step`, `summary`, `created_at`, `updated_at`, `completed_at`.
+  - Add `AgentRunEvent` fields: `id`, `run_id`, `sequence`, `event_type`, `status`, `message`, `payload_json`, `created_at`.
+  - Add indexes for `project_id`, `run_id`, `created_at`, and `sequence`.
+  - Runtime schema sync must migrate old user databases without data loss.
+  - Payload JSON must be allowed to be empty but never contain secret-looking keys.
+- Verification:
+  - `py -m pytest backend/tests/test_external_agent_runs.py -q`
+  - Start backend against an existing user database and confirm runtime schema creation does not fail.
+
+### MCP-0803 - Implement Agent Run Service And API
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/services/external_agent/run_service.py`
+  - `backend/app/routers/external_agent.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_external_agent_api.py`
+- Goal:
+  - Provide backend APIs for creating, reading, streaming, cancelling, and listing external Agent runs.
+- Required endpoints:
+  - `POST /api/v1/projects/{project_id}/agent-runs`
+  - `GET /api/v1/projects/{project_id}/agent-runs`
+  - `GET /api/v1/projects/{project_id}/agent-runs/{run_id}`
+  - `GET /api/v1/projects/{project_id}/agent-runs/{run_id}/events`
+  - `GET /api/v1/projects/{project_id}/agent-runs/{run_id}/stream`
+  - `POST /api/v1/projects/{project_id}/agent-runs/{run_id}/cancel`
+- Required behavior:
+  - SSE stream sends existing events first, then live events.
+  - Event sequence numbers must be monotonic per run.
+  - Cancelling a run records a `cancelled` event; external clients must see cancellation when they report the next event.
+  - API must enforce project isolation.
+- Verification:
+  - `py -m pytest backend/tests/test_external_agent_api.py -q`
+  - Manual SSE smoke test with `curl` or a tiny Python client.
+
+### MCP-0804 - Expose External Agent Reporting Tools Through MCP
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/services/workspace/tools/external_agent.py`
+  - `backend/app/services/workspace/registry.py`
+  - `backend/app/mcp/permissions.py`
+  - `backend/tests/test_mcp_external_agent_tools.py`
+- Goal:
+  - Give Claude Code / Codex explicit MCP tools for reporting what they are doing to Moshu.
+- Required tools:
+  - `start_agent_run`
+  - `report_agent_plan`
+  - `report_agent_progress`
+  - `report_context_selected`
+  - `append_draft_chunk`
+  - `mark_draft_ready`
+  - `finish_agent_run`
+- Required behavior:
+  - These tools are allowed in MCP readonly mode because they only write run telemetry, not project content.
+  - Tool args must include `project_id` and `run_id` except `start_agent_run`.
+  - Payloads must be summarized or truncated before persistence.
+  - Secret-looking fields are rejected or redacted.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_external_agent_tools.py -q`
+  - MCP `tools/list` includes reporting tools but still excludes API key/model secret tools.
+
+### MCP-0805 - Auto-Instrument MCP Tool Calls With Run Events
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/mcp/adapter.py`
+  - `backend/app/mcp/schemas.py`
+  - `backend/app/services/external_agent/run_service.py`
+  - `backend/tests/test_mcp_tool_run_events.py`
+- Goal:
+  - When an external client passes `run_id` to any Moshu MCP tool call, Moshu should automatically log `tool_start` and `tool_result` events.
+- Required behavior:
+  - `run_id` may be accepted as an out-of-band MCP argument and stripped before calling the underlying workspace tool if the tool schema does not define it.
+  - Log tool name, status, safe argument summary, safe result summary, warnings, and error message.
+  - Do not store full chapter text or giant tool payloads in run events; store references and summaries.
+  - Tool execution must continue even if telemetry logging fails.
+- Verification:
+  - `py -m pytest backend/tests/test_mcp_tool_run_events.py -q`
+  - Existing MCP tests still pass.
+
+### MCP-0806 - Add External Agent Run Frontend Panel
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `frontend/src/components/ExternalAgentRunPanel.tsx`
+  - `frontend/src/components/ExternalAgentRunPanel.css`
+  - `frontend/src/pages/ProjectWorkspace.tsx`
+  - `frontend/src/api/client.ts`
+  - `frontend/src/types/agentRun.ts`
+- Goal:
+  - Let users watch Claude Code / Codex working inside Moshu in real time.
+- Required UI:
+  - Collapsible panel in project workspace.
+  - Active run selector and historical run list.
+  - Timeline grouped by plan steps and tool calls.
+  - Latest status strip.
+  - Draft chunk preview with copy/apply controls disabled until confirmed-write flow exists.
+  - Warnings and errors visible without opening developer console.
+  - Empty state explaining how to connect Claude Code / Codex through MCP.
+- Verification:
+  - `cd frontend; npm run build`
+  - Manual smoke test with mocked SSE events shows live updates without refreshing.
+
+### MCP-0807 - Add Confirmed Write Flow For External Agent Drafts
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/app/services/external_agent/write_requests.py`
+  - `backend/app/routers/external_agent.py`
+  - `backend/app/mcp/adapter.py`
+  - `frontend/src/components/ExternalAgentRunPanel.tsx`
+  - `backend/tests/test_external_agent_confirmed_writes.py`
+- Goal:
+  - Allow external Agent drafts to become real Moshu project writes only after explicit user confirmation.
+- Required behavior:
+  - External clients can request writes such as create chapter, update chapter, create outline, update character, and create worldbuilding.
+  - Backend creates a pending write request linked to `run_id`.
+  - Frontend shows diff/preview and asks the user to confirm or reject.
+  - Confirmed writes use the existing MCP confirmation-token layer where possible.
+  - Rejected writes record an event and do not modify project data.
+  - API keys and model settings remain non-writable through MCP.
+- Verification:
+  - `py -m pytest backend/tests/test_external_agent_confirmed_writes.py -q`
+  - Manual test: external draft appears in UI, confirm creates chapter, reject creates no data.
+
+### MCP-0808 - Provide Claude Code / Codex Operating Prompt And Config Docs
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `docs/mcp/claude-code-codex-client.md`
+  - `README.md`
+  - `PACKAGING.md`
+- Goal:
+  - Give users a copyable setup for making Claude Code / Codex operate Moshu through MCP and report progress to the Moshu UI.
+- Required content:
+  - Source and exe MCP server command examples.
+  - Sample MCP client config.
+  - Recommended external Agent operating rules:
+    - Start a run before reading project data.
+    - Report a short plan before tool work.
+    - Use Moshu resources/RAG before writing.
+    - Report selected context.
+    - Stream draft chunks for long writing.
+    - Request confirmed writes instead of directly modifying data.
+    - Finish the run with a concise summary.
+  - Troubleshooting section: wrong database path, missing project id, insufficient model balance, SSE not connected.
+- Verification:
+  - Fresh user can connect Claude Code / Codex from docs only.
+  - Docs mention that Moshu itself still uses configured model APIs unless external Agent workflow is used.
+
+### MCP-0809 - Add End-To-End External Agent Smoke Test
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - `backend/tests/test_external_agent_e2e.py`
+  - `scripts/dev-external-agent-smoke.py`
+  - `docs/mcp/external-agent-live-session.md`
+- Goal:
+  - Verify the complete loop with a fake external MCP client.
+- Scenario:
+  - Start run.
+  - Report plan.
+  - Read project/chapter context through MCP.
+  - Stream draft chunks.
+  - Request a create-chapter write.
+  - Confirm write through backend API.
+  - Finish run.
+  - Assert frontend-facing event stream contains all major milestones.
+- Verification:
+  - `py -m pytest backend/tests/test_external_agent_e2e.py -q`
+  - `py scripts/dev-external-agent-smoke.py --project-id <id>` works against a running backend.
+
+### MCP-0810 - Release Gate For External Agent Live Session
+
+- Status: `[ ]`
+- Owner:
+- File scope:
+  - all Phase 8 touched areas
+  - `README.md`
+  - `docs/mcp/*.md`
+- Required commands:
+  - `py -m pytest backend/tests -q`
+  - `cd frontend; npm run build`
+  - `py scripts/moshu-mcp-server.py --help`
+  - packaged exe MCP smoke test if release build is requested
+- Release criteria:
+  - External Agent telemetry tools work through MCP.
+  - Frontend shows active and historical external Agent runs.
+  - Confirmed write flow prevents silent data mutation.
+  - No API key/model secret tools are exposed or writable.
+  - Existing internal project assistant and scheduler flows still work.
+
 ## Completion Log
 
 Append verified completions here. Keep entries short and factual.
@@ -476,3 +715,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0701: README.md updated with MCP Server section (source/exe usage, client config, feature summary). PACKAGING.md already had MCP section from MCP-0105.
 - MCP-0702: launcher.py updated with --mcp-server flag support. When invoked with --mcp-server, runs MCP stdio server instead of web app. Compiles successfully.
 - MCP-0703: `py -m pytest` — 253 passed, 87 subtests. `npm run build` — built in 7.02s. No API key/model secret tools exposed through MCP (0 found out of 99 tools). All release criteria met.
+- MCP-0801: `Test-Path docs/mcp/external-agent-live-session.md` — file exists, 10 sections. Covers run lifecycle (6 states), 12 event types, payload size limits, no-secret rules, frontend rendering contract, SSE format, backward compatibility.
