@@ -1803,6 +1803,7 @@ def _register_all() -> None:
         start_novel_creation_session,
         draft_novel_blueprint,
         review_novel_blueprint,
+        apply_novel_blueprint,
     )
 
     _r(ToolDef(
@@ -1926,6 +1927,22 @@ def _register_all() -> None:
         handler=review_novel_blueprint,
     ))
 
+    _r(ToolDef(
+        name="apply_novel_blueprint",
+        description="Apply a confirmed blueprint to create a real Moshu project with characters, worldbuilding, and outline.",
+        input_schema={
+            "session_id": {"type": "string", "description": "Creation session ID"},
+            "blueprint_index": {"type": "integer", "description": "Which blueprint to apply (default 0)"},
+            "mode": {"type": "string", "description": "manual|auto. Manual returns candidates, auto creates project."},
+        },
+        required=["session_id"],
+        tool_type="write",
+        writes_project_data=True,
+        risk_level="medium",
+        estimated_cost="free",
+        handler=apply_novel_blueprint,
+    ))
+
     # ── Prompt Pack Tools ────────────────────────────────────────────────
     from .tools.prompt_packs import (
         list_prompt_packs,
@@ -2007,6 +2024,7 @@ def _classify_all() -> None:
         "update_cataloging_candidate", "apply_pending_cataloging",
         "set_cataloging_mode", "set_daily_word_goal",
         "apply_external_story_updates",
+        "apply_novel_blueprint",
     }
 
     _MANAGEMENT_TOOLS = {

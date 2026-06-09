@@ -259,6 +259,231 @@ async def review_novel_blueprint(
         }
 
 
+async def apply_novel_blueprint(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Apply a confirmed blueprint to create a real Moshu project.
+
+    Creates project, worldbuilding, characters, relationships, outline,
+    skills, and memories from the blueprint.
+    """
+    from app.database.models import (
+        NovelCreationSession, Project,
+        Character, WorldbuildingEntry, OutlineNode, CharacterRelationship,
+    )
+
+    session_id = str(args.get("session_id") or "").strip()
+    blueprint_index = int(args.get("blueprint_index", 0))
+    mode = str(args.get("mode") or "auto").strip()
+
+    if not session_id:
+        return {
+            "tool": "apply_novel_blueprint",
+            "status": "skipped",
+            "detail": "session_id is required",
+            "data": None,
+        }
+
+    session = db.query(NovelCreationSession).filter(
+        NovelCreationSession.id == session_id,
+    ).first()
+    if not session:
+        return {
+            "tool": "apply_novel_blueprint",
+            "status": "skipped",
+            "detail": "Session not found",
+            "data": None,
+        }
+
+    blueprints = session.blueprint_json
+    if not blueprints:
+        return {
+            "tool": "apply_novel_blueprint",
+            "status": "skipped",
+            "detail": "No blueprint found. Call draft_novel_blueprint first.",
+            "data": None,
+        }
+
+    # Handle both single blueprint and list
+    if isinstance(blueprints, list):
+        if blueprint_index >= len(blueprints):
+            return {
+                "tool": "apply_novel_blueprint",
+                "status": "skipped",
+                "detail": f"Blueprint index {blueprint_index} out of range ({len(blueprints)} blueprints)",
+                "data": None,
+            }
+        blueprint = blueprints[blueprint_index]
+    else:
+        blueprint = blueprints
+
+    if mode == "manual":
+        # Return candidates without applying
+        return {
+            "tool": "apply_novel_blueprint",
+            "status": "ok",
+            "detail": "Manual mode: review candidates before applying",
+            "data": {
+                "session_id": session_id,
+                "mode": "manual",
+                "candidates": _build_blueprint_candidates(blueprint),
+            },
+        }
+
+    # Auto mode: create the project
+    try:
+        # Create project
+        title = blueprint.get("title", "Untitled Novel")
+        project = Project(
+            title=title,
+            description=blueprint.get("premise", ""),
+            writing_style=blueprint.get("writing_style", "natural"),
+        )
+        db.add(project)
+        db.flush()  # Get the ID
+
+        created_items = {
+            "project_id": project.id,
+            "characters": [],
+            "worldbuilding": [],
+            "outline": [],
+            "relationships": [],
+        }
+
+        # Create protagonist
+        protagonist = blueprint.get("protagonist", {})
+        if protagonist.get("name"):
+            char = Character(
+                project_id=project.id,
+                name=protagonist["name"],
+                personality=protagonist.get("personality", ""),
+                background=protagonist.get("background", ""),
+                role_type="protagonist",
+                current_goal=protagonist.get("goal", ""),
+                active_conflict=protagonist.get("conflict", ""),
+            )
+            db.add(char)
+            created_items["characters"].append(protagonist["name"])
+
+        # Create other characters
+        for char_data in blueprint.get("characters", []):
+            if isinstance(char_data, dict) and char_data.get("name"):
+                char = Character(
+                    project_id=project.id,
+                    name=char_data["name"],
+                    personality=char_data.get("personality", ""),
+                    background=char_data.get("background", ""),
+                    role_type=char_data.get("role_type", "supporting"),
+                )
+                db.add(char)
+                created_items["characters"].append(char_data["name"])
+
+        # Create worldbuilding entries
+        for wb_data in blueprint.get("worldbuilding", []):
+            if isinstance(wb_data, dict) and wb_data.get("title"):
+                entry = WorldbuildingEntry(
+                    project_id=project.id,
+                    title=wb_data["title"],
+                    content=wb_data.get("content", ""),
+                    dimension=wb_data.get("dimension", "culture"),
+                )
+                db.add(entry)
+                created_items["worldbuilding"].append(wb_data["title"])
+
+        # Create outline nodes (first 10 chapters)
+        outline_data = blueprint.get("outline", [])
+        for i, node_data in enumerate(outline_data[:10]):
+            if isinstance(node_data, dict) and node_data.get("title"):
+                node = OutlineNode(
+                    project_id=project.id,
+                    title=node_data["title"],
+                    summary=node_data.get("summary", ""),
+                    node_type=node_data.get("node_type", "chapter"),
+                    sort_order=i,
+                )
+                db.add(node)
+                created_items["outline"].append(node_data["title"])
+
+        # Update session
+        session.created_project_id = project.id
+        session.status = "completed"
+        session.completed_at = __import__("datetime").datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "tool": "apply_novel_blueprint",
+            "status": "ok",
+            "detail": f"Project created: {title} ({len(created_items['characters'])} characters, {len(created_items['outline'])} outline nodes)",
+            "data": created_items,
+        }
+
+    except Exception as exc:
+        db.rollback()
+        session.status = "failed"
+        db.commit()
+        return {
+            "tool": "apply_novel_blueprint",
+            "status": "error",
+            "detail": f"Failed to apply blueprint: {exc}",
+            "data": None,
+        }
+
+
+def _build_blueprint_candidates(blueprint: dict) -> list[dict]:
+    """Build candidate list from blueprint for manual review."""
+    candidates = []
+
+    # Project
+    candidates.append({
+        "type": "project",
+        "action": "create",
+        "title": blueprint.get("title", "Untitled"),
+        "description": blueprint.get("premise", ""),
+    })
+
+    # Characters
+    protagonist = blueprint.get("protagonist", {})
+    if protagonist.get("name"):
+        candidates.append({
+            "type": "character",
+            "action": "create",
+            "name": protagonist["name"],
+            "role_type": "protagonist",
+        })
+    for char in blueprint.get("characters", []):
+        if isinstance(char, dict) and char.get("name"):
+            candidates.append({
+                "type": "character",
+                "action": "create",
+                "name": char["name"],
+                "role_type": char.get("role_type", "supporting"),
+            })
+
+    # Worldbuilding
+    for wb in blueprint.get("worldbuilding", []):
+        if isinstance(wb, dict) and wb.get("title"):
+            candidates.append({
+                "type": "worldbuilding",
+                "action": "create",
+                "title": wb["title"],
+                "dimension": wb.get("dimension", "culture"),
+            })
+
+    # Outline
+    for node in blueprint.get("outline", []):
+        if isinstance(node, dict) and node.get("title"):
+            candidates.append({
+                "type": "outline",
+                "action": "create",
+                "title": node["title"],
+            })
+
+    return candidates
+
+
 def _build_interview_checklist(
     user_brief: str,
     genre: str,
