@@ -568,8 +568,8 @@
 
 ### MCP-0806 - Add External Agent Run Frontend Panel
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `frontend/src/components/ExternalAgentRunPanel.tsx`
   - `frontend/src/components/ExternalAgentRunPanel.css`
@@ -720,3 +720,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0803: `py -m pytest tests/test_external_agent_api.py -q` — 6 passed. Added external_agent/run_service.py (create_run, list_runs, add_event, get_events, cancel_run) with secret redaction and payload truncation. Router at /projects/{project_id}/agent-runs (POST create, GET list, GET detail, GET events, POST events, GET stream/SSE, POST cancel). Registered in main.py.
 - MCP-0804: `py -m pytest tests/test_mcp_external_agent_tools.py -q` — 11 passed, 14 subtests. Added 7 external agent reporting tools to workspace registry (start_agent_run, report_agent_plan, report_agent_progress, report_context_selected, append_draft_chunk, mark_draft_ready, finish_agent_run). All registered as tool_type=read → readonly tier. Tests verify tools appear in MCP tools/list and secret tools remain excluded.
 - MCP-0805: `py -m pytest tests/test_mcp_tool_run_events.py -q` — 12 passed. Updated adapter.execute_tool to accept run_id, strip it from arguments, and auto-log tool_start/tool_result events via run_service.add_event. Added _build_args_summary for safe argument truncation. Telemetry failures never break tool execution.
+- MCP-0806: `npm run build` — built in 5.20s. Added ExternalAgentRunPanel.tsx with collapsible run list, event timeline, status badges, SSE live updates, cancel button, draft preview. Added types/agentRun.ts with TypeScript interfaces.
