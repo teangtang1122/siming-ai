@@ -959,8 +959,8 @@
 
 ### MCP-0910 - Regression Gate For Permission Packs And Single Tool Source
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - all Phase 9 touched areas
 - Required commands:
@@ -1029,3 +1029,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0907: `py -m pytest tests/test_tool_catalog_api.py -q` — 5 passed. Added tools router with GET /tools/catalog and GET /projects/{project_id}/tools/exposed endpoints. Registered in main.py. Catalog returns all tools from single registry source; exposed endpoint filters by project's enabled packs.
 - MCP-0908: `py scripts/check-tool-registry.py` — PASS, 106 tools checked. `py -m pytest tests/test_tool_registry_lint.py -q` — 8 passed. Added linter script that checks every tool has description, schema, handler, tool_type, permission_tags, risk_level, exposure flags. Rejects secret-looking tools exposed to MCP. Added docs/mcp/tool-authoring.md with copyable checklist.
 - MCP-0909: Updated docs/mcp/claude-code-codex-client.md with Permission Packs section: pack definitions, hierarchy, how to enable, trusted local mode rules, troubleshooting for "tool not listed".
+- MCP-0910: `py -m pytest` — 375 passed, 101 subtests. `npm run build` — built in 4.79s. `py scripts/check-tool-registry.py` — PASS, 106 tools. `py scripts/moshu-mcp-server.py --help` — exits 0. All Phase 9 release criteria met.
