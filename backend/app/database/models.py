@@ -998,3 +998,60 @@ class ExternalAgentSettings(Base):
     __table_args__ = (
         Index("ix_external_agent_settings_project", "project_id", unique=True),
     )
+
+
+# ---------------------------------------------------------------------------
+# 24. public_prompt_packs — 公开提示词包表
+# ---------------------------------------------------------------------------
+class PublicPromptPack(Base):
+    __tablename__ = "public_prompt_packs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)  # null = global builtin
+    pack_id = Column(String(100), nullable=False)  # e.g. "chapter_writing_quality"
+    version = Column(String(20), nullable=False, default="1.0.0")
+    scope = Column(String(50), nullable=False)  # new_project|chapter_writing|chapter_review|...
+    title = Column(String(200), nullable=False)
+    summary = Column(Text, nullable=True)
+    system_prompt = Column(Text, nullable=False)
+    workflow_json = Column(JSON, nullable=True)  # list of workflow steps
+    quality_rubric_json = Column(JSON, nullable=True)
+    tool_playbook_json = Column(JSON, nullable=True)
+    forbidden_patterns_json = Column(JSON, nullable=True)  # list of strings
+    context_policy_json = Column(JSON, nullable=True)
+    output_contract_json = Column(JSON, nullable=True)
+    enabled = Column(Boolean, default=True)
+    is_builtin = Column(Boolean, default=False)
+    tags_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_public_prompt_packs_project_pack", "project_id", "pack_id"),
+        Index("ix_public_prompt_packs_scope", "scope"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 25. method_cards — 方法卡片表
+# ---------------------------------------------------------------------------
+class MethodCard(Base):
+    __tablename__ = "method_cards"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)  # null = global builtin
+    card_id = Column(String(100), nullable=False)  # e.g. "chapter_writing_workflow"
+    version = Column(String(20), nullable=False, default="1.0.0")
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    content_json = Column(JSON, nullable=False)  # structured method content
+    card_type = Column(String(50), nullable=False)  # workflow|rubric|playbook|pattern
+    enabled = Column(Boolean, default=True)
+    is_builtin = Column(Boolean, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_method_cards_project_card", "project_id", "card_id"),
+        Index("ix_method_cards_type", "card_type"),
+    )

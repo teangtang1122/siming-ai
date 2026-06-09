@@ -126,8 +126,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0101 - Add PromptPack Method Models
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0001
 - File scope:
@@ -824,3 +824,4 @@ Append completed-task evidence here. Use one entry per task:
 
 - NOVEL-0001: `Test-Path docs/agent/shared-prompt-pack-contract.md` — file exists, 9 sections. Covers hidden vs public prompts, prompt pack fields (14 fields), scopes (7 scopes), compatibility rules, redaction rules, storage/indexing, backward compatibility.
 - NOVEL-0002: `Test-Path docs/agent/external-no-api-writing.md` — file exists, 7 sections. 10-step workflow documented. 19 API-free tools listed. 14 API-backed tools to skip. Failure handling for 4 scenarios. Example session included.
+- NOVEL-0101: `py -m pytest tests/test_prompt_pack_models.py -q` — 10 passed. Added PublicPromptPack model (project_id, pack_id, version, scope, title, system_prompt, workflow/rubric/playbook/patterns/context/output JSON fields, enabled, is_builtin, tags) and MethodCard model (project_id, card_id, version, title, content_json, card_type, enabled, is_builtin). Pydantic schemas (Create, Read) for both.
