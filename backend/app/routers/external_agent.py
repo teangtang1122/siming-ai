@@ -22,6 +22,7 @@ from ..schemas.agent_run import (
     AgentRunListResponse,
     AgentRunEventListResponse,
 )
+from ..schemas.external_agent_settings import ExternalAgentSettingsUpdate
 from ..services.external_agent.run_service import (
     create_run,
     get_run,
@@ -293,3 +294,95 @@ def reject_agent_write(
     if result["status"] == "error":
         raise HTTPException(status_code=400, detail=result["detail"])
     return ApiResponse.success(data=result, message="Write rejected")
+
+
+# ── Settings endpoints ───────────────────────────────────────────────────
+
+@router.get("/settings")
+def get_external_agent_settings(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get external Agent permission settings for a project."""
+    get_project_or_404(db, project_id)
+
+    from app.database.models import ExternalAgentSettings
+    from app.schemas.external_agent_settings import (
+        DEFAULT_ENABLED_PACKS, DEFAULT_TRUSTED_LOCAL_ENABLED,
+        DEFAULT_TRUSTED_LOCAL_CLIENTS, DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
+        DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
+    )
+
+    settings = db.query(ExternalAgentSettings).filter(
+        ExternalAgentSettings.project_id == project_id
+    ).first()
+
+    if not settings:
+        # Return defaults
+        return ApiResponse.success(data={
+            "project_id": project_id,
+            "enabled_packs": DEFAULT_ENABLED_PACKS,
+            "trusted_local_enabled": DEFAULT_TRUSTED_LOCAL_ENABLED,
+            "trusted_local_clients": DEFAULT_TRUSTED_LOCAL_CLIENTS,
+            "require_confirmation_for_writes": DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
+            "require_confirmation_for_destructive": DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
+        })
+
+    return ApiResponse.success(data={
+        "id": settings.id,
+        "project_id": settings.project_id,
+        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
+        "trusted_local_enabled": settings.trusted_local_enabled or False,
+        "trusted_local_clients": settings.trusted_local_clients or [],
+        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else True,
+        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else True,
+    })
+
+
+@router.put("/settings")
+def update_external_agent_settings(
+    project_id: str,
+    body: ExternalAgentSettingsUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update external Agent permission settings for a project."""
+    get_project_or_404(db, project_id)
+
+    from app.database.models import ExternalAgentSettings
+    from app.schemas.external_agent_settings import (
+        DEFAULT_ENABLED_PACKS, DEFAULT_TRUSTED_LOCAL_CLIENTS,
+    )
+
+    settings = db.query(ExternalAgentSettings).filter(
+        ExternalAgentSettings.project_id == project_id
+    ).first()
+
+    if not settings:
+        settings = ExternalAgentSettings(project_id=project_id)
+        db.add(settings)
+
+    if body.enabled_packs is not None:
+        settings.enabled_packs = body.enabled_packs
+    if body.trusted_local_enabled is not None:
+        settings.trusted_local_enabled = body.trusted_local_enabled
+    if body.trusted_local_clients is not None:
+        settings.trusted_local_clients = body.trusted_local_clients
+    if body.require_confirmation_for_writes is not None:
+        settings.require_confirmation_for_writes = body.require_confirmation_for_writes
+    if body.require_confirmation_for_destructive is not None:
+        settings.require_confirmation_for_destructive = body.require_confirmation_for_destructive
+
+    from datetime import datetime
+    settings.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(settings)
+
+    return ApiResponse.success(data={
+        "id": settings.id,
+        "project_id": settings.project_id,
+        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
+        "trusted_local_enabled": settings.trusted_local_enabled or False,
+        "trusted_local_clients": settings.trusted_local_clients or [],
+        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else True,
+        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else True,
+    }, message="Settings updated")

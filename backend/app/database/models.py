@@ -52,6 +52,7 @@ class Project(Base):
     scheduled_tasks = relationship("ScheduledTask", back_populates="project", cascade="all, delete-orphan")
     mcp_server_configs = relationship("McpServerConfig", back_populates="project", cascade="all, delete-orphan")
     agent_runs = relationship("AgentRun", back_populates="project", cascade="all, delete-orphan")
+    external_agent_settings = relationship("ExternalAgentSettings", back_populates="project", uselist=False, cascade="all, delete-orphan")
 
 
 # ---------------------------------------------------------------------------
@@ -973,4 +974,27 @@ class AgentRunEvent(Base):
     __table_args__ = (
         Index("ix_agent_run_events_run_seq", "run_id", "sequence", unique=True),
         Index("ix_agent_run_events_created", "created_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 23. external_agent_settings — 外部 Agent 权限设置表
+# ---------------------------------------------------------------------------
+class ExternalAgentSettings(Base):
+    __tablename__ = "external_agent_settings"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True)
+    enabled_packs = Column(JSON, nullable=False, default=list)  # ["readonly_collaboration"]
+    trusted_local_enabled = Column(Boolean, default=False)
+    trusted_local_clients = Column(JSON, nullable=False, default=list)  # ["claude-code", "codex"]
+    require_confirmation_for_writes = Column(Boolean, default=True)
+    require_confirmation_for_destructive = Column(Boolean, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="external_agent_settings")
+
+    __table_args__ = (
+        Index("ix_external_agent_settings_project", "project_id", unique=True),
     )

@@ -790,8 +790,8 @@
 
 ### MCP-0904 - Add External Agent Permission Settings Model And API
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/database/models.py`
   - `backend/app/database/migrations.py`
@@ -1023,3 +1023,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0901: `Test-Path docs/mcp/permission-packs-and-tools.md` — file exists, 12 sections. Covers 5 permission packs, permanent deny-list, tool metadata contract (15 fields), single-source rules, trusted local mode, settings model, MCP adapter integration, tool catalog API, linter requirements.
 - MCP-0902: `py -m pytest tests/test_tool_registry_metadata.py -q` — 16 passed. Extended ToolDef with permission_tags, risk_level, writes_project_data, expose_to_internal_agent, expose_to_scheduler, expose_to_mcp, mcp_permission_pack. Added registry methods: list_for_internal_agent, list_for_scheduler, list_for_mcp, list_for_frontend, _derive_mcp_pack.
 - MCP-0903: `py -m pytest tests/test_mcp_permission_packs.py -q` — 14 passed. Added _classify_all() post-registration step that assigns permission_tags, risk_level, writes_project_data, mcp_permission_pack to every tool. Tests verify: readonly_collaboration (read/analysis), draft_generation (generators), project_writing (create/update content), project_management (project/scheduler/skill CRUD), trusted_local_maintenance (delete/merge). No secret tools exposed in any pack.
+- MCP-0904: `py -m pytest tests/test_external_agent_permission_settings.py -q` — 7 passed. Added ExternalAgentSettings model (project_id, enabled_packs, trusted_local_enabled, trusted_local_clients, require_confirmation_for_writes/destructive). Schema with safe defaults (readonly_collaboration only). API endpoints: GET/PUT /external-agent/settings.
