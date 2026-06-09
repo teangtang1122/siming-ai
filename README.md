@@ -357,7 +357,7 @@ gh auth login
 
 ```powershell
 .\build-exe.bat
-.\scripts\publish-github.ps1 -Tag v1.3.7
+.\scripts\publish-github.ps1 -Tag v1.3.9
 ```
 
 发布脚本会提交当前改动、推送到 `main`，创建或更新 GitHub Release，并上传 exe、sha256 和 update manifest。
