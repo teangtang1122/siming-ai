@@ -1581,5 +1581,109 @@ def _register_all() -> None:
         handler=list_memories,
     ))
 
+    # ── External Agent Reporting Tools ───────────────────────────────────
+    from .tools.external_agent import (
+        start_agent_run,
+        report_agent_plan,
+        report_agent_progress,
+        report_context_selected,
+        append_draft_chunk,
+        mark_draft_ready,
+        finish_agent_run,
+    )
+
+    _r(ToolDef(
+        name="start_agent_run",
+        description="Start a new external Agent run. Returns run_id for subsequent reporting.",
+        input_schema={
+            "client_name": {"type": "string", "description": "Client name: claude-code, codex, etc."},
+            "title": {"type": "string", "description": "Optional run title"},
+        },
+        tool_type="read",  # Telemetry only, not project content
+        estimated_cost="free",
+        handler=start_agent_run,
+    ))
+
+    _r(ToolDef(
+        name="report_agent_plan",
+        description="Report the execution plan for an Agent run.",
+        input_schema={
+            "run_id": {"type": "string", "description": "Agent run ID"},
+            "plan": {"type": "array", "items": {"type": "string"}, "description": "Plan steps"},
+        },
+        required=["run_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=report_agent_plan,
+    ))
+
+    _r(ToolDef(
+        name="report_agent_progress",
+        description="Report a progress update for an Agent run.",
+        input_schema={
+            "run_id": {"type": "string", "description": "Agent run ID"},
+            "message": {"type": "string", "description": "Progress message"},
+            "step": {"type": "integer", "description": "Optional step index"},
+        },
+        required=["run_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=report_agent_progress,
+    ))
+
+    _r(ToolDef(
+        name="report_context_selected",
+        description="Report which context was selected for reasoning.",
+        input_schema={
+            "run_id": {"type": "string", "description": "Agent run ID"},
+            "sources": {"type": "array", "items": {"type": "object"}, "description": "Selected sources"},
+        },
+        required=["run_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=report_context_selected,
+    ))
+
+    _r(ToolDef(
+        name="append_draft_chunk",
+        description="Stream a draft content chunk to the Agent run.",
+        input_schema={
+            "run_id": {"type": "string", "description": "Agent run ID"},
+            "content": {"type": "string", "description": "Draft content chunk"},
+            "chunk_index": {"type": "integer", "description": "Chunk sequence number"},
+        },
+        required=["run_id", "content"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=append_draft_chunk,
+    ))
+
+    _r(ToolDef(
+        name="mark_draft_ready",
+        description="Signal that a draft is complete.",
+        input_schema={
+            "run_id": {"type": "string", "description": "Agent run ID"},
+            "content_type": {"type": "string", "description": "Content type: chapter, outline, character, worldbuilding"},
+            "summary": {"type": "string", "description": "Brief description of the draft"},
+        },
+        required=["run_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=mark_draft_ready,
+    ))
+
+    _r(ToolDef(
+        name="finish_agent_run",
+        description="Signal Agent run completion with a summary.",
+        input_schema={
+            "run_id": {"type": "string", "description": "Agent run ID"},
+            "summary": {"type": "string", "description": "Final summary of what was accomplished"},
+        },
+        required=["run_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=finish_agent_run,
+    ))
+
 
 _register_all()

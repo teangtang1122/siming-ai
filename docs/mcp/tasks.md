@@ -520,8 +520,8 @@
 
 ### MCP-0804 - Expose External Agent Reporting Tools Through MCP
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/services/workspace/tools/external_agent.py`
   - `backend/app/services/workspace/registry.py`
@@ -718,3 +718,4 @@ Append verified completions here. Keep entries short and factual.
 - MCP-0801: `Test-Path docs/mcp/external-agent-live-session.md` — file exists, 10 sections. Covers run lifecycle (6 states), 12 event types, payload size limits, no-secret rules, frontend rendering contract, SSE format, backward compatibility.
 - MCP-0802: `py -m pytest tests/test_external_agent_runs.py -q` — 14 passed. Added AgentRun model (id, project_id, source, client_name, title, status, current_step, summary, timestamps) and AgentRunEvent model (id, run_id, sequence, event_type, status, message, payload_json, created_at). Pydantic schemas (Create, Read, List) for both. Indexes on project_id/status, run_id/sequence.
 - MCP-0803: `py -m pytest tests/test_external_agent_api.py -q` — 6 passed. Added external_agent/run_service.py (create_run, list_runs, add_event, get_events, cancel_run) with secret redaction and payload truncation. Router at /projects/{project_id}/agent-runs (POST create, GET list, GET detail, GET events, POST events, GET stream/SSE, POST cancel). Registered in main.py.
+- MCP-0804: `py -m pytest tests/test_mcp_external_agent_tools.py -q` — 11 passed, 14 subtests. Added 7 external agent reporting tools to workspace registry (start_agent_run, report_agent_plan, report_agent_progress, report_context_selected, append_draft_chunk, mark_draft_ready, finish_agent_run). All registered as tool_type=read → readonly tier. Tests verify tools appear in MCP tools/list and secret tools remain excluded.
