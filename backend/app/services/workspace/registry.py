@@ -1801,6 +1801,7 @@ def _register_all() -> None:
     )
     from .tools.novel_creation import (
         start_novel_creation_session,
+        draft_novel_blueprint,
     )
 
     _r(ToolDef(
@@ -1894,6 +1895,20 @@ def _register_all() -> None:
         tool_type="read",
         estimated_cost="free",
         handler=start_novel_creation_session,
+    ))
+
+    _r(ToolDef(
+        name="draft_novel_blueprint",
+        description="Draft novel blueprints for a creation session. Supports internal_llm and external_agent modes.",
+        input_schema={
+            "session_id": {"type": "string", "description": "Creation session ID"},
+            "execution_mode": {"type": "string", "description": "internal_llm|external_agent"},
+            "user_brief": {"type": "string", "description": "Additional user brief"},
+        },
+        required=["session_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=draft_novel_blueprint,
     ))
 
     # ── Prompt Pack Tools ────────────────────────────────────────────────

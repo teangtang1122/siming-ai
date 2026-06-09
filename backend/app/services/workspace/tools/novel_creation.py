@@ -82,6 +82,101 @@ async def start_novel_creation_session(
     }
 
 
+async def draft_novel_blueprint(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    """Draft novel blueprints for a creation session.
+
+    Supports two modes:
+    - internal_llm: calls Moshu API if configured
+    - external_agent: returns prompt/context/output schema for external agent to fill
+    """
+    from app.database.models import NovelCreationSession, PublicPromptPack
+
+    session_id = str(args.get("session_id") or "").strip()
+    execution_mode = str(args.get("execution_mode") or "external_agent").strip()
+    user_brief = str(args.get("user_brief") or "").strip()
+
+    if not session_id:
+        return {
+            "tool": "draft_novel_blueprint",
+            "status": "skipped",
+            "detail": "session_id is required",
+            "data": None,
+        }
+
+    session = db.query(NovelCreationSession).filter(
+        NovelCreationSession.id == session_id,
+    ).first()
+    if not session:
+        return {
+            "tool": "draft_novel_blueprint",
+            "status": "skipped",
+            "detail": "Session not found",
+            "data": None,
+        }
+
+    # Get the prompt pack
+    pack = db.query(PublicPromptPack).filter(
+        PublicPromptPack.pack_id == "new_project_setup",
+        PublicPromptPack.enabled == True,
+    ).first()
+
+    if execution_mode == "external_agent":
+        # Return prompt and context for external agent to fill
+        return {
+            "tool": "draft_novel_blueprint",
+            "status": "ok",
+            "detail": "External agent mode: use the provided prompt to generate blueprints",
+            "data": {
+                "session_id": session_id,
+                "execution_mode": "external_agent",
+                "prompt_pack": {
+                    "pack_id": pack.pack_id,
+                    "system_prompt": pack.system_prompt,
+                    "workflow": pack.workflow_json,
+                } if pack else None,
+                "user_brief": session.user_brief or user_brief,
+                "genre": session.genre,
+                "target_audience": session.target_audience,
+                "platform": session.platform,
+                "output_schema": {
+                    "blueprints": [
+                        {
+                            "title": "Blueprint title",
+                            "premise": "Core premise in 2-3 sentences",
+                            "protagonist": {
+                                "name": "Character name",
+                                "goal": "What they want",
+                                "conflict": "What blocks them",
+                            },
+                            "world_hook": "Unique world element",
+                            "opening_scene": "First scene description",
+                            "estimated_chapters": 30,
+                        }
+                    ],
+                    "recommendation": "Which blueprint to pursue and why",
+                },
+                "next_tool": "review_novel_blueprint",
+            },
+        }
+    else:
+        # Internal LLM mode — would call LLM here
+        # For now, return a placeholder since this requires API
+        return {
+            "tool": "draft_novel_blueprint",
+            "status": "skipped",
+            "detail": "Internal LLM mode requires Moshu API key. Use external_agent mode instead.",
+            "data": {
+                "session_id": session_id,
+                "execution_mode": "internal_llm",
+                "hint": "Set execution_mode='external_agent' or configure a Moshu API key",
+            },
+        }
+
+
 def _build_interview_checklist(
     user_brief: str,
     genre: str,

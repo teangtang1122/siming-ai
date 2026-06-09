@@ -422,8 +422,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0303 - Add Blueprint Draft Tool With Internal And External Modes
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0302
 - File scope:
