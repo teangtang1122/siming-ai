@@ -653,8 +653,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0602 - Add External Writing Panel
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0205
 - File scope:
