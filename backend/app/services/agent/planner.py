@@ -211,38 +211,6 @@ def plan_quality_chapter(
 def plan_cataloging_init(
     *,
     chapter_ids: list[str] | None = None,
-) -> PlanGraph:
-    """Cataloging initialization path.
-
-    Delegates to the cataloging service via the plan orchestrator.
-    """
-    steps: dict[str, StepDef] = {
-        "extract_facts": StepDef(
-            tool="extract_facts",
-            args={"chapter_ids": chapter_ids or []},
-            depends_on=[],
-            label="提取事实",
-        ),
-        "resolve_targets": StepDef(
-            tool="resolve_targets",
-            args={},
-            depends_on=["extract_facts"],
-            label="解析目标",
-        ),
-        "apply_candidates": StepDef(
-            tool="apply_candidates",
-            args={},
-            depends_on=["resolve_targets"],
-            label="应用候选",
-        ),
-    }
-
-    return PlanGraph(name="cataloging_init", steps=steps)
-
-
-def plan_cataloging_init(
-    *,
-    chapter_ids: list[str] | None = None,
     execution_mode: str = "auto",
 ) -> PlanGraph:
     """Cataloging initialization path backed by real workspace tools."""

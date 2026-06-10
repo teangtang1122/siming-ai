@@ -96,8 +96,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 
 ### EAC-0002 - Remove Duplicate Cataloging Plan Function
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/services/agent/planner.py`
   - `backend/tests/test_agent_planner_cataloging.py`
