@@ -15,6 +15,7 @@ $DistDir = Join-Path $Root "release"
 $AppName = "Moshu"
 $LegacyAppName = "NovelWritingAgent"
 $DefaultUpdateRepo = "teangtang1122/NovelWritingAgent"
+$SetupMcpScriptName = "setup-external-agent-mcp.ps1"
 
 function Write-Step {
   param([string]$Message)
@@ -120,6 +121,15 @@ $LegacyExePath = if ($OneDir) {
   Join-Path $DistDir "$LegacyAppName.exe"
 }
 Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
+$SetupMcpScriptSource = Join-Path $ScriptDir $SetupMcpScriptName
+$SetupMcpScriptPath = if ($OneDir) {
+  Join-Path (Join-Path $DistDir $AppName) $SetupMcpScriptName
+} else {
+  Join-Path $DistDir $SetupMcpScriptName
+}
+if (Test-Path -LiteralPath $SetupMcpScriptSource) {
+  Copy-Item -LiteralPath $SetupMcpScriptSource -Destination $SetupMcpScriptPath -Force
+}
 $Manifest = [ordered]@{
   version = $Version
   download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/$AppName.exe"
@@ -138,10 +148,15 @@ $ShaPath = if ($OneDir) {
 } else {
   Join-Path $DistDir "sha256.txt"
 }
-$ShaLines = @(
+$ShaLinesArray = @(
   "$Sha256  $AppName.exe"
   "$Sha256  $LegacyAppName.exe"
-) -join [Environment]::NewLine
+)
+if (Test-Path -LiteralPath $SetupMcpScriptPath) {
+  $SetupScriptSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SetupMcpScriptPath).Hash.ToLowerInvariant()
+  $ShaLinesArray += "$SetupScriptSha256  $SetupMcpScriptName"
+}
+$ShaLines = $ShaLinesArray -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($ShaPath, $ShaLines + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 Write-Host "Update manifest: $ManifestPath"
 Write-Host "SHA256 manifest: $ShaPath"
@@ -151,4 +166,7 @@ if ($OneDir) {
 } else {
   Write-Host "Executable: $ExePath"
   Write-Host "Legacy-compatible alias: $LegacyExePath"
+}
+if (Test-Path -LiteralPath $SetupMcpScriptPath) {
+  Write-Host "MCP setup script: $SetupMcpScriptPath"
 }

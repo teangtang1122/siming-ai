@@ -14,6 +14,9 @@ $ExePath = Join-Path $Root "release\$AppName.exe"
 $LegacyExePath = Join-Path $Root "release\$LegacyAppName.exe"
 $ManifestPath = Join-Path $Root "release\update.json"
 $ShaPath = Join-Path $Root "release\sha256.txt"
+$SetupMcpScriptName = "setup-external-agent-mcp.ps1"
+$SetupMcpScriptSource = Join-Path $Root "scripts\$SetupMcpScriptName"
+$SetupMcpScriptPath = Join-Path $Root "release\$SetupMcpScriptName"
 
 function Require-Command {
   param([string]$Name, [string]$Hint)
@@ -60,12 +63,20 @@ try {
   if (-not (Test-Path $LegacyExePath)) {
     Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
   }
+  if ((Test-Path $SetupMcpScriptSource) -and (-not (Test-Path $SetupMcpScriptPath))) {
+    Copy-Item -LiteralPath $SetupMcpScriptSource -Destination $SetupMcpScriptPath -Force
+  }
 
   $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
-  Set-Content -LiteralPath $ShaPath -Encoding UTF8 -Value @(
+  $shaLines = @(
     "$sha  $AppName.exe",
     "$sha  $LegacyAppName.exe"
   )
+  if (Test-Path $SetupMcpScriptPath) {
+    $setupSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $SetupMcpScriptPath).Hash.ToLowerInvariant()
+    $shaLines += "$setupSha  $SetupMcpScriptName"
+  }
+  Set-Content -LiteralPath $ShaPath -Encoding UTF8 -Value $shaLines
 
   $PreviousErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
@@ -75,7 +86,11 @@ try {
   if (-not $ReleaseExists) {
     gh release create $Tag -R $Repo --title $Tag --notes "Moshu $Tag"
   }
-  gh release upload $Tag -R $Repo $ExePath $LegacyExePath $ShaPath $ManifestPath --clobber
+  $assets = @($ExePath, $LegacyExePath, $ShaPath, $ManifestPath)
+  if (Test-Path $SetupMcpScriptPath) {
+    $assets += $SetupMcpScriptPath
+  }
+  gh release upload $Tag -R $Repo @assets --clobber
 } finally {
   Pop-Location
 }

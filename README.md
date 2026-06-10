@@ -108,6 +108,138 @@
 - 做拆书分析、资料整理、角色关系管理和世界观维护。
 - 给不同作品配置不同的技能提示词和写作偏好。
 
+## 外部 Agent 快速接入
+
+墨枢可以作为 MCP Server 接入 Claude Code / Codex。接入后，外部 Agent 可以读取所有作品、获取墨枢写作 Prompt Pack、执行无 API 写作流程、创建新小说、写入章节和更新角色/世界观。
+
+推荐先使用 `project_management` 权限包。它可以管理作品、写章节、创建新小说、管理技能和导出数据，但不会暴露 API Key、模型密钥等敏感配置，也不会暴露危险删除/合并工具。
+
+### 自动配置
+
+推荐先运行自动配置脚本。脚本会自动检测本机是否安装 Claude Code / Codex，自动寻找同目录、下载目录、桌面、`release` 目录或 `%LOCALAPPDATA%` 下的 `Moshu.exe`，找不到 exe 时会回退到源码里的 `scripts\moshu-mcp-server.py`。
+
+如果你下载的是 GitHub Release，请把 `setup-external-agent-mcp.ps1` 放在 `Moshu.exe` 旁边，然后运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1
+```
+
+如果你从源码运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -PreferSource
+```
+
+想先预览将要写入什么配置，可以加 `-DryRun`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -DryRun
+```
+
+常用参数：
+
+```powershell
+# 只配置 Claude Code
+powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -Client claude
+
+# 只配置 Codex
+powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -Client codex
+
+# 手动指定 exe 路径
+powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -MoshuExe "C:\path\to\Moshu.exe"
+```
+
+配置成功后重启 Claude Code / Codex，然后让它调用：
+
+```text
+list_projects
+```
+
+如果能列出墨枢里的作品，就说明接入成功。
+
+### 手动配置
+
+如果自动脚本不适合你的环境，可以手动配置。下面示例里的路径都需要换成你自己电脑上的实际路径：
+
+- 源码方式：把 `C:\path\to\agent` 换成墨枢源码目录。
+- exe 方式：把 `C:\path\to\Moshu.exe` 换成你下载或安装的 `Moshu.exe` 完整路径。
+
+### Claude Code
+
+Claude Code 推荐用命令添加 MCP Server，不需要手动找配置文件：
+
+```powershell
+claude mcp add -s user moshu -- python "C:\path\to\agent\scripts\moshu-mcp-server.py" --permission-pack project_management
+```
+
+如果使用打包后的 exe：
+
+```powershell
+claude mcp add -s user moshu -- "C:\path\to\Moshu.exe" --mcp-server --permission-pack project_management
+```
+
+验证：
+
+```powershell
+claude mcp list
+```
+
+### Codex
+
+Codex 修改配置文件：
+
+```text
+%USERPROFILE%\.codex\config.toml
+```
+
+源码方式添加：
+
+```toml
+[mcp_servers.moshu]
+type = "stdio"
+command = "python"
+args = ["C:\\path\\to\\agent\\scripts\\moshu-mcp-server.py", "--permission-pack", "project_management"]
+```
+
+exe 方式添加：
+
+```toml
+[mcp_servers.moshu]
+type = "stdio"
+command = "C:\\path\\to\\Moshu.exe"
+args = ["--mcp-server", "--permission-pack", "project_management"]
+```
+
+改完后重启 Codex。连接成功后，在 Claude Code / Codex 中让它调用：
+
+```text
+list_projects
+```
+
+如果能列出墨枢里的作品，就说明接入成功。
+
+### 不绑定单个作品
+
+默认不要加 `--project-id`，这样外部 Agent 可以通过 `list_projects` 查看所有作品，并在调用具体工具时传入 `project_id`。如果只想暴露某一个作品，再添加：
+
+```text
+--project-id YOUR_PROJECT_ID
+```
+
+### 无 API 写作模式
+
+如果墨枢没有配置模型 API，外部 Agent 不要调用 `chapter_writer` / `evaluate_chapter` 这类内部模型工具。应使用：
+
+- `get_prompt_pack`
+- `get_quality_rubric`
+- `prepare_external_writing_context`
+- `save_external_chapter_draft`
+- `record_external_quality_review`
+- `create_chapter`
+- `apply_external_story_updates`
+
+完整说明见 [Claude Code / Codex MCP Client Setup Guide](docs/mcp/claude-code-codex-client.md)。
+
 ## 开发环境依赖
 
 如果只是运行已经打包好的 `Moshu.exe`，不需要安装下面这些开发依赖。

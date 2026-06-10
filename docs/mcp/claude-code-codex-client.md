@@ -14,6 +14,31 @@ external agents should first call `list_projects`, then pass the selected
 
 ## Quick Start
 
+### Option 0: Automatic Windows Setup
+
+If you are on Windows, use the setup script first. It detects Claude Code and
+Codex, finds `Moshu.exe` when available, falls back to the source MCP entrypoint,
+and writes the correct client configuration.
+
+From a GitHub Release, place `setup-external-agent-mcp.ps1` next to `Moshu.exe`
+and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1
+```
+
+From source:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -PreferSource
+```
+
+Preview without changing files:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -DryRun
+```
+
 ### Option 1: From Source
 
 Add to your MCP client configuration:

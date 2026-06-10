@@ -14,6 +14,7 @@ build-exe.bat
 release\Moshu.exe
 release\NovelWritingAgent.exe
 release\update.json
+release\setup-external-agent-mcp.ps1
 ```
 
 这个命令会先构建前端静态文件，再把后端、依赖和前端页面一起打包进一个 Windows 可执行文件。
@@ -79,6 +80,7 @@ Moshu.exe
 NovelWritingAgent.exe
 sha256.txt
 update.json
+setup-external-agent-mcp.ps1
 ```
 
 `sha256.txt` 可以直接填写打包生成的 SHA256 值。为了兼容旧版本，文件中应同时包含：
@@ -86,6 +88,7 @@ update.json
 ```text
 <sha256>  Moshu.exe
 <sha256>  NovelWritingAgent.exe
+<sha256>  setup-external-agent-mcp.ps1
 ```
 
 用户启动旧版本时，旧更新器会下载 `NovelWritingAgent.exe`；用户启动新版本时，新更新器优先下载 `Moshu.exe`，找不到时会回退到旧名资产。
@@ -109,6 +112,14 @@ build-exe.bat -OneDir
 ## MCP Server
 
 打包后的 exe 包含 MCP Server 入口。MCP 客户端（如 Claude Desktop、Cursor）可通过 stdio 方式连接：
+
+推荐把 Release 中的 `setup-external-agent-mcp.ps1` 下载到 `Moshu.exe` 旁边，然后运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1
+```
+
+脚本会自动检测 Claude Code / Codex，并写入对应 MCP 配置。也可以手动配置：
 
 ```json
 {
