@@ -171,8 +171,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 
 ### EAC-0103 - Make MCP Permission Source Explicit
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/launcher.py`
   - `scripts/moshu-mcp-server.py`

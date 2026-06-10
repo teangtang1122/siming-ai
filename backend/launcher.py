@@ -81,15 +81,16 @@ def _run_mcp_server() -> None:
     )
     parser.add_argument(
         "--permission-pack",
-        default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "readonly_collaboration"),
+        default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "auto"),
         choices=[
+            "auto",
             "readonly_collaboration",
             "draft_generation",
             "project_writing",
             "project_management",
             "trusted_local_maintenance",
         ],
-        help="MCP permission pack to expose.",
+        help="MCP permission pack to expose. 'auto' resolves from global/project settings.",
     )
     args, _ = parser.parse_known_args()
 

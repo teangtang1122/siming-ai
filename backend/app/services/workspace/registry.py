@@ -1849,6 +1849,9 @@ def _register_all() -> None:
         review_novel_blueprint,
         apply_novel_blueprint,
     )
+    from .tools.mcp_status import (
+        get_mcp_permission_status,
+    )
 
     _r(ToolDef(
         name="prepare_external_writing_context",
@@ -1985,6 +1988,15 @@ def _register_all() -> None:
         risk_level="medium",
         estimated_cost="free",
         handler=apply_novel_blueprint,
+    ))
+
+    _r(ToolDef(
+        name="get_mcp_permission_status",
+        description="Report current MCP permission status: effective pack, source, CLI override status.",
+        input_schema={},
+        tool_type="read",
+        estimated_cost="free",
+        handler=get_mcp_permission_status,
     ))
 
     # ── Prompt Pack Tools ────────────────────────────────────────────────

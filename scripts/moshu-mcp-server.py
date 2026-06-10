@@ -73,15 +73,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--permission-pack",
-        default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "readonly_collaboration"),
+        default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "auto"),
         choices=[
+            "auto",
             "readonly_collaboration",
             "draft_generation",
             "project_writing",
             "project_management",
             "trusted_local_maintenance",
         ],
-        help="MCP permission pack to expose. Use project_management to allow project creation/skills/tasks/export; trusted_local_maintenance also exposes destructive tools.",
+        help="MCP permission pack to expose. 'auto' resolves from global/project settings. Fixed packs bypass UI settings.",
     )
     parser.add_argument(
         "--verbose",

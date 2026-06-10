@@ -219,8 +219,21 @@ def serve_stdio(
         db: SQLAlchemy session for tool execution.
         project_id: Default project ID.
         allowed_tiers: Permission tiers to allow. Defaults to {"readonly"}.
-        permission_pack: Permission pack name. If set, overrides allowed_tiers.
+        permission_pack: Permission pack name. If "auto", resolves from
+            global/project settings. If a fixed pack name, uses that directly.
     """
+    # Resolve "auto" permission pack from settings
+    resolved_pack = permission_pack
+    if permission_pack == "auto" and db is not None:
+        try:
+            from app.services.external_agent.permissions import resolve_effective_pack
+            result = resolve_effective_pack(db, project_id=project_id or None)
+            resolved_pack = result["effective_pack"]
+            logger.info("Auto-resolved permission pack: %s (source: %s)", resolved_pack, result["source"])
+        except Exception as exc:
+            logger.warning("Failed to resolve auto permission pack: %s, falling back to readonly", exc)
+            resolved_pack = "readonly_collaboration"
+
     if allowed_tiers is None:
         allowed_tiers = {"readonly"}
 
@@ -236,7 +249,7 @@ def serve_stdio(
             db=db,
             project_id=project_id,
             allowed_tiers=allowed_tiers,
-            permission_pack=permission_pack,
+            permission_pack=resolved_pack,
         )
         stdout.write(response + "\n")
         stdout.flush()
