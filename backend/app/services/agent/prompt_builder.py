@@ -60,8 +60,8 @@ def build_system_prompt(
     *,
     skill_prompts: str = "",
     db: Any = None,
-    scope: str = "chapter_writing",
-    mode: str = "quality",
+    public_pack_scope: str = "chapter_writing",
+    public_pack_mode: str = "quality",
     **kwargs: Any,
 ) -> str:
     """Build the full system prompt from a pack.
@@ -80,7 +80,7 @@ def build_system_prompt(
 
     # Inject public prompt pack section if db is available
     if db is not None:
-        mode_prompt = inject_public_prompt_pack_section(mode_prompt, db, scope, mode)
+        mode_prompt = inject_public_prompt_pack_section(mode_prompt, db, public_pack_scope, public_pack_mode)
 
     return mode_prompt
 

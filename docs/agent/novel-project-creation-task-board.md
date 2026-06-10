@@ -716,8 +716,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0701 - Backend Regression Gate
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0503
 - File scope:

@@ -31,7 +31,7 @@ class BuildSystemPromptWithPublicPackTest(unittest.TestCase):
         query_mock.first.return_value = mock_pack
         db.query.return_value = query_mock
 
-        result = build_system_prompt(pack, db=db, scope="chapter_writing", mode="quality")
+        result = build_system_prompt(pack, db=db, public_pack_scope="chapter_writing", public_pack_mode="quality")
         self.assertIn("质量模式", result)
         self.assertIn("1.0.0", result)
 
