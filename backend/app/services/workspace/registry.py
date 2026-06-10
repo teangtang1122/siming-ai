@@ -1859,6 +1859,7 @@ def _register_all() -> None:
         save_external_cataloging_candidates,
         verify_external_cataloging_progress,
     )
+    from .tools.project_status import get_project_archive_status
 
     _r(ToolDef(
         name="prepare_external_writing_context",
@@ -2072,6 +2073,15 @@ def _register_all() -> None:
         tool_type="read",
         estimated_cost="free",
         handler=verify_external_cataloging_progress,
+    ))
+
+    _r(ToolDef(
+        name="get_project_archive_status",
+        description="Get project archive status: chapter/character/outline/worldbuilding counts, last cataloging job, warnings, and recommended next steps. Use to verify project data exists before reporting completion.",
+        input_schema={},
+        tool_type="read",
+        estimated_cost="free",
+        handler=get_project_archive_status,
     ))
 
     # ── Prompt Pack Tools ────────────────────────────────────────────────

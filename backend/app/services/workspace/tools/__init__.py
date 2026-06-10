@@ -79,6 +79,7 @@ from .deconstruct import (
     start_deconstruct_job,
 )
 from .stats import get_today_writing_stats, get_writing_stats_history, set_daily_word_goal
+from .project_status import get_project_archive_status
 
 __all__ = [
     "chapter_writer",
@@ -179,4 +180,5 @@ __all__ = [
     "get_today_writing_stats",
     "get_writing_stats_history",
     "set_daily_word_goal",
+    "get_project_archive_status",
 ]
