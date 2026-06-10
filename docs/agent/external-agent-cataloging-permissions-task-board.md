@@ -215,8 +215,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 
 ### EAC-0201 - Move MCP / External Agent To Top-Level Navigation
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `frontend/src/App.tsx`
   - `frontend/src/pages/DashboardPage.tsx`

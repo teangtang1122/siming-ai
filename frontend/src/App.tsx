@@ -6,6 +6,7 @@ import { useAppStore } from './stores'
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const ProjectWorkspace = lazy(() => import('./pages/ProjectWorkspace'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const ExternalAgentPage = lazy(() => import('./pages/ExternalAgentPage'))
 
 const { Content } = Layout
 
@@ -87,6 +88,7 @@ function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/external-agent" element={<ExternalAgentPage />} />
             <Route path="*" element={<WildcardRedirect />} />
           </Routes>
         </Suspense>
