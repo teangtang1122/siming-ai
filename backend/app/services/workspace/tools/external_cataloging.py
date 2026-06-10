@@ -52,6 +52,7 @@ async def start_external_cataloging_job(
         project_id=project_id,
         execution_mode="external_agent",
         status="running",
+        total_chapters=len(chapters),
     )
     db.add(job)
     db.flush()
@@ -60,8 +61,9 @@ async def start_external_cataloging_job(
     for i, chapter in enumerate(chapters):
         run = CatalogingChapterRun(
             job_id=job.id,
+            project_id=project_id,
             chapter_id=chapter.id,
-            chapter_index=i,
+            chapter_order=i,
             status="pending",
         )
         db.add(run)
@@ -118,7 +120,7 @@ async def get_next_external_cataloging_chapter(
     chapter_run = db.query(CatalogingChapterRun).filter(
         CatalogingChapterRun.job_id == job_id,
         CatalogingChapterRun.status == "pending",
-    ).order_by(CatalogingChapterRun.chapter_index).first()
+    ).order_by(CatalogingChapterRun.chapter_order).first()
 
     if not chapter_run:
         return {
@@ -254,9 +256,10 @@ async def save_external_cataloging_facts(
         fact = CatalogingFact(
             job_id=job_id,
             chapter_run_id=chapter_run.id,
+            project_id=job.project_id,
+            chapter_id=chapter_id,
             fact_type=str(fact_data.get("type", "unknown")),
-            data_json=json.dumps(fact_data.get("data", {}), ensure_ascii=False),
-            source="external_agent",
+            raw_payload=json.dumps(fact_data.get("data", fact_data), ensure_ascii=False),
         )
         db.add(fact)
         saved += 1
@@ -323,11 +326,13 @@ async def save_external_cataloging_candidates(
         candidate = CatalogingCandidate(
             job_id=job_id,
             chapter_run_id=chapter_run.id,
+            project_id=job.project_id,
+            chapter_id=chapter_id,
             item_type=str(cand_data.get("type", "unknown")),
-            action=str(cand_data.get("action", "create")),
-            payload_json=json.dumps(cand_data, ensure_ascii=False),
+            operation=str(cand_data.get("action", "upsert")),
+            raw_payload=json.dumps(cand_data, ensure_ascii=False),
             status="pending",
-            source="external_agent",
+            source_task="external_agent",
         )
         db.add(candidate)
         saved += 1
