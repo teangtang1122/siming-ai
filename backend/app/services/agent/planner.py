@@ -21,6 +21,7 @@ _INTENT_PROJECT = "project"
 _INTENT_EXPORT = "export"
 _INTENT_DECONSTRUCT = "deconstruct"
 _INTENT_CREATE_NOVEL = "create_novel"
+_INTENT_EXTERNAL_WRITING = "external_writing"
 
 
 def plan_fast_chapter(
@@ -481,6 +482,46 @@ def plan_create_novel(
     return PlanGraph(name="create_novel", steps=steps)
 
 
+def plan_external_writing(
+    *,
+    requirements: str = "",
+) -> PlanGraph:
+    """External writing path — prepare context, wait for external draft, save, review, apply."""
+    steps = {
+        "prepare_context": StepDef(
+            tool="prepare_external_writing_context",
+            args={"mode": "quality"},
+            depends_on=[],
+            label="准备写作上下文",
+        ),
+        "save_draft": StepDef(
+            tool="save_external_chapter_draft",
+            args={"content": "$external_draft", "source_agent": "external"},
+            depends_on=["prepare_context"],
+            label="保存外部草稿",
+        ),
+        "record_review": StepDef(
+            tool="record_external_quality_review",
+            args={"draft_id": "$save_draft.draft_id", "pass": True},
+            depends_on=["save_draft"],
+            label="记录质量评审",
+        ),
+        "create_chapter": StepDef(
+            tool="create_chapter",
+            args={"draft_id": "$save_draft.draft_id"},
+            depends_on=["record_review"],
+            label="创建章节",
+        ),
+        "apply_updates": StepDef(
+            tool="apply_external_story_updates",
+            args={"mode": "auto"},
+            depends_on=["create_chapter"],
+            label="应用故事更新",
+        ),
+    }
+    return PlanGraph(name="external_writing", steps=steps)
+
+
 def plan_export_project(
     *,
     scope: str = "all",
@@ -645,6 +686,14 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
     if any(kw in text for kw in _CREATE_NOVEL_KEYWORDS):
         return {"intent_type": _INTENT_CREATE_NOVEL, "requirements": text}
 
+    # 1.2 External writing (Claude Code / Codex writes)
+    _EXTERNAL_WRITING_KEYWORDS = [
+        "外部写作", "外部写", "让claude写", "让codex写",
+        "外部agent写", "外部模型写", "不用内部api写",
+    ]
+    if any(kw in text for kw in _EXTERNAL_WRITING_KEYWORDS):
+        return {"intent_type": _INTENT_EXTERNAL_WRITING, "requirements": text}
+
     # 1.5 Scheduled tasks
     if any(kw in text for kw in _SCHEDULE_KEYWORDS) and any(kw in text for kw in ("任务", "搜索", "整理", "提醒", "监控", "收集")):
         cron_expr, interval_minutes = _extract_schedule(text)
@@ -751,6 +800,11 @@ def build_plan_from_intent(intent: dict[str, Any], *, outline_node_id: str = "")
 
     if intent_type == _INTENT_CREATE_NOVEL:
         return plan_create_novel(
+            requirements=intent.get("requirements", ""),
+        )
+
+    if intent_type == _INTENT_EXTERNAL_WRITING:
+        return plan_external_writing(
             requirements=intent.get("requirements", ""),
         )
 
