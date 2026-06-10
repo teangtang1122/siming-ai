@@ -743,8 +743,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0703 - Manual Smoke Test
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0701
   - NOVEL-0702
