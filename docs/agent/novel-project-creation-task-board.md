@@ -607,8 +607,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0504 - Update Claude Code / Codex Operating Docs
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0501
   - NOVEL-0502

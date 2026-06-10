@@ -345,6 +345,10 @@ python scripts/moshu-mcp-server.py --permission-pack project_management
 
 墨枢支持通过 MCP 让 Claude Code 或 Codex 直接操作项目数据，并在 Web UI 中实时显示外部 Agent 的工作进度。详见 `docs/mcp/claude-code-codex-client.md`。
 
+### 无 API 写作模式
+
+Claude Code / Codex 可以在墨枢**没有配置模型 API** 的情况下写作。墨枢提供上下文、提示词包、存储和遥测，外部模型负责生成和评审。详见 `docs/mcp/claude-code-codex-client.md` 的 "No Moshu API Mode" 章节。
+
 ## 发布到 GitHub
 
 确保已经安装并登录 GitHub CLI：

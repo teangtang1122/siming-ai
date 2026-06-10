@@ -278,6 +278,142 @@ If a tool you expect is not available:
 4. **Secret deny-list** — API key/model secret tools are permanently blocked
 5. **Schema validation failure** — Check linter: `python scripts/check-tool-registry.py`
 
+## No Moshu API Mode
+
+Claude Code / Codex can write novels through Moshu **without any model API configured inside Moshu**. In this mode, Moshu provides context, prompt packs, storage, and telemetry — the external model does all generation and review.
+
+### How It Works
+
+1. Moshu stores your project data (outline, characters, worldbuilding)
+2. Claude Code / Codex fetches writing context and prompt packs from Moshu
+3. The external model generates chapter text using its own capabilities
+4. The external model self-reviews using Moshu's quality rubric
+5. The draft is saved to Moshu and promoted to a chapter after confirmation
+
+### Writing a Chapter Without Moshu API
+
+```
+# 1. Get writing context
+prepare_external_writing_context({
+  "project_id": "YOUR_PROJECT_ID",
+  "outline_node_id": "NODE_ID",
+  "mode": "quality"
+})
+
+# 2. [Claude Code writes chapter using the context and prompt pack]
+
+# 3. Save the draft
+save_external_chapter_draft({
+  "content": "Generated chapter text...",
+  "title": "Chapter Title",
+  "outline_node_id": "NODE_ID",
+  "source_agent": "claude-code"
+})
+
+# 4. Record quality review
+record_external_quality_review({
+  "draft_id": "DRAFT_ID",
+  "scores": {"opening_hook": 8, "plot_progression": 7, ...},
+  "pass": true,
+  "reviewer_model": "claude-sonnet-4-6"
+})
+
+# 5. Create the chapter
+create_chapter({
+  "title": "Chapter Title",
+  "draft_id": "DRAFT_ID",
+  "outline_node_id": "NODE_ID"
+})
+
+# 6. Apply story updates
+apply_external_story_updates({
+  "chapter_id": "CHAPTER_ID",
+  "updates": {
+    "characters": [{"id": "CHAR_ID", "current_location": "New Location"}],
+    "chapter_summary": "Brief summary..."
+  },
+  "mode": "auto"
+})
+```
+
+### Creating a New Novel Without Moshu API
+
+```
+# 1. Start creation session
+start_novel_creation_session({
+  "user_brief": "A xianxia novel about a female cultivator",
+  "genre": "xianxia",
+  "target_audience": "male",
+  "platform": "qidian"
+})
+
+# 2. Draft blueprints (external agent fills the schema)
+draft_novel_blueprint({
+  "session_id": "SESSION_ID",
+  "execution_mode": "external_agent"
+})
+# [Claude Code generates blueprints using the provided schema]
+
+# 3. Review blueprint
+review_novel_blueprint({
+  "session_id": "SESSION_ID",
+  "execution_mode": "external_agent",
+  "blueprint": { ... }
+})
+
+# 4. Apply blueprint to create project
+apply_novel_blueprint({
+  "session_id": "SESSION_ID",
+  "mode": "auto"
+})
+```
+
+### Tools That Work Without Moshu API
+
+| Tool | Purpose |
+|------|---------|
+| `list_projects` | List all projects |
+| `get_project_info` | Get project metadata |
+| `list_prompt_packs` | List available writing methods |
+| `get_prompt_pack` | Get a specific writing method |
+| `get_tool_playbook` | Get tool usage guide |
+| `get_quality_rubric` | Get quality scoring criteria |
+| `prepare_external_writing_context` | Build writing context package |
+| `save_external_chapter_draft` | Store generated draft |
+| `get_external_chapter_draft` | Retrieve stored draft |
+| `record_external_quality_review` | Store quality review |
+| `start_novel_creation_session` | Start new novel creation |
+| `draft_novel_blueprint` | Generate blueprint schema |
+| `review_novel_blueprint` | Review blueprint |
+| `apply_novel_blueprint` | Create project from blueprint |
+| `apply_external_story_updates` | Apply character/worldbuilding updates |
+| `search_chapters` | Search existing chapters |
+| `search_characters` | Search characters |
+| `search_worldbuilding` | Search worldbuilding |
+| `search_outline` | Search outline |
+| `detect_character_changes` | Detect character state changes |
+| `detect_new_worldbuilding` | Detect unrecorded worldbuilding |
+| `detect_forbidden_patterns` | Check for AI patterns |
+
+### Tools That Require Moshu API
+
+These tools call the configured model API and will fail if no API key is set:
+
+| Tool | Why It Needs API |
+|------|-----------------|
+| `chapter_writer` | Generates chapter text using LLM |
+| `outline_writer` | Generates outline nodes using LLM |
+| `character_writer` | Generates character cards using LLM |
+| `worldbuilding_writer` | Generates worldbuilding entries using LLM |
+| `rewrite_text` | Rewrites text using LLM |
+| `expand_text` | Expands text using LLM |
+| `continue_text` | Continues text using LLM |
+| `roleplay_character` | Character roleplay using LLM |
+| `dialogue_battle` | Multi-character dialogue using LLM |
+| `evaluate_chapter` | Chapter quality evaluation using LLM |
+| `design_plot` | Plot design using LLM |
+| `suggest_conflicts` | Conflict suggestions using LLM |
+
 ## Troubleshooting
 
 ### Wrong Database Path
@@ -303,6 +439,18 @@ If tools fail with model errors:
 1. Moshu uses your configured model API (OpenAI, Anthropic, etc.)
 2. Check your API key balance
 3. The MCP server itself doesn't need a model — only the tools that call LLMs do
+
+### chapter_writer Fails Because No API Key
+
+If `chapter_writer` or other LLM tools fail with "no API key configured":
+
+1. You're trying to use tools that require Moshu's model API
+2. Use the **No Moshu API mode** instead (see above)
+3. Replace `chapter_writer` with:
+   - `prepare_external_writing_context` to get context
+   - External model generates text
+   - `save_external_chapter_draft` to store the draft
+   - `create_chapter` with `draft_id` to save
 
 ### SSE Not Connected
 
