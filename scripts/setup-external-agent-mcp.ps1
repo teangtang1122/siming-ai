@@ -1,6 +1,6 @@
 param(
-  [ValidateSet("readonly_collaboration", "draft_generation", "project_writing", "project_management", "trusted_local_maintenance")]
-  [string]$PermissionPack = "project_management",
+  [ValidateSet("auto", "readonly_collaboration", "draft_generation", "project_writing", "project_management", "trusted_local_maintenance")]
+  [string]$PermissionPack = "auto",
   [string]$ProjectId = "",
   [string]$MoshuExe = "",
   [string]$SourceRoot = "",
@@ -282,6 +282,9 @@ $server = Resolve-McpCommand
 Write-Step "Selected MCP server mode: $($server.Mode)"
 Write-Step "Command: $($server.Command)"
 Write-Step "Args: $($server.Args -join ' ')"
+if ($PermissionPack -ne "auto") {
+  Write-Host "[Moshu MCP] WARNING: Using fixed permission pack '$PermissionPack'. This bypasses UI global permission changes." -ForegroundColor Yellow
+}
 if ($server.Cwd) {
   Write-Step "Source root: $($server.Cwd)"
 }

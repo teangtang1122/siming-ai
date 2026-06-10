@@ -169,13 +169,13 @@ list_projects
 Claude Code 推荐用命令添加 MCP Server，不需要手动找配置文件：
 
 ```powershell
-claude mcp add -s user moshu -- python "C:\path\to\agent\scripts\moshu-mcp-server.py" --permission-pack project_management
+claude mcp add -s user moshu -- python "C:\path\to\agent\scripts\moshu-mcp-server.py" --permission-pack auto
 ```
 
 如果使用打包后的 exe：
 
 ```powershell
-claude mcp add -s user moshu -- "C:\path\to\Moshu.exe" --mcp-server --permission-pack project_management
+claude mcp add -s user moshu -- "C:\path\to\Moshu.exe" --mcp-server --permission-pack auto
 ```
 
 验证：
@@ -433,7 +433,7 @@ MOSHU_GITHUB_TOKEN=...
 ### 从源码运行
 
 ```bash
-python scripts/moshu-mcp-server.py --permission-pack project_management
+python scripts/moshu-mcp-server.py --permission-pack auto
 ```
 
 ### MCP 客户端配置

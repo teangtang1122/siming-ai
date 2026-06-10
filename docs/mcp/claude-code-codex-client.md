@@ -309,6 +309,43 @@ Packs form a hierarchy — enabling a higher pack automatically enables all lowe
 4. Toggle the packs you want to enable
 5. Confirm the changes
 
+### Global Settings vs CLI Override
+
+Moshu has two levels of permission settings:
+
+**Global settings** (system-wide):
+- Configured in the Moshu web UI under "External Agent / MCP"
+- Apply to all projects unless overridden
+- Default: `readonly_collaboration`
+
+**Project settings** (per-project):
+- Configured in each project's settings
+- Override global settings for that project only
+
+**CLI override** (fixed pack):
+- Set via `--permission-pack` flag when starting the MCP server
+- Bypasses all UI settings
+- Use `--permission-pack auto` (default) to respect UI settings
+- Use a fixed pack (e.g., `--permission-pack project_management`) to lock permissions
+
+**Recommended:** Use `--permission-pack auto` (the default) so UI settings take effect. Only use fixed packs for advanced use cases.
+
+When a CLI override is active, the UI will show a warning: "Claude/Codex currently locked by CLI override."
+
+### Check Current Permission Status
+
+Use the `get_mcp_permission_status` tool to see which permissions are active:
+
+```
+get_mcp_permission_status()
+```
+
+Returns:
+- `effective_pack`: the active permission pack
+- `source`: where it came from (global_settings, project_override, cli_override)
+- `cli_override`: whether a CLI override is active
+- `warnings`: any issues
+
 ### Trusted Local Mode
 
 Trusted local mode allows Claude Code / Codex to skip write confirmations for project content. **Only enable this on machines you control.**

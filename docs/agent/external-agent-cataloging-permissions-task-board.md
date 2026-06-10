@@ -193,8 +193,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 
 ### EAC-0104 - Update Auto Configuration Script
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `scripts/setup-external-agent-mcp.ps1`
   - `release/setup-external-agent-mcp.ps1`
