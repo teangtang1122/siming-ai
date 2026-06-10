@@ -32,7 +32,7 @@ function ExternalAgentPage() {
   const fetchGlobalSettings = useCallback(async () => {
     try {
       const resp = await apiClient.get<ApiResponse<GlobalSettings>>(
-        `/projects/dummy/agent-runs/global-settings`
+        `/external-agent/settings`
       )
       setGlobalSettings(resp.data.data)
     } catch {
