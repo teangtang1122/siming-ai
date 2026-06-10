@@ -633,8 +633,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0601 - Add Prompt Pack Browser UI
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0103
 - File scope:
