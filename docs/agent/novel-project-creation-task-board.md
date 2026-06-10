@@ -552,8 +552,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0501 - Expose Prompt Pack Tools Through MCP
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0103
 - File scope:
