@@ -324,8 +324,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 
 ### EAC-0303 - Reuse Existing Cataloging Applier
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/services/cataloging/applier.py`
   - `backend/app/services/cataloging/candidate_store.py`
