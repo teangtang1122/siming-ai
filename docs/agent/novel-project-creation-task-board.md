@@ -793,8 +793,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0705 - Compatibility Test With Old User Data
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0704
 - File scope:
