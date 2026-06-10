@@ -1081,3 +1081,20 @@ class NovelCreationSession(Base):
     __table_args__ = (
         Index("ix_novel_creation_sessions_status", "status"),
     )
+
+
+# ---------------------------------------------------------------------------
+# 27. external_agent_global_settings — 全局外部 Agent 权限设置表
+# ---------------------------------------------------------------------------
+class ExternalAgentGlobalSettings(Base):
+    __tablename__ = "external_agent_global_settings"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    enabled_packs = Column(JSON, nullable=False, default=list)  # ["readonly_collaboration"]
+    trusted_local_enabled = Column(Boolean, default=False)
+    trusted_local_clients = Column(JSON, nullable=False, default=list)
+    require_confirmation_for_writes = Column(Boolean, default=True)
+    require_confirmation_for_destructive = Column(Boolean, default=True)
+    mcp_permission_source = Column(String(30), default="global_settings")  # global_settings | cli_override
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)

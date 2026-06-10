@@ -114,8 +114,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 
 ### EAC-0101 - Add Global External Agent Settings Model
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/database/models.py`
   - `backend/app/database/migrations.py`
