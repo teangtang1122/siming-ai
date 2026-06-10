@@ -50,4 +50,6 @@ export interface EventPayload {
   write_type?: string
   result_status?: string
   result_detail?: string
+  prompt_pack_version?: string
+  prompt_pack_id?: string
 }

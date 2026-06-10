@@ -90,6 +90,11 @@ function EventItem({ event }: { event: AgentRunEvent }) {
             {payload.args_summary && ` — ${payload.args_summary}`}
           </Text>
         )}
+        {payload?.prompt_pack_version && (
+          <Tag color="purple" style={{ fontSize: 11 }}>
+            提示词包 v{payload.prompt_pack_version}
+          </Tag>
+        )}
         {payload?.plan && (
           <ol style={{ margin: 0, paddingLeft: 20 }}>
             {payload.plan.map((step, i) => (

@@ -694,8 +694,8 @@ Every implementation task must preserve the existing Moshu architecture:
 
 ### NOVEL-0604 - Show Shared Prompt Version In Runs
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - Depends on:
   - NOVEL-0403
 - File scope:
