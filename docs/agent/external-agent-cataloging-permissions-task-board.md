@@ -145,8 +145,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 
 ### EAC-0102 - Add Global Settings API
 
-- Status: `[ ]`
-- Owner:
+- Status: `[x]`
+- Owner: Claude Code
 - File scope:
   - `backend/app/routers/external_agent.py`
   - `backend/app/services/external_agent/permissions.py`
