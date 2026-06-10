@@ -73,16 +73,11 @@ class GetExternalDraftTest(unittest.TestCase):
     @patch("app.services.workspace.generated_drafts.get_chapter_draft")
     def test_returns_draft(self, mock_get):
         from app.services.workspace.tools.external_writing import get_external_chapter_draft
-        mock_get.return_value = {
-            "project_id": "p1",
-            "title": "Chapter 1",
-            "content": "Test content",
-            "outline_node_id": "n1",
-        }
+        mock_get.return_value = "Test content"
         db = MagicMock()
         result = asyncio.run(get_external_chapter_draft(db, "p1", {"draft_id": "draft-123"}))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["data"]["title"], "Chapter 1")
+        self.assertEqual(result["data"]["content"], "Test content")
 
 
 if __name__ == "__main__":

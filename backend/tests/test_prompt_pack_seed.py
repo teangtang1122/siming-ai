@@ -39,7 +39,7 @@ class BuiltinPacksDefinitionTest(unittest.TestCase):
         valid_scopes = {
             "new_project", "chapter_writing", "chapter_review",
             "character_design", "worldbuilding", "outline_planning",
-            "anti_ai_review",
+            "anti_ai_review", "cataloging",
         }
         for pack in BUILTIN_PACKS:
             with self.subTest(pack_id=pack["pack_id"]):
@@ -65,7 +65,7 @@ class BuiltinPacksDefinitionTest(unittest.TestCase):
                     self.assertGreater(len(pack["forbidden_patterns_json"]), 0)
 
     def test_pack_count(self):
-        self.assertEqual(len(BUILTIN_PACKS), 8)
+        self.assertEqual(len(BUILTIN_PACKS), 9)
 
 
 class SeedFunctionTest(unittest.TestCase):
@@ -76,8 +76,8 @@ class SeedFunctionTest(unittest.TestCase):
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = None
         count = seed_builtin_packs(db)
-        self.assertEqual(count, 8)
-        self.assertEqual(db.add.call_count, 8)
+        self.assertEqual(count, 9)
+        self.assertEqual(db.add.call_count, 9)
         db.commit.assert_called_once()
 
     def test_seed_idempotent(self):
