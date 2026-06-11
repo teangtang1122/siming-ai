@@ -419,13 +419,18 @@ async def _repair_forbidden_sentence_text(
             f"- {item['pattern']}：{item['snippet']}" for item in remaining[:12]
         )
         messages = build_style_repair_messages(repaired, patterns, hit_list)
-        result = await LLMGateway.chat_completion(
-            messages=messages,
-            model=model,
-            temperature=0.1,
-            max_tokens=_repair_token_budget(repaired, max_tokens),
-            retry=1,
-        )
+        try:
+            result = await LLMGateway.chat_completion(
+                messages=messages,
+                model=model,
+                temperature=0.1,
+                max_tokens=_repair_token_budget(repaired, max_tokens),
+                retry=1,
+            )
+        except Exception:
+            # Creating/saving user content must not fail just because the
+            # optional style-repair model is unavailable or not configured.
+            break
         candidate = _strip_plain_text_response(result.get("content", ""))
         if candidate and _repair_candidate_keeps_text(repaired, candidate):
             repaired = candidate

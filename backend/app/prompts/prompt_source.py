@@ -147,8 +147,8 @@ def get_character_change_detection_prompt() -> str:
 
 def get_new_worldbuilding_detection_prompt() -> str:
     """New worldbuilding detection prompt — same as internal detect_new_worldbuilding tool."""
-    from .analysis_prompts import NEW_WORLDBUILDING_SYSTEM
-    return NEW_WORLDBUILDING_SYSTEM
+    from .analysis_prompts import NEW_WORLDBUILDING_DETECTION_SYSTEM
+    return NEW_WORLDBUILDING_DETECTION_SYSTEM
 
 
 def get_chapter_evaluation_prompt() -> str:

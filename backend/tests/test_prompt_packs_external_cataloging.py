@@ -74,7 +74,7 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         self.assertIn("status", prompt)
 
     def test_total_pack_count(self):
-        self.assertEqual(len(BUILTIN_PACKS), 9)
+        self.assertEqual(len(BUILTIN_PACKS), 13)
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ def get_language_rules() -> str:
 
 
 def get_cataloging_candidate_rules() -> str:
-    return “””【候选写入规则】
+    return """【候选写入规则】
 1. 每章必须至少生成 1 条 chapter_summary 和 1 条 chapter 级 outline_create。
 
 2. 每个出场角色，必须输出 character_state_update 和 character_update（除非是全新角色用 character_create）。
@@ -57,7 +57,7 @@ def get_cataloging_candidate_rules() -> str:
 
 8. 新设定或设定变化要写 worldbuilding_create/update；设定被验证、破坏、限制或使用，写 worldbuilding_timeline。
 
-9. 章节涉及的角色、世界观、大纲必须用 chapter_link 或对应摘要字段建立关联。”””
+9. 章节涉及的角色、世界观、大纲必须用 chapter_link 或对应摘要字段建立关联。"""
 
 
 def get_external_no_api_rules() -> str:
@@ -113,8 +113,8 @@ def get_internal_cataloging_system_prompt() -> str:
 
 
 def get_external_cataloging_system_prompt() -> str:
-    return “\n\n”.join([
-        “你是一个外部编目 Agent。你的任务是在不调用墨枢内部模型 API 的情况下，对导入的小说项目进行编目：提取角色、世界观、大纲和章节摘要，并通过墨枢工具保存到正确作品。”,
+    return "\n\n".join([
+        "你是一个外部编目 Agent。你的任务是在不调用墨枢内部模型 API 的情况下，对导入的小说项目进行编目：提取角色、世界观、大纲和章节摘要，并通过墨枢工具保存到正确作品。",
         get_project_binding_rules(),
         get_language_rules(),
         get_external_no_api_rules(),
@@ -128,7 +128,7 @@ def get_external_cataloging_system_prompt() -> str:
 
 
 def get_candidate_format_examples() -> str:
-    return “””【候选类型格式】
+    return """【候选类型格式】
 save_external_cataloging_candidates 的 candidates 数组中，每个候选的格式：
 
 1. 章节摘要（尽量详细，不要只写一句话）：
@@ -163,20 +163,20 @@ background 必须是完整重写，不是追加。custom_system_prompt 也要完
 - 不要使用 new_character、new_worldbuilding 等非标准类型
 - 所有字段都要尽量详细，不要只写一两个词
 - background 必须是完整背景，不是增量补丁
-- custom_system_prompt 要写300-800字，帮助AI扮演该角色”””
+- custom_system_prompt 要写300-800字，帮助AI扮演该角色"""
 
 
 def get_merge_rules() -> str:
-    return “””【合并规则】
+    return """【合并规则】
 - 角色别名：如果同一角色有多个名字，使用主名字作为规范名
 - 角色当前状态字段：覆盖旧状态
 - 角色背景/外貌：追加新信息，不覆盖旧信息
 - 世界观：相同标题的条目进行语义合并，不创建重复
-- 大纲：每章创建一个新节点，除非明确对应现有节点”””
+- 大纲：每章创建一个新节点，除非明确对应现有节点"""
 
 
 def get_completion_criteria() -> str:
-    return “””【工具返回契约】
+    return """【工具返回契约】
 每次工具调用后必须读取返回 JSON 的 status：
 - status == “ok”：继续下一步。
 - status != “ok”：立即停止，报告失败工具、status、detail，不要继续下一章，不要说完成。
@@ -190,7 +190,7 @@ def get_completion_criteria() -> str:
 - characters_count > 0
 - worldbuilding_count > 0（类型小说通常应有）
 - warnings 为空或已解释并处理
-不满足时只能说”尚未完成”，并给出下一步。”””
+不满足时只能说”尚未完成”，并给出下一步。"""
 
 
 def get_external_cataloging_workflow() -> list[dict[str, object]]:

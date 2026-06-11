@@ -111,7 +111,7 @@ class OldDataCompatibilityTest(unittest.TestCase):
     def test_prompt_pack_seed_importable(self):
         """Prompt pack seed module should be importable."""
         from app.services.prompt_packs.seed import BUILTIN_PACKS, seed_builtin_packs
-        self.assertEqual(len(BUILTIN_PACKS), 9)
+        self.assertEqual(len(BUILTIN_PACKS), 13)
         self.assertTrue(callable(seed_builtin_packs))
 
     def test_seed_refreshes_existing_builtin_prompt_pack(self):
