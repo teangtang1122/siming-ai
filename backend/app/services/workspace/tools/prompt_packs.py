@@ -240,6 +240,25 @@ async def get_prompt_pack(
             "data": None,
         }
 
+    # For chapter_writing packs, build system_prompt from shared source
+    # (same modules as internal packs — edit once, both benefit)
+    system_prompt = pack.system_prompt
+    if pack.pack_id in ("chapter_writing_quality", "chapter_writing_fast"):
+        from app.prompts.prompt_source import (
+            get_public_chapter_quality_system_prompt,
+            get_public_chapter_fast_system_prompt,
+        )
+        from app.prompts.style_prompts import build_style_context
+        from app.database.models import Project
+        project = db.query(Project).filter(Project.id == project_id).first() if project_id else None
+        if project:
+            style_ctx = build_style_context(project, include_anti_ai=True)
+            if pack.pack_id == "chapter_writing_quality":
+                system_prompt = get_public_chapter_quality_system_prompt()
+            else:
+                system_prompt = get_public_chapter_fast_system_prompt()
+            system_prompt = system_prompt.replace("{style_context}", style_ctx)
+
     return {
         "tool": "get_prompt_pack",
         "status": "ok",
@@ -250,7 +269,7 @@ async def get_prompt_pack(
             "scope": pack.scope,
             "title": pack.title,
             "summary": pack.summary,
-            "system_prompt": pack.system_prompt,
+            "system_prompt": system_prompt,
             "workflow": pack.workflow_json,
             "quality_rubric": pack.quality_rubric_json,
             "tool_playbook": pack.tool_playbook_json,

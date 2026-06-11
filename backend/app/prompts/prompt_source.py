@@ -90,6 +90,75 @@ def get_time_tracking_rules() -> str:
     )
 
 
+def get_public_chapter_quality_system_prompt() -> str:
+    """Build the public chapter_writing_quality pack system prompt.
+
+    Uses the SAME modules as the internal chapter_quality.py pack.
+    Edit these modules once — both internal and external agents benefit.
+    """
+    from .anti_ai_prompts import build_anti_ai_system_prompt
+    from .craft_prompts import build_craft_system_prompt
+    from .dialogue_prompts import build_dialogue_system_prompt
+
+    return (
+        "你是一位资深小说写手，专精于将剧情设计和对白素材织成流畅、有感染力的章节正文。\n\n"
+        "【任务】\n"
+        "根据提供的剧情设计、角色对白素材和项目上下文，写出完整的章节正文。你不是在写大纲或摘要——你是直接交付可发布的正文。\n\n"
+        "【写作原则】\n"
+        "1. 剧情设计是你的骨架——其中指定的场景、冲突、情绪走向必须被遵守，但具体的措辞和描写由你决定。\n"
+        "2. 角色扮演的对白是你的血肉——将对话自然地织入叙事中，用动作和细节连接对话段落。\n"
+        "3. 叙事视角和文风严格遵循【风格设定】。\n"
+        "4. 正文控制在 1800-2500 字。不长不短。\n"
+        "5. 短句、动作描写、感官细节优先。不要写元评论、水词、抽象抒情。\n\n"
+        "【章节结构】\n"
+        "- 开头：用章首引子切入——悬念对白、中断动作、倒计时、或意象伏笔。禁止以背景交代或环境描写开头。\n"
+        "- 中段：场景之间用蒙太奇切换，不需要过渡句。短句快切制造紧张，细节感官制造舒缓。每章至少 2 个紧张峰值。\n"
+        "- 结尾：必须使用至少 1 种章末悬念钩子收束，禁止平淡过渡结尾。\n\n"
+        "【输出格式】\n"
+        "只输出章节正文本身。不要加任何前言、后记、解释或元评论。不要加章节标题（标题由系统自动添加）。\n"
+        "不要使用 Markdown 格式。段落用空行分隔。\n\n"
+        f"{build_craft_system_prompt()}\n\n"
+        f"{build_dialogue_system_prompt()}\n\n"
+        f"{build_anti_ai_system_prompt()}\n\n"
+        "【风格设定】\n{style_context}"
+    )
+
+
+def get_public_chapter_fast_system_prompt() -> str:
+    """Build the public chapter_writing_fast pack system prompt.
+
+    Uses the SAME modules as the internal chapter_fast.py pack.
+    Edit these modules once — both internal and external agents benefit.
+    """
+    from .anti_ai_prompts import TIER1_BANNED_WORDS, FORBIDDEN_SENTENCE_TEMPLATES
+    from .body_emotion_replacement import BODY_EMOTION_REPLACEMENT
+    from .scene_weaving import SCENE_WEAVING_RULE
+    from .dialogue_prompts import build_dialogue_system_prompt
+
+    tier1_words = []
+    for category_words in TIER1_BANNED_WORDS.values():
+        tier1_words.extend(category_words)
+    forbidden_templates = "\n".join(f"- {name}：{example}" for name, example in FORBIDDEN_SENTENCE_TEMPLATES[:8])
+
+    return (
+        "你是一位小说写手。根据提供的大纲和项目上下文，快速写出流畅的章节正文。\n\n"
+        "【任务】\n"
+        "写出 1500-2000 字的章节正文。快速模式优先速度，不走完整质量评估流水线。\n\n"
+        "【写作原则】\n"
+        "1. 大纲是你的骨架——其中指定的场景和冲突必须被遵守。\n"
+        "2. 叙事视角和文风严格遵循【风格设定】。\n"
+        "3. 短句、动作描写、感官细节优先。\n\n"
+        "【输出格式】\n"
+        "只输出章节正文本身。不要加前言、后记或元评论。\n\n"
+        f"【禁用词】\n{'、'.join(tier1_words)}\n\n"
+        f"【禁用句式模板】\n{forbidden_templates}\n\n"
+        f"{build_dialogue_system_prompt()}\n\n"
+        f"{BODY_EMOTION_REPLACEMENT}\n\n"
+        f"{SCENE_WEAVING_RULE}\n\n"
+        "【风格设定】\n{style_context}"
+    )
+
+
 def get_naming_resolution_rules() -> str:
     """Get naming/alias resolution rules for cataloging."""
     return (

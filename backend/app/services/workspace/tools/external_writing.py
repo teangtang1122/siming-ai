@@ -58,12 +58,17 @@ async def prepare_external_writing_context(
             "writing_style": project.writing_style,
             "forbidden_sentence_patterns": project.forbidden_sentence_patterns,
             "narrative_perspective": project.narrative_perspective,
+            "rhetoric_guidelines": project.rhetoric_guidelines,
+            "short_sentences": project.short_sentences,
+            "custom_style_prompt": project.custom_style_prompt,
         },
+        "mode": mode,
+        "requirements": requirements,
         "warnings": [],
         "next_tool_suggestions": [],
     }
 
-    # Prompt pack
+    # Prompt pack — build system_prompt from shared source (same modules as internal packs)
     if include_prompt_pack:
         pack_id = "chapter_writing_quality" if mode == "quality" else "chapter_writing_fast"
         pack = db.query(PublicPromptPack).filter(
@@ -71,11 +76,24 @@ async def prepare_external_writing_context(
             PublicPromptPack.enabled == True,
         ).first()
         if pack:
+            from app.prompts.prompt_source import (
+                get_public_chapter_quality_system_prompt,
+                get_public_chapter_fast_system_prompt,
+            )
+            from app.prompts.style_prompts import build_style_context
+            # Build style context for this project
+            style_ctx = build_style_context(project, include_anti_ai=True)
+            # Get system prompt from shared source and inject style context
+            if mode == "quality":
+                system_prompt = get_public_chapter_quality_system_prompt()
+            else:
+                system_prompt = get_public_chapter_fast_system_prompt()
+            system_prompt = system_prompt.replace("{style_context}", style_ctx)
             result["prompt_pack"] = {
                 "pack_id": pack.pack_id,
                 "version": pack.version,
                 "title": pack.title,
-                "system_prompt": pack.system_prompt,
+                "system_prompt": system_prompt,
                 "workflow": pack.workflow_json,
                 "quality_rubric": pack.quality_rubric_json,
                 "forbidden_patterns": pack.forbidden_patterns_json,
@@ -166,10 +184,17 @@ async def prepare_external_writing_context(
         for e in wb_entries
     ]
 
-    # Forbidden patterns from project settings
-    if project.forbidden_sentence_patterns:
-        patterns = [p.strip() for p in project.forbidden_sentence_patterns.split("\n") if p.strip()]
-        result["forbidden_patterns"] = patterns
+    # Merged forbidden patterns (system defaults + project overrides)
+    from app.prompts.style_prompts import effective_forbidden_patterns, effective_rhetoric_guidelines
+    merged_patterns = effective_forbidden_patterns(project)
+    result["forbidden_patterns"] = [p.strip() for p in merged_patterns.splitlines() if p.strip()]
+
+    # Rhetoric guidelines (system defaults + project overrides)
+    result["rhetoric_guidelines"] = effective_rhetoric_guidelines(project)
+
+    # Full style context — same as what internal chapter_writer gets
+    from app.prompts.style_prompts import build_style_context
+    result["style_context"] = build_style_context(project, include_anti_ai=True)
 
     # Quality rubric (from prompt pack)
     if include_prompt_pack and "prompt_pack" in result:
