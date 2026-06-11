@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Alert,
+  Button,
   Card,
   Space,
   Switch,
@@ -10,7 +12,9 @@ import {
 } from 'antd'
 import {
   ApiOutlined,
+  HomeOutlined,
   LockOutlined,
+  SettingOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
@@ -43,6 +47,7 @@ const RISK_COLORS: Record<string, string> = {
 }
 
 function ExternalAgentPage() {
+  const navigate = useNavigate()
   const [settings, setSettings] = useState<GlobalSettings | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -107,6 +112,16 @@ function ExternalAgentPage() {
 
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
+      {/* Navigation */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <Button icon={<HomeOutlined />} onClick={() => navigate('/dashboard')}>
+          作品管理
+        </Button>
+        <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>
+          系统设置
+        </Button>
+      </div>
+
       <Title level={3}>
         <ApiOutlined style={{ marginRight: 8 }} />
         外部 Agent / MCP 设置

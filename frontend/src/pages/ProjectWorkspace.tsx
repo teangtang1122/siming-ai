@@ -34,7 +34,6 @@ import ImportPage from './ImportPage'
 import CatalogingPage from './CatalogingPage'
 import SkillsPage from './SkillsPage'
 import { ScheduledTasksPage } from './ScheduledTasksPage'
-import McpPage from './McpPage'
 import AiSidePanel from '../components/AiSidePanel'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 import { AiPanelProvider, useAiPanelContext } from '../contexts/AiPanelContext'
@@ -138,7 +137,7 @@ function ProjectWorkspace() {
     { key: 'cataloging', icon: <DatabaseOutlined />, label: '作品建档' },
     { key: 'skills', icon: <BulbOutlined />, label: '技能管理' },
     { key: 'scheduler', icon: <ClockCircleOutlined />, label: '自动任务' },
-    { key: 'mcp', icon: <ApiOutlined />, label: 'MCP / 外部 Agent' },
+    { key: 'external-agent', icon: <ApiOutlined />, label: '外部 Agent / MCP' },
     { key: 'import', icon: <FileAddOutlined />, label: '内容导入' },
     { key: 'visualization', icon: <ApartmentOutlined />, label: '可视化' },
     { key: 'export', icon: <ExportOutlined />, label: '导出' },
@@ -193,6 +192,10 @@ function ProjectWorkspace() {
                 navigate('/settings', { state: { fromProjectId: projectId } })
                 return
               }
+              if (key === 'external-agent') {
+                navigate('/external-agent')
+                return
+              }
               setActiveKey(key as MenuKey)
             }}
             items={menuItems}
@@ -224,8 +227,6 @@ function ProjectWorkspace() {
               <SkillsPage projectId={projectId} />
             ) : activeKey === 'scheduler' && projectId ? (
               <ScheduledTasksPage projectId={projectId} />
-            ) : activeKey === 'mcp' && projectId ? (
-              <McpPage projectId={projectId} />
             ) : (
             <div style={{ fontSize: 18, color: '#999', textAlign: 'center', marginTop: 100 }}>
               选择左侧菜单开始
