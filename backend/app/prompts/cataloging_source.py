@@ -28,17 +28,32 @@ def get_language_rules() -> str:
 
 
 def get_cataloging_candidate_rules() -> str:
-    return """【候选写入规则】
+    return “””【候选写入规则】
 1. 每章必须至少生成 1 条 chapter_summary 和 1 条 chapter 级 outline_create。
-2. 当前章节出现或状态发生变化的角色，必须输出 character_state_update。状态字段表示“本章结束时最新状态”，只能覆盖，不能拼接旧章节状态。
-3. character_state_update 尽量包含 age、life_status、current_location、realm_or_level、physical_state、mental_state、current_goal、active_conflict、abilities_state、items_or_assets。
-4. age 是描述性文本，不是精确数字。示例：“3岁”、“约16岁”、“外表约16岁，实际经历约200年”、“年龄不详”。
-5. character_create/character_update 用于角色档案本体，尽量包含 name、aliases、role_type、appearance、personality、background、abilities、tone_style、catchphrases、emotion_tendency、custom_system_prompt。
-6. background 和 custom_system_prompt 是重写合并后的完整版本，不是追加片段。重要经历写清“以什么身份做过什么事”。
-7. 角色有多个称呼时，name 放最稳定主名，aliases 放亲属称呼、尊称、昵称、身份名、化名。发现两个卡片其实是同一人时，输出 character_merge_candidate。
-8. 世界观 dimension 必须使用 geography、history、factions、power_system、races、culture。修炼体系、阵法、病毒、封印优先 power_system；宗门/家族/组织优先 factions；地点优先 geography，不要全塞进 culture。
-9. 新设定或设定变化要写 worldbuilding_create/update；设定被验证、破坏、限制或使用，写 worldbuilding_timeline。
-10. 章节涉及的角色、世界观、大纲必须用 chapter_link 或对应摘要字段建立关联。"""
+
+2. 当前章节出现或状态发生变化的角色，必须输出 character_state_update。
+   状态字段表示”本章结束时最新状态”，只能覆盖，不能拼接旧章节状态。
+   character_state_update 必须包含：appearance、age、life_status、current_location、realm_or_level、physical_state、mental_state、current_goal、active_conflict、abilities_state、items_or_assets。
+   - appearance 和 age 也是当前状态：外貌会因受伤/换装/成长变化，年龄会随时间推进。
+   - 每章出场角色都要输出，即使只是确认”没有变化”也要输出当前值。
+
+3. 当角色档案本体有新信息时（新经历、性格发展、能力变化），输出 character_update。
+   background 和 custom_system_prompt 必须每次都是重写合并后的完整版本，不是追加片段。
+   - 读取已有角色档案，把本章新经历整合进已有背景，输出完整的 background。
+   - 不要只写”本章新增：xxx”，要写”角色名，身份xxx，曾经历xxx，本章又xxx”。
+   - 如果角色没有档案本体变化（只有状态变化），不需要输出 character_update。
+
+4. age 是描述性文本，不是精确数字。示例：”3岁”、”约16岁”、”外表约16岁，实际经历约200年”、”年龄不详”。
+
+5. character_create 用于新角色，尽量包含 name、aliases、role_type、appearance、personality、background、abilities、tone_style、catchphrases、emotion_tendency、custom_system_prompt。
+
+6. 角色有多个称呼时，name 放最稳定主名，aliases 放亲属称呼、尊称、昵称、身份名、化名。发现两个卡片其实是同一人时，输出 character_merge_candidate。
+
+7. 世界观 dimension 必须使用 geography、history、factions、power_system、races、culture。修炼体系、阵法、病毒、封印优先 power_system；宗门/家族/组织优先 factions；地点优先 geography，不要全塞进 culture。
+
+8. 新设定或设定变化要写 worldbuilding_create/update；设定被验证、破坏、限制或使用，写 worldbuilding_timeline。
+
+9. 章节涉及的角色、世界观、大纲必须用 chapter_link 或对应摘要字段建立关联。”””
 
 
 def get_external_no_api_rules() -> str:
@@ -125,7 +140,8 @@ background 必须是完整的背景档案，不是本章新增片段。
 
 4. 角色状态更新（每个出场角色都必须输出！用 character_state_update）：
 这是单独的候选类型，不是 character_create 的一部分。
-{“type”: “character_state_update”, “name”: “特昂糖”, “age”: “3岁”, “current_location”: “陆家后院”, “current_goal”: “找到回家的方法”, “life_status”: “alive”, “physical_state”: “3岁幼女身体，体力有限”, “mental_state”: “冷静分析中带着迷茫”, “active_conflict”: “身份暴露的风险”, “realm_or_level”: “未修炼”, “abilities_state”: “感知灵气波动”, “items_or_assets”: “无”}
+appearance 和 age 也是当前状态，必须包含。
+{“type”: “character_state_update”, “name”: “特昂糖”, “appearance”: “3岁幼女，左臂缠着绷带（本章受伤）”, “age”: “3岁”, “current_location”: “陆家后院”, “current_goal”: “找到回家的方法”, “life_status”: “alive”, “physical_state”: “左臂受伤，行动受限”, “mental_state”: “冷静分析中带着迷茫”, “active_conflict”: “身份暴露的风险”, “realm_or_level”: “未修炼”, “abilities_state”: “感知灵气波动”, “items_or_assets”: “无”}
 
 5. 世界观条目（content 必须具体：定义、规则、限制、代价、来源、影响范围、与角色/剧情的关系）：
 {“type”: “worldbuilding_create”, “title”: “护族大阵”, “dimension”: “power_system”, “content”: “陆家祖传防护阵法，由历代家主灵力维持。激活需要消耗大量灵石，可抵御筑基期以下攻击。阵法核心在祖祠地下，与陆家血脉绑定。本章中被旁支周氏暗中破坏了东侧节点。”}

@@ -90,12 +90,13 @@ async def update_character(
     if not character:
         return {"tool": "update_character", "status": "skipped", "detail": "未找到角色"}
     changed = False
-    for field, limit in [("appearance", 4000), ("personality", 4000), ("background", 8000), ("role_type", 100), ("age", 100)]:
+    for field, limit in [("personality", 4000), ("background", 8000), ("role_type", 100)]:
         if field in args:
             setattr(character, field, str(args.get(field) or "")[:limit])
             changed = True
-    # Current-state fields
+    # Current-state fields (updated per chapter, overwrite old state)
     for field, limit in [
+        ("appearance", 4000), ("age", 100),
         ("life_status", 50), ("current_location", 200), ("realm_or_level", 200),
         ("physical_state", 4000), ("mental_state", 4000), ("current_goal", 4000),
         ("active_conflict", 4000), ("abilities_state", 4000), ("items_or_assets", 4000),

@@ -1272,19 +1272,19 @@ def _register_all() -> None:
 
     _r(ToolDef(
         name="update_character",
-        description="更新角色信息。用ID或角色名定位。只有传入的字段才会被更新。",
+        description="更新角色信息。用ID或角色名定位。只有传入的字段才会被更新。appearance、age 和所有 current_state 字段是逐章覆盖的当前状态，不是追加。",
         input_schema={
             "id": {"type": "string", "description": "角色ID（优先使用）"},
             "name": {"type": "string", "description": "角色名（id为空时用于定位）"},
-            "appearance": {"type": "string", "description": "更新外貌"},
-            "personality": {"type": "string", "description": "更新性格"},
-            "background": {"type": "string", "description": "更新背景"},
+            "personality": {"type": "string", "description": "更新性格（覆盖）"},
+            "background": {"type": "string", "description": "更新背景（必须是重写合并后的完整版本，不是追加片段）"},
             "abilities": {"type": "array", "items": {"type": "string"}, "description": "更新能力列表（替换全部）"},
             "role_type": {"type": "string", "description": "更新角色类型：protagonist|supporting|antagonist|mentor|other"},
-            "age": {"type": "string", "description": "更新年龄/时间状态，如 3岁、约16岁、外表16岁实际200岁、成年"},
             "ai_config": {"type": "object", "description": "更新角色AI扮演配置，含 tone_style/catchphrases/verbosity/emotion_tendency/custom_system_prompt"},
-            "custom_system_prompt": {"type": "string", "description": "更新角色AI扮演提示词"},
-            # Current-state fields
+            "custom_system_prompt": {"type": "string", "description": "更新角色AI扮演提示词（必须是完整版本）"},
+            # Current-state fields (per-chapter, overwrite old state)
+            "appearance": {"type": "string", "description": "当前外貌（逐章覆盖，如受伤/换装/成长等变化）"},
+            "age": {"type": "string", "description": "当前年龄/时间状态，如 3岁、约16岁、外表16岁实际200岁"},
             "life_status": {"type": "string", "description": "生死状态，如 存活/死亡/失踪/重伤"},
             "current_location": {"type": "string", "description": "当前位置"},
             "realm_or_level": {"type": "string", "description": "境界/等级/修为"},
