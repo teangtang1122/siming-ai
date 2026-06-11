@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("auto", "readonly_collaboration", "draft_generation", "project_writing", "project_management", "trusted_local_maintenance")]
+  [ValidateSet("auto", "readonly_collaboration", "draft_generation", "project_writing", "project_management", "internal_llm", "trusted_local_maintenance")]
   [string]$PermissionPack = "auto",
   [string]$ProjectId = "",
   [string]$MoshuExe = "",

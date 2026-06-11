@@ -30,9 +30,10 @@ class EffectivePermissionsTest(unittest.TestCase):
             "draft_generation",
             "project_writing",
             "project_management",
+            "internal_llm",
             "trusted_local_maintenance",
         ]
-        self.assertEqual(len(pack_order), 5)
+        self.assertEqual(len(pack_order), 6)
 
     def test_effective_pack_calculation(self):
         """Verify effective pack is the highest enabled pack."""
@@ -41,6 +42,7 @@ class EffectivePermissionsTest(unittest.TestCase):
             "draft_generation",
             "project_writing",
             "project_management",
+            "internal_llm",
             "trusted_local_maintenance",
         ]
 
@@ -58,6 +60,7 @@ class EffectivePermissionsTest(unittest.TestCase):
         self.assertEqual(calc_effective(["readonly_collaboration", "draft_generation"]), "draft_generation")
         self.assertEqual(calc_effective(["readonly_collaboration", "project_writing"]), "project_writing")
         self.assertEqual(calc_effective(["project_management"]), "project_management")
+        self.assertEqual(calc_effective(["project_management", "internal_llm"]), "internal_llm")
 
 
 if __name__ == "__main__":

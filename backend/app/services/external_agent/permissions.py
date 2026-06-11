@@ -18,10 +18,34 @@ PACK_ORDER = [
     "draft_generation",
     "project_writing",
     "project_management",
+    "internal_llm",
     "trusted_local_maintenance",
 ]
 
 DEFAULT_PACKS = ["readonly_collaboration"]
+
+PACK_INCLUDES = {
+    "readonly_collaboration": ["readonly_collaboration"],
+    "draft_generation": ["readonly_collaboration", "draft_generation"],
+    "project_writing": ["readonly_collaboration", "project_writing"],
+    "project_management": [
+        "readonly_collaboration",
+        "project_writing",
+        "project_management",
+    ],
+    "internal_llm": [
+        "readonly_collaboration",
+        "project_writing",
+        "project_management",
+        "internal_llm",
+    ],
+    "trusted_local_maintenance": [
+        "readonly_collaboration",
+        "project_writing",
+        "project_management",
+        "trusted_local_maintenance",
+    ],
+}
 
 
 def resolve_effective_pack(
@@ -104,9 +128,11 @@ def _highest_pack(enabled_packs: list[str]) -> str:
 
 
 def _packs_up_to(pack: str) -> list[str]:
-    """Return all packs up to and including the given pack."""
-    try:
-        idx = PACK_ORDER.index(pack)
-        return PACK_ORDER[: idx + 1]
-    except ValueError:
-        return [pack]
+    """Return the packs implied by a selected pack.
+
+    The permission model is intentionally non-linear: project management does
+    not imply internal LLM access, and trusted maintenance does not imply it
+    either. ``internal_llm`` must be selected explicitly when users want to
+    spend the model API configured inside Moshu.
+    """
+    return PACK_INCLUDES.get(pack, [pack])

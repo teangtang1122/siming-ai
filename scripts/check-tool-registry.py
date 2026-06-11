@@ -66,7 +66,7 @@ def check_tool(td: ToolDef) -> list[str]:
     # MCP permission pack check
     valid_packs = {
         "readonly_collaboration", "draft_generation", "project_writing",
-        "project_management", "trusted_local_maintenance",
+        "project_management", "internal_llm", "trusted_local_maintenance",
     }
     pack = registry._derive_mcp_pack(td)
     if pack not in valid_packs:

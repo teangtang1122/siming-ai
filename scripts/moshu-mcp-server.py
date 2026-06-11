@@ -91,6 +91,7 @@ def main() -> None:
             "draft_generation",
             "project_writing",
             "project_management",
+            "internal_llm",
             "trusted_local_maintenance",
         ],
         help="MCP permission pack to expose. 'auto' resolves from global/project settings. Fixed packs bypass UI settings.",

@@ -17,7 +17,8 @@ class ListMcpToolsByPackTest(unittest.TestCase):
         names = {t.name for t in tools}
         self.assertIn("list_projects", names)
         self.assertIn("search_chapters", names)
-        self.assertIn("detect_character_changes", names)
+        self.assertIn("detect_forbidden_patterns", names)
+        self.assertNotIn("detect_character_changes", names)
 
     def test_project_scoped_tools_require_project_id_in_schema(self):
         tools = {tool.name: tool for tool in list_mcp_tools(permission_pack="readonly_collaboration")}
@@ -35,15 +36,22 @@ class ListMcpToolsByPackTest(unittest.TestCase):
         self.assertNotIn("create_chapter", names)
         self.assertNotIn("delete_project", names)
 
-    def test_draft_pack_includes_generators(self):
+    def test_draft_pack_does_not_include_internal_llm_generators(self):
         readonly = list_mcp_tools(permission_pack="readonly_collaboration")
         draft = list_mcp_tools(permission_pack="draft_generation")
         readonly_names = {t.name for t in readonly}
         draft_names = {t.name for t in draft}
-        # Draft pack should include generators
-        self.assertIn("chapter_writer", draft_names)
-        # Draft pack should include all readonly tools
         self.assertTrue(readonly_names.issubset(draft_names))
+        self.assertNotIn("chapter_writer", draft_names)
+        self.assertNotIn("start_cataloging_job", draft_names)
+
+    def test_internal_llm_pack_includes_internal_model_tools(self):
+        tools = list_mcp_tools(permission_pack="internal_llm")
+        names = {t.name for t in tools}
+        self.assertIn("chapter_writer", names)
+        self.assertIn("start_cataloging_job", names)
+        self.assertIn("create_chapter", names)
+        self.assertNotIn("delete_project", names)
 
     def test_project_writing_pack_includes_create(self):
         tools = list_mcp_tools(permission_pack="project_writing")
@@ -58,6 +66,8 @@ class ListMcpToolsByPackTest(unittest.TestCase):
         self.assertIn("create_scheduled_task", names)
         self.assertIn("import_file_as_project", names)
         self.assertIn("import_file_as_chapters", names)
+        self.assertNotIn("chapter_writer", names)
+        self.assertNotIn("start_cataloging_job", names)
 
     def test_trusted_pack_includes_destructive(self):
         tools = list_mcp_tools(permission_pack="trusted_local_maintenance")
@@ -68,7 +78,7 @@ class ListMcpToolsByPackTest(unittest.TestCase):
     def test_no_secret_tools_in_any_pack(self):
         from app.mcp.permissions import is_secret_tool
         for pack in ["readonly_collaboration", "draft_generation", "project_writing",
-                     "project_management", "trusted_local_maintenance"]:
+                     "project_management", "internal_llm", "trusted_local_maintenance"]:
             tools = list_mcp_tools(permission_pack=pack)
             for t in tools:
                 self.assertFalse(
@@ -86,8 +96,10 @@ class IsToolAllowedByPackTest(unittest.TestCase):
     def test_write_tool_not_allowed_in_readonly(self):
         self.assertFalse(is_tool_allowed("create_chapter", permission_pack="readonly_collaboration"))
 
-    def test_generator_allowed_in_draft(self):
-        self.assertTrue(is_tool_allowed("chapter_writer", permission_pack="draft_generation"))
+    def test_generator_allowed_only_in_internal_llm(self):
+        self.assertTrue(is_tool_allowed("chapter_writer", permission_pack="internal_llm"))
+        self.assertFalse(is_tool_allowed("chapter_writer", permission_pack="draft_generation"))
+        self.assertFalse(is_tool_allowed("chapter_writer", permission_pack="project_management"))
 
     def test_generator_not_allowed_in_readonly(self):
         self.assertFalse(is_tool_allowed("chapter_writer", permission_pack="readonly_collaboration"))
@@ -113,15 +125,23 @@ class PackHierarchyTest(unittest.TestCase):
         draft = {t.name for t in list_mcp_tools(permission_pack="draft_generation")}
         self.assertTrue(readonly.issubset(draft))
 
-    def test_writing_includes_draft(self):
+    def test_writing_excludes_internal_llm_tools(self):
         draft = {t.name for t in list_mcp_tools(permission_pack="draft_generation")}
         writing = {t.name for t in list_mcp_tools(permission_pack="project_writing")}
-        self.assertTrue(draft.issubset(writing))
+        self.assertTrue({"list_projects", "search_chapters"}.issubset(writing))
+        self.assertTrue({"list_projects", "search_chapters"}.issubset(draft))
+        self.assertNotIn("chapter_writer", writing)
 
     def test_management_includes_writing(self):
         writing = {t.name for t in list_mcp_tools(permission_pack="project_writing")}
         management = {t.name for t in list_mcp_tools(permission_pack="project_management")}
         self.assertTrue(writing.issubset(management))
+        self.assertNotIn("chapter_writer", management)
+
+    def test_trusted_maintenance_does_not_imply_internal_llm(self):
+        trusted = {t.name for t in list_mcp_tools(permission_pack="trusted_local_maintenance")}
+        self.assertIn("delete_project", trusted)
+        self.assertNotIn("chapter_writer", trusted)
 
 
 if __name__ == "__main__":

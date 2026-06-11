@@ -1,5 +1,16 @@
 # 墨枢 / Moshu
 
+## 外部 Agent 默认规则
+
+Claude Code / Codex 通过 MCP 连接墨枢时，默认应走 **API-free 外部流程**：
+
+- `project_management` 权限包只暴露项目创建、导入、写入、导出、技能和自动任务等 API-free 工具。
+- `chapter_writer`、`start_cataloging_job`、`evaluate_chapter`、`design_plot` 等会消耗墨枢内部模型额度的工具只在 `internal_llm` 权限包中暴露。
+- 除非用户明确说“使用墨枢内部 API / 内部模型 / 系统模型额度”，外部 Agent 不应调用内部模型工具。
+- 中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观，不要因为工具报错改成英文或拼音。
+- 外部 Agent 建档应使用 `get_prompt_pack(pack_id="cataloging_external_no_api")`、`start_external_cataloging_job`、`get_next_external_cataloging_chapter`、`save_external_cataloging_facts`、`save_external_cataloging_candidates`、`apply_pending_cataloging`、`verify_external_cataloging_progress`。
+- 外部 Agent 写作应使用 `prepare_external_writing_context`、`save_external_chapter_draft`、`record_external_quality_review`、`create_chapter(draft_id/content_ref)`、`apply_external_story_updates`。
+
 墨枢是一个本地运行的长篇小说 AI 工作台。它把章节正文、大纲、角色、关系网、世界观、写作偏好、技能提示词和项目记忆放在同一个工作流里，让 AI 不只是“临时写一段”，而是能围绕一部作品持续工作。
 
 ## 解决什么痛点

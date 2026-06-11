@@ -97,15 +97,20 @@ class MCPPackDerivationTest(unittest.TestCase):
         pack = registry._derive_mcp_pack(td)
         self.assertEqual(pack, "readonly_collaboration")
 
-    def test_analysis_tools_are_readonly(self):
-        td = registry.get("detect_character_changes")
+    def test_api_free_analysis_tools_are_readonly(self):
+        td = registry.get("preview_writing_context")
         pack = registry._derive_mcp_pack(td)
         self.assertEqual(pack, "readonly_collaboration")
 
-    def test_generator_tools_are_draft(self):
+    def test_model_backed_analysis_tools_are_internal_llm(self):
+        td = registry.get("detect_character_changes")
+        pack = registry._derive_mcp_pack(td)
+        self.assertEqual(pack, "internal_llm")
+
+    def test_generator_tools_are_internal_llm(self):
         td = registry.get("chapter_writer")
         pack = registry._derive_mcp_pack(td)
-        self.assertEqual(pack, "draft_generation")
+        self.assertEqual(pack, "internal_llm")
 
     def test_explicit_pack_override(self):
         td = ToolDef(

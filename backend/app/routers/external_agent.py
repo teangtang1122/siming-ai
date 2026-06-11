@@ -474,33 +474,15 @@ def get_effective_permissions(
         if project_settings and project_settings.enabled_packs:
             project_packs = project_settings.enabled_packs
 
-    # Effective pack is the highest enabled pack
-    pack_order = [
-        "readonly_collaboration",
-        "draft_generation",
-        "project_writing",
-        "project_management",
-        "trusted_local_maintenance",
-    ]
-    effective_packs = project_packs or global_packs
-    max_level = 0
-    for pack in effective_packs:
-        try:
-            level = pack_order.index(pack)
-            max_level = max(max_level, level)
-        except ValueError:
-            continue
-    effective_pack = pack_order[max_level]
+    from app.services.external_agent.permissions import resolve_effective_pack
 
-    warnings = []
-    if global_settings and global_settings.mcp_permission_source == "cli_override":
-        warnings.append("MCP permission source is CLI override. UI settings may not apply.")
+    result = resolve_effective_pack(db, project_id=project_id)
 
     return ApiResponse.success(data={
         "global_enabled_packs": global_packs,
         "project_enabled_packs": project_packs,
-        "effective_pack": effective_pack,
-        "source": "project_override" if project_packs else "global_settings",
-        "cli_override": (global_settings.mcp_permission_source == "cli_override") if global_settings else False,
-        "warnings": warnings,
+        "effective_pack": result["effective_pack"],
+        "source": result["source"],
+        "cli_override": result["cli_override"],
+        "warnings": result["warnings"],
     })

@@ -105,6 +105,22 @@ def render_quickstart(
     """Render a project-optional quickstart prompt."""
     no_api_flag = str(no_api or "").lower() in {"1", "true", "yes", "y", "是"}
     parts = [
+        "# Moshu / 墨枢外部 Agent 快速入口",
+        "",
+        "## 必读规则",
+        "- 默认使用 API-free 外部流程：除非用户明确说“使用墨枢内部 API/内部模型/系统模型额度”，不要调用内部模型工具。",
+        "- 内部模型工具只通过 MCP permission pack: internal_llm 暴露；project_management 只用于 API-free 的项目创建、导入、写入、导出、技能和自动任务管理。",
+        "- 中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观；不要因为工具报错就改成英文或拼音。",
+        "- 先调用 list_projects 或 get_project_info 确认作品；所有项目写入工具都必须传入正确 project_id。",
+        "- 创建、导入、建档、写作后必须调用 get_project_archive_status 或对应 search/list 工具验证数据真的写入到了目标作品。",
+        "- 禁止默认调用的内部模型工具：chapter_writer, character_writer, outline_writer, worldbuilding_writer, design_plot, roleplay_character, dialogue_battle, evaluate_chapter, detect_character_changes, detect_new_worldbuilding, detect_worldbuilding_conflicts, rewrite_text, expand_text, continue_text, start_cataloging_job, resume_cataloging_job, retry_current_cataloging_chapter, rerun_cataloging_resolution_current, start_deconstruct_job。",
+        "",
+        "## 默认外部建档流程",
+        "get_prompt_pack(pack_id='cataloging_external_no_api') -> start_external_cataloging_job -> 循环 get_next_external_cataloging_chapter / save_external_cataloging_facts / save_external_cataloging_candidates / apply_pending_cataloging -> verify_external_cataloging_progress -> get_project_archive_status。",
+        "",
+        "## 默认外部写作流程",
+        "prepare_external_writing_context -> 外部 Agent 自己写作和自检 -> save_external_chapter_draft -> record_external_quality_review -> create_chapter(draft_id/content_ref) -> apply_external_story_updates。",
+        "",
         "# Moshu / 墨枢外部 Agent 快速入门",
         "",
         "你正在通过 MCP 操作墨枢。不要把工具列表当成普通 CRUD 猜着用，先根据任务选择工作流。",

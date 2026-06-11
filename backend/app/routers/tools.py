@@ -38,32 +38,11 @@ def get_exposed_tools(
     """
     get_project_or_404(db, project_id)
 
-    from ..database.models import ExternalAgentSettings
-    from ..schemas.external_agent_settings import DEFAULT_ENABLED_PACKS
+    from ..services.external_agent.permissions import resolve_effective_pack
 
-    settings = db.query(ExternalAgentSettings).filter(
-        ExternalAgentSettings.project_id == project_id
-    ).first()
-
-    enabled_packs = (settings.enabled_packs if settings and settings.enabled_packs else DEFAULT_ENABLED_PACKS)
-
-    # Get the highest enabled pack level
-    pack_order = [
-        "readonly_collaboration",
-        "draft_generation",
-        "project_writing",
-        "project_management",
-        "trusted_local_maintenance",
-    ]
-    max_level = 0
-    for pack in enabled_packs:
-        try:
-            level = pack_order.index(pack)
-            max_level = max(max_level, level)
-        except ValueError:
-            continue
-
-    effective_pack = pack_order[max_level]
+    permission = resolve_effective_pack(db, project_id=project_id)
+    enabled_packs = permission["enabled_packs"]
+    effective_pack = permission["effective_pack"]
 
     # Get tools for this pack
     allowed_tools = registry.list_for_mcp(permission_pack=effective_pack)
@@ -94,4 +73,6 @@ def get_exposed_tools(
         "total": len(result),
         "effective_pack": effective_pack,
         "enabled_packs": enabled_packs,
+        "source": permission["source"],
+        "warnings": permission["warnings"],
     })

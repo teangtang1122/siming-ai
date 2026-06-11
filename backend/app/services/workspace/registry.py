@@ -100,9 +100,9 @@ class ToolRegistry:
         if td.tool_type in ("read", "analysis", "web"):
             return "readonly_collaboration"
         if td.tool_type == "memory":
-            return "readonly_collaboration" if not td.writes_project_data else "draft_generation"
+            return "readonly_collaboration" if not td.writes_project_data else "project_writing"
         if td.tool_type == "generator":
-            return "draft_generation"
+            return "internal_llm"
         if td.tool_type == "scheduler":
             return "project_management"
         if td.tool_type == "write":
@@ -141,29 +141,42 @@ class ToolRegistry:
         permission_pack: str = "readonly_collaboration",
     ) -> list[ToolDef]:
         """Return tools available to MCP clients for a given permission pack."""
-        # Pack hierarchy
-        pack_order = [
-            "readonly_collaboration",
-            "draft_generation",
-            "project_writing",
-            "project_management",
-            "trusted_local_maintenance",
-        ]
-        try:
-            max_level = pack_order.index(permission_pack)
-        except ValueError:
-            max_level = 0
+        # Non-linear pack inclusion.
+        #
+        # Internal LLM tools intentionally do not sit below project_management:
+        # external agents should be able to manage/import/write API-free data
+        # without also receiving tools that spend the user's configured model
+        # credits. Expose those only through the explicit internal_llm pack.
+        pack_includes = {
+            "readonly_collaboration": {"readonly_collaboration"},
+            "draft_generation": {"readonly_collaboration", "draft_generation"},
+            "project_writing": {"readonly_collaboration", "project_writing"},
+            "project_management": {
+                "readonly_collaboration",
+                "project_writing",
+                "project_management",
+            },
+            "trusted_local_maintenance": {
+                "readonly_collaboration",
+                "project_writing",
+                "project_management",
+                "trusted_local_maintenance",
+            },
+            "internal_llm": {
+                "readonly_collaboration",
+                "project_writing",
+                "project_management",
+                "internal_llm",
+            },
+        }
+        allowed_packs = pack_includes.get(permission_pack, {"readonly_collaboration"})
 
         result = []
         for td in self._tools.values():
             if not td.expose_to_mcp:
                 continue
             pack = self._derive_mcp_pack(td)
-            try:
-                pack_level = pack_order.index(pack)
-            except ValueError:
-                continue
-            if pack_level <= max_level:
+            if pack in allowed_packs:
                 result.append(td)
         return result
 
@@ -2249,6 +2262,21 @@ def _classify_all() -> None:
         "run_scheduled_task_now", "cancel_cataloging_job",
     }
 
+    _INTERNAL_LLM_TOOLS = {
+        # Internal generation.
+        "chapter_writer", "character_writer", "outline_writer", "worldbuilding_writer",
+        "rewrite_text", "expand_text", "continue_text",
+        "roleplay_character", "dialogue_battle", "draft_skill",
+        # Internal analysis/evaluation that calls the configured model.
+        "suggest_conflicts", "design_plot", "evaluate_chapter",
+        "detect_character_changes", "detect_new_worldbuilding",
+        "detect_worldbuilding_conflicts",
+        # Long-running internal model jobs.
+        "start_cataloging_job", "start_deconstruct_job",
+        "resume_cataloging_job", "retry_current_cataloging_chapter",
+        "rerun_cataloging_resolution_current", "rerun_failed_deconstruct_chunks",
+    }
+
     _READ_TAGS = {"read", "search"}
     _ANALYSIS_TAGS = {"read", "analysis"}
     _GENERATOR_TAGS = {"generator", "draft"}
@@ -2306,6 +2334,17 @@ def _classify_all() -> None:
                 tags = _MGMT_TAGS
                 risk = "low"
 
+        if name in _INTERNAL_LLM_TOOLS or td.tool_type == "generator":
+            tags = {"internal_llm", "model"}
+            if td.tool_type == "generator":
+                tags.add("generator")
+            if td.tool_type == "analysis":
+                tags.add("analysis")
+            if td.tool_type == "write":
+                tags.update({"write", "management"})
+                writes = True
+            risk = "high" if name in _HIGH_RISK_TOOLS or td.tool_type == "write" else "medium"
+
         # External agent reporting tools
         if name in ("start_agent_run", "finish_agent_run", "append_draft_chunk", "mark_draft_ready") or name.startswith("report_"):
             tags = _TELEMETRY_TAGS
@@ -2313,16 +2352,18 @@ def _classify_all() -> None:
             writes = False
 
         # Derive MCP permission pack
-        if name in _DESTRUCTIVE_TOOLS:
+        if name in _INTERNAL_LLM_TOOLS or td.tool_type == "generator":
+            pack = "internal_llm"
+        elif name in _DESTRUCTIVE_TOOLS:
             pack = "trusted_local_maintenance"
         elif name in _MANAGEMENT_TOOLS:
             pack = "project_management"
         elif td.tool_type in ("read", "analysis", "web"):
             pack = "readonly_collaboration"
         elif td.tool_type == "memory":
-            pack = "readonly_collaboration" if not writes else "draft_generation"
+            pack = "readonly_collaboration" if not writes else "project_writing"
         elif td.tool_type == "generator":
-            pack = "draft_generation"
+            pack = "internal_llm"
         elif td.tool_type == "scheduler":
             pack = "project_management"
         elif writes:

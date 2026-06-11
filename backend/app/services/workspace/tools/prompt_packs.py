@@ -29,6 +29,123 @@ async def get_moshu_usage_guide(
     scenario = str(args.get("scenario") or "quickstart").strip() or "quickstart"
     no_api = bool(args.get("no_api") if "no_api" in args else scenario in {"cataloging_no_api", "writing_no_api"})
 
+    internal_llm_tools = [
+        "chapter_writer",
+        "character_writer",
+        "outline_writer",
+        "worldbuilding_writer",
+        "design_plot",
+        "roleplay_character",
+        "dialogue_battle",
+        "evaluate_chapter",
+        "detect_character_changes",
+        "detect_new_worldbuilding",
+        "detect_worldbuilding_conflicts",
+        "rewrite_text",
+        "expand_text",
+        "continue_text",
+        "start_cataloging_job",
+        "resume_cataloging_job",
+        "retry_current_cataloging_chapter",
+        "rerun_cataloging_resolution_current",
+        "start_deconstruct_job",
+    ]
+
+    workflows = {
+        "quickstart": {
+            "title": "墨枢外部 Agent 快速入口",
+            "rules": [
+                "默认使用 API-free 外部流程：除非用户明确说“使用墨枢内部 API/内部模型/系统模型额度”，不要调用内部模型工具。",
+                "内部模型工具现在只通过 MCP permission pack: internal_llm 暴露；project_management 只用于 API-free 的项目创建、导入、写入、导出、技能和自动任务管理。",
+                "中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观；不要因为工具报错就改成英文或拼音。",
+                "先调用 list_projects 或 get_project_info 确认作品；所有项目写入工具都必须传入正确 project_id。",
+                "创建、导入、建档、写作后必须调用 get_project_archive_status 或对应 search/list 工具验证数据真的写入到了目标作品。",
+                "长正文、完整章节、完整档案和大量候选 JSON 不要完整输出到聊天里；应写入 save_external_chapter_draft、save_external_cataloging_facts、save_external_cataloging_candidates 或对应写入工具，聊天只返回摘要、ID、字数、数量和验证结果。",
+            ],
+            "first_tools": [
+                "get_mcp_permission_status",
+                "list_projects",
+                "get_project_archive_status",
+                "list_prompt_packs",
+                "get_prompt_pack",
+            ],
+            "internal_llm_tools_forbidden_by_default": internal_llm_tools,
+        },
+        "import_file": {
+            "title": "导入本地小说为新作品",
+            "steps": [
+                "调用 import_file_as_project(file_path, title)。",
+                "读取返回的 project.id；之后所有写入都使用这个 project_id。",
+                "调用 get_project_archive_status 验证 chapters_count 是否正确。",
+                "如果用户还要建档，默认继续 cataloging_no_api；只有用户明确授权内部 API 时才走 cataloging_internal。",
+            ],
+        },
+        "cataloging_no_api": {
+            "title": "API-free 建档，由外部 Agent 自己读章节并写入",
+            "steps": [
+                "调用 get_prompt_pack(pack_id='cataloging_external_no_api') 读取建档提示词和输出契约。",
+                "调用 start_external_cataloging_job 创建外部建档任务。",
+                "循环：get_next_external_cataloging_chapter -> 外部 Agent 阅读章节 -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging。",
+                "每章 apply 后调用 verify_external_cataloging_progress；发现 pending_candidates 或 warnings 时先处理，不要跳过关键章节。",
+                "最终调用 get_project_archive_status，确认角色、大纲、世界观、章节摘要数量符合预期后再报告完成。",
+            ],
+            "forbidden_tools": internal_llm_tools,
+        },
+        "cataloging_internal": {
+            "title": "使用墨枢内部 API 建档",
+            "steps": [
+                "只有用户明确授权使用墨枢内部 API/内部模型时才能进入此流程。",
+                "确认 MCP 权限包为 internal_llm，且系统设置里的模型 API 可用。",
+                "调用 start_cataloging_job；前端会显示实时进度。",
+                "失败时使用 retry_current_cataloging_chapter 或 rerun_cataloging_resolution_current。",
+                "完成后调用 get_project_archive_status 验证数据。",
+            ],
+        },
+        "writing_no_api": {
+            "title": "API-free 写作，由外部 Agent 生成正文",
+            "steps": [
+                "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要、质量规则和禁用句式。",
+                "外部 Agent 按 prompt pack 自己写正文并自检。",
+                "调用 save_external_chapter_draft 保存完整草稿；聊天里不要完整输出正文。",
+                "调用 record_external_quality_review 记录外部质量检查。",
+                "用户确认后调用 create_chapter，并传 draft_id/content_ref；随后调用 apply_external_story_updates 写入角色状态、章节摘要和世界观变化。",
+            ],
+            "forbidden_tools": internal_llm_tools,
+        },
+        "writing_internal": {
+            "title": "使用墨枢内部 API 写作",
+            "steps": [
+                "只有用户明确授权使用墨枢内部 API/内部模型时才能进入此流程。",
+                "确认 MCP 权限包为 internal_llm。",
+                "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
+                "内部写作会消耗系统设置里的模型 API 额度。",
+            ],
+        },
+    }
+
+    selected = workflows.get(scenario, workflows["quickstart"])
+    return {
+        "tool": "get_moshu_usage_guide",
+        "status": "ok",
+        "detail": f"Usage guide: {scenario}",
+        "data": {
+            "scenario": scenario,
+            "project_id": project_id,
+            "no_api": no_api,
+            "default_mode": "api_free_external",
+            "internal_llm_requires_explicit_user_opt_in": True,
+            "guide": selected,
+            "recommended_next": _recommended_next(scenario, no_api),
+        },
+    }
+
+    from app.services.prompt_packs.seed import ensure_builtin_packs
+
+    ensure_builtin_packs(db)
+
+    scenario = str(args.get("scenario") or "quickstart").strip() or "quickstart"
+    no_api = bool(args.get("no_api") if "no_api" in args else scenario in {"cataloging_no_api", "writing_no_api"})
+
     workflows = {
         "quickstart": {
             "title": "墨枢外部 Agent 快速入口",

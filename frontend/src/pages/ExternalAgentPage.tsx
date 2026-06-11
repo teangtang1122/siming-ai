@@ -15,7 +15,7 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import SystemNav from '../components/SystemNav'
-import { PERMISSION_PACKS } from '../types/externalAgentSettings'
+import { getPermissionPackDependencies, PERMISSION_PACKS } from '../types/externalAgentSettings'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -88,18 +88,30 @@ function ExternalAgentPage() {
 
   const handlePackToggle = (packName: string, enabled: boolean) => {
     if (!settings) return
-    const packIndex = PERMISSION_PACKS.findIndex(p => p.name === packName)
-    if (packIndex === -1) return
+    if (!PERMISSION_PACKS.some(p => p.name === packName)) return
 
     let newPacks: string[]
     if (enabled) {
-      // Enable this pack and all lower packs
-      const packsToEnable = PERMISSION_PACKS.slice(0, packIndex + 1).map(p => p.name)
+      const packsToEnable = new Set<string>()
+      const addWithDependencies = (name: string) => {
+        packsToEnable.add(name)
+        getPermissionPackDependencies(name).forEach(addWithDependencies)
+      }
+      addWithDependencies(packName)
       newPacks = [...new Set([...settings.enabled_packs, ...packsToEnable])]
     } else {
-      // Disable this pack and all higher packs
-      const packsToDisable = PERMISSION_PACKS.slice(packIndex).map(p => p.name)
-      newPacks = settings.enabled_packs.filter(p => !packsToDisable.includes(p))
+      const packsToDisable = new Set<string>([packName])
+      let changed = true
+      while (changed) {
+        changed = false
+        PERMISSION_PACKS.forEach(pack => {
+          if (!packsToDisable.has(pack.name) && (pack.dependsOn ?? []).some(dep => packsToDisable.has(dep))) {
+            packsToDisable.add(pack.name)
+            changed = true
+          }
+        })
+      }
+      newPacks = settings.enabled_packs.filter(p => !packsToDisable.has(p))
     }
     updateSettings({ enabled_packs: newPacks })
   }
@@ -138,9 +150,9 @@ function ExternalAgentPage() {
           选择要启用的权限包。启用高级权限包会自动启用所有低级权限包。
         </Paragraph>
 
-        {PERMISSION_PACKS.map((pack, index) => {
+        {PERMISSION_PACKS.map(pack => {
           const isEnabled = settings.enabled_packs.includes(pack.name)
-          const isLocked = index > 0 && !settings.enabled_packs.includes(PERMISSION_PACKS[index - 1].name)
+          const isLocked = (pack.dependsOn ?? []).some(dep => !settings.enabled_packs.includes(dep))
 
           return (
             <Card

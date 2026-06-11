@@ -84,15 +84,21 @@ can see all projects through `list_projects`.
 
 ## Permission Packs
 
-- `readonly_collaboration`: read/search/analysis tools only.
-- `draft_generation`: readonly tools plus draft generators.
-- `project_writing`: can create/update chapters, characters, outline, worldbuilding.
-- `project_management`: project CRUD, import/export, scheduler and skill management.
-- `trusted_local_maintenance`: also exposes destructive tools such as delete/merge.
+- `readonly_collaboration`: read/search/API-free context tools only.
+- `draft_generation`: legacy compatibility pack; does not expose Moshu internal LLM tools.
+- `project_writing`: can create/update chapters, characters, outline, worldbuilding, and external drafts without calling Moshu's model API.
+- `project_management`: project CRUD, import/export, scheduler and skill management. It does **not** expose internal LLM tools.
+- `internal_llm`: explicit opt-in pack for tools that spend Moshu's configured model API, such as `chapter_writer` and `start_cataloging_job`.
+- `trusted_local_maintenance`: exposes destructive tools such as delete/merge. It does **not** imply `internal_llm`.
 
 For normal local Claude Code/Codex use, `project_management` is the practical
 default: it can list all projects, create new projects, write content, manage
-skills, and export data, while destructive tools remain outside the pack.
+skills, and export data, while destructive tools and internal LLM tools remain
+outside the pack.
+
+Default rule for external agents: do your own reading, reasoning, cataloging,
+and writing unless the user explicitly says to use Moshu's internal API/model
+quota. Use `internal_llm` only for that explicit opt-in mode.
 
 ## Operating Rules for External Agents
 
@@ -588,8 +594,6 @@ the pending chapter before moving to the next chapter.
 | `search_characters` | Search characters |
 | `search_worldbuilding` | Search worldbuilding |
 | `search_outline` | Search outline |
-| `detect_character_changes` | Detect character state changes |
-| `detect_new_worldbuilding` | Detect unrecorded worldbuilding |
 | `detect_forbidden_patterns` | Check for AI patterns |
 | `start_external_cataloging_job` | Start API-free cataloging job |
 | `get_next_external_cataloging_chapter` | Get next chapter for cataloging |
@@ -615,6 +619,10 @@ These tools call the configured model API and will fail if no API key is set:
 | `evaluate_chapter` | Chapter quality evaluation using LLM |
 | `design_plot` | Plot design using LLM |
 | `suggest_conflicts` | Conflict suggestions using LLM |
+| `detect_character_changes` | Character-change analysis using LLM |
+| `detect_new_worldbuilding` | Worldbuilding detection using LLM |
+| `detect_worldbuilding_conflicts` | Worldbuilding conflict check using LLM |
+| `start_cataloging_job` | Internal cataloging job using Moshu's configured LLM |
 
 ## Troubleshooting
 

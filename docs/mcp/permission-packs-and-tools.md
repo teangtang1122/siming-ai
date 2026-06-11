@@ -25,10 +25,11 @@ Permission packs are named groups of tools that can be enabled/disabled per proj
 | Pack | Intent | Default |
 |------|--------|---------|
 | `readonly_collaboration` | Read/search/context tools. Safe for any external client. | **Enabled** |
-| `draft_generation` | Generator tools (chapter_writer, outline_writer, etc.). Produce content in-memory without DB writes. | Disabled |
-| `project_writing` | Create/update tools for chapters, characters, outline, worldbuilding. Require confirmed write unless trusted local mode. | Disabled |
-| `project_management` | Project CRUD, import/export, scheduler, skill, MCP-server management. | Disabled |
-| `trusted_local_maintenance` | Dangerous maintenance tools (delete, merge, reset). Only available in trusted local mode. | Disabled |
+| `draft_generation` | Legacy compatibility pack. It must not expose Moshu internal LLM tools. | Disabled |
+| `project_writing` | API-free create/update tools for chapters, characters, outline, worldbuilding, external drafts, and external cataloging candidates. | Disabled |
+| `project_management` | API-free project CRUD, import/export, scheduler, skill, MCP-server management. Does not imply internal LLM access. | Disabled |
+| `internal_llm` | Explicit opt-in pack for tools that spend Moshu's configured model API (`chapter_writer`, `start_cataloging_job`, etc.). | Disabled |
+| `trusted_local_maintenance` | Dangerous maintenance tools (delete, merge, reset). Only available in trusted local mode. Does not imply internal LLM access. | Disabled |
 
 ### 2.2 Pack Assignment Rules
 
@@ -40,22 +41,32 @@ Every registered tool must belong to exactly one pack. The assignment is based o
 | `analysis` | `readonly_collaboration` |
 | `web` | `readonly_collaboration` |
 | `memory` (read) | `readonly_collaboration` |
-| `generator` | `draft_generation` |
-| `memory` (write) | `draft_generation` |
+| `generator` | `internal_llm` |
+| model-backed `analysis` | `internal_llm` |
+| internal model job `write` | `internal_llm` |
+| `memory` (write) | `project_writing` |
 | `write` (create/update content) | `project_writing` |
 | `write` (project/import/export/scheduler/skill) | `project_management` |
 | `write` (delete/merge/reset) | `trusted_local_maintenance` |
 | `scheduler` | `project_management` |
 
-### 2.3 Pack Hierarchy
+### 2.3 Pack Inclusion
 
-Packs form a hierarchy of increasing privilege:
+Packs are intentionally non-linear. Internal model access is a separate opt-in
+capability, not a side effect of project management or trusted maintenance.
 
-```
-readonly_collaboration ⊂ draft_generation ⊂ project_writing ⊂ project_management ⊂ trusted_local_maintenance
-```
+| Selected Pack | Implied Packs |
+|---------------|---------------|
+| `readonly_collaboration` | `readonly_collaboration` |
+| `draft_generation` | `readonly_collaboration`, `draft_generation` |
+| `project_writing` | `readonly_collaboration`, `project_writing` |
+| `project_management` | `readonly_collaboration`, `project_writing`, `project_management` |
+| `internal_llm` | `readonly_collaboration`, `project_writing`, `project_management`, `internal_llm` |
+| `trusted_local_maintenance` | `readonly_collaboration`, `project_writing`, `project_management`, `trusted_local_maintenance` |
 
-Enabling a higher pack implicitly enables all lower packs. Disabling a lower pack disables all higher packs.
+Default external Agent rule: unless the user explicitly asks to use Moshu's
+internal API/model quota, tools in `internal_llm` must remain unavailable and
+the Agent should use the API-free external workflows.
 
 ## 3. Permanent Deny-List
 

@@ -45,7 +45,23 @@ class PacksUpToTest(unittest.TestCase):
 
     def test_project_writing(self):
         result = _packs_up_to("project_writing")
-        self.assertEqual(len(result), 3)
+        self.assertEqual(result, ["readonly_collaboration", "project_writing"])
+
+    def test_project_management_does_not_include_internal_llm(self):
+        result = _packs_up_to("project_management")
+        self.assertIn("project_writing", result)
+        self.assertNotIn("internal_llm", result)
+
+    def test_internal_llm_is_explicit(self):
+        result = _packs_up_to("internal_llm")
+        self.assertIn("internal_llm", result)
+        self.assertIn("project_management", result)
+        self.assertNotIn("trusted_local_maintenance", result)
+
+    def test_trusted_does_not_include_internal_llm(self):
+        result = _packs_up_to("trusted_local_maintenance")
+        self.assertIn("trusted_local_maintenance", result)
+        self.assertNotIn("internal_llm", result)
 
     def test_unknown(self):
         result = _packs_up_to("unknown")

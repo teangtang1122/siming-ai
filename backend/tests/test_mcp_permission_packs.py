@@ -43,8 +43,7 @@ class ReadonlyCollaborationPackTest(unittest.TestCase):
             self.assertEqual(pack, "readonly_collaboration", f"{name}: pack is {pack}")
 
     def test_analysis_tools_in_readonly_pack(self):
-        analysis_tools = ["detect_character_changes", "preview_writing_context",
-                          "evaluate_chapter", "suggest_conflicts"]
+        analysis_tools = ["preview_writing_context", "detect_forbidden_patterns"]
         for name in analysis_tools:
             td = registry.get(name)
             self.assertIsNotNone(td)
@@ -52,17 +51,24 @@ class ReadonlyCollaborationPackTest(unittest.TestCase):
             self.assertEqual(pack, "readonly_collaboration", f"{name}: pack is {pack}")
 
 
-class DraftGenerationPackTest(unittest.TestCase):
-    """Verify draft_generation pack contains correct tools."""
+class InternalLLMPackTest(unittest.TestCase):
+    """Verify internal_llm pack contains model-backed tools."""
 
-    def test_generator_tools_in_draft_pack(self):
+    def test_generator_tools_in_internal_llm_pack(self):
         generator_tools = ["chapter_writer", "outline_writer", "character_writer",
                            "worldbuilding_writer", "rewrite_text", "expand_text", "continue_text"]
         for name in generator_tools:
             td = registry.get(name)
             self.assertIsNotNone(td, f"Tool not found: {name}")
             pack = registry._derive_mcp_pack(td)
-            self.assertEqual(pack, "draft_generation", f"{name}: pack is {pack}")
+            self.assertEqual(pack, "internal_llm", f"{name}: pack is {pack}")
+
+    def test_internal_model_jobs_in_internal_llm_pack(self):
+        for name in ["start_cataloging_job", "resume_cataloging_job", "start_deconstruct_job"]:
+            td = registry.get(name)
+            self.assertIsNotNone(td, f"Tool not found: {name}")
+            pack = registry._derive_mcp_pack(td)
+            self.assertEqual(pack, "internal_llm", f"{name}: pack is {pack}")
 
 
 class ProjectWritingPackTest(unittest.TestCase):

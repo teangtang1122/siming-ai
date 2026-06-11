@@ -83,7 +83,7 @@ class MyNewToolTest(unittest.TestCase):
         td = registry.get("my_new_tool")
         pack = registry._derive_mcp_pack(td)
         self.assertIn(pack, ("readonly_collaboration", "draft_generation",
-                             "project_writing", "project_management",
+                             "project_writing", "project_management", "internal_llm",
                              "trusted_local_maintenance"))
 ```
 
@@ -129,14 +129,20 @@ Tools are automatically assigned to a permission pack based on their metadata:
 | `tool_type` | `writes_project_data` | `risk_level` | Pack |
 |-------------|----------------------|--------------|------|
 | read/analysis/web | False | safe | `readonly_collaboration` |
-| generator | False | low | `draft_generation` |
+| generator | False | medium | `internal_llm` |
+| model-backed analysis | False | medium | `internal_llm` |
+| internal model job | True | high | `internal_llm` |
 | write | True | safe/low/medium | `project_writing` |
 | write | True | high | `project_management` |
 | write | True | destructive | `trusted_local_maintenance` |
 | write | False | any | `project_management` |
 | scheduler | any | any | `project_management` |
 | memory (read) | False | safe | `readonly_collaboration` |
-| memory (write) | True | low | `draft_generation` |
+| memory (write) | True | low | `project_writing` |
+
+Important: `project_management` and `trusted_local_maintenance` must not imply
+`internal_llm`. External agents should only receive Moshu internal model tools
+when the user explicitly chooses the `internal_llm` pack.
 
 ## Common Mistakes
 
