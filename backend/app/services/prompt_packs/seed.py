@@ -24,11 +24,15 @@ def _get_writing_quality_content() -> dict:
         get_forbidden_patterns,
         get_quality_rubric,
         get_chapter_writing_rules,
+        get_time_tracking_rules,
+        get_naming_resolution_rules,
     )
     return {
         "forbidden_patterns": get_forbidden_patterns(),
         "quality_rubric": get_quality_rubric(),
         "writing_rules": get_chapter_writing_rules(),
+        "time_tracking_rules": get_time_tracking_rules(),
+        "naming_resolution_rules": get_naming_resolution_rules(),
     }
 
 
@@ -349,9 +353,8 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "- 章节摘要：每章必须有摘要\n\n"
             "⚠️ 重要：character_create 只创建角色基本信息（外貌、性格、背景），不包含当前状态。\n"
             "每个出场角色都必须额外输出一条 character_state，写入本章结束时的最新状态。\n\n"
-            "【时间追踪】\n"
-            "- 注意章节之间的时间流逝（如\"三天后\"、\"一个月后\"、\"三年后\"）\n"
-            "- 如果时间有显著推进，更新角色的 age 字段\n"
+            "{time_tracking_rules}\n\n"
+            "{naming_resolution_rules}\n\n"
             "- 如果角色在本章有重要事件（受伤、突破、关系变化），输出 character_timeline\n"
             "- character_timeline 的 event_type: appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event\n\n"
             "【候选类型格式】\n"
@@ -480,6 +483,14 @@ def seed_builtin_packs(db: Session) -> int:
                 merged["quality_rubric_json"] = quality_content["quality_rubric"]
             if not merged.get("forbidden_patterns_json"):
                 merged["forbidden_patterns_json"] = quality_content["forbidden_patterns"]
+
+        # Inject shared rules into cataloging pack system prompts
+        if pack_data["scope"] == "cataloging" and "{time_tracking_rules}" in merged.get("system_prompt", ""):
+            merged["system_prompt"] = (
+                merged["system_prompt"]
+                .replace("{time_tracking_rules}", quality_content["time_tracking_rules"])
+                .replace("{naming_resolution_rules}", quality_content["naming_resolution_rules"])
+            )
 
         if existing:
             existing.version = "1.0.1"
