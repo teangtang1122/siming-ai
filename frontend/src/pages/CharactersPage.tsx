@@ -19,7 +19,7 @@ interface ApiResponse<T> { code: number; message: string; data: T }
 interface Character {
   id: string; project_id: string; name: string; appearance?: string
   personality?: string; background?: string; abilities: string[]; aliases?: string[]
-  role_type?: string; current_version: number; is_evolution_tracked: boolean
+  role_type?: string; age?: string; current_version: number; is_evolution_tracked: boolean
   life_status?: string; current_location?: string; realm_or_level?: string
   physical_state?: string; mental_state?: string; current_goal?: string
   active_conflict?: string; abilities_state?: string; items_or_assets?: string
@@ -58,7 +58,7 @@ interface AIConfig {
 }
 
 interface CharacterFormValues {
-  name: string; role_type?: string; appearance?: string; personality?: string
+  name: string; role_type?: string; age?: string; appearance?: string; personality?: string
   background?: string; abilities?: string[]; aliases?: string[]; is_evolution_tracked?: boolean
   life_status?: string; current_location?: string; realm_or_level?: string
   physical_state?: string; mental_state?: string; current_goal?: string
@@ -151,7 +151,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
       const res = await apiClient.get<ApiResponse<Character>>(`/projects/${projectId}/characters/${characterId}`)
       setSelectedDetail(res.data.data)
       form.setFieldsValue({
-        name: res.data.data.name, role_type: res.data.data.role_type,
+        name: res.data.data.name, role_type: res.data.data.role_type, age: res.data.data.age,
         appearance: res.data.data.appearance, personality: res.data.data.personality,
         background: res.data.data.background, abilities: res.data.data.abilities || [],
         aliases: res.data.data.aliases || [],
@@ -455,6 +455,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             <Form.Item name="aliases" label="别名/称呼">
               <Select mode="tags" tokenSeparators={[',', '，', '/', '、']} placeholder="输入别名、昵称、尊称或隐藏身份后回车" />
             </Form.Item>
+            <Form.Item name="age" label="年龄"><Input placeholder="如：3岁、约16岁、外表16岁实际200岁、成年" /></Form.Item>
             <Form.Item name="appearance" label="外貌"><Input.TextArea rows={3} placeholder="外貌、衣着、气质、辨识特征" /></Form.Item>
             <Form.Item name="personality" label="性格"><Input.TextArea rows={3} placeholder="核心性格、弱点、行为模式" /></Form.Item>
             <Form.Item name="background" label="背景故事"><Input.TextArea rows={4} placeholder="出身、经历、秘密、目标" /></Form.Item>
