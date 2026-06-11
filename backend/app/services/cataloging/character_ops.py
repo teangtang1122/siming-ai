@@ -296,7 +296,7 @@ def _update_ai_config(db: Session, character: Character, payload: dict[str, Any]
 
 
 def _identity_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
-    raw_name = str(payload.get("name") or payload.get("primary_name") or "").strip()
+    raw_name = str(payload.get("name") or payload.get("primary_name") or payload.get("character_name") or "").strip()
     parts = split_character_name(raw_name)
     canonical = parts[0] if parts else raw_name
     aliases = _aliases_from_payload(payload, canonical)

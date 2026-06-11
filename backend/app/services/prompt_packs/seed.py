@@ -330,6 +330,30 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "- 世界观更新：如果出现新的设定或现有设定需要修改\n"
             "- 大纲节点：每章对应一个大纲节点\n"
             "- 章节摘要：每章必须有摘要\n\n"
+            "【候选类型格式】\n"
+            "save_external_cataloging_candidates 的 candidates 数组中，每个候选的格式：\n\n"
+            "1. 章节摘要：\n"
+            '{"type": "chapter_summary", "summary": "200字以内的摘要"}\n\n'
+            "2. 大纲节点：\n"
+            '{"type": "outline_create", "title": "第一章 穿越", "node_type": "chapter", "summary": "节点摘要"}\n\n'
+            "3. 新角色（必须用 character_create，不要用 new_character）：\n"
+            '{"type": "character_create", "name": "特昂糖", "appearance": "外貌", "personality": "性格", '
+            '"background": "背景", "abilities": ["能力1"], "role_type": "protagonist", '
+            '"motivation": "动机", "conflict": "冲突", "speech_style": "说话风格"}\n\n'
+            "4. 角色状态更新（当前状态变化，用 character_state）：\n"
+            '{"type": "character_state", "name": "特昂糖", "current_location": "新位置", '
+            '"current_goal": "新目标", "life_status": "状态"}\n\n'
+            "5. 世界观条目（必须用 worldbuilding_create，不要用 new_worldbuilding）：\n"
+            '{"type": "worldbuilding_create", "title": "护族大阵", "dimension": "geography", '
+            '"content": "详细描述"}\n\n'
+            "6. 角色关系：\n"
+            '{"type": "character_relationship", "source_name": "角色A", "target_name": "角色B", '
+            '"relationship_type": "父女", "description": "关系描述"}\n\n'
+            "注意：\n"
+            "- character_create 的 name 字段是必填的\n"
+            "- character_state 用于更新角色当前状态（位置、目标等），不是创建新角色\n"
+            "- character_update 用于更新角色基本信息（外貌、性格等），需要 name 字段\n"
+            "- 不要使用 new_character、new_worldbuilding 等非标准类型\n\n"
             "【合并规则】\n"
             "- 角色别名：如果同一角色有多个名字，使用主名字作为规范名\n"
             "- 角色当前状态字段：覆盖旧状态\n"

@@ -36,6 +36,10 @@ def _normalize_candidate_input(candidate: dict[str, Any]) -> tuple[dict[str, Any
     """Normalize external-agent candidate shorthand to the internal apply contract."""
     payload = candidate.get("data") if isinstance(candidate.get("data"), dict) else None
     normalized_payload = dict(payload or candidate)
+    # Map character_name to name if name is not present
+    if "character_name" in candidate and "name" not in candidate:
+        candidate["name"] = candidate["character_name"]
+
     for key in [
         "name", "title", "summary", "content", "dimension", "aliases",
         "source_name", "target_name", "character_a", "character_b",
