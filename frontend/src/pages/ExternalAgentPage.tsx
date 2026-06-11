@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  Alert,
   Card,
   Space,
+  Switch,
   Tag,
   Typography,
+  message,
 } from 'antd'
 import {
   ApiOutlined,
+  LockOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
-import ExternalAgentPermissionPanel from '../components/ExternalAgentPermissionPanel'
+import { PERMISSION_PACKS } from '../types/externalAgentSettings'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -20,34 +25,85 @@ interface ApiResponse<T> {
 }
 
 interface GlobalSettings {
+  id?: string
   enabled_packs: string[]
   trusted_local_enabled: boolean
+  trusted_local_clients: string[]
+  require_confirmation_for_writes: boolean
+  require_confirmation_for_destructive: boolean
   mcp_permission_source: string
 }
 
-function ExternalAgentPage() {
-  const [globalSettings, setGlobalSettings] = useState<GlobalSettings | null>(null)
-  const [selectedProjectId] = useState<string>('')
+const RISK_COLORS: Record<string, string> = {
+  safe: 'green',
+  low: 'blue',
+  medium: 'orange',
+  high: 'red',
+  destructive: 'red',
+}
 
-  const fetchGlobalSettings = useCallback(async () => {
+function ExternalAgentPage() {
+  const [settings, setSettings] = useState<GlobalSettings | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const fetchSettings = useCallback(async () => {
     try {
       const resp = await apiClient.get<ApiResponse<GlobalSettings>>(
         `/external-agent/settings`
       )
-      setGlobalSettings(resp.data.data)
+      setSettings(resp.data.data)
     } catch {
-      // Use defaults
-      setGlobalSettings({
+      setSettings({
         enabled_packs: ['readonly_collaboration'],
         trusted_local_enabled: false,
+        trusted_local_clients: [],
+        require_confirmation_for_writes: true,
+        require_confirmation_for_destructive: true,
         mcp_permission_source: 'global_settings',
       })
     }
   }, [])
 
   useEffect(() => {
-    fetchGlobalSettings()
-  }, [fetchGlobalSettings])
+    fetchSettings()
+  }, [fetchSettings])
+
+  const updateSettings = async (updates: Partial<GlobalSettings>) => {
+    if (!settings) return
+    setLoading(true)
+    try {
+      const resp = await apiClient.put<ApiResponse<GlobalSettings>>(
+        `/external-agent/settings`,
+        updates
+      )
+      setSettings(resp.data.data)
+      message.success('设置已保存')
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handlePackToggle = (packName: string, enabled: boolean) => {
+    if (!settings) return
+    const packIndex = PERMISSION_PACKS.findIndex(p => p.name === packName)
+    if (packIndex === -1) return
+
+    let newPacks: string[]
+    if (enabled) {
+      // Enable this pack and all lower packs
+      const packsToEnable = PERMISSION_PACKS.slice(0, packIndex + 1).map(p => p.name)
+      newPacks = [...new Set([...settings.enabled_packs, ...packsToEnable])]
+    } else {
+      // Disable this pack and all higher packs
+      const packsToDisable = PERMISSION_PACKS.slice(packIndex).map(p => p.name)
+      newPacks = settings.enabled_packs.filter(p => !packsToDisable.includes(p))
+    }
+    updateSettings({ enabled_packs: newPacks })
+  }
+
+  if (!settings) return null
 
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
@@ -61,43 +117,115 @@ function ExternalAgentPage() {
         全局设置适用于所有项目，项目级设置可以覆盖全局设置。
       </Paragraph>
 
-      {/* Global settings info */}
-      <Card size="small" title="全局设置" style={{ marginBottom: 16 }}>
+      {/* CLI override warning */}
+      {settings.mcp_permission_source === 'cli_override' && (
+        <Alert
+          type="warning"
+          message="CLI 覆盖生效中"
+          description="MCP 权限来源为 CLI --permission-pack 参数。UI 设置更改不会生效，直到 MCP 服务器使用 --permission-pack auto 启动。"
+          showIcon
+          icon={<WarningOutlined />}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {/* Permission pack toggles */}
+      <Card size="small" title="权限包" style={{ marginBottom: 16 }}>
+        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          选择要启用的权限包。启用高级权限包会自动启用所有低级权限包。
+        </Paragraph>
+
+        {PERMISSION_PACKS.map((pack, index) => {
+          const isEnabled = settings.enabled_packs.includes(pack.name)
+          const isLocked = index > 0 && !settings.enabled_packs.includes(PERMISSION_PACKS[index - 1].name)
+
+          return (
+            <Card
+              key={pack.name}
+              size="small"
+              style={{ marginBottom: 8, opacity: isLocked ? 0.6 : 1 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space>
+                  <Switch
+                    checked={isEnabled}
+                    onChange={(checked) => handlePackToggle(pack.name, checked)}
+                    disabled={isLocked || loading}
+                    size="small"
+                  />
+                  <Text strong>{pack.label}</Text>
+                  <Tag color={RISK_COLORS[pack.riskLevel]}>{pack.riskLevel}</Tag>
+                </Space>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {pack.tools.length} 个工具
+                </Text>
+              </div>
+              <Paragraph type="secondary" style={{ margin: '8px 0 0 0', fontSize: 13 }}>
+                {pack.description}
+              </Paragraph>
+            </Card>
+          )
+        })}
+      </Card>
+
+      {/* Permanent deny-list notice */}
+      <Alert
+        message="永久禁止的工具"
+        description="API 密钥、模型密钥、加密密钥等敏感工具永远不会通过 MCP 暴露，无论权限包如何配置。"
+        type="warning"
+        showIcon
+        icon={<LockOutlined />}
+        style={{ marginBottom: 16 }}
+      />
+
+      {/* Trusted local mode */}
+      <Card size="small" title="可信本地模式" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <Text>当前权限来源：</Text>
-            <Tag color={globalSettings?.mcp_permission_source === 'cli_override' ? 'red' : 'blue'}>
-              {globalSettings?.mcp_permission_source === 'cli_override' ? 'CLI 覆盖' : '全局设置'}
-            </Tag>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <Text>已启用的权限包：</Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Space>
-              {globalSettings?.enabled_packs?.map(pack => (
-                <Tag key={pack}>{pack}</Tag>
-              ))}
+              <Switch
+                checked={settings.trusted_local_enabled}
+                onChange={(checked) => updateSettings({ trusted_local_enabled: checked })}
+                disabled={loading}
+                size="small"
+              />
+              <Text strong>启用可信本地模式</Text>
             </Space>
           </div>
-          {globalSettings?.mcp_permission_source === 'cli_override' && (
-            <div style={{ background: '#fff2f0', padding: 12, borderRadius: 4, border: '1px solid #ffccc7' }}>
-              <Text type="danger">
-                ⚠️ MCP 权限来源为 CLI 覆盖。UI 设置更改不会生效，直到 MCP 服务器使用 --permission-pack auto 启动。
-              </Text>
-            </div>
+          {settings.trusted_local_enabled && (
+            <Alert
+              message="警告"
+              description="可信本地模式允许外部 Agent 跳过写入确认。仅在您信任的本地机器上启用。所有写入操作仍会被审计记录。"
+              type="warning"
+              showIcon
+              icon={<WarningOutlined />}
+            />
           )}
         </Space>
       </Card>
 
-      {/* Permission panel (requires a project) */}
-      <Card size="small" title="项目级权限设置" style={{ marginBottom: 16 }}>
-        <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-          项目级设置覆盖全局设置。选择一个项目来查看和修改其权限配置。
-        </Paragraph>
-        {selectedProjectId ? (
-          <ExternalAgentPermissionPanel projectId={selectedProjectId} />
-        ) : (
-          <Text type="secondary">请从项目工作区进入此页面以查看项目级设置。</Text>
-        )}
+      {/* Confirmation toggles */}
+      <Card size="small" title="确认设置" style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text>写入操作需要确认</Text>
+            <Switch
+              checked={settings.require_confirmation_for_writes}
+              onChange={(checked) => updateSettings({ require_confirmation_for_writes: checked })}
+              disabled={loading || settings.trusted_local_enabled}
+              size="small"
+            />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text>危险操作需要确认</Text>
+            <Switch
+              checked={settings.require_confirmation_for_destructive}
+              onChange={(checked) => updateSettings({ require_confirmation_for_destructive: checked })}
+              disabled={loading}
+              size="small"
+            />
+          </div>
+        </Space>
       </Card>
 
       {/* MCP connection info */}
