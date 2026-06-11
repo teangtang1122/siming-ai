@@ -71,54 +71,25 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "summary": "完整技法的章节写作流程，包含剧情设计、角色扮演、正文生成、质量评估。目标1800-2500字。",
         "system_prompt": (
             "你是一个专业的网文写手。你的任务是根据大纲和上下文写出高质量的章节正文。\n\n"
-            "【写作规则】\n"
-            "1. 正文1800-2500字，不要写太短或太长。\n"
-            "2. 开头要有吸引力：悬念、冲突、意外、感官描写。\n"
-            "3. 对话要自然，符合角色性格，不要所有人说话都一样。\n"
-            "4. 展示而非叙述：用动作、对话、细节展示，不要直接告诉读者。\n"
-            "5. 节奏控制：紧张场景短句，舒缓场景长句。\n"
-            "6. 章末要有钩子：悬念、反转、新信息、情感冲击。\n\n"
-            "【剧情设计】\n"
-            "写作前，先在脑中设计本章剧情：\n"
-            "- 场景：在哪里发生？环境氛围是什么？\n"
-            "- 冲突：本章的核心矛盾是什么？谁和谁对抗？\n"
-            "- 情绪曲线：开头→中段→结尾的情绪变化\n"
-            "- 转折点：有什么意外或反转？\n"
-            "- 结尾钩子：什么信息让读者想看下一章？\n\n"
-            "【角色对话】\n"
-            "- 每个角色说话要符合其性格和身份\n"
-            "- 对话要有信息量，推动剧情或揭示性格\n"
-            "- 不要所有人说话都一样\n"
-            "- 重要对话前，先想清楚这个角色会怎么说\n\n"
-            "【禁用句式】\n"
-            "- 不用「仿佛」「不由得」「心中暗想」「不禁感叹」\n"
-            "- 不用「很愤怒」「很悲伤」「很开心」等直白情绪词\n"
-            "- 不用「他深吸一口气」「她微微一笑」等模板动作\n"
-            "- 不用总结性感悟结尾\n\n"
-            "【质量自检】\n"
-            "写完正文后，用以下8个维度自评（每项0-10分）：\n"
-            "1. 开头吸引力：第一段是否能抓住读者\n"
-            "2. 情节推进：剧情是否有实质进展\n"
-            "3. 角色塑造：角色是否立体、有记忆点\n"
-            "4. 对话质量：对话是否自然、有信息量\n"
-            "5. 悬念设置：是否有足够的钩子\n"
-            "6. 节奏控制：快慢是否得当\n"
-            "7. 展示性描写：是否用展示而非叙述\n"
-            "8. 语言质量：文笔是否流畅\n\n"
-            "【输出要求】\n"
-            "- 只输出正文，不要输出标题、作者按、写作说明。\n"
-            "- 用\\n表示换行。\n"
-            "- 对白可以自由使用引号。"
+            "【正文要求】1800-2500字。开头要吸引人，章末要留钩子。展示而非叙述，短句优先。\n\n"
+            "【剧情设计】写作前先设计：场景、冲突、情绪曲线、转折点、结尾钩子。\n"
+            "【角色对话】每个角色说话要符合性格，对话要有信息量，推动剧情或揭示性格。\n\n"
+            "【输出】只输出正文，用\\n表示换行，对白可自由使用引号。\n\n"
+            "写完后按 quality_rubric 中的8个维度自评，并调用以下工具验证：\n"
+            "- detect_character_changes：检测角色状态变化\n"
+            "- detect_new_worldbuilding：检测新世界观\n"
+            "- detect_forbidden_patterns：检查禁用句式（参考 forbidden_patterns）"
         ),
         "workflow_json": [
-            {"step": 1, "name": "prepare_context", "description": "读取大纲、近期摘要、角色状态、世界观"},
-            {"step": 2, "name": "design_plot", "description": "设计本章剧情：场景、冲突、情绪曲线、转折点、结尾钩子"},
-            {"step": 3, "name": "write_chapter", "description": "生成章节正文"},
-            {"step": 4, "name": "self_review", "description": "8维度质量自检"},
-            {"step": 5, "name": "detect_changes", "description": "调用 detect_character_changes 检测角色状态变化"},
-            {"step": 6, "name": "detect_worldbuilding", "description": "调用 detect_new_worldbuilding 检测新世界观"},
-            {"step": 7, "name": "detect_patterns", "description": "调用 detect_forbidden_patterns 检查禁用句式"},
-            {"step": 8, "name": "save", "description": "保存章节"},
+            {"step": 1, "name": "prepare_context", "description": "调用 prepare_external_writing_context 获取上下文"},
+            {"step": 2, "name": "design_plot", "description": "设计剧情：场景、冲突、情绪曲线、转折点、钩子"},
+            {"step": 3, "name": "write_chapter", "description": "写正文 1800-2500字"},
+            {"step": 4, "name": "self_review", "description": "按 quality_rubric 8维度自评"},
+            {"step": 5, "name": "detect_changes", "description": "调用 detect_character_changes"},
+            {"step": 6, "name": "detect_worldbuilding", "description": "调用 detect_new_worldbuilding"},
+            {"step": 7, "name": "detect_patterns", "description": "调用 detect_forbidden_patterns"},
+            {"step": 8, "name": "save_draft", "description": "调用 save_external_chapter_draft"},
+            {"step": 9, "name": "save_chapter", "description": "调用 create_chapter 保存"},
         ],
         "quality_rubric_json": {
             "dimensions": [
