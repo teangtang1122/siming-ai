@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Card,
   Typography,
@@ -24,7 +23,6 @@ import {
   CloseCircleOutlined,
   GlobalOutlined,
   ReloadOutlined,
-  ArrowLeftOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
@@ -192,9 +190,7 @@ const defaultSafetyLimits = (provider?: string, model?: string) => {
 }
 
 function SettingsPage() {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const { projects, fetchProjects } = useAppStore()
+  const { fetchProjects } = useAppStore()
   const [configs, setConfigs] = useState<ModelConfig[]>([])
   const [globalModel, setGlobalModel] = useState<GlobalModel>({ provider: null, model: null })
   const [loading, setLoading] = useState(false)
@@ -209,8 +205,6 @@ function SettingsPage() {
   const [modelsLoading, setModelsLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
   const [connectionTestResult, setConnectionTestResult] = useState<{ success: boolean; message: string } | null>(null)
-  const fromProjectId = (location.state as { fromProjectId?: string } | null)?.fromProjectId
-  const returnProjectId = fromProjectId || projects[0]?.id
 
   const fetchConfigs = useCallback(async () => {
     setLoading(true)
@@ -493,14 +487,6 @@ function SettingsPage() {
     <div style={{ padding: 24, maxWidth: 960, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <Title level={3} style={{ margin: 0 }}>⚙️ 系统设置</Title>
-        <Space wrap>
-          <Button
-            icon={<ArrowLeftOutlined />}
-            onClick={() => returnProjectId ? navigate(`/project/${returnProjectId}`) : navigate('/dashboard')}
-          >
-            返回作品
-          </Button>
-        </Space>
         <SystemNav current="settings" />
       </div>
 
