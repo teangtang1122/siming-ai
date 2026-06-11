@@ -94,6 +94,7 @@ class Character(Base):
     background = Column(Text, nullable=True)
     abilities = Column(Text, nullable=True)  # JSON string — low-frequency query
     role_type = Column(String(50), nullable=True)  # protagonist/supporting/antagonist/etc.
+    age = Column(String(50), nullable=True)  # e.g. "3岁", "约70岁", "成年"
     current_version = Column(Integer, default=1)
     is_evolution_tracked = Column(Boolean, default=True)  # FR-018
     life_status = Column(String(50), nullable=True)

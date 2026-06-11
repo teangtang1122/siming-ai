@@ -363,6 +363,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             '{"type": "character_create", "name": "特昂糖", '
             '"aliases": ["糖糖", "陆糖"], '
             '"role_type": "protagonist", '
+            '"age": "3岁", '
             '"appearance": "3岁幼女，矮小但步伐稳健，眼神中带着不属于这个年龄的冷静与洞察", '
             '"personality": "冷静理性、分析能力强、成熟超越年龄、偶尔流露前世成人的思维方式", '
             '"background": "前世是华清实验室神经网络研究员，姚班天才少女。穿越到修仙世界成为陆家旁支幼女。拥有前世记忆和科学思维，能用数据分析方法理解修炼体系。", '
@@ -374,6 +375,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "4. 角色状态更新（⚠️ 每个出场角色都必须输出！用 character_state）：\n"
             "这是单独的候选类型，不是 character_create 的一部分。\n"
             '{"type": "character_state", "name": "特昂糖", '
+            '"age": "3岁", '
             '"current_location": "陆家后院", '
             '"current_goal": "找到回家的方法", '
             '"life_status": "alive", '
