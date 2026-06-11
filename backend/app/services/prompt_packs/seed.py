@@ -78,11 +78,33 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "4. 展示而非叙述：用动作、对话、细节展示，不要直接告诉读者。\n"
             "5. 节奏控制：紧张场景短句，舒缓场景长句。\n"
             "6. 章末要有钩子：悬念、反转、新信息、情感冲击。\n\n"
+            "【剧情设计】\n"
+            "写作前，先在脑中设计本章剧情：\n"
+            "- 场景：在哪里发生？环境氛围是什么？\n"
+            "- 冲突：本章的核心矛盾是什么？谁和谁对抗？\n"
+            "- 情绪曲线：开头→中段→结尾的情绪变化\n"
+            "- 转折点：有什么意外或反转？\n"
+            "- 结尾钩子：什么信息让读者想看下一章？\n\n"
+            "【角色对话】\n"
+            "- 每个角色说话要符合其性格和身份\n"
+            "- 对话要有信息量，推动剧情或揭示性格\n"
+            "- 不要所有人说话都一样\n"
+            "- 重要对话前，先想清楚这个角色会怎么说\n\n"
             "【禁用句式】\n"
             "- 不用「仿佛」「不由得」「心中暗想」「不禁感叹」\n"
             "- 不用「很愤怒」「很悲伤」「很开心」等直白情绪词\n"
             "- 不用「他深吸一口气」「她微微一笑」等模板动作\n"
             "- 不用总结性感悟结尾\n\n"
+            "【质量自检】\n"
+            "写完正文后，用以下8个维度自评（每项0-10分）：\n"
+            "1. 开头吸引力：第一段是否能抓住读者\n"
+            "2. 情节推进：剧情是否有实质进展\n"
+            "3. 角色塑造：角色是否立体、有记忆点\n"
+            "4. 对话质量：对话是否自然、有信息量\n"
+            "5. 悬念设置：是否有足够的钩子\n"
+            "6. 节奏控制：快慢是否得当\n"
+            "7. 展示性描写：是否用展示而非叙述\n"
+            "8. 语言质量：文笔是否流畅\n\n"
             "【输出要求】\n"
             "- 只输出正文，不要输出标题、作者按、写作说明。\n"
             "- 用\\n表示换行。\n"
@@ -90,12 +112,13 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         ),
         "workflow_json": [
             {"step": 1, "name": "prepare_context", "description": "读取大纲、近期摘要、角色状态、世界观"},
-            {"step": 2, "name": "design_plot", "description": "设计本章剧情：场景、冲突、情绪曲线"},
-            {"step": 3, "name": "roleplay", "description": "角色扮演生成关键对白"},
-            {"step": 4, "name": "write_chapter", "description": "生成章节正文"},
-            {"step": 5, "name": "evaluate", "description": "8维度质量评估"},
-            {"step": 6, "name": "detect_changes", "description": "检测角色状态变化"},
-            {"step": 7, "name": "save", "description": "保存章节"},
+            {"step": 2, "name": "design_plot", "description": "设计本章剧情：场景、冲突、情绪曲线、转折点、结尾钩子"},
+            {"step": 3, "name": "write_chapter", "description": "生成章节正文"},
+            {"step": 4, "name": "self_review", "description": "8维度质量自检"},
+            {"step": 5, "name": "detect_changes", "description": "调用 detect_character_changes 检测角色状态变化"},
+            {"step": 6, "name": "detect_worldbuilding", "description": "调用 detect_new_worldbuilding 检测新世界观"},
+            {"step": 7, "name": "detect_patterns", "description": "调用 detect_forbidden_patterns 检查禁用句式"},
+            {"step": 8, "name": "save", "description": "保存章节"},
         ],
         "quality_rubric_json": {
             "dimensions": [
