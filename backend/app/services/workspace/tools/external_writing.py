@@ -68,9 +68,21 @@ async def prepare_external_writing_context(
         "next_tool_suggestions": [],
     }
 
-    # API-free mode rules — always included so external agents know the boundary
-    from app.prompts.prompt_source import get_api_free_mode_rules
+    # API-free mode rules + all analysis prompts — one call gets everything
+    from app.prompts.prompt_source import (
+        get_api_free_mode_rules,
+        get_character_change_detection_prompt,
+        get_new_worldbuilding_detection_prompt,
+        get_chapter_evaluation_prompt,
+        get_conflict_suggestion_prompt,
+    )
     result["api_free_mode_rules"] = get_api_free_mode_rules()
+    result["analysis_prompts"] = {
+        "character_change_detection": get_character_change_detection_prompt(),
+        "worldbuilding_detection": get_new_worldbuilding_detection_prompt(),
+        "chapter_evaluation": get_chapter_evaluation_prompt(),
+        "conflict_suggestion": get_conflict_suggestion_prompt(),
+    }
 
     # Prompt pack — build system_prompt from shared source (same modules as internal packs)
     if include_prompt_pack:
