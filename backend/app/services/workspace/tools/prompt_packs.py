@@ -219,6 +219,10 @@ async def get_prompt_pack(
             ("cataloging", "external_no_api"): "cataloging_external_no_api",
             ("cataloging", ""): "cataloging_external_no_api",
             ("anti_ai_review", ""): "anti_ai_review",
+            ("character_change_detection", ""): "character_change_detection",
+            ("worldbuilding_detection", ""): "worldbuilding_detection",
+            ("chapter_evaluation", ""): "chapter_evaluation",
+            ("conflict_suggestion", ""): "conflict_suggestion",
         }
         mapped_id = scope_mode_map.get((scope, mode), scope_mode_map.get((scope, ""), ""))
         if mapped_id:

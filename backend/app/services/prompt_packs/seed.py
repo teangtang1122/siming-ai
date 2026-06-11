@@ -312,6 +312,72 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "心中涌起", "眼中闪过", "嘴角勾起",
         ],
     },
+    # ── Analysis prompt packs (same prompts as internal LLM tools) ──
+    # These allow external agents to perform analysis without calling Moshu's LLM.
+    # The system_prompt is populated at runtime from prompt_source.py (single source of truth).
+    {
+        "pack_id": "character_change_detection",
+        "scope": "character_change_detection",
+        "title": "角色变化检测",
+        "summary": "检测章节中角色的状态变化——技能、经历、关系、性格演变。与内部 detect_character_changes 工具使用相同提示词。",
+        "system_prompt": "{character_change_detection_prompt}",
+        "workflow_json": [
+            {"step": 1, "name": "read_chapter", "description": "读取章节正文"},
+            {"step": 2, "name": "read_characters", "description": "读取当前角色档案"},
+            {"step": 3, "name": "detect", "description": "对比分析，检测变化"},
+            {"step": 4, "name": "apply", "description": "用 update_character 保存变化"},
+        ],
+    },
+    {
+        "pack_id": "worldbuilding_detection",
+        "scope": "worldbuilding_detection",
+        "title": "新世界观检测",
+        "summary": "检测章节正文中引入的新世界观设定。与内部 detect_new_worldbuilding 工具使用相同提示词。",
+        "system_prompt": "{worldbuilding_detection_prompt}",
+        "workflow_json": [
+            {"step": 1, "name": "read_chapter", "description": "读取章节正文"},
+            {"step": 2, "name": "read_worldbuilding", "description": "读取已有世界观"},
+            {"step": 3, "name": "detect", "description": "对比分析，检测新设定"},
+            {"step": 4, "name": "apply", "description": "用 create_worldbuilding_entry 保存新设定"},
+        ],
+    },
+    {
+        "pack_id": "chapter_evaluation",
+        "scope": "chapter_evaluation",
+        "title": "章节质量评估",
+        "summary": "8维度80分结构化评估。与内部 evaluate_chapter 工具使用相同提示词。",
+        "system_prompt": "{chapter_evaluation_prompt}",
+        "workflow_json": [
+            {"step": 1, "name": "read_chapter", "description": "读取章节正文"},
+            {"step": 2, "name": "evaluate", "description": "8维度评分"},
+            {"step": 3, "name": "record", "description": "用 record_external_quality_review 保存评估"},
+        ],
+        "quality_rubric_json": {
+            "dimensions": [
+                {"name": "opening_hook", "description": "开头吸引力", "max_score": 10},
+                {"name": "plot_progression", "description": "情节推进", "max_score": 10},
+                {"name": "character_portrayal", "description": "角色塑造", "max_score": 10},
+                {"name": "dialogue_quality", "description": "对话质量", "max_score": 10},
+                {"name": "suspense", "description": "悬念设置", "max_score": 10},
+                {"name": "pacing", "description": "节奏控制", "max_score": 10},
+                {"name": "show_dont_tell", "description": "展示性描写", "max_score": 10},
+                {"name": "language_quality", "description": "语言质量", "max_score": 10},
+            ],
+            "passing_score": 60,
+            "max_score": 80,
+        },
+    },
+    {
+        "pack_id": "conflict_suggestion",
+        "scope": "conflict_suggestion",
+        "title": "冲突建议",
+        "summary": "基于当前剧情状态设计3种冲突方案。与内部 suggest_conflicts 工具使用相同提示词。",
+        "system_prompt": "{conflict_suggestion_prompt}",
+        "workflow_json": [
+            {"step": 1, "name": "read_context", "description": "读取大纲、摘要、角色、关系"},
+            {"step": 2, "name": "suggest", "description": "设计3种冲突方案"},
+        ],
+    },
     {
         "pack_id": "cataloging_external_no_api",
         "scope": "cataloging",
@@ -512,6 +578,25 @@ def seed_builtin_packs(db: Session) -> int:
 
         if pack_data["pack_id"] == "cataloging_external_no_api":
             merged.update(cataloging_content)
+
+        # Inject analysis prompts from prompt_source (single source of truth)
+        from app.prompts.prompt_source import (
+            get_character_change_detection_prompt,
+            get_new_worldbuilding_detection_prompt,
+            get_chapter_evaluation_prompt,
+            get_conflict_suggestion_prompt,
+        )
+        analysis_injections = {
+            "{character_change_detection_prompt}": get_character_change_detection_prompt,
+            "{worldbuilding_detection_prompt}": get_new_worldbuilding_detection_prompt,
+            "{chapter_evaluation_prompt}": get_chapter_evaluation_prompt,
+            "{conflict_suggestion_prompt}": get_conflict_suggestion_prompt,
+        }
+        sys_prompt = merged.get("system_prompt", "")
+        for placeholder, getter in analysis_injections.items():
+            if placeholder in sys_prompt:
+                merged["system_prompt"] = sys_prompt.replace(placeholder, getter())
+                sys_prompt = merged["system_prompt"]
 
         # Inject shared rules into cataloging pack system prompts
         if pack_data["scope"] == "cataloging" and "{time_tracking_rules}" in merged.get("system_prompt", ""):

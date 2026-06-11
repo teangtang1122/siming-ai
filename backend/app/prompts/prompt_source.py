@@ -90,6 +90,30 @@ def get_time_tracking_rules() -> str:
     )
 
 
+def get_character_change_detection_prompt() -> str:
+    """Character change detection prompt — same as internal detect_character_changes tool."""
+    from .analysis_prompts import CHARACTER_CHANGE_SYSTEM
+    return CHARACTER_CHANGE_SYSTEM
+
+
+def get_new_worldbuilding_detection_prompt() -> str:
+    """New worldbuilding detection prompt — same as internal detect_new_worldbuilding tool."""
+    from .analysis_prompts import NEW_WORLDBUILDING_SYSTEM
+    return NEW_WORLDBUILDING_SYSTEM
+
+
+def get_chapter_evaluation_prompt() -> str:
+    """Chapter evaluation prompt — same as internal evaluate_chapter tool."""
+    from .chapter_evaluation_prompts import CHAPTER_EVALUATION_SYSTEM
+    return CHAPTER_EVALUATION_SYSTEM
+
+
+def get_conflict_suggestion_prompt() -> str:
+    """Conflict suggestion prompt — same as internal suggest_conflicts tool."""
+    from .analysis_prompts import CONFLICT_SUGGESTION_SYSTEM
+    return CONFLICT_SUGGESTION_SYSTEM
+
+
 def get_public_chapter_quality_system_prompt() -> str:
     """Build the public chapter_writing_quality pack system prompt.
 
