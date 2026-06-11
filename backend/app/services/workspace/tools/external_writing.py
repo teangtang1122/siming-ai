@@ -133,21 +133,34 @@ async def prepare_external_writing_context(
             "word_count": ch.word_count,
         })
 
-    # Characters
+    # Characters — full state fields (same as internal assistant sees)
+    from app.database.models import CharacterAlias
     characters = db.query(Character).filter(
         Character.project_id == project_id,
+        Character.role_type != "merged_alias",
     ).limit(16).all()
 
     result["characters"] = []
     for c in characters:
+        # Resolve aliases
+        aliases = [a.alias for a in (c.aliases or []) if a.alias]
         result["characters"].append({
             "id": c.id,
             "name": c.name,
+            "aliases": aliases,
             "role_type": c.role_type,
-            "personality": c.personality,
-            "current_location": c.current_location,
-            "current_goal": c.current_goal,
-            "life_status": c.life_status,
+            "appearance": c.appearance or "",
+            "personality": c.personality or "",
+            "background": (c.background or "")[:2000],
+            "current_location": c.current_location or "",
+            "current_goal": c.current_goal or "",
+            "life_status": c.life_status or "",
+            "realm_or_level": c.realm_or_level or "",
+            "physical_state": c.physical_state or "",
+            "mental_state": c.mental_state or "",
+            "active_conflict": c.active_conflict or "",
+            "abilities_state": c.abilities_state or "",
+            "items_or_assets": c.items_or_assets or "",
         })
 
     # Relationships
@@ -179,7 +192,7 @@ async def prepare_external_writing_context(
             "id": e.id,
             "title": e.title,
             "dimension": e.dimension,
-            "content": e.content[:500],
+            "content": e.content[:1500],
         }
         for e in wb_entries
     ]
@@ -212,12 +225,43 @@ async def prepare_external_writing_context(
     if outline_node_id and "outline" not in result:
         result["warnings"].append("Outline node not found. Writing without outline context.")
 
-    # Next tool suggestions
+    # Auto-match relevant skills (same as internal assistant)
+    try:
+        from app.services.skills.service import select_relevant_skills, build_skill_prompt_section
+        message_for_skills = requirements or (f"写第{outline_node_id}章" if outline_node_id else "写章节")
+        matched_skills = select_relevant_skills(db, project_id, message_for_skills, "project")
+        skill_prompt_section, skill_info = build_skill_prompt_section(matched_skills)
+        if skill_prompt_section:
+            result["matched_skills"] = skill_info
+            result["skill_instructions"] = skill_prompt_section
+    except Exception:
+        pass  # Skill matching is best-effort
+
+    # Auto-inject relevant memories
+    try:
+        from app.database.models import AssistantMemory
+        memories = db.query(AssistantMemory).filter(
+            AssistantMemory.project_id == project_id,
+            AssistantMemory.importance >= 7,
+        ).order_by(AssistantMemory.importance.desc()).limit(5).all()
+        if memories:
+            result["memories"] = [
+                {"key": m.key, "value": m.value, "category": m.category}
+                for m in memories
+            ]
+    except Exception:
+        pass  # Memory injection is best-effort
+
+    # Next tool suggestions — mirrors internal assistant's post-writing flow
     result["next_tool_suggestions"] = [
-        {"tool": "save_external_chapter_draft", "description": "Save generated draft before creating chapter"},
-        {"tool": "record_external_quality_review", "description": "Record quality review of the draft"},
-        {"tool": "create_chapter", "description": "Create chapter from draft using draft_id/content_ref"},
-        {"tool": "apply_external_story_updates", "description": "Apply character/worldbuilding updates after writing"},
+        {"tool": "recall", "description": "查询已有记忆，避免重复或矛盾"},
+        {"tool": "save_external_chapter_draft", "description": "保存生成的草稿"},
+        {"tool": "record_external_quality_review", "description": "记录质量自评"},
+        {"tool": "create_chapter", "description": "用 draft_id 保存章节"},
+        {"tool": "detect_character_changes", "description": "检测角色状态变化"},
+        {"tool": "detect_new_worldbuilding", "description": "检测新增世界观元素"},
+        {"tool": "apply_external_story_updates", "description": "应用角色/世界观更新"},
+        {"tool": "evaluate_chapter", "description": "8维度80分质量评估（需要墨枢API）"},
     ]
 
     return {
