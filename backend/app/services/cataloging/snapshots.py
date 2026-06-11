@@ -26,6 +26,7 @@ def character_snapshot(character: Character | None) -> dict | None:
         "background": character.background,
         "abilities": abilities,
         "role_type": character.role_type,
+        "age": character.age,
         "life_status": character.life_status,
         "current_location": character.current_location,
         "realm_or_level": character.realm_or_level,

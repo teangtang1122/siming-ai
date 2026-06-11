@@ -223,6 +223,20 @@ class ExecuteToolConfirmationTest(unittest.TestCase):
         self.assertFalse(result.is_error)
         self.assertEqual(mock_exec.call_args.args[1], "target-project")
 
+    @patch("app.services.workspace.executor.execute_workspace_action", new_callable=AsyncMock)
+    def test_project_scoped_tool_without_project_id_is_denied(self, mock_exec):
+        mock_db = MagicMock()
+        result = asyncio.run(execute_tool(
+            mock_db, "", "list_chapters",
+            {},
+            permission_pack="readonly_collaboration",
+        ))
+        self.assertTrue(result.is_error)
+        parsed = json.loads(result.content[0]["text"])
+        self.assertEqual(parsed["status"], "denied")
+        self.assertIn("project_id", parsed["detail"])
+        mock_exec.assert_not_called()
+
     def test_trusted_pack_destructive_tool_still_requires_token(self):
         mock_db = MagicMock()
         result = asyncio.run(execute_tool(

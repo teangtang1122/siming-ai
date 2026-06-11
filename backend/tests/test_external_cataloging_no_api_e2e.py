@@ -244,6 +244,64 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
         ).first()
         self.assertIsNotNone(outline)
 
+    def test_job_id_recovers_project_scope_when_project_id_is_empty(self):
+        """External agents can continue a cataloging job by job_id without losing project binding."""
+        from app.services.workspace.tools.external_cataloging import (
+            start_external_cataloging_job,
+            get_next_external_cataloging_chapter,
+            save_external_cataloging_facts,
+            save_external_cataloging_candidates,
+            verify_external_cataloging_progress,
+        )
+        from app.services.workspace.tools.cataloging import apply_pending_cataloging
+
+        project_id = self.project.id
+        result = _run(start_external_cataloging_job(
+            self.db,
+            project_id,
+            {"chapter_ids": [self.chapters[0].id]},
+        ))
+        self.assertEqual(result["status"], "ok")
+        job_id = result["data"]["job_id"]
+
+        result = _run(get_next_external_cataloging_chapter(self.db, "", {"job_id": job_id}))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["project_id"], project_id)
+        chapter_id = result["data"]["chapter_id"]
+
+        result = _run(save_external_cataloging_facts(
+            self.db,
+            "",
+            {"job_id": job_id, "chapter_id": chapter_id, "facts": [{"type": "character", "data": {"name": "Alice"}}]},
+        ))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["project_id"], project_id)
+
+        result = _run(save_external_cataloging_candidates(
+            self.db,
+            "",
+            {
+                "job_id": job_id,
+                "chapter_id": chapter_id,
+                "candidates": [
+                    {"type": "character", "action": "create", "name": "Alice", "background": "A traveler."},
+                    {"type": "outline", "action": "create", "title": "Chapter 1", "summary": "Alice appears."},
+                    {"type": "summary", "action": "create", "summary": "Alice appears in the forest."},
+                ],
+            },
+        ))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["project_id"], project_id)
+
+        result = _run(apply_pending_cataloging(self.db, "", {"job_id": job_id}))
+        self.assertEqual(result["status"], "ok", result)
+
+        result = _run(verify_external_cataloging_progress(self.db, "", {"job_id": job_id}))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["project_id"], project_id)
+        self.assertGreaterEqual(result["data"]["characters_count"], 1)
+        self.assertGreaterEqual(result["data"]["outline_nodes_count"], 1)
+
     def test_no_chapters_returns_skipped(self):
         """Starting cataloging on empty project should skip."""
         from app.services.workspace.tools.external_cataloging import start_external_cataloging_job

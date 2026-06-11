@@ -123,6 +123,16 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _job_project_id(job: Any, provided_project_id: str) -> tuple[str, str | None]:
+    effective_project_id = str(getattr(job, "project_id", "") or "").strip()
+    provided = str(provided_project_id or "").strip()
+    if provided and effective_project_id and provided != effective_project_id:
+        return effective_project_id, (
+            f"project_id mismatch: provided {provided}, but job {getattr(job, 'id', '')} belongs to {effective_project_id}"
+        )
+    return effective_project_id or provided, None
+
+
 def _workflow_reminder(next_tool: str, *, note: str = "") -> dict[str, Any]:
     """Return a compact workflow reminder for long-context external agents."""
     return {
@@ -160,6 +170,14 @@ async def start_external_cataloging_job(
     Does not call LLMGateway.
     """
     from app.database.models import CatalogingJob, CatalogingChapterRun, Chapter
+
+    if not str(project_id or "").strip():
+        return {
+            "tool": "start_external_cataloging_job",
+            "status": "skipped",
+            "detail": "project_id is required to start an external cataloging job",
+            "data": None,
+        }
 
     # Get chapters for this project
     chapter_ids = args.get("chapter_ids", [])
@@ -257,6 +275,14 @@ async def get_next_external_cataloging_chapter(
             "detail": "Job not found",
             "data": None,
         }
+    effective_project_id, mismatch = _job_project_id(job, project_id)
+    if mismatch:
+        return {
+            "tool": "get_next_external_cataloging_chapter",
+            "status": "skipped",
+            "detail": mismatch,
+            "data": None,
+        }
 
     # Get next pending chapter run
     chapter_run = db.query(CatalogingChapterRun).filter(
@@ -274,9 +300,10 @@ async def get_next_external_cataloging_chapter(
                 "tool": "get_next_external_cataloging_chapter",
                 "status": "ok",
                 "detail": "A chapter is awaiting candidate application before continuing",
-                "data": {
-                    "job_id": job_id,
-                    "chapter_id": awaiting_run.chapter_id,
+            "data": {
+                "job_id": job_id,
+                "project_id": effective_project_id,
+                "chapter_id": awaiting_run.chapter_id,
                     "chapter_index": awaiting_run.chapter_order,
                     "all_done": False,
                     "waiting_for_apply": True,
@@ -293,6 +320,7 @@ async def get_next_external_cataloging_chapter(
             "detail": "No more chapters to process",
             "data": {
                 "job_id": job_id,
+                "project_id": effective_project_id,
                 "all_done": True,
                 "next_tool": "get_project_archive_status",
                 "workflow_reminder": _workflow_reminder(
@@ -313,7 +341,7 @@ async def get_next_external_cataloging_chapter(
 
     # Build context indexes
     characters = db.query(Character).filter(
-        Character.project_id == project_id,
+        Character.project_id == effective_project_id,
     ).all()
     char_index = {c.name: c.id for c in characters}
     # Also include aliases
@@ -324,13 +352,13 @@ async def get_next_external_cataloging_chapter(
                     char_index[alias.alias_name] = c.id
 
     wb_entries = db.query(WorldbuildingEntry).filter(
-        WorldbuildingEntry.project_id == project_id,
+        WorldbuildingEntry.project_id == effective_project_id,
     ).all()
     wb_index = {e.title: e.id for e in wb_entries}
 
     # Get outline neighborhood
     outline_nodes = db.query(OutlineNode).filter(
-        OutlineNode.project_id == project_id,
+        OutlineNode.project_id == effective_project_id,
     ).order_by(OutlineNode.sort_order).limit(20).all()
     outline_neighborhood = [
         {"id": n.id, "title": n.title, "node_type": n.node_type, "parent_id": n.parent_id}
@@ -362,6 +390,7 @@ async def get_next_external_cataloging_chapter(
         "detail": f"Chapter: {chapter.title}",
         "data": {
             "job_id": job_id,
+            "project_id": effective_project_id,
             "chapter_id": chapter.id,
             "chapter_index": chapter_run.chapter_order,
             "title": chapter.title,
@@ -410,6 +439,14 @@ async def save_external_cataloging_facts(
             "detail": "Job not found",
             "data": None,
         }
+    effective_project_id, mismatch = _job_project_id(job, project_id)
+    if mismatch:
+        return {
+            "tool": "save_external_cataloging_facts",
+            "status": "skipped",
+            "detail": mismatch,
+            "data": None,
+        }
 
     # Find the chapter run
     chapter_run = db.query(CatalogingChapterRun).filter(
@@ -449,6 +486,7 @@ async def save_external_cataloging_facts(
         "detail": f"Saved {saved} facts",
         "data": {
             "job_id": job_id,
+            "project_id": effective_project_id,
             "chapter_id": chapter_id,
             "facts_saved": saved,
             "next_tool": "save_external_cataloging_candidates",
@@ -489,6 +527,14 @@ async def save_external_cataloging_candidates(
             "tool": "save_external_cataloging_candidates",
             "status": "skipped",
             "detail": "Job not found",
+            "data": None,
+        }
+    effective_project_id, mismatch = _job_project_id(job, project_id)
+    if mismatch:
+        return {
+            "tool": "save_external_cataloging_candidates",
+            "status": "skipped",
+            "detail": mismatch,
             "data": None,
         }
 
@@ -547,6 +593,7 @@ async def save_external_cataloging_candidates(
         "detail": f"Saved {saved} candidates",
         "data": {
             "job_id": job_id,
+            "project_id": effective_project_id,
             "chapter_id": chapter_id,
             "candidates_saved": saved,
             "chapter_run_status": chapter_run.status,
@@ -595,6 +642,14 @@ async def verify_external_cataloging_progress(
             "detail": "Job not found",
             "data": None,
         }
+    effective_project_id, mismatch = _job_project_id(job, project_id)
+    if mismatch:
+        return {
+            "tool": "verify_external_cataloging_progress",
+            "status": "skipped",
+            "detail": mismatch,
+            "data": None,
+        }
 
     # Count chapter runs
     total_runs = db.query(CatalogingChapterRun).filter(
@@ -618,11 +673,11 @@ async def verify_external_cataloging_progress(
     ).count()
 
     # Count project data
-    chapters_count = db.query(Chapter).filter(Chapter.project_id == project_id).count()
-    characters_count = db.query(Character).filter(Character.project_id == project_id).count()
-    wb_count = db.query(WorldbuildingEntry).filter(WorldbuildingEntry.project_id == project_id).count()
-    outline_count = db.query(OutlineNode).filter(OutlineNode.project_id == project_id).count()
-    rel_count = db.query(CharacterRelationship).filter(CharacterRelationship.project_id == project_id).count()
+    chapters_count = db.query(Chapter).filter(Chapter.project_id == effective_project_id).count()
+    characters_count = db.query(Character).filter(Character.project_id == effective_project_id).count()
+    wb_count = db.query(WorldbuildingEntry).filter(WorldbuildingEntry.project_id == effective_project_id).count()
+    outline_count = db.query(OutlineNode).filter(OutlineNode.project_id == effective_project_id).count()
+    rel_count = db.query(CharacterRelationship).filter(CharacterRelationship.project_id == effective_project_id).count()
 
     # Count pending candidates
     pending_candidates = db.query(CatalogingCandidate).filter(
@@ -657,6 +712,7 @@ async def verify_external_cataloging_progress(
         "detail": f"Progress: {completed_runs}/{total_runs} chapters processed",
         "data": {
             "job_id": job_id,
+            "project_id": effective_project_id,
             "chapters_processed": completed_runs,
             "chapters_total": total_runs,
             "chapters_pending": pending_runs,

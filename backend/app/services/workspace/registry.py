@@ -1246,6 +1246,7 @@ def _register_all() -> None:
             "background": {"type": "string", "description": "背景故事"},
             "abilities": {"type": "array", "items": {"type": "string"}, "description": "能力/技能列表"},
             "role_type": {"type": "string", "description": "角色类型：protagonist|supporting|antagonist|mentor|other，默认supporting"},
+            "age": {"type": "string", "description": "年龄/时间状态，如 3岁、约16岁、外表16岁实际200岁、成年"},
             "speech_style": {"type": "string", "description": "说话风格，可合并进背景/AI提示词"},
             "motivation": {"type": "string", "description": "当前动机，可合并进背景/AI提示词"},
             "conflict": {"type": "string", "description": "核心冲突，可合并进背景/AI提示词"},
@@ -1280,6 +1281,7 @@ def _register_all() -> None:
             "background": {"type": "string", "description": "更新背景"},
             "abilities": {"type": "array", "items": {"type": "string"}, "description": "更新能力列表（替换全部）"},
             "role_type": {"type": "string", "description": "更新角色类型：protagonist|supporting|antagonist|mentor|other"},
+            "age": {"type": "string", "description": "更新年龄/时间状态，如 3岁、约16岁、外表16岁实际200岁、成年"},
             "ai_config": {"type": "object", "description": "更新角色AI扮演配置，含 tone_style/catchphrases/verbosity/emotion_tendency/custom_system_prompt"},
             "custom_system_prompt": {"type": "string", "description": "更新角色AI扮演提示词"},
             # Current-state fields

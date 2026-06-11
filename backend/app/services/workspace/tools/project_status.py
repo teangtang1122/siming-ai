@@ -34,6 +34,14 @@ async def get_project_archive_status(
         WorldbuildingEntry,
     )
 
+    if not str(project_id or "").strip():
+        return {
+            "tool": "get_project_archive_status",
+            "status": "skipped",
+            "detail": "project_id is required to verify project archive status",
+            "data": None,
+        }
+
     chapters_count = db.query(Chapter).filter(
         Chapter.project_id == project_id,
     ).count()

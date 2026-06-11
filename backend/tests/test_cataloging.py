@@ -283,6 +283,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             character = Character(
                 project_id=project.id,
                 name="Mira",
+                age="三岁《第一章》：三岁半",
                 current_location="Hall《第一章》：Courtyard",
                 current_goal="Wait for orders",
             )
@@ -299,6 +300,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 item_type="character_state_update",
                 raw_payload=json.dumps({
                     "name": "Mira",
+                    "age": "三岁半",
                     "current_location": "Courtyard",
                     "current_goal": "Learn breathing",
                 }, ensure_ascii=False),
@@ -307,6 +309,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
 
             apply_candidates_for_run(db, job, run)
 
+            self.assertEqual(character.age, "三岁半")
             self.assertEqual(character.current_location, "Courtyard")
             self.assertEqual(character.current_goal, "Learn breathing")
             version = (
@@ -315,6 +318,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 .order_by(CharacterVersion.version_number.desc())
                 .first()
             )
+            self.assertIn("年龄/时间状态", version.change_summary)
             self.assertIn("当前位置", version.change_summary)
             self.assertIn("当前目标", version.change_summary)
             self.assertNotIn("角色档案更新", version.change_summary)

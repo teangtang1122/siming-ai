@@ -52,6 +52,21 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         self.assertIn("中文小说必须用中文建档", prompt)
         self.assertIn("不要改成英文或拼音", prompt)
 
+    def test_pack_requires_explicit_project_binding(self):
+        pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
+        prompt = pack["system_prompt"]
+        self.assertIn("project_id", prompt)
+        self.assertIn("current_project_id 为空", prompt)
+        self.assertIn("同一个 project_id", prompt)
+
+    def test_pack_documents_external_no_api_flow(self):
+        pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
+        prompt = pack["system_prompt"]
+        self.assertIn("get_prompt_pack", prompt)
+        self.assertIn("start_external_cataloging_job", prompt)
+        self.assertIn("save_external_cataloging_facts", prompt)
+        self.assertIn("apply_pending_cataloging", prompt)
+
     def test_pack_requires_verification(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
         prompt = pack["system_prompt"]

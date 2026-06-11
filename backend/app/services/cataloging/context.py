@@ -65,6 +65,7 @@ def build_light_context(db: Session, project_id: str, chapter: Chapter) -> dict:
     for character in characters[:30]:
         state = {
             "name": character.name,
+            "age": character.age,
             "life_status": character.life_status,
             "current_location": character.current_location,
             "realm_or_level": character.realm_or_level,
@@ -88,6 +89,7 @@ def build_light_context(db: Session, project_id: str, chapter: Chapter) -> dict:
         "character_index": [
             {
                 "name": item.name,
+                "age": item.age,
                 "role_type": item.role_type,
                 "life_status": item.life_status,
                 "current_location": item.current_location,
@@ -122,6 +124,7 @@ def _character_detail(character: Character) -> dict:
         "name": character.name,
         "aliases": [alias.alias for alias in (character.aliases or []) if alias.alias],
         "role_type": character.role_type,
+        "age": character.age,
         "appearance": _clip(character.appearance, 360),
         "personality": _clip(character.personality, 420),
         "background": _clip(character.background, 560),

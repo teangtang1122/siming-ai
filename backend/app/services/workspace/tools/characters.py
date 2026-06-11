@@ -43,6 +43,7 @@ async def create_character(
             ensure_ascii=False,
         ),
         role_type=str(args.get("role_type") or "supporting"),
+        age=str(args.get("age") or "")[:100] or None,
         is_evolution_tracked=True,
         # Current-state fields
         life_status=str(args.get("life_status") or "")[:50] or None,
@@ -89,7 +90,7 @@ async def update_character(
     if not character:
         return {"tool": "update_character", "status": "skipped", "detail": "未找到角色"}
     changed = False
-    for field, limit in [("appearance", 4000), ("personality", 4000), ("background", 8000), ("role_type", 100)]:
+    for field, limit in [("appearance", 4000), ("personality", 4000), ("background", 8000), ("role_type", 100), ("age", 100)]:
         if field in args:
             setattr(character, field, str(args.get(field) or "")[:limit])
             changed = True

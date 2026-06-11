@@ -15,6 +15,7 @@ class CharacterBase(BaseModel):
     abilities: Optional[list[str]] = Field(None, description="能力/技能列表")
     aliases: Optional[list[str]] = Field(None, description="别名/称呼列表")
     role_type: Optional[str] = Field(None, max_length=50, description="角色类型")
+    age: Optional[str] = Field(None, max_length=100, description="年龄/时间状态")
     is_evolution_tracked: bool = Field(True, description="是否开启自动追踪")
 
 
@@ -43,6 +44,7 @@ class CharacterUpdate(BaseModel):
     abilities: Optional[list[str]] = None
     aliases: Optional[list[str]] = None
     role_type: Optional[str] = Field(None, max_length=50)
+    age: Optional[str] = Field(None, max_length=100)
     life_status: Optional[str] = Field(None, max_length=50)
     current_location: Optional[str] = Field(None, max_length=200)
     realm_or_level: Optional[str] = Field(None, max_length=200)
@@ -68,6 +70,7 @@ class CharacterResponse(BaseModel):
     abilities: list[str]
     aliases: list[str]
     role_type: Optional[str]
+    age: Optional[str]
     life_status: Optional[str]
     current_location: Optional[str]
     realm_or_level: Optional[str]

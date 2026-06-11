@@ -34,6 +34,7 @@ def character_payload(character: Character) -> dict:
         "background": character.background,
         "abilities": abilities,
         "role_type": character.role_type,
+        "age": character.age,
         "current_version": character.current_version,
         # Current-state fields
         "life_status": character.life_status,
@@ -211,4 +212,3 @@ _character_ids_from_names = character_ids_from_names
 _replace_outline_links_by_names = replace_outline_links_by_names
 _next_outline_sort_order = next_outline_sort_order
 _next_worldbuilding_sort_order = next_worldbuilding_sort_order
-

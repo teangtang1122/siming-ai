@@ -133,6 +133,9 @@ def render_quickstart(
         "2. 外部 Agent 自己写正文并按质量规则自检",
         "3. save_external_chapter_draft -> record_external_quality_review -> create_chapter -> apply_external_story_updates",
     ]
+    from app.prompts.cataloging_source import get_language_rules, get_project_binding_rules
+
+    parts.extend(["", get_project_binding_rules(), "", get_language_rules()])
     if task:
         parts.append(f"\n## 当前任务\n{task}")
     if project_id:
@@ -149,6 +152,15 @@ def render_external_cataloging(
     job_id: str | None = None,
 ) -> list[McpPromptMessage]:
     """Render the API-free external cataloging prompt."""
+    from app.prompts.cataloging_source import get_external_cataloging_system_prompt
+
+    parts = [get_external_cataloging_system_prompt()]
+    if project_id:
+        parts.append(f"\n## project_id\n{project_id}")
+    if job_id:
+        parts.append(f"\n## job_id\n{job_id}")
+    return [McpPromptMessage(role="user", content="\n".join(parts))]
+
     parts = [
         "# 墨枢无 API 建档工作流",
         "",

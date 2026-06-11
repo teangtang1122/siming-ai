@@ -42,6 +42,7 @@ def build_targeted_context(db: Session, project_id: str, chapter: Chapter, facts
         "character_name_index": [
             {
                 "name": item.name,
+                "age": item.age,
                 "role_type": item.role_type,
                 "life_status": item.life_status,
                 "aliases": [alias.alias for alias in (item.aliases or []) if alias.alias],
@@ -195,6 +196,7 @@ def _character_context(character: Character) -> dict:
             for alias in (character.aliases or [])
         ],
         "role_type": character.role_type,
+        "age": character.age,
         "appearance": _clip(character.appearance, 360),
         "personality": _clip(character.personality, 480),
         "background": _clip(character.background, 720),

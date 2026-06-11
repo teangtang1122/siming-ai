@@ -22,8 +22,35 @@ logger = logging.getLogger(__name__)
 # Maximum character count before content is truncated in MCP responses.
 _CONTENT_TRUNCATE_LIMIT = 12000
 
+_PROJECT_OPTIONAL_TOOLS = {
+    "list_projects",
+    "create_project",
+    "get_project_info",
+    "update_project_info",
+    "delete_project",
+    "import_file_as_project",
+    "preview_import_splits",
+    "web_search",
+    "get_mcp_permission_status",
+    "get_moshu_usage_guide",
+    "list_prompt_packs",
+    "get_prompt_pack",
+    "get_tool_playbook",
+    "get_quality_rubric",
+    "list_skill_templates",
+    "start_novel_creation_session",
+    "draft_novel_blueprint",
+    "review_novel_blueprint",
+    "apply_novel_blueprint",
+}
 
-def _add_project_id_argument(tool: McpTool) -> McpTool:
+
+def _requires_project_id(td: ToolDef) -> bool:
+    """Whether an MCP tool needs an explicit or inferred project target."""
+    return td.name not in _PROJECT_OPTIONAL_TOOLS
+
+
+def _add_project_id_argument(tool: McpTool, *, required: bool = False) -> McpTool:
     """Expose a universal project_id override for MCP clients.
 
     Workspace handlers receive project_id out-of-band from the internal UI. MCP
@@ -34,8 +61,17 @@ def _add_project_id_argument(tool: McpTool) -> McpTool:
     properties = schema.setdefault("properties", {})
     properties.setdefault("project_id", {
         "type": "string",
-        "description": "Optional target project ID. Use after calling list_projects. If omitted, the MCP server default project is used.",
+        "description": (
+            "Target project ID. Call list_projects or use the project_id returned by "
+            "create_project/import_file_as_project. Project-scoped tools must use the "
+            "same project_id for every read/write/verify step."
+        ),
     })
+    if required:
+        required_list = list(schema.get("required") or [])
+        if "project_id" not in required_list:
+            required_list.append("project_id")
+        schema["required"] = required_list
     return McpTool(name=tool.name, description=tool.description, input_schema=schema)
 
 
@@ -69,7 +105,7 @@ def list_mcp_tools(
             description=td.description,
             input_schema=td.input_schema,
             required=td.required or None,
-        )))
+        ), required=_requires_project_id(td)))
     return result
 
 
@@ -294,6 +330,56 @@ def _build_args_summary(arguments: dict[str, Any]) -> str:
     return result[:300] if len(result) > 300 else result
 
 
+def _infer_project_id_from_arguments(db: Any, arguments: dict[str, Any]) -> str:
+    """Infer a project ID from stable workflow IDs when possible."""
+    try:
+        job_id = str(arguments.get("job_id") or "").strip()
+        if job_id:
+            from app.database.models import CatalogingJob
+
+            job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+            inferred = getattr(job, "project_id", "") if job else ""
+            if isinstance(inferred, str) and inferred.strip():
+                return inferred.strip()
+    except Exception:
+        logger.debug("Could not infer project_id from job_id", exc_info=True)
+
+    try:
+        run_id = str(arguments.get("run_id") or "").strip()
+        if run_id:
+            from app.database.models import AgentRun
+
+            run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+            inferred = getattr(run, "project_id", "") if run else ""
+            if isinstance(inferred, str) and inferred.strip():
+                return inferred.strip()
+    except Exception:
+        logger.debug("Could not infer project_id from run_id", exc_info=True)
+
+    return ""
+
+
+def _missing_project_payload(tool_name: str) -> dict[str, Any]:
+    return {
+        "status": "denied",
+        "tool": tool_name,
+        "detail": (
+            "project_id is required for this Moshu tool. Call list_projects or "
+            "use the project_id returned by create_project/import_file_as_project, "
+            "then pass that same project_id to every project-scoped tool call."
+        ),
+        "workflow_reminder": {
+            "required_arg": "project_id",
+            "standard_flow": [
+                "list_projects or import_file_as_project",
+                "record data.id as project_id",
+                "call project-scoped tools with project_id",
+                "verify with get_project_archive_status(project_id=...)",
+            ],
+        },
+    }
+
+
 def _safe_commit(db: Any) -> None:
     commit = getattr(db, "commit", None)
     if callable(commit):
@@ -353,6 +439,13 @@ async def execute_tool(
 
     # Extract project_id/run_id from arguments if present (out-of-band MCP arguments)
     effective_project_id = str(arguments.pop("project_id", "") or project_id or "").strip()
+    if not effective_project_id:
+        effective_project_id = _infer_project_id_from_arguments(db, arguments)
+    if _requires_project_id(td) and not effective_project_id:
+        return make_text_result(
+            json.dumps(_missing_project_payload(tool_name), ensure_ascii=False),
+            is_error=True,
+        )
     if not run_id:
         run_id = arguments.pop("run_id", None)
     else:

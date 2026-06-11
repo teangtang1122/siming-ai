@@ -89,6 +89,7 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
         background=payload.background,
         abilities=dumps_list(payload.abilities),
         role_type=payload.role_type,
+        age=payload.age,
         life_status=payload.life_status,
         current_location=payload.current_location,
         realm_or_level=payload.realm_or_level,

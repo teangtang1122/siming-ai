@@ -19,6 +19,16 @@ class ListMcpToolsByPackTest(unittest.TestCase):
         self.assertIn("search_chapters", names)
         self.assertIn("detect_character_changes", names)
 
+    def test_project_scoped_tools_require_project_id_in_schema(self):
+        tools = {tool.name: tool for tool in list_mcp_tools(permission_pack="readonly_collaboration")}
+        self.assertIn("list_chapters", tools)
+        self.assertIn("project_id", tools["list_chapters"].input_schema.get("required", []))
+
+    def test_global_tools_do_not_require_project_id_in_schema(self):
+        tools = {tool.name: tool for tool in list_mcp_tools(permission_pack="readonly_collaboration")}
+        self.assertIn("list_projects", tools)
+        self.assertNotIn("project_id", tools["list_projects"].input_schema.get("required", []))
+
     def test_readonly_pack_no_write_tools(self):
         tools = list_mcp_tools(permission_pack="readonly_collaboration")
         names = {t.name for t in tools}

@@ -32,7 +32,12 @@ def _get_job(db: Session, project_id: str, args: dict[str, Any]) -> CatalogingJo
     job_id = str(args.get("job_id") or args.get("id") or "").strip()
     if not job_id:
         return None
-    return db.query(CatalogingJob).filter(CatalogingJob.id == job_id, CatalogingJob.project_id == project_id).first()
+    job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+    if not job:
+        return None
+    if project_id and job.project_id != project_id:
+        return None
+    return job
 
 
 async def start_cataloging_job(db: Session, project_id: str, args: dict[str, Any]) -> dict:
@@ -87,7 +92,7 @@ async def set_cataloging_mode(db: Session, project_id: str, args: dict[str, Any]
     job.execution_mode = mode
     db.flush()
     if job.status == "waiting_confirmation" and mode == "auto":
-        asyncio.create_task(_consume_cataloging_stream(project_id, job.id))
+        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
     return {"tool": "set_cataloging_mode", "status": "ok", "detail": f"建档模式已切换为 {mode}", "data": job_to_dict(job)}
 
 
@@ -156,7 +161,7 @@ async def apply_pending_cataloging(db: Session, project_id: str, args: dict[str,
     refresh_job_progress(db, job)
     db.flush()
     if job.execution_mode == "auto":
-        asyncio.create_task(_consume_cataloging_stream(project_id, job.id))
+        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
     data: dict[str, Any] = {"job": job_to_dict(job), "run": run_to_dict(run), "events": events}
     if job.execution_mode == "external_agent":
         data["next_tool"] = "verify_external_cataloging_progress"
@@ -182,7 +187,7 @@ async def retry_current_cataloging_chapter(db: Session, project_id: str, args: d
     reset_run_for_retry(db, job, run)
     db.flush()
     if bool(args.get("run_now", True)):
-        asyncio.create_task(_consume_cataloging_stream(project_id, job.id))
+        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
     return {"tool": "retry_current_cataloging_chapter", "status": "ok", "detail": "当前章节已重置并开始重试", "data": {"job": job_to_dict(job), "run": run_to_dict(run)}}
 
 
@@ -196,7 +201,7 @@ async def rerun_cataloging_resolution_current(db: Session, project_id: str, args
     reset_run_for_resolution_retry(db, job, run)
     db.flush()
     if bool(args.get("run_now", True)):
-        asyncio.create_task(_consume_cataloging_stream(project_id, job.id))
+        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
     return {"tool": "rerun_cataloging_resolution_current", "status": "ok", "detail": "已保留事实并重跑第二阶段", "data": {"job": job_to_dict(job), "run": run_to_dict(run)}}
 
 
@@ -216,7 +221,7 @@ async def resume_cataloging_job(db: Session, project_id: str, args: dict[str, An
     resume_job(job)
     db.flush()
     if bool(args.get("run_now", True)):
-        asyncio.create_task(_consume_cataloging_stream(project_id, job.id))
+        asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
     return {"tool": "resume_cataloging_job", "status": "ok", "detail": "建档任务已继续", "data": job_to_dict(job)}
 
 

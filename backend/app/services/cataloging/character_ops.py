@@ -27,6 +27,7 @@ from .snapshots import character_snapshot, chapter_change_title
 
 CHARACTER_TEXT_FIELDS = ["appearance", "personality", "background", "role_type"]
 CHARACTER_STATE_FIELDS = [
+    "age",
     "life_status",
     "current_location",
     "realm_or_level",
@@ -39,6 +40,7 @@ CHARACTER_STATE_FIELDS = [
 ]
 
 STATE_FIELD_LIMITS = {
+    "age": 100,
     "life_status": 50,
     "current_location": 200,
     "realm_or_level": 200,
@@ -62,6 +64,7 @@ CHARACTER_CHANGE_LABELS = {
     "catchphrases": "口头禅",
     "verbosity": "表达详略",
     "emotion_tendency": "情绪倾向",
+    "age": "年龄/时间状态",
     "life_status": "生死状态",
     "current_location": "当前位置",
     "realm_or_level": "境界",

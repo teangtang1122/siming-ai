@@ -36,6 +36,21 @@ def _get_writing_quality_content() -> dict:
     }
 
 
+def _get_cataloging_shared_content() -> dict:
+    """Load cataloging content from the single source of truth."""
+    from app.prompts.cataloging_source import (
+        get_external_cataloging_forbidden_patterns,
+        get_external_cataloging_system_prompt,
+        get_external_cataloging_workflow,
+    )
+
+    return {
+        "system_prompt": get_external_cataloging_system_prompt(),
+        "workflow_json": get_external_cataloging_workflow(),
+        "forbidden_patterns_json": get_external_cataloging_forbidden_patterns(),
+    }
+
+
 # ── Built-in prompt pack definitions ─────────────────────────────────────
 
 BUILTIN_PACKS: list[dict[str, Any]] = [
@@ -459,6 +474,15 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
 
 
 # ── Seed function ────────────────────────────────────────────────────────
+def _refresh_builtin_cataloging_pack_defs() -> None:
+    cataloging_content = _get_cataloging_shared_content()
+    for pack in BUILTIN_PACKS:
+        if pack.get("pack_id") == "cataloging_external_no_api":
+            pack.update(cataloging_content)
+
+
+_refresh_builtin_cataloging_pack_defs()
+
 
 def seed_builtin_packs(db: Session) -> int:
     """Seed built-in prompt packs if they don't exist.
@@ -468,6 +492,7 @@ def seed_builtin_packs(db: Session) -> int:
     """
     # Load shared content from source files
     quality_content = _get_writing_quality_content()
+    cataloging_content = _get_cataloging_shared_content()
 
     created = 0
     for pack_data in BUILTIN_PACKS:
@@ -483,6 +508,9 @@ def seed_builtin_packs(db: Session) -> int:
                 merged["quality_rubric_json"] = quality_content["quality_rubric"]
             if not merged.get("forbidden_patterns_json"):
                 merged["forbidden_patterns_json"] = quality_content["forbidden_patterns"]
+
+        if pack_data["pack_id"] == "cataloging_external_no_api":
+            merged.update(cataloging_content)
 
         # Inject shared rules into cataloging pack system prompts
         if pack_data["scope"] == "cataloging" and "{time_tracking_rules}" in merged.get("system_prompt", ""):

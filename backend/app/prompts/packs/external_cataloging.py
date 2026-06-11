@@ -5,9 +5,9 @@ from . import PromptPack
 
 
 def _build_external_cataloging_system() -> str:
-    from ...services.prompt_packs.seed import BUILTIN_PACKS
-    pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
-    return pack["system_prompt"]
+    from ..cataloging_source import get_external_cataloging_system_prompt
+
+    return get_external_cataloging_system_prompt()
 
 
 EXTERNAL_CATALOGING_PACK = PromptPack(

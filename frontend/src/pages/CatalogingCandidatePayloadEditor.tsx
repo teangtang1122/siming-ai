@@ -100,6 +100,7 @@ function renderEditor(
         <Field label="角色名"><Input value={str(payload.name)} disabled={disabled} onChange={(event) => updatePayload('name', event.target.value)} /></Field>
         <Field label="别名/称呼"><Select mode="tags" value={arr(payload.aliases)} disabled={disabled} tokenSeparators={[',', '，', '/', '、']} onChange={(value) => updatePayload('aliases', value)} /></Field>
         <Field label="角色类型"><Select allowClear options={ROLE_OPTIONS} value={optionalStr(payload.role_type)} disabled={disabled} onChange={(value) => updatePayload('role_type', value)} /></Field>
+        <Field label="年龄/时间状态"><Input value={str(payload.age)} disabled={disabled} onChange={(event) => updatePayload('age', event.target.value)} /></Field>
         <Field label="外貌"><TextArea rows={3} value={str(payload.appearance)} disabled={disabled} onChange={(event) => updatePayload('appearance', event.target.value)} /></Field>
         <Field label="性格"><TextArea rows={3} value={str(payload.personality)} disabled={disabled} onChange={(event) => updatePayload('personality', event.target.value)} /></Field>
         <Field label="背景故事"><TextArea rows={4} value={str(payload.background)} disabled={disabled} onChange={(event) => updatePayload('background', event.target.value)} /></Field>
@@ -114,6 +115,7 @@ function renderEditor(
       <Space direction="vertical" style={{ width: '100%' }}>
         <Field label="角色名"><Input value={str(payload.name)} disabled={disabled} onChange={(event) => updatePayload('name', event.target.value)} /></Field>
         <Field label="别名/称呼"><Select mode="tags" value={arr(payload.aliases)} disabled={disabled} tokenSeparators={[',', '，', '/', '、']} onChange={(value) => updatePayload('aliases', value)} /></Field>
+        <Field label="年龄/时间状态"><Input value={str(payload.age)} disabled={disabled} onChange={(event) => updatePayload('age', event.target.value)} /></Field>
         <Field label="生死状态"><Input value={str(payload.life_status)} disabled={disabled} onChange={(event) => updatePayload('life_status', event.target.value)} /></Field>
         <Field label="当前位置"><Input value={str(payload.current_location)} disabled={disabled} onChange={(event) => updatePayload('current_location', event.target.value)} /></Field>
         <Field label="境界/等级"><Input value={str(payload.realm_or_level)} disabled={disabled} onChange={(event) => updatePayload('realm_or_level', event.target.value)} /></Field>

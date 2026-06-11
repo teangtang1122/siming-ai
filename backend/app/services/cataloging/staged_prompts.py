@@ -27,7 +27,7 @@ FACT_EXTRACTION_SYSTEM_PROMPT = """你是“作品建档”的第一阶段事实
 {"fact_type":"...","confidence":0.9,"evidence":"原文依据或概述","payload":{...}}
 
 字段要求：
-1. character_fact.payload 尽量包含 names、primary_name、aliases、role_hint、actions、state_changes、appearance_clues、background_clues、location、realm_or_level、physical_state、mental_state、goals、items_or_assets、keywords。
+1. character_fact.payload 尽量包含 names、primary_name、aliases、role_hint、age、actions、state_changes、appearance_clues、background_clues、location、realm_or_level、physical_state、mental_state、goals、items_or_assets、keywords。
 2. worldbuilding_fact.payload 尽量包含 title_hint、dimension_hint、keywords、content_points、rules、limits、affected_characters。
 3. identity_hint.payload 必须包含 names、reason、evidence_points、confidence_reason。疑似同一人但未实锤也要输出，供下一阶段读取相关卡片。
 4. outline_fact.payload 包含 title_hint、node_type、summary、characters、hook。
@@ -61,7 +61,7 @@ CATALOGING_RESOLUTION_SYSTEM_PROMPT = """你是“作品建档”的第二阶段
 2. 背景故事 background 必须写成“以什么身份做过什么事”的经历档案，不要只写一句身份简介。
    对已有角色输出 character_update 时，background 不要只写本章新增片段，而要结合相关旧角色卡输出一版压缩后的完整背景：保留出身、身份、关键经历、长期动机、核心冲突和隐藏身份，删除重复流水账；本章一次性行动应写入 character_timeline，不要塞进 background。
    custom_system_prompt 也要输出可直接替换旧提示词的完整版本，不要输出“补充几句”的增量片段。
-3. 每个出场或状态变化的角色，输出 character_state_update，尽量包含位置、境界、身体、心理、目标、冲突、能力状态、持有物。
+3. 每个出场或状态变化的角色，输出 character_state_update，尽量包含年龄/时间状态、位置、境界、身体、心理、目标、冲突、能力状态、持有物。
    这些字段表示“当前状态”，请只输出本章结束时的最新状态，不要把前几章状态拼接进去。
 4. 重要经历输出 character_timeline。
 5. 明确关系或关系变化输出 character_relationship。
@@ -77,9 +77,9 @@ CATALOGING_RESOLUTION_SYSTEM_PROMPT = """你是“作品建档”的第二阶段
 - chapter_summary：{"summary_text": "...", "key_events": ["..."], "characters": ["..."], "worldbuilding": ["..."], "outline_hint": "..."}
 - outline_create：{"title": "...", "summary": "...", "actual_summary": "...", "planned_summary": "...", "node_type": "chapter|section|volume", "parent_title": "...", "status": "completed", "related_characters": ["..."]}
 - outline_update：{"title": "...", "summary": "...", "actual_summary": "...", "status": "completed", "related_characters": ["..."]}
-- character_create：{"name": "...", "aliases": ["..."], "role_type": "...", "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
-- character_update：{"name": "...", "aliases": ["..."], "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
-- character_state_update：{"name": "...", "life_status": "alive|dead|unknown", "current_location": "...", "realm_or_level": "...", "physical_state": "...", "mental_state": "...", "current_goal": "...", "active_conflict": "...", "abilities_state": "...", "items_or_assets": "..."}
+- character_create：{"name": "...", "aliases": ["..."], "role_type": "...", "age": "...", "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
+- character_update：{"name": "...", "aliases": ["..."], "age": "...", "appearance": "...", "personality": "...", "background": "...", "abilities": ["..."], "tone_style": "...", "catchphrases": ["..."], "emotion_tendency": "...", "custom_system_prompt": "..."}
+- character_state_update：{"name": "...", "age": "...", "life_status": "alive|dead|unknown", "current_location": "...", "realm_or_level": "...", "physical_state": "...", "mental_state": "...", "current_goal": "...", "active_conflict": "...", "abilities_state": "...", "items_or_assets": "..."}
 - character_timeline：{"name": "...", "event_description": "...", "event_type": "appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event", "emotional_state_change": "..."}
 - character_relationship：{"source_name": "...", "target_name": "...", "relationship_type": "...", "description": "..."}
 - character_merge_candidate：{"primary_name": "...", "secondary_name": "...", "canonical_name": "...", "aliases": ["..."], "confidence_reason": "...", "evidence_points": ["..."], "background_append": "..."}
