@@ -42,12 +42,13 @@ def get_cataloging_candidate_rules() -> str:
 
 
 def get_external_no_api_rules() -> str:
-    return """【无 API 外部 Agent 规则】
-用户说明墨枢 API 欠费、未配置、不可用，或要求 Claude/Codex 自己分析时：
-1. 禁止调用需要墨枢内部模型 API 的工具；不要调用这些内部 LLM 工具：start_cataloging_job、chapter_writer、character_writer、outline_writer、worldbuilding_writer、design_plot、evaluate_chapter。
-2. 使用无 API 工具链：get_prompt_pack(pack_id='cataloging_external_no_api') -> start_external_cataloging_job -> get_next_external_cataloging_chapter -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress。
-3. 外部 Agent 自己阅读章节正文并生成 facts/candidates，墨枢只负责保存、应用、验证。
-4. 每章必须完成 apply_pending_cataloging 后才能进入下一章。候选只是暂存，不应用就不会出现在角色、大纲、世界观、章节摘要里。"""
+    from .prompt_source import get_api_free_mode_rules
+    return get_api_free_mode_rules() + """
+
+【编目专用补充规则】
+1. 使用无 API 工具链：get_prompt_pack(pack_id='cataloging_external_no_api') -> start_external_cataloging_job -> get_next_external_cataloging_chapter -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress。
+2. 外部 Agent 自己阅读章节正文并生成 facts/candidates，墨枢只负责保存、应用、验证。
+3. 每章必须完成 apply_pending_cataloging 后才能进入下一章。候选只是暂存，不应用就不会出现在角色、大纲、世界观、章节摘要里。"""
 
 
 def get_internal_cataloging_system_prompt() -> str:

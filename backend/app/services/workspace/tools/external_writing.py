@@ -68,6 +68,10 @@ async def prepare_external_writing_context(
         "next_tool_suggestions": [],
     }
 
+    # API-free mode rules — always included so external agents know the boundary
+    from app.prompts.prompt_source import get_api_free_mode_rules
+    result["api_free_mode_rules"] = get_api_free_mode_rules()
+
     # Prompt pack — build system_prompt from shared source (same modules as internal packs)
     if include_prompt_pack:
         pack_id = "chapter_writing_quality" if mode == "quality" else "chapter_writing_fast"

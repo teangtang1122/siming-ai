@@ -581,12 +581,14 @@ def seed_builtin_packs(db: Session) -> int:
 
         # Inject analysis prompts from prompt_source (single source of truth)
         from app.prompts.prompt_source import (
+            get_api_free_mode_rules,
             get_character_change_detection_prompt,
             get_new_worldbuilding_detection_prompt,
             get_chapter_evaluation_prompt,
             get_conflict_suggestion_prompt,
         )
         analysis_injections = {
+            "{api_free_mode_rules}": get_api_free_mode_rules,
             "{character_change_detection_prompt}": get_character_change_detection_prompt,
             "{worldbuilding_detection_prompt}": get_new_worldbuilding_detection_prompt,
             "{chapter_evaluation_prompt}": get_chapter_evaluation_prompt,

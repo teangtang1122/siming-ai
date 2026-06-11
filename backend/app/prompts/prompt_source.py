@@ -90,6 +90,55 @@ def get_time_tracking_rules() -> str:
     )
 
 
+def get_api_free_mode_rules() -> str:
+    """Rules for external agents to avoid calling internal LLM tools.
+
+    This is the single source of truth for API-free mode guidance.
+    Both prompt packs and tool responses reference this.
+    """
+    return """【API-free 模式 — 默认生效】
+除非用户明确说"用墨枢 API"或"用内部模型"，否则你必须自己完成所有分析和生成工作，不要调用以下需要墨枢内部 LLM 的工具。
+
+需要墨枢内部 LLM 的工具（禁止自动调用）：
+- chapter_writer → 你自己写章节正文
+- character_writer → 你自己设计角色
+- outline_writer → 你自己写大纲
+- worldbuilding_writer → 你自己写世界观
+- design_plot → 你自己设计剧情
+- roleplay_character → 你自己模拟角色对话
+- dialogue_battle → 你自己写多角色对话
+- evaluate_chapter → 你自己按 quality_rubric 评分，或调用 record_external_quality_review
+- suggest_conflicts → 你自己分析冲突
+- detect_character_changes → 你自己分析角色变化，然后调用 update_character
+- detect_new_worldbuilding → 你自己分析新设定，然后调用 create_worldbuilding_entry
+- detect_worldbuilding_conflicts → 你自己检查设定矛盾
+- rewrite_text → 你自己改写
+- expand_text → 你自己扩写
+- continue_text → 你自己续写
+- start_cataloging_job（内部编目） → 用 start_external_cataloging_job 代替
+
+API-free 工具（可以自由使用）：
+- 所有 search_*/list_* 查询工具
+- 所有 create_*/update_*/delete_* 写入工具
+- prepare_external_writing_context → 获取写作上下文
+- save_external_chapter_draft → 保存草稿
+- record_external_quality_review → 记录质量自评
+- apply_external_story_updates → 应用故事更新
+- start_external_cataloging_job / get_next_external_cataloging_chapter / save_external_cataloging_facts / save_external_cataloging_candidates / apply_pending_cataloging / verify_external_cataloging_progress → 外部编目全套
+- get_project_archive_status → 验证数据
+- get_prompt_pack → 获取写作方法论
+- remember / recall / forget → 记忆管理
+- web_search → 搜索引擎
+- get_mcp_permission_status → 权限查询
+
+工作方式：
+1. 调用 get_prompt_pack 获取写作/分析方法论提示词
+2. 调用 prepare_external_writing_context 获取上下文
+3. 你自己按提示词要求完成分析/生成
+4. 调用工具保存结果
+5. 调用验证工具确认数据已保存"""
+
+
 def get_character_change_detection_prompt() -> str:
     """Character change detection prompt — same as internal detect_character_changes tool."""
     from .analysis_prompts import CHARACTER_CHANGE_SYSTEM
@@ -153,6 +202,7 @@ def get_public_chapter_quality_system_prompt() -> str:
         f"{CHAPTER_ENDING_HOOK_TYPES}\n\n"
         "【文学技法】\n"
         f"{LITERARY_TECHNIQUES}\n\n"
+        f"{{api_free_mode_rules}}\n\n"
         "【风格设定】\n{style_context}"
     )
 
@@ -193,6 +243,7 @@ def get_public_chapter_fast_system_prompt() -> str:
         f"{CHAPTER_OPENING_HOOKS}\n\n"
         "【章末钩子类型】\n"
         f"{CHAPTER_ENDING_HOOK_TYPES}\n\n"
+        f"{{api_free_mode_rules}}\n\n"
         "【风格设定】\n{style_context}"
     )
 
