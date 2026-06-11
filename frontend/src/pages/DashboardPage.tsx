@@ -20,9 +20,8 @@ import {
   EditOutlined,
   DeleteOutlined,
   BookOutlined,
-  SettingOutlined,
-  ApiOutlined,
 } from '@ant-design/icons'
+import SystemNav from '../components/SystemNav'
 import { useAppStore } from '../stores'
 
 const { Text } = Typography
@@ -141,26 +140,14 @@ function DashboardPage() {
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
+      <SystemNav current="dashboard" />
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ margin: 0 }}>
           <BookOutlined style={{ marginRight: 8 }} />
           作品管理
         </h1>
         <Space size={12}>
-          <Button
-            type="text"
-            icon={<ApiOutlined />}
-            onClick={() => navigate('/external-agent')}
-          >
-            外部 Agent / MCP
-          </Button>
-          <Button
-            type="text"
-            icon={<SettingOutlined />}
-            onClick={() => navigate('/settings')}
-          >
-            系统设置
-          </Button>
           <Button
             type="primary"
             icon={<PlusOutlined />}

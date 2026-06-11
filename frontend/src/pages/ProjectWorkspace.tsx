@@ -137,13 +137,13 @@ function ProjectWorkspace() {
     { key: 'cataloging', icon: <DatabaseOutlined />, label: '作品建档' },
     { key: 'skills', icon: <BulbOutlined />, label: '技能管理' },
     { key: 'scheduler', icon: <ClockCircleOutlined />, label: '自动任务' },
-    { key: 'external-agent', icon: <ApiOutlined />, label: '外部 Agent / MCP' },
     { key: 'import', icon: <FileAddOutlined />, label: '内容导入' },
     { key: 'visualization', icon: <ApartmentOutlined />, label: '可视化' },
     { key: 'export', icon: <ExportOutlined />, label: '导出' },
     { type: 'divider' as const },
     { key: 'dashboard', icon: <HomeOutlined />, label: '作品管理' },
     { key: 'settings', icon: <SettingOutlined />, label: '系统设置' },
+    { key: 'external-agent', icon: <ApiOutlined />, label: '外部 Agent / MCP' },
   ]
 
   return (

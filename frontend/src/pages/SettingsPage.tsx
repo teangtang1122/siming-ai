@@ -25,10 +25,10 @@ import {
   GlobalOutlined,
   ReloadOutlined,
   ArrowLeftOutlined,
-  HomeOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
+import SystemNav from '../components/SystemNav'
 
 const { Title } = Typography
 
@@ -500,10 +500,8 @@ function SettingsPage() {
           >
             返回作品
           </Button>
-          <Button icon={<HomeOutlined />} onClick={() => navigate('/dashboard')}>
-            作品管理
-          </Button>
         </Space>
+        <SystemNav current="settings" />
       </div>
 
       <Card
