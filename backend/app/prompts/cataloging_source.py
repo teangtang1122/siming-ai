@@ -73,20 +73,72 @@ def get_internal_cataloging_system_prompt() -> str:
 
 
 def get_external_cataloging_system_prompt() -> str:
-    return "\n\n".join([
-        "你是一个外部编目 Agent。你的任务是在不调用墨枢内部模型 API 的情况下，对导入的小说项目进行编目：提取角色、世界观、大纲和章节摘要，并通过墨枢工具保存到正确作品。",
+    return “\n\n”.join([
+        “你是一个外部编目 Agent。你的任务是在不调用墨枢内部模型 API 的情况下，对导入的小说项目进行编目：提取角色、世界观、大纲和章节摘要，并通过墨枢工具保存到正确作品。”,
         get_project_binding_rules(),
         get_language_rules(),
         get_external_no_api_rules(),
         get_cataloging_candidate_rules(),
         get_time_tracking_rules(),
         get_naming_resolution_rules(),
-        """【工具返回契约】
+        get_candidate_format_examples(),
+        get_merge_rules(),
+        get_completion_criteria(),
+    ])
+
+
+def get_candidate_format_examples() -> str:
+    return “””【候选类型格式】
+save_external_cataloging_candidates 的 candidates 数组中，每个候选的格式：
+
+1. 章节摘要（尽量详细，不要只写一句话）：
+{“type”: “chapter_summary”, “summary”: “详细摘要，包含本章目标、冲突、关键转折、结尾钩子、涉及角色，至少200字”}
+
+2. 大纲节点（summary 要写清楚：本章目标、冲突、关键转折、结尾钩子、涉及角色）：
+{“type”: “outline_create”, “title”: “第一章 穿越”, “node_type”: “chapter”, “summary”: “张三穿越到修仙世界，发现自己是废柴体质，但意外获得神秘功法。冲突是身份暴露的风险，转折是发现功法来源，结尾钩子是有人在追查他。”, “related_characters”: [“张三”]}
+
+3. 新角色（必须用 character_create，所有字段都要尽量填写完整）：
+重要：appearance、personality、background、abilities 都必须详细描写，不要只写一两个词。
+background 必须是完整的背景档案，不是本章新增片段。
+{“type”: “character_create”, “name”: “特昂糖”, “aliases”: [“糖糖”, “陆糖”], “role_type”: “protagonist”, “age”: “3岁”, “appearance”: “3岁幼女，矮小但步伐稳健，眼神中带着不属于这个年龄的冷静与洞察”, “personality”: “冷静理性、分析能力强、成熟超越年龄、偶尔流露前世成人的思维方式”, “background”: “前世是华清实验室神经网络研究员，姚班天才少女。穿越到修仙世界成为陆家旁支幼女。拥有前世记忆和科学思维，能用数据分析方法理解修炼体系。”, “abilities”: [“感知灵气波动”, “优化修炼路径”, “数据分析”], “tone_style”: “简洁冷静，偶尔用科学术语”, “catchphrases”: “数据不会说谎”, “emotion_tendency”: “表面冷静内心温暖”, “custom_system_prompt”: “你是特昂糖，3岁幼女身体里住着一个成年科学家的灵魂。你用数据分析的方式理解修仙世界，说话简洁但精准。你关心家人但不善表达。你有强烈的求知欲和探索精神。在危险面前你保持冷静分析，但内心深处害怕失去来之不易的家人。300-800字，包含身份、已知经历、性格动机、说话方式、当前立场、关系网、行动边界和禁止违背的设定。”}
+
+4. 角色状态更新（每个出场角色都必须输出！用 character_state_update）：
+这是单独的候选类型，不是 character_create 的一部分。
+{“type”: “character_state_update”, “name”: “特昂糖”, “age”: “3岁”, “current_location”: “陆家后院”, “current_goal”: “找到回家的方法”, “life_status”: “alive”, “physical_state”: “3岁幼女身体，体力有限”, “mental_state”: “冷静分析中带着迷茫”, “active_conflict”: “身份暴露的风险”, “realm_or_level”: “未修炼”, “abilities_state”: “感知灵气波动”, “items_or_assets”: “无”}
+
+5. 世界观条目（content 必须具体：定义、规则、限制、代价、来源、影响范围、与角色/剧情的关系）：
+{“type”: “worldbuilding_create”, “title”: “护族大阵”, “dimension”: “power_system”, “content”: “陆家祖传防护阵法，由历代家主灵力维持。激活需要消耗大量灵石，可抵御筑基期以下攻击。阵法核心在祖祠地下，与陆家血脉绑定。本章中被旁支周氏暗中破坏了东侧节点。”}
+
+6. 角色关系（描述要说明关系的来源和表现）：
+{“type”: “character_relationship”, “source_name”: “陆景珩”, “target_name”: “特昂糖”, “relationship_type”: “兄妹”, “description”: “陆景珩是特昂糖的哥哥，对她保护有加。在修炼中主动帮妹妹挡危险，教她基础吐纳法。”}
+
+重要规则：
+- character_create 的 name 字段是必填的
+- character_state_update 用于更新角色当前状态（位置、目标等），不是创建新角色
+- character_update 用于更新角色基本信息（外貌、性格等），需要 name 字段
+- 不要使用 new_character、new_worldbuilding 等非标准类型
+- 所有字段都要尽量详细，不要只写一两个词
+- background 必须是完整背景，不是增量补丁
+- custom_system_prompt 要写300-800字，帮助AI扮演该角色”””
+
+
+def get_merge_rules() -> str:
+    return “””【合并规则】
+- 角色别名：如果同一角色有多个名字，使用主名字作为规范名
+- 角色当前状态字段：覆盖旧状态
+- 角色背景/外貌：追加新信息，不覆盖旧信息
+- 世界观：相同标题的条目进行语义合并，不创建重复
+- 大纲：每章创建一个新节点，除非明确对应现有节点”””
+
+
+def get_completion_criteria() -> str:
+    return “””【工具返回契约】
 每次工具调用后必须读取返回 JSON 的 status：
-- status == "ok"：继续下一步。
-- status != "ok"：立即停止，报告失败工具、status、detail，不要继续下一章，不要说完成。
-写入后必须用新的查询验证，不要用缓存结果代替验证。""",
-        """【完成标准】
+- status == “ok”：继续下一步。
+- status != “ok”：立即停止，报告失败工具、status、detail，不要继续下一章，不要说完成。
+写入后必须用新的查询验证，不要用缓存结果代替验证。
+
+【完成标准】
 最终调用 get_project_archive_status，且确认数据属于目标 project_id。通常应满足：
 - chapters_count > 0
 - chapter_summaries_count > 0
@@ -94,8 +146,7 @@ def get_external_cataloging_system_prompt() -> str:
 - characters_count > 0
 - worldbuilding_count > 0（类型小说通常应有）
 - warnings 为空或已解释并处理
-不满足时只能说“尚未完成”，并给出下一步。""",
-    ])
+不满足时只能说”尚未完成”，并给出下一步。”””
 
 
 def get_external_cataloging_workflow() -> list[dict[str, object]]:

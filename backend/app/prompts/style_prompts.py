@@ -142,8 +142,20 @@ def build_style_context(
             parts.append("生成或改写时必须主动避开上述句式，包括同义变体和近似模板。")
     # Anti-AI-flavor core rules — skipped when include_anti_ai=False (chapter_writer loads full version)
     if include_anti_ai:
+        from .anti_ai_prompts import (
+            TIER1_BANNED_WORDS,
+            AI_PATTERN_1_HIGH_FREQ_WORDS,
+            STACKED_WRITING_RULE,
+        )
+        # Build a compact banned-words summary from tiered source
+        tier1_words = []
+        for category_words in TIER1_BANNED_WORDS.values():
+            tier1_words.extend(category_words)
+        banned_words_str = "、".join(tier1_words[:20])  # Top 20 for compact display
         parts.append(
             "【去AI味硬规则 — 全局生效】你写的是中文通俗小说，不是作文、不是论文、不是新闻稿。"
+            f"高频禁用词（立即替换或删除）：{banned_words_str}。"
+            "完整禁用词表和7大AI写作模式详见 anti_ai_prompts 模块。"
             "严禁以下AI模型高频语言习惯："
             "（1）禁用'在……中/时/后'句式开头的长状语——拆成独立短句或用动作承接；"
             "（2）禁用'随着……'开头——直接切进场景和动作；"
