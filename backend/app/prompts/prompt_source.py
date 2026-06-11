@@ -121,8 +121,10 @@ def get_public_chapter_quality_system_prompt() -> str:
     Edit these modules once — both internal and external agents benefit.
     """
     from .anti_ai_prompts import build_anti_ai_system_prompt
+    from .chapter_prompts import CHAPTER_ENDING_HOOK_TYPES, CHAPTER_OPENING_HOOKS, LITERARY_TECHNIQUES
     from .craft_prompts import build_craft_system_prompt
     from .dialogue_prompts import build_dialogue_system_prompt
+    from .paragraph_hooks_prompts import build_paragraph_hooks_system_prompt
 
     return (
         "你是一位资深小说写手，专精于将剧情设计和对白素材织成流畅、有感染力的章节正文。\n\n"
@@ -144,6 +146,13 @@ def get_public_chapter_quality_system_prompt() -> str:
         f"{build_craft_system_prompt()}\n\n"
         f"{build_dialogue_system_prompt()}\n\n"
         f"{build_anti_ai_system_prompt()}\n\n"
+        f"{build_paragraph_hooks_system_prompt()}\n\n"
+        "【章首引子类型】\n"
+        f"{CHAPTER_OPENING_HOOKS}\n\n"
+        "【章末钩子类型】\n"
+        f"{CHAPTER_ENDING_HOOK_TYPES}\n\n"
+        "【文学技法】\n"
+        f"{LITERARY_TECHNIQUES}\n\n"
         "【风格设定】\n{style_context}"
     )
 
@@ -156,6 +165,7 @@ def get_public_chapter_fast_system_prompt() -> str:
     """
     from .anti_ai_prompts import TIER1_BANNED_WORDS, FORBIDDEN_SENTENCE_TEMPLATES
     from .body_emotion_replacement import BODY_EMOTION_REPLACEMENT
+    from .chapter_prompts import CHAPTER_ENDING_HOOK_TYPES, CHAPTER_OPENING_HOOKS
     from .scene_weaving import SCENE_WEAVING_RULE
     from .dialogue_prompts import build_dialogue_system_prompt
 
@@ -179,6 +189,10 @@ def get_public_chapter_fast_system_prompt() -> str:
         f"{build_dialogue_system_prompt()}\n\n"
         f"{BODY_EMOTION_REPLACEMENT}\n\n"
         f"{SCENE_WEAVING_RULE}\n\n"
+        "【章首引子类型】\n"
+        f"{CHAPTER_OPENING_HOOKS}\n\n"
+        "【章末钩子类型】\n"
+        f"{CHAPTER_ENDING_HOOK_TYPES}\n\n"
         "【风格设定】\n{style_context}"
     )
 

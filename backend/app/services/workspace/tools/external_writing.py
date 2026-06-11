@@ -206,8 +206,9 @@ async def prepare_external_writing_context(
     result["rhetoric_guidelines"] = effective_rhetoric_guidelines(project)
 
     # Full style context — same as what internal chapter_writer gets
+    # include_anti_ai=False because the prompt pack already includes full anti-AI rules
     from app.prompts.style_prompts import build_style_context
-    result["style_context"] = build_style_context(project, include_anti_ai=True)
+    result["style_context"] = build_style_context(project, include_anti_ai=False)
 
     # Quality rubric (from prompt pack)
     if include_prompt_pack and "prompt_pack" in result:
@@ -243,7 +244,7 @@ async def prepare_external_writing_context(
         memories = db.query(AssistantMemory).filter(
             AssistantMemory.project_id == project_id,
             AssistantMemory.importance >= 7,
-        ).order_by(AssistantMemory.importance.desc()).limit(5).all()
+        ).order_by(AssistantMemory.importance.desc()).limit(15).all()
         if memories:
             result["memories"] = [
                 {"key": m.key, "value": m.value, "category": m.category}
