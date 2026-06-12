@@ -242,7 +242,7 @@ def main() -> None:
         _safe_print(f"Update check failed: {exc}")
 
     url = f"http://127.0.0.1:{port}"
-    gui_url = f"{url}/#/gui"
+    gui_url = f"{url}/gui"
     _safe_print(f"{APP_NAME} starting...")
     _safe_print(f"Data directory: {home}")
     _safe_print(f"Open: {url}")
