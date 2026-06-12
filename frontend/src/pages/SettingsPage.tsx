@@ -189,7 +189,11 @@ const defaultSafetyLimits = (provider?: string, model?: string) => {
   }
 }
 
-function SettingsPage() {
+interface SettingsPageProps {
+  embedded?: boolean
+}
+
+function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const { fetchProjects } = useAppStore()
   const [configs, setConfigs] = useState<ModelConfig[]>([])
   const [globalModel, setGlobalModel] = useState<GlobalModel>({ provider: null, model: null })
@@ -487,7 +491,7 @@ function SettingsPage() {
     <div style={{ padding: 24, maxWidth: 960, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <Title level={3} style={{ margin: 0 }}>⚙️ 系统设置</Title>
-        <SystemNav current="settings" />
+        {!embedded && <SystemNav current="settings" />}
       </div>
 
       <Card

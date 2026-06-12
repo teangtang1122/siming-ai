@@ -88,7 +88,7 @@ try {
     "--noconfirm",
     "--clean",
     $PyInstallerMode,
-    "--console",
+    "--windowed",
     "--name", $AppName,
     "--distpath", $DistDir,
     "--workpath", (Join-Path $BuildDir "pyinstaller-work"),
@@ -100,6 +100,10 @@ try {
     "--collect-submodules", "httptools",
     "--collect-submodules", "watchfiles",
     "--hidden-import", "sqlite3",
+    "--hidden-import", "webview",
+    "--hidden-import", "webview.platforms",
+    "--hidden-import", "clr_loader",
+    "--hidden-import", "pythonnet",
     (Join-Path $BackendDir "launcher.py")
   )
 } finally {

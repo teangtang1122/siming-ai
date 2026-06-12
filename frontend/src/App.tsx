@@ -7,6 +7,7 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const ProjectWorkspace = lazy(() => import('./pages/ProjectWorkspace'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const ExternalAgentPage = lazy(() => import('./pages/ExternalAgentPage'))
+const GuiPage = lazy(() => import('./pages/GuiPage'))
 
 const { Content } = Layout
 
@@ -73,7 +74,7 @@ function WildcardRedirect() {
 
 function App() {
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: '100vh' }} className="moshu-grain">
       <Content style={{ padding: 0 }}>
         <ProjectPreloader />
         <Suspense
@@ -89,6 +90,7 @@ function App() {
             <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/external-agent" element={<ExternalAgentPage />} />
+            <Route path="/gui" element={<GuiPage />} />
             <Route path="*" element={<WildcardRedirect />} />
           </Routes>
         </Suspense>

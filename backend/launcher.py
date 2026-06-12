@@ -4,8 +4,9 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import tempfile
 import threading
-import webbrowser
+import traceback
 from pathlib import Path
 
 import uvicorn
@@ -14,6 +15,72 @@ import uvicorn
 APP_NAME = "Moshu"
 LEGACY_APP_NAME = "NovelWritingAgent"
 DEFAULT_PORT = 8765
+_STDIO_LOG_HANDLES = []
+
+
+def _launcher_log_path() -> Path:
+    try:
+        home = _app_home()
+        (home / "logs").mkdir(parents=True, exist_ok=True)
+        return home / "logs" / "launcher.log"
+    except Exception:
+        return Path(tempfile.gettempdir()) / "moshu-launcher.log"
+
+
+def _log(message: str) -> None:
+    from datetime import datetime
+
+    try:
+        path = _launcher_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n")
+    except Exception:
+        pass
+
+
+def _show_error(title: str, message: str) -> None:
+    _log(f"{title}: {message}")
+    try:
+        import tkinter
+        from tkinter import messagebox
+
+        root = tkinter.Tk()
+        root.withdraw()
+        messagebox.showerror(title, message)
+        root.destroy()
+    except Exception:
+        pass
+
+
+def _safe_print(message: str, *, error: bool = False) -> None:
+    stream = sys.stderr if error else sys.stdout
+    if stream is None:
+        _log(message)
+        return
+    try:
+        print(message, file=stream)
+    except Exception:
+        _log(message)
+
+
+def _redirect_missing_stdio_to_log() -> None:
+    """Windowed executables may have sys.stdout/stderr set to None.
+
+    Uvicorn's logging setup expects stderr to exist and have isatty(), so route
+    missing streams to the launcher log in GUI mode. MCP stdio mode must not call
+    this because stdout/stdin are the protocol transport.
+    """
+    path = _launcher_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if sys.stdout is None:
+        stdout_log = path.open("a", encoding="utf-8", buffering=1)
+        sys.stdout = stdout_log
+        _STDIO_LOG_HANDLES.append(stdout_log)
+    if sys.stderr is None:
+        stderr_log = path.open("a", encoding="utf-8", buffering=1)
+        sys.stderr = stderr_log
+        _STDIO_LOG_HANDLES.append(stderr_log)
 
 
 def _configure_stdio_utf8() -> None:
@@ -119,11 +186,48 @@ def _run_mcp_server() -> None:
         db.close()
 
 
+def _run_server_in_background(app, host: str, port: int) -> None:
+    """Run uvicorn in a background thread so the GUI event loop can run on the main thread."""
+    try:
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+            access_log=False,
+        )
+    except Exception:
+        _log("Server thread crashed:\n" + traceback.format_exc())
+        raise
+
+
+def _wait_for_server(host: str, port: int, timeout: float = 30.0) -> bool:
+    """Poll until the server is accepting connections, or timeout."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+
 def main() -> None:
+    _log(f"{APP_NAME} launcher entered with argv={sys.argv!r}")
     # Check for MCP server mode
     if "--mcp-server" in sys.argv:
+        _log("Starting MCP stdio server")
         _run_mcp_server()
         return
+
+    _redirect_missing_stdio_to_log()
+
+    # Check for --browser flag to use old browser-based launch
+    use_browser = "--browser" in sys.argv
+    if use_browser:
+        sys.argv.remove("--browser")
 
     port = _find_free_port()
     home = _prepare_environment(port)
@@ -131,31 +235,86 @@ def main() -> None:
 
     try:
         if apply_update_if_available(home):
+            _log("Update was scheduled; exiting current process.")
             return
     except Exception as exc:
-        print(f"Update check failed: {exc}")
+        _log("Update check failed:\n" + traceback.format_exc())
+        _safe_print(f"Update check failed: {exc}")
 
     url = f"http://127.0.0.1:{port}"
-    print(f"{APP_NAME} starting...")
-    print(f"Data directory: {home}")
-    print(f"Open: {url}")
-    threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    gui_url = f"{url}/#/gui"
+    _safe_print(f"{APP_NAME} starting...")
+    _safe_print(f"Data directory: {home}")
+    _safe_print(f"Open: {url}")
+    _log(f"Data directory: {home}")
+    _log(f"HTTP URL: {url}; GUI URL: {gui_url}")
 
     from app.main import app
 
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=port,
-        log_level="info",
-        access_log=False,
+    # Start the server in a background thread
+    server_thread = threading.Thread(
+        target=_run_server_in_background,
+        args=(app, "127.0.0.1", port),
+        daemon=True,
     )
+    server_thread.start()
+
+    # Wait for the server to be ready before opening any window
+    _safe_print("Waiting for server to start...")
+    if not _wait_for_server("127.0.0.1", port, timeout=30):
+        log_path = _launcher_log_path()
+        message = (
+            f"后端服务没有在 30 秒内启动。\n\n"
+            f"端口：{port}\n"
+            f"日志：{log_path}\n\n"
+            "可以稍后重试，或用命令行添加 --browser 以浏览器模式启动。"
+        )
+        _safe_print(f"Server did not start within 30 seconds on port {port}.")
+        _show_error(f"{APP_NAME} 启动失败", message)
+        return
+    _safe_print(f"Server ready on port {port}.")
+    _log(f"Server ready on port {port}")
+
+    if use_browser:
+        # Legacy browser mode
+        import webbrowser
+        webbrowser.open(url)
+        server_thread.join()
+    else:
+        # Native GUI mode with pywebview
+        try:
+            import webview
+            webview.create_window(
+                title=f"{APP_NAME} — 控制面板",
+                url=gui_url,
+                width=1100,
+                height=750,
+                min_size=(800, 600),
+                text_select=True,
+            )
+            _log("Starting pywebview GUI")
+            webview.start()
+            _log("pywebview GUI closed")
+        except Exception:
+            # Fallback to browser if pywebview is unavailable or the WebView runtime fails.
+            import webbrowser
+            _log("pywebview failed; falling back to browser:\n" + traceback.format_exc())
+            _show_error(
+                f"{APP_NAME} 图形窗口启动失败",
+                f"桌面窗口启动失败，已尝试改用浏览器打开。\n\n日志：{_launcher_log_path()}",
+            )
+            webbrowser.open(gui_url)
+            server_thread.join()
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"Startup failed: {exc}", file=sys.stderr)
-        input("Press Enter to exit...")
+        _log("Fatal startup failure:\n" + traceback.format_exc())
+        if "--mcp-server" not in sys.argv:
+            _show_error(f"{APP_NAME} 启动失败", f"{exc}\n\n日志：{_launcher_log_path()}")
+        _safe_print(f"Startup failed: {exc}", error=True)
+        if getattr(sys.stdin, "isatty", lambda: False)():
+            input("Press Enter to exit...")
         raise

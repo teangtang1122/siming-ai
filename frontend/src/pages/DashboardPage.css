@@ -1,0 +1,132 @@
+/* ─── Hero header ─── */
+.dashboard-hero {
+  padding: 48px 0 32px;
+  text-align: center;
+  position: relative;
+  margin-bottom: 8px;
+}
+
+.dashboard-hero::after {
+  content: '';
+  display: block;
+  width: 64px;
+  height: 2px;
+  background: var(--ant-color-primary);
+  margin: 24px auto 0;
+  opacity: 0.5;
+}
+
+.dashboard-hero-title {
+  font-family: 'Noto Serif SC', 'LXGW WenKai', serif;
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ant-color-text);
+  margin: 0 0 8px;
+  line-height: 1.3;
+}
+
+.dashboard-hero-sub {
+  font-size: 15px;
+  color: var(--ant-color-text-tertiary);
+  margin: 0;
+  letter-spacing: 0.04em;
+}
+
+/* ─── Actions bar ─── */
+.dashboard-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+/* ─── Project grid ─── */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 20px;
+}
+
+/* ─── Project card ─── */
+.dashboard-card {
+  cursor: pointer;
+  border-radius: 8px !important;
+  overflow: hidden;
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.2s ease;
+}
+
+.dashboard-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+.dashboard-card .ant-card-head {
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+  padding: 14px 20px;
+  min-height: auto;
+}
+
+.dashboard-card .ant-card-body {
+  padding: 16px 20px 20px;
+}
+
+.dashboard-card-title {
+  font-family: 'Noto Serif SC', 'LXGW WenKai', serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ant-color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-card-desc {
+  color: var(--ant-color-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 44px;
+  margin-bottom: 10px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dashboard-card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ant-color-text-tertiary);
+  padding-top: 10px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+/* ─── Empty state ─── */
+.dashboard-empty {
+  padding: 80px 0;
+  text-align: center;
+}
+
+/* ─── Stagger animation for cards ─── */
+.dashboard-card-wrap {
+  animation: moshu-slide-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dashboard-card-wrap:nth-child(1) { animation-delay: 0.05s; }
+.dashboard-card-wrap:nth-child(2) { animation-delay: 0.10s; }
+.dashboard-card-wrap:nth-child(3) { animation-delay: 0.15s; }
+.dashboard-card-wrap:nth-child(4) { animation-delay: 0.20s; }
+.dashboard-card-wrap:nth-child(5) { animation-delay: 0.25s; }
+.dashboard-card-wrap:nth-child(6) { animation-delay: 0.30s; }
+.dashboard-card-wrap:nth-child(7) { animation-delay: 0.35s; }
+.dashboard-card-wrap:nth-child(8) { animation-delay: 0.40s; }
+.dashboard-card-wrap:nth-child(9) { animation-delay: 0.45s; }
+.dashboard-card-wrap:nth-child(10) { animation-delay: 0.50s; }
+.dashboard-card-wrap:nth-child(11) { animation-delay: 0.55s; }
+.dashboard-card-wrap:nth-child(12) { animation-delay: 0.60s; }

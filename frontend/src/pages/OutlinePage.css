@@ -11,9 +11,9 @@
 
 .outline-tree-panel,
 .outline-editor {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
-  background: #fff;
+  background: var(--ant-color-bg-container);
 }
 
 .outline-tree-panel {
@@ -39,8 +39,8 @@
 }
 
 .outline-panel-head {
-  background: #fff;
-  border-bottom: 1px solid #f0f0f0;
+  background: var(--ant-color-bg-container);
+  border-bottom: 1px solid var(--ant-color-border-secondary);
   margin-bottom: 12px;
   padding-bottom: 12px;
   position: sticky;
@@ -63,10 +63,12 @@
 
 .outline-tree-main {
   display: inline-flex;
-  flex: 1 1 auto;
+  flex: 1 1 60%;
   min-width: 0;
+  max-width: calc(100% - 120px);
   align-items: center;
   gap: 6px;
+  overflow: hidden;
 }
 
 .outline-tree-main span:last-child {
@@ -80,6 +82,7 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .outline-tree-tags .ant-tag {

@@ -11,9 +11,9 @@
 
 .writer-chapter-panel,
 .writer-editor {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
-  background: #fff;
+  background: var(--ant-color-bg-container);
 }
 
 .writer-chapter-panel {
@@ -41,8 +41,8 @@
 
 .writer-panel-head {
   margin-bottom: 12px;
-  background: #fff;
-  border-bottom: 1px solid #f0f0f0;
+  background: var(--ant-color-bg-container);
+  border-bottom: 1px solid var(--ant-color-border-secondary);
   padding-bottom: 12px;
   position: sticky;
   top: 0;
@@ -69,11 +69,11 @@
 }
 
 .writer-chapter-item:hover {
-  background: #fafafa;
+  background: var(--ant-color-bg-text-hover);
 }
 
 .writer-chapter-item-active {
-  background: #e6f4ff;
+  background: var(--ant-color-primary-bg);
 }
 
 .writer-form-grid {
@@ -89,7 +89,7 @@
 
 /* History */
 .writer-history-section {
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--ant-color-border-secondary);
   margin-top: 18px;
   padding-top: 16px;
 }
@@ -111,7 +111,7 @@
 
 /* Diff */
 .writer-diff-panel {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
   margin-top: 14px;
   padding: 12px;
@@ -126,7 +126,7 @@
 }
 
 .writer-diff-change {
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--ant-color-border-secondary);
   padding: 10px 0;
 }
 
@@ -151,13 +151,13 @@
 }
 
 .writer-diff-old {
-  background: #fff1f0;
-  border: 1px solid #ffccc7;
+  background: var(--ant-color-error-bg);
+  border: 1px solid var(--ant-color-error-border);
 }
 
 .writer-diff-new {
-  background: #f6ffed;
-  border: 1px solid #b7eb8f;
+  background: var(--ant-color-success-bg);
+  border: 1px solid var(--ant-color-success-border);
 }
 
 @media (max-width: 1480px) {

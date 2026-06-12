@@ -14,3 +14,4 @@ python-dotenv==1.0.0
 python-docx==1.2.0
 ddgs==9.0.0
 croniter>=2.0
+pywebview>=5.0

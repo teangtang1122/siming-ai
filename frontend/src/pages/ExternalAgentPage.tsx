@@ -43,7 +43,11 @@ const RISK_COLORS: Record<string, string> = {
   destructive: 'red',
 }
 
-function ExternalAgentPage() {
+interface ExternalAgentPageProps {
+  embedded?: boolean
+}
+
+function ExternalAgentPage({ embedded = false }: ExternalAgentPageProps = {}) {
   const [settings, setSettings] = useState<GlobalSettings | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -120,7 +124,7 @@ function ExternalAgentPage() {
 
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
-      <SystemNav current="external-agent" />
+      {!embedded && <SystemNav current="external-agent" />}
 
       <Title level={3}>
         <ApiOutlined style={{ marginRight: 8 }} />

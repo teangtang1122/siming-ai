@@ -1,7 +1,7 @@
 .ai-side-panel {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
-  background: #fff;
+  background: var(--ant-color-bg-container);
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -24,7 +24,7 @@
 
 .ai-side-resize-handle:hover,
 .ai-side-panel-dragging .ai-side-resize-handle {
-  background: #1677ff;
+  background: var(--ant-color-primary);
 }
 
 .ai-side-head {
@@ -32,7 +32,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
   flex-shrink: 0;
   padding: 10px 14px;
 }

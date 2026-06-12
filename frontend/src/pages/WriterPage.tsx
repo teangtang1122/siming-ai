@@ -380,11 +380,6 @@ function WriterPage({ projectId }: WriterPageProps) {
                   description={
                     <Space direction="vertical" size={4}>
                       <Text type="secondary" ellipsis>{chapter.outline_path.length > 0 ? chapter.outline_path.join(' / ') : '未关联大纲'}</Text>
-                      {chapter.summary_text && (
-                        <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0, fontSize: 12 }}>
-                          {chapter.summary_text}
-                        </Paragraph>
-                      )}
                       <Space size={6} wrap>
                         <Tag>{chapter.word_count} 字</Tag>
                         <Tag>v{chapter.current_version}</Tag>

@@ -139,7 +139,7 @@ describe('DashboardPage', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('暂无作品，点击上方按钮创建')).toBeInTheDocument()
+      expect(screen.getByText('暂无作品，开始你的第一部创作')).toBeInTheDocument()
     })
   })
 

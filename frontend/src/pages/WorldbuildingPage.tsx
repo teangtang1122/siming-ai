@@ -360,7 +360,13 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
                   columns={columns}
                   dataSource={dataSource}
                   loading={loading}
-                  pagination={false}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: ['10', '20', '50'],
+                    showTotal: (total) => `共 ${total} 条`,
+                    size: 'small',
+                  }}
                   locale={{
                     emptyText: (
                       <Empty
@@ -381,14 +387,38 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
       </div>
 
       <Modal
-        title={contentModal?.title}
+        title={
+          contentModal && (
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{contentModal.title}</div>
+              <Space size={12}>
+                <Tag icon={DIMENSIONS.find((d) => d.key === contentModal.dimension)?.icon}>
+                  {DIMENSIONS.find((d) => d.key === contentModal.dimension)?.label}
+                </Tag>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  更新于 {new Date(contentModal.updated_at).toLocaleString('zh-CN')}
+                </Text>
+              </Space>
+            </div>
+          )
+        }
         open={!!contentModal}
         onCancel={() => setContentModal(null)}
         footer={null}
         width={720}
         style={{ top: 32 }}
       >
-        <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+        <div
+          style={{
+            maxHeight: 'calc(100vh - 240px)',
+            overflowY: 'auto',
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.9,
+            fontSize: 15,
+            color: 'var(--ant-color-text)',
+            paddingTop: 8,
+          }}
+        >
           {contentModal?.content}
         </div>
       </Modal>

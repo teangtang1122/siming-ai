@@ -22,7 +22,9 @@ import {
   BookOutlined,
 } from '@ant-design/icons'
 import SystemNav from '../components/SystemNav'
+import PageWrapper from '../components/PageWrapper'
 import { useAppStore } from '../stores'
+import './DashboardPage.css'
 
 const { Text } = Typography
 
@@ -125,9 +127,9 @@ function DashboardPage() {
     try {
       const tags = JSON.parse(tagsStr) as string[]
       return (
-        <Space size={4} style={{ marginTop: 8, flexWrap: 'wrap' }}>
+        <Space size={4} style={{ flexWrap: 'wrap' }}>
           {tags.map((tag) => (
-            <Tag key={tag} color="blue" style={{ fontSize: 12 }}>
+            <Tag key={tag} style={{ fontSize: 12 }}>
               {tag}
             </Tag>
           ))}
@@ -139,112 +141,118 @@ function DashboardPage() {
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
+    <PageWrapper>
       <SystemNav current="dashboard" />
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h1 style={{ margin: 0 }}>
-          <BookOutlined style={{ marginRight: 8 }} />
-          作品管理
+      {/* Hero */}
+      <div className="dashboard-hero moshu-animate-in">
+        <h1 className="dashboard-hero-title">
+          <BookOutlined style={{ marginRight: 12, fontSize: 32 }} />
+          墨枢
         </h1>
-        <Space size={12}>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            size="large"
-            onClick={() => setIsCreateModalOpen(true)}
-          >
-            创建新作品
-          </Button>
-        </Space>
+        <p className="dashboard-hero-sub">笔下生花，万象归枢</p>
       </div>
 
-      <Input.Search
-        placeholder="搜索作品标题或简介"
-        allowClear
-        enterButton={<><SearchOutlined /> 搜索</>}
-        size="large"
-        style={{ marginBottom: 24 }}
-        value={searchKeyword}
-        onChange={(e) => setSearchKeyword(e.target.value)}
-        onSearch={handleSearch}
-      />
+      {/* Actions */}
+      <div className="dashboard-actions moshu-animate-in moshu-stagger-1">
+        <Input.Search
+          placeholder="搜索作品标题或简介"
+          allowClear
+          enterButton={<><SearchOutlined /> 搜索</>}
+          size="large"
+          style={{ maxWidth: 400 }}
+          value={searchKeyword}
+          onChange={(e) => setSearchKeyword(e.target.value)}
+          onSearch={handleSearch}
+        />
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          size="large"
+          className="moshu-btn-press"
+          onClick={() => setIsCreateModalOpen(true)}
+        >
+          创建新作品
+        </Button>
+      </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 60 }}>
+        <div style={{ textAlign: 'center', padding: 80 }}>
           <Spin size="large" />
-          <div style={{ marginTop: 12, color: '#666' }}>加载中...</div>
+          <div style={{ marginTop: 16, color: 'var(--ant-color-text-secondary)', fontSize: 15 }}>加载中...</div>
         </div>
       ) : projects.length === 0 ? (
-        <Empty
-          description={
-            searchKeyword
-              ? '未找到匹配的作品'
-              : '暂无作品，点击上方按钮创建'
-          }
-          style={{ padding: 60 }}
-        >
-          {!searchKeyword && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setIsCreateModalOpen(true)}>
-              立即创建
-            </Button>
-          )}
-        </Empty>
+        <div className="dashboard-empty moshu-animate-fade">
+          <Empty
+            description={
+              searchKeyword
+                ? '未找到匹配的作品'
+                : '暂无作品，开始你的第一部创作'
+            }
+          >
+            {!searchKeyword && (
+              <Button type="primary" icon={<PlusOutlined />} size="large" onClick={() => setIsCreateModalOpen(true)}>
+                立即创建
+              </Button>
+            )}
+          </Empty>
+        </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
+        <div className="dashboard-grid">
           {projects.map((project) => (
-            <Card
-              key={project.id}
-              title={
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 'bold', fontSize: 16 }}>{project.title}</span>
-                  <Space size={4}>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<EditOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        openEditModal(project)
-                      }}
-                    />
-                    <Popconfirm
-                      title="确认删除"
-                      description="删除作品将同时删除其所有关联数据（世界观、角色、大纲、章节等），此操作不可恢复。"
-                      onConfirm={(e) => {
-                        e?.stopPropagation()
-                        handleDelete(project.id)
-                      }}
-                      onCancel={(e) => e?.stopPropagation()}
-                      okText="删除"
-                      cancelText="取消"
-                      okButtonProps={{ danger: true, autoInsertSpace: false }}
-                      cancelButtonProps={{ autoInsertSpace: false }}
-                    >
+            <div key={project.id} className="dashboard-card-wrap">
+              <Card
+                className="dashboard-card"
+                hoverable
+                onClick={() => navigate(`/project/${project.id}`)}
+                title={
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span className="dashboard-card-title">{project.title}</span>
+                    <Space size={2}>
                       <Button
                         type="text"
                         size="small"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={(e) => e.stopPropagation()}
+                        icon={<EditOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openEditModal(project)
+                        }}
                       />
-                    </Popconfirm>
-                  </Space>
+                      <Popconfirm
+                        title="确认删除"
+                        description="删除作品将同时删除其所有关联数据，此操作不可恢复。"
+                        onConfirm={(e) => {
+                          e?.stopPropagation()
+                          handleDelete(project.id)
+                        }}
+                        onCancel={(e) => e?.stopPropagation()}
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true, autoInsertSpace: false }}
+                        cancelButtonProps={{ autoInsertSpace: false }}
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </Popconfirm>
+                    </Space>
+                  </div>
+                }
+              >
+                <p className="dashboard-card-desc">
+                  {project.description || '暂无简介'}
+                </p>
+                {renderTags(project.tags)}
+                <div className="dashboard-card-meta">
+                  <Text type="secondary">更新于 {new Date(project.updated_at).toLocaleDateString('zh-CN')}</Text>
+                  <Text type="secondary">{new Date(project.created_at).toLocaleDateString('zh-CN')} 创建</Text>
                 </div>
-              }
-              hoverable
-              onClick={() => navigate(`/project/${project.id}`)}
-              bodyStyle={{ minHeight: 100 }}
-            >
-              <p style={{ color: '#666', minHeight: 40, marginBottom: 8 }}>
-                {project.description || '暂无简介'}
-              </p>
-              {renderTags(project.tags)}
-              <div style={{ marginTop: 12, fontSize: 12, color: '#999', display: 'flex', justifyContent: 'space-between' }}>
-                <Text type="secondary">更新于 {new Date(project.updated_at).toLocaleDateString('zh-CN')}</Text>
-                <Text type="secondary">{new Date(project.created_at).toLocaleDateString('zh-CN')} 创建</Text>
-              </div>
-            </Card>
+              </Card>
+            </div>
           ))}
         </div>
       )}
@@ -314,7 +322,7 @@ function DashboardPage() {
           </Form.Item>
         </Form>
       </Modal>
-    </div>
+    </PageWrapper>
   )
 }
 

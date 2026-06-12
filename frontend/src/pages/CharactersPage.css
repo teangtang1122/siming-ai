@@ -11,9 +11,9 @@
 
 .characters-sidebar,
 .characters-editor {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
-  background: #fff;
+  background: var(--ant-color-bg-container);
 }
 
 .characters-sidebar {
@@ -34,14 +34,14 @@
 .characters-sidebar-toolbar,
 .characters-sidebar-head {
   align-items: center;
-  background: #fff;
+  background: var(--ant-color-bg-container);
   display: flex;
   gap: 12px;
   justify-content: space-between;
 }
 
 .characters-sidebar-toolbar {
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
   flex: 0 0 auto;
   flex-direction: column;
   margin-bottom: 12px;
@@ -87,11 +87,11 @@
 }
 
 .characters-list-item:hover {
-  background: #fafafa;
+  background: var(--ant-color-bg-text-hover);
 }
 
 .characters-list-item-active {
-  background: #e6f4ff;
+  background: var(--ant-color-primary-bg);
 }
 
 .characters-editor-head {
@@ -107,7 +107,7 @@
 }
 
 .characters-section {
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--ant-color-border-secondary);
   margin-top: 16px;
   padding-top: 16px;
 }
@@ -125,8 +125,8 @@
 }
 
 .characters-ai-result {
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
+  background: var(--ant-color-bg-layout);
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
   max-height: 220px;
   overflow: auto;

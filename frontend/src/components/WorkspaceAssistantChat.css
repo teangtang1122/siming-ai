@@ -27,8 +27,8 @@
 
 .workspace-assistant-history-item {
   align-items: center;
-  background: #fff;
-  border: 1px solid #f0f0f0;
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
   color: inherit;
   cursor: pointer;
@@ -49,13 +49,13 @@
 }
 
 .workspace-assistant-history-item-active {
-  background: #e6f4ff;
-  border-color: #91caff;
+  background: var(--ant-color-primary-bg);
+  border-color: var(--ant-color-primary-border);
 }
 
 .workspace-assistant-run-log {
-  background: #fff;
-  border: 1px solid #e6f4ff;
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-primary-bg);
   border-radius: 6px;
   flex-shrink: 0;
   max-height: 130px;
@@ -73,14 +73,14 @@
 .workspace-assistant-run-log-toggle {
   background: none;
   border: none;
-  color: #1677ff;
+  color: var(--ant-color-primary);
   cursor: pointer;
   font-size: 12px;
   padding: 0;
 }
 
 .workspace-assistant-run-log-toggle:hover {
-  color: #4096ff;
+  color: var(--ant-color-primary-hover);
   text-decoration: underline;
 }
 
@@ -100,8 +100,8 @@
 }
 
 .workspace-assistant-messages {
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
+  background: var(--ant-color-bg-layout);
+  border: 1px solid var(--ant-color-border-secondary);
   border-radius: 6px;
   flex: 1 1 auto;
   min-height: 0;
@@ -111,21 +111,21 @@
 }
 
 .workspace-assistant-message {
-  background: #fff;
-  border: 1px solid #f0f0f0;
-  border-left: 3px solid #1677ff;
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-left: 3px solid var(--ant-color-primary);
   border-radius: 6px;
   margin-bottom: 10px;
   padding: 10px;
 }
 
 .workspace-assistant-user {
-  border-left-color: #8c8c8c;
+  border-left-color: var(--ant-color-text-tertiary);
 }
 
 .workspace-assistant-composer {
-  background: #fff;
-  border-top: 1px solid #f0f0f0;
+  background: var(--ant-color-bg-container);
+  border-top: 1px solid var(--ant-color-border-secondary);
   display: grid;
   flex-shrink: 0;
   gap: 8px;
@@ -133,8 +133,8 @@
 }
 
 .workspace-assistant-scroll-bottom {
-  background: #fff;
-  border: 1px solid #d9d9d9;
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border);
   border-radius: 50%;
   bottom: 8px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
@@ -151,6 +151,6 @@
 }
 
 .workspace-assistant-scroll-bottom:hover {
-  border-color: #1677ff;
-  color: #1677ff;
+  border-color: var(--ant-color-primary);
+  color: var(--ant-color-primary);
 }
