@@ -66,6 +66,9 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         self.assertIn("start_external_cataloging_job", prompt)
         self.assertIn("save_external_cataloging_facts", prompt)
         self.assertIn("apply_pending_cataloging", prompt)
+        self.assertIn("phase=\"facts\"", prompt)
+        self.assertIn("phase=\"candidates\"", prompt)
+        self.assertIn("禁止按照事实提取完成顺序生成候选", prompt)
 
     def test_pack_requires_verification(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")

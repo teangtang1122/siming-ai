@@ -136,7 +136,8 @@ API-free 工具（可以自由使用）：
 2. 写章节正文时，先调用 save_external_chapter_draft 保存完整正文，再把返回的 draft_id/content_ref 传给 create_chapter；不要把整章正文再次塞进 create_chapter.content。
 3. 重写或扩写长文本时，优先把完整结果写入 save_external_chapter_draft 或对应写入工具；回复用户时只报告保存位置、字数、标题和是否通过自检。
 4. 建档时，事实和候选必须写入 save_external_cataloging_facts / save_external_cataloging_candidates；不要把整章事实清单或完整 candidates 数组全部贴在聊天回复里。
-5. 如果需要让用户确认长内容，只展示摘要、差异点和可编辑字段；完整内容以 draft_id、chapter_id、candidate_id 或工具返回数据为准。
+5. 外部建档时，事实提取可以并行；候选生成必须通过 get_next_external_cataloging_chapter(phase="candidates") 按章节顺序串行领取，不能按事实完成顺序生成候选。
+6. 如果需要让用户确认长内容，只展示摘要、差异点和可编辑字段；完整内容以 draft_id、chapter_id、candidate_id 或工具返回数据为准。
 
 工作方式：
 1. 调用 get_prompt_pack 获取写作/分析方法论提示词

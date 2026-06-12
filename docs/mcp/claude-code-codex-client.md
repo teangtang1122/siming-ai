@@ -532,11 +532,12 @@ start_external_cataloging_job({
   "project_id": "YOUR_PROJECT_ID"
 })
 
-# 3. For each chapter:
+# 3A. Fact stage can be parallel. Multiple agents may fetch different chapters.
 get_next_external_cataloging_chapter({
-  "job_id": "JOB_ID"
+  "job_id": "JOB_ID",
+  "phase": "facts"
 })
-# [Analyze the chapter text, extract facts and candidates]
+# [Analyze the chapter text and extract facts only]
 
 save_external_cataloging_facts({
   "job_id": "JOB_ID",
@@ -544,13 +545,21 @@ save_external_cataloging_facts({
   "facts": [...]
 })
 
+# 3B. Candidate stage must be serial by chapter_order. Always ask Moshu
+# which chapter is allowed next; never use fact-completion order.
+get_next_external_cataloging_chapter({
+  "job_id": "JOB_ID",
+  "phase": "candidates"
+})
+# [Generate candidates for the returned chapter only]
+
 save_external_cataloging_candidates({
   "job_id": "JOB_ID",
   "chapter_id": "CHAPTER_ID",
   "candidates": [...]
 })
 
-# 4. Apply this chapter's candidates before moving to the next chapter
+# 4. Apply this chapter's candidates before generating candidates for the next chapter
 apply_pending_cataloging({
   "job_id": "JOB_ID"
 })
@@ -560,7 +569,7 @@ verify_external_cataloging_progress({
   "job_id": "JOB_ID"
 })
 
-# 6. Repeat steps 3-5 for each chapter; then do final verification
+# 6. Repeat candidate-stage steps in chapter_order; then do final verification
 get_project_archive_status({})
 ```
 
@@ -569,6 +578,11 @@ as real characters, outline nodes, worldbuilding, or chapter summaries until
 `apply_pending_cataloging` succeeds. If `verify_external_cataloging_progress`
 reports `pending_candidates > 0` or `chapters_awaiting_confirmation > 0`, apply
 the pending chapter before moving to the next chapter.
+
+Fact extraction may be parallel, but candidate generation is intentionally
+serialized. Candidate generation merges into cumulative character backgrounds,
+current status, outline nodes, and worldbuilding entries, so it must follow
+`chapter_order` rather than the order in which fact extraction finishes.
 
 ### Tools That Work Without Moshu API
 

@@ -75,10 +75,12 @@ def get_external_no_api_rules() -> str:
 - 多个子 agent 可以同时处理不同章节的 save_external_cataloging_facts
 - 事实是章节级别的原始数据，章节之间互不影响
 - 可以同时提取第1章、第2章、第3章的事实
-- 每个子 agent 调用 get_next_external_cataloging_chapter 获取章节 → 分析 → save_external_cataloging_facts
+- 每个子 agent 调用 get_next_external_cataloging_chapter(phase="facts") 获取章节 → 分析 → save_external_cataloging_facts
 
 阶段二：候选生成与应用（必须串行）
-- 必须一章一章按顺序执行 save_external_cataloging_candidates → apply_pending_cataloging
+- 必须只通过 get_next_external_cataloging_chapter(phase="candidates") 获取当前允许生成候选的章节
+- 必须一章一章按章节顺序执行 save_external_cataloging_candidates → apply_pending_cataloging
+- 禁止按照事实提取完成顺序生成候选；如果第5章事实先完成，也必须等第1-4章候选全部应用后再处理第5章
 - 原因：候选引用了已有的角色、世界观、大纲。前一章创建的角色会影响后一章的候选生成（如角色已存在则用 update 而非 create）
 - 每章必须完成 apply_pending_cataloging 后才能处理下一章
 - 候选只是暂存，不应用就不会出现在角色、大纲、世界观、章节摘要里
@@ -86,7 +88,7 @@ def get_external_no_api_rules() -> str:
 推荐工作流：
 1. 并行提取所有章节的事实（阶段一）
 2. 等所有事实保存完成后
-3. 串行处理每章的候选生成和应用（阶段二）
+3. 反复调用 get_next_external_cataloging_chapter(phase="candidates")，按系统返回的章节串行生成候选和应用（阶段二）
 4. 最终 verify_external_cataloging_progress + get_project_archive_status 验证"""
 
 

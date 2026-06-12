@@ -357,6 +357,95 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
 
             mock_llm.assert_not_called()
 
+    def test_candidates_are_serial_even_when_facts_are_parallel(self):
+        """Facts may be saved out ahead, but candidates must follow chapter_order."""
+        from app.services.workspace.tools.external_cataloging import (
+            start_external_cataloging_job,
+            get_next_external_cataloging_chapter,
+            save_external_cataloging_facts,
+            save_external_cataloging_candidates,
+        )
+        from app.services.workspace.tools.cataloging import apply_pending_cataloging
+
+        project_id = self.project.id
+        result = _run(start_external_cataloging_job(self.db, project_id, {}))
+        self.assertEqual(result["status"], "ok", result)
+        job_id = result["data"]["job_id"]
+
+        first = _run(get_next_external_cataloging_chapter(
+            self.db,
+            project_id,
+            {"job_id": job_id, "phase": "facts"},
+        ))
+        self.assertEqual(first["status"], "ok", first)
+        first_chapter_id = first["data"]["chapter_id"]
+        result = _run(save_external_cataloging_facts(
+            self.db,
+            project_id,
+            {"job_id": job_id, "chapter_id": first_chapter_id, "facts": [{"type": "event", "data": {"summary": "first"}}]},
+        ))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertTrue(result["data"]["candidate_generation_allowed"])
+
+        second = _run(get_next_external_cataloging_chapter(
+            self.db,
+            project_id,
+            {"job_id": job_id, "phase": "facts"},
+        ))
+        self.assertEqual(second["status"], "ok", second)
+        second_chapter_id = second["data"]["chapter_id"]
+        result = _run(save_external_cataloging_facts(
+            self.db,
+            project_id,
+            {"job_id": job_id, "chapter_id": second_chapter_id, "facts": [{"type": "event", "data": {"summary": "second"}}]},
+        ))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertFalse(result["data"]["candidate_generation_allowed"])
+        self.assertEqual(result["data"]["blocking_run"]["chapter_id"], first_chapter_id)
+
+        result = _run(save_external_cataloging_candidates(
+            self.db,
+            project_id,
+            {
+                "job_id": job_id,
+                "chapter_id": second_chapter_id,
+                "candidates": [{"type": "outline", "action": "create", "title": "Chapter 2", "summary": "second"}],
+            },
+        ))
+        self.assertEqual(result["status"], "skipped", result)
+        self.assertFalse(result["data"]["candidate_generation_allowed"])
+        self.assertEqual(result["data"]["blocking_run"]["chapter_id"], first_chapter_id)
+        self.assertEqual(result["data"]["next_arguments"]["phase"], "candidates")
+
+        result = _run(get_next_external_cataloging_chapter(
+            self.db,
+            project_id,
+            {"job_id": job_id, "phase": "candidates"},
+        ))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["chapter_id"], first_chapter_id)
+
+        result = _run(save_external_cataloging_candidates(
+            self.db,
+            project_id,
+            {
+                "job_id": job_id,
+                "chapter_id": first_chapter_id,
+                "candidates": [{"type": "outline", "action": "create", "title": "Chapter 1", "summary": "first"}],
+            },
+        ))
+        self.assertEqual(result["status"], "ok", result)
+        result = _run(apply_pending_cataloging(self.db, project_id, {"job_id": job_id}))
+        self.assertEqual(result["status"], "ok", result)
+
+        result = _run(get_next_external_cataloging_chapter(
+            self.db,
+            project_id,
+            {"job_id": job_id, "phase": "candidates"},
+        ))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["chapter_id"], second_chapter_id)
+
 
 if __name__ == "__main__":
     unittest.main()

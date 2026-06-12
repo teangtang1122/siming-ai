@@ -2075,6 +2075,10 @@ def _register_all() -> None:
         description="Get the next pending chapter for external cataloging. Returns chapter text, character/wb indexes, and prompt pack. API-free.",
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
+            "phase": {
+                "type": "string",
+                "description": "facts or candidates. facts may be parallel; candidates returns the next chapter allowed by chapter_order.",
+            },
         },
         required=["job_id"],
         tool_type="read",

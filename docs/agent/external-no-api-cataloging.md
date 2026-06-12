@@ -24,7 +24,7 @@ Result: { "job_id": "...", "chapter_count": 150 }
 
 ```
 Tool: get_next_external_cataloging_chapter
-Arguments: { "job_id": "JOB_ID" }
+Arguments: { "job_id": "JOB_ID", "phase": "facts" }
 Result: {
   "chapter_id": "...",
   "title": "Chapter 1",
@@ -37,6 +37,9 @@ Result: {
 ```
 
 **API-free**: Yes. Reads from database.
+
+Use `phase: "facts"` for the parallel fact extraction stage. Multiple external
+agents may fetch and analyze different chapters in this phase.
 
 ### Step 3: Extract Facts (External Agent)
 
@@ -75,6 +78,12 @@ The external agent generates candidate updates:
 - Chapter summaries
 
 **No Moshu tool called** — this happens entirely in the external model.
+
+Before generating candidates, call `get_next_external_cataloging_chapter` with
+`phase: "candidates"` and only generate candidates for the chapter returned by
+Moshu. Candidate generation must follow chapter order, not the order in which
+fact extraction finished. This keeps character backgrounds, aliases, current
+status, outline nodes, and worldbuilding merges chronological.
 
 ### Step 6: Save Candidates
 
@@ -183,7 +192,7 @@ These tools must NOT be called in external no-API mode:
 < { "job_id": "job-001", "chapter_count": 150 }
 
 ## 2. Process chapter 1
-> get_next_external_cataloging_chapter({ "job_id": "job-001" })
+> get_next_external_cataloging_chapter({ "job_id": "job-001", "phase": "facts" })
 < { "chapter_id": "ch-1", "title": "The Beginning", "content": "..." }
 
 ## 3. [Claude Code analyzes chapter 1]
@@ -199,7 +208,10 @@ These tools must NOT be called in external no-API mode:
   })
 < { "status": "ok", "facts_saved": 2 }
 
-## 5. Save candidates
+## 5. Ask for the next allowed candidate chapter, then save candidates
+> get_next_external_cataloging_chapter({ "job_id": "job-001", "phase": "candidates" })
+< { "chapter_id": "ch-1", "title": "The Beginning", "content": "..." }
+
 > save_external_cataloging_candidates({
     "job_id": "job-001",
     "chapter_id": "ch-1",
@@ -219,7 +231,7 @@ These tools must NOT be called in external no-API mode:
 > verify_external_cataloging_progress({ "job_id": "job-001" })
 < { "chapters_processed": 1, "characters_count": 1, "worldbuilding_count": 1, "outline_nodes_count": 1, "pending_candidates": 0 }
 
-## 8. Repeat steps 2-7 for chapters 2-150...
+## 8. Facts can be extracted in parallel, but repeat candidate steps in chapter_order...
 
 ## 9. Final verify
 > verify_external_cataloging_progress({ "job_id": "job-001" })

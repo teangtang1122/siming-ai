@@ -85,8 +85,9 @@ async def get_moshu_usage_guide(
             "steps": [
                 "调用 get_prompt_pack(pack_id='cataloging_external_no_api') 读取建档提示词和输出契约。",
                 "调用 start_external_cataloging_job 创建外部建档任务。",
-                "循环：get_next_external_cataloging_chapter -> 外部 Agent 阅读章节 -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging。",
-                "每章 apply 后调用 verify_external_cataloging_progress；发现 pending_candidates 或 warnings 时先处理，不要跳过关键章节。",
+                "事实阶段可并行：多个外部 Agent 可调用 get_next_external_cataloging_chapter(phase='facts') 阅读不同章节，并分别 save_external_cataloging_facts。",
+                "候选阶段必须按章节顺序串行：只调用 get_next_external_cataloging_chapter(phase='candidates') 获取系统允许的下一章，再执行 save_external_cataloging_candidates -> apply_pending_cataloging。",
+                "每章 apply 后调用 verify_external_cataloging_progress；发现 pending_candidates、chapters_facts_saved 或 warnings 时先处理，不要跳过关键章节。",
                 "最终调用 get_project_archive_status，确认角色、大纲、世界观、章节摘要数量符合预期后再报告完成。",
             ],
             "forbidden_tools": internal_llm_tools,
@@ -180,8 +181,9 @@ async def get_moshu_usage_guide(
                 "语言规则：中文小说全程用中文建档；角色名、别名、章节标题、摘要、大纲、世界观和证据都保留原文语言。",
                 "调用 get_prompt_pack(pack_id='cataloging_external_no_api') 读取建档提示词和输出契约。",
                 "调用 start_external_cataloging_job 创建任务。",
-                "循环：get_next_external_cataloging_chapter -> 由外部 Agent 阅读章节 -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging。",
-                "每章 apply 后调用 verify_external_cataloging_progress；发现 pending_candidates 或 warnings 时先处理，不要跳过关键章节。",
+                "事实阶段可并行：多个外部 Agent 可调用 get_next_external_cataloging_chapter(phase='facts') 阅读不同章节，并分别 save_external_cataloging_facts。",
+                "候选阶段必须按章节顺序串行：只调用 get_next_external_cataloging_chapter(phase='candidates') 获取系统允许的下一章，再执行 save_external_cataloging_candidates -> apply_pending_cataloging。",
+                "每章 apply 后调用 verify_external_cataloging_progress；发现 pending_candidates、chapters_facts_saved 或 warnings 时先处理，不要跳过关键章节。",
                 "最终调用 get_project_archive_status，确认角色、大纲、世界观、章节摘要数量符合预期后才报告完成。",
             ],
             "canonical_candidate_types": [

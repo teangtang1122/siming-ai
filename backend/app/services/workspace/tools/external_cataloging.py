@@ -31,6 +31,8 @@ CANONICAL_CANDIDATE_TYPES = {
     "worldbuilding_update",
 }
 
+COMPLETED_RUN_STATUSES = {"completed", "completed_with_warnings"}
+
 
 def _normalize_candidate_input(candidate: dict[str, Any]) -> tuple[dict[str, Any], str, str, str | None]:
     """Normalize external-agent candidate shorthand to the internal apply contract."""
@@ -137,6 +139,11 @@ def _workflow_reminder(next_tool: str, *, note: str = "") -> dict[str, Any]:
     """Return a compact workflow reminder for long-context external agents."""
     return {
         "mode": "external_cataloging_no_api",
+        "phase_policy": {
+            "facts": "Fact extraction may run in parallel across chapters. Save facts for each chapter as soon as they are extracted.",
+            "candidates": "Candidate generation and apply must be sequential by chapter_order. Never generate candidates for a later chapter before every earlier chapter is applied.",
+            "why": "Candidates merge into cumulative character, outline, and worldbuilding cards. Later chapters must see earlier applied cards to avoid scrambled backgrounds and duplicate entities.",
+        },
         "language_rule": (
             "Use the novel/source language for archive data. For Chinese novels, "
             "save Chinese names, titles, summaries, facts, candidates, aliases, "
@@ -151,12 +158,86 @@ def _workflow_reminder(next_tool: str, *, note: str = "") -> dict[str, Any]:
             "get_moshu_usage_guide(scenario='cataloging_no_api', no_api=true)",
             "get_prompt_pack(pack_id='cataloging_external_no_api')",
             "start_external_cataloging_job",
-            "Repeat per chapter: get_next_external_cataloging_chapter -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress",
+            "Parallel fact stage: get_next_external_cataloging_chapter(phase='facts') -> save_external_cataloging_facts for many chapters",
+            "Sequential candidate stage: get_next_external_cataloging_chapter(phase='candidates') -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress, one chapter at a time in chapter_order",
             "Finish with get_project_archive_status and verify counts before reporting completion",
         ],
         "next_tool": next_tool,
         "note": note,
     }
+
+
+def _run_summary(run: Any | None) -> dict[str, Any] | None:
+    if not run:
+        return None
+    return {
+        "chapter_run_id": getattr(run, "id", None),
+        "chapter_id": getattr(run, "chapter_id", None),
+        "chapter_order": getattr(run, "chapter_order", None),
+        "status": getattr(run, "status", None),
+    }
+
+
+def _earliest_unfinished_run(db: Session, job_id: str) -> Any | None:
+    from app.database.models import CatalogingChapterRun
+
+    return (
+        db.query(CatalogingChapterRun)
+        .filter(CatalogingChapterRun.job_id == job_id)
+        .filter(CatalogingChapterRun.status.notin_(list(COMPLETED_RUN_STATUSES)))
+        .order_by(CatalogingChapterRun.chapter_order.asc())
+        .first()
+    )
+
+
+def _previous_unfinished_run(db: Session, run: Any) -> Any | None:
+    from app.database.models import CatalogingChapterRun
+
+    return (
+        db.query(CatalogingChapterRun)
+        .filter(CatalogingChapterRun.job_id == run.job_id)
+        .filter(CatalogingChapterRun.chapter_order < run.chapter_order)
+        .filter(CatalogingChapterRun.status.notin_(list(COMPLETED_RUN_STATUSES)))
+        .order_by(CatalogingChapterRun.chapter_order.asc())
+        .first()
+    )
+
+
+def _next_candidate_run(db: Session, job_id: str) -> Any | None:
+    """Return the earliest run whose candidates may be generated now."""
+    first = _earliest_unfinished_run(db, job_id)
+    if first and first.status == "facts_saved":
+        return first
+    return None
+
+
+def _candidate_gate(db: Session, run: Any) -> tuple[bool, dict[str, Any] | None, str]:
+    previous = _previous_unfinished_run(db, run)
+    if previous:
+        return (
+            False,
+            _run_summary(previous),
+            "A previous chapter has not been applied. Candidate generation must follow chapter_order.",
+        )
+    if run.status == "awaiting_confirmation":
+        return (
+            False,
+            _run_summary(run),
+            "This chapter already has staged candidates. Call apply_pending_cataloging before generating more candidates.",
+        )
+    if run.status in COMPLETED_RUN_STATUSES:
+        return (
+            False,
+            _run_summary(run),
+            "This chapter is already applied. Do not generate duplicate candidates.",
+        )
+    if run.status != "facts_saved":
+        return (
+            False,
+            _run_summary(run),
+            "Save facts for this chapter before generating candidates.",
+        )
+    return True, None, "This chapter is the current sequential candidate turn."
 
 
 async def start_external_cataloging_job(
@@ -234,7 +315,10 @@ async def start_external_cataloging_job(
             "next_tool": "get_prompt_pack",
             "workflow_reminder": _workflow_reminder(
                 "get_prompt_pack",
-                note="Read the cataloging_external_no_api prompt pack before extracting facts.",
+                note=(
+                    "Read the cataloging_external_no_api prompt pack before extracting facts. "
+                    "Facts may be extracted in parallel, but candidates must later be generated and applied in chapter_order."
+                ),
             ),
         },
     }
@@ -259,6 +343,11 @@ async def get_next_external_cataloging_chapter(
     ensure_builtin_packs(db)
 
     job_id = str(args.get("job_id") or "").strip()
+    phase = str(args.get("phase") or "facts").strip().lower()
+    if phase in {"candidate", "resolution", "resolve", "apply"}:
+        phase = "candidates"
+    if phase not in {"facts", "candidates"}:
+        phase = "facts"
     if not job_id:
         return {
             "tool": "get_next_external_cataloging_chapter",
@@ -284,13 +373,7 @@ async def get_next_external_cataloging_chapter(
             "data": None,
         }
 
-    # Get next pending chapter run
-    chapter_run = db.query(CatalogingChapterRun).filter(
-        CatalogingChapterRun.job_id == job_id,
-        CatalogingChapterRun.status == "pending",
-    ).order_by(CatalogingChapterRun.chapter_order).first()
-
-    if not chapter_run:
+    if phase == "candidates":
         awaiting_run = db.query(CatalogingChapterRun).filter(
             CatalogingChapterRun.job_id == job_id,
             CatalogingChapterRun.status == "awaiting_confirmation",
@@ -299,45 +382,170 @@ async def get_next_external_cataloging_chapter(
             return {
                 "tool": "get_next_external_cataloging_chapter",
                 "status": "ok",
-                "detail": "A chapter is awaiting candidate application before continuing",
-            "data": {
-                "job_id": job_id,
-                "project_id": effective_project_id,
-                "chapter_id": awaiting_run.chapter_id,
+                "detail": "A chapter already has staged candidates and must be applied before continuing",
+                "data": {
+                    "job_id": job_id,
+                    "project_id": effective_project_id,
+                    "phase": "candidates",
+                    "chapter_id": awaiting_run.chapter_id,
                     "chapter_index": awaiting_run.chapter_order,
                     "all_done": False,
                     "waiting_for_apply": True,
                     "next_tool": "apply_pending_cataloging",
                     "workflow_reminder": _workflow_reminder(
                         "apply_pending_cataloging",
-                        note="Apply the current chapter's candidates before reading the next chapter.",
+                        note="Apply the current chapter's candidates before generating candidates for any later chapter.",
                     ),
                 },
             }
-        return {
-            "tool": "get_next_external_cataloging_chapter",
-            "status": "ok",
-            "detail": "No more chapters to process",
-            "data": {
-                "job_id": job_id,
-                "project_id": effective_project_id,
-                "all_done": True,
-                "next_tool": "get_project_archive_status",
-                "workflow_reminder": _workflow_reminder(
-                    "get_project_archive_status",
-                    note="Verify archive counts before reporting the cataloging job complete.",
-                ),
-            },
-        }
 
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_run.chapter_id).first()
-    if not chapter:
-        return {
-            "tool": "get_next_external_cataloging_chapter",
-            "status": "skipped",
-            "detail": "Chapter not found",
-            "data": None,
-        }
+        candidate_run = _next_candidate_run(db, job_id)
+        if not candidate_run:
+            first_unfinished = _earliest_unfinished_run(db, job_id)
+            if first_unfinished:
+                return {
+                    "tool": "get_next_external_cataloging_chapter",
+                    "status": "ok",
+                    "detail": "No chapter is ready for candidate generation yet",
+                    "data": {
+                        "job_id": job_id,
+                        "project_id": effective_project_id,
+                        "phase": "candidates",
+                        "all_done": False,
+                        "waiting_for_facts": True,
+                        "blocking_run": _run_summary(first_unfinished),
+                        "next_tool": "get_next_external_cataloging_chapter",
+                        "next_arguments": {"job_id": job_id, "phase": "facts"},
+                        "workflow_reminder": _workflow_reminder(
+                            "get_next_external_cataloging_chapter",
+                            note="Finish saving facts for the earliest unfinished chapter before generating candidates.",
+                        ),
+                    },
+                }
+            return {
+                "tool": "get_next_external_cataloging_chapter",
+                "status": "ok",
+                "detail": "No more chapters to process",
+                "data": {
+                    "job_id": job_id,
+                    "project_id": effective_project_id,
+                    "phase": "candidates",
+                    "all_done": True,
+                    "next_tool": "get_project_archive_status",
+                    "workflow_reminder": _workflow_reminder(
+                        "get_project_archive_status",
+                        note="Verify archive counts before reporting the cataloging job complete.",
+                    ),
+                },
+            }
+
+        chapter = db.query(Chapter).filter(Chapter.id == candidate_run.chapter_id).first()
+        if not chapter:
+            return {
+                "tool": "get_next_external_cataloging_chapter",
+                "status": "skipped",
+                "detail": "Chapter not found",
+                "data": None,
+            }
+        chapter_run = candidate_run
+    else:
+        # Get next pending chapter run for fact extraction.
+        chapter_run = db.query(CatalogingChapterRun).filter(
+            CatalogingChapterRun.job_id == job_id,
+            CatalogingChapterRun.status == "pending",
+        ).order_by(CatalogingChapterRun.chapter_order).first()
+
+        if not chapter_run:
+            awaiting_run = db.query(CatalogingChapterRun).filter(
+                CatalogingChapterRun.job_id == job_id,
+                CatalogingChapterRun.status == "awaiting_confirmation",
+            ).order_by(CatalogingChapterRun.chapter_order).first()
+            if awaiting_run:
+                return {
+                    "tool": "get_next_external_cataloging_chapter",
+                    "status": "ok",
+                    "detail": "A chapter is awaiting candidate application before continuing candidate generation",
+                    "data": {
+                        "job_id": job_id,
+                        "project_id": effective_project_id,
+                        "phase": "facts",
+                        "chapter_id": awaiting_run.chapter_id,
+                        "chapter_index": awaiting_run.chapter_order,
+                        "all_done": False,
+                        "waiting_for_apply": True,
+                        "next_tool": "apply_pending_cataloging",
+                        "workflow_reminder": _workflow_reminder(
+                            "apply_pending_cataloging",
+                            note="Apply the current chapter's candidates before generating candidates for later chapters. You may only fetch more fact chapters if any are still pending.",
+                        ),
+                    },
+                }
+
+            first_unfinished = _earliest_unfinished_run(db, job_id)
+            if first_unfinished and first_unfinished.status == "facts_saved":
+                return {
+                    "tool": "get_next_external_cataloging_chapter",
+                    "status": "ok",
+                    "detail": "All pending fact chapters are assigned; switch to sequential candidate generation",
+                    "data": {
+                        "job_id": job_id,
+                        "project_id": effective_project_id,
+                        "phase": "facts",
+                        "all_done": False,
+                        "facts_stage_done": True,
+                        "next_candidate_run": _run_summary(first_unfinished),
+                        "next_tool": "get_next_external_cataloging_chapter",
+                        "next_arguments": {"job_id": job_id, "phase": "candidates"},
+                        "workflow_reminder": _workflow_reminder(
+                            "get_next_external_cataloging_chapter",
+                            note="Call get_next_external_cataloging_chapter with phase='candidates' and process candidates strictly in chapter_order.",
+                        ),
+                    },
+                }
+            if first_unfinished:
+                return {
+                    "tool": "get_next_external_cataloging_chapter",
+                    "status": "ok",
+                    "detail": "No pending fact chapters remain, but some chapters are still being processed",
+                    "data": {
+                        "job_id": job_id,
+                        "project_id": effective_project_id,
+                        "phase": "facts",
+                        "all_done": False,
+                        "waiting_for_facts": True,
+                        "blocking_run": _run_summary(first_unfinished),
+                        "next_tool": "verify_external_cataloging_progress",
+                        "workflow_reminder": _workflow_reminder(
+                            "verify_external_cataloging_progress",
+                            note="Wait for parallel fact extraction to save facts, then switch to phase='candidates'.",
+                        ),
+                    },
+                }
+            return {
+                "tool": "get_next_external_cataloging_chapter",
+                "status": "ok",
+                "detail": "No more chapters to process",
+                "data": {
+                    "job_id": job_id,
+                    "project_id": effective_project_id,
+                    "phase": "facts",
+                    "all_done": True,
+                    "next_tool": "get_project_archive_status",
+                    "workflow_reminder": _workflow_reminder(
+                        "get_project_archive_status",
+                        note="Verify archive counts before reporting the cataloging job complete.",
+                    ),
+                },
+            }
+
+        chapter = db.query(Chapter).filter(Chapter.id == chapter_run.chapter_id).first()
+        if not chapter:
+            return {
+                "tool": "get_next_external_cataloging_chapter",
+                "status": "skipped",
+                "detail": "Chapter not found",
+                "data": None,
+            }
 
     # Build context indexes
     characters = db.query(Character).filter(
@@ -380,9 +588,10 @@ async def get_next_external_cataloging_chapter(
             "workflow": pack.workflow_json,
         }
 
-    # Mark chapter run as in_progress
-    chapter_run.status = "in_progress"
-    db.commit()
+    # Mark chapter run as in_progress only when assigning fact extraction.
+    if phase == "facts":
+        chapter_run.status = "in_progress"
+        db.commit()
 
     return {
         "tool": "get_next_external_cataloging_chapter",
@@ -391,6 +600,7 @@ async def get_next_external_cataloging_chapter(
         "data": {
             "job_id": job_id,
             "project_id": effective_project_id,
+            "phase": phase,
             "chapter_id": chapter.id,
             "chapter_index": chapter_run.chapter_order,
             "title": chapter.title,
@@ -399,10 +609,14 @@ async def get_next_external_cataloging_chapter(
             "worldbuilding_title_index": wb_index,
             "outline_neighborhood": outline_neighborhood,
             "prompt_pack": prompt_pack_data,
-            "next_tool": "save_external_cataloging_facts",
+            "next_tool": "save_external_cataloging_facts" if phase == "facts" else "save_external_cataloging_candidates",
             "workflow_reminder": _workflow_reminder(
-                "save_external_cataloging_facts",
-                note="Read this chapter with the prompt pack, then save extracted facts in the source language.",
+                "save_external_cataloging_facts" if phase == "facts" else "save_external_cataloging_candidates",
+                note=(
+                    "Read this chapter with the prompt pack, then save extracted facts in the source language."
+                    if phase == "facts"
+                    else "Generate candidates for this chapter now. This is the current sequential candidate turn; do not skip ahead."
+                ),
             ),
         },
     }
@@ -478,7 +692,26 @@ async def save_external_cataloging_facts(
         db.add(fact)
         saved += 1
 
+    chapter_run.status = "facts_saved"
+    if job.status == "waiting_confirmation":
+        job.status = "running"
     db.commit()
+
+    allowed, blocking_run, gate_note = _candidate_gate(db, chapter_run)
+    if allowed:
+        next_tool = "save_external_cataloging_candidates"
+        next_arguments = None
+        note = (
+            "This chapter is now the current sequential candidate turn. "
+            "Convert the saved facts into concrete write candidates in the source language."
+        )
+    else:
+        next_tool = "get_next_external_cataloging_chapter"
+        next_arguments = {"job_id": job_id, "phase": "candidates"}
+        note = (
+            "Facts saved. Do not generate candidates for this chapter yet unless it is the earliest unapplied chapter. "
+            "Use get_next_external_cataloging_chapter with phase='candidates' to get the allowed chapter."
+        )
 
     return {
         "tool": "save_external_cataloging_facts",
@@ -489,10 +722,15 @@ async def save_external_cataloging_facts(
             "project_id": effective_project_id,
             "chapter_id": chapter_id,
             "facts_saved": saved,
-            "next_tool": "save_external_cataloging_candidates",
+            "chapter_run_status": chapter_run.status,
+            "candidate_generation_allowed": allowed,
+            "candidate_gate_note": gate_note,
+            "blocking_run": blocking_run,
+            "next_tool": next_tool,
+            "next_arguments": next_arguments,
             "workflow_reminder": _workflow_reminder(
-                "save_external_cataloging_candidates",
-                note="Convert the saved facts into concrete write candidates in the source language.",
+                next_tool,
+                note=note,
             ),
         },
     }
@@ -549,6 +787,43 @@ async def save_external_cataloging_candidates(
             "status": "skipped",
             "detail": "Chapter run not found",
             "data": None,
+        }
+
+    allowed, blocking_run, gate_note = _candidate_gate(db, chapter_run)
+    if not allowed:
+        if chapter_run.status == "awaiting_confirmation":
+            next_tool = "apply_pending_cataloging"
+            next_arguments = {"job_id": job_id}
+        elif blocking_run and blocking_run.get("status") == "facts_saved":
+            next_tool = "get_next_external_cataloging_chapter"
+            next_arguments = {"job_id": job_id, "phase": "candidates"}
+        elif blocking_run and blocking_run.get("status") == "awaiting_confirmation":
+            next_tool = "apply_pending_cataloging"
+            next_arguments = {"job_id": job_id}
+        else:
+            next_tool = "get_next_external_cataloging_chapter"
+            next_arguments = {"job_id": job_id, "phase": "facts"}
+        return {
+            "tool": "save_external_cataloging_candidates",
+            "status": "skipped",
+            "detail": gate_note,
+            "data": {
+                "job_id": job_id,
+                "project_id": effective_project_id,
+                "chapter_id": chapter_id,
+                "chapter_run_status": chapter_run.status,
+                "candidate_generation_allowed": False,
+                "blocking_run": blocking_run,
+                "next_tool": next_tool,
+                "next_arguments": next_arguments,
+                "workflow_reminder": _workflow_reminder(
+                    next_tool,
+                    note=(
+                        "Candidate generation is serialized. Process and apply the earliest chapter first, "
+                        "then ask for phase='candidates' again."
+                    ),
+                ),
+            },
         }
 
     saved = 0
@@ -667,6 +942,14 @@ async def verify_external_cataloging_progress(
         CatalogingChapterRun.job_id == job_id,
         CatalogingChapterRun.status == "pending",
     ).count()
+    in_progress_runs = db.query(CatalogingChapterRun).filter(
+        CatalogingChapterRun.job_id == job_id,
+        CatalogingChapterRun.status == "in_progress",
+    ).count()
+    facts_saved_runs = db.query(CatalogingChapterRun).filter(
+        CatalogingChapterRun.job_id == job_id,
+        CatalogingChapterRun.status == "facts_saved",
+    ).count()
     awaiting_runs = db.query(CatalogingChapterRun).filter(
         CatalogingChapterRun.job_id == job_id,
         CatalogingChapterRun.status == "awaiting_confirmation",
@@ -696,15 +979,29 @@ async def verify_external_cataloging_progress(
     if pending_candidates > 0 or awaiting_runs > 0:
         next_tool = "apply_pending_cataloging"
         note = "There are staged candidates or awaiting chapters. Apply them before continuing."
+        next_arguments = {"job_id": job_id}
     elif failed_runs > 0:
         next_tool = "retry_current_cataloging_chapter"
         note = "Retry or inspect failed chapters before moving on."
+        next_arguments = {"job_id": job_id}
+    elif facts_saved_runs > 0:
+        next_tool = "get_next_external_cataloging_chapter"
+        note = "Generate candidates for the earliest facts_saved chapter by calling phase='candidates'."
+        next_arguments = {"job_id": job_id, "phase": "candidates"}
     elif pending_runs > 0:
         next_tool = "get_next_external_cataloging_chapter"
-        note = "Continue with the next pending chapter."
+        note = "Continue parallel fact extraction with phase='facts'."
+        next_arguments = {"job_id": job_id, "phase": "facts"}
+    elif in_progress_runs > 0:
+        next_tool = "verify_external_cataloging_progress"
+        note = "Wait for in-progress fact extraction to save facts, then verify again."
+        next_arguments = {"job_id": job_id}
     else:
         next_tool = "get_project_archive_status"
         note = "All chapter runs are processed. Verify archive counts before reporting completion."
+        next_arguments = {"project_id": effective_project_id}
+
+    next_candidate_run = _next_candidate_run(db, job_id)
 
     return {
         "tool": "verify_external_cataloging_progress",
@@ -716,8 +1013,11 @@ async def verify_external_cataloging_progress(
             "chapters_processed": completed_runs,
             "chapters_total": total_runs,
             "chapters_pending": pending_runs,
+            "chapters_in_progress": in_progress_runs,
+            "chapters_facts_saved": facts_saved_runs,
             "chapters_awaiting_confirmation": awaiting_runs,
             "chapters_failed": failed_runs,
+            "next_candidate_run": _run_summary(next_candidate_run),
             "chapters_count": chapters_count,
             "characters_count": characters_count,
             "worldbuilding_count": wb_count,
@@ -725,6 +1025,7 @@ async def verify_external_cataloging_progress(
             "relationships_count": rel_count,
             "pending_candidates": pending_candidates,
             "next_tool": next_tool,
+            "next_arguments": next_arguments,
             "workflow_reminder": _workflow_reminder(next_tool, note=note),
             "warnings": warnings,
         },
