@@ -1,12 +1,16 @@
-/* ─── GUI Chat Layout ─── */
 .gui-chat {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
+  background: var(--ant-color-bg-layout);
+  transition: grid-template-columns 0.18s ease;
 }
 
-/* ─── Sidebar ─── */
+.gui-chat-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr);
+}
+
 .gui-chat-sidebar {
   display: flex;
   flex-direction: column;
@@ -19,9 +23,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px;
+  min-height: 56px;
+  padding: 12px;
   border-bottom: 1px solid var(--ant-color-border-secondary);
   flex-shrink: 0;
+}
+
+.gui-chat-collapsed .gui-chat-sidebar-head {
+  justify-content: center;
 }
 
 .gui-chat-conv-list {
@@ -34,6 +43,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px;
   border-radius: 6px;
   cursor: pointer;
@@ -57,7 +67,6 @@
   font-size: 14px;
 }
 
-/* ─── Main Chat Area ─── */
 .gui-chat-main {
   display: flex;
   flex-direction: column;
@@ -70,13 +79,21 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 12px 24px;
   border-bottom: 1px solid var(--ant-color-border-secondary);
   background: var(--ant-color-bg-container);
   flex-shrink: 0;
 }
 
-/* ─── Messages ─── */
+.gui-chat-project-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 .gui-chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -118,8 +135,7 @@
   font-weight: 600;
   color: var(--ant-color-text-tertiary);
   margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 
 .gui-chat-msg-content {
@@ -143,7 +159,6 @@
   border-bottom-left-radius: 2px;
 }
 
-/* ─── Composer ─── */
 .gui-chat-composer {
   padding: 16px 24px;
   border-top: 1px solid var(--ant-color-border-secondary);
@@ -157,13 +172,18 @@
   margin-top: 8px;
 }
 
-/* ─── Responsive ─── */
-@media (max-width: 768px) {
-  .gui-chat {
+@media (max-width: 820px) {
+  .gui-chat,
+  .gui-chat-collapsed {
     grid-template-columns: 1fr;
   }
 
   .gui-chat-sidebar {
     display: none;
+  }
+
+  .gui-chat-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

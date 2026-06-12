@@ -1,7 +1,8 @@
 """API config CRUD, global default model, model listing, and connection test endpoints."""
 import asyncio
 import json
-from fastapi import APIRouter, Depends
+import webbrowser
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from openai import (
     AsyncOpenAI,
@@ -36,6 +37,14 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(0.7, ge=0, le=2.0)
     max_tokens: int | None = Field(None, ge=1)
     extra_body: dict | None = None
+
+
+@router.post("/system/open-home")
+def open_home_in_default_browser(request: Request):
+    """Open the Moshu web home in the user's default browser."""
+    home_url = str(request.base_url).rstrip("/") + "/"
+    webbrowser.open(home_url)
+    return ApiResponse.success(data={"url": home_url}, message="已在默认浏览器打开墨枢首页")
 
 PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
