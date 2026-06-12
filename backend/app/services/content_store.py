@@ -112,6 +112,14 @@ def delete_project_folder(project: Project) -> None:
         shutil.rmtree(folder)
 
 
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def ensure_project_folder(db: Session, project: Project) -> Path:
     if project.folder_path:
         folder = Path(project.folder_path).expanduser()
@@ -561,3 +569,50 @@ def migrate_legacy_projects_to_files(db: Session) -> None:
             continue
         sync_project_to_files(db, project.id)
     db.commit()
+
+
+def migrate_projects_to_content_root(
+    db: Session,
+    target_root: str | Path,
+    *,
+    previous_root: str | Path | None = None,
+    cleanup_old: bool = True,
+) -> dict[str, Any]:
+    """Move all project content folders under a new Moshu content root.
+
+    Existing file-backed projects are refreshed into the DB first, then written
+    into the target root. Old project folders are removed only when they are
+    children of the previous content root.
+    """
+    target = Path(target_root).expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    old_root = Path(previous_root).expanduser().resolve() if previous_root else content_root()
+    projects = db.query(Project).all()
+    migrated = 0
+    cleaned = 0
+    for project in projects:
+        old_folder = Path(project.folder_path).expanduser().resolve() if project.folder_path else None
+        if old_folder and old_folder.exists():
+            refresh_project_from_files(db, project.id)
+        project.folder_path = None
+        project.storage_mode = "folder"
+        sync_project_to_files(db, project.id)
+        migrated += 1
+        new_folder = Path(project.folder_path).expanduser().resolve() if project.folder_path else None
+        if (
+            cleanup_old
+            and old_folder
+            and old_folder.exists()
+            and new_folder
+            and old_folder != new_folder
+            and _is_relative_to(old_folder, old_root)
+            and not _is_relative_to(new_folder, old_folder)
+        ):
+            shutil.rmtree(old_folder)
+            cleaned += 1
+    return {
+        "target_root": str(target),
+        "previous_root": str(old_root),
+        "migrated_projects": migrated,
+        "cleaned_project_folders": cleaned,
+    }

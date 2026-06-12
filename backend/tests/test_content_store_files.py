@@ -4,12 +4,13 @@ import asyncio
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import Base, Chapter, Character, Project, WorldbuildingEntry
-from app.services.content_store import refresh_project_from_files, sync_project_to_files
+from app.services.content_store import migrate_projects_to_content_root, refresh_project_from_files, sync_project_to_files
 from app.services.workspace.tools.project_files import (
     list_project_files,
     read_project_file,
@@ -87,3 +88,31 @@ class ContentStoreFileSourceTestCase(unittest.TestCase):
         search = asyncio.run(search_project_files(self.db, project.id, {"query": "青石村"}))
         self.assertEqual(search["status"], "ok")
         self.assertEqual(len(search["data"]["matches"]), 1)
+
+    def test_migrate_projects_to_new_content_root_refreshes_and_cleans_old_folder(self):
+        project = self._project()
+        chapter = Chapter(project_id=project.id, title="第一章", content="旧正文", word_count=3)
+        self.db.add(chapter)
+        self.db.flush()
+        sync_project_to_files(self.db, project.id)
+        self.db.flush()
+
+        old_root = os.environ["MOSHU_CONTENT_ROOT"]
+        old_folder = project.folder_path
+        chapter_path = os.path.join(project.folder_path, chapter.content_file_path)
+        with open(chapter_path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        with open(chapter_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text.replace("旧正文", "外部修改后的正文"))
+
+        new_root = os.path.join(self.tmp.name, "new-root")
+        os.environ["MOSHU_CONTENT_ROOT"] = new_root
+        result = migrate_projects_to_content_root(self.db, new_root, previous_root=old_root, cleanup_old=True)
+        self.db.flush()
+
+        self.assertEqual(result["migrated_projects"], 1)
+        self.assertEqual(result["cleaned_project_folders"], 1)
+        self.assertFalse(os.path.exists(old_folder))
+        Path(project.folder_path).resolve().relative_to(Path(new_root).resolve())
+        self.assertEqual(chapter.content.strip(), "外部修改后的正文")
+        self.assertTrue(os.path.exists(os.path.join(project.folder_path, chapter.content_file_path)))

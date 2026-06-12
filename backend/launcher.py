@@ -181,10 +181,7 @@ def _prepare_data_environment() -> Path:
     launcher_settings = _load_launcher_settings(home)
     content_root = os.environ.get("MOSHU_CONTENT_ROOT") or launcher_settings.get("content_root")
     if not content_root:
-        picked = _pick_content_root(home)
-        content_root = str(picked) if picked else str(home / "projects")
-        launcher_settings["content_root"] = content_root
-        _save_launcher_settings(home, launcher_settings)
+        content_root = str(home / "projects")
     os.environ.setdefault("MOSHU_HOME", str(home))
     os.environ.setdefault("MOSHU_CONTENT_ROOT", str(Path(content_root).expanduser().resolve()))
     os.environ.setdefault("MOSHU_KEY_FILE", str(home / ".crypto_key"))

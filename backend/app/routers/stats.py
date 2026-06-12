@@ -1,5 +1,5 @@
 """Writing statistics — today stats, history, and daily goal management."""
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -15,13 +15,33 @@ from ..schemas.stats import GoalUpdate
 router = APIRouter(tags=["stats"])
 
 
+def _local_day_bounds(day: date) -> tuple[datetime, datetime]:
+    """Return UTC-naive bounds for one local calendar day.
+
+    SQLAlchemy defaults currently store timestamps as UTC-naive values. The UI
+    and daily writing goal should follow the user's local calendar day, so we
+    convert local midnight boundaries back to UTC-naive query bounds.
+    """
+    local_tz = datetime.now().astimezone().tzinfo
+    start_local = datetime.combine(day, time.min).replace(tzinfo=local_tz)
+    end_local = start_local + timedelta(days=1)
+    return (
+        start_local.astimezone(timezone.utc).replace(tzinfo=None),
+        end_local.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+def _utc_naive_to_local_date(value: datetime) -> str:
+    local_tz = datetime.now().astimezone().tzinfo
+    return value.replace(tzinfo=timezone.utc).astimezone(local_tz).date().isoformat()
+
+
 @router.get("/projects/{project_id}/stats/today")
 def get_today_stats(project_id: str, db: Session = Depends(get_db)):
     """Get today's writing statistics based on chapter creation date."""
     project = get_project_or_404(db, project_id)
-    today = date.today()
-    today_start = datetime.combine(today, datetime.min.time())
-    today_end = today_start + timedelta(days=1)
+    today = datetime.now().astimezone().date()
+    today_start, today_end = _local_day_bounds(today)
 
     row = (
         db.query(
@@ -57,29 +77,30 @@ def get_stats_history(
 ):
     """Get historical daily writing statistics based on chapter creation dates."""
     project = get_project_or_404(db, project_id)
-    start_date = date.today() - timedelta(days=days - 1)
-    start_dt = datetime.combine(start_date, datetime.min.time())
+    today = datetime.now().astimezone().date()
+    start_date = today - timedelta(days=days - 1)
+    start_dt, _ = _local_day_bounds(start_date)
 
-    rows = (
-        db.query(
-            func.date(Chapter.created_at).label("day"),
-            func.coalesce(func.sum(Chapter.word_count), 0).label("total_words"),
-            func.count(Chapter.id).label("chapters_count"),
-        )
+    chapters = (
+        db.query(Chapter)
         .filter(
             Chapter.project_id == project_id,
             Chapter.created_at >= start_dt,
         )
-        .group_by(func.date(Chapter.created_at))
         .all()
     )
 
-    words_by_date = {str(r.day): int(r.total_words) for r in rows}
+    words_by_date: dict[str, int] = {}
+    for chapter in chapters:
+        if not chapter.created_at:
+            continue
+        day_key = _utc_naive_to_local_date(chapter.created_at)
+        words_by_date[day_key] = words_by_date.get(day_key, 0) + int(chapter.word_count or 0)
     goal = project.daily_word_goal or 6000
     items = []
     total_words = 0
     current = start_date
-    while current <= date.today():
+    while current <= today:
         words = words_by_date.get(current.isoformat(), 0)
         total_words += words
         items.append({

@@ -35,6 +35,7 @@ from ..core.response import ApiResponse
 from ..database.models import APIConfig
 from ..database.session import get_db
 from ..schemas.config import APIConfigCreate, ConnectionTestRequest, GlobalModelSetting, ModelListRequest
+from ..services.content_store import content_root as resolve_content_root, migrate_projects_to_content_root
 
 router = APIRouter(tags=["config"])
 
@@ -47,6 +48,10 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(0.7, ge=0, le=2.0)
     max_tokens: int | None = Field(None, ge=1)
     extra_body: dict | None = None
+
+
+class ContentRootUpdateRequest(BaseModel):
+    path: str = Field(..., min_length=1)
 
 
 PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {
@@ -85,6 +90,106 @@ def _app_home() -> Path:
     return Path.home() / "Moshu"
 
 
+def _launcher_settings_path() -> Path:
+    return _app_home() / "launcher-settings.json"
+
+
+def _load_launcher_settings() -> dict:
+    path = _launcher_settings_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_launcher_settings(settings: dict) -> None:
+    path = _launcher_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _default_content_root() -> Path:
+    return (_app_home() / "projects").expanduser().resolve()
+
+
+def _path_is_empty(path: Path) -> bool:
+    if not path.exists():
+        return True
+    ignored = {".DS_Store", "Thumbs.db", "desktop.ini"}
+    return not any(item.name not in ignored for item in path.iterdir())
+
+
+def _looks_like_moshu_content_root(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    for child in path.iterdir():
+        if child.is_dir() and (child / "moshu-project.json").exists():
+            return True
+    return False
+
+
+def _content_root_payload(extra: dict | None = None) -> dict:
+    settings = _load_launcher_settings()
+    configured = settings.get("content_root")
+    current = resolve_content_root()
+    default = _default_content_root()
+    payload = {
+        "current_path": str(current),
+        "configured_path": configured,
+        "default_path": str(default),
+        "is_default": not configured and current == default,
+        "exists": current.exists(),
+        "is_empty": _path_is_empty(current),
+        "looks_like_moshu_root": _looks_like_moshu_content_root(current),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _apply_content_root(db: Session, raw_path: str) -> dict:
+    target = Path(raw_path).expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    current = resolve_content_root()
+    if target != current and not _path_is_empty(target) and not _looks_like_moshu_content_root(target):
+        raise ValidationError("小说数据目录必须是空文件夹，或已经是 Moshu 小说数据目录")
+    settings = _load_launcher_settings()
+    previous = current
+    os.environ["MOSHU_CONTENT_ROOT"] = str(target)
+    settings["content_root"] = str(target)
+    _save_launcher_settings(settings)
+    migration = migrate_projects_to_content_root(db, target, previous_root=previous, cleanup_old=True)
+    db.commit()
+    return _content_root_payload({"migration": migration})
+
+
+def _pick_empty_content_root() -> Path | None:
+    try:
+        import tkinter
+        from tkinter import filedialog, messagebox
+
+        root = tkinter.Tk()
+        root.withdraw()
+        while True:
+            selected = filedialog.askdirectory(title="选择 Moshu 小说数据目录")
+            if not selected:
+                root.destroy()
+                return None
+            path = Path(selected).expanduser().resolve()
+            path.mkdir(parents=True, exist_ok=True)
+            if _path_is_empty(path) or _looks_like_moshu_content_root(path):
+                root.destroy()
+                return path
+            messagebox.showwarning(
+                "Moshu 小说数据目录",
+                "请选择空目录，或已经由 Moshu 创建过的小说数据目录。",
+            )
+    except Exception as exc:
+        raise ValidationError(f"无法打开文件夹选择器：{exc}")
+
+
 @router.post("/system/open-home")
 def open_home_in_default_browser(request: Request):
     """Open the Moshu web home in the user's default browser."""
@@ -92,6 +197,27 @@ def open_home_in_default_browser(request: Request):
     home_url = str(request.base_url).rstrip("/") + "/"
     webbrowser.open(home_url)
     return ApiResponse.success(data={"url": home_url}, message="Moshu home opened in the default browser")
+
+
+@router.get("/config/content-root")
+def get_content_root_settings():
+    """Return the current Moshu 2.x novel data directory setting."""
+    return ApiResponse.success(data=_content_root_payload())
+
+
+@router.put("/config/content-root")
+def update_content_root_settings(payload: ContentRootUpdateRequest, db: Session = Depends(get_db)):
+    """Set the Moshu novel data directory and migrate existing project files."""
+    return ApiResponse.success(data=_apply_content_root(db, payload.path), message="小说数据目录已更新")
+
+
+@router.post("/config/content-root/pick")
+def pick_content_root_settings(db: Session = Depends(get_db)):
+    """Open a native folder picker and set the selected Moshu data directory."""
+    selected = _pick_empty_content_root()
+    if not selected:
+        return ApiResponse.success(data=_content_root_payload({"cancelled": True}), message="已取消选择")
+    return ApiResponse.success(data=_apply_content_root(db, str(selected)), message="小说数据目录已更新")
 
 
 @router.get("/system/logs")

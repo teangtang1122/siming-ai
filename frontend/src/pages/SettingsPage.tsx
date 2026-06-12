@@ -23,12 +23,14 @@ import {
   CloseCircleOutlined,
   GlobalOutlined,
   ReloadOutlined,
+  FolderOpenOutlined,
+  SaveOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 import SystemNav from '../components/SystemNav'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 
 interface ModelConfig {
   id: string
@@ -53,6 +55,23 @@ interface ModelConfig {
 interface GlobalModel {
   provider: string | null
   model: string | null
+}
+
+interface ContentRootSettings {
+  current_path: string
+  configured_path?: string | null
+  default_path: string
+  is_default: boolean
+  exists: boolean
+  is_empty: boolean
+  looks_like_moshu_root: boolean
+  cancelled?: boolean
+  migration?: {
+    previous_root?: string
+    target_root?: string
+    migrated_projects?: number
+    cleaned_project_folders?: number
+  }
 }
 
 interface ModelOption {
@@ -251,6 +270,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [modelsLoading, setModelsLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
   const [connectionTestResult, setConnectionTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [contentRoot, setContentRoot] = useState<ContentRootSettings | null>(null)
+  const [contentRootPath, setContentRootPath] = useState('')
+  const [contentRootLoading, setContentRootLoading] = useState(false)
 
   const fetchConfigs = useCallback(async () => {
     setLoading(true)
@@ -279,11 +301,79 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     }
   }, [globalForm])
 
+  const fetchContentRoot = useCallback(async () => {
+    setContentRootLoading(true)
+    try {
+      const res = await apiClient.get<{ code: number; data: ContentRootSettings }>('/config/content-root')
+      setContentRoot(res.data.data)
+      setContentRootPath(res.data.data.current_path || res.data.data.default_path || '')
+    } catch (err: any) {
+      message.error(err.message || '获取小说数据目录失败')
+    } finally {
+      setContentRootLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     fetchConfigs()
     fetchGlobalModel()
+    fetchContentRoot()
     fetchProjects()
-  }, [fetchConfigs, fetchGlobalModel, fetchProjects])
+  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchProjects])
+
+  const applyContentRootResponse = (settings: ContentRootSettings, successText: string) => {
+    setContentRoot(settings)
+    setContentRootPath(settings.current_path || settings.default_path || '')
+    const migrated = settings.migration?.migrated_projects
+    if (typeof migrated === 'number') {
+      message.success(`${successText}，已迁移 ${migrated} 个作品`)
+    } else {
+      message.success(successText)
+    }
+    fetchProjects()
+  }
+
+  const saveContentRoot = async () => {
+    const path = contentRootPath.trim()
+    if (!path) {
+      message.warning('请填写小说数据目录')
+      return
+    }
+    Modal.confirm({
+      title: '切换小说数据目录',
+      content: '新目录必须为空，或已经是 Moshu 小说数据目录。保存后会把现有作品资料迁移到新目录。',
+      okText: '保存并迁移',
+      onOk: async () => {
+        setContentRootLoading(true)
+        try {
+          const res = await apiClient.put<{ code: number; data: ContentRootSettings }>('/config/content-root', { path })
+          applyContentRootResponse(res.data.data, '小说数据目录已更新')
+        } catch (err: any) {
+          message.error(err.message || '更新小说数据目录失败')
+        } finally {
+          setContentRootLoading(false)
+        }
+      },
+    })
+  }
+
+  const pickContentRoot = async () => {
+    setContentRootLoading(true)
+    try {
+      const res = await apiClient.post<{ code: number; data: ContentRootSettings }>('/config/content-root/pick')
+      if (res.data.data.cancelled) {
+        setContentRoot(res.data.data)
+        setContentRootPath(res.data.data.current_path || res.data.data.default_path || '')
+        message.info('已取消选择')
+        return
+      }
+      applyContentRootResponse(res.data.data, '小说数据目录已更新')
+    } catch (err: any) {
+      message.error(err.message || '选择小说数据目录失败')
+    } finally {
+      setContentRootLoading(false)
+    }
+  }
 
   const handleAddOrEdit = (provider?: string) => {
     setConnectionTestResult(null)
@@ -553,6 +643,50 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         <Title level={3} style={{ margin: 0 }}>⚙️ 系统设置</Title>
         {!embedded && <SystemNav current="settings" />}
       </div>
+
+      <Card title={<span><FolderOpenOutlined /> 小说数据目录</span>} style={{ marginTop: 16 }} loading={contentRootLoading && !contentRoot}>
+        <Descriptions size="small" column={1} bordered>
+          <Descriptions.Item label="当前目录">
+            <Text code copyable>{contentRoot?.current_path || '未加载'}</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="默认目录">
+            <Text code copyable>{contentRoot?.default_path || '未加载'}</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="状态">
+            <Space wrap>
+              <Tag color={contentRoot?.is_default ? 'default' : 'blue'}>
+                {contentRoot?.is_default ? '使用默认目录' : '已指定目录'}
+              </Tag>
+              <Tag color={contentRoot?.exists ? 'success' : 'warning'}>
+                {contentRoot?.exists ? '目录存在' : '目录未创建'}
+              </Tag>
+              <Tag color={contentRoot?.is_empty ? 'default' : 'green'}>
+                {contentRoot?.is_empty ? '当前为空' : contentRoot?.looks_like_moshu_root ? 'Moshu 数据目录' : '已有文件'}
+              </Tag>
+            </Space>
+          </Descriptions.Item>
+        </Descriptions>
+
+        <Divider style={{ margin: '16px 0' }} />
+
+        <Space.Compact style={{ width: '100%' }}>
+          <Input
+            value={contentRootPath}
+            onChange={(event) => setContentRootPath(event.target.value)}
+            placeholder="选择或填写一个空文件夹路径"
+          />
+          <Button icon={<FolderOpenOutlined />} loading={contentRootLoading} onClick={pickContentRoot}>
+            选择文件夹
+          </Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={contentRootLoading} onClick={saveContentRoot}>
+            保存
+          </Button>
+        </Space.Compact>
+
+        <p style={{ marginTop: 12, color: '#888' }}>
+          未指定时自动使用默认目录。切换目录会迁移现有作品资料；为了避免混入无关文件，新目录必须为空，或是已经由 Moshu 创建过的小说数据目录。
+        </p>
+      </Card>
 
       <Card
         title="模型提供商配置"
