@@ -39,7 +39,8 @@ async def prepare_external_writing_context(
     ensure_builtin_packs(db)
 
     outline_node_id = str(args.get("outline_node_id") or "").strip()
-    mode = str(args.get("mode") or "quality").strip()
+    requested_mode = str(args.get("mode") or "quality").strip() or "quality"
+    mode = "quality"
     include_prompt_pack = args.get("include_prompt_pack", True)
     requirements = str(args.get("requirements") or "").strip()
 
@@ -65,10 +66,17 @@ async def prepare_external_writing_context(
             "custom_style_prompt": project.custom_style_prompt,
         },
         "mode": mode,
+        "requested_mode": requested_mode,
+        "effective_mode": mode,
         "requirements": requirements,
         "warnings": [],
         "next_tool_suggestions": [],
     }
+    if requested_mode != mode:
+        result["warnings"].append(
+            f"Requested mode '{requested_mode}' was normalized to quality. "
+            "Moshu uses the highest-quality writing prompt for all entrypoints."
+        )
 
     # API-free mode rules + all analysis prompts — one call gets everything
     from app.prompts.prompt_source import (
@@ -88,7 +96,7 @@ async def prepare_external_writing_context(
 
     # Prompt pack — build system_prompt from shared source (same modules as internal packs)
     if include_prompt_pack:
-        pack_id = "chapter_writing_quality" if mode == "quality" else "chapter_writing_fast"
+        pack_id = "chapter_writing_quality"
         pack = db.query(PublicPromptPack).filter(
             PublicPromptPack.pack_id == pack_id,
             PublicPromptPack.enabled == True,
@@ -96,19 +104,17 @@ async def prepare_external_writing_context(
         if pack:
             from app.prompts.prompt_source import (
                 get_public_chapter_quality_system_prompt,
-                get_public_chapter_fast_system_prompt,
             )
             from app.prompts.style_prompts import build_style_context
             # Build style context for this project
             style_ctx = build_style_context(project, include_anti_ai=True)
             # Get system prompt from shared source and inject style context
-            if mode == "quality":
-                system_prompt = get_public_chapter_quality_system_prompt()
-            else:
-                system_prompt = get_public_chapter_fast_system_prompt()
+            system_prompt = get_public_chapter_quality_system_prompt()
             system_prompt = system_prompt.replace("{style_context}", style_ctx)
             result["prompt_pack"] = {
                 "pack_id": pack.pack_id,
+                "requested_mode": requested_mode,
+                "effective_mode": mode,
                 "version": pack.version,
                 "title": pack.title,
                 "system_prompt": system_prompt,

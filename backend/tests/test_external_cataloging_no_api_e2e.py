@@ -108,6 +108,8 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
             self.assertFalse(result["data"].get("all_done"))
             self.assertEqual(result["data"]["next_tool"], "save_external_cataloging_facts")
             self.assertIn("source language", result["data"]["workflow_reminder"]["language_rule"])
+            self.assertIn('node_type="section"', result["data"]["outline_granularity_policy"])
+            self.assertIn("outline_granularity_policy", result["data"]["workflow_reminder"])
             chapter_id = result["data"]["chapter_id"]
 
             # Save facts
@@ -159,6 +161,9 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
         self.assertEqual(data["next_tool"], "get_project_archive_status")
         self.assertGreaterEqual(data["characters_count"], 1)
         self.assertGreaterEqual(data["outline_nodes_count"], 3)
+        self.assertGreaterEqual(data["chapter_outline_nodes_count"], 3)
+        self.assertEqual(data["section_outline_nodes_count"], 0)
+        self.assertTrue(any("section-level outline nodes" in item for item in data["warnings"]))
         self.assertGreaterEqual(self.db.query(ChapterSummary).count(), 3)
         self.assertGreaterEqual(self.db.query(Character).count(), 1)
         self.assertGreaterEqual(self.db.query(OutlineNode).count(), 3)

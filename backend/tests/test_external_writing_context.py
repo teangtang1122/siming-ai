@@ -115,6 +115,51 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
         self.assertIn("worldbuilding", data)
         self.assertIn("warnings", data)
         self.assertIn("next_tool_suggestions", data)
+        self.assertEqual(data["effective_mode"], "quality")
+
+    def test_fast_request_uses_quality_prompt(self):
+        from app.services.workspace.tools.external_writing import prepare_external_writing_context
+
+        project = MagicMock()
+        project.id = "p1"
+        project.title = "Test Novel"
+        project.writing_style = "natural"
+        project.forbidden_sentence_patterns = ""
+        project.narrative_perspective = "third_person"
+
+        pack = MagicMock()
+        pack.pack_id = "chapter_writing_quality"
+        pack.version = "1.0.0"
+        pack.title = "Quality Writing"
+        pack.workflow_json = [{"step": 1}]
+        pack.quality_rubric_json = {"dimensions": []}
+        pack.forbidden_patterns_json = ["仿佛"]
+
+        def query_side_effect(model):
+            q = MagicMock()
+            q.filter.return_value = q
+            q.order_by.return_value = q
+            q.limit.return_value = q
+            model_name = model.__name__ if hasattr(model, '__name__') else str(model)
+            if "Project" in model_name:
+                q.first.return_value = project
+            elif "PublicPromptPack" in model_name:
+                q.first.return_value = pack
+            else:
+                q.first.return_value = None
+                q.all.return_value = []
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = query_side_effect
+
+        result = asyncio.run(prepare_external_writing_context(db, "p1", {"mode": "fast"}))
+        self.assertEqual(result["status"], "ok")
+        data = result["data"]
+        self.assertEqual(data["requested_mode"], "fast")
+        self.assertEqual(data["effective_mode"], "quality")
+        self.assertEqual(data["prompt_pack"]["pack_id"], "chapter_writing_quality")
+        self.assertIn("资深小说写手", data["prompt_pack"]["system_prompt"])
 
     def test_no_llm_call(self):
         """Verify the tool does not call LLMGateway."""

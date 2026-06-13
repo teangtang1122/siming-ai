@@ -113,7 +113,7 @@ async def get_moshu_usage_guide(
             "title": "API-free 写作，由外部 Agent 生成正文",
             "steps": [
                 "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要、质量规则和禁用句式。",
-                "外部 Agent 按 prompt pack 自己写正文并自检。",
+                "外部 Agent 必须按质量版 prompt pack 自己写正文并自检；fast 请求也只影响外围流程，不降低正文写作标准。",
                 "调用 save_external_chapter_draft 保存完整草稿；聊天里不要完整输出正文。",
                 "调用 record_external_quality_review 记录外部质量检查。",
                 "用户确认后调用 create_chapter，并传 draft_id/content_ref；随后调用 apply_external_story_updates 写入角色状态、章节摘要和世界观变化。",
@@ -125,7 +125,8 @@ async def get_moshu_usage_guide(
             "steps": [
                 "只有用户明确授权使用墨枢内部 API/内部模型时才能进入此流程。",
                 "确认 MCP 权限包为 internal_llm。",
-                "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
+                "内部写作统一使用质量版总控和质量版章节提示词：检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
+                "fast 请求只允许减少外围轮次，不能切换到低配正文提示词。",
                 "内部写作会消耗系统设置里的模型 API 额度。",
             ],
         },
@@ -241,7 +242,7 @@ async def get_moshu_usage_guide(
             "title": "使用墨枢内部 API 写作",
             "steps": [
                 "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
-                "快速模式会减少评估和角色对戏，优先速度。",
+                "快速模式是兼容入口，正文写作提示词和质量标准仍与质量模式一致；只能减少外围非必要轮次，不能降低正文质量规则。",
                 "内部写作会消耗系统设置里的模型 API 额度。",
             ],
         },
@@ -327,17 +328,19 @@ async def get_prompt_pack(
     mode = str(args.get("mode") or "quality").strip()
     pack_id = str(args.get("pack_id") or "").strip()
 
+    requested_pack_id = pack_id
     # Find by pack_id or by scope+mode
     if pack_id:
+        lookup_pack_id = "chapter_writing_quality" if pack_id == "chapter_writing_fast" else pack_id
         pack = db.query(PublicPromptPack).filter(
-            PublicPromptPack.pack_id == pack_id,
+            PublicPromptPack.pack_id == lookup_pack_id,
             PublicPromptPack.enabled == True,
         ).first()
     else:
         # Map scope+mode to pack_id
         scope_mode_map = {
             ("chapter_writing", "quality"): "chapter_writing_quality",
-            ("chapter_writing", "fast"): "chapter_writing_fast",
+            ("chapter_writing", "fast"): "chapter_writing_quality",
             ("chapter_review", "quality"): "chapter_review_quality",
             ("new_project", ""): "new_project_setup",
             ("character_design", ""): "character_design",
@@ -374,20 +377,18 @@ async def get_prompt_pack(
     # For chapter_writing packs, build system_prompt from shared source
     # (same modules as internal packs — edit once, both benefit)
     system_prompt = pack.system_prompt
+    effective_pack_id = "chapter_writing_quality" if pack.pack_id == "chapter_writing_fast" else pack.pack_id
+    requested_pack_id = requested_pack_id or pack.pack_id
     if pack.pack_id in ("chapter_writing_quality", "chapter_writing_fast"):
         from app.prompts.prompt_source import (
             get_public_chapter_quality_system_prompt,
-            get_public_chapter_fast_system_prompt,
         )
         from app.prompts.style_prompts import build_style_context
         from app.database.models import Project
         project = db.query(Project).filter(Project.id == project_id).first() if project_id else None
         if project:
             style_ctx = build_style_context(project, include_anti_ai=True)
-            if pack.pack_id == "chapter_writing_quality":
-                system_prompt = get_public_chapter_quality_system_prompt()
-            else:
-                system_prompt = get_public_chapter_fast_system_prompt()
+            system_prompt = get_public_chapter_quality_system_prompt()
             system_prompt = system_prompt.replace("{style_context}", style_ctx)
 
     return {
@@ -396,6 +397,8 @@ async def get_prompt_pack(
         "detail": f"Prompt pack: {pack.title} (v{pack.version})",
         "data": {
             "pack_id": pack.pack_id,
+            "requested_pack_id": requested_pack_id,
+            "effective_pack_id": effective_pack_id,
             "version": pack.version,
             "scope": pack.scope,
             "title": pack.title,

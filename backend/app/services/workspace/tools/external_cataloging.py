@@ -12,6 +12,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.prompts.cataloging_source import get_outline_granularity_rules
+
 from ....services.content_store import refresh_project_from_files
 
 logger = logging.getLogger(__name__)
@@ -151,6 +153,7 @@ def _workflow_reminder(next_tool: str, *, note: str = "") -> dict[str, Any]:
             "save Chinese names, titles, summaries, facts, candidates, aliases, "
             "outline nodes, and worldbuilding. Do not translate to English unless the user explicitly asks."
         ),
+        "outline_granularity_policy": get_outline_granularity_rules(),
         "no_api_rule": (
             "When the user says Moshu API is unavailable, do not call internal LLM tools such as "
             "start_cataloging_job, chapter_writer, character_writer, outline_writer, worldbuilding_writer, "
@@ -616,6 +619,7 @@ async def get_next_external_cataloging_chapter(
             "character_alias_index": char_index,
             "worldbuilding_title_index": wb_index,
             "outline_neighborhood": outline_neighborhood,
+            "outline_granularity_policy": get_outline_granularity_rules(),
             "prompt_pack": prompt_pack_data,
             "next_tool": "save_external_cataloging_facts" if phase == "facts" else "save_external_cataloging_candidates",
             "workflow_reminder": _workflow_reminder(
@@ -968,6 +972,14 @@ async def verify_external_cataloging_progress(
     characters_count = db.query(Character).filter(Character.project_id == effective_project_id).count()
     wb_count = db.query(WorldbuildingEntry).filter(WorldbuildingEntry.project_id == effective_project_id).count()
     outline_count = db.query(OutlineNode).filter(OutlineNode.project_id == effective_project_id).count()
+    chapter_outline_count = db.query(OutlineNode).filter(
+        OutlineNode.project_id == effective_project_id,
+        OutlineNode.node_type == "chapter",
+    ).count()
+    section_outline_count = db.query(OutlineNode).filter(
+        OutlineNode.project_id == effective_project_id,
+        OutlineNode.node_type == "section",
+    ).count()
     rel_count = db.query(CharacterRelationship).filter(CharacterRelationship.project_id == effective_project_id).count()
 
     # Count pending candidates
@@ -983,6 +995,11 @@ async def verify_external_cataloging_progress(
         warnings.append("No characters found despite having chapters")
     if outline_count == 0 and chapters_count > 0:
         warnings.append("No outline nodes found despite having chapters")
+    if outline_count > 0 and chapters_count > 1 and section_outline_count == 0:
+        warnings.append(
+            "No section-level outline nodes found; external cataloging may be too coarse. "
+            "Follow outline_granularity_policy and create section outline nodes for multi-scene chapters."
+        )
 
     if pending_candidates > 0 or awaiting_runs > 0:
         next_tool = "apply_pending_cataloging"
@@ -1030,6 +1047,8 @@ async def verify_external_cataloging_progress(
             "characters_count": characters_count,
             "worldbuilding_count": wb_count,
             "outline_nodes_count": outline_count,
+            "chapter_outline_nodes_count": chapter_outline_count,
+            "section_outline_nodes_count": section_outline_count,
             "relationships_count": rel_count,
             "pending_candidates": pending_candidates,
             "next_tool": next_tool,

@@ -49,46 +49,17 @@ def _build_compact_dialogue() -> str:
 
 
 def _build_system(*, style_context: str) -> str:
-    """Build a compact chapter writer system prompt for fast mode.
+    """Compatibility wrapper: fast chapter writing uses quality rules too."""
+    from .chapter_quality import PACK as CHAPTER_QUALITY_PACK
 
-    Includes key quality rules from each module but skips deep-dive sections.
-    """
-    anti_ai_compact = _build_compact_anti_ai()
-    dialogue_compact = _build_compact_dialogue()
-
-    return (
-        "你是一位小说写手，专精于将剧情设计和对白素材织成流畅的章节正文。\n\n"
-        "【任务】\n"
-        "根据提供的剧情设计和项目上下文，写出完整的章节正文。直接交付可发布的正文。\n\n"
-        "【写作原则】\n"
-        "1. 剧情设计是你的骨架——场景、冲突、情绪走向必须被遵守。\n"
-        "2. 叙事视角和文风严格遵循【风格设定】。\n"
-        "3. 正文控制在 1500-2000 字。\n"
-        "4. 短句、动作描写、感官细节优先。不要写元评论、水词、抽象抒情。\n\n"
-        "【章节结构】\n"
-        "- 开头：用章首引子切入。禁止以背景交代或环境描写开头。\n"
-        "- 中段：短句快切制造紧张，细节感官制造舒缓。每章至少 1 个紧张峰值。\n"
-        "- 结尾：必须使用章末悬念钩子收束，禁止平淡过渡结尾。\n\n"
-        "【输出格式】\n"
-        "只输出章节正文本身。不要加任何前言、后记、解释或元评论。不要加章节标题。\n"
-        "不要使用 Markdown 格式。段落用空行分隔。\n\n"
-        f"{BODY_EMOTION_REPLACEMENT}\n\n"
-        f"{SCENE_WEAVING_RULE}\n\n"
-        f"{dialogue_compact}\n\n"
-        f"{anti_ai_compact}\n\n"
-        "【章首引子类型】\n"
-        f"{CHAPTER_OPENING_HOOKS}\n\n"
-        "【章末钩子类型】\n"
-        f"{CHAPTER_ENDING_HOOK_TYPES}\n\n"
-        f"【风格设定】\n{style_context}"
-    )
+    return CHAPTER_QUALITY_PACK.build_system_prompt(style_context=style_context)
 
 
 PACK = PromptPack(
     name="chapter_fast",
     version="1.0",
     pack_type="chapter",
-    description="Fast chapter writer — compact craft/dialogue/anti-AI rules, shorter output",
+    description="Compatibility fast chapter writer — delegates to quality writing rules",
     input_fields=[
         "style_context", "outline_context", "world_context",
         "character_profiles", "recent_summaries",
@@ -102,7 +73,7 @@ PACK = PromptPack(
         "禁止添加前言、后记、解释或元评论",
         "禁止添加章节标题",
         "禁止使用 Markdown 格式",
-        "正文必须控制在 1500-2000 字",
+        "正文生成必须使用质量版写作规则",
     ],
     default_temperature=0.8,
     default_max_tokens=4000,

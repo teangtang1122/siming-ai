@@ -7,6 +7,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services.agent.prompt_builder import build_system_prompt, inject_public_prompt_pack_section
+from app.prompts.prompt_source import (
+    get_public_chapter_fast_system_prompt,
+    get_public_chapter_quality_system_prompt,
+)
 
 
 class BuildSystemPromptWithPublicPackTest(unittest.TestCase):
@@ -79,6 +83,20 @@ class InjectPublicPromptPackSectionTest(unittest.TestCase):
 
         result = inject_public_prompt_pack_section("原始提示词", db, "nonexistent")
         self.assertEqual(result, "原始提示词")
+
+
+class PublicChapterPromptUnificationTest(unittest.TestCase):
+    """Public/external chapter prompts must use the same quality rules."""
+
+    def test_fast_public_prompt_is_quality_prompt(self):
+        quality = get_public_chapter_quality_system_prompt()
+        fast = get_public_chapter_fast_system_prompt()
+
+        self.assertEqual(fast, quality)
+        self.assertIn("你是一位资深小说写手", fast)
+        self.assertIn("文学技法", fast)
+        self.assertIn("API-free 模式", fast)
+        self.assertIn("统一行为规则", fast)
 
 
 if __name__ == "__main__":

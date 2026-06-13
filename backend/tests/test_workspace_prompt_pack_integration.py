@@ -60,13 +60,13 @@ class InjectPublicPromptPackSectionTest(unittest.TestCase):
         result = inject_public_prompt_pack_section(original, db, "chapter_writing")
         self.assertEqual(result, original)
 
-    def test_fast_mode_uses_fast_pack(self):
+    def test_fast_mode_injects_quality_pack(self):
         db = MagicMock()
         pack = MagicMock()
-        pack.pack_id = "chapter_writing_fast"
-        pack.title = "快速模式"
+        pack.pack_id = "chapter_writing_quality"
+        pack.title = "质量模式"
         pack.version = "1.0.0"
-        pack.summary = "精简版"
+        pack.summary = "完整技法"
         pack.quality_rubric_json = None
         pack.forbidden_patterns_json = ["仿佛"]
 
@@ -76,7 +76,7 @@ class InjectPublicPromptPackSectionTest(unittest.TestCase):
         db.query.return_value = query_mock
 
         result = inject_public_prompt_pack_section("原始", db, "chapter_writing", "fast")
-        self.assertIn("快速模式", result)
+        self.assertIn("质量模式", result)
 
 
 if __name__ == "__main__":

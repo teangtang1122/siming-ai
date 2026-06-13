@@ -18,22 +18,27 @@ logger = logging.getLogger(__name__)
 # ── Pack accessors ──────────────────────────────────────────────────────
 
 def get_workspace_pack(mode: str) -> PromptPack:
-    """Return the workspace prompt pack for the given mode."""
-    from ...prompts.packs.workspace_fast import PACK as WORKSPACE_FAST_PACK
+    """Return the workspace prompt pack.
+
+    Moshu keeps the UI-facing ``mode`` flag for workflow hints, but the
+    controlling agent prompt is intentionally unified on the highest-quality
+    pack. This prevents the same user request from behaving differently when
+    it enters through the web UI, Plan Agent, MCP, or a local CLI model.
+    """
     from ...prompts.packs.workspace_quality import PACK as WORKSPACE_QUALITY_PACK
 
-    if mode == "fast":
-        return WORKSPACE_FAST_PACK
     return WORKSPACE_QUALITY_PACK
 
 
 def get_chapter_pack(mode: str) -> PromptPack:
-    """Return the chapter writer prompt pack for the given mode."""
-    from ...prompts.packs.chapter_fast import PACK as CHAPTER_FAST_PACK
+    """Return the chapter writer prompt pack.
+
+    Chapter prose generation always uses the quality pack. A requested fast
+    mode may still reduce orchestration elsewhere, but it must not downgrade
+    the writing rules used to produce the chapter body.
+    """
     from ...prompts.packs.chapter_quality import PACK as CHAPTER_QUALITY_PACK
 
-    if mode == "fast":
-        return CHAPTER_FAST_PACK
     return CHAPTER_QUALITY_PACK
 
 
@@ -108,7 +113,7 @@ def inject_public_prompt_pack_section(
         # Map scope+mode to pack_id
         scope_mode_map = {
             ("chapter_writing", "quality"): "chapter_writing_quality",
-            ("chapter_writing", "fast"): "chapter_writing_fast",
+            ("chapter_writing", "fast"): "chapter_writing_quality",
             ("chapter_review", "quality"): "chapter_review_quality",
             ("new_project", ""): "new_project_setup",
             ("character_design", ""): "character_design",
@@ -185,7 +190,7 @@ def compose_chapter_writer_messages(
     if roleplay_results:
         user_parts.append(f"【角色对白素材】\n{_json.dumps(roleplay_results, ensure_ascii=False)}")
 
-    word_target = "1500-2000" if "fast" in pack.name else "1800-2500"
+    word_target = "1800-2500"
     user_parts.append(
         f"\n请根据以上素材，写出完整的章节正文（{word_target} 字）。直接输出正文，不要加任何说明。"
     )

@@ -73,27 +73,23 @@ class TestWorkspacePacks(unittest.TestCase):
         prompt = WQ.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
         self.assertGreater(len(prompt), 100)
 
-    def test_fast_prompt_shorter_than_quality(self):
+    def test_fast_prompt_same_as_quality(self):
         fast = WF.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
         quality = WQ.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
-        self.assertLess(len(fast), len(quality),
-                        f"Fast ({len(fast)}) should be shorter than quality ({len(quality)})")
+        self.assertEqual(fast, quality)
 
     def test_quality_pack_requires_evaluate_chapter(self):
         prompt = WQ.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
         self.assertIn("evaluate_chapter", prompt)
 
-    def test_fast_pack_does_not_mandate_evaluate_chapter(self):
+    def test_fast_pack_mandates_quality_evaluation(self):
         prompt = WF.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
-        # Fast mode says "默认不要调用 evaluate_chapter"
-        self.assertIn("默认不要调用 evaluate_chapter", prompt)
+        self.assertIn("evaluate_chapter", prompt)
+        self.assertIn("质量模式", prompt)
 
-    def test_fast_pack_excludes_quality_tools(self):
-        quality_only = {"evaluate_chapter", "design_plot", "roleplay_character",
-                        "dialogue_battle", "detect_forbidden_patterns",
-                        "detect_worldbuilding_conflicts", "suggest_conflicts"}
-        for tool in quality_only:
-            self.assertNotIn(tool, WF.available_tools, f"Fast pack should not include {tool}")
+    def test_fast_pack_includes_quality_tools(self):
+        for tool in ["evaluate_chapter", "design_plot", "roleplay_character", "dialogue_battle"]:
+            self.assertIn(tool, WF.available_tools)
 
     def test_quality_pack_includes_quality_tools(self):
         for tool in ["evaluate_chapter", "design_plot", "roleplay_character", "dialogue_battle"]:
@@ -121,8 +117,8 @@ class TestWorkspacePacks(unittest.TestCase):
     def test_quality_pack_tool_policy_is_full(self):
         self.assertEqual(WQ.tool_policy, "full")
 
-    def test_fast_pack_tool_policy_is_custom(self):
-        self.assertEqual(WF.tool_policy, "custom")
+    def test_fast_pack_tool_policy_is_full(self):
+        self.assertEqual(WF.tool_policy, "full")
 
 
 class TestChapterPacks(unittest.TestCase):
@@ -152,12 +148,11 @@ class TestChapterPacks(unittest.TestCase):
     def test_fast_prompt_shorter_than_quality(self):
         fast = CF.build_system_prompt(style_context="测试风格")
         quality = CQ.build_system_prompt(style_context="测试风格")
-        self.assertLess(len(fast), len(quality),
-                        f"Fast ({len(fast)}) should be shorter than quality ({len(quality)})")
+        self.assertEqual(fast, quality)
 
     def test_fast_word_target_lower(self):
         prompt = CF.build_system_prompt(style_context="测试风格")
-        self.assertIn("1500-2000", prompt)
+        self.assertIn("1800-2500", prompt)
 
     def test_quality_word_target(self):
         prompt = CQ.build_system_prompt(style_context="测试风格")
@@ -187,11 +182,11 @@ class TestChapterPacks(unittest.TestCase):
 
     def test_fast_includes_forbidden_sentence_templates(self):
         prompt = CF.build_system_prompt(style_context="")
-        self.assertIn("禁用句式", prompt)
+        self.assertIn("去AI味", prompt)
 
     def test_fast_includes_rhetoric_limits(self):
         prompt = CF.build_system_prompt(style_context="")
-        self.assertIn("明喻", prompt)
+        self.assertIn("文学技法", prompt)
 
     def test_fast_includes_dialogue_core_rules(self):
         prompt = CF.build_system_prompt(style_context="")
@@ -273,6 +268,11 @@ class TestToolCallRules(unittest.TestCase):
         prompt = WF.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
         self.assertIn("函数调用", prompt)
 
+    def test_workspace_fast_delegates_to_quality_prompt(self):
+        fast = WF.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
+        quality = WQ.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
+        self.assertEqual(fast, quality)
+
     def test_workspace_quality_has_tool_protocol(self):
         prompt = WQ.build_system_prompt(scope="project", outline_batch_count=3, auto_apply=True)
         self.assertIn("函数调用", prompt)
@@ -326,7 +326,7 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertEqual(messages[0]["role"], "system")
         self.assertEqual(messages[1]["role"], "user")
 
-    def test_compose_chapter_writer_fast_word_target(self):
+    def test_compose_chapter_writer_fast_uses_quality_word_target(self):
         from app.services.agent.prompt_builder import compose_chapter_writer_messages
         messages = compose_chapter_writer_messages(
             pack=CF,
@@ -337,7 +337,7 @@ class TestPromptBuilder(unittest.TestCase):
             recent_summaries="暂无前文章节。",
         )
         user_msg = messages[1]["content"]
-        self.assertIn("1500-2000", user_msg)
+        self.assertIn("1800-2500", user_msg)
 
     def test_compose_chapter_writer_quality_word_target(self):
         from app.services.agent.prompt_builder import compose_chapter_writer_messages
@@ -360,7 +360,7 @@ class TestPromptBuilder(unittest.TestCase):
     def test_get_workspace_pack_fast(self):
         from app.services.agent.prompt_builder import get_workspace_pack
         pack = get_workspace_pack("fast")
-        self.assertEqual(pack.name, "workspace_fast")
+        self.assertEqual(pack.name, "workspace_quality")
 
     def test_get_chapter_pack_defaults_to_quality(self):
         from app.services.agent.prompt_builder import get_chapter_pack
@@ -370,7 +370,7 @@ class TestPromptBuilder(unittest.TestCase):
     def test_get_chapter_pack_fast(self):
         from app.services.agent.prompt_builder import get_chapter_pack
         pack = get_chapter_pack("fast")
-        self.assertEqual(pack.name, "chapter_fast")
+        self.assertEqual(pack.name, "chapter_quality")
 
     def test_inject_assistant_mode_for_chapter_writer(self):
         from app.services.agent.prompt_builder import inject_assistant_mode

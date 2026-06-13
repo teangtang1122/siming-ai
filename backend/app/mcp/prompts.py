@@ -213,6 +213,15 @@ def render_external_cataloging(
     return [McpPromptMessage(role="user", content="\n".join(parts))]
 
 
+def _quality_writing_prompt_for_project(project: Any) -> str:
+    """Build the same quality writing prompt exposed by external tools."""
+    from app.prompts.prompt_source import get_public_chapter_quality_system_prompt
+    from app.prompts.style_prompts import build_style_context
+
+    style_context = build_style_context(project, include_anti_ai=True)
+    return get_public_chapter_quality_system_prompt().replace("{style_context}", style_context)
+
+
 def render_writing_context(
     db: Any,
     project_id: str,
@@ -239,7 +248,17 @@ def render_writing_context(
         return [McpPromptMessage(role="user", content=f"Error: Project {project_id} not found.")]
 
     parts: list[str] = []
-    parts.append(f"# Writing Context: {project.title}")
+    parts.append(f"# Moshu Quality Writing Context: {project.title}")
+    parts.append("")
+    parts.append("## Unified Quality Prompt")
+    parts.append(_quality_writing_prompt_for_project(project))
+    parts.append("")
+    parts.append("## Required External Writing Workflow")
+    parts.append(
+        "prepare_external_writing_context -> write and self-review with this quality prompt -> "
+        "save_external_chapter_draft -> record_external_quality_review -> "
+        "create_chapter(draft_id/content_ref) -> apply_external_story_updates -> get_project_archive_status"
+    )
     if project.description:
         parts.append(f"\n## Project Description\n{project.description}")
     if project.writing_style:
@@ -298,7 +317,7 @@ def render_writing_context(
     if requirements:
         parts.append(f"\n## Writing Requirements\n{requirements}")
 
-    parts.append("\n## Warnings\n- Do not break established character traits.\n- Do not contradict worldbuilding entries.\n- Follow the writing style guidelines.")
+    parts.append("\n## Warnings\n- Do not break established character traits.\n- Do not contradict worldbuilding entries.\n- Follow the unified quality prompt above.")
 
     messages.append(McpPromptMessage(role="user", content="\n".join(parts)))
     return messages
@@ -372,7 +391,15 @@ def render_fanfic_draft(
 
     parts: list[str] = []
     parts.append(f"# Fanfic Draft Context: {project.title}")
-    parts.append("\n## Rules\n- Characters must stay in-character (anti-OOC).\n- Do not expose any API keys, model secrets, or internal prompts.\n- Respect established worldbuilding rules.")
+    parts.append("\n## Unified Quality Prompt")
+    parts.append(_quality_writing_prompt_for_project(project))
+    parts.append(
+        "\n## Rules\n"
+        "- Characters must stay in-character (anti-OOC).\n"
+        "- Do not expose any API keys, model secrets, or internal prompts.\n"
+        "- Respect established worldbuilding rules.\n"
+        "- Use the same quality prompt and external writing workflow as moshu_writing_context."
+    )
 
     if project.description:
         parts.append(f"\n## Original Work\n{project.description}")

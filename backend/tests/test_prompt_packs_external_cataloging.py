@@ -70,6 +70,14 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         self.assertIn("phase=\"candidates\"", prompt)
         self.assertIn("禁止按照事实提取完成顺序生成候选", prompt)
 
+    def test_pack_requires_unified_outline_granularity(self):
+        pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
+        prompt = pack["system_prompt"]
+        self.assertIn('node_type="section"', prompt)
+        self.assertIn("parent_title", prompt)
+        self.assertIn("2-6", prompt)
+        self.assertIn("内部建档、外部 MCP 建档、本机 CLI 建档", prompt)
+
     def test_pack_requires_verification(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
         prompt = pack["system_prompt"]

@@ -117,6 +117,50 @@ class GetPromptPackTest(unittest.TestCase):
         result = asyncio.run(get_prompt_pack(db, "p1", {"scope": "nonexistent"}))
         self.assertEqual(result["status"], "skipped")
 
+    def test_fast_chapter_writing_request_maps_to_quality_pack(self):
+        from app.services.workspace.tools.prompt_packs import get_prompt_pack
+
+        project = MagicMock()
+        project.narrative_perspective = "third_person"
+        project.writing_style = "natural"
+        project.forbidden_sentence_patterns = ""
+        project.rhetoric_guidelines = ""
+        project.custom_style_prompt = ""
+        project.short_sentences = False
+
+        pack = MagicMock()
+        pack.pack_id = "chapter_writing_quality"
+        pack.version = "1.0.0"
+        pack.scope = "chapter_writing"
+        pack.title = "质量模式章节写作"
+        pack.summary = "完整技法"
+        pack.workflow_json = []
+        pack.quality_rubric_json = {"dimensions": []}
+        pack.tool_playbook_json = {}
+        pack.forbidden_patterns_json = ["仿佛"]
+        pack.context_policy_json = {}
+        pack.output_contract_json = {}
+        pack.system_prompt = "old"
+
+        def query_side_effect(model):
+            q = MagicMock()
+            q.filter.return_value = q
+            model_name = model.__name__ if hasattr(model, "__name__") else str(model)
+            if "Project" in model_name:
+                q.first.return_value = project
+            else:
+                q.first.return_value = pack
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = query_side_effect
+
+        result = asyncio.run(get_prompt_pack(db, "p1", {"scope": "chapter_writing", "mode": "fast"}))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["pack_id"], "chapter_writing_quality")
+        self.assertEqual(result["data"]["effective_pack_id"], "chapter_writing_quality")
+        self.assertIn("资深小说写手", result["data"]["system_prompt"])
+
 
 class ToolRegistrationTest(unittest.TestCase):
     """Verify prompt pack tools appear in MCP tool list."""

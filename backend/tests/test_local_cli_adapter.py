@@ -1,9 +1,11 @@
 """Tests for local CLI model adapter helpers."""
 
 import unittest
+from unittest.mock import patch
 
 from app.ai.local_cli_adapter import (
     LocalCLIAdapter,
+    hidden_subprocess_kwargs,
     messages_to_prompt,
     parse_cli_args,
     parse_cli_launch,
@@ -46,3 +48,9 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
     def test_normalize_plain_output_is_preserved(self):
         adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")
         self.assertEqual(adapter._normalize_output("plain answer\n"), "plain answer")
+
+    @patch("app.ai.local_cli_adapter.os.name", "nt")
+    def test_hidden_subprocess_kwargs_hides_windows_console(self):
+        kwargs = hidden_subprocess_kwargs()
+        self.assertIn("creationflags", kwargs)
+        self.assertGreater(kwargs["creationflags"], 0)

@@ -166,21 +166,15 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "chapter_writing_fast",
         "scope": "chapter_writing",
         "title": "快速模式章节写作",
-        "summary": "精简版章节写作流程，优先速度。目标1500-2000字。",
+        "summary": "兼容旧配置的快速入口。正文写作规则与质量模式完全一致，仅允许外围调度减少非必要轮次。",
         "system_prompt": (
-            "你是一个高效的网文写手。快速写出章节正文，不走完整评估流水线。\n\n"
-            "【写作规则】\n"
-            "1. 正文1500-2000字。\n"
-            "2. 开头直接进入场景，不要铺垫太多。\n"
-            "3. 对话推动剧情，不要大段心理描写。\n"
-            "4. 章末留钩子。\n"
-            "5. 避免禁用句式（仿佛、不由得、心中暗想等）。\n\n"
-            "【输出】只输出正文。"
+            "快速入口兼容旧配置。实际种子写入时会替换为 chapter_writing_quality 的完整质量提示词。\n"
+            "任何入口生成章节正文都必须遵守质量模式写作规则、禁用句式、角色一致性和设定一致性。"
         ),
         "workflow_json": [
-            {"step": 1, "name": "prepare_context", "description": "快速读取大纲和角色"},
-            {"step": 2, "name": "write_chapter", "description": "直接生成正文"},
-            {"step": 3, "name": "save", "description": "保存章节"},
+            {"step": 1, "name": "prepare_context", "description": "读取写作所需上下文，使用与质量模式一致的提示词"},
+            {"step": 2, "name": "write_chapter", "description": "按质量版章节规则生成正文"},
+            {"step": 3, "name": "review_and_save", "description": "按入口能力完成评估或自检后保存章节"},
         ],
         "forbidden_patterns_json": [
             "仿佛", "不由得", "心中暗想", "不禁感叹",
@@ -578,6 +572,14 @@ def seed_builtin_packs(db: Session) -> int:
 
         if pack_data["pack_id"] == "cataloging_external_no_api":
             merged.update(cataloging_content)
+
+        if pack_data["pack_id"] in ("chapter_writing_quality", "chapter_writing_fast"):
+            from app.prompts.prompt_source import get_public_chapter_quality_system_prompt
+            merged["system_prompt"] = get_public_chapter_quality_system_prompt()
+            if pack_data["pack_id"] == "chapter_writing_fast":
+                merged["summary"] = (
+                    "快速模式仅表示外围流程可减少检索或评估轮次；章节正文生成仍统一使用质量模式提示词。"
+                )
 
         # Inject analysis prompts from prompt_source (single source of truth)
         from app.prompts.prompt_source import (

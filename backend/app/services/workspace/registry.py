@@ -1682,7 +1682,7 @@ def _register_all() -> None:
             "involved_characters": {"type": "array", "items": {"type": "string"}, "description": "本章出场的角色名列表"},
             "previous_plot": {"type": "object", "description": "design_plot 返回的剧情设计JSON（可选，如有则传入）"},
             "previous_roleplay": {"type": "array", "items": {"type": "object"}, "description": "roleplay_character 或 dialogue_battle 返回的对白结果（可选，如有则传入）"},
-            "mode": {"type": "string", "enum": ["fast", "quality"], "description": "写作模式，fast=快速简洁（1500-2000字），quality=完整技法（1800-2500字）。默认由系统注入。"},
+            "mode": {"type": "string", "enum": ["fast", "quality"], "description": "兼容字段。无论 fast/quality，章节正文都统一使用质量版提示词；fast 只能作为外围流程的速度偏好。默认由系统注入。"},
         },
         required=["outline_node_id"],
         tool_type="generator",

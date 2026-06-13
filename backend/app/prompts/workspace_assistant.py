@@ -28,10 +28,10 @@ SCOPE_LABELS = {
 MAX_ITERATIONS = 30
 
 
-# NOTE: build_fast_workspace_assistant_system_prompt() was removed — it was
-# dead code.  The pack-based version in packs/workspace_fast.py is the single
-# source of truth.  The entry point build_workspace_assistant_system_prompt()
-# delegates to the pack system.
+# NOTE: build_fast_workspace_assistant_system_prompt() was removed. The entry
+# point delegates to prompt_builder.get_workspace_pack(), which intentionally
+# normalizes all modes to the quality pack so every entrypoint follows the same
+# behavior standard.
 
 
 def build_workspace_assistant_system_prompt(
@@ -42,10 +42,8 @@ def build_workspace_assistant_system_prompt(
     mode: str = "quality",
 ) -> str:
     """Backward-compatible wrapper — delegates to the pack system."""
-    from .packs.workspace_fast import PACK as WORKSPACE_FAST_PACK
-    from .packs.workspace_quality import PACK as WORKSPACE_QUALITY_PACK
-    from ..services.agent.prompt_builder import build_system_prompt
-    pack = WORKSPACE_FAST_PACK if mode == "fast" else WORKSPACE_QUALITY_PACK
+    from ..services.agent.prompt_builder import build_system_prompt, get_workspace_pack
+    pack = get_workspace_pack(mode)
     return build_system_prompt(pack, scope=scope, outline_batch_count=outline_batch_count, auto_apply=auto_apply)
 
 

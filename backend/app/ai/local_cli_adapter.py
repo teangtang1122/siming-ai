@@ -11,6 +11,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Optional
@@ -61,6 +62,14 @@ def is_local_cli_provider(provider: str | None) -> bool:
 def local_cli_model_options(provider: str) -> list[dict]:
     model = DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
     return [{"id": model, "display_name": model}]
+
+
+def hidden_subprocess_kwargs() -> dict:
+    """Hide transient CLI windows when Moshu launches model CLIs on Windows."""
+    if os.name != "nt":
+        return {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return {"creationflags": creationflags} if creationflags else {}
 
 
 def _message_text(content) -> str:
@@ -213,6 +222,7 @@ class LocalCLIAdapter(BaseAdapter):
                 stdin=asyncio.subprocess.PIPE if launch.stdin_text is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
             )
         except OSError as exc:
             raise LLMError(f"启动本机 CLI 失败: {exc}")
