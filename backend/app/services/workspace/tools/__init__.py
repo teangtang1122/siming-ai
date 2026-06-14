@@ -89,6 +89,7 @@ from .deconstruct import (
 from .stats import get_today_writing_stats, get_writing_stats_history, set_daily_word_goal
 from .project_status import get_project_archive_status
 from .prompt_packs import get_moshu_usage_guide
+from .local_cli_agent import start_local_cli_agent_run
 
 __all__ = [
     "chapter_writer",
@@ -197,4 +198,5 @@ __all__ = [
     "set_daily_word_goal",
     "get_project_archive_status",
     "get_moshu_usage_guide",
+    "start_local_cli_agent_run",
 ]

@@ -9,14 +9,15 @@ from sqlalchemy.orm import Session
 from ....database.models import Project
 from ....services.content_store import (
     ensure_project_folder,
-    refresh_project_from_files,
     sync_project_to_files,
+    refresh_project_from_files,
 )
 
 
 TEXT_SUFFIXES = {".md", ".json", ".txt", ".yml", ".yaml", ".csv"}
 MAX_READ_CHARS = 200_000
 MAX_WRITE_CHARS = 1_500_000
+CANONICAL_DIRS = {"chapters", "characters", "worldbuilding", "outline", "relationships"}
 
 
 def _resolve_project(db: Session, current_project_id: str, args: dict[str, Any]) -> Project | None:
@@ -81,7 +82,6 @@ async def list_project_files(db: Session, project_id: str, args: dict[str, Any])
     project = _resolve_project(db, project_id, args)
     if not project:
         return {"tool": "list_project_files", "status": "skipped", "detail": "未找到作品"}
-    refresh_project_from_files(db, project.id)
     folder = _folder(db, project)
     rel_dir = str(args.get("path") or "").strip()
     try:
@@ -104,7 +104,6 @@ async def read_project_file(db: Session, project_id: str, args: dict[str, Any]) 
     project = _resolve_project(db, project_id, args)
     if not project:
         return {"tool": "read_project_file", "status": "skipped", "detail": "未找到作品"}
-    refresh_project_from_files(db, project.id)
     folder = _folder(db, project)
     try:
         path = _safe_path(folder, args.get("path"))
@@ -140,6 +139,13 @@ async def write_project_file(db: Session, project_id: str, args: dict[str, Any])
         path = _safe_path(folder, args.get("path"))
     except ValueError:
         return {"tool": "write_project_file", "status": "skipped", "detail": "文件路径超出作品目录"}
+    rel_parts = path.resolve().relative_to(folder.resolve()).parts
+    if rel_parts and rel_parts[0] in CANONICAL_DIRS:
+        return {
+            "tool": "write_project_file",
+            "status": "skipped",
+            "detail": "2.1 起章节/角色/大纲/世界观文件是只读镜像；请使用对应 create/update/delete 工具写入数据库后自动刷新镜像",
+        }
     if path.suffix.lower() not in TEXT_SUFFIXES:
         return {"tool": "write_project_file", "status": "skipped", "detail": "仅支持写入文本类项目文件"}
     content = str(args.get("content") or "")
@@ -149,9 +155,6 @@ async def write_project_file(db: Session, project_id: str, args: dict[str, Any])
         return {"tool": "write_project_file", "status": "skipped", "detail": "文件已存在，未覆盖"}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8", newline="\n")
-    if bool(args.get("sync_after_write", True)):
-        refresh_project_from_files(db, project.id)
-        db.flush()
     return {
         "tool": "write_project_file",
         "status": "ok",
@@ -164,7 +167,6 @@ async def search_project_files(db: Session, project_id: str, args: dict[str, Any
     project = _resolve_project(db, project_id, args)
     if not project:
         return {"tool": "search_project_files", "status": "skipped", "detail": "未找到作品"}
-    refresh_project_from_files(db, project.id)
     folder = _folder(db, project)
     query = str(args.get("query") or "").strip()
     if not query:
@@ -216,14 +218,28 @@ async def sync_project_files(db: Session, project_id: str, args: dict[str, Any])
     project = _resolve_project(db, project_id, args)
     if not project:
         return {"tool": "sync_project_files", "status": "skipped", "detail": "未找到作品"}
-    direction = str(args.get("direction") or "files_to_db").strip()
+    direction = str(args.get("direction") or "db_to_files").strip()
     if direction in {"db_to_files", "export"}:
         sync_project_to_files(db, project.id)
     elif direction in {"both"}:
+        if not bool(args.get("confirm_import_from_files")):
+            return {
+                "tool": "sync_project_files",
+                "status": "skipped",
+                "detail": "2.1 默认禁止从文件镜像反向覆盖数据库；如确需修复导入，请传 confirm_import_from_files=true",
+            }
         refresh_project_from_files(db, project.id)
         sync_project_to_files(db, project.id)
-    else:
+    elif direction in {"files_to_db", "import"}:
+        if not bool(args.get("confirm_import_from_files")):
+            return {
+                "tool": "sync_project_files",
+                "status": "skipped",
+                "detail": "2.1 默认禁止从文件镜像反向覆盖数据库；如确需修复导入，请传 confirm_import_from_files=true",
+            }
         refresh_project_from_files(db, project.id)
+    else:
+        return {"tool": "sync_project_files", "status": "skipped", "detail": f"未知同步方向：{direction}"}
     db.flush()
     return {
         "tool": "sync_project_files",

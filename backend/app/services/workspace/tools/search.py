@@ -13,12 +13,17 @@ from ....database.models import (
     OutlineNode,
     WorldbuildingEntry,
 )
-from ....services.content_store import refresh_project_from_files
+from ....services.hot_cache import get_json, project_cache_key, set_json
 
 
 def _refresh(db: Session, project_id: str) -> None:
-    refresh_project_from_files(db, project_id)
-    db.flush()
+    """Compatibility no-op.
+
+    Moshu 2.1 treats the database as authoritative. File mirrors are read-only
+    context for external/local agents and are never auto-imported during normal
+    search because that makes reads slow and can overwrite newer DB data.
+    """
+    return None
 
 
 async def search_characters(
@@ -279,6 +284,10 @@ async def list_characters(
 ) -> dict:
     """Lightweight character catalog — names and IDs only, for quick overview."""
     _refresh(db, project_id)
+    cache_key = project_cache_key(project_id, "workspace:list_characters")
+    cached = get_json(cache_key)
+    if cached is not None:
+        return cached
     characters = (
         db.query(Character)
         .filter(Character.project_id == project_id)
@@ -288,14 +297,18 @@ async def list_characters(
         .all()
     )
     if not characters:
-        return {"tool": "list_characters", "status": "ok", "detail": "该项目暂无角色", "data": []}
+        result = {"tool": "list_characters", "status": "ok", "detail": "该项目暂无角色", "data": []}
+        set_json(cache_key, result)
+        return result
     results = [{"id": c.id, "name": c.name, "role_type": c.role_type} for c in characters]
-    return {
+    result = {
         "tool": "list_characters",
         "status": "ok",
         "detail": f"共 {len(results)} 个角色",
         "data": results,
     }
+    set_json(cache_key, result)
+    return result
 
 
 def _build_outline_tree(
@@ -325,6 +338,10 @@ async def search_outline_tree(
 ) -> dict:
     _refresh(db, project_id)
     root_id = str(args.get("root_id") or "").strip() or None
+    cache_key = project_cache_key(project_id, "workspace:outline_tree", root_id or "root")
+    cached = get_json(cache_key)
+    if cached is not None:
+        return cached
     all_nodes = (
         db.query(OutlineNode)
         .filter(OutlineNode.project_id == project_id)
@@ -332,7 +349,9 @@ async def search_outline_tree(
         .all()
     )
     if not all_nodes:
-        return {"tool": "search_outline_tree", "status": "ok", "detail": "该项目暂无大纲", "data": []}
+        result = {"tool": "search_outline_tree", "status": "ok", "detail": "该项目暂无大纲", "data": []}
+        set_json(cache_key, result)
+        return result
 
     if root_id:
         root = next((n for n in all_nodes if n.id == root_id), None)
@@ -340,20 +359,24 @@ async def search_outline_tree(
             return {"tool": "search_outline_tree", "status": "skipped", "detail": f"未找到大纲节点 {root_id}", "data": []}
         tree = _build_outline_tree(db, project_id, all_nodes, root.id)
         node_count = sum(1 + _count_descendants(n) for n in tree)
-        return {
+        result = {
             "tool": "search_outline_tree",
             "status": "ok",
             "detail": f"大纲子树「{root.title}」：{node_count} 个节点",
             "data": tree,
         }
+        set_json(cache_key, result)
+        return result
 
     tree = _build_outline_tree(db, project_id, all_nodes, None)
-    return {
+    result = {
         "tool": "search_outline_tree",
         "status": "ok",
         "detail": f"完整大纲树：{len(all_nodes)} 个节点",
         "data": tree,
     }
+    set_json(cache_key, result)
+    return result
 
 
 def _count_descendants(node: dict) -> int:
@@ -367,6 +390,10 @@ async def list_worldbuilding(
 ) -> dict:
     """Lightweight worldbuilding catalog — id, title, dimension only, for quick overview."""
     _refresh(db, project_id)
+    cache_key = project_cache_key(project_id, "workspace:list_worldbuilding")
+    cached = get_json(cache_key)
+    if cached is not None:
+        return cached
     entries = (
         db.query(WorldbuildingEntry)
         .filter(WorldbuildingEntry.project_id == project_id)
@@ -375,17 +402,21 @@ async def list_worldbuilding(
         .all()
     )
     if not entries:
-        return {"tool": "list_worldbuilding", "status": "ok", "detail": "该项目暂无世界观条目", "data": []}
+        result = {"tool": "list_worldbuilding", "status": "ok", "detail": "该项目暂无世界观条目", "data": []}
+        set_json(cache_key, result)
+        return result
     results = [
         {"id": e.id, "title": e.title, "dimension": e.dimension}
         for e in entries
     ]
-    return {
+    result = {
         "tool": "list_worldbuilding",
         "status": "ok",
         "detail": f"共 {len(results)} 个世界观条目",
         "data": results,
     }
+    set_json(cache_key, result)
+    return result
 
 
 async def list_chapters(
@@ -395,6 +426,10 @@ async def list_chapters(
 ) -> dict:
     """Lightweight chapter catalog — id, title, outline_node_id only, for quick overview."""
     _refresh(db, project_id)
+    cache_key = project_cache_key(project_id, "workspace:list_chapters")
+    cached = get_json(cache_key)
+    if cached is not None:
+        return cached
     chapters = (
         db.query(Chapter)
         .filter(Chapter.project_id == project_id)
@@ -403,17 +438,21 @@ async def list_chapters(
         .all()
     )
     if not chapters:
-        return {"tool": "list_chapters", "status": "ok", "detail": "该项目暂无章节", "data": []}
+        result = {"tool": "list_chapters", "status": "ok", "detail": "该项目暂无章节", "data": []}
+        set_json(cache_key, result)
+        return result
     results = [
         {"id": c.id, "title": c.title, "outline_node_id": c.outline_node_id}
         for c in chapters
     ]
-    return {
+    result = {
         "tool": "list_chapters",
         "status": "ok",
         "detail": f"共 {len(results)} 个章节",
         "data": results,
     }
+    set_json(cache_key, result)
+    return result
 
 
 async def search_relationships(

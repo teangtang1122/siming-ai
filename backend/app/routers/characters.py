@@ -38,7 +38,6 @@ from ..services.character_service import (
 )
 from ..services.content_store import (
     delete_project_file,
-    refresh_project_from_files,
     sync_character_to_file,
     sync_relationships_to_file,
 )
@@ -55,8 +54,6 @@ router = APIRouter(tags=["characters"])
 def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depends(get_db)):
     """Get project character list."""
     get_project_or_404(db, project_id)
-    refresh_project_from_files(db, project_id)
-    db.commit()
     query = (
         db.query(Character)
         .filter(Character.project_id == project_id)
@@ -215,8 +212,6 @@ def merge_duplicate_characters(
 def get_character_detail(project_id: str, character_id: str, db: Session = Depends(get_db)):
     """Get character detail with current version and appearance records."""
     get_project_or_404(db, project_id)
-    refresh_project_from_files(db, project_id)
-    db.commit()
     character = get_character_or_404(db, project_id, character_id)
     data = character_to_dict(character)
     data["appearances"] = get_appearances(db, character.id)

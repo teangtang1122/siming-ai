@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from app.prompts.cataloging_source import get_outline_granularity_rules
 
-from ....services.content_store import refresh_project_from_files
 
 logger = logging.getLogger(__name__)
 
@@ -265,9 +264,8 @@ async def start_external_cataloging_job(
             "data": None,
         }
 
-    # Get chapters for this project
-    refresh_project_from_files(db, project_id)
-    db.flush()
+    # Get chapters from the authoritative database. The project folder is a
+    # read-only mirror for local/external agents and is not auto-imported here.
     chapter_ids = args.get("chapter_ids", [])
     if chapter_ids:
         chapters = db.query(Chapter).filter(
@@ -379,9 +377,6 @@ async def get_next_external_cataloging_chapter(
             "detail": mismatch,
             "data": None,
         }
-
-    refresh_project_from_files(db, effective_project_id)
-    db.flush()
 
     if phase == "candidates":
         awaiting_run = db.query(CatalogingChapterRun).filter(

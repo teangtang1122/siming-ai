@@ -8,6 +8,13 @@
 
 This document defines the exact workflow when Moshu has **no model API configured** and Claude Code / Codex performs cataloging (extracting characters, worldbuilding, outline, and chapter summaries from imported text).
 
+Moshu 2.1 data boundary: the database is authoritative, while the project
+folder is a read-only mirror. External agents may read mirrored chapter and
+card files directly, but all facts, candidates, applies, creates, updates, and
+deletes must be saved through Moshu MCP tools with the correct `project_id`.
+Do not edit `chapters/`, `characters/`, `worldbuilding/`, `outline/`, or
+`relationships/` files directly.
+
 ## 2. Step-By-Step Flow
 
 ### Step 1: Start External Cataloging Job
@@ -36,7 +43,9 @@ Result: {
 }
 ```
 
-**API-free**: Yes. Reads from database.
+**API-free**: Yes. Reads authoritative state from the database. The agent may
+also use `get_project_files_info` / `search_project_files` or direct file reads
+for long context, but writes still go through Moshu tools.
 
 Use `phase: "facts"` for the parallel fact extraction stage. Multiple external
 agents may fetch and analyze different chapters in this phase.

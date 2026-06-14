@@ -100,6 +100,26 @@ Default rule for external agents: do your own reading, reasoning, cataloging,
 and writing unless the user explicitly says to use Moshu's internal API/model
 quota. Use `internal_llm` only for that explicit opt-in mode.
 
+## Moshu 2.1 Data Boundary
+
+Moshu 2.1 uses the database as the authoritative data source. The project
+folder is a readable mirror for long-context work:
+
+- External agents may read `chapters/`, `characters/`, `worldbuilding/`,
+  `outline/`, and `relationships/` directly from disk.
+- External agents must not edit those canonical mirror folders.
+- All creates, updates, deletes, chapter saves, cataloging candidates, outline
+  changes, character states, and worldbuilding changes must go through Moshu
+  MCP tools with the correct `project_id`.
+- `write_project_file` is only for non-canonical folders such as `outbox/` or
+  temporary notes.
+- `sync_project_files` defaults to `db_to_files`. `files_to_db`, `import`, and
+  `both` are repair paths and require `confirm_import_from_files=true`.
+
+This lets Claude Code / Codex read a whole novel like a local workspace while
+Moshu still keeps versions, frontend state, RAG, cache invalidation, and file
+mirrors consistent.
+
 ## Operating Rules for External Agents
 
 When Claude Code or Codex operates Moshu through MCP, follow these rules for the best experience:
@@ -134,9 +154,17 @@ Arguments: {
 
 ### 3. Use Moshu Resources/RAG Before Writing
 
-Read project context before generating content:
+Read project context before generating content. For focused lookup, use Moshu
+tools; for long chapters or broad inspection, read the project folder mirror
+directly after calling `get_project_files_info`.
 
 ```
+Tool: get_project_files_info
+Arguments: { "project_id": "PROJECT_ID" }
+
+Tool: search_project_files
+Arguments: { "project_id": "PROJECT_ID", "query": "关键线索", "path": "chapters" }
+
 Tool: search_chapters
 Arguments: { "query": "recent", "limit": 3 }
 

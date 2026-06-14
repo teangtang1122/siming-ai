@@ -33,8 +33,6 @@ async def get_project_archive_status(
         OutlineNode,
         WorldbuildingEntry,
     )
-    from app.services.content_store import refresh_project_from_files
-
     if not str(project_id or "").strip():
         return {
             "tool": "get_project_archive_status",
@@ -42,10 +40,6 @@ async def get_project_archive_status(
             "detail": "project_id is required to verify project archive status",
             "data": None,
         }
-
-    if isinstance(db, Session):
-        refresh_project_from_files(db, project_id)
-        db.flush()
 
     chapters_count = db.query(Chapter).filter(
         Chapter.project_id == project_id,

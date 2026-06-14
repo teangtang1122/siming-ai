@@ -15,8 +15,10 @@ from app.services.workspace.tools.project_files import (
     list_project_files,
     read_project_file,
     search_project_files,
+    sync_project_files,
     write_project_file,
 )
+from app.services.workspace.tools.search import search_chapters
 
 
 class ContentStoreFileSourceTestCase(unittest.TestCase):
@@ -88,6 +90,83 @@ class ContentStoreFileSourceTestCase(unittest.TestCase):
         search = asyncio.run(search_project_files(self.db, project.id, {"query": "青石村"}))
         self.assertEqual(search["status"], "ok")
         self.assertEqual(len(search["data"]["matches"]), 1)
+
+    def test_canonical_project_dirs_are_read_only_mirrors(self):
+        project = self._project()
+        sync_project_to_files(self.db, project.id)
+
+        blocked = asyncio.run(write_project_file(
+            self.db,
+            project.id,
+            {"path": "chapters/manual.md", "content": "不能直接写章节镜像"},
+        ))
+        self.assertEqual(blocked["status"], "skipped")
+        self.assertIn("只读镜像", blocked["detail"])
+
+        allowed = asyncio.run(write_project_file(
+            self.db,
+            project.id,
+            {"path": "outbox/manual.md", "content": "可以写入非规范目录"},
+        ))
+        self.assertEqual(allowed["status"], "ok")
+
+    def test_normal_reads_do_not_import_file_mirror_edits(self):
+        project = self._project()
+        chapter = Chapter(project_id=project.id, title="第一章", content="数据库正文", word_count=5)
+        self.db.add(chapter)
+        self.db.flush()
+        sync_project_to_files(self.db, project.id)
+        self.db.flush()
+
+        path = os.path.join(project.folder_path, chapter.content_file_path)
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text.replace("数据库正文", "文件镜像改动"))
+
+        result = asyncio.run(search_chapters(self.db, project.id, {"query": "第一章"}))
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("数据库正文", result["data"][0]["content"])
+        self.assertNotIn("文件镜像改动", result["data"][0]["content"])
+        self.assertEqual(chapter.content, "数据库正文")
+
+    def test_sync_project_files_requires_confirmation_for_file_import(self):
+        project = self._project()
+        chapter = Chapter(project_id=project.id, title="第一章", content="数据库正文", word_count=5)
+        self.db.add(chapter)
+        self.db.flush()
+        sync_project_to_files(self.db, project.id)
+        self.db.flush()
+
+        path = os.path.join(project.folder_path, chapter.content_file_path)
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text.replace("数据库正文", "显式导入正文"))
+
+        default_sync = asyncio.run(sync_project_files(self.db, project.id, {}))
+        self.assertEqual(default_sync["status"], "ok")
+        self.assertEqual(default_sync["data"]["direction"], "db_to_files")
+        self.assertEqual(chapter.content, "数据库正文")
+
+        skipped = asyncio.run(sync_project_files(self.db, project.id, {"direction": "files_to_db"}))
+        self.assertEqual(skipped["status"], "skipped")
+        self.assertIn("confirm_import_from_files", skipped["detail"])
+        self.assertEqual(chapter.content, "数据库正文")
+
+        # Re-apply the external edit because the default db_to_files sync refreshed the mirror.
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text.replace("数据库正文", "显式导入正文"))
+
+        imported = asyncio.run(sync_project_files(
+            self.db,
+            project.id,
+            {"direction": "files_to_db", "confirm_import_from_files": True},
+        ))
+        self.assertEqual(imported["status"], "ok")
+        self.assertEqual(chapter.content.strip(), "显式导入正文")
 
     def test_migrate_projects_to_new_content_root_refreshes_and_cleans_old_folder(self):
         project = self._project()

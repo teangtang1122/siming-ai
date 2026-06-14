@@ -143,8 +143,8 @@ def _pick_content_root(home: Path) -> Path | None:
         root = tkinter.Tk()
         root.withdraw()
         messagebox.showinfo(
-            "Moshu 2.0",
-            "请选择一个空文件夹作为小说数据目录。\n旧数据库内容会自动迁移到这个目录。",
+            "Moshu 2.1",
+            "请选择一个空文件夹作为小说文件镜像目录。\n数据库仍是权威数据源，旧数据会导出为可读镜像，方便 Claude/Codex 读取。",
         )
         while True:
             selected = filedialog.askdirectory(title="选择 Moshu 小说数据目录")
@@ -158,7 +158,7 @@ def _pick_content_root(home: Path) -> Path | None:
                 root.destroy()
                 return path
             messagebox.showwarning(
-                "Moshu 2.0",
+                "Moshu 2.1",
                 "请选择空目录，避免和已有文件混在一起。\n\n可以新建一个空文件夹后再选择。",
             )
     except Exception as exc:

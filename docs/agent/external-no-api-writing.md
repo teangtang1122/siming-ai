@@ -8,6 +8,12 @@
 
 This document defines the exact workflow when Moshu has **no model API configured** and Claude Code / Codex performs all writing and review tasks. In this mode, Moshu provides context, prompt packs, storage, telemetry, and write APIs — the external model does generation and review.
 
+Moshu 2.1 data boundary: the database is authoritative. The project folder is
+a read-only mirror that external agents may inspect for long-context reading.
+Do not edit canonical mirror folders directly; all chapter saves, story
+updates, character state changes, outline changes, and worldbuilding changes
+must use Moshu MCP tools with the correct `project_id`.
+
 ## 2. Step-By-Step Flow
 
 ### Step 1: List Projects
@@ -54,6 +60,10 @@ Result: Context sections, outline, characters, worldbuilding, prompt pack, warni
 ```
 
 **API-free**: Yes. Uses RAG/context packer without LLM calls.
+
+For extra long-context inspection, the agent may also call
+`get_project_files_info` and read/search the project folder mirror. File reads
+are only for context; saving must still use the tools below.
 
 ### Step 5: External Model Writes
 

@@ -21,7 +21,6 @@ from ..services.chapter_service import (
 )
 from ..services.content_store import (
     delete_project_file,
-    refresh_project_from_files,
     sync_chapter_to_file,
 )
 from ..services.outline_service import load_outline_nodes, outline_sort_context
@@ -65,8 +64,6 @@ def _get_snapshot_or_404(
 def list_chapters(project_id: str, db: Session = Depends(get_db)):
     """Get chapter list ordered by outline tree structure."""
     project = get_project_or_404(db, project_id)
-    refresh_project_from_files(db, project_id)
-    db.commit()
     outline_context = outline_sort_context(load_outline_nodes(db, project_id))
     chapters = db.query(Chapter).filter(Chapter.project_id == project_id).all()
 
@@ -108,8 +105,6 @@ def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depend
 def get_chapter_detail(project_id: str, chapter_id: str, db: Session = Depends(get_db)):
     """Get chapter detail with full content."""
     get_project_or_404(db, project_id)
-    refresh_project_from_files(db, project_id)
-    db.commit()
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     outline_context = outline_sort_context(load_outline_nodes(db, project_id))
     return ApiResponse.success(data=chapter_to_detail(chapter, outline_context))

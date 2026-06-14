@@ -16,7 +16,6 @@ from ..schemas.project import ProjectCreate, ProjectListItem, ProjectResponse, P
 from ..services.content_store import (
     delete_project_folder,
     ensure_project_folder,
-    refresh_project_from_files,
     write_project_manifest,
 )
 
@@ -65,9 +64,6 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise NotFoundError("作品不存在")
-    refresh_project_from_files(db, project_id)
-    db.commit()
-    db.refresh(project)
     return ApiResponse.success(data=ProjectResponse.model_validate(project).model_dump())
 
 

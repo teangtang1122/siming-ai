@@ -403,13 +403,16 @@ def _register_all() -> None:
 
     _r(ToolDef(
         name="write_project_file",
-        description="写入作品目录内的文本文件，并可自动刷新数据库索引。只能写入当前作品目录内的 md/json/txt/yml/yaml/csv 文件。",
+        description=(
+            "写入作品目录内的非规范文本文件。Moshu 2.1 起数据库是唯一写入源，"
+            "chapters/characters/worldbuilding/outline/relationships 目录只是只读镜像；"
+            "如需创建或修改章节、角色、大纲、世界观、关系，必须使用对应 create/update/delete 工具。"
+        ),
         input_schema={
             "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
-            "path": {"type": "string", "description": "作品目录内的相对文件路径"},
+            "path": {"type": "string", "description": "作品目录内的相对文件路径；不能位于规范镜像目录"},
             "content": {"type": "string", "description": "要写入的完整文本内容"},
             "overwrite": {"type": "boolean", "description": "是否覆盖已有文件，默认true"},
-            "sync_after_write": {"type": "boolean", "description": "写入后是否刷新数据库索引，默认true"},
         },
         required=["path", "content"],
         tool_type="write",
@@ -420,10 +423,14 @@ def _register_all() -> None:
 
     _r(ToolDef(
         name="sync_project_files",
-        description="手动同步作品文件目录与数据库索引。files_to_db 读取文件刷新索引，db_to_files 将数据库镜像导出到文件，both 双向执行。",
+        description=(
+            "手动同步作品文件目录。默认 db_to_files，将数据库权威数据刷新为文件镜像。"
+            "files_to_db/import/both 是危险的修复导入路径，必须传 confirm_import_from_files=true 才会执行。"
+        ),
         input_schema={
             "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
-            "direction": {"type": "string", "description": "files_to_db|db_to_files|both，默认 files_to_db"},
+            "direction": {"type": "string", "description": "db_to_files|files_to_db|import|export|both，默认 db_to_files"},
+            "confirm_import_from_files": {"type": "boolean", "description": "仅在 files_to_db/import/both 时需要；确认允许文件镜像反向覆盖数据库"},
         },
         tool_type="write",
         writes_project_data=True,
@@ -1880,6 +1887,7 @@ def _register_all() -> None:
         mark_draft_ready,
         finish_agent_run,
     )
+    from .tools.local_cli_agent import start_local_cli_agent_run
 
     _r(ToolDef(
         name="start_agent_run",
@@ -1972,6 +1980,23 @@ def _register_all() -> None:
         tool_type="read",
         estimated_cost="free",
         handler=finish_agent_run,
+    ))
+
+    _r(ToolDef(
+        name="start_local_cli_agent_run",
+        description=(
+            "Start a Moshu-managed local CLI Agent worker (Claude/Codex/opencode). "
+            "The CLI reads project files directly but must write/delete/update only through Moshu MCP tools. "
+            "Returns an Agent run_id whose events can be streamed in the UI."
+        ),
+        input_schema={
+            "task_type": {"type": "string", "description": "general|cataloging|writing"},
+            "user_request": {"type": "string", "description": "User request for the local CLI agent"},
+            "provider": {"type": "string", "description": "Optional local CLI provider id, e.g. claude_cli/codex_cli/opencode_cli"},
+        },
+        tool_type="scheduler",
+        estimated_cost="local_cli",
+        handler=start_local_cli_agent_run,
     ))
 
     # ── External Writing Tools ───────────────────────────────────────────

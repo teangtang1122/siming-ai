@@ -31,7 +31,7 @@ class Project(Base):
     short_sentences = Column(Boolean, default=False)
     custom_style_prompt = Column(Text, nullable=True)
     daily_word_goal = Column(Integer, default=6000)  # FR-011
-    storage_mode = Column(String(30), default="folder")
+    storage_mode = Column(String(30), default="db_mirror")
     folder_path = Column(Text, nullable=True)
     content_migrated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

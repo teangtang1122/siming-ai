@@ -16,7 +16,7 @@ from ..schemas.worldbuilding import (
     WorldbuildingEntryResponse,
     WorldbuildingEntryUpdate,
 )
-from ..services.content_store import delete_project_file, refresh_project_from_files, sync_worldbuilding_to_file
+from ..services.content_store import delete_project_file, sync_worldbuilding_to_file
 
 router = APIRouter(tags=["worldbuilding"])
 
@@ -75,8 +75,6 @@ def list_worldbuilding_entries(
 ):
     """Get worldbuilding entries grouped by dimension."""
     get_project_or_404(db, project_id)
-    refresh_project_from_files(db, project_id)
-    db.commit()
 
     query = db.query(WorldbuildingEntry).filter(WorldbuildingEntry.project_id == project_id)
     if dimension:

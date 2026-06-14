@@ -1,8 +1,9 @@
-"""Folder-backed source of truth for project creative content.
+"""Human-readable project content mirror.
 
-Moshu 2.x keeps operational state in SQLite, while chapters, outline,
-characters, relationships, and worldbuilding are mirrored to human-readable
-project folders. SQLite rows remain the fast index and compatibility layer.
+Moshu 2.1 makes the database the authoritative source for chapters, outline,
+characters, relationships, and worldbuilding. Project folders are a readable
+mirror for humans and local CLI agents. Normal reads must use the database;
+writes/deletes go through Moshu tools/API and then refresh the mirror.
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ from .character_service import (
     snapshot_character,
     sync_character_aliases,
 )
+from .hot_cache import invalidate_project
 
 
 STORE_VERSION = 1
@@ -101,6 +103,7 @@ def delete_project_file(project: Project, rel_path: str | None) -> None:
         return
     if path.exists() and path.is_file():
         path.unlink()
+    invalidate_project(project.id)
 
 
 def delete_project_folder(project: Project) -> None:
@@ -110,6 +113,7 @@ def delete_project_folder(project: Project) -> None:
     folder = Path(project.folder_path).resolve()
     if folder.exists() and folder.is_dir():
         shutil.rmtree(folder)
+    invalidate_project(project.id)
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
@@ -126,7 +130,7 @@ def ensure_project_folder(db: Session, project: Project) -> Path:
     else:
         folder = content_root() / f"{_safe_name(project.title, 'project')}-{project.id}"
         project.folder_path = str(folder)
-    project.storage_mode = "folder"
+    project.storage_mode = "db_mirror"
     folder.mkdir(parents=True, exist_ok=True)
     for name in ("chapters", "characters", "worldbuilding", "outline", "relationships", "outbox"):
         (folder / name).mkdir(parents=True, exist_ok=True)
@@ -154,6 +158,7 @@ def project_manifest(project: Project) -> dict[str, Any]:
 def write_project_manifest(db: Session, project: Project) -> None:
     folder = ensure_project_folder(db, project)
     _write_json(folder / MANIFEST_NAME, project_manifest(project))
+    invalidate_project(project.id)
 
 
 def _chapter_path(folder: Path, chapter: Chapter, index: int = 0) -> Path:
@@ -195,6 +200,7 @@ def sync_chapter_to_file(db: Session, project: Project, chapter: Chapter, index:
     digest = _write_text(path, chapter_markdown(chapter))
     chapter.content_file_path = _rel(path, folder)
     chapter.content_hash = digest
+    invalidate_project(project.id)
 
 
 def load_chapter_from_file(project: Project, chapter: Chapter) -> None:
@@ -236,6 +242,7 @@ def sync_character_to_file(db: Session, project: Project, character: Character) 
     digest = _write_json(path, character_payload(character))
     character.content_file_path = _rel(path, folder)
     character.content_hash = digest
+    invalidate_project(project.id)
 
 
 def sync_worldbuilding_to_file(db: Session, project: Project, entry: WorldbuildingEntry) -> None:
@@ -257,6 +264,7 @@ def sync_worldbuilding_to_file(db: Session, project: Project, entry: Worldbuildi
     digest = _write_json(path, payload)
     entry.content_file_path = _rel(path, folder)
     entry.content_hash = digest
+    invalidate_project(project.id)
 
 
 def outline_payload(nodes: list[OutlineNode]) -> dict[str, Any]:
@@ -300,6 +308,7 @@ def sync_outline_to_file(db: Session, project: Project) -> None:
     for node in nodes:
         node.content_file_path = "outline/outline.json"
         node.content_hash = digest
+    invalidate_project(project.id)
 
 
 def sync_relationships_to_file(db: Session, project: Project) -> None:
@@ -323,6 +332,7 @@ def sync_relationships_to_file(db: Session, project: Project) -> None:
             for row in rows
         ]
     })
+    invalidate_project(project.id)
 
 
 def sync_project_to_files(db: Session, project_id: str) -> None:
@@ -345,12 +355,19 @@ def sync_project_to_files(db: Session, project_id: str) -> None:
         sync_worldbuilding_to_file(db, project, entry)
     sync_outline_to_file(db, project)
     sync_relationships_to_file(db, project)
-    project.storage_mode = "folder"
+    project.storage_mode = "db_mirror"
     project.folder_path = str(folder)
     project.content_migrated_at = project.content_migrated_at or datetime.utcnow()
+    invalidate_project(project.id)
 
 
 def refresh_project_from_files(db: Session, project_id: str) -> None:
+    """Explicit repair/import path from the readable mirror into the database.
+
+    This is intentionally not called by normal read endpoints in 2.1. External
+    agents may read files directly, but all writes must go through Moshu
+    tools/MCP so the database remains authoritative.
+    """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project or not project.folder_path:
         return
@@ -565,7 +582,7 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
 def migrate_legacy_projects_to_files(db: Session) -> None:
     projects = db.query(Project).all()
     for project in projects:
-        if project.storage_mode == "folder" and project.folder_path and (Path(project.folder_path) / MANIFEST_NAME).exists():
+        if project.storage_mode in {"folder", "db_mirror"} and project.folder_path and (Path(project.folder_path) / MANIFEST_NAME).exists():
             continue
         sync_project_to_files(db, project.id)
     db.commit()
@@ -580,9 +597,8 @@ def migrate_projects_to_content_root(
 ) -> dict[str, Any]:
     """Move all project content folders under a new Moshu content root.
 
-    Existing file-backed projects are refreshed into the DB first, then written
-    into the target root. Old project folders are removed only when they are
-    children of the previous content root.
+    This explicit migration path may import the old folder first so users who
+    edited 2.0 files do not lose changes. Normal read paths never do this.
     """
     target = Path(target_root).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
@@ -595,7 +611,7 @@ def migrate_projects_to_content_root(
         if old_folder and old_folder.exists():
             refresh_project_from_files(db, project.id)
         project.folder_path = None
-        project.storage_mode = "folder"
+        project.storage_mode = "db_mirror"
         sync_project_to_files(db, project.id)
         migrated += 1
         new_folder = Path(project.folder_path).expanduser().resolve() if project.folder_path else None
