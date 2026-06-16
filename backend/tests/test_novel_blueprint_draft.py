@@ -146,6 +146,10 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertGreaterEqual(len(first["outline"]), 12)
         self.assertIn("golden_three", first)
         self.assertIn("chapter_1", first["golden_three"])
+        self.assertIn("creative_slots", first)
+        self.assertIn("requirement_coverage", first)
+        self.assertIn("quality_self_check", first)
+        self.assertIn("compiled_brief", result["data"])
 
     def test_template_mode_refines_from_feedback(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
@@ -263,6 +267,9 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertEqual(first["protagonist"]["name"], "陆知微")
         self.assertGreaterEqual(len(first["volume_outline"]), 8)
         self.assertGreaterEqual(len(first["outline"]), 30)
+        self.assertGreaterEqual(first["requirement_coverage"]["score"], 90)
+        self.assertIn("篇幅 1000 章", first["requirement_coverage"]["covered"])
+        self.assertIn("克苏鲁", first["creative_slots"]["genre_fusion"])
 
     def test_template_refine_can_rename_protagonist(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
@@ -297,6 +304,44 @@ class DraftNovelBlueprintTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["blueprints"][0]["protagonist"]["name"], "沈夜")
+
+    def test_template_preserves_unusual_custom_motifs(self):
+        from app.services.workspace.tools.novel_creation import draft_novel_blueprint
+
+        session = MagicMock()
+        session.id = "s1"
+        session.user_brief = "我想写800章，梦境审判+灵魂税收+修仙，主角叫闻灯，不要后宫"
+        session.genre = "xianxia"
+        session.target_audience = "all"
+        session.platform = "qidian"
+        session.blueprint_json = []
+
+        def query_side_effect(model):
+            q = MagicMock()
+            q.filter.return_value = q
+            model_name = model.__name__ if hasattr(model, "__name__") else str(model)
+            if "NovelCreationSession" in model_name:
+                q.first.return_value = session
+            else:
+                q.first.return_value = None
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = query_side_effect
+
+        result = asyncio.run(draft_novel_blueprint(db, "p1", {
+            "session_id": "s1",
+            "execution_mode": "template",
+        }))
+
+        first = result["data"]["blueprints"][0]
+        flat_text = str(first)
+        self.assertEqual(first["estimated_chapters"], 800)
+        self.assertEqual(first["protagonist"]["name"], "闻灯")
+        self.assertIn("梦境审判", flat_text)
+        self.assertIn("灵魂税收", flat_text)
+        self.assertTrue(any("后宫" in item for item in first["forbidden_patterns"]))
+        self.assertGreaterEqual(first["requirement_coverage"]["score"], 85)
 
 
 if __name__ == "__main__":

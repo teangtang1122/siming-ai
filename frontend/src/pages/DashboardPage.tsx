@@ -4,12 +4,15 @@ import {
   Alert,
   Button,
   Card,
+  Collapse,
+  Divider,
   Drawer,
   Empty,
   Form,
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
   Spin,
@@ -26,6 +29,7 @@ import {
   FileAddOutlined,
   PlusOutlined,
   RobotOutlined,
+  SaveOutlined,
   SearchOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
@@ -49,6 +53,8 @@ interface NovelBriefValues {
   target_audience?: string
   platform?: string
   user_brief: string
+  reference_examples?: string
+  template_id?: string
 }
 
 interface ApiResponse<T> {
@@ -126,6 +132,21 @@ interface NovelBlueprint {
     chapter_3?: string
     promise?: string
   }
+  creative_slots?: Record<string, string | string[]>
+  requirement_coverage?: {
+    score?: number
+    covered?: string[]
+    missing?: string[]
+    warnings?: string[]
+  }
+  quality_self_check?: {
+    score?: number
+    pass?: boolean
+    issues?: string[]
+    suggestions?: string[]
+  }
+  creation_engine?: string
+  deep_optimization_available?: boolean
 }
 
 interface NovelDraftData {
@@ -134,6 +155,9 @@ interface NovelDraftData {
   recommendation?: string
   revision_mode?: string
   feedback?: string
+  enhancement_mode?: string
+  compiled_brief?: Record<string, unknown>
+  coverage_summary?: Array<{ title?: string; score?: number; missing?: string[] }>
 }
 
 interface NovelApplyData {
@@ -148,6 +172,15 @@ interface AssistantMessage {
   role: 'user' | 'assistant'
   content: string
 }
+
+interface CreationTemplate {
+  id: string
+  name: string
+  brief: string
+  creative_slots?: Record<string, string | string[]>
+}
+
+const CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
 
 const GENRE_OPTIONS = [
   { label: '仙侠', value: 'xianxia' },
@@ -201,6 +234,46 @@ function titleFromFile(file: File) {
   return file.name.replace(/\.(txt|docx)$/i, '').trim()
 }
 
+function buildCreationBrief(values: NovelBriefValues) {
+  const base = (values.user_brief || '').trim()
+  const references = (values.reference_examples || '').trim()
+  return references ? `${base}\n\n参考样例/风格：${references}` : base
+}
+
+function slotValueToText(value?: string | string[]) {
+  if (Array.isArray(value)) return value.join('、')
+  return value || ''
+}
+
+function slotDraftToFeedback(slots: Record<string, string | string[]>) {
+  const labels: Record<string, string> = {
+    story_engine: '故事发动机',
+    genre_fusion: '类型融合',
+    protagonist_design: '主角设计',
+    world_rules: '世界规则',
+    conflict_engine: '冲突发动机',
+    reader_promise: '读者承诺',
+    scale_plan: '篇幅规划',
+    custom_motifs: '创意要素',
+    avoid_list: '禁用/避免',
+    reference_examples: '参考样例',
+  }
+  return Object.entries(slots)
+    .map(([key, value]) => `${labels[key] || key}：${slotValueToText(value)}`)
+    .filter((line) => line.trim().length > 2)
+    .join('\n')
+}
+
+function readCreationTemplates(): CreationTemplate[] {
+  try {
+    const raw = localStorage.getItem(CREATION_TEMPLATE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 function DashboardPage() {
   const navigate = useNavigate()
   const {
@@ -226,6 +299,10 @@ function DashboardPage() {
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([])
   const [blueprints, setBlueprints] = useState<NovelBlueprint[]>([])
   const [applyingBlueprintIndex, setApplyingBlueprintIndex] = useState<number | null>(null)
+  const [creationTemplates, setCreationTemplates] = useState<CreationTemplate[]>([])
+  const [slotEditorOpen, setSlotEditorOpen] = useState(false)
+  const [slotBlueprintIndex, setSlotBlueprintIndex] = useState<number | null>(null)
+  const [slotDraft, setSlotDraft] = useState<Record<string, string | string[]>>({})
   const [editingProject, setEditingProject] = useState<{
     id: string
     title: string
@@ -239,6 +316,10 @@ function DashboardPage() {
   useEffect(() => {
     fetchProjects()
   }, [fetchProjects])
+
+  useEffect(() => {
+    setCreationTemplates(readCreationTemplates())
+  }, [])
 
   const pendingUploadList = useMemo<UploadFile[]>(() => {
     if (!pendingImportFile) return []
@@ -277,6 +358,54 @@ function DashboardPage() {
         content: '先告诉我题材、主角、核心卖点或你想避开的写法。我会先给出三套可比较的新书方案；不满意可以继续说，我可以在当前基础上调整，也可以全部重新生成。',
       }])
     }
+  }
+
+  const handleTemplateChange = (templateId?: string) => {
+    if (!templateId) return
+    const template = creationTemplates.find((item) => item.id === templateId)
+    if (!template) return
+    const currentBrief = assistantForm.getFieldValue('user_brief') || ''
+    assistantForm.setFieldsValue({
+      user_brief: currentBrief ? `${currentBrief}\n\n套用模板：${template.brief}` : template.brief,
+    })
+    message.success('已套用创作模板')
+  }
+
+  const saveBlueprintAsTemplate = (blueprint: NovelBlueprint) => {
+    const nextTemplate: CreationTemplate = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name: blueprint.title || `创作模板 ${creationTemplates.length + 1}`,
+      brief: [
+        blueprint.logline,
+        blueprint.premise,
+        blueprint.core_conflict ? `核心冲突：${blueprint.core_conflict}` : '',
+        blueprint.world_hook ? `世界钩子：${blueprint.world_hook}` : '',
+        blueprint.protagonist?.name ? `主角：${blueprint.protagonist.name}` : '',
+      ].filter(Boolean).join('\n'),
+      creative_slots: blueprint.creative_slots,
+    }
+    const next = [nextTemplate, ...creationTemplates].slice(0, 12)
+    localStorage.setItem(CREATION_TEMPLATE_KEY, JSON.stringify(next))
+    setCreationTemplates(next)
+    message.success('已保存为新书创作模板')
+  }
+
+  const openSlotEditor = (blueprint: NovelBlueprint, index: number) => {
+    setSlotBlueprintIndex(index)
+    setSlotDraft({ ...(blueprint.creative_slots || {}) })
+    setSlotEditorOpen(true)
+  }
+
+  const closeSlotEditor = () => {
+    setSlotEditorOpen(false)
+    setSlotBlueprintIndex(null)
+    setSlotDraft({})
+  }
+
+  const submitSlotEditor = async () => {
+    const feedback = `请按以下创意槽调整当前方案：\n${slotDraftToFeedback(slotDraft)}`
+    closeSlotEditor()
+    await handleReviseBlueprints('refine', feedback)
   }
 
   const attachImportFile = (file: File) => {
@@ -423,24 +552,26 @@ function DashboardPage() {
   }
 
   const handleGenerateBlueprints = async (values: NovelBriefValues) => {
+    const userBrief = buildCreationBrief(values)
     setAssistantBusy(true)
     setAssistantRecommendation('')
     setBlueprints([])
     setAssistantMessages([
-      { role: 'user', content: values.user_brief },
+      { role: 'user', content: userBrief },
       { role: 'assistant', content: '收到，我先按这个设想生成三套方向不同的新书立项方案。' },
     ])
     try {
       const startRes = await apiClient.post<ApiResponse<NovelStartData>>('/novel-creation/start', {
         mode: 'template',
         ...values,
+        user_brief: userBrief,
       })
       const sessionId = startRes.data.data.session_id
       setAssistantSessionId(sessionId)
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: sessionId,
         execution_mode: 'template',
-        user_brief: values.user_brief,
+        user_brief: userBrief,
         enhance_with_llm: false,
       })
       setBlueprints(draftRes.data.data.blueprints || [])
@@ -460,21 +591,29 @@ function DashboardPage() {
     }
   }
 
-  const handleReviseBlueprints = async (revisionMode: 'refine' | 'regenerate') => {
-    const feedback = assistantDraftText.trim()
-    if (revisionMode === 'refine' && !feedback) {
+  const handleReviseBlueprints = async (
+    revisionMode: 'refine' | 'regenerate',
+    overrideFeedback?: string,
+    enhanceWithLlm = false,
+  ) => {
+    const feedback = (overrideFeedback ?? assistantDraftText).trim()
+    if (revisionMode === 'refine' && !feedback && !enhanceWithLlm) {
       message.warning('先写下你想调整的方向')
       return
     }
 
     const values = assistantForm.getFieldsValue()
+    const userBrief = buildCreationBrief(values)
+    const requestFeedback = feedback || '请对当前方案进行深度优化：增强差异化卖点、主角设计、世界规则、黄金三章和长线卷纲。'
     setAssistantBusy(true)
     setAssistantMessages((items) => [
       ...items,
-      ...(feedback ? [{ role: 'user' as const, content: feedback }] : []),
+      ...(requestFeedback ? [{ role: 'user' as const, content: requestFeedback }] : []),
       {
         role: 'assistant',
-        content: revisionMode === 'refine'
+        content: enhanceWithLlm
+          ? '我会启动深度优化，这一步会比快速模板慢一些；完成后会保留需求覆盖率和创意槽供你继续改。'
+          : revisionMode === 'refine'
           ? '我会保留当前核心方向，按你的反馈调整卖点、前三章、角色关系和卷纲。'
           : '我会基于你的原始需求，重新生成三套不同的方案。',
       },
@@ -485,6 +624,7 @@ function DashboardPage() {
         const startRes = await apiClient.post<ApiResponse<NovelStartData>>('/novel-creation/start', {
           mode: 'template',
           ...values,
+          user_brief: userBrief,
         })
         sessionId = startRes.data.data.session_id
         setAssistantSessionId(sessionId)
@@ -492,10 +632,10 @@ function DashboardPage() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: sessionId,
         execution_mode: 'template',
-        user_brief: values.user_brief || '',
-        feedback,
+        user_brief: userBrief,
+        feedback: requestFeedback,
         revision_mode: revisionMode,
-        enhance_with_llm: false,
+        enhance_with_llm: enhanceWithLlm,
       })
       setBlueprints(draftRes.data.data.blueprints || [])
       setAssistantRecommendation(draftRes.data.data.recommendation || '')
@@ -546,6 +686,80 @@ function DashboardPage() {
     } finally {
       setApplyingBlueprintIndex(null)
     }
+  }
+
+  const renderCoverage = (blueprint: NovelBlueprint) => {
+    const coverage = blueprint.requirement_coverage
+    if (!coverage) return null
+    const score = coverage.score ?? 0
+    const status = score >= 90 ? 'success' : score >= 70 ? 'normal' : 'exception'
+    return (
+      <div className="assistant-coverage">
+        <div className="assistant-coverage-head">
+          <Text strong>需求覆盖率</Text>
+          <Text type="secondary">{score}%</Text>
+        </div>
+        <Progress percent={score} size="small" status={status} showInfo={false} />
+        {coverage.missing?.length ? (
+          <Space wrap size={4} style={{ marginTop: 6 }}>
+            {coverage.missing.slice(0, 4).map((item) => (
+              <Tag color="orange" key={item}>{item}</Tag>
+            ))}
+          </Space>
+        ) : (
+          <Text type="secondary" className="assistant-small-note">关键要求已覆盖</Text>
+        )}
+        {coverage.warnings?.length ? (
+          <div className="assistant-warning-list">
+            {coverage.warnings.slice(0, 2).map((item) => (
+              <Text type="warning" key={item}>{item}</Text>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  const renderCreativeSlots = (blueprint: NovelBlueprint, index: number) => {
+    const slots = blueprint.creative_slots || {}
+    const entries = Object.entries(slots).filter(([, value]) => slotValueToText(value).trim())
+    if (!entries.length) return null
+    const labels: Record<string, string> = {
+      story_engine: '故事发动机',
+      genre_fusion: '类型融合',
+      protagonist_design: '主角设计',
+      world_rules: '世界规则',
+      conflict_engine: '冲突发动机',
+      reader_promise: '读者承诺',
+      scale_plan: '篇幅规划',
+      custom_motifs: '创意要素',
+      avoid_list: '禁用/避免',
+      reference_examples: '参考样例',
+    }
+    return (
+      <Collapse
+        size="small"
+        ghost
+        className="assistant-slot-collapse"
+        items={[{
+          key: 'slots',
+          label: '创意槽',
+          children: (
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              {entries.slice(0, 10).map(([key, value]) => (
+                <div key={key} className="assistant-slot-row">
+                  <Text type="secondary">{labels[key] || key}</Text>
+                  <Text>{slotValueToText(value)}</Text>
+                </div>
+              ))}
+              <Button size="small" icon={<EditOutlined />} onClick={() => openSlotEditor(blueprint, index)}>
+                编辑创意槽并调整
+              </Button>
+            </Space>
+          ),
+        }]}
+      />
+    )
   }
 
   return (
@@ -698,6 +912,16 @@ function DashboardPage() {
                 <Form.Item name="platform" label="发布平台">
                   <Select options={PLATFORM_OPTIONS} />
                 </Form.Item>
+                {creationTemplates.length > 0 && (
+                  <Form.Item name="template_id" label="套用模板">
+                    <Select
+                      allowClear
+                      placeholder="选择之前保存的新书模板"
+                      options={creationTemplates.map((item) => ({ label: item.name, value: item.id }))}
+                      onChange={handleTemplateChange}
+                    />
+                  </Form.Item>
+                )}
                 <Form.Item
                   name="user_brief"
                   label="创作设想"
@@ -708,6 +932,14 @@ function DashboardPage() {
                     autoSize={{ minRows: 4, maxRows: 8 }}
                     showCount
                     maxLength={1000}
+                  />
+                </Form.Item>
+                <Form.Item name="reference_examples" label="参考作品 / 示例风格（可选）">
+                  <TextArea
+                    placeholder="例如：想要某作品的探索感、某平台的短章钩子、某类主角关系张力..."
+                    autoSize={{ minRows: 2, maxRows: 5 }}
+                    showCount
+                    maxLength={800}
                   />
                 </Form.Item>
                 <Button type="primary" htmlType="submit" icon={<RobotOutlined />} loading={assistantBusy} block>
@@ -763,6 +995,11 @@ function DashboardPage() {
                       <Space wrap>
                         {blueprint.genre && <Tag>{blueprint.genre}</Tag>}
                         {blueprint.estimated_chapters && <Tag>{blueprint.estimated_chapters} 章预估</Tag>}
+                        {blueprint.creation_engine && (
+                          <Tag color={blueprint.creation_engine === 'instant_template' ? 'default' : 'purple'}>
+                            {blueprint.creation_engine === 'instant_template' ? '快速草案' : '深度优化'}
+                          </Tag>
+                        )}
                         {blueprint.protagonist?.name && <Tag color="blue">主角：{blueprint.protagonist.name}</Tag>}
                         {blueprint.characters?.length ? <Tag color="cyan">角色 {blueprint.characters.length + 1} 人</Tag> : null}
                         {blueprint.relationships?.length ? <Tag color="orange">关系 {blueprint.relationships.length} 条</Tag> : null}
@@ -770,6 +1007,7 @@ function DashboardPage() {
                         {blueprint.volume_outline?.length ? <Tag color="volcano">卷纲 {blueprint.volume_outline.length} 卷</Tag> : null}
                         {blueprint.outline?.length ? <Tag color="green">大纲 {blueprint.outline.length} 节点</Tag> : null}
                       </Space>
+                      {renderCoverage(blueprint)}
                       {blueprint.selling_points?.length ? (
                         <div>
                           <Text strong>核心卖点</Text>
@@ -801,13 +1039,27 @@ function DashboardPage() {
                           </Space>
                         </div>
                       )}
-                      <Button
-                        type="primary"
-                        onClick={() => handleApplyBlueprint(blueprint, index)}
-                        loading={applyingBlueprintIndex === index}
-                      >
-                        使用这个方案创建
-                      </Button>
+                      {renderCreativeSlots(blueprint, index)}
+                      {blueprint.quality_self_check?.issues?.length ? (
+                        <Alert
+                          type={blueprint.quality_self_check.pass ? 'info' : 'warning'}
+                          showIcon
+                          message={`自检分 ${blueprint.quality_self_check.score ?? 0}`}
+                          description={blueprint.quality_self_check.issues.slice(0, 2).join('；')}
+                        />
+                      ) : null}
+                      <Space wrap>
+                        <Button
+                          type="primary"
+                          onClick={() => handleApplyBlueprint(blueprint, index)}
+                          loading={applyingBlueprintIndex === index}
+                        >
+                          使用这个方案创建
+                        </Button>
+                        <Button icon={<SaveOutlined />} onClick={() => saveBlueprintAsTemplate(blueprint)}>
+                          保存为模板
+                        </Button>
+                      </Space>
                     </Space>
                   </Card>
                 ))}
@@ -864,12 +1116,65 @@ function DashboardPage() {
                   >
                     全部重新生成
                   </Button>
+                  <Divider style={{ margin: '4px 0' }} />
+                  <Button
+                    loading={assistantBusy}
+                    block
+                    size="small"
+                    onClick={() => handleReviseBlueprints('refine', undefined, true)}
+                  >
+                    深度优化当前方案
+                  </Button>
                 </Space>
               </div>
             </div>
           </div>
         )}
       </Drawer>
+
+      <Modal
+        title={`编辑创意槽${slotBlueprintIndex !== null ? ` · 方案 ${slotBlueprintIndex + 1}` : ''}`}
+        open={slotEditorOpen}
+        onCancel={closeSlotEditor}
+        onOk={submitSlotEditor}
+        okText="按创意槽调整"
+        cancelText="取消"
+        okButtonProps={{ autoInsertSpace: false, loading: assistantBusy }}
+        cancelButtonProps={{ autoInsertSpace: false }}
+        width={680}
+        destroyOnClose
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="这里改的是创作方向，不会直接覆盖原方案"
+            description="确认后，助手会把这些槽位作为反馈重新调整三套方案。"
+          />
+          {[
+            ['story_engine', '故事发动机'],
+            ['genre_fusion', '类型融合'],
+            ['protagonist_design', '主角设计'],
+            ['world_rules', '世界规则'],
+            ['conflict_engine', '冲突发动机'],
+            ['reader_promise', '读者承诺'],
+            ['scale_plan', '篇幅规划'],
+            ['custom_motifs', '创意要素'],
+            ['avoid_list', '禁用/避免'],
+            ['reference_examples', '参考样例'],
+          ].map(([key, label]) => (
+            <div key={key}>
+              <Text strong>{label}</Text>
+              <TextArea
+                value={slotValueToText(slotDraft[key])}
+                onChange={(event) => setSlotDraft((prev) => ({ ...prev, [key]: event.target.value }))}
+                autoSize={{ minRows: 2, maxRows: 5 }}
+                style={{ marginTop: 6 }}
+              />
+            </div>
+          ))}
+        </Space>
+      </Modal>
 
       <Modal
         title="创建作品"

@@ -371,6 +371,312 @@ def _feedback_tone(feedback: str) -> dict[str, str]:
     }
 
 
+def _unique_texts(items: list[str], limit: int | None = None) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = _clean_text(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+        if limit and len(result) >= limit:
+            break
+    return result
+
+
+def _has_explicit_chapter_count(user_brief: str) -> bool:
+    text = _clean_text(user_brief)
+    return bool(re.search(r"\d{2,5}\s*(?:章|章节)", text) or "长篇" in text or "大长篇" in text)
+
+
+def _extract_avoid_patterns(user_brief: str) -> list[str]:
+    text = _clean_text(user_brief)
+    patterns: list[str] = []
+    for match in re.finditer(r"(?:不要|别|避免|禁止|不想要|不喜欢)([^。；;\n]{2,36})", text):
+        value = match.group(1).strip(" ，,：:。；;")
+        if value:
+            patterns.append(value)
+    return _unique_texts(patterns, limit=8)
+
+
+def _extract_reference_examples(user_brief: str) -> list[str]:
+    text = _clean_text(user_brief)
+    examples: list[str] = []
+    for pattern in (
+        r"(?:参考|像|类似|对标)(?:作品|风格|样例)?[:：]?\s*([^。；;\n]{2,60})",
+        r"(?:喜欢|想要)([^。；;\n]{2,40})(?:那种|这种)(?:感觉|风格|节奏)",
+    ):
+        for match in re.finditer(pattern, text):
+            value = match.group(1).strip(" ，,：:。；;")
+            if value:
+                examples.append(value)
+    return _unique_texts(examples, limit=6)
+
+
+def _extract_custom_motifs(user_brief: str, genre_tags: list[str], features: list[str]) -> list[str]:
+    text = _clean_text(user_brief)
+    stopwords = {
+        "我想写", "我要写", "帮我写", "一本", "一部", "小说", "长篇", "主角", "女主", "男主",
+        "命名为", "取名为", "叫做", "设定", "生成", "方案", "要求", "参考", "类似",
+    }
+    motifs: list[str] = []
+    motifs.extend(genre_tags)
+    motifs.extend(features)
+    for token in re.split(r"[+＋/、,，;；\s\n\r]+", text):
+        value = token.strip(" 。.!！?？:：\"'“”《》")
+        value = re.sub(r"^(我想写|我要写|帮我写|写|一部|一本)", "", value)
+        value = re.sub(r"\d{2,5}(?:章|章节)?", "", value).strip()
+        if not value or value in stopwords:
+            continue
+        if len(value) < 2 or len(value) > 16:
+            continue
+        if re.search(r"(?:主角|女主|男主).{0,8}(?:叫|名|是)", value):
+            continue
+        motifs.append(value)
+    return _unique_texts(motifs, limit=12)
+
+
+def _compile_creative_brief(
+    *,
+    user_brief: str,
+    genre: str,
+    target_audience: str,
+    platform: str,
+) -> dict[str, Any]:
+    """Compile a free-form user brief into deterministic creation constraints."""
+    brief = _clean_text(user_brief, "用户希望创建一部新小说。")
+    genre_label = _genre_display_label(genre, brief)
+    genre_tags = _extract_genre_tags(brief, _genre_label(genre))
+    features = _brief_features(brief)
+    chapter_count = _extract_chapter_count(brief)
+    protagonist_name = _extract_protagonist_name(brief)
+    title = _extract_title(brief, genre_label)
+    avoid_patterns = _extract_avoid_patterns(brief)
+    references = _extract_reference_examples(brief)
+    custom_motifs = _extract_custom_motifs(brief, genre_tags, features)
+
+    hard_constraints: list[str] = []
+    if _has_explicit_chapter_count(brief):
+        hard_constraints.append(f"篇幅约束：{chapter_count}章")
+    if genre_tags:
+        hard_constraints.append(f"类型融合：{'+'.join(genre_tags)}")
+    if protagonist_name != "未命名主角":
+        hard_constraints.append(f"主角姓名：{protagonist_name}")
+    if avoid_patterns:
+        hard_constraints.append(f"禁用/避免：{'；'.join(avoid_patterns)}")
+
+    missing_fields: list[str] = []
+    if protagonist_name == "未命名主角":
+        missing_fields.append("主角姓名")
+    if _looks_like_requirement_title(title) or _is_generic_title(title, genre_label):
+        missing_fields.append("作品标题")
+    if not references:
+        missing_fields.append("参考风格或对标作品")
+
+    return {
+        "raw_brief": brief,
+        "genre_label": genre_label,
+        "genre_tags": genre_tags,
+        "features": features,
+        "chapter_count": chapter_count,
+        "explicit_chapter_count": _has_explicit_chapter_count(brief),
+        "protagonist_name": protagonist_name,
+        "title_candidate": title,
+        "opening_anchor": _opening_anchor(brief),
+        "avoid_patterns": avoid_patterns,
+        "reference_examples": references,
+        "custom_motifs": custom_motifs,
+        "hard_constraints": hard_constraints,
+        "soft_preferences": _unique_texts(features + references, limit=10),
+        "missing_fields": missing_fields,
+        "target_audience": _clean_text(target_audience),
+        "platform": _clean_text(platform),
+    }
+
+
+def _flatten_blueprint_text(blueprint: dict[str, Any]) -> str:
+    parts: list[str] = []
+
+    def walk(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested)
+        elif isinstance(value, (int, float)):
+            parts.append(str(value))
+
+    walk(blueprint)
+    return "\n".join(parts)
+
+
+def _blueprint_requirement_coverage(
+    blueprint: dict[str, Any],
+    compiled: dict[str, Any],
+) -> dict[str, Any]:
+    text = _flatten_blueprint_text(blueprint)
+    covered: list[str] = []
+    missing: list[str] = []
+    warnings: list[str] = []
+
+    expected_chapters = int(compiled.get("chapter_count") or 160)
+    actual_chapters = int(blueprint.get("estimated_chapters") or 0)
+    if compiled.get("explicit_chapter_count"):
+        if actual_chapters == expected_chapters:
+            covered.append(f"篇幅 {expected_chapters} 章")
+        else:
+            missing.append(f"篇幅应为 {expected_chapters} 章，当前为 {actual_chapters or '未填写'}")
+
+    for tag in compiled.get("genre_tags") or []:
+        if tag and tag in text:
+            covered.append(f"类型要素：{tag}")
+        else:
+            missing.append(f"缺少类型要素：{tag}")
+
+    protagonist_name = _clean_text(compiled.get("protagonist_name"))
+    if protagonist_name and protagonist_name != "未命名主角":
+        actual_name = _clean_text((blueprint.get("protagonist") or {}).get("name") if isinstance(blueprint.get("protagonist"), dict) else "")
+        if actual_name == protagonist_name:
+            covered.append(f"主角命名：{protagonist_name}")
+        else:
+            missing.append(f"主角姓名应为 {protagonist_name}")
+
+    for motif in compiled.get("custom_motifs") or []:
+        if motif and motif in text:
+            covered.append(f"创意要素：{motif}")
+        else:
+            missing.append(f"缺少创意要素：{motif}")
+
+    avoid_patterns = compiled.get("avoid_patterns") or []
+    if avoid_patterns:
+        forbidden_text = "\n".join(str(item) for item in blueprint.get("forbidden_patterns", []) if item)
+        for pattern in avoid_patterns:
+            if pattern in forbidden_text or pattern in text:
+                covered.append(f"已记录禁用项：{pattern}")
+            else:
+                missing.append(f"未记录禁用项：{pattern}")
+
+    total = max(1, len(covered) + len(missing))
+    score = round(len(covered) / total * 100)
+    if score < 80:
+        warnings.append("方案没有充分覆盖用户输入，建议继续调整或深度优化。")
+    if compiled.get("explicit_chapter_count") and actual_chapters and expected_chapters >= 500 and len(blueprint.get("volume_outline", []) or []) < 6:
+        warnings.append("长篇卷纲偏少，建议补充中后期扩张卷。")
+
+    return {
+        "score": score,
+        "covered": _unique_texts(covered, limit=30),
+        "missing": _unique_texts(missing, limit=30),
+        "warnings": _unique_texts(warnings, limit=10),
+    }
+
+
+def _build_creative_slots(blueprint: dict[str, Any], compiled: dict[str, Any]) -> dict[str, Any]:
+    protagonist = blueprint.get("protagonist") if isinstance(blueprint.get("protagonist"), dict) else {}
+    golden_three = blueprint.get("golden_three") if isinstance(blueprint.get("golden_three"), dict) else {}
+    return {
+        "story_engine": _clean_text(blueprint.get("core_conflict"), "主角发现异常、验证规则、承受反噬、反向利用。"),
+        "genre_fusion": " × ".join(compiled.get("genre_tags") or [_clean_text(blueprint.get("genre"), "未指定类型")]),
+        "protagonist_design": f"{_clean_text(protagonist.get('name'), '未命名主角')}：{_clean_text(protagonist.get('goal'), '目标待定')}",
+        "world_rules": _clean_text(blueprint.get("world_hook"), "需要明确力量来源、代价和边界。"),
+        "conflict_engine": _clean_text(protagonist.get("conflict"), _clean_text(blueprint.get("core_conflict"), "冲突待细化")),
+        "reader_promise": _clean_text(golden_three.get("promise"), "前三章要兑现类型卖点、主角魅力和持续追读钩子。"),
+        "scale_plan": f"{int(blueprint.get('estimated_chapters') or compiled.get('chapter_count') or 160)}章 / {len(blueprint.get('volume_outline') or [])}卷 / {len(blueprint.get('outline') or [])}个前期节点",
+        "custom_motifs": compiled.get("custom_motifs") or [],
+        "avoid_list": _unique_texts((compiled.get("avoid_patterns") or []) + (blueprint.get("forbidden_patterns") or []), limit=12),
+        "reference_examples": compiled.get("reference_examples") or [],
+    }
+
+
+def _ensure_worldbuilding_entry(
+    worldbuilding: list[dict[str, Any]],
+    *,
+    dimension: str,
+    title: str,
+    content: str,
+) -> None:
+    if any(_clean_text(item.get("title")) == title for item in worldbuilding if isinstance(item, dict)):
+        return
+    worldbuilding.append({"dimension": dimension, "title": title, "content": content})
+
+
+def _repair_blueprint_against_constraints(
+    blueprint: dict[str, Any],
+    compiled: dict[str, Any],
+) -> dict[str, Any]:
+    bp = dict(blueprint)
+    bp["genre"] = compiled.get("genre_label") or bp.get("genre")
+    bp["estimated_chapters"] = int(compiled.get("chapter_count") or bp.get("estimated_chapters") or 160)
+
+    protagonist_name = _clean_text(compiled.get("protagonist_name"))
+    if protagonist_name and protagonist_name != "未命名主角":
+        protagonist = dict(bp.get("protagonist") or {})
+        protagonist["name"] = protagonist_name
+        bp["protagonist"] = protagonist
+
+    selling_points = list(bp.get("selling_points") or [])
+    motifs = compiled.get("custom_motifs") or []
+    if motifs and not any("用户指定要素" in _clean_text(point) for point in selling_points):
+        selling_points.append(f"用户指定要素必须落地：{'、'.join(motifs[:6])}。")
+    bp["selling_points"] = _unique_texts(selling_points, limit=8)
+
+    forbidden = list(bp.get("forbidden_patterns") or [])
+    forbidden.extend(compiled.get("avoid_patterns") or [])
+    bp["forbidden_patterns"] = _unique_texts(forbidden, limit=16)
+
+    worldbuilding = [dict(item) for item in bp.get("worldbuilding", []) if isinstance(item, dict)]
+    genre_tags = compiled.get("genre_tags") or []
+    if "克苏鲁" in genre_tags:
+        _ensure_worldbuilding_entry(
+            worldbuilding,
+            dimension="power_system",
+            title="旧日污染的认知边界",
+            content="旧日力量不直接用数值碾压角色，而是通过梦境、记录、仪式和命名污染认知；主角每次理解它都会获得线索，也会留下精神代价。",
+        )
+    if "规则怪谈" in genre_tags:
+        _ensure_worldbuilding_entry(
+            worldbuilding,
+            dimension="culture",
+            title="怪谈规则的可验证性",
+            content="怪谈规则必须能被观察、误读、验证和反向利用。每条规则都应有表层解释、隐藏代价和被主角钻空子的边界。",
+        )
+    if "修仙" in genre_tags:
+        _ensure_worldbuilding_entry(
+            worldbuilding,
+            dimension="power_system",
+            title="修行体系与异常规则冲突",
+            content="境界、灵气和功法构成常规修行逻辑；旧日污染或怪谈规则会绕开常规境界判断，迫使修士重新理解修行安全边界。",
+        )
+    bp["worldbuilding"] = worldbuilding
+    return bp
+
+
+def _annotate_blueprint(
+    blueprint: dict[str, Any],
+    compiled: dict[str, Any],
+) -> dict[str, Any]:
+    bp = _repair_blueprint_against_constraints(blueprint, compiled)
+    bp["creative_slots"] = _build_creative_slots(bp, compiled)
+    coverage = _blueprint_requirement_coverage(bp, compiled)
+    bp["requirement_coverage"] = coverage
+    quality = _score_blueprint(bp)
+    bp["quality_self_check"] = {
+        "score": quality["total_score"],
+        "pass": quality["pass"],
+        "issues": quality["issues"],
+        "suggestions": quality["suggestions"],
+    }
+    bp["deep_optimization_available"] = True
+    bp["creation_engine"] = "instant_template"
+    return bp
+
+
 # ---------------------------------------------------------------------------
 # LLM-powered blueprint refinement
 # ---------------------------------------------------------------------------
@@ -400,6 +706,20 @@ _BLUEPRINT_SCHEMA_DESC = """{
   "forbidden_patterns": [""],
   "risks": [""],
   "next_questions": [""],
+  "creative_slots": {
+    "story_engine": "故事发动机",
+    "genre_fusion": "类型融合方式",
+    "protagonist_design": "主角设计",
+    "world_rules": "世界规则",
+    "conflict_engine": "冲突发动机",
+    "reader_promise": "读者承诺",
+    "scale_plan": "篇幅与卷纲规划",
+    "custom_motifs": ["用户指定创意要素"],
+    "avoid_list": ["禁用或避免内容"],
+    "reference_examples": ["参考作品或风格"]
+  },
+  "requirement_coverage": {"score": 100, "covered": [""], "missing": [""], "warnings": [""]},
+  "quality_self_check": {"score": 80, "pass": true, "issues": [""], "suggestions": [""]},
   "recommendation_reason": ""
 }"""
 
@@ -611,6 +931,11 @@ def _validate_blueprint(
     bp.setdefault("revision_instruction", "")
     bp.setdefault("adjustment_notes", {})
     bp.setdefault("writing_style", "natural")
+    bp.setdefault("creative_slots", {})
+    bp.setdefault("requirement_coverage", {})
+    bp.setdefault("quality_self_check", {})
+    bp.setdefault("deep_optimization_available", True)
+    bp.setdefault("creation_engine", "instant_template")
 
     # protagonist
     if not isinstance(bp.get("protagonist"), dict):
@@ -1083,13 +1408,20 @@ def _template_blueprint(
     variant: int,
     revision_instruction: str = "",
     revision_mode: str = "initial",
+    compiled: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     genre_key = _genre_key(genre)
-    genre_label = _genre_display_label(genre, user_brief)
+    compiled = compiled or _compile_creative_brief(
+        user_brief=user_brief,
+        genre=genre,
+        target_audience=target_audience,
+        platform=platform,
+    )
+    genre_label = _clean_text(compiled.get("genre_label"), _genre_display_label(genre, user_brief))
     preset = GENRE_PRESETS.get(genre_key, GENRE_PRESETS["fantasy"])
-    protagonist_name = _extract_protagonist_name(user_brief)
+    protagonist_name = _clean_text(compiled.get("protagonist_name"), _extract_protagonist_name(user_brief))
     features = _brief_features(user_brief)
-    chapter_count = _extract_chapter_count(user_brief)
+    chapter_count = int(compiled.get("chapter_count") or _extract_chapter_count(user_brief))
     profile = _variant_profile(variant)
     revision_tone = _feedback_tone(revision_instruction)
 
@@ -1152,7 +1484,7 @@ def _template_blueprint(
         chapter_count=chapter_count,
     )
 
-    return {
+    blueprint = {
         "title": selected_title,
         "subtitle": profile["name"],
         "logline": logline,
@@ -1213,6 +1545,8 @@ def _template_blueprint(
             "你更想强调爽点、悬念、情感关系，还是世界观探索？",
         ],
     }
+    blueprint["creative_slots"] = _build_creative_slots(blueprint, compiled)
+    return blueprint
 
 
 def _base_blueprint_title(blueprints: Any) -> str:
@@ -1246,15 +1580,21 @@ def _build_template_blueprints(
     else:
         brief = base_brief
     genre = _clean_text(session.genre, "other")
-    genre_label = _genre_label(genre)
-    protagonist_name = _extract_protagonist_name(brief)
-    features = _brief_features(brief)
-    title = _extract_title(brief, genre_label)
+    compiled = _compile_creative_brief(
+        user_brief=brief,
+        genre=genre,
+        target_audience=_clean_text(session.target_audience),
+        platform=_clean_text(session.platform),
+    )
+    genre_label = _clean_text(compiled.get("genre_label"), _genre_label(genre))
+    protagonist_name = _clean_text(compiled.get("protagonist_name"), _extract_protagonist_name(brief))
+    features = compiled.get("features") or _brief_features(brief)
+    title = _clean_text(compiled.get("title_candidate"), _extract_title(brief, genre_label))
     if revision_mode == "refine":
         title = _base_blueprint_title(getattr(session, "blueprint_json", None)) or title
     if _is_generic_title(title, genre_label):
         title = _suggest_title(brief, genre_label, protagonist_name, features)
-    return [
+    blueprints = [
         _template_blueprint(
             title=title,
             user_brief=brief,
@@ -1264,9 +1604,11 @@ def _build_template_blueprints(
             variant=index,
             revision_instruction=feedback,
             revision_mode=revision_mode,
+            compiled=compiled,
         )
         for index in range(3)
     ]
+    return [_annotate_blueprint(bp, compiled) for bp in blueprints]
 
 
 def _is_real_session(db: Session) -> bool:
@@ -1423,6 +1765,22 @@ async def draft_novel_blueprint(
     ).first()
 
     if execution_mode in {"template", "local_template", "auto"}:
+        base_brief_for_compile = _clean_text(user_brief or session.user_brief, "用户希望创建一部新小说。")
+        if feedback:
+            if revision_mode == "refine":
+                effective_brief = f"{base_brief_for_compile}\n\n在当前方案基础上调整：{feedback}"
+            elif revision_mode == "regenerate":
+                effective_brief = f"{base_brief_for_compile}\n\n请按以下反馈重新生成整套方案：{feedback}"
+            else:
+                effective_brief = f"{base_brief_for_compile}\n\n用户补充要求：{feedback}"
+        else:
+            effective_brief = base_brief_for_compile
+        compiled = _compile_creative_brief(
+            user_brief=effective_brief,
+            genre=_clean_text(session.genre, "other"),
+            target_audience=_clean_text(session.target_audience),
+            platform=_clean_text(session.platform),
+        )
         # Step 1: Always generate template blueprints as baseline
         template_blueprints = _build_template_blueprints(
             session,
@@ -1444,6 +1802,7 @@ async def draft_novel_blueprint(
             )
             if llm_result:
                 blueprints = llm_result
+        blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)]
 
         session.blueprint_json = blueprints
         if user_brief or feedback:
@@ -1453,13 +1812,13 @@ async def draft_novel_blueprint(
         db.commit()
         if revision_mode == "refine":
             detail = f"Refined {len(blueprints)} blueprint options from current direction"
-            recommendation = "已按反馈在当前方向上调整三套方案；如果仍感觉方向不对，可以选择全部重新生成。"
+            recommendation = "已按反馈在当前方向上调整三套方案；请优先查看需求覆盖率，仍感觉方向不对时可以全部重新生成。"
         elif revision_mode == "regenerate":
             detail = f"Regenerated {len(blueprints)} blueprint options"
-            recommendation = "已按反馈重新生成三套方案；建议先比较标题、核心冲突和黄金三章是否符合预期。"
+            recommendation = "已按反馈重新生成三套方案；建议先比较标题、核心冲突、黄金三章和创意槽是否符合预期。"
         else:
             detail = f"Generated {len(blueprints)} API-free blueprint options"
-            recommendation = "优先选择第一个稳态方案；如果想强化悬念或高压节奏，可选择后两个变体。"
+            recommendation = "已用快速创意编译器生成三套方案；优先选择需求覆盖率最高且黄金三章最顺眼的一套。"
         return {
             "tool": "draft_novel_blueprint",
             "status": "ok",
@@ -1469,7 +1828,18 @@ async def draft_novel_blueprint(
                 "execution_mode": "template",
                 "revision_mode": revision_mode,
                 "enhance_with_llm": enhance_with_llm,
+                "enhancement_mode": "llm_enhanced" if enhance_with_llm else "instant_template",
                 "feedback": feedback,
+                "compiled_brief": compiled,
+                "coverage_summary": [
+                    {
+                        "title": bp.get("title"),
+                        "score": (bp.get("requirement_coverage") or {}).get("score"),
+                        "missing": (bp.get("requirement_coverage") or {}).get("missing", []),
+                    }
+                    for bp in blueprints
+                    if isinstance(bp, dict)
+                ],
                 "blueprints": blueprints,
                 "recommendation": recommendation,
                 "next_tool": "review_novel_blueprint",
@@ -1477,6 +1847,12 @@ async def draft_novel_blueprint(
         }
 
     if execution_mode == "external_agent":
+        compiled = _compile_creative_brief(
+            user_brief=_clean_text(session.user_brief or user_brief),
+            genre=_clean_text(session.genre, "other"),
+            target_audience=_clean_text(session.target_audience),
+            platform=_clean_text(session.platform),
+        )
         return {
             "tool": "draft_novel_blueprint",
             "status": "ok",
@@ -1496,6 +1872,7 @@ async def draft_novel_blueprint(
                 "genre": session.genre,
                 "target_audience": session.target_audience,
                 "platform": session.platform,
+                "compiled_brief": compiled,
                 "output_schema": {
                     "blueprints": [
                         {
@@ -1533,6 +1910,30 @@ async def draft_novel_blueprint(
                             "forbidden_patterns": ["禁用写法"],
                             "risks": ["创作风险"],
                             "next_questions": ["后续需要向用户确认的问题"],
+                            "creative_slots": {
+                                "story_engine": "故事发动机",
+                                "genre_fusion": "类型融合方式",
+                                "protagonist_design": "主角设计",
+                                "world_rules": "世界规则",
+                                "conflict_engine": "冲突发动机",
+                                "reader_promise": "读者承诺",
+                                "scale_plan": "篇幅与卷纲规划",
+                                "custom_motifs": ["用户指定创意要素"],
+                                "avoid_list": ["禁用或避免内容"],
+                                "reference_examples": ["参考作品或风格"],
+                            },
+                            "requirement_coverage": {
+                                "score": 100,
+                                "covered": ["已覆盖的用户要求"],
+                                "missing": ["尚未覆盖的用户要求"],
+                                "warnings": ["风险提醒"],
+                            },
+                            "quality_self_check": {
+                                "score": 80,
+                                "pass": True,
+                                "issues": ["问题"],
+                                "suggestions": ["建议"],
+                            },
                             "recommendation_reason": "推荐理由",
                         }
                     ],
@@ -1583,13 +1984,24 @@ async def review_novel_blueprint(
     if execution_mode in {"template", "local_template", "auto"}:
         blueprints = session.blueprint_json or []
         selected = blueprints[0] if isinstance(blueprints, list) and blueprints else blueprints
-        review = _score_blueprint(selected) if isinstance(selected, dict) else {
-            "scores": {},
-            "total_score": 0,
-            "pass": False,
-            "issues": ["方案格式无效。"],
-            "suggestions": ["请重新生成方案或让外部 Agent 按 schema 输出。"],
-        }
+        if isinstance(selected, dict):
+            compiled = _compile_creative_brief(
+                user_brief=_clean_text(session.user_brief),
+                genre=_clean_text(session.genre, "other"),
+                target_audience=_clean_text(session.target_audience),
+                platform=_clean_text(session.platform),
+            )
+            selected = _annotate_blueprint(selected, compiled)
+            review = _score_blueprint(selected)
+            review["requirement_coverage"] = selected.get("requirement_coverage", {})
+        else:
+            review = {
+                "scores": {},
+                "total_score": 0,
+                "pass": False,
+                "issues": ["方案格式无效。"],
+                "suggestions": ["请重新生成方案或让外部 Agent 按 schema 输出。"],
+            }
         session.review_json = review
         session.status = "reviewing"
         db.commit()
