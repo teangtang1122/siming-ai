@@ -35,6 +35,27 @@ GENRE_LABELS = {
 }
 
 
+HYBRID_GENRE_KEYWORDS = [
+    ("克苏鲁", "克苏鲁"),
+    ("旧日", "克苏鲁"),
+    ("规则怪谈", "规则怪谈"),
+    ("怪谈", "规则怪谈"),
+    ("修仙", "修仙"),
+    ("仙侠", "仙侠"),
+    ("诡异", "诡异"),
+    ("中式恐怖", "中式恐怖"),
+    ("无限流", "无限流"),
+    ("末世", "末世"),
+    ("赛博", "赛博"),
+    ("科幻", "科幻"),
+    ("玄幻", "玄幻"),
+    ("悬疑", "悬疑"),
+    ("都市", "都市"),
+    ("历史", "历史"),
+    ("言情", "言情"),
+]
+
+
 GENRE_PRESETS = {
     "xianxia": {
         "hook": "修炼规则与现实逻辑发生碰撞",
@@ -133,6 +154,73 @@ def _genre_label(genre: str | None) -> str:
     return GENRE_LABELS.get(key, _clean_text(genre, "其他"))
 
 
+def _extract_genre_tags(user_brief: str, fallback_label: str) -> list[str]:
+    text = _clean_text(user_brief)
+    tags: list[str] = []
+    for keyword, label in HYBRID_GENRE_KEYWORDS:
+        if keyword in text and label not in tags:
+            tags.append(label)
+    if not tags and fallback_label:
+        tags.append(fallback_label)
+    return tags[:4]
+
+
+def _genre_display_label(genre: str | None, user_brief: str) -> str:
+    fallback = _genre_label(genre)
+    tags = _extract_genre_tags(user_brief, fallback)
+    return "+".join(tags) if tags else fallback
+
+
+def _extract_chapter_count(user_brief: str, default: int = 160) -> int:
+    text = _clean_text(user_brief)
+    patterns = (
+        r"(?:写|做|规划|预计|大概|约)?\s*(\d{2,5})\s*(?:章|章节)",
+        r"(\d{2,5})\s*(?:章|章节)\s*(?:长篇|小说|连载)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = int(match.group(1))
+            return max(30, min(value, 3000))
+    if "长篇" in text or "大长篇" in text:
+        return 600
+    return default
+
+
+def _looks_like_requirement_title(candidate: str) -> bool:
+    text = _clean_text(candidate)
+    if not text:
+        return True
+    if re.search(r"\d{2,5}\s*(?:章|章节)", text):
+        return True
+    genre_hits = sum(1 for keyword, _ in HYBRID_GENRE_KEYWORDS if keyword in text)
+    if genre_hits >= 2 and ("+" in text or "，" in text or "," in text):
+        return True
+    return False
+
+
+def _volume_count_for_chapters(chapter_count: int) -> int:
+    if chapter_count >= 1200:
+        return 10
+    if chapter_count >= 900:
+        return 8
+    if chapter_count >= 500:
+        return 6
+    if chapter_count >= 260:
+        return 5
+    return 4
+
+
+def _outline_target_for_chapters(chapter_count: int) -> int:
+    if chapter_count >= 900:
+        return 32
+    if chapter_count >= 500:
+        return 26
+    if chapter_count >= 260:
+        return 20
+    return 15
+
+
 def _extract_title(user_brief: str, genre_label: str) -> str:
     text = _clean_text(user_brief)
     for pattern in (
@@ -142,11 +230,13 @@ def _extract_title(user_brief: str, genre_label: str) -> str:
     ):
         match = re.search(pattern, text)
         if match:
-            return match.group(1).strip()
+            candidate = match.group(1).strip()
+            if not _looks_like_requirement_title(candidate):
+                return candidate
     if text:
         first = re.split(r"[。\n\r]", text, maxsplit=1)[0].strip()
         first = re.sub(r"^(我想|我要|帮我|创建|新建|写)(一本|一部)?", "", first).strip()
-        if 2 <= len(first) <= 24:
+        if 2 <= len(first) <= 24 and not _looks_like_requirement_title(first):
             return first
     return f"未命名{genre_label}小说"
 
@@ -167,18 +257,27 @@ def _is_generic_title(title: str, genre_label: str) -> bool:
 def _extract_protagonist_name(user_brief: str) -> str:
     text = _clean_text(user_brief)
     for pattern in (
+        r"(?:主角|女主|男主|主人公).{0,8}(?:命名为|改名为|取名为|设定为|叫做|叫|名叫|名为|是|：|:)\s*([A-Za-z0-9_\-\u4e00-\u9fff]{1,12})",
         r"(?:主角|女主|男主|主人公)(?:叫|名叫|是|：|:)\s*([A-Za-z0-9_\-\u4e00-\u9fff]{1,12})",
         r"([A-Za-z0-9_\-\u4e00-\u9fff]{1,12})(?:是|作为)(?:主角|女主|男主)",
     ):
         match = re.search(pattern, text)
         if match:
-            return match.group(1).strip(" ，。,.")
+            name = match.group(1).strip(" ，。,.;；:：")
+            if name not in {"未命名", "一个", "一位", "可以", "命名为"}:
+                return name
     return "未命名主角"
 
 
 def _suggest_title(user_brief: str, genre_label: str, protagonist_name: str, features: list[str]) -> str:
     text = _clean_text(user_brief)
     has_named_protagonist = protagonist_name and protagonist_name != "未命名主角"
+    if all(keyword in text for keyword in ("克苏鲁", "修仙", "规则怪谈")):
+        return f"{protagonist_name}的旧日仙途" if has_named_protagonist else "旧日仙途怪谈录"
+    if "克苏鲁" in text and "修仙" in text:
+        return f"{protagonist_name}的旧日仙途" if has_named_protagonist else "旧日仙途录"
+    if "规则怪谈" in text and "修仙" in text:
+        return f"{protagonist_name}的怪谈道途" if has_named_protagonist else "怪谈修仙录"
     if "病毒" in text and "归墟" in text:
         return f"{protagonist_name}与归墟病毒" if has_named_protagonist else "归墟病毒档案"
     if "病毒" in text and genre_label == "仙侠":
@@ -198,6 +297,9 @@ def _brief_features(user_brief: str) -> list[str]:
         ("穿越", "穿越视角"),
         ("重生", "重生改命"),
         ("系统", "系统规则"),
+        ("克苏鲁", "旧日污染"),
+        ("旧日", "旧日污染"),
+        ("规则怪谈", "怪谈规则"),
         ("病毒", "异常病毒"),
         ("末日", "末日压力"),
         ("修仙", "修仙规则"),
@@ -860,37 +962,45 @@ def _build_worldbuilding(
     return worldbuilding
 
 
-def _build_volume_outline(title: str, protagonist_name: str, conflict: str) -> list[dict[str, Any]]:
-    return [
-        {
-            "title": "第一卷 异常入局",
-            "summary": f"{protagonist_name}发现身边秩序出现裂缝，先在小范围内验证规则，再被迫直面{conflict}。",
-            "start_chapter": 1,
-            "end_chapter": 30,
-            "node_type": "volume",
-        },
-        {
-            "title": "第二卷 规则反噬",
-            "summary": "主角把第一卷得到的方法用于更大舞台，却发现规则本身会反过来筛选和吞噬使用者。",
-            "start_chapter": 31,
-            "end_chapter": 70,
-            "node_type": "volume",
-        },
-        {
-            "title": "第三卷 旧事重启",
-            "summary": f"旧日隐线浮出水面，{protagonist_name}必须判断前人的失败究竟是能力不足，还是方向错误。",
-            "start_chapter": 71,
-            "end_chapter": 120,
-            "node_type": "volume",
-        },
-        {
-            "title": "第四卷 终局改写",
-            "summary": "主角将个人成长、关系选择和世界规则合并为最终方案，付出代价后改写核心危机。",
-            "start_chapter": 121,
-            "end_chapter": 160,
-            "node_type": "volume",
-        },
+def _build_volume_outline(title: str, protagonist_name: str, conflict: str, chapter_count: int) -> list[dict[str, Any]]:
+    volume_titles = [
+        "第一卷 异常入局",
+        "第二卷 规则反噬",
+        "第三卷 旧事重启",
+        "第四卷 势力围猎",
+        "第五卷 污染扩散",
+        "第六卷 体系崩坏",
+        "第七卷 旧日降临",
+        "第八卷 规则改写",
+        "第九卷 诸界回声",
+        "第十卷 终局封神",
     ]
+    summaries = [
+        f"{protagonist_name}发现身边秩序出现裂缝，先在小范围内验证规则，再被迫直面{conflict}。",
+        "主角把第一卷得到的方法用于更大舞台，却发现规则本身会反过来筛选和吞噬使用者。",
+        f"旧日隐线浮出水面，{protagonist_name}必须判断前人的失败究竟是能力不足，还是方向错误。",
+        "宗门、家族、城池或秘境势力开始围绕主角和异常资源下注，主角从局部求生进入多方博弈。",
+        "污染或怪谈规则从单点事件扩散成区域危机，主角必须建立自己的情报网和应对体系。",
+        "既有修行体系与怪谈规则发生冲突，主角发现力量升级本身也可能成为污染入口。",
+        "旧日源头露出轮廓，敌人不再只是人或组织，而是能改写认知和因果的高维压力。",
+        "主角开始反向利用规则，把被动求生改为主动布置，但每次改写都会留下新的代价。",
+        "故事舞台扩展到更大范围，前期伏笔集中回收，盟友、反派和旧日力量重新站队。",
+        f"{title}进入终局，{protagonist_name}把个人目标、世界规则和情感牵引合并为最终选择。",
+    ]
+    volume_count = _volume_count_for_chapters(chapter_count)
+    span = max(1, chapter_count // volume_count)
+    volumes: list[dict[str, Any]] = []
+    for index in range(volume_count):
+        start = index * span + 1
+        end = chapter_count if index == volume_count - 1 else min(chapter_count, (index + 1) * span)
+        volumes.append({
+            "title": volume_titles[index],
+            "summary": summaries[index],
+            "start_chapter": start,
+            "end_chapter": end,
+            "node_type": "volume",
+        })
+    return volumes
 
 
 def _build_golden_three(
@@ -916,6 +1026,7 @@ def _build_outline(
     profile: dict[str, str] | None = None,
     user_brief: str = "",
     revision_tone: dict[str, str] | None = None,
+    chapter_count: int = 160,
 ) -> list[dict[str, Any]]:
     profile = profile or _variant_profile(0)
     anchor = _opening_anchor(user_brief)
@@ -937,6 +1048,17 @@ def _build_outline(
         ("第14章 旧线回声", "旧日隐线与当前事件第一次明确相连，读者意识到故事已经牵动更大的危机。", "伏笔回收"),
         ("第15章 第一卷中段爆点", "主角必须在保护关系和继续追查之间做选择，推动第一卷进入中段高潮。", "中段爆点"),
     ]
+    target = _outline_target_for_chapters(chapter_count)
+    while len(beats) < target:
+        node_no = len(beats) + 1
+        phase = "中期扩张" if node_no < target * 0.65 else "后期回收"
+        beats.append((
+            f"第{node_no}节点 {phase}",
+            f"{protagonist_name}围绕{anchor}延伸出的新规则继续推进，回收一条旧伏笔，同时放出下一阶段更大的代价或敌意。",
+            "长篇推进",
+        ))
+
+    chapter_span = max(1, chapter_count // len(beats))
     return [
         {
             "title": beat_title,
@@ -945,6 +1067,7 @@ def _build_outline(
             "parent_index": 0,
             "purpose": purpose,
             "involved_characters": [protagonist_name, "关键盟友"] if index < 3 else [protagonist_name],
+            "suggested_chapter_range": f"{index * chapter_span + 1}-{chapter_count if index == len(beats) - 1 else min(chapter_count, (index + 1) * chapter_span)}",
         }
         for index, (beat_title, summary, purpose) in enumerate(beats)
     ]
@@ -962,10 +1085,11 @@ def _template_blueprint(
     revision_mode: str = "initial",
 ) -> dict[str, Any]:
     genre_key = _genre_key(genre)
-    genre_label = _genre_label(genre)
+    genre_label = _genre_display_label(genre, user_brief)
     preset = GENRE_PRESETS.get(genre_key, GENRE_PRESETS["fantasy"])
     protagonist_name = _extract_protagonist_name(user_brief)
     features = _brief_features(user_brief)
+    chapter_count = _extract_chapter_count(user_brief)
     profile = _variant_profile(variant)
     revision_tone = _feedback_tone(revision_instruction)
 
@@ -1016,7 +1140,7 @@ def _template_blueprint(
         profile=profile,
         features=features,
     )
-    volume_outline = _build_volume_outline(title, protagonist_name, conflict)
+    volume_outline = _build_volume_outline(title, protagonist_name, conflict, chapter_count)
     outline = _build_outline(
         selected_title,
         genre_label,
@@ -1025,6 +1149,7 @@ def _template_blueprint(
         profile,
         user_brief=user_brief,
         revision_tone=revision_tone,
+        chapter_count=chapter_count,
     )
 
     return {
@@ -1056,7 +1181,7 @@ def _template_blueprint(
         "relationships": _build_relationships(protagonist_name),
         "world_hook": preset["hook"],
         "opening_scene": profile["opening"],
-        "estimated_chapters": 160,
+        "estimated_chapters": chapter_count,
         "worldbuilding": worldbuilding,
         "volume_outline": volume_outline,
         "outline": outline,
