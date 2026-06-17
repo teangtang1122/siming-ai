@@ -1,12 +1,14 @@
 /**
  * Desktop control-panel assistant.
  *
- * It runs outside the project workspace page, but still binds every chat to a
- * real project so tool calls can read and write novel data safely.
+ * It runs outside the project workspace page. When a project is selected it
+ * uses the normal workspace assistant; without a project it behaves as a
+ * system-level assistant that can help users create the first novel project.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
+  Card,
   Empty,
   Input,
   InputNumber,
@@ -15,6 +17,7 @@ import {
   Space,
   Spin,
   Switch,
+  Tag,
   Tooltip,
   Typography,
   message,
@@ -77,10 +80,80 @@ interface ChatMessage {
   created_at?: string
 }
 
+interface NovelBlueprint {
+  title: string
+  logline?: string
+  genre?: string
+  estimated_chapters?: number
+  protagonist?: { name?: string }
+  characters?: unknown[]
+  relationships?: unknown[]
+  worldbuilding?: unknown[]
+  volume_outline?: unknown[]
+  outline?: unknown[]
+  requirement_coverage?: { score?: number }
+}
+
+interface NovelStartData {
+  session_id: string
+}
+
+interface NovelDraftData {
+  blueprints: NovelBlueprint[]
+  recommendation?: string
+}
+
+interface NovelApplyData {
+  project_id: string
+}
+
 type AssistantMode = 'fast' | 'quality'
 
 const PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
 const SIDEBAR_STORAGE_KEY = 'moshu.gui.assistant.sidebarCollapsed'
+
+function shouldUseNovelCreation(text: string, hasActiveProject: boolean) {
+  const normalized = text.trim()
+  if (!normalized) return false
+  if (hasActiveProject && /(写|续写|重写|生成).{0,8}第?\d+\s*章/.test(normalized)) {
+    return false
+  }
+  if (/新书|新小说|新作品|帮我创建|创建.*(小说|作品|项目)|新建.*(小说|作品|项目)|设计.*(小说|新书)|开书|立项|我想写|我要写|帮我写.*小说|\d{3,5}\s*章.*创意/.test(normalized)) {
+    return true
+  }
+  if (!hasActiveProject && /(克苏鲁|规则怪谈|修仙|仙侠|玄幻|都市|科幻|悬疑|言情|历史|末日|赛博|无限流)/.test(normalized)) {
+    return true
+  }
+  return false
+}
+
+function parseBlueprintIndex(text: string) {
+  const match = text.match(/(?:使用|选|选择|创建|就|采用|用)(?:第)?\s*([123一二三])\s*(?:个|套|号|版|方案)?/)
+  if (!match) return null
+  const map: Record<string, number> = { '1': 0, '2': 1, '3': 2, 一: 0, 二: 1, 三: 2 }
+  return map[match[1]] ?? null
+}
+
+function formatBlueprintSummary(blueprints: NovelBlueprint[]) {
+  if (!blueprints.length) return '没有生成可用方案。'
+  return blueprints.map((bp, index) => {
+    const protagonist = bp.protagonist?.name || '待定主角'
+    const score = bp.requirement_coverage?.score
+    const metrics = [
+      bp.genre,
+      bp.estimated_chapters ? `${bp.estimated_chapters}章` : undefined,
+      `${bp.characters?.length || 0}角色`,
+      `${bp.worldbuilding?.length || 0}设定`,
+      score != null ? `覆盖率${score}%` : undefined,
+    ].filter(Boolean).join(' / ')
+    return [
+      `${index + 1}. 《${bp.title}》`,
+      `主角：${protagonist}`,
+      metrics ? `规模：${metrics}` : '',
+      bp.logline ? `一句话：${bp.logline}` : '',
+    ].filter(Boolean).join('\n')
+  }).join('\n\n')
+}
 
 function GuiAssistantChat() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -98,6 +171,10 @@ function GuiAssistantChat() {
   const [temperature, setTemperature] = useState(0.3)
   const [maxTokens, setMaxTokens] = useState<number | null>(null)
   const [autoApply, setAutoApply] = useState(true)
+  const [systemSessionId, setSystemSessionId] = useState<string>()
+  const [systemBrief, setSystemBrief] = useState('')
+  const [systemBlueprints, setSystemBlueprints] = useState<NovelBlueprint[]>([])
+  const [applyingBlueprintIndex, setApplyingBlueprintIndex] = useState<number | null>(null)
 
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const [model, setModel] = useState<string | undefined>()
@@ -109,6 +186,7 @@ function GuiAssistantChat() {
     () => projects.find((project) => project.id === activeProjectId),
     [projects, activeProjectId],
   )
+  const assistantContextLabel = activeProject ? `作品模式 · ${activeProject.title}` : '系统模式 · 可创建新作品'
 
   useEffect(() => {
     if (!model && defaultModel) setModel(defaultModel)
@@ -192,7 +270,13 @@ function GuiAssistantChat() {
   }, [fetchProjects])
 
   useEffect(() => {
-    if (!activeProjectId) return
+    if (!activeProjectId) {
+      setActiveConvId(null)
+      setConversations([])
+      setMessages([])
+      localStorage.removeItem(PROJECT_STORAGE_KEY)
+      return
+    }
     localStorage.setItem(PROJECT_STORAGE_KEY, activeProjectId)
     setActiveConvId(null)
     setMessages([])
@@ -207,6 +291,9 @@ function GuiAssistantChat() {
     setActiveConvId(null)
     setMessages([])
     setInputValue('')
+    setSystemSessionId(undefined)
+    setSystemBrief('')
+    setSystemBlueprints([])
   }
 
   const deleteConversation = async (convId: string) => {
@@ -285,11 +372,156 @@ function GuiAssistantChat() {
     }
   }
 
+  const setLastAssistantMessage = (content: string, status: ChatMessage['status'] = 'completed') => {
+    setMessages((prev) => {
+      const next = [...prev]
+      const last = next[next.length - 1]
+      if (last?.role === 'assistant') {
+        last.content = content
+        last.status = status
+      }
+      return [...next]
+    })
+  }
+
+  const handleSystemAssistantMessage = async (text: string) => {
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text, status: 'completed', created_at: new Date().toISOString() },
+      { role: 'assistant', content: '正在处理...', status: 'running', created_at: new Date().toISOString() },
+    ])
+    setInputValue('')
+    setStreaming(true)
+
+    try {
+      const selectedBlueprintIndex = parseBlueprintIndex(text)
+      if (selectedBlueprintIndex != null && systemBlueprints[selectedBlueprintIndex]) {
+        if (!systemSessionId) throw new Error('缺少新书创建会话，请重新生成方案。')
+        const blueprint = systemBlueprints[selectedBlueprintIndex]
+        setApplyingBlueprintIndex(selectedBlueprintIndex)
+        setLastAssistantMessage(`正在创建《${blueprint.title}》...`, 'running')
+        await apiClient.post<ApiResponse<unknown>>('/novel-creation/review', {
+          session_id: systemSessionId,
+          execution_mode: 'template',
+          blueprint: systemBlueprints,
+        })
+        const applyRes = await apiClient.post<ApiResponse<NovelApplyData>>('/novel-creation/apply', {
+          session_id: systemSessionId,
+          blueprint_index: selectedBlueprintIndex,
+          mode: 'auto',
+          blueprint,
+        })
+        const projectId = applyRes.data.data.project_id
+        await fetchProjects()
+        setActiveProjectId(projectId)
+        localStorage.setItem(PROJECT_STORAGE_KEY, projectId)
+        setSystemBlueprints([])
+        setSystemSessionId(undefined)
+        setSystemBrief('')
+        setLastAssistantMessage(
+          `已创建新作品《${blueprint.title}》。我已经切换到这个作品上下文，接下来可以继续让我细化大纲、角色、世界观，或直接开始写第一章。`,
+        )
+        return
+      }
+
+      if (shouldUseNovelCreation(text, Boolean(activeProjectId))) {
+        setLastAssistantMessage('收到，我先按这个设想生成三套方向不同的新书立项方案。', 'running')
+        const startRes = await apiClient.post<ApiResponse<NovelStartData>>('/novel-creation/start', {
+          mode: 'template',
+          user_brief: text,
+          genre: '',
+          target_audience: '',
+          platform: '',
+        })
+        const sessionId = startRes.data.data.session_id
+        setSystemSessionId(sessionId)
+        setSystemBrief(text)
+        const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
+          session_id: sessionId,
+          execution_mode: 'template',
+          user_brief: text,
+          enhance_with_llm: false,
+        })
+        const blueprints = draftRes.data.data.blueprints || []
+        setSystemBlueprints(blueprints)
+        setLastAssistantMessage(
+          [
+            `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复“使用第1个创建”。`,
+            '',
+            formatBlueprintSummary(blueprints),
+          ].join('\n'),
+        )
+        return
+      }
+
+      if (systemBlueprints.length > 0 && systemSessionId && !/作品|项目|列表|有哪些|查看/.test(text)) {
+        const revisionMode = /重新|全部|重来|换一批|不要当前/.test(text) ? 'regenerate' : 'refine'
+        setLastAssistantMessage(
+          revisionMode === 'regenerate'
+            ? '我会按你的反馈重新生成整套方案。'
+            : '我会在当前方案基础上继续调整书名、主角、卖点和卷纲。',
+          'running',
+        )
+        const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
+          session_id: systemSessionId,
+          execution_mode: 'template',
+          user_brief: systemBrief || text,
+          feedback: text,
+          revision_mode: revisionMode,
+          enhance_with_llm: false,
+        })
+        const blueprints = draftRes.data.data.blueprints || []
+        setSystemBlueprints(blueprints)
+        setLastAssistantMessage(
+          [
+            revisionMode === 'regenerate' ? '已重新生成 3 个方案。' : '已在当前方案基础上调整完成。',
+            '你可以继续修改，或回复“使用第1个创建”。',
+            '',
+            formatBlueprintSummary(blueprints),
+          ].join('\n'),
+        )
+        return
+      }
+
+      if (/作品|项目|列表|有哪些|查看/.test(text)) {
+        const res = await apiClient.get<ApiResponse<{ items: Project[]; total: number }>>('/projects')
+        const items = res.data?.data?.items || []
+        setProjects(items)
+        if (!items.length) {
+          setLastAssistantMessage('当前还没有作品。你可以直接说“我想写克苏鲁+修仙+规则怪谈”，我会先生成三套新书方案。')
+          return
+        }
+        const projectList = items.map((project, index) => `${index + 1}. ${project.title}`).join('\n')
+        setLastAssistantMessage(`当前共有 ${items.length} 个作品：\n${projectList}\n\n你可以在助手设置里切换作品，也可以直接让我创建新作品。`)
+        return
+      }
+
+      setLastAssistantMessage(
+        [
+          '我现在可以作为系统助手工作，不需要先进入某个作品。',
+          '你可以直接说：',
+          '1. “我想写1000章，克苏鲁+修仙+规则怪谈”',
+          '2. “使用第1个创建”',
+          '3. “查看我的作品列表”',
+          '',
+          activeProjectId ? '当前也已绑定作品，可以继续让我管理章节、大纲、角色和世界观。' : '当前未绑定作品，我会优先帮你创建新小说项目。',
+        ].join('\n'),
+      )
+    } catch (err: any) {
+      setLastAssistantMessage(err.message || '处理失败', 'error')
+      message.error(err.message || '处理失败')
+    } finally {
+      setStreaming(false)
+      setApplyingBlueprintIndex(null)
+    }
+  }
+
   const sendMessage = async () => {
     const text = inputValue.trim()
     if (!text || streaming) return
-    if (!activeProjectId) {
-      message.warning('请先创建或选择一个作品，AI 助手需要作品上下文才能读写章节、大纲、角色和世界观。')
+    const continuesSystemCreation = systemBlueprints.length > 0 && !/(写|续写|重写|查看|打开).{0,8}第?\d+\s*章/.test(text)
+    if (!activeProjectId || shouldUseNovelCreation(text, Boolean(activeProjectId)) || continuesSystemCreation) {
+      await handleSystemAssistantMessage(text)
       return
     }
 
@@ -389,6 +621,62 @@ function GuiAssistantChat() {
     }
   }
 
+  const renderBlueprintCards = () => {
+    if (!systemBlueprints.length) return null
+    return (
+      <div className="gui-chat-blueprints">
+        <div className="gui-chat-blueprints-head">
+          <div>
+            <Text strong>新书方案</Text>
+            <Text type="secondary">  ·  可继续对话微调，也可以直接创建</Text>
+          </div>
+          <Space size={8}>
+            <Button size="small" onClick={() => handleSystemAssistantMessage('全部重新生成')} disabled={streaming}>
+              全部重来
+            </Button>
+            <Button size="small" onClick={() => handleSystemAssistantMessage('强化书名、主角动机和前三章钩子')} disabled={streaming}>
+              强化方案
+            </Button>
+          </Space>
+        </div>
+        <div className="gui-chat-blueprint-grid">
+          {systemBlueprints.map((bp, index) => {
+            const score = bp.requirement_coverage?.score
+            return (
+              <Card
+                key={`${bp.title}-${index}`}
+                size="small"
+                className="gui-chat-blueprint-card"
+                title={<span className="gui-chat-blueprint-title">《{bp.title}》</span>}
+                extra={score != null ? <Tag color={score >= 90 ? 'green' : 'blue'}>覆盖率 {score}%</Tag> : null}
+              >
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space size={6} wrap>
+                    {bp.genre && <Tag>{bp.genre}</Tag>}
+                    {bp.estimated_chapters && <Tag>{bp.estimated_chapters}章</Tag>}
+                    <Tag>{bp.characters?.length || 0} 角色</Tag>
+                    <Tag>{bp.worldbuilding?.length || 0} 设定</Tag>
+                  </Space>
+                  <Text type="secondary">主角：{bp.protagonist?.name || '待定主角'}</Text>
+                  {bp.logline && <Paragraph className="gui-chat-blueprint-logline">{bp.logline}</Paragraph>}
+                  <Button
+                    type="primary"
+                    block
+                    loading={applyingBlueprintIndex === index}
+                    disabled={streaming && applyingBlueprintIndex !== index}
+                    onClick={() => handleSystemAssistantMessage(`使用第${index + 1}个创建`)}
+                  >
+                    使用这个创建作品
+                  </Button>
+                </Space>
+              </Card>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   const settingsContent = (
     <Space direction="vertical" size={12} style={{ width: 300 }}>
       <div>
@@ -399,7 +687,8 @@ function GuiAssistantChat() {
           onChange={setActiveProjectId}
           options={projects.map((project) => ({ value: project.id, label: project.title }))}
           loading={projectsLoading}
-          placeholder="选择作品"
+          allowClear
+          placeholder="可不选作品，直接创建新书"
           optionFilterProp="label"
           style={{ width: '100%' }}
         />
@@ -520,14 +809,20 @@ function GuiAssistantChat() {
       <main className="gui-chat-main">
         <div className="gui-chat-header">
           <div>
-            <Title level={5} style={{ margin: 0 }}>
-              {activeConvId ? conversations.find((c) => c.id === activeConvId)?.title || 'AI 助手' : 'AI 助手'}
-            </Title>
+            <Space size={8} align="center">
+              <Title level={5} style={{ margin: 0 }}>
+                {activeConvId ? conversations.find((c) => c.id === activeConvId)?.title || 'AI 助手' : 'AI 助手'}
+              </Title>
+              <Tag color={activeProject ? 'blue' : 'purple'}>{assistantContextLabel}</Tag>
+            </Space>
             <Text type="secondary" className="gui-chat-project-line">
-              <FolderOpenOutlined /> {activeProject ? activeProject.title : '未选择作品'}
+              <FolderOpenOutlined /> {activeProject ? '作品问题会写回当前作品；新书/创建意图会自动进入系统立项流程' : '未选择作品时仍可创建新小说'}
             </Text>
           </div>
           <Space>
+            <Button onClick={() => setInputValue('帮我创建一本新的小说，克苏鲁+规则怪谈，至少要能写1000章的创意')}>
+              新书立项
+            </Button>
             <Popover trigger="click" title="助手设置" content={settingsContent}>
               <Button icon={<SettingOutlined />}>助手设置</Button>
             </Popover>
@@ -542,11 +837,19 @@ function GuiAssistantChat() {
             <div className="gui-chat-welcome">
               <div className="gui-chat-welcome-icon">📜</div>
               <Title level={3} style={{ margin: '0 0 8px', fontFamily: "'Noto Serif SC', serif" }}>
-                先创建一个作品
+                墨枢系统助手
               </Title>
               <Paragraph type="secondary" style={{ fontSize: 15, maxWidth: 460, textAlign: 'center' }}>
-                AI 助手需要作品上下文，才能读取章节、大纲、角色、世界观。请先在墨枢首页创建一个作品。
+                不需要先创建作品。你可以直接说“我想写1000章，克苏鲁+修仙+规则怪谈”，我会生成新书方案，并在你确认后创建作品。
               </Paragraph>
+              <Space wrap className="gui-chat-welcome-actions">
+                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={() => setInputValue('我想写1000章，克苏鲁+修仙+规则怪谈')}>
+                  试着创建新小说
+                </Button>
+                <Button size="large" onClick={() => setInputValue('查看我的作品列表')}>
+                  查看作品列表
+                </Button>
+              </Space>
             </div>
           ) : !activeConvId && messages.length === 0 ? (
             <div className="gui-chat-welcome">
@@ -555,11 +858,16 @@ function GuiAssistantChat() {
                 墨枢 AI 助手
               </Title>
               <Paragraph type="secondary" style={{ fontSize: 15, maxWidth: 460, textAlign: 'center' }}>
-                当前绑定作品：{activeProject?.title || '未选择'}。可以直接提需求，助手会自动检索资料、调用工具并写回作品。
+                当前绑定作品：{activeProject?.title || '未选择'}。写章节、查角色会进入作品助手；创建新小说会自动切到系统立项流程。
               </Paragraph>
-              <Button type="primary" icon={<PlusOutlined />} size="large" onClick={startNewConversation}>
-                开始新对话
-              </Button>
+              <Space wrap className="gui-chat-welcome-actions">
+                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={startNewConversation}>
+                  开始新对话
+                </Button>
+                <Button size="large" onClick={() => setInputValue('帮我创建一本新的小说，克苏鲁+规则怪谈，至少要能写1000章的创意')}>
+                  创建新小说
+                </Button>
+              </Space>
             </div>
           ) : loading ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
@@ -575,6 +883,7 @@ function GuiAssistantChat() {
                   </div>
                 </div>
               ))}
+              {renderBlueprintCards()}
               <div ref={messagesEndRef} />
             </>
           )}
@@ -587,7 +896,7 @@ function GuiAssistantChat() {
             onKeyDown={handleKeyDown}
             placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
             autoSize={{ minRows: 2, maxRows: 6 }}
-            disabled={streaming || !activeProjectId}
+            disabled={streaming}
           />
           <div className="gui-chat-composer-actions">
             {streaming ? (
@@ -599,7 +908,7 @@ function GuiAssistantChat() {
                 type="primary"
                 icon={<SendOutlined />}
                 onClick={sendMessage}
-                disabled={!inputValue.trim() || !activeProjectId}
+                disabled={!inputValue.trim()}
               >
                 发送
               </Button>

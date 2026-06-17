@@ -336,9 +336,12 @@ class DraftNovelBlueprintTest(unittest.TestCase):
 
         blueprints = result["data"]["blueprints"]
         names = [bp["protagonist"]["name"] for bp in blueprints]
+        titles = [bp["title"] for bp in blueprints]
         self.assertEqual(len(set(names)), 3)
         self.assertNotIn("未命名主角", names)
-        self.assertTrue(all("禁忌档案" in bp["title"] for bp in blueprints))
+        self.assertEqual(len(set(titles)), 3)
+        self.assertTrue(all("克苏鲁+规则怪谈" not in title for title in titles))
+        self.assertTrue(any("旧神" in title or "规则" in title or "怪谈" in title for title in titles))
         self.assertTrue(all(bp["requirement_coverage"]["score"] >= 90 for bp in blueprints))
 
     def test_template_feedback_separately_designs_protagonists_without_false_avoid(self):

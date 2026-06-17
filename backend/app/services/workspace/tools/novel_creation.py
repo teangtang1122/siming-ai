@@ -294,30 +294,83 @@ def _resolve_protagonist_name(user_brief: str, variant: int = 0) -> str:
     return names[min(max(variant, 0), len(names) - 1)]
 
 
-def _suggest_title(user_brief: str, genre_label: str, protagonist_name: str, features: list[str]) -> str:
+def _suggest_title_candidates(user_brief: str, genre_label: str, protagonist_name: str, features: list[str]) -> list[str]:
     text = _clean_text(user_brief)
     has_named_protagonist = protagonist_name and protagonist_name != "未命名主角"
+    feature = features[0] if features else "异常"
+
     if "克苏鲁" in text and "规则怪谈" in text and "修仙" in text:
-        return f"{protagonist_name}的旧日禁则" if has_named_protagonist else "旧日禁则录"
+        candidates = [
+            "修仙第一条：别读旧神规则",
+            "规则怪谈降临修仙界",
+            f"{protagonist_name}收到第十三条门规" if has_named_protagonist else "第十三条仙门禁规",
+            "我把旧神怪谈炼成道法",
+        ]
+        return _unique_texts(candidates, limit=4)
     if "克苏鲁" in text and "规则怪谈" in text:
-        return f"{protagonist_name}的禁忌档案" if has_named_protagonist else "禁忌怪谈档案"
+        candidates = [
+            "规则怪谈：别向旧神许愿",
+            "通关规则被旧神污染了",
+            f"{protagonist_name}的禁忌档案" if has_named_protagonist else "禁忌怪谈档案",
+            "我在怪谈里听见旧神低语",
+        ]
+        return _unique_texts(candidates, limit=4)
     if all(keyword in text for keyword in ("克苏鲁", "修仙", "规则怪谈")):
-        return f"{protagonist_name}的旧日仙途" if has_named_protagonist else "旧日仙途怪谈录"
+        candidates = [
+            "修仙第一条：别读旧神规则",
+            "规则怪谈降临修仙界",
+            f"{protagonist_name}的旧日仙途" if has_named_protagonist else "旧日仙途怪谈录",
+        ]
+        return _unique_texts(candidates, limit=4)
     if "克苏鲁" in text and "修仙" in text:
-        return f"{protagonist_name}的旧日仙途" if has_named_protagonist else "旧日仙途录"
+        candidates = [
+            "修仙尽头是旧神",
+            f"{protagonist_name}的旧日仙途" if has_named_protagonist else "旧日仙途录",
+            "我在仙门梦见不可名状",
+        ]
+        return _unique_texts(candidates, limit=4)
     if "规则怪谈" in text and "修仙" in text:
-        return f"{protagonist_name}的怪谈道途" if has_named_protagonist else "怪谈修仙录"
+        candidates = [
+            "仙门守则正在杀人",
+            f"{protagonist_name}的怪谈道途" if has_named_protagonist else "怪谈修仙录",
+            "我靠改门规修仙",
+        ]
+        return _unique_texts(candidates, limit=4)
     if "病毒" in text and "归墟" in text:
-        return f"{protagonist_name}与归墟病毒" if has_named_protagonist else "归墟病毒档案"
+        candidates = [
+            "归墟病毒正在回收众生",
+            f"{protagonist_name}与归墟病毒" if has_named_protagonist else "归墟病毒档案",
+            "我被归墟病毒追着杀",
+        ]
+        return _unique_texts(candidates, limit=4)
     if "病毒" in text and genre_label == "仙侠":
-        return f"{protagonist_name}的病毒修仙录" if has_named_protagonist else "病毒追着我修仙"
+        candidates = [
+            "病毒追着我修仙",
+            f"{protagonist_name}的病毒修仙录" if has_named_protagonist else "病毒修仙录",
+            "我的灵气感染了",
+        ]
+        return _unique_texts(candidates, limit=4)
     if "灵石" in text or "账目" in text:
-        return f"{protagonist_name}的灵石账簿" if has_named_protagonist else "灵石账簿疑云"
+        candidates = [
+            f"{protagonist_name}的灵石账簿" if has_named_protagonist else "灵石账簿疑云",
+            "账本里藏着一条灵脉",
+            "我用账目掀翻修仙家族",
+        ]
+        return _unique_texts(candidates, limit=4)
     if "穿越" in text and has_named_protagonist:
-        return f"{protagonist_name}的异世开局"
+        return _unique_texts([f"{protagonist_name}的异世开局", f"{protagonist_name}开局被世界盯上"], limit=4)
     if features:
-        return f"{features[0]}{genre_label}录"
-    return f"未命名{genre_label}小说"
+        candidates = [
+            f"{feature}{genre_label}录",
+            f"开局被{feature}盯上",
+            f"我在{feature}里改写命运",
+        ]
+        return _unique_texts(candidates, limit=4)
+    return [f"未命名{genre_label}小说"]
+
+
+def _suggest_title(user_brief: str, genre_label: str, protagonist_name: str, features: list[str]) -> str:
+    return _suggest_title_candidates(user_brief, genre_label, protagonist_name, features)[0]
 
 
 def _brief_features(user_brief: str) -> list[str]:
@@ -1448,6 +1501,7 @@ def _template_blueprint(
     revision_instruction: str = "",
     revision_mode: str = "initial",
     compiled: dict[str, Any] | None = None,
+    use_variant_title_suffix: bool = True,
 ) -> dict[str, Any]:
     genre_key = _genre_key(genre)
     compiled = compiled or _compile_creative_brief(
@@ -1468,12 +1522,15 @@ def _template_blueprint(
     profile = _variant_profile(variant)
     revision_tone = _feedback_tone(revision_instruction)
 
-    variant_titles = [
-        title,
-        f"{title}{_variant_profile(1)['suffix']}",
-        f"{title}{_variant_profile(2)['suffix']}",
-    ]
-    selected_title = variant_titles[min(variant, len(variant_titles) - 1)]
+    if use_variant_title_suffix:
+        variant_titles = [
+            title,
+            f"{title}{_variant_profile(1)['suffix']}",
+            f"{title}{_variant_profile(2)['suffix']}",
+        ]
+        selected_title = variant_titles[min(variant, len(variant_titles) - 1)]
+    else:
+        selected_title = title
     if not compiled.get("explicit_protagonist_name"):
         first_auto_name = _clean_text((compiled.get("auto_protagonist_names") or [compiled.get("protagonist_name")])[0])
         if first_auto_name and first_auto_name in selected_title:
@@ -1639,11 +1696,13 @@ def _build_template_blueprints(
     title = _clean_text(compiled.get("title_candidate"), _extract_title(brief, genre_label))
     if revision_mode == "refine":
         title = _base_blueprint_title(getattr(session, "blueprint_json", None)) or title
-    if _is_generic_title(title, genre_label):
-        title = _suggest_title(brief, genre_label, protagonist_name, features)
+    explicit_title = not (_is_generic_title(title, genre_label) or _looks_like_requirement_title(title))
+    title_candidates = [title]
+    if not explicit_title:
+        title_candidates = _suggest_title_candidates(brief, genre_label, protagonist_name, features)
     blueprints = [
         _template_blueprint(
-            title=title,
+            title=title_candidates[index % len(title_candidates)],
             user_brief=brief,
             genre=genre,
             target_audience=_clean_text(session.target_audience),
@@ -1652,6 +1711,7 @@ def _build_template_blueprints(
             revision_instruction=feedback,
             revision_mode=revision_mode,
             compiled=compiled,
+            use_variant_title_suffix=explicit_title,
         )
         for index in range(3)
     ]

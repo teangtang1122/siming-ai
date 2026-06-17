@@ -126,6 +126,10 @@
   animation: moshu-float 4s ease-in-out infinite;
 }
 
+.gui-chat-welcome-actions {
+  justify-content: center;
+}
+
 .gui-chat-msg {
   margin-bottom: 20px;
   max-width: 85%;
@@ -169,6 +173,55 @@
   border-bottom-left-radius: 2px;
 }
 
+.gui-chat-blueprints {
+  max-width: 1100px;
+  margin: 8px 0 24px;
+  padding: 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 10px;
+  background: var(--ant-color-bg-container);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04);
+}
+
+.gui-chat-blueprints-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.gui-chat-blueprint-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.gui-chat-blueprint-card {
+  border-radius: 8px;
+}
+
+.gui-chat-blueprint-card .ant-card-head {
+  min-height: 44px;
+}
+
+.gui-chat-blueprint-title {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.gui-chat-blueprint-logline {
+  min-height: 72px;
+  margin: 0 !important;
+  color: var(--ant-color-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 /* ── Composer ── */
 .gui-chat-composer {
   padding: 16px 24px;
@@ -197,5 +250,14 @@
   .gui-chat-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .gui-chat-blueprints-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .gui-chat-blueprint-grid {
+    grid-template-columns: 1fr;
   }
 }
