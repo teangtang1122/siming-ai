@@ -1,5 +1,5 @@
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
-import { Layout, Spin } from 'antd'
+import { Alert, Layout, Spin } from 'antd'
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { useAppStore } from './stores'
 
@@ -109,9 +109,29 @@ function WildcardRedirect() {
   return null
 }
 
+/** Global error banner — renders store errors as a dismissible alert. */
+function GlobalErrorBanner() {
+  const error = useAppStore((s) => s.error)
+  const setError = useAppStore((s) => s.setError)
+
+  if (!error) return null
+
+  return (
+    <Alert
+      type="error"
+      message={error}
+      closable
+      onClose={() => setError(null)}
+      banner
+      style={{ position: 'sticky', top: 0, zIndex: 1100 }}
+    />
+  )
+}
+
 function App() {
   return (
     <Layout style={{ minHeight: '100vh' }} className="moshu-grain">
+      <GlobalErrorBanner />
       <Content style={{ padding: 0 }}>
         <ProjectPreloader />
         <Suspense fallback={<LoadingScreen />}>

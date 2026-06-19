@@ -508,6 +508,46 @@ class AssistantMessage(Base):
 
 
 # ---------------------------------------------------------------------------
+# 19a. system_assistant_conversations — 系统级助手对话会话表
+# ---------------------------------------------------------------------------
+class SystemAssistantConversation(Base):
+    __tablename__ = "system_assistant_conversations"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    title = Column(String(200), nullable=False, default="新对话")
+    creation_session_id = Column(String(36), nullable=True)
+    user_brief = Column(Text, nullable=True)
+    blueprint_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    messages = relationship(
+        "SystemAssistantMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+
+
+class SystemAssistantMessage(Base):
+    __tablename__ = "system_assistant_messages"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    conversation_id = Column(
+        String(36),
+        ForeignKey("system_assistant_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role = Column(String(20), nullable=False)
+    content = Column(Text, nullable=False, default="")
+    payload_json = Column(JSON, nullable=True)
+    status = Column(String(20), nullable=False, default="completed")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("SystemAssistantConversation", back_populates="messages")
+
+
+# ---------------------------------------------------------------------------
 # 20. assistant_runs — 写作助手执行任务表
 # ---------------------------------------------------------------------------
 class AssistantRun(Base):

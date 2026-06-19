@@ -11,7 +11,6 @@ import {
   Form,
   Input,
   Modal,
-  Popconfirm,
   Progress,
   Select,
   Space,
@@ -850,17 +849,24 @@ function DashboardPage() {
                         icon={<EditOutlined />}
                         onClick={() => openEditModal(project)}
                       />
-                      <Popconfirm
-                        title="确认删除"
-                        description="删除作品会同时删除关联数据，此操作不可恢复。"
-                        onConfirm={() => handleDelete(project.id)}
-                        okText="删除"
-                        cancelText="取消"
-                        okButtonProps={{ danger: true, autoInsertSpace: false }}
-                        cancelButtonProps={{ autoInsertSpace: false }}
-                      >
-                        <Button type="text" size="small" danger aria-label={`删除 ${project.title}`} icon={<DeleteOutlined />} />
-                      </Popconfirm>
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        aria-label={`删除 ${project.title}`}
+                        icon={<DeleteOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          Modal.confirm({
+                            title: '确认删除作品',
+                            content: `确定要删除「${project.title}」吗？删除作品会同时删除关联的角色、大纲、章节等数据，此操作不可恢复。`,
+                            okText: '删除',
+                            cancelText: '取消',
+                            okButtonProps: { danger: true },
+                            onOk: () => handleDelete(project.id),
+                          })
+                        }}
+                      />
                     </Space>
                   </div>
                 }
@@ -1185,6 +1191,7 @@ function DashboardPage() {
         cancelText="取消"
         okButtonProps={{ autoInsertSpace: false, loading: creating }}
         cancelButtonProps={{ autoInsertSpace: false, disabled: creating }}
+        closable={!creating}
         width={720}
         maskClosable={!creating}
         destroyOnClose

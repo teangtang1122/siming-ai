@@ -96,14 +96,27 @@
   border-bottom: 1px solid var(--ant-color-border-secondary);
   background: var(--ant-color-bg-container);
   flex-shrink: 0;
+  min-width: 0;
+}
+
+.gui-chat-header > div:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.gui-chat-header > .ant-space {
+  flex-shrink: 0;
 }
 
 .gui-chat-project-line {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
   font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Messages ── */
@@ -227,11 +240,44 @@
 }
 
 .gui-chat-blueprint-logline {
-  min-height: 72px;
+  min-height: 88px;
   margin: 0 !important;
   color: var(--ant-color-text);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.gui-chat-blueprint-premise {
+  margin: 0 !important;
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.gui-chat-blueprint-card .ant-collapse {
+  margin: 0 -8px;
+}
+
+.gui-chat-blueprint-card .ant-collapse-header {
+  padding-block: 6px !important;
+}
+
+.gui-chat-blueprint-card .ant-collapse-content-box {
+  padding: 4px 8px 10px !important;
+}
+
+.gui-chat-blueprint-list {
+  margin: 6px 0 0 18px;
+  padding: 0;
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.gui-chat-blueprint-details {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
 }
 
 /* ── Composer ── */

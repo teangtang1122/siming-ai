@@ -6,6 +6,7 @@ import {
   Form,
   Input,
   List,
+  Modal,
   Popconfirm,
   Select,
     Space,
@@ -26,6 +27,7 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
+import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './WriterPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -140,6 +142,7 @@ function WriterPage({ projectId }: WriterPageProps) {
   const [chapters, setChapters] = useState<ChapterItem[]>([])
   const [outlineOptions, setOutlineOptions] = useState<Array<{ value: string; label: string }>>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
   const [detail, setDetail] = useState<ChapterDetail | null>(null)
   const [snapshots, setSnapshots] = useState<SnapshotItem[]>([])
   const [creating, setCreating] = useState(false)
@@ -274,12 +277,14 @@ function WriterPage({ projectId }: WriterPageProps) {
   }, [refreshKey])
 
   const startCreate = () => {
-    setCreating(true)
-    setSelectedId(null)
-    setDetail(null)
-    setSnapshots([])
-    setDiff(null)
-    form.setFieldsValue({ title: '', outline_node_id: undefined, content: '' })
+    confirmLeave(() => {
+      setCreating(true)
+      setSelectedId(null)
+      setDetail(null)
+      setSnapshots([])
+      setDiff(null)
+      form.setFieldsValue({ title: '', outline_node_id: undefined, content: '' })
+    })
   }
 
   const saveChapter = async (values: ChapterFormValues) => {
@@ -298,6 +303,7 @@ function WriterPage({ projectId }: WriterPageProps) {
         message.success('章节已保存并创建快照')
         fetchSnapshots(selectedId)
       }
+      markSaved()
       fetchChapters()
     } catch (err: any) {
       message.error(err.message || '保存章节失败')
@@ -373,7 +379,7 @@ function WriterPage({ projectId }: WriterPageProps) {
             renderItem={(chapter) => (
               <List.Item
                 className={`writer-chapter-item${chapter.id === selectedId ? ' writer-chapter-item-active' : ''}`}
-                onClick={() => setSelectedId(chapter.id)}
+                onClick={() => confirmLeave(() => setSelectedId(chapter.id))}
               >
                 <List.Item.Meta
                   title={<Text strong ellipsis={{ tooltip: chapter.title }} style={{ maxWidth: '100%' }}>{chapter.title}</Text>}
@@ -405,11 +411,16 @@ function WriterPage({ projectId }: WriterPageProps) {
             <Space>
               {selectedId && !creating && (
                 <>
-                  <Popconfirm title="删除章节" description="版本历史和出场记录也会一并删除。" okText="删除" cancelText="取消"
-                    okButtonProps={{ danger: true, autoInsertSpace: false }} cancelButtonProps={{ autoInsertSpace: false }}
-                    onConfirm={deleteChapter}>
-                    <Button danger icon={<DeleteOutlined />}>删除</Button>
-                  </Popconfirm>
+                  <Button danger icon={<DeleteOutlined />} onClick={() => {
+                    Modal.confirm({
+                      title: '确认删除章节',
+                      content: '版本历史和出场记录也会一并删除，此操作不可恢复。',
+                      okText: '删除',
+                      cancelText: '取消',
+                      okButtonProps: { danger: true },
+                      onOk: deleteChapter,
+                    })
+                  }}>删除</Button>
                 </>
               )}
               <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => form.submit()}>保存</Button>
@@ -419,7 +430,7 @@ function WriterPage({ projectId }: WriterPageProps) {
           {!creating && !detail && chapters.length === 0 ? (
             <Alert type="info" showIcon message="先创建一个章节，正文和版本历史会从这里开始。" />
           ) : (
-            <Form form={form} layout="vertical" onFinish={saveChapter}>
+            <Form form={form} layout="vertical" onFinish={saveChapter} onValuesChange={markDirty}>
               <div className="writer-form-grid">
                 <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入章节标题' }]}>
                   <Input placeholder="例如：第一章 风祭前夜" maxLength={200} />

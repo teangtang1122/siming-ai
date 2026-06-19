@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert, Button, Descriptions, Divider, Empty, Form, Input, List, Modal,
-  Popconfirm, Select, Space, Tag, Timeline, Typography, message,
+  Select, Space, Tag, Timeline, Typography, message,
 } from 'antd'
 import {
   DeleteOutlined, HistoryOutlined, PlusOutlined,
@@ -10,6 +10,7 @@ import {
 import { apiClient } from '../api/client'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './CharactersPage.css'
 
 const { Text, Title } = Typography
@@ -127,6 +128,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [mergeApplying, setMergeApplying] = useState(false)
   const { setAiContext, refreshKey } = useAiPanelContext()
   const { modelOptions, loading: modelsLoading } = useModelOptions()
+  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
 
   const fetchCharacters = useCallback(async (q?: string) => {
     setLoading(true)
@@ -216,9 +218,11 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   }, [network.edges, selectedId])
 
   const startCreate = () => {
-    setSelectedId(null); setSelectedDetail(null); setVersions([]); setAiConfig(null)
-    form.resetFields(); aiConfigForm.resetFields()
-    form.setFieldsValue({ abilities: [], is_evolution_tracked: true, role_type: 'supporting' })
+    confirmLeave(() => {
+      setSelectedId(null); setSelectedDetail(null); setVersions([]); setAiConfig(null)
+      form.resetFields(); aiConfigForm.resetFields()
+      form.setFieldsValue({ abilities: [], is_evolution_tracked: true, role_type: 'supporting' })
+    })
   }
 
   const saveCharacter = async (values: CharacterFormValues) => {
@@ -237,6 +241,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         const res = await apiClient.post<ApiResponse<Character>>(`/projects/${projectId}/characters`, payload)
         setSelectedId(res.data.data.id); message.success('角色已创建')
       }
+      markSaved()
       fetchCharacters(keyword); fetchNetwork()
     } catch (err: any) { message.error(err.message || '保存角色失败') }
     finally { setSaving(false) }
@@ -409,7 +414,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
               locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无角色" /> }}
               renderItem={(item) => (
                 <List.Item className={`characters-list-item${item.id === selectedId ? ' characters-list-item-active' : ''}`}
-                  onClick={() => setSelectedId(item.id)}>
+                  onClick={() => confirmLeave(() => setSelectedId(item.id))}>
                   <List.Item.Meta title={<span className="characters-name-text" title={item.name}>{item.name}</span>}
                     description={<Space size={6} wrap>
                       <Tag>{item.role_type || '未分类'}</Tag>
@@ -434,16 +439,22 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             </div>
             <Space>
               {selectedId && (
-                <Popconfirm title="删除角色" description="该角色的关系、版本和出场记录也会被删除。" okText="删除" cancelText="取消"
-                  okButtonProps={{ danger: true, autoInsertSpace: false }} cancelButtonProps={{ autoInsertSpace: false }} onConfirm={deleteCharacter}>
-                  <Button danger icon={<DeleteOutlined />}>删除</Button>
-                </Popconfirm>
+                <Button danger icon={<DeleteOutlined />} onClick={() => {
+                  Modal.confirm({
+                    title: '确认删除角色',
+                    content: '该角色的关系、版本和出场记录也会被删除，此操作不可恢复。',
+                    okText: '删除',
+                    cancelText: '取消',
+                    okButtonProps: { danger: true },
+                    onOk: deleteCharacter,
+                  })
+                }}>删除</Button>
               )}
               <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => form.submit()}>保存角色</Button>
             </Space>
           </div>
 
-          <Form form={form} layout="vertical" onFinish={saveCharacter}>
+          <Form form={form} layout="vertical" onFinish={saveCharacter} onValuesChange={markDirty}>
             <div className="characters-two-col">
               <Form.Item name="name" label="姓名" rules={[{ required: true, message: '请输入角色姓名' }]}>
                 <Input placeholder="角色姓名" maxLength={100} />

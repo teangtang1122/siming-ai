@@ -343,6 +343,53 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertTrue(all("克苏鲁+规则怪谈" not in title for title in titles))
         self.assertTrue(any("旧神" in title or "规则" in title or "怪谈" in title for title in titles))
         self.assertTrue(all(bp["requirement_coverage"]["score"] >= 90 for bp in blueprints))
+        self.assertEqual(len({bp["subtitle"] for bp in blueprints}), 3)
+        self.assertEqual(len({bp["core_conflict"] for bp in blueprints}), 3)
+        self.assertEqual(len({bp["protagonist"]["goal"] for bp in blueprints}), 3)
+        self.assertEqual(len({bp["golden_three"]["chapter_1"] for bp in blueprints}), 3)
+
+    def test_template_regenerate_rotates_to_new_story_engines(self):
+        from app.services.workspace.tools.novel_creation import draft_novel_blueprint
+
+        session = MagicMock()
+        session.id = "s1"
+        session.user_brief = "克苏鲁+规则怪谈，至少1000章"
+        session.genre = "other"
+        session.target_audience = "all"
+        session.platform = "qidian"
+        session.blueprint_json = []
+
+        def query_side_effect(model):
+            q = MagicMock()
+            q.filter.return_value = q
+            model_name = model.__name__ if hasattr(model, "__name__") else str(model)
+            if "NovelCreationSession" in model_name:
+                q.first.return_value = session
+            else:
+                q.first.return_value = None
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = query_side_effect
+
+        initial = asyncio.run(draft_novel_blueprint(db, "p1", {
+            "session_id": "s1",
+            "execution_mode": "template",
+        }))["data"]["blueprints"]
+        session.blueprint_json = initial
+        regenerated = asyncio.run(draft_novel_blueprint(db, "p1", {
+            "session_id": "s1",
+            "execution_mode": "template",
+            "feedback": "全部重新生成",
+            "revision_mode": "regenerate",
+        }))["data"]["blueprints"]
+
+        self.assertTrue(set(bp["title"] for bp in initial).isdisjoint(bp["title"] for bp in regenerated))
+        self.assertTrue(set(bp["subtitle"] for bp in initial).isdisjoint(bp["subtitle"] for bp in regenerated))
+        self.assertNotEqual(
+            [bp["protagonist"]["name"] for bp in initial],
+            [bp["protagonist"]["name"] for bp in regenerated],
+        )
 
     def test_template_feedback_separately_designs_protagonists_without_false_avoid(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint

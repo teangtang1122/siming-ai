@@ -48,8 +48,16 @@
   gap: 12px;
   border-bottom: 1px solid var(--ant-color-border-secondary);
   flex-shrink: 0;
+  min-width: 0;
   padding: 10px 14px;
   background: linear-gradient(180deg, rgba(0,0,0,0.01) 0%, transparent 100%);
+}
+
+.ai-side-head .ant-typography {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* Body */

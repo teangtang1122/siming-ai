@@ -261,8 +261,11 @@ function ProjectWorkspace() {
                 作品管理
               </Button>
               <span style={{ fontSize: 10, color: 'var(--ant-color-text-quaternary)', margin: '0 2px' }}>›</span>
-              <span
+              <Button
+                type="link"
+                onClick={() => setActiveKey('writer')}
                 style={{
+                  padding: 0,
                   fontWeight: 600,
                   fontSize: 13,
                   overflow: 'hidden',
@@ -270,10 +273,11 @@ function ProjectWorkspace() {
                   whiteSpace: 'nowrap',
                   fontFamily: "'Noto Serif SC', 'LXGW WenKai', serif",
                   letterSpacing: '0.01em',
+                  maxWidth: 200,
                 }}
               >
                 {projectTitle || '未命名作品'}
-              </span>
+              </Button>
               <span style={{ fontSize: 10, color: 'var(--ant-color-text-quaternary)', margin: '0 2px' }}>›</span>
               <span style={{ color: 'var(--ant-color-text-secondary)', fontSize: 13 }}>{PAGE_TITLES[activeKey]}</span>
             </div>

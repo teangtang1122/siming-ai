@@ -44,13 +44,14 @@ export function Composer({
           autoSize={{ minRows: 2, maxRows: 5 }}
           disabled={generating}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
               onSend()
             }
           }}
         />
         <div className="workspace-assistant-actions">
-          <Text type="secondary" style={{ fontSize: 11 }}>Ctrl+Enter 发送</Text>
+          <Text type="secondary" style={{ fontSize: 11 }}>Enter 发送，Shift+Enter 换行</Text>
           {generating ? (
             <Button danger icon={<StopOutlined />} onClick={onStop}>
               停止

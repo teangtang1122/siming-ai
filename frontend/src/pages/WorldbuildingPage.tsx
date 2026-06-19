@@ -30,6 +30,7 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
+import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './WorldbuildingPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -96,6 +97,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   const [draft, setDraft] = useState<DraftEntry>({ title: '', content: '', sort_order: 0 })
 
   const { refreshKey } = useAiPanelContext()
+  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
 
   const [contentModal, setContentModal] = useState<WorldbuildingEntry | null>(null)
 
@@ -127,20 +129,29 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   const currentEntries = entriesByDimension[activeDimension] || []
 
   const startCreate = () => {
-    const nextSortOrder = currentEntries.length
-    setCreating(true)
-    setEditingId(NEW_ROW_ID)
-    setDraft({ title: '', content: '', sort_order: nextSortOrder })
+    confirmLeave(() => {
+      const nextSortOrder = currentEntries.length
+      setCreating(true)
+      setEditingId(NEW_ROW_ID)
+      setDraft({ title: '', content: '', sort_order: nextSortOrder })
+    })
   }
 
   const startEdit = (entry: WorldbuildingEntry) => {
-    setCreating(false)
-    setEditingId(entry.id)
-    setDraft({
-      title: entry.title,
-      content: entry.content,
-      sort_order: entry.sort_order,
+    confirmLeave(() => {
+      setCreating(false)
+      setEditingId(entry.id)
+      setDraft({
+        title: entry.title,
+        content: entry.content,
+        sort_order: entry.sort_order,
+      })
     })
+  }
+
+  const updateDraft = (patch: Partial<DraftEntry>) => {
+    setDraft((prev) => ({ ...prev, ...patch }))
+    markDirty()
   }
 
   const cancelEdit = () => {
@@ -176,6 +187,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
         message.success('世界观条目已保存')
       }
 
+      markSaved()
       cancelEdit()
       fetchEntries()
     } catch (err: any) {
@@ -222,7 +234,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
           return (
             <Input
               value={draft.title}
-              onChange={(event) => setDraft((prev) => ({ ...prev, title: event.target.value }))}
+              onChange={(event) => updateDraft({ title: event.target.value })}
               placeholder="例如：北境雪原"
               maxLength={200}
             />
@@ -240,7 +252,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
           return (
             <Input.TextArea
               value={draft.content}
-              onChange={(event) => setDraft((prev) => ({ ...prev, content: event.target.value }))}
+              onChange={(event) => updateDraft({ content: event.target.value })}
               placeholder="写下这条设定的规则、历史、限制与剧情钩子"
               autoSize={{ minRows: 3, maxRows: 8 }}
               showCount
@@ -266,7 +278,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
             <InputNumber
               min={0}
               value={draft.sort_order}
-              onChange={(value) => setDraft((prev) => ({ ...prev, sort_order: Number(value || 0) }))}
+              onChange={(value) => updateDraft({ sort_order: Number(value || 0) })}
               style={{ width: 72 }}
             />
           )

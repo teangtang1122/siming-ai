@@ -15,9 +15,22 @@
   display: flex;
   gap: 8px;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .workspace-assistant-head {
+  flex-shrink: 0;
+}
+
+.workspace-assistant-head > .ant-typography {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.workspace-assistant-head > .ant-space {
   flex-shrink: 0;
 }
 

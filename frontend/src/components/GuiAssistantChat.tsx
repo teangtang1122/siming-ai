@@ -7,8 +7,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Alert,
   Button,
   Card,
+  Collapse,
   Empty,
   Input,
   InputNumber,
@@ -57,6 +59,9 @@ interface Conversation {
   project_id?: string
   title: string
   scope?: string
+  creation_session_id?: string
+  user_brief?: string
+  blueprints?: NovelBlueprint[]
   message_count?: number
   created_at?: string
   updated_at?: string
@@ -82,16 +87,37 @@ interface ChatMessage {
 
 interface NovelBlueprint {
   title: string
+  subtitle?: string
   logline?: string
+  premise?: string
   genre?: string
+  creation_engine?: string
   estimated_chapters?: number
-  protagonist?: { name?: string }
+  protagonist?: {
+    name?: string
+    goal?: string
+    conflict?: string
+    personality?: string
+    background?: string
+  }
   characters?: unknown[]
   relationships?: unknown[]
   worldbuilding?: unknown[]
-  volume_outline?: unknown[]
+  volume_outline?: Array<{ title?: string; summary?: string; start_chapter?: number; end_chapter?: number }>
   outline?: unknown[]
-  requirement_coverage?: { score?: number }
+  selling_points?: string[]
+  world_hook?: string
+  core_conflict?: string
+  golden_three?: {
+    opening_scene?: string
+    chapter_1?: string
+    chapter_2?: string
+    chapter_3?: string
+    promise?: string
+  }
+  creative_slots?: Record<string, unknown>
+  requirement_coverage?: { score?: number; covered?: string[]; missing?: string[]; warnings?: string[] }
+  quality_self_check?: { score?: number; pass?: boolean; issues?: string[]; suggestions?: string[] }
 }
 
 interface NovelStartData {
@@ -148,9 +174,12 @@ function formatBlueprintSummary(blueprints: NovelBlueprint[]) {
     ].filter(Boolean).join(' / ')
     return [
       `${index + 1}. 《${bp.title}》`,
+      bp.subtitle ? `方向：${bp.subtitle}` : '',
       `主角：${protagonist}`,
       metrics ? `规模：${metrics}` : '',
       bp.logline ? `一句话：${bp.logline}` : '',
+      bp.protagonist?.goal ? `主角目标：${bp.protagonist.goal}` : '',
+      bp.golden_three?.chapter_1 ? `首章钩子：${bp.golden_three.chapter_1}` : '',
     ].filter(Boolean).join('\n')
   }).join('\n\n')
 }
@@ -172,6 +201,7 @@ function GuiAssistantChat() {
   const [maxTokens, setMaxTokens] = useState<number | null>(null)
   const [autoApply, setAutoApply] = useState(true)
   const [systemSessionId, setSystemSessionId] = useState<string>()
+  const [systemConversationId, setSystemConversationId] = useState<string>()
   const [systemBrief, setSystemBrief] = useState('')
   const [systemBlueprints, setSystemBlueprints] = useState<NovelBlueprint[]>([])
   const [applyingBlueprintIndex, setApplyingBlueprintIndex] = useState<number | null>(null)
@@ -208,10 +238,12 @@ function GuiAssistantChat() {
       setProjects(items)
 
       const savedProjectId = localStorage.getItem(PROJECT_STORAGE_KEY) || undefined
-      const nextProject = items.find((item) => item.id === savedProjectId) || items[0]
+      const nextProject = items.find((item) => item.id === savedProjectId)
       if (nextProject) {
         setActiveProjectId((current) => current || nextProject.id)
         localStorage.setItem(PROJECT_STORAGE_KEY, nextProject.id)
+      } else if (savedProjectId) {
+        localStorage.removeItem(PROJECT_STORAGE_KEY)
       }
     } catch (err: any) {
       message.error(err.message || '加载作品失败')
@@ -221,16 +253,16 @@ function GuiAssistantChat() {
   }, [])
 
   const fetchConversations = useCallback(async (projectId = activeProjectId) => {
-    if (!projectId) {
-      setConversations([])
-      return []
-    }
     setConversationsLoading(true)
     try {
-      const res = await apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
-        `/projects/${projectId}/ai/assistant/conversations`,
-        { scope: 'project' },
-      )
+      const res = projectId
+        ? await apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
+            `/projects/${projectId}/ai/assistant/conversations`,
+            { scope: 'project' },
+          )
+        : await apiClient.get<ApiResponse<{ items: Conversation[]; total: number }>>(
+            '/ai/system-assistant/conversations',
+          )
       const items = res.data?.data?.items || []
       setConversations(items)
       return items
@@ -243,12 +275,15 @@ function GuiAssistantChat() {
   }, [activeProjectId])
 
   const fetchMessages = useCallback(async (convId: string) => {
-    if (!activeProjectId) return
     setLoading(true)
     try {
-      const res = await apiClient.get<ApiResponse<{ conversation: Conversation; messages: PersistedMessage[] }>>(
-        `/projects/${activeProjectId}/ai/assistant/conversations/${convId}`,
-      )
+      const res = activeProjectId
+        ? await apiClient.get<ApiResponse<{ conversation: Conversation; messages: PersistedMessage[] }>>(
+            `/projects/${activeProjectId}/ai/assistant/conversations/${convId}`,
+          )
+        : await apiClient.get<ApiResponse<{ conversation: Conversation; messages: PersistedMessage[] }>>(
+            `/ai/system-assistant/conversations/${convId}`,
+          )
       const loadedMessages = (res.data?.data?.messages || []).map((item) => ({
         id: item.id,
         role: item.role,
@@ -258,6 +293,13 @@ function GuiAssistantChat() {
       }))
       setMessages(loadedMessages)
       setActiveConvId(res.data.data.conversation.id)
+      if (!activeProjectId) {
+        const conversation = res.data.data.conversation
+        setSystemConversationId(conversation.id)
+        setSystemSessionId(conversation.creation_session_id)
+        setSystemBrief(conversation.user_brief || '')
+        setSystemBlueprints(conversation.blueprints || [])
+      }
     } catch (err: any) {
       message.error(err.message || '加载对话失败')
     } finally {
@@ -272,9 +314,11 @@ function GuiAssistantChat() {
   useEffect(() => {
     if (!activeProjectId) {
       setActiveConvId(null)
-      setConversations([])
       setMessages([])
       localStorage.removeItem(PROJECT_STORAGE_KEY)
+      fetchConversations(undefined).then((items) => {
+        if (items[0]) fetchMessages(items[0].id)
+      })
       return
     }
     localStorage.setItem(PROJECT_STORAGE_KEY, activeProjectId)
@@ -292,14 +336,18 @@ function GuiAssistantChat() {
     setMessages([])
     setInputValue('')
     setSystemSessionId(undefined)
+    setSystemConversationId(undefined)
     setSystemBrief('')
     setSystemBlueprints([])
   }
 
   const deleteConversation = async (convId: string) => {
-    if (!activeProjectId) return
     try {
-      await apiClient.delete(`/projects/${activeProjectId}/ai/assistant/conversations/${convId}`)
+      if (activeProjectId) {
+        await apiClient.delete(`/projects/${activeProjectId}/ai/assistant/conversations/${convId}`)
+      } else {
+        await apiClient.delete(`/ai/system-assistant/conversations/${convId}`)
+      }
       setConversations((prev) => prev.filter((item) => item.id !== convId))
       if (activeConvId === convId) startNewConversation()
       message.success('对话已删除')
@@ -384,7 +432,58 @@ function GuiAssistantChat() {
     })
   }
 
+  const persistSystemTurn = async (
+    userContent: string,
+    assistantContent: string,
+    status: ChatMessage['status'],
+    state: {
+      creationSessionId?: string
+      userBrief?: string
+      blueprints?: NovelBlueprint[]
+    },
+  ) => {
+    try {
+      let conversationId = systemConversationId
+      if (!conversationId) {
+        const createRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
+          '/ai/system-assistant/conversations',
+          { title: userContent.slice(0, 36) },
+        )
+        conversationId = createRes.data.data.conversation.id
+        setSystemConversationId(conversationId)
+      }
+      const turnRes = await apiClient.post<ApiResponse<{ conversation: Conversation }>>(
+        `/ai/system-assistant/conversations/${conversationId}/turns`,
+        {
+          user_content: userContent,
+          assistant_content: assistantContent,
+          status: status || 'completed',
+          creation_session_id: state.creationSessionId || null,
+          user_brief: state.userBrief || '',
+          blueprints: state.blueprints || [],
+        },
+      )
+      if (!activeProjectId) {
+        setActiveConvId(conversationId)
+        upsertConversation(turnRes.data.data.conversation)
+      }
+    } catch {
+      message.warning('本轮回复已完成，但系统对话历史保存失败')
+    }
+  }
+
   const handleSystemAssistantMessage = async (text: string) => {
+    let finalReply = ''
+    let finalStatus: ChatMessage['status'] = 'completed'
+    let persistedSessionId = systemSessionId
+    let persistedBrief = systemBrief
+    let persistedBlueprints = systemBlueprints
+    const finish = (content: string, status: ChatMessage['status'] = 'completed') => {
+      finalReply = content
+      finalStatus = status
+      setLastAssistantMessage(content, status)
+    }
+
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: text, status: 'completed', created_at: new Date().toISOString() },
@@ -418,7 +517,10 @@ function GuiAssistantChat() {
         setSystemBlueprints([])
         setSystemSessionId(undefined)
         setSystemBrief('')
-        setLastAssistantMessage(
+        persistedBlueprints = []
+        persistedSessionId = undefined
+        persistedBrief = ''
+        finish(
           `已创建新作品《${blueprint.title}》。我已经切换到这个作品上下文，接下来可以继续让我细化大纲、角色、世界观，或直接开始写第一章。`,
         )
         return
@@ -436,6 +538,8 @@ function GuiAssistantChat() {
         const sessionId = startRes.data.data.session_id
         setSystemSessionId(sessionId)
         setSystemBrief(text)
+        persistedSessionId = sessionId
+        persistedBrief = text
         const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
           session_id: sessionId,
           execution_mode: 'template',
@@ -444,7 +548,8 @@ function GuiAssistantChat() {
         })
         const blueprints = draftRes.data.data.blueprints || []
         setSystemBlueprints(blueprints)
-        setLastAssistantMessage(
+        persistedBlueprints = blueprints
+        finish(
           [
             `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复“使用第1个创建”。`,
             '',
@@ -472,7 +577,8 @@ function GuiAssistantChat() {
         })
         const blueprints = draftRes.data.data.blueprints || []
         setSystemBlueprints(blueprints)
-        setLastAssistantMessage(
+        persistedBlueprints = blueprints
+        finish(
           [
             revisionMode === 'regenerate' ? '已重新生成 3 个方案。' : '已在当前方案基础上调整完成。',
             '你可以继续修改，或回复“使用第1个创建”。',
@@ -488,15 +594,15 @@ function GuiAssistantChat() {
         const items = res.data?.data?.items || []
         setProjects(items)
         if (!items.length) {
-          setLastAssistantMessage('当前还没有作品。你可以直接说“我想写克苏鲁+修仙+规则怪谈”，我会先生成三套新书方案。')
+          finish('当前还没有作品。你可以直接说“我想写克苏鲁+修仙+规则怪谈”，我会先生成三套新书方案。')
           return
         }
         const projectList = items.map((project, index) => `${index + 1}. ${project.title}`).join('\n')
-        setLastAssistantMessage(`当前共有 ${items.length} 个作品：\n${projectList}\n\n你可以在助手设置里切换作品，也可以直接让我创建新作品。`)
+        finish(`当前共有 ${items.length} 个作品：\n${projectList}\n\n你可以在助手设置里切换作品，也可以直接让我创建新作品。`)
         return
       }
 
-      setLastAssistantMessage(
+      finish(
         [
           '我现在可以作为系统助手工作，不需要先进入某个作品。',
           '你可以直接说：',
@@ -508,9 +614,16 @@ function GuiAssistantChat() {
         ].join('\n'),
       )
     } catch (err: any) {
-      setLastAssistantMessage(err.message || '处理失败', 'error')
+      finish(err.message || '处理失败', 'error')
       message.error(err.message || '处理失败')
     } finally {
+      if (finalReply) {
+        await persistSystemTurn(text, finalReply, finalStatus, {
+          creationSessionId: persistedSessionId,
+          userBrief: persistedBrief,
+          blueprints: persistedBlueprints,
+        })
+      }
       setStreaming(false)
       setApplyingBlueprintIndex(null)
     }
@@ -652,13 +765,85 @@ function GuiAssistantChat() {
               >
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
                   <Space size={6} wrap>
+                    {bp.subtitle && <Tag color="purple">{bp.subtitle}</Tag>}
                     {bp.genre && <Tag>{bp.genre}</Tag>}
                     {bp.estimated_chapters && <Tag>{bp.estimated_chapters}章</Tag>}
-                    <Tag>{bp.characters?.length || 0} 角色</Tag>
+                    <Tag>{(bp.characters?.length || 0) + 1} 角色</Tag>
+                    <Tag>{bp.relationships?.length || 0} 关系</Tag>
                     <Tag>{bp.worldbuilding?.length || 0} 设定</Tag>
+                    <Tag>{bp.volume_outline?.length || 0} 卷</Tag>
+                    <Tag>{bp.outline?.length || 0} 节点</Tag>
                   </Space>
                   <Text type="secondary">主角：{bp.protagonist?.name || '待定主角'}</Text>
                   {bp.logline && <Paragraph className="gui-chat-blueprint-logline">{bp.logline}</Paragraph>}
+                  {bp.premise && <Paragraph className="gui-chat-blueprint-premise">{bp.premise}</Paragraph>}
+                  <Collapse
+                    ghost
+                    size="small"
+                    items={[
+                      {
+                        key: 'details',
+                        label: '查看完整方案',
+                        children: (
+                          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                            {bp.selling_points?.length ? (
+                              <div>
+                                <Text strong>核心卖点</Text>
+                                <ul className="gui-chat-blueprint-list">
+                                  {bp.selling_points.slice(0, 4).map((point, pointIndex) => (
+                                    <li key={`${bp.title}-selling-${pointIndex}`}>{point}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ) : null}
+                            {bp.world_hook && <Text>世界钩子：{bp.world_hook}</Text>}
+                            {bp.core_conflict && <Text>核心冲突：{bp.core_conflict}</Text>}
+                            {bp.protagonist?.goal && <Text>主角目标：{bp.protagonist.goal}</Text>}
+                            {bp.protagonist?.background && <Text type="secondary">主角背景：{bp.protagonist.background}</Text>}
+                            {bp.golden_three && (
+                              <div>
+                                <Text strong>黄金三章</Text>
+                                <Space direction="vertical" size={4} className="gui-chat-blueprint-details">
+                                  {bp.golden_three.chapter_1 && <Text type="secondary">1：{bp.golden_three.chapter_1}</Text>}
+                                  {bp.golden_three.chapter_2 && <Text type="secondary">2：{bp.golden_three.chapter_2}</Text>}
+                                  {bp.golden_three.chapter_3 && <Text type="secondary">3：{bp.golden_three.chapter_3}</Text>}
+                                </Space>
+                              </div>
+                            )}
+                            {bp.volume_outline?.length ? (
+                              <div>
+                                <Text strong>卷纲概览</Text>
+                                <Space direction="vertical" size={4} className="gui-chat-blueprint-details">
+                                  {bp.volume_outline.slice(0, 4).map((volume, volumeIndex) => (
+                                    <Text type="secondary" key={`${bp.title}-volume-${volumeIndex}`}>
+                                      {volume.title || `第${volumeIndex + 1}卷`}
+                                      {volume.summary ? `：${volume.summary}` : ''}
+                                    </Text>
+                                  ))}
+                                </Space>
+                              </div>
+                            ) : null}
+                            {bp.requirement_coverage?.missing?.length ? (
+                              <Alert
+                                type="warning"
+                                showIcon
+                                message="仍需补充"
+                                description={bp.requirement_coverage.missing.slice(0, 3).join('；')}
+                              />
+                            ) : null}
+                            {bp.quality_self_check?.issues?.length ? (
+                              <Alert
+                                type={bp.quality_self_check.pass ? 'info' : 'warning'}
+                                showIcon
+                                message={`质量自检 ${bp.quality_self_check.score ?? 0} 分`}
+                                description={bp.quality_self_check.issues.slice(0, 2).join('；')}
+                              />
+                            ) : null}
+                          </Space>
+                        ),
+                      },
+                    ]}
+                  />
                   <Button
                     type="primary"
                     block
@@ -837,16 +1022,16 @@ function GuiAssistantChat() {
 
       <main className="gui-chat-main">
         <div className="gui-chat-header">
-          <div>
-            <Space size={8} align="center">
-              <Title level={5} style={{ margin: 0 }}>
-                {activeConvId ? conversations.find((c) => c.id === activeConvId)?.title || 'AI 助手' : 'AI 助手'}
-              </Title>
-              <Tag color={activeProject ? 'blue' : 'purple'}>{assistantContextLabel}</Tag>
-            </Space>
-            <Text type="secondary" className="gui-chat-project-line">
-              <FolderOpenOutlined /> {activeProject ? '作品问题会写回当前作品；新书/创建意图会自动进入系统立项流程' : '未选择作品时仍可创建新小说'}
-            </Text>
+          <div style={{ minWidth: 0 }}>
+            <Title level={5} style={{ margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {activeConvId ? conversations.find((c) => c.id === activeConvId)?.title || 'AI 助手' : 'AI 助手'}
+            </Title>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+              <Tag color={activeProject ? 'blue' : 'purple'} style={{ margin: 0 }}>{assistantContextLabel}</Tag>
+              <Text type="secondary" className="gui-chat-project-line" style={{ marginTop: 0 }}>
+                <FolderOpenOutlined /> {activeProject ? '作品问题会写回当前作品；新书/创建意图会自动进入系统立项流程' : '未选择作品时仍可创建新小说'}
+              </Text>
+            </div>
           </div>
           <Space>
             <Button onClick={() => setInputValue('帮我创建一本新的小说，克苏鲁+规则怪谈，至少要能写1000章的创意')}>
@@ -862,7 +1047,7 @@ function GuiAssistantChat() {
         </div>
 
         <div className="gui-chat-messages">
-          {!activeProjectId && !projectsLoading ? (
+          {!activeProjectId && !projectsLoading && messages.length === 0 ? (
             <div className="gui-chat-welcome">
               <div className="gui-chat-welcome-icon" aria-hidden="true">
                 <RobotOutlined />
@@ -871,7 +1056,7 @@ function GuiAssistantChat() {
                 墨枢系统助手
               </Title>
               <Paragraph type="secondary" style={{ fontSize: 15, maxWidth: 460, textAlign: 'center' }}>
-                不需要先创建作品。你可以直接说“我想写1000章，克苏鲁+修仙+规则怪谈”，我会生成新书方案，并在你确认后创建作品。
+                不需要先创建作品。你可以直接说"我想写1000章，克苏鲁+修仙+规则怪谈"，我会生成新书方案，并在你确认后创建作品。
               </Paragraph>
               <Space wrap className="gui-chat-welcome-actions">
                 <Button type="primary" icon={<PlusOutlined />} size="large" onClick={() => setInputValue('我想写1000章，克苏鲁+修仙+规则怪谈')}>
@@ -882,7 +1067,7 @@ function GuiAssistantChat() {
                 </Button>
               </Space>
             </div>
-          ) : !activeConvId && messages.length === 0 ? (
+          ) : activeProjectId && !activeConvId && messages.length === 0 ? (
             <div className="gui-chat-welcome">
               <div className="gui-chat-welcome-icon" aria-hidden="true">
                 <RobotOutlined />

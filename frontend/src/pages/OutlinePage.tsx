@@ -27,6 +27,7 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
+import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './OutlinePage.css'
 
 const { Text, Title } = Typography
@@ -131,6 +132,32 @@ function collectDescendantIds(node?: OutlineNode | null): Set<string> {
   return ids
 }
 
+/** Build a tree from a flat list of outline nodes. */
+function buildTree(flat: OutlineNode[]): OutlineNode[] {
+  const map = new Map<string, OutlineNode>()
+  const roots: OutlineNode[] = []
+  // First pass: clone nodes with empty children
+  flat.forEach((node) => {
+    map.set(node.id, { ...node, children: [] })
+  })
+  // Second pass: attach children to parents
+  flat.forEach((node) => {
+    const clone = map.get(node.id)!
+    if (node.parent_id && map.has(node.parent_id)) {
+      map.get(node.parent_id)!.children.push(clone)
+    } else {
+      roots.push(clone)
+    }
+  })
+  // Sort children by sort_order
+  const sortChildren = (nodes: OutlineNode[]) => {
+    nodes.sort((a, b) => a.sort_order - b.sort_order)
+    nodes.forEach((n) => sortChildren(n.children))
+  }
+  sortChildren(roots)
+  return roots
+}
+
 function nextChildType(parent?: OutlineNode | null): NodeType {
   if (!parent) return 'volume'
   if (parent.node_type === 'volume') return 'chapter'
@@ -148,6 +175,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const { setAiContext, refreshKey } = useAiPanelContext()
+  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
 
   const selectedNode = useMemo(
     () => flat.find((node) => node.id === selectedId) || null,
@@ -263,18 +291,20 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   }, [tree])
 
   const startCreate = (parent?: OutlineNode | null) => {
-    setCreating(true)
-    setSelectedId(null)
-    const parentId = parent?.id || null
-    const siblingCount = flat.filter((node) => (node.parent_id || null) === parentId).length
-    form.setFieldsValue({
-      parent_id: parentId || undefined,
-      node_type: nextChildType(parent),
-      title: '',
-      summary: '',
-      status: 'pending',
-      sort_order: siblingCount,
-      character_ids: [],
+    confirmLeave(() => {
+      setCreating(true)
+      setSelectedId(null)
+      const parentId = parent?.id || null
+      const siblingCount = flat.filter((node) => (node.parent_id || null) === parentId).length
+      form.setFieldsValue({
+        parent_id: parentId || undefined,
+        node_type: nextChildType(parent),
+        title: '',
+        summary: '',
+        status: 'pending',
+        sort_order: siblingCount,
+        character_ids: [],
+      })
     })
   }
 
@@ -309,6 +339,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         setSelectedId(res.data.data.id)
         message.success('大纲节点已保存')
       }
+      markSaved()
       fetchOutline()
     } catch (err: any) {
       message.error(err.message || '保存大纲失败')
@@ -338,6 +369,10 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     const draggedNode = flat.find((node) => node.id === draggedId)
     const targetNode = flat.find((node) => node.id === targetId)
     if (!draggedNode || !targetNode) return
+
+    // Save previous state for rollback
+    const prevTree = tree
+    const prevFlat = flat
 
     try {
       let items: Array<{ id: string; parent_id: string | null; sort_order: number }> = []
@@ -369,10 +404,26 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         }))
       }
 
+      // Optimistic update: apply reorder locally before API call
+      const updatedFlat = flat.map((node) => {
+        const match = items.find((item) => item.id === node.id)
+        if (match) {
+          return { ...node, parent_id: match.parent_id, sort_order: match.sort_order }
+        }
+        return node
+      })
+      setFlat(updatedFlat)
+      // Rebuild tree from updated flat list
+      setTree(buildTree(updatedFlat))
+
       await apiClient.put(`/projects/${projectId}/outline/reorder`, { items })
       message.success('大纲顺序已更新')
+      // Sync with server to get any computed fields
       fetchOutline()
     } catch (err: any) {
+      // Rollback on failure
+      setTree(prevTree)
+      setFlat(prevFlat)
       message.error(err.message || '调整大纲顺序失败')
     }
   }
@@ -416,8 +467,10 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               expandedKeys={expandedKeys}
               onExpand={(keys) => setExpandedKeys(keys.map(String))}
               onSelect={(keys) => {
-                setCreating(false)
-                setSelectedId(keys.length > 0 ? String(keys[0]) : null)
+                confirmLeave(() => {
+                  setCreating(false)
+                  setSelectedId(keys.length > 0 ? String(keys[0]) : null)
+                })
               }}
               onDrop={handleDrop}
             />
@@ -462,7 +515,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
           {!creating && !selectedNode && tree.length === 0 ? (
             <Alert type="info" showIcon message="先创建一个大纲节点" />
           ) : (
-            <Form form={form} layout="vertical" onFinish={saveOutlineNode}>
+            <Form form={form} layout="vertical" onFinish={saveOutlineNode} onValuesChange={markDirty}>
               <div className="outline-grid">
                 <Form.Item name="parent_id" label="父级节点">
                   <Select

@@ -241,6 +241,20 @@ def _extract_title(user_brief: str, genre_label: str) -> str:
     return f"未命名{genre_label}小说"
 
 
+def _extract_explicit_title(user_brief: str) -> str:
+    text = _clean_text(user_brief)
+    for pattern in (
+        r"[《「『“\"]([^《》「」『』“”\"]{2,40})[》」』”\"]",
+        r"(?:书名|标题|作品名|命名为|叫做)[:：]?\s*([^\n，。,.]{2,40})",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            candidate = match.group(1).strip()
+            if not _looks_like_requirement_title(candidate):
+                return candidate
+    return ""
+
+
 def _is_generic_title(title: str, genre_label: str) -> bool:
     text = _clean_text(title)
     generic_titles = {
@@ -272,7 +286,7 @@ def _extract_protagonist_name(user_brief: str) -> str:
 def _suggest_protagonist_names(user_brief: str) -> list[str]:
     text = _clean_text(user_brief)
     if "克苏鲁" in text and "规则怪谈" in text:
-        return ["林雾白", "沈灯", "闻缺"]
+        return ["林雾白", "沈灯", "闻缺", "顾回声", "陆终站", "苏无名"]
     if "克苏鲁" in text or "旧日" in text:
         return ["沈夜灯", "陆观澜", "许听潮"]
     if "规则怪谈" in text or "怪谈" in text:
@@ -451,6 +465,16 @@ def _feedback_tone(feedback: str) -> dict[str, str]:
         "direction": f"按用户反馈调整：{text}",
         "style": "保留原有核心卖点，同时把反馈落实到开篇事件、角色关系和卷内冲突。",
     }
+
+
+def _revision_feedback_content(feedback: str, revision_mode: str) -> str:
+    text = _clean_text(feedback)
+    if revision_mode == "regenerate" and re.fullmatch(
+        r"(?:请)?(?:全部)?(?:重新生成|重来|换一批|不要当前)(?:方案)?[。！! ]*",
+        text,
+    ):
+        return ""
+    return text
 
 
 def _unique_texts(items: list[str], limit: int | None = None) -> list[str]:
@@ -1169,6 +1193,208 @@ async def _try_llm_blueprint_refinement(
     return None
 
 
+def _story_concept_profiles(user_brief: str, generation_cycle: int = 0) -> list[dict[str, Any]]:
+    normalized = _clean_text(user_brief).lower()
+    is_cthulhu_rules = "克苏鲁" in normalized and "规则怪谈" in normalized
+    if is_cthulhu_rules:
+        concept_sets = [
+            [
+                {
+                    "name": "都市规则追逃",
+                    "title": "规则怪谈：别替旧神签收",
+                    "strong_title": "规则怪谈：签收旧神的人会被全城遗忘",
+                    "hook": "城市每天凌晨会发布一条新规则，而被规则点名的人会从所有人的记忆里消失",
+                    "conflict": "主角必须在遵守规则保命与违反规则救回被抹去的妹妹之间做选择",
+                    "goal": "找回被第七码头规则抹去的妹妹，并查清规则公告为何总在她做梦后更新",
+                    "background": "主角是城市异常热线的夜班接线员。三年前妹妹在一场没有记录的停电事故中失踪，只有主角仍记得她存在。",
+                    "personality": "克制、记忆力极强，对官方结论保持怀疑；越害怕失去，越会强迫自己记录证据",
+                    "opening": "凌晨零点，主角接到妹妹用失踪前三年的声音打来的报修电话，要求她绝对不要签收门外的黑色包裹。",
+                    "advantage": "主角能记住被规则删除的细节，但每保留一段禁忌记忆，就会失去一段自己的真实经历。",
+                    "pressure": "规则执行者会根据主角保留的记忆反向定位她，城市管理机构也把她列为污染源。",
+                    "chapter_1": "妹妹的旧号码来电，门外同时出现写着主角姓名的黑色包裹；章末，整栋楼只有她记得隔壁住过人。",
+                    "chapter_2": "主角用热线录音验证“签收即替换身份”的规则，救下一名住户，却发现录音里多出自己的死亡时间。",
+                    "chapter_3": "规则公告公开点名主角为违规者，她必须在天亮前进入第七码头，否则妹妹将被永久改写成旧神的信使。",
+                    "cast": ["失踪妹妹", "异常热线组长", "无脸快递员", "规则档案员", "幸存住户"],
+                    "worldbuilding": [
+                        ("culture", "凌晨规则公告", "每天零点，全城公共屏幕会刷新一条规则。多数人只把它当作灾害通知，真正被点名的人会逐渐从社会记录和他人记忆中消失。"),
+                        ("power_system", "禁忌记忆代价", "能够记住被规则删除的信息是一种稀有能力。记忆者每保留一项真相，都要随机失去一段私人记忆。"),
+                        ("geography", "第七码头", "地图上不存在的旧港区，只在规则要求某人抵达时出现。它是城市与旧神梦境交换人员和记忆的口岸。"),
+                    ],
+                },
+                {
+                    "name": "禁忌档案调查",
+                    "title": "第七码头没有活人",
+                    "strong_title": "档案写着：我将在七天后死去",
+                    "hook": "所有怪谈档案都会提前七天写出下一名死者，而主角在档案里看见了尚未出生的自己",
+                    "conflict": "主角要公开档案真相洗清父亲的邪教罪名，却发现每公开一页都会让其中的灾难成为现实",
+                    "goal": "证明父亲当年封锁档案馆是在阻止灾难，并找到能让预言失效的第零页",
+                    "background": "主角是禁忌档案馆的修复员，父亲被认定为制造二十年前怪谈灾难的邪教徒。她一直靠修复残页寻找翻案证据。",
+                    "personality": "冷静、偏执、尊重证据，不轻易相信人；面对父亲相关线索时会失去平时的克制",
+                    "opening": "主角修复一份二十年前的死亡名单，纸背浮出她明天将在档案馆自杀的完整笔录。",
+                    "advantage": "主角能从纸张纤维与删改痕迹判断规则被改写过几次，但阅读原始版本会让她短暂继承死者的感官。",
+                    "pressure": "档案馆审查官想销毁异常卷宗，旧神信徒则试图逼她公开全部档案，让预言集中兑现。",
+                    "chapter_1": "主角在自己的死亡笔录里发现父亲留下的修复暗号；章末，笔录新增一句“她已经读到这里”。",
+                    "chapter_2": "她按暗号调换两份档案，使一次预言偏离目标，却让无辜同事成为新的替代死者。",
+                    "chapter_3": "审查官封锁档案馆，所有出口变成同一扇门；主角必须找出第零页，决定是否公开父亲留下的真相。",
+                    "cast": ["被定罪的父亲", "档案馆审查官", "替代死者", "盲眼装订师", "旧神信徒"],
+                    "worldbuilding": [
+                        ("history", "二十年前的焚档案", "官方称大火由邪教徒引发，实际是档案馆成员试图阻止预言文本完成自我复制。"),
+                        ("power_system", "预言档案", "档案一旦被完整阅读，记载事件就会获得现实权重；删页只能转移受害者，无法真正取消事件。"),
+                        ("factions", "档案审查局", "负责隔离和销毁危险文本，内部存在主张永久封存、有限利用和主动公开三种派系。"),
+                    ],
+                },
+                {
+                    "name": "诡道修仙宗门",
+                    "title": "宗门戒律由死人书写",
+                    "strong_title": "仙门第十三条：不可回应死去的师姐",
+                    "hook": "修仙宗门的戒律其实是镇压旧神的封印，弟子每突破一个境界，就会替旧神理解一条人类情感",
+                    "conflict": "主角想救回被写进门规的师姐，却必须亲手破坏保护整座修真界的戒律封印",
+                    "goal": "把师姐从第十三条门规中释放出来，并找到无需献祭弟子人格也能维持封印的方法",
+                    "background": "主角是宗门戒律堂抄经弟子，幼年因无法感知灵气被视为废材，只有失踪师姐相信她能看懂戒律中的异常笔迹。",
+                    "personality": "耐心、敏锐、对权威有礼但不盲从；一旦认定某条规则伤害无辜，就会寻找它的漏洞",
+                    "opening": "入门大典上，所有弟子被要求背诵十二条戒律，主角却听见失踪师姐从不存在的第十三条中求救。",
+                    "advantage": "主角看不见灵气，却能看见戒律修改世界时留下的“删改痕”；每次利用漏洞都会被旧神记住一个名字。",
+                    "pressure": "戒律堂认为她是封印松动的征兆，宗门天才则需要利用她找到更安全的突破方式。",
+                    "chapter_1": "主角在入门大典听见第十三条戒律，念出师姐名字后，全场弟子同时忘记师姐；章末，戒律碑上出现主角的名字。",
+                    "chapter_2": "她故意违反一条无害戒律，确认惩罚并非天道，而是某个会学习人类反应的意志。",
+                    "chapter_3": "戒律堂要抹除主角记忆，师姐从碑中交出一段禁忌功法；主角必须选择拜入戒律堂还是当众揭穿封印。",
+                    "cast": ["失踪师姐", "戒律堂首座", "宗门天才", "守碑老人", "被戒律夺走情感的弟子"],
+                    "worldbuilding": [
+                        ("power_system", "戒律境界", "每条宗门戒律对应一道修行关卡。突破者会获得力量，同时被抽走一种情感供封印中的旧神理解。"),
+                        ("history", "第十三条戒律", "官方门规只有十二条，第十三条由历代失踪弟子的名字组成，是维持封印的真正核心。"),
+                        ("factions", "戒律堂与问心峰", "戒律堂维护封印秩序，问心峰主张寻找不牺牲弟子的修行方式，两派长期互相制衡。"),
+                    ],
+                },
+            ],
+            [
+                {
+                    "name": "全民直播怪谈",
+                    "title": "直播间规则正在吃掉观众",
+                    "strong_title": "直播守则：请勿救出画面里的母亲",
+                    "hook": "怪谈通过直播弹幕发布规则，观众越遵守，现实越会被直播间替换",
+                    "conflict": "主角必须借助观众人数救出困在直播里的母亲，却不能让直播获得足够改写城市的关注度",
+                    "goal": "在直播间覆盖现实前找到母亲，并切断观众服从规则产生的旧神信仰",
+                    "background": "主角曾是事故调查主播，因一次错误判断害死搭档后退网。母亲突然出现在一个不存在的直播频道里。",
+                    "personality": "反应快、善于调动群体，却畏惧再次误导别人；越紧张越会把判断过程公开",
+                    "opening": "停播两年的主角收到开播提醒，画面中的母亲站在早已拆除的商场里，弹幕要求观众不要告诉她出口。",
+                    "advantage": "主角能看见规则在观众群体中的传播路径，但每次公开破解方法都会生成一条针对她的新规则。",
+                    "pressure": "平台算法主动推荐怪谈直播，调查机构又要求主角维持热度以定位源头。",
+                    "chapter_1": "主角重启账号进入直播，发现每退出一名观众，商场里就少一扇门；章末，直播人数开始显示全城人口。",
+                    "chapter_2": "她用假规则引导观众制造短暂漏洞，救出一名幸存者，却让母亲被系统标记为最终奖品。",
+                    "chapter_3": "直播间要求主角在母亲和十万观众中选择一方，她反向发起全城连麦，把怪谈拖进公开审判。",
+                    "cast": ["被困母亲", "已故搭档账号", "平台安全主管", "匿名榜一观众", "怪谈调查员"],
+                    "worldbuilding": [
+                        ("power_system", "观看即参与", "只要完整观看一条规则，观众就会成为怪谈参与者；点赞、转发和服从会提高规则的现实权重。"),
+                        ("culture", "异常直播公约", "平台与官方共同制定的处置公约要求延迟传播，但算法会把高恐惧内容自动推向更多用户。"),
+                        ("factions", "观众自治群", "由幸存观众组成的互助组织，擅长集体制造假弹幕，也可能因意见分裂成为规则放大器。"),
+                    ],
+                },
+                {
+                    "name": "移动禁区远征",
+                    "title": "午夜列车禁止抵达终点",
+                    "strong_title": "午夜列车守则：终点站没有活人",
+                    "hook": "一列永不到站的夜车穿行于被旧神吞噬的城市，每节车厢都遵守不同的现实规则",
+                    "conflict": "主角要抵达终点阻止故乡被删除，但列车规则规定抵达终点的人必须成为下一任司机",
+                    "goal": "在列车完成第七次环行前找到故乡站台，并让所有乘客保留返回现实的资格",
+                    "background": "主角是失踪人口调查员，童年故乡在地图上消失，所有线索都指向一张每晚自动刷新的旧车票。",
+                    "personality": "务实、警惕、善于观察陌生人；不轻易承诺，但一旦答应就会承担到底",
+                    "opening": "主角登上没有线路编号的末班车，检票员递回车票时，上面印着她故乡明天被删除的时间。",
+                    "advantage": "主角能通过车票背面的磨损推断车厢规则，但每跨越一节车厢，现实中的一个人会忘记她。",
+                    "pressure": "乘客各自隐藏目的，司机不断缩短停站时间，车外的旧神则尝试用熟人的声音诱使乘客下车。",
+                    "chapter_1": "列车广播宣布“不要承认自己有故乡”；主角说出故乡名字后，窗外出现一座无人记得的城市。",
+                    "chapter_2": "她与三名乘客交换车票验证身份规则，发现其中一人已经死于上一轮列车。",
+                    "chapter_3": "列车跳过所有站台直奔终点，主角必须夺取司机室规则册，代价是现实中的母亲开始忘记她。",
+                    "cast": ["失忆母亲", "前一轮死者", "沉默检票员", "逃票少年", "上一任司机"],
+                    "worldbuilding": [
+                        ("geography", "环夜列车", "列车连接现实中被删除或即将消失的地点，每次环行都会把一座城市变成无法抵达的站名。"),
+                        ("power_system", "车票身份", "车票记录乘客在现实中的存在权。交换、撕毁或补票都会改变身份、记忆和可进入的车厢。"),
+                        ("history", "第七次环行", "列车每完成七次环行就会更换司机，并把司机的故乡作为下一轮燃料。"),
+                    ],
+                },
+                {
+                    "name": "家族记忆献祭",
+                    "title": "我的家谱在向旧神献祭",
+                    "strong_title": "族谱禁忌：被删掉的人正在回家",
+                    "hook": "家族每代都会从家谱中删掉一个人，用全族对他的遗忘换取百年平安",
+                    "conflict": "主角要阻止自己被删名，却发现家族之外的整座城市依靠这场献祭维持正常",
+                    "goal": "保住自己的姓名和存在，同时找到替代家族献祭、不会让城市立刻沦为怪谈的方法",
+                    "background": "主角是族谱修复师，自幼被告知没有父亲。成年后，她在旧族谱夹层里发现父亲和自己的名字都被重复删除过。",
+                    "personality": "温和、耐心、重视亲缘，但对被隐瞒的事实极其固执；擅长从家族琐事中发现年代矛盾",
+                    "opening": "祭祖当天，主角发现所有亲属的合照里都少了自己，只有族谱上的墨迹还在缓慢书写她的死亡方式。",
+                    "advantage": "主角能触碰族谱残留的关系线，看见被删除者做过的事；每次读取都会让一名亲人暂时把她当成陌生人。",
+                    "pressure": "族老坚持完成献祭，城市管理者暗中保护仪式，被删除的历代族人则想借主角身体集体归来。",
+                    "chapter_1": "主角在祭祖仪式中被所有亲属遗忘，章末却听见已被删名的父亲从祠堂地板下叫她。",
+                    "chapter_2": "她改动族谱一笔，让母亲短暂记起自己，也使整条街出现重复的死者。",
+                    "chapter_3": "族老宣布午夜前完成删名，主角放出一位被献祭祖先的记忆，迫使全族看见百年平安的真实代价。",
+                    "cast": ["失忆母亲", "被删名父亲", "守谱族老", "城市联络官", "归来的祖先"],
+                    "worldbuilding": [
+                        ("culture", "删名祭", "家族通过集体遗忘一名成员维持城市边界，被删者的关系、财产和痕迹会自动转移给其他人。"),
+                        ("power_system", "关系线", "族谱记录的不只是血缘，而是现实承认某人存在的关系网络；修改一笔就会重分配相关记忆和因果。"),
+                        ("history", "百年平安契约", "城市建立之初与旧神签订契约，每代献祭一人只是最低代价，真正到期日即将到来。"),
+                    ],
+                },
+            ],
+        ]
+        return concept_sets[generation_cycle % len(concept_sets)]
+
+    generic_sets = [
+        [
+            {
+                "name": "封闭场域求生",
+                "title": "今夜规则不许任何人回家",
+                "hook": "熟悉场所被一套会主动学习的规则接管",
+                "conflict": "主角既要带人逃离封闭场域，也要阻止规则跟随幸存者扩散到现实",
+                "goal": "找出规则形成的第一原因，并带回仍被困在其中的重要之人",
+                "background": "主角曾经历过一次被所有人否认的异常事故，因此比旁人更早察觉日常秩序的裂缝。",
+                "personality": "谨慎、观察细致，愿意承担责任，但不轻易相信未经验证的解释",
+                "opening": "主角在最熟悉的地点看到一条只对自己显示的禁令。",
+                "advantage": "能通过细节变化推断规则边界，但试错会留下可追踪的痕迹。",
+                "pressure": "规则会根据幸存者的选择升级，外部救援也可能成为新的入口。",
+                "chapter_1": "熟悉场所出现第一条禁令，主角验证规则后发现出口已经被替换。",
+                "chapter_2": "主角组织第一次试探，救下一人，也暴露规则会学习参与者的选择。",
+                "chapter_3": "救援到达却触发更高层规则，主角决定反向进入核心区域寻找源头。",
+                "cast": ["被困同伴", "秩序维护者", "隐瞒者", "外部联络人", "异常见证者"],
+                "worldbuilding": [],
+            },
+            {
+                "name": "旧案调查悬疑",
+                "title": "所有证词都在等我死亡",
+                "hook": "一宗旧案会不断重写现实证词",
+                "conflict": "主角必须公开真相，却不能让真相本身完成异常仪式",
+                "goal": "洗清重要之人的罪名，并找出唯一没有被改写的原始证词",
+                "background": "主角长期追查一宗改变其人生的旧案，擅长从记录和证词矛盾中寻找真相。",
+                "personality": "理性、执着、尊重证据，对私人情感相关的线索尤其敏感",
+                "opening": "一份结案多年的卷宗突然新增了主角明天的死亡证词。",
+                "advantage": "能辨认记录被修改的层次，但读取原始版本会承受死者残留的感受。",
+                "pressure": "调查机构要封存旧案，真正获利者则希望主角替他们完成最后一步。",
+                "chapter_1": "旧卷宗预告主角死亡，她从中发现熟人的隐秘标记。",
+                "chapter_2": "主角改变一条证词使预言偏移，却让另一名证人成为替代目标。",
+                "chapter_3": "所有证词开始指向同一地点，主角决定在预言兑现前公开进入现场。",
+                "cast": ["旧案关系人", "调查负责人", "替代证人", "记录修复者", "幕后受益者"],
+                "worldbuilding": [],
+            },
+            {
+                "name": "势力成长博弈",
+                "title": "他们都想让我遵守错误规则",
+                "hook": "现有力量体系建立在一条被刻意隐瞒的错误规则上",
+                "conflict": "主角要利用规则漏洞成长，同时避免旧秩序因她揭露真相而全面崩坏",
+                "goal": "证明自己的道路可行，并建立不依靠旧秩序牺牲品的新体系",
+                "background": "主角因不符合主流标准被视为失败者，却能看见体系运行中的矛盾。",
+                "personality": "行动坚定、善于拆解问题，不崇拜权威，也不会轻视规则存在的现实原因",
+                "opening": "公开测试中，主角按照官方方法失败，却发现失败结果比成功者更接近真相。",
+                "advantage": "能识别体系漏洞并提出替代路径，但每次成功都会动摇既得利益。",
+                "pressure": "对手会快速吸收主角的方法，迫使她持续升级并承担改革代价。",
+                "chapter_1": "主角在公开测试中被判失败，却意外触发被隐藏的第二套标准。",
+                "chapter_2": "她验证替代路径，赢得第一名追随者，也引来秩序维护者调查。",
+                "chapter_3": "旧体系要求主角交出方法，她选择公开一半真相并保留最危险的核心。",
+                "cast": ["第一名追随者", "秩序维护者", "既得利益者", "旧体系导师", "普通见证者"],
+                "worldbuilding": [],
+            },
+        ],
+    ]
+    return generic_sets[generation_cycle % len(generic_sets)]
+
+
 def _variant_profile(variant: int) -> dict[str, str]:
     profiles = [
         {
@@ -1228,8 +1454,9 @@ def _build_characters(
     genre_label: str,
     conflict: str,
     profile: dict[str, str],
+    concept: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    return [
+    characters = [
         {
             "name": "关键盟友",
             "role_type": "supporting",
@@ -1286,43 +1513,54 @@ def _build_characters(
             "life_status": "active",
         },
     ]
+    cast = concept.get("cast", []) if isinstance(concept, dict) else []
+    for index, character in enumerate(characters):
+        if index < len(cast) and _clean_text(cast[index]):
+            character["name"] = _clean_text(cast[index])
+    return characters
 
 
-def _build_relationships(protagonist_name: str) -> list[dict[str, str]]:
+def _build_relationships(protagonist_name: str, concept: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    cast = concept.get("cast", []) if isinstance(concept, dict) else []
+    names = [
+        _clean_text(cast[index]) if index < len(cast) else fallback
+        for index, fallback in enumerate(["关键盟友", "主要对手", "引导者", "情感牵引者", "规则见证者"])
+    ]
+    ally, antagonist, mentor, emotional_anchor, witness = names
     return [
         {
             "character_a": protagonist_name,
-            "character_b": "关键盟友",
+            "character_b": ally,
             "relationship_type": "互信未稳的同盟",
             "description": "两人因异常事件绑定，合作能提高生存概率，但早期仍会互相试探。",
         },
         {
             "character_a": protagonist_name,
-            "character_b": "主要对手",
+            "character_b": antagonist,
             "relationship_type": "被低估的敌对",
             "description": "对手起初把主角当成可处理的小变量，随后逐步意识到她会改变整局。",
         },
         {
             "character_a": protagonist_name,
-            "character_b": "引导者",
+            "character_b": mentor,
             "relationship_type": "试探与传承",
             "description": "引导者给出必要线索，也会隐瞒更危险的真相，让主角自己做选择。",
         },
         {
             "character_a": protagonist_name,
-            "character_b": "情感牵引者",
+            "character_b": emotional_anchor,
             "relationship_type": "保护与牵挂",
             "description": "这段关系决定主角不会只追求胜利，也要考虑普通人的安全和情感代价。",
         },
         {
             "character_a": protagonist_name,
-            "character_b": "规则见证者",
+            "character_b": witness,
             "relationship_type": "行动者与见证者",
             "description": "规则见证者记录主角选择造成的实际后果，帮助剧情保持真实压力。",
         },
         {
-            "character_a": "主要对手",
-            "character_b": "引导者",
+            "character_a": antagonist,
+            "character_b": mentor,
             "relationship_type": "旧怨或立场冲突",
             "description": "两人都知道部分旧事，但选择不同，形成第一卷背后的价值对撞。",
         },
@@ -1338,6 +1576,7 @@ def _build_worldbuilding(
     preset: dict[str, Any],
     profile: dict[str, str],
     features: list[str],
+    concept: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     worldbuilding = [
         {"dimension": dimension, "title": wb_title, "content": content}
@@ -1376,6 +1615,15 @@ def _build_worldbuilding(
             "content": f"{profile['focus']}每章至少推进一种变化：信息、关系、局势、能力或代价，避免连续铺垫。",
         },
     ])
+    if isinstance(concept, dict):
+        for entry in concept.get("worldbuilding", []):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                _ensure_worldbuilding_entry(
+                    worldbuilding,
+                    dimension=_clean_text(entry[0], "culture"),
+                    title=_clean_text(entry[1]),
+                    content=_clean_text(entry[2]),
+                )
     return worldbuilding
 
 
@@ -1425,7 +1673,16 @@ def _build_golden_three(
     protagonist_name: str,
     preset_hook: str,
     profile: dict[str, str],
+    concept: dict[str, Any] | None = None,
 ) -> dict[str, str]:
+    if isinstance(concept, dict):
+        return {
+            "opening_scene": _clean_text(concept.get("opening"), profile["opening"]),
+            "chapter_1": _clean_text(concept.get("chapter_1")),
+            "chapter_2": _clean_text(concept.get("chapter_2")),
+            "chapter_3": _clean_text(concept.get("chapter_3")),
+            "promise": f"前三章完成“{_clean_text(concept.get('hook'), preset_hook)}”的第一次闭环，同时留下主角私人目标与全书级谜团。",
+        }
     return {
         "opening_scene": profile["opening"],
         "chapter_1": f"主角登场并遭遇异常。第一章必须让读者看到{protagonist_name}如何观察别人忽略的细节，章末留下“异常并非偶然”的钩子。",
@@ -1444,9 +1701,10 @@ def _build_outline(
     user_brief: str = "",
     revision_tone: dict[str, str] | None = None,
     chapter_count: int = 160,
+    opening_anchor: str = "",
 ) -> list[dict[str, Any]]:
     profile = profile or _variant_profile(0)
-    anchor = _opening_anchor(user_brief)
+    anchor = _clean_text(opening_anchor, _opening_anchor(user_brief))
     tone_direction = revision_tone.get("direction") if revision_tone else ""
     beats = [
         ("第1章 异常开端", f"从{anchor}切入，{protagonist_name}用独特观察方式发现第一处不合理，章末抛出异常源头疑问。", "开场钩子"),
@@ -1502,8 +1760,11 @@ def _template_blueprint(
     revision_mode: str = "initial",
     compiled: dict[str, Any] | None = None,
     use_variant_title_suffix: bool = True,
+    generation_cycle: int = 0,
 ) -> dict[str, Any]:
     genre_key = _genre_key(genre)
+    if genre_key == "other" and "克苏鲁" in user_brief and "规则怪谈" in user_brief:
+        genre_key = "xianxia" if ("修仙" in user_brief or "仙侠" in user_brief) else "mystery"
     compiled = compiled or _compile_creative_brief(
         user_brief=user_brief,
         genre=genre,
@@ -1516,10 +1777,20 @@ def _template_blueprint(
         protagonist_name = _clean_text(compiled.get("protagonist_name"), _extract_protagonist_name(user_brief))
     else:
         auto_names = compiled.get("auto_protagonist_names") or _suggest_protagonist_names(user_brief)
-        protagonist_name = _clean_text(auto_names[min(max(variant, 0), len(auto_names) - 1)], _resolve_protagonist_name(user_brief, variant))
+        name_index = (max(variant, 0) + max(generation_cycle, 0) * 3) % len(auto_names)
+        protagonist_name = _clean_text(auto_names[name_index], _resolve_protagonist_name(user_brief, variant))
     features = _brief_features(user_brief)
     chapter_count = int(compiled.get("chapter_count") or _extract_chapter_count(user_brief))
-    profile = _variant_profile(variant)
+    concept_profiles = _story_concept_profiles(user_brief, generation_cycle)
+    concept = concept_profiles[min(max(variant, 0), len(concept_profiles) - 1)]
+    profile = {
+        **_variant_profile(variant),
+        "name": _clean_text(concept.get("name"), _variant_profile(variant)["name"]),
+        "focus": _clean_text(concept.get("focus"), _variant_profile(variant)["focus"]),
+        "opening": _clean_text(concept.get("opening"), _variant_profile(variant)["opening"]),
+        "advantage": _clean_text(concept.get("advantage"), _variant_profile(variant)["advantage"]),
+        "pressure": _clean_text(concept.get("pressure"), _variant_profile(variant)["pressure"]),
+    }
     revision_tone = _feedback_tone(revision_instruction)
 
     if use_variant_title_suffix:
@@ -1535,24 +1806,25 @@ def _template_blueprint(
         first_auto_name = _clean_text((compiled.get("auto_protagonist_names") or [compiled.get("protagonist_name")])[0])
         if first_auto_name and first_auto_name in selected_title:
             selected_title = selected_title.replace(first_auto_name, protagonist_name, 1)
-    conflict = preset["conflict"]
+    story_hook = _clean_text(concept.get("hook"), preset["hook"])
+    conflict = _clean_text(concept.get("conflict"), preset["conflict"])
     premise = (
-        f"{_clean_text(user_brief, f'一部{genre_label}小说')}。"
-        f" 本方案主打“{preset['hook']}”，{profile['focus']}"
+        f"{_clean_text(concept.get('background'), _clean_text(user_brief, f'一部{genre_label}小说'))}。"
+        f" 本方案主打“{story_hook}”，{profile['focus']}"
     )
     if revision_instruction:
         premise += f" 本轮根据反馈“{revision_instruction}”调整，重点是{revision_tone['direction']}"
     logline = (
-        f"{protagonist_name}从{_opening_anchor(user_brief)}里察觉危机，"
-        f"用自己的认知优势破解{preset['hook']}，并在{conflict}中争取主动。"
+        f"{protagonist_name}在{_clean_text(concept.get('opening'), _opening_anchor(user_brief))}中被卷入危机，"
+        f"目标是{_clean_text(concept.get('goal'))}；阻碍在于{conflict}，同时还要识破“{story_hook}”的真正代价。"
     )
 
     protagonist = {
         "name": protagonist_name,
-        "goal": "弄清异常背后的规则，保护自己重视的人，并在危机中争取主动权",
+        "goal": _clean_text(concept.get("goal"), "弄清异常背后的规则，保护自己重视的人，并在危机中争取主动权"),
         "conflict": conflict,
-        "personality": "观察细致，有行动力，但会因信息不足和关系牵挂付出代价",
-        "background": f"故事开局时与核心异常产生直接关联，是推动《{title}》剧情展开的中心人物。",
+        "personality": _clean_text(concept.get("personality"), "观察细致，有行动力，但会因信息不足和关系牵挂付出代价"),
+        "background": _clean_text(concept.get("background"), f"故事开局时与核心异常产生直接关联，是推动《{title}》剧情展开的中心人物。"),
         "appearance": "外貌可在正式正文中根据年龄、身份和题材进一步细化；第一章应给出一个能被读者记住的动作或神态。",
         "current_location": "第一卷核心舞台",
         "life_status": "active",
@@ -1566,6 +1838,7 @@ def _template_blueprint(
         genre_label=genre_label,
         conflict=conflict,
         profile=profile,
+        concept=concept,
     )
     worldbuilding = _build_worldbuilding(
         title=title,
@@ -1575,6 +1848,7 @@ def _template_blueprint(
         preset=preset,
         profile=profile,
         features=features,
+        concept=concept,
     )
     volume_outline = _build_volume_outline(title, protagonist_name, conflict, chapter_count)
     outline = _build_outline(
@@ -1586,6 +1860,7 @@ def _template_blueprint(
         user_brief=user_brief,
         revision_tone=revision_tone,
         chapter_count=chapter_count,
+        opening_anchor=_clean_text(concept.get("opening")),
     )
 
     blueprint = {
@@ -1607,15 +1882,15 @@ def _template_blueprint(
             title=title,
             genre_label=genre_label,
             protagonist_name=protagonist_name,
-            preset_hook=preset["hook"],
+            preset_hook=story_hook,
             features=features,
             profile=profile,
             revision_tone=revision_tone,
         ),
         "protagonist": protagonist,
         "characters": characters,
-        "relationships": _build_relationships(protagonist_name),
-        "world_hook": preset["hook"],
+        "relationships": _build_relationships(protagonist_name, concept),
+        "world_hook": story_hook,
         "opening_scene": profile["opening"],
         "estimated_chapters": chapter_count,
         "worldbuilding": worldbuilding,
@@ -1623,9 +1898,12 @@ def _template_blueprint(
         "outline": outline,
         "golden_three": _build_golden_three(
             protagonist_name=protagonist_name,
-            preset_hook=preset["hook"],
+            preset_hook=story_hook,
             profile=profile,
+            concept=concept,
         ),
+        "generation_cycle": generation_cycle,
+        "story_engine": profile["name"],
         "style_rules": [
             "正文优先用行动、对话和选择展示设定，少用成段解释。",
             "每章至少推进一种变化：信息、关系、局势、能力或代价。",
@@ -1674,13 +1952,14 @@ def _build_template_blueprints(
     base_brief = _clean_text(user_brief or session.user_brief, "用户希望创建一部新小说。")
     feedback = _clean_text(feedback)
     revision_mode = _clean_text(revision_mode, "initial")
-    if feedback:
+    feedback_for_content = _revision_feedback_content(feedback, revision_mode)
+    if feedback_for_content:
         if revision_mode == "refine":
-            brief = f"{base_brief}\n\n在当前方案基础上调整：{feedback}"
+            brief = f"{base_brief}\n\n在当前方案基础上调整：{feedback_for_content}"
         elif revision_mode == "regenerate":
-            brief = f"{base_brief}\n\n请按以下反馈重新生成整套方案：{feedback}"
+            brief = f"{base_brief}\n\n请按以下反馈重新生成整套方案：{feedback_for_content}"
         else:
-            brief = f"{base_brief}\n\n用户补充要求：{feedback}"
+            brief = f"{base_brief}\n\n用户补充要求：{feedback_for_content}"
     else:
         brief = base_brief
     genre = _clean_text(session.genre, "other")
@@ -1693,25 +1972,53 @@ def _build_template_blueprints(
     genre_label = _clean_text(compiled.get("genre_label"), _genre_label(genre))
     protagonist_name = _clean_text(compiled.get("protagonist_name"), _extract_protagonist_name(brief))
     features = compiled.get("features") or _brief_features(brief)
-    title = _clean_text(compiled.get("title_candidate"), _extract_title(brief, genre_label))
-    if revision_mode == "refine":
-        title = _base_blueprint_title(getattr(session, "blueprint_json", None)) or title
-    explicit_title = not (_is_generic_title(title, genre_label) or _looks_like_requirement_title(title))
-    title_candidates = [title]
-    if not explicit_title:
-        title_candidates = _suggest_title_candidates(brief, genre_label, protagonist_name, features)
+    previous_blueprints = getattr(session, "blueprint_json", None)
+    previous_items = previous_blueprints if isinstance(previous_blueprints, list) else []
+    previous_cycle = max(
+        [
+            int(item.get("generation_cycle") or 0)
+            for item in previous_items
+            if isinstance(item, dict)
+        ]
+        or [0]
+    )
+    generation_cycle = previous_cycle + 1 if revision_mode == "regenerate" else previous_cycle
+    concepts = _story_concept_profiles(brief, generation_cycle)
+    explicit_title = _extract_explicit_title(base_brief)
+    title_candidates: list[str] = []
+    for index, concept in enumerate(concepts[:3]):
+        previous_title = (
+            _clean_text(previous_items[index].get("title"))
+            if index < len(previous_items) and isinstance(previous_items[index], dict)
+            else ""
+        )
+        if explicit_title:
+            candidate = explicit_title
+        elif revision_mode == "refine" and previous_title and "书名" not in feedback_for_content and "标题" not in feedback_for_content:
+            candidate = previous_title
+        else:
+            candidate = _clean_text(
+                concept.get("strong_title")
+                if revision_mode == "refine" and ("书名" in feedback_for_content or "标题" in feedback_for_content)
+                else concept.get("title")
+            )
+        if not candidate:
+            fallback_titles = _suggest_title_candidates(brief, genre_label, protagonist_name, features)
+            candidate = fallback_titles[index % len(fallback_titles)]
+        title_candidates.append(candidate)
     blueprints = [
         _template_blueprint(
-            title=title_candidates[index % len(title_candidates)],
+            title=title_candidates[index],
             user_brief=brief,
             genre=genre,
             target_audience=_clean_text(session.target_audience),
             platform=_clean_text(session.platform),
             variant=index,
-            revision_instruction=feedback,
+            revision_instruction=feedback_for_content,
             revision_mode=revision_mode,
             compiled=compiled,
-            use_variant_title_suffix=explicit_title,
+            use_variant_title_suffix=False,
+            generation_cycle=generation_cycle,
         )
         for index in range(3)
     ]
@@ -1873,13 +2180,14 @@ async def draft_novel_blueprint(
 
     if execution_mode in {"template", "local_template", "auto"}:
         base_brief_for_compile = _clean_text(user_brief or session.user_brief, "用户希望创建一部新小说。")
-        if feedback:
+        feedback_for_content = _revision_feedback_content(feedback, revision_mode)
+        if feedback_for_content:
             if revision_mode == "refine":
-                effective_brief = f"{base_brief_for_compile}\n\n在当前方案基础上调整：{feedback}"
+                effective_brief = f"{base_brief_for_compile}\n\n在当前方案基础上调整：{feedback_for_content}"
             elif revision_mode == "regenerate":
-                effective_brief = f"{base_brief_for_compile}\n\n请按以下反馈重新生成整套方案：{feedback}"
+                effective_brief = f"{base_brief_for_compile}\n\n请按以下反馈重新生成整套方案：{feedback_for_content}"
             else:
-                effective_brief = f"{base_brief_for_compile}\n\n用户补充要求：{feedback}"
+                effective_brief = f"{base_brief_for_compile}\n\n用户补充要求：{feedback_for_content}"
         else:
             effective_brief = base_brief_for_compile
         compiled = _compile_creative_brief(
@@ -1914,7 +2222,11 @@ async def draft_novel_blueprint(
         session.blueprint_json = blueprints
         if user_brief or feedback:
             base_brief = _clean_text(user_brief or session.user_brief)
-            session.user_brief = f"{base_brief}\n\n{feedback}".strip() if feedback and revision_mode == "regenerate" else base_brief
+            session.user_brief = (
+                f"{base_brief}\n\n{feedback_for_content}".strip()
+                if feedback_for_content and revision_mode == "regenerate"
+                else base_brief
+            )
         session.status = "reviewing"
         db.commit()
         if revision_mode == "refine":
