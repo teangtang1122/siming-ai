@@ -49,6 +49,7 @@ from ..services.context_builders import (
     _count_words,
     _get_outline_node_or_404,
 )
+from ..services.content_store import ensure_project_folder
 from ..prompts.workspace_assistant import (
     build_workspace_assistant_system_prompt,
     build_workspace_assistant_initial_user_message,
@@ -1207,6 +1208,12 @@ async def workspace_assistant_stream(
 
             # --- Phase 2: Build minimal initial messages ---
             project = get_project_or_404(db, project_id)
+            project_folder = str(ensure_project_folder(db, project))
+            db.commit()
+            local_cli_extra_body = LLMGateway.local_cli_extra_body(
+                payload.model,
+                cwd=project_folder,
+            )
             style_context = build_style_context(project, concise=True)
             selected_context: list[str] = []
             if selected_node:
@@ -1339,6 +1346,7 @@ async def workspace_assistant_stream(
                             max_tokens=payload.max_tokens,
                             timeout=300,
                             retry=1,
+                            extra_body=local_cli_extra_body,
                             tools=ALL_TOOL_SCHEMAS,
                             tool_choice="auto",
                         )
@@ -1394,6 +1402,7 @@ async def workspace_assistant_stream(
                         max_tokens=payload.max_tokens,
                         timeout=300,
                         retry=1,
+                        extra_body=local_cli_extra_body,
                     )
                     try:
                         async for chunk in stream_gen:
@@ -1923,7 +1932,13 @@ async def workspace_assistant_stream(
                         _resp = await LLMGateway.chat_completion(
                             messages=[{"role": "system", "content": _MP.build_system_prompt()},
                                       {"role": "user", "content": _conv}],
-                            model=None, temperature=0.2, max_tokens=2000,
+                            model=None,
+                            temperature=0.2,
+                            max_tokens=2000,
+                            extra_body=LLMGateway.local_cli_extra_body(
+                                None,
+                                cwd=project_folder,
+                            ),
                         )
                         _raw = _resp.get("content", "")
                         try:

@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from .base import BaseAdapter
@@ -53,7 +54,16 @@ DEFAULT_CLI_ARGS: dict[str, list[str]] = {
     # run unattended while Moshu still enforces its own MCP permission boundary.
     "claude_cli": ["--permission-mode", "bypassPermissions", "-p", "{prompt}"],
     "codex_cli": ["exec", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
-    "opencode_cli": ["run", "--dangerously-skip-permissions", "{prompt}"],
+    "opencode_cli": [
+        "run",
+        "--pure",
+        "--dangerously-skip-permissions",
+        "--format",
+        "json",
+        "--model",
+        "{model}",
+        "{prompt}",
+    ],
     "mimocode_cli": ["run", "--dangerously-skip-permissions", "{prompt}"],
     "cursor_cli": ["-p", "--force", "--approve-mcps", "--trust", "--output-format", "text", "{prompt}"],
     "kilocode_cli": ["run", "--auto", "{prompt}"],
@@ -66,7 +76,7 @@ DEFAULT_CLI_ARGS: dict[str, list[str]] = {
 DEFAULT_CLI_MODELS: dict[str, str] = {
     "claude_cli": "claude-code",
     "codex_cli": "codex-cli",
-    "opencode_cli": "opencode-cli",
+    "opencode_cli": "opencode/deepseek-v4-flash-free",
     "mimocode_cli": "mimocode-cli",
     "cursor_cli": "cursor-agent",
     "kilocode_cli": "kilocode-cli",
@@ -79,13 +89,21 @@ DEFAULT_CLI_MODELS: dict[str, str] = {
 STDIN_PROMPT_PROVIDERS = {
     "claude_cli",
     "codex_cli",
-    "opencode_cli",
     "mimocode_cli",
     "cursor_cli",
     "kilocode_cli",
     "qwen_code_cli",
 }
 WINDOWS_SAFE_ARG_CHARS = 12000
+OPENCODE_LEGACY_MODEL = "opencode-cli"
+OPENCODE_DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
+OPENCODE_MODELS = [
+    OPENCODE_DEFAULT_MODEL,
+    "opencode/mimo-v2.5-free",
+    "opencode/nemotron-3-ultra-free",
+    "opencode/north-mini-code-free",
+    "opencode/big-pickle",
+]
 
 
 @dataclass(frozen=True)
@@ -98,7 +116,15 @@ def is_local_cli_provider(provider: str | None) -> bool:
     return (provider or "").strip().lower() in LOCAL_CLI_PROVIDERS
 
 
+def effective_local_cli_model(provider: str, model: str) -> str:
+    if provider == "opencode_cli" and model == OPENCODE_LEGACY_MODEL:
+        return OPENCODE_DEFAULT_MODEL
+    return model
+
+
 def local_cli_model_options(provider: str) -> list[dict]:
+    if provider == "opencode_cli":
+        return [{"id": model, "display_name": model} for model in OPENCODE_MODELS]
     model = DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
     return [{"id": model, "display_name": model}]
 
@@ -212,6 +238,11 @@ def _extract_text_from_json_event(data: dict) -> str:
         nested = _extract_text_from_json_event(item)
         if nested:
             return nested
+    part = data.get("part")
+    if isinstance(part, dict):
+        nested = _extract_text_from_json_event(part)
+        if nested:
+            return nested
 
     content = data.get("content")
     if isinstance(content, list):
@@ -251,11 +282,122 @@ class LocalCLIAdapter(BaseAdapter):
     def _launch(self, prompt: str, model: str) -> CLILaunch:
         return parse_cli_launch(self.cli_args, self._provider, prompt, model)
 
-    async def _run(self, prompt: str, model: str) -> str:
+    @staticmethod
+    def _runtime_cwd(extra_body: Optional[dict]) -> str:
+        requested = str((extra_body or {}).get("local_cli_cwd") or "").strip()
+        candidates = [
+            requested,
+            os.environ.get("MOSHU_CONTENT_ROOT") or "",
+            str(Path(os.environ.get("MOSHU_HOME") or tempfile.gettempdir()) / "projects"),
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = Path(candidate).expanduser()
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                return str(path.resolve())
+            except OSError:
+                continue
+        fallback = Path(tempfile.gettempdir()) / "moshu-cli-workspace"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return str(fallback.resolve())
+
+    @staticmethod
+    def _runtime_attachments(extra_body: Optional[dict]) -> list[str]:
+        raw = (extra_body or {}).get("local_cli_attachments") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        attachments: list[str] = []
+        for value in raw:
+            path = Path(str(value)).expanduser()
+            if path.exists() and path.is_file():
+                attachments.append(str(path.resolve()))
+        return attachments
+
+    @staticmethod
+    def _opencode_env() -> dict[str, str]:
+        env = os.environ.copy()
+        env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+        env["OPENCODE_PURE"] = "1"
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps({
+            "mcp": {
+                "moshu": {
+                    "type": "local",
+                    "command": ["cmd", "/c", "exit", "0"],
+                    "enabled": False,
+                }
+            },
+            # Internal model execution must be side-effect free. The complete
+            # prompt and source documents are attached before the run, so no
+            # filesystem, shell, web, or MCP tool is required.
+            "permission": {"*": "deny"},
+        }, ensure_ascii=False)
+        return env
+
+    @staticmethod
+    def _ensure_opencode_option(args: list[str], flag: str, value: str | None = None) -> None:
+        if flag in args:
+            return
+        insert_at = 1 if args and args[0] == "run" else 0
+        args.insert(insert_at, flag)
+        if value is not None:
+            args.insert(insert_at + 1, value)
+
+    def _opencode_launch(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        cwd: str,
+        attachments: list[str],
+    ) -> tuple[CLILaunch, str]:
+        execution_model = effective_local_cli_model(self._provider, model)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".md",
+            prefix="moshu-opencode-task-",
+            delete=False,
+        ) as handle:
+            handle.write(prompt)
+            prompt_file = handle.name
+
+        launch = self._launch(
+            "请完整读取附件中的墨枢任务，严格遵守其中的系统规则。"
+            "不要调用任何工具，不要写文件，只在最终回复中输出任务要求的结果。",
+            execution_model,
+        )
+        args = list(launch.args)
+        self._ensure_opencode_option(args, "--pure")
+        self._ensure_opencode_option(args, "--format", "json")
+        self._ensure_opencode_option(args, "--model", execution_model)
+        self._ensure_opencode_option(args, "--dir", cwd)
+        for path in [prompt_file, *attachments]:
+            args.extend(["--file", path])
+        return CLILaunch(args=args), prompt_file
+
+    async def _run(
+        self,
+        prompt: str,
+        model: str,
+        extra_body: Optional[dict] = None,
+    ) -> str:
         command = self._command()
         prompt_file: str | None = None
         launch_prompt = prompt
-        if len(prompt) > WINDOWS_SAFE_ARG_CHARS and self._provider not in STDIN_PROMPT_PROVIDERS:
+        cwd = self._runtime_cwd(extra_body)
+        attachments = self._runtime_attachments(extra_body)
+        env = os.environ.copy()
+        if self._provider == "opencode_cli":
+            launch, prompt_file = self._opencode_launch(
+                prompt=prompt,
+                model=model,
+                cwd=cwd,
+                attachments=attachments,
+            )
+            env = self._opencode_env()
+        elif len(prompt) > WINDOWS_SAFE_ARG_CHARS and self._provider not in STDIN_PROMPT_PROVIDERS:
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
@@ -269,7 +411,9 @@ class LocalCLIAdapter(BaseAdapter):
                 "Read the complete UTF-8 task prompt from this local file and follow it exactly: "
                 f"{prompt_file}"
             )
-        launch = self._launch(launch_prompt, model)
+            launch = self._launch(launch_prompt, model)
+        else:
+            launch = self._launch(launch_prompt, model)
         try:
             proc = await asyncio.create_subprocess_exec(
                 command,
@@ -277,6 +421,8 @@ class LocalCLIAdapter(BaseAdapter):
                 stdin=asyncio.subprocess.PIPE if launch.stdin_text is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=env,
                 **hidden_subprocess_kwargs(),
             )
         except OSError as exc:
@@ -334,7 +480,7 @@ class LocalCLIAdapter(BaseAdapter):
         tool_choice: Optional[str | dict] = None,
     ) -> dict:
         prompt = messages_to_prompt(messages)
-        content = await self._run(prompt, model)
+        content = await self._run(prompt, model, extra_body)
         return {
             "content": content,
             "model": model,

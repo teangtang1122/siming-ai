@@ -51,11 +51,12 @@ def _requires_project_id(td: ToolDef) -> bool:
 
 
 def _add_project_id_argument(tool: McpTool, *, required: bool = False) -> McpTool:
-    """Expose a universal project_id override for MCP clients.
+    """Expose universal project and run context for MCP clients.
 
     Workspace handlers receive project_id out-of-band from the internal UI. MCP
     clients often operate globally, so they need an explicit way to target a
-    project after calling list_projects.
+    project after calling list_projects. run_id lets managed Agents attach tool
+    calls and progress events to the frontend-visible Agent run.
     """
     schema = deepcopy(tool.input_schema)
     properties = schema.setdefault("properties", {})
@@ -65,6 +66,14 @@ def _add_project_id_argument(tool: McpTool, *, required: bool = False) -> McpToo
             "Target project ID. Call list_projects or use the project_id returned by "
             "create_project/import_file_as_project. Project-scoped tools must use the "
             "same project_id for every read/write/verify step."
+        ),
+    })
+    properties.setdefault("run_id", {
+        "type": "string",
+        "description": (
+            "Optional Moshu Agent run ID. Managed local/external Agents should pass "
+            "the run_id supplied by their task so tool calls and progress appear in "
+            "the frontend execution timeline."
         ),
     })
     if required:
@@ -446,7 +455,21 @@ async def execute_tool(
             json.dumps(_missing_project_payload(tool_name), ensure_ascii=False),
             is_error=True,
         )
-    if not run_id:
+    telemetry_tools = {
+        "report_agent_plan",
+        "report_agent_progress",
+        "report_context_selected",
+        "append_draft_chunk",
+        "mark_draft_ready",
+        "finish_agent_run",
+    }
+    if tool_name in telemetry_tools:
+        # These handlers need run_id as part of their public contract. Keep it
+        # in arguments instead of consuming it as out-of-band auto-telemetry.
+        run_id = run_id or str(arguments.get("run_id") or "").strip() or None
+        if run_id:
+            arguments["run_id"] = run_id
+    elif not run_id:
         run_id = arguments.pop("run_id", None)
     else:
         arguments.pop("run_id", None)  # Strip if passed explicitly

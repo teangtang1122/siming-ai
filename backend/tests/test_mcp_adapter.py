@@ -109,6 +109,12 @@ class McpToolSchemaTest(unittest.TestCase):
         self.assertIn("project_id", by_name["search_chapters"].input_schema["properties"])
         self.assertIn("project_id", by_name["create_project"].input_schema["properties"])
 
+    def test_mcp_tools_expose_agent_run_context(self):
+        tools = list_mcp_tools(permission_pack="project_management")
+        by_name = {t.name: t for t in tools}
+        self.assertIn("run_id", by_name["search_chapters"].input_schema["properties"])
+        self.assertIn("run_id", by_name["report_agent_progress"].input_schema["properties"])
+
 
 class PermissionFilterTest(unittest.TestCase):
     """Verify the permission filter logic."""

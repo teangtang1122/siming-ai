@@ -7,12 +7,21 @@ from tempfile import TemporaryDirectory
 from sqlalchemy import create_engine, inspect, text
 
 from app.database.backup import backup_sqlite_database, sqlite_database_path
-from app.database.migrations import ensure_runtime_schema
+from app.database.migrations import ensure_runtime_schema, runtime_schema_needs_sync
 from app.database.models import AssistantRun, AgentPlan, AgentPlanStep, Base  # noqa: F401 - importing models populates metadata
 from app.services.workspace.run_log import mark_interrupted_assistant_runs
 
 
 class RuntimeMigrationTestCase(unittest.TestCase):
+    def test_runtime_schema_needs_sync_detects_missing_columns(self):
+        engine = create_engine("sqlite:///:memory:")
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE projects (id VARCHAR(36) PRIMARY KEY, title VARCHAR(200))"))
+        self.assertTrue(runtime_schema_needs_sync(engine))
+        Base.metadata.create_all(bind=engine)
+        ensure_runtime_schema(engine)
+        self.assertFalse(runtime_schema_needs_sync(engine))
+
     def test_existing_legacy_sqlite_database_gets_new_cataloging_schema(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:

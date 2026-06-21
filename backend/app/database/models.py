@@ -622,6 +622,8 @@ class CatalogingJob(Base):
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     status = Column(String(30), nullable=False, default="queued")
     execution_mode = Column(String(20), nullable=False, default="auto")
+    execution_backend = Column(String(30), nullable=False, default="internal_llm")
+    agent_run_id = Column(String(36), nullable=True)
     current_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
     last_completed_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
     blocked_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)

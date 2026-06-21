@@ -20,7 +20,11 @@ from .capabilities import (
 )
 from .deepseek_adapter import DeepSeekAdapter
 from .gemini_adapter import GeminiAdapter
-from .local_cli_adapter import LocalCLIAdapter
+from .local_cli_adapter import (
+    LocalCLIAdapter,
+    effective_local_cli_model,
+    is_local_cli_provider,
+)
 from .openai_adapter import OpenAIAdapter
 from .qwen_adapter import QwenAdapter
 
@@ -122,10 +126,40 @@ class LLMGateway:
         return provider
 
     @classmethod
+    def model_identity(cls, model: Optional[str] = None) -> tuple[str, str]:
+        provider, model_name = cls._parse_model(model)
+        if is_local_cli_provider(provider):
+            model_name = effective_local_cli_model(provider, model_name)
+        return provider, model_name
+
+    @classmethod
     def supports_tool_calling(cls, model: Optional[str] = None) -> bool:
         provider = cls.provider_for_model(model)
         caps = provider_capabilities(provider)
         return caps.supports_tools and caps.supports_streaming_tools
+
+    @classmethod
+    def local_cli_extra_body(
+        cls,
+        model: Optional[str] = None,
+        *,
+        cwd: str | None = None,
+        attachments: list[str] | None = None,
+        base: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Attach local filesystem runtime context only for local CLI models."""
+        try:
+            provider = cls.provider_for_model(model)
+        except NotFoundError:
+            return base
+        if not is_local_cli_provider(provider):
+            return base
+        payload = dict(base or {})
+        if cwd:
+            payload["local_cli_cwd"] = cwd
+        if attachments:
+            payload["local_cli_attachments"] = attachments
+        return payload
 
     @staticmethod
     def _load_config(provider: str) -> APIConfig:

@@ -52,6 +52,20 @@ def _sql_default(col) -> str:
     return ""
 
 
+def runtime_schema_needs_sync(engine: Engine) -> bool:
+    """Return whether model metadata contains a table or column missing in DB."""
+    from .session import Base
+
+    inspector = inspect(engine)
+    for table_name, table in Base.metadata.tables.items():
+        if not inspector.has_table(table_name):
+            return True
+        existing = {col["name"] for col in inspector.get_columns(table_name)}
+        if any(column.name not in existing for column in table.columns):
+            return True
+    return False
+
+
 def ensure_runtime_schema(engine: Engine) -> None:
     """Auto-sync DB schema with all tables in SQLAlchemy metadata.
 

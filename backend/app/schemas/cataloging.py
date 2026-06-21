@@ -47,6 +47,8 @@ class CatalogingJobResponse(BaseModel):
     project_id: str
     status: str
     execution_mode: str
+    execution_backend: str = "internal_llm"
+    agent_run_id: Optional[str] = None
     current_chapter_id: Optional[str]
     last_completed_chapter_id: Optional[str]
     blocked_chapter_id: Optional[str]

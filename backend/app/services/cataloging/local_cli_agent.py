@@ -1,0 +1,686 @@
+"""Moshu-managed local CLI cataloging coordinator.
+
+Each chapter is handled in a fresh CLI turn. The Agent reads the UTF-8 project
+mirror directly and performs every model-originated write through Moshu MCP.
+This keeps chapter text out of command arguments and avoids carrying an entire
+novel through one ever-growing CLI conversation.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.ai.local_cli_adapter import (
+    DEFAULT_CLI_COMMANDS,
+    DEFAULT_CLI_MODELS,
+    effective_local_cli_model,
+    hidden_subprocess_kwargs,
+    parse_cli_launch,
+)
+from app.database.models import (
+    APIConfig,
+    AgentRun,
+    CatalogingChapterRun,
+    CatalogingJob,
+    Chapter,
+    Project,
+)
+from app.database.session import SessionLocal
+from app.prompts.cataloging_source import get_external_cataloging_system_prompt
+from app.services.content_store import ensure_project_folder, sync_chapter_to_file
+from app.services.external_agent.run_service import add_event, create_run, update_run_status
+from app.services.cataloging.candidate_io import candidate_to_dict
+from app.services.cataloging.fact_store import fact_to_dict
+from app.services.cataloging.orchestrator import job_to_dict, run_to_dict, sse_event
+
+
+_COORDINATORS: dict[str, asyncio.Task] = {}
+_PROCESSES: dict[str, asyncio.subprocess.Process] = {}
+_TERMINAL_JOBS = {"completed", "failed", "cancelled"}
+_TERMINAL_RUNS = {"completed", "completed_with_warnings", "skipped_by_user"}
+
+
+def _provider_from_model(model: str | None) -> str | None:
+    if model and ":" in model:
+        return model.split(":", 1)[0].strip() or None
+    return None
+
+
+def _select_cli_config(db: Session, provider: str | None) -> APIConfig | None:
+    query = db.query(APIConfig).filter(APIConfig.provider_type == "local_cli")
+    if provider:
+        return query.filter(APIConfig.provider == provider).first()
+    return (
+        query.filter(APIConfig.is_global_default == True).first()  # noqa: E712
+        or query.order_by(APIConfig.updated_at.desc()).first()
+    )
+
+
+def _active_agent_run(db: Session, job: CatalogingJob, provider: str) -> AgentRun:
+    run = None
+    if job.agent_run_id:
+        run = db.query(AgentRun).filter(AgentRun.id == job.agent_run_id).first()
+    if run and run.status not in {"completed", "failed", "cancelled"}:
+        run.status = "running"
+        run.current_step = "准备处理下一章"
+        run.updated_at = datetime.utcnow()
+        db.commit()
+        return run
+
+    run = create_run(
+        db,
+        job.project_id,
+        source="internal_cli",
+        client_name=provider,
+        title=f"作品建档：{job.total_chapters or 0} 章",
+    )
+    job.agent_run_id = run.id
+    job.updated_at = datetime.utcnow()
+    db.commit()
+    return run
+
+
+def ensure_local_cli_cataloging_worker(
+    db: Session,
+    job: CatalogingJob,
+    *,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    """Start or resume the background coordinator for a local CLI job."""
+    provider = provider or _provider_from_model(job.model)
+    config = _select_cli_config(db, provider)
+    if not config:
+        raise RuntimeError("未找到可用的本机 CLI 配置")
+    provider = config.provider
+    run = _active_agent_run(db, job, provider)
+    job.execution_backend = "local_cli_agent"
+    if job.status not in _TERMINAL_JOBS and job.status != "waiting_confirmation":
+        job.status = "running"
+    db.commit()
+
+    current = _COORDINATORS.get(job.id)
+    if not current or current.done():
+        _COORDINATORS[job.id] = asyncio.create_task(
+            _coordinate_cataloging(job.id, provider),
+            name=f"cataloging-cli-{job.id}",
+        )
+    return {
+        "agent_run_id": run.id,
+        "provider": provider,
+        "job_id": job.id,
+    }
+
+
+def cancel_local_cli_cataloging_worker(job_id: str, *, terminal: bool = False) -> None:
+    process = _PROCESSES.get(job_id)
+    if process and process.returncode is None:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+    task = _COORDINATORS.get(job_id)
+    if task and not task.done():
+        task.cancel()
+    db = SessionLocal()
+    try:
+        job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+        if job and job.agent_run_id:
+            run = db.query(AgentRun).filter(AgentRun.id == job.agent_run_id).first()
+            if run and run.status not in {"completed", "failed", "cancelled"}:
+                run.status = "cancelled" if terminal else "waiting_confirmation"
+                run.current_step = "任务已取消" if terminal else "任务已暂停"
+                run.completed_at = datetime.utcnow() if terminal else None
+                run.updated_at = datetime.utcnow()
+                db.commit()
+    finally:
+        db.close()
+
+
+def local_cli_cataloging_is_running(job_id: str) -> bool:
+    task = _COORDINATORS.get(job_id)
+    return bool(task and not task.done())
+
+
+async def stream_local_cli_cataloging_job(project_id: str, job_id: str):
+    """Stream database and AgentRun changes using the existing cataloging UI contract."""
+    from app.database.models import AgentRunEvent, CatalogingCandidate, CatalogingFact
+
+    db = SessionLocal()
+    seen_facts: set[str] = set()
+    seen_candidates: set[str] = set()
+    seen_run_states: dict[str, str] = {}
+    last_agent_sequence = 0
+    last_job_signature: tuple[Any, ...] | None = None
+    try:
+        job = db.query(CatalogingJob).filter(
+            CatalogingJob.id == job_id,
+            CatalogingJob.project_id == project_id,
+        ).first()
+        if not job:
+            yield sse_event({"type": "error", "message": "作品建档任务不存在"})
+            yield "data: [DONE]\n\n"
+            return
+        if job.status not in _TERMINAL_JOBS and job.status not in {"paused", "waiting_confirmation"}:
+            ensure_local_cli_cataloging_worker(db, job)
+        yield sse_event({
+            "type": "cataloging_stage",
+            "message": "本机 CLI Agent 已连接，将直接读取作品文件并通过 Moshu MCP 写入",
+            "job": job_to_dict(job),
+        })
+
+        while True:
+            await asyncio.sleep(0.5)
+            db.expire_all()
+            job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+            if not job:
+                yield sse_event({"type": "error", "message": "作品建档任务已被删除"})
+                yield "data: [DONE]\n\n"
+                return
+
+            runs = (
+                db.query(CatalogingChapterRun)
+                .filter(CatalogingChapterRun.job_id == job.id)
+                .order_by(CatalogingChapterRun.chapter_order.asc())
+                .all()
+            )
+            for run in runs:
+                previous = seen_run_states.get(run.id)
+                if previous != run.status:
+                    seen_run_states[run.id] = run.status
+                    event_type = "chapter_started" if run.status in {"in_progress", "extracting"} else "chapter_state"
+                    if run.status in _TERMINAL_RUNS:
+                        event_type = "chapter_completed"
+                    elif run.status == "failed":
+                        event_type = "chapter_failed"
+                    yield sse_event({
+                        "type": event_type,
+                        "message": f"第 {run.chapter_order + 1} 章：{run.status}",
+                        "job": job_to_dict(job),
+                        "run": run_to_dict(run),
+                    })
+
+            facts = (
+                db.query(CatalogingFact)
+                .filter(CatalogingFact.job_id == job.id)
+                .order_by(CatalogingFact.created_at.asc())
+                .all()
+            )
+            for fact in facts:
+                if fact.id in seen_facts:
+                    continue
+                seen_facts.add(fact.id)
+                payload = fact_to_dict(fact)
+                yield sse_event({
+                    "type": "fact_extracted",
+                    "message": f"已抽取事实：{fact.fact_type}",
+                    "fact": {
+                        "fact_type": fact.fact_type,
+                        "payload": payload.get("payload") or {},
+                        "confidence": fact.confidence,
+                        "evidence": fact.evidence,
+                    },
+                    "run": run_to_dict(fact.chapter_run),
+                    "job": job_to_dict(job),
+                })
+
+            candidates = (
+                db.query(CatalogingCandidate)
+                .filter(CatalogingCandidate.job_id == job.id)
+                .order_by(CatalogingCandidate.created_at.asc())
+                .all()
+            )
+            for candidate in candidates:
+                if candidate.id in seen_candidates:
+                    continue
+                seen_candidates.add(candidate.id)
+                yield sse_event({
+                    "type": "candidate_created",
+                    "message": f"已生成候选：{candidate.item_type}",
+                    "candidate": candidate_to_dict(candidate),
+                    "run": run_to_dict(candidate.chapter_run),
+                    "job": job_to_dict(job),
+                })
+
+            if job.agent_run_id:
+                events = (
+                    db.query(AgentRunEvent)
+                    .filter(
+                        AgentRunEvent.run_id == job.agent_run_id,
+                        AgentRunEvent.sequence > last_agent_sequence,
+                    )
+                    .order_by(AgentRunEvent.sequence.asc())
+                    .all()
+                )
+                for event in events:
+                    last_agent_sequence = max(last_agent_sequence, event.sequence)
+                    yield sse_event({
+                        "type": "agent_event",
+                        "message": event.message or event.event_type,
+                        "agent_event": {
+                            "sequence": event.sequence,
+                            "event_type": event.event_type,
+                            "status": event.status,
+                            "payload_json": event.payload_json,
+                        },
+                        "job": job_to_dict(job),
+                    })
+
+            signature = (
+                job.status,
+                job.current_chapter_id,
+                job.blocked_chapter_id,
+                job.completed_chapters,
+                job.failed_chapters,
+                job.error,
+            )
+            if signature != last_job_signature:
+                last_job_signature = signature
+                yield sse_event({"type": "job", "job": job_to_dict(job)})
+
+            if job.status == "completed":
+                yield sse_event({"type": "completed", "job": job_to_dict(job)})
+                yield "data: [DONE]\n\n"
+                return
+            if job.status == "waiting_confirmation" and job.execution_mode == "manual":
+                blocking = next((run for run in runs if run.chapter_id == job.blocked_chapter_id), None)
+                yield sse_event({
+                    "type": "waiting_confirmation",
+                    "job": job_to_dict(job),
+                    "run": run_to_dict(blocking) if blocking else None,
+                })
+                yield "data: [DONE]\n\n"
+                return
+            if job.status in {"paused_on_failure", "paused", "cancelled", "failed"}:
+                blocking = next((run for run in runs if run.chapter_id == job.blocked_chapter_id), None)
+                yield sse_event({
+                    "type": job.status,
+                    "job": job_to_dict(job),
+                    "run": run_to_dict(blocking) if blocking else None,
+                    "error": job.error,
+                })
+                yield "data: [DONE]\n\n"
+                return
+    finally:
+        db.close()
+
+
+def _next_run(db: Session, job_id: str) -> CatalogingChapterRun | None:
+    return (
+        db.query(CatalogingChapterRun)
+        .filter(CatalogingChapterRun.job_id == job_id)
+        .filter(CatalogingChapterRun.status.notin_(list(_TERMINAL_RUNS)))
+        .order_by(CatalogingChapterRun.chapter_order.asc())
+        .first()
+    )
+
+
+def _ensure_chapter_file(
+    db: Session,
+    project: Project,
+    chapter: Chapter,
+    chapter_order: int,
+) -> tuple[Path, Path]:
+    folder = ensure_project_folder(db, project)
+    path = folder / chapter.content_file_path if chapter.content_file_path else None
+    if not path or not path.exists():
+        sync_chapter_to_file(db, project, chapter, index=chapter_order + 1)
+        path = folder / chapter.content_file_path
+        db.commit()
+    return folder, path.resolve()
+
+
+def _turn_stage(run: CatalogingChapterRun, mode: str) -> str:
+    if run.status == "awaiting_confirmation" and mode == "auto":
+        return "apply"
+    if run.status == "facts_saved":
+        return "candidates"
+    return "full"
+
+
+def _task_text(
+    *,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+    agent_run_id: str,
+    provider: str,
+    project: Project,
+    project_folder: Path,
+    chapter: Chapter,
+    chapter_file: Path,
+    stage: str,
+) -> str:
+    shared_prompt = get_external_cataloging_system_prompt()
+    if stage == "apply":
+        stage_steps = f"""
+## 本轮唯一任务
+0. 立即调用 `report_agent_plan`，上报本轮计划：读取控制状态、应用候选、验证进度。
+1. 调用 `get_cataloging_control_state`，参数必须包含：
+   `project_id="{job.project_id}"`, `job_id="{job.id}"`, `run_id="{agent_run_id}"`。
+2. 只有 execution_mode 仍为 `auto` 时，调用 `apply_pending_cataloging` 写入当前候选。
+3. 调用 `verify_external_cataloging_progress`，然后结束本轮。
+"""
+    else:
+        phase = "facts" if stage == "full" else "candidates"
+        fact_steps = """
+3. 调用 `report_agent_progress` 说明正在读取章节文件；随后裸读章节文件。
+4. 按共享提示词抽取不限数量的事实；调用
+   `save_external_cataloging_facts` 保存。事实必须充分覆盖章节，不得为了缩短 JSON 而漏信息。
+5. 调用 `report_agent_progress` 说明事实已保存、开始结合档案生成候选。
+""" if stage == "full" else """
+3. 本章事实已经保存。调用 `report_agent_progress` 说明正在恢复第二阶段。
+4. 调用 `list_cataloging_facts`，使用本任务中的 chapter_run_id
+   读取事实，再结合相关角色、世界观和大纲镜像生成候选。
+"""
+        stage_steps = f"""
+## 本轮执行步骤
+0. 立即调用 `report_agent_plan`，上报本轮将读取文件、保存结构化结果并验证进度。
+1. 调用 `get_next_external_cataloging_chapter`：
+   - `project_id="{job.project_id}"`
+   - `job_id="{job.id}"`
+   - `phase="{phase}"`
+   - `include_content=false`
+   - `include_prompt_pack=false`
+   - `include_context_indexes=false`
+   - `run_id="{agent_run_id}"`
+2. 工具返回的 chapter_id 必须是 `{chapter.id}`。若不一致，立即停止并说明阻塞。
+{fact_steps}
+6. 直接读取本作品镜像中与事实有关的角色、世界观、大纲文件，合并旧信息后生成候选；
+   调用 `save_external_cataloging_candidates` 保存。必须包含 chapter_summary、章级大纲，
+   有独立场景时还要创建 section 大纲，并正确关联角色、世界观和章节。
+7. 调用 `report_agent_progress` 说明候选已经保存，正在检查自动/手动模式。
+8. 调用 `get_cataloging_control_state` 获取实时 execution_mode：
+   - `auto`：调用 `apply_pending_cataloging`。
+   - `manual`：不要应用候选，停在等待用户确认状态。
+9. 调用 `verify_external_cataloging_progress`，然后结束本轮。
+"""
+
+    return f"""# 墨枢本机 CLI 作品建档任务
+
+## 固定身份
+你是墨枢启动的作品建档 Agent，不是代码助手。始终使用中文。
+你必须直接读取小说文件，不得要求墨枢把完整章节塞进提示词或 MCP 返回值。
+
+## 任务绑定
+- project_id: `{job.project_id}`
+- project_title: `{project.title}`
+- cataloging_job_id: `{job.id}`
+- chapter_run_id: `{run.id}`
+- chapter_id: `{chapter.id}`
+- chapter_order: `{run.chapter_order}`
+- chapter_title: `{chapter.title}`
+- chapter_file: `{chapter_file}`
+- project_folder: `{project_folder}`
+- agent_run_id: `{agent_run_id}`
+- provider: `{provider}`
+
+## 数据边界
+- 数据库是唯一权威写入源；项目目录是只读镜像。
+- 可以使用文件读取、Glob、Grep 搜索 `{project_folder}`。
+- 禁止直接修改 `chapters/`、`characters/`、`worldbuilding/`、`outline/`、`relationships/`。
+- 所有事实、候选和应用操作必须调用 Moshu MCP 工具。
+- 每个 MCP 调用都必须带 `project_id="{job.project_id}"` 和 `run_id="{agent_run_id}"`。
+- 不要创建 candidates.jsonl、临时档案或其他旁路数据文件。
+
+{stage_steps}
+
+## 共享建档提示词
+{shared_prompt}
+
+## 输出约束
+不要在最终回复里复制章节、完整事实或完整候选。只简短说明本章处理结果；正式数据必须已经通过 MCP 保存。
+"""
+
+
+def _task_prompt(task_file: Path) -> str:
+    return (
+        "你是墨枢本机作品建档 Agent。请读取并严格执行以下 UTF-8 任务文件：\n"
+        f"{task_file}\n"
+        "章节正文和档案由你从任务指定的作品目录自行读取；所有写入必须使用 Moshu MCP。"
+    )
+
+
+async def _run_cli_turn(
+    *,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+    project: Project,
+    chapter: Chapter,
+    config: APIConfig,
+    agent_run_id: str,
+    stage: str,
+) -> tuple[int, str, str]:
+    db = SessionLocal()
+    try:
+        db_project = db.query(Project).filter(Project.id == project.id).first()
+        db_chapter = db.query(Chapter).filter(Chapter.id == chapter.id).first()
+        project_folder, chapter_file = _ensure_chapter_file(
+            db,
+            db_project,
+            db_chapter,
+            run.chapter_order,
+        )
+    finally:
+        db.close()
+
+    run_dir = project_folder / ".moshu" / "cataloging" / job.id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    task_file = run_dir / f"{run.chapter_order + 1:04d}-{stage}.md"
+    task_file.write_text(
+        _task_text(
+            job=job,
+            run=run,
+            agent_run_id=agent_run_id,
+            provider=config.provider,
+            project=project,
+            project_folder=project_folder,
+            chapter=chapter,
+            chapter_file=chapter_file,
+            stage=stage,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    command = (config.cli_command or DEFAULT_CLI_COMMANDS.get(config.provider) or "").strip()
+    resolved = shutil.which(command) or (command if Path(command).exists() else None)
+    if not resolved:
+        raise RuntimeError(f"未找到本机 CLI 命令：{command}")
+    model = effective_local_cli_model(
+        config.provider,
+        config.default_model or DEFAULT_CLI_MODELS.get(config.provider, config.provider),
+    )
+    launch = parse_cli_launch(config.cli_args, config.provider, _task_prompt(task_file), model)
+    env = os.environ.copy()
+    env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")
+    env["MOSHU_MANAGED_AGENT_KIND"] = "cataloging"
+    process = await asyncio.create_subprocess_exec(
+        resolved,
+        *launch.args,
+        stdin=asyncio.subprocess.PIPE if launch.stdin_text is not None else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(project_folder),
+        env=env,
+        **hidden_subprocess_kwargs(),
+    )
+    _PROCESSES[job.id] = process
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(
+                input=launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None
+            ),
+            timeout=1200,
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise RuntimeError("本机 CLI 单章建档超过 20 分钟，已终止")
+    finally:
+        _PROCESSES.pop(job.id, None)
+    return (
+        process.returncode or 0,
+        stdout.decode("utf-8", errors="replace").strip(),
+        stderr.decode("utf-8", errors="replace").strip(),
+    )
+
+
+async def _coordinate_cataloging(job_id: str, provider: str) -> None:
+    try:
+        while True:
+            db = SessionLocal()
+            try:
+                job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+                if not job or job.status in _TERMINAL_JOBS:
+                    return
+                if job.status == "paused":
+                    return
+                config = _select_cli_config(db, provider)
+                if not config:
+                    raise RuntimeError(f"本机 CLI 配置不存在：{provider}")
+                agent_run = _active_agent_run(db, job, provider)
+                run = _next_run(db, job.id)
+                if not run:
+                    job.status = "completed"
+                    job.current_chapter_id = None
+                    job.blocked_chapter_id = None
+                    job.completed_at = datetime.utcnow()
+                    db.commit()
+                    update_run_status(db, agent_run.id, "completed", summary="作品建档完成")
+                    return
+                if run.status == "failed":
+                    job.status = "paused_on_failure"
+                    job.blocked_chapter_id = run.chapter_id
+                    db.commit()
+                    update_run_status(db, agent_run.id, "failed", summary=run.error or "当前章节建档失败")
+                    return
+                if run.status == "awaiting_confirmation" and job.execution_mode == "manual":
+                    job.status = "waiting_confirmation"
+                    job.blocked_chapter_id = run.chapter_id
+                    agent_run.status = "waiting_confirmation"
+                    agent_run.current_step = f"等待确认：第 {run.chapter_order + 1} 章"
+                    db.commit()
+                    return
+                project = db.query(Project).filter(Project.id == job.project_id).first()
+                chapter = db.query(Chapter).filter(Chapter.id == run.chapter_id).first()
+                if not project or not chapter:
+                    raise RuntimeError("建档任务关联的作品或章节不存在")
+                stage = _turn_stage(run, job.execution_mode)
+                run.started_at = run.started_at or datetime.utcnow()
+                job.status = "running"
+                job.current_chapter_id = chapter.id
+                job.blocked_chapter_id = None
+                agent_run.status = "running"
+                agent_run.current_step = f"第 {run.chapter_order + 1} 章：{stage}"
+                db.commit()
+                add_event(
+                    db,
+                    agent_run.id,
+                    "chapter_agent_started",
+                    status="running",
+                    message=f"开始处理第 {run.chapter_order + 1} 章：{chapter.title}",
+                    payload_json=json.dumps({
+                        "job_id": job.id,
+                        "chapter_id": chapter.id,
+                        "chapter_run_id": run.id,
+                        "stage": stage,
+                    }, ensure_ascii=False),
+                )
+                # The CLI turn outlives this database session. Refresh and
+                # detach the scalar snapshots so later access never triggers a
+                # lazy load on a closed Session.
+                snapshots = (job, run, project, chapter, config)
+                for snapshot in snapshots:
+                    db.refresh(snapshot)
+                    db.expunge(snapshot)
+                job_snapshot = job
+                run_snapshot = run
+                project_snapshot = project
+                chapter_snapshot = chapter
+                config_snapshot = config
+                agent_run_id = agent_run.id
+            finally:
+                db.close()
+
+            returncode, stdout, stderr = await _run_cli_turn(
+                job=job_snapshot,
+                run=run_snapshot,
+                project=project_snapshot,
+                chapter=chapter_snapshot,
+                config=config_snapshot,
+                agent_run_id=agent_run_id,
+                stage=stage,
+            )
+
+            db = SessionLocal()
+            try:
+                job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+                run = db.query(CatalogingChapterRun).filter(CatalogingChapterRun.id == run_snapshot.id).first()
+                if not job or not run:
+                    return
+                add_event(
+                    db,
+                    agent_run_id,
+                    "chapter_agent_finished",
+                    status="ok" if returncode == 0 else "error",
+                    message=f"本机 CLI 已结束：{chapter_snapshot.title}",
+                    payload_json=json.dumps({
+                        "returncode": returncode,
+                        "chapter_status": run.status,
+                        "stdout_tail": stdout[-1500:],
+                        "stderr_tail": stderr[-1500:],
+                    }, ensure_ascii=False),
+                )
+                if returncode != 0:
+                    run.status = "failed"
+                    run.error = stderr[-2000:] or stdout[-2000:] or f"CLI exit code {returncode}"
+                elif run.status in {"pending", "in_progress", "extracting"}:
+                    run.status = "failed"
+                    run.error = "本机 CLI 未通过 MCP 保存本章事实或候选"
+                elif stage == "candidates" and run.status == "facts_saved":
+                    run.status = "failed"
+                    run.error = "本机 CLI 未通过 MCP 保存本章候选"
+                elif stage == "apply" and run.status == "awaiting_confirmation":
+                    run.status = "failed"
+                    run.error = "本机 CLI 未应用当前章节候选"
+                if run.status == "failed":
+                    job.status = "paused_on_failure"
+                    job.blocked_chapter_id = run.chapter_id
+                    job.error = run.error
+                    db.commit()
+                    update_run_status(db, agent_run_id, "failed", summary=run.error)
+                    return
+                if run.status == "awaiting_confirmation" and job.execution_mode == "manual":
+                    job.status = "waiting_confirmation"
+                    job.blocked_chapter_id = run.chapter_id
+                    agent_run = db.query(AgentRun).filter(AgentRun.id == agent_run_id).first()
+                    if agent_run:
+                        agent_run.status = "waiting_confirmation"
+                        agent_run.current_step = f"等待确认：第 {run.chapter_order + 1} 章"
+                    db.commit()
+                    return
+                db.commit()
+            finally:
+                db.close()
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        db = SessionLocal()
+        try:
+            job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+            if job and job.status not in _TERMINAL_JOBS:
+                job.status = "paused_on_failure"
+                job.error = str(exc)
+                db.commit()
+                if job.agent_run_id:
+                    add_event(db, job.agent_run_id, "error", status="error", message=str(exc))
+        finally:
+            db.close()
+    finally:
+        _COORDINATORS.pop(job_id, None)

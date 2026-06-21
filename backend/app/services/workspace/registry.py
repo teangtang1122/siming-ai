@@ -141,6 +141,28 @@ class ToolRegistry:
         permission_pack: str = "readonly_collaboration",
     ) -> list[ToolDef]:
         """Return tools available to MCP clients for a given permission pack."""
+        if permission_pack == "cataloging_worker":
+            # Managed single-chapter cataloging CLIs read project files
+            # directly. Keep their MCP surface deliberately small so every
+            # fresh chapter turn does not pay for the full system tool schema.
+            allowed_names = {
+                "report_agent_plan",
+                "report_agent_progress",
+                "report_context_selected",
+                "get_next_external_cataloging_chapter",
+                "save_external_cataloging_facts",
+                "save_external_cataloging_candidates",
+                "verify_external_cataloging_progress",
+                "get_cataloging_control_state",
+                "list_cataloging_facts",
+                "apply_pending_cataloging",
+            }
+            return [
+                td
+                for name, td in self._tools.items()
+                if name in allowed_names and td.expose_to_mcp
+            ]
+
         # Non-linear pack inclusion.
         #
         # Internal LLM tools intentionally do not sit below project_management:
@@ -243,6 +265,7 @@ def _register_all() -> None:
         expand_text,
         export_project,
         forget,
+        get_cataloging_control_state,
         get_cataloging_job,
         get_deconstruct_report,
         get_export_word_count,
@@ -627,6 +650,16 @@ def _register_all() -> None:
         tool_type="read",
         estimated_cost="free",
         handler=get_cataloging_job,
+    ))
+
+    _r(ToolDef(
+        name="get_cataloging_control_state",
+        description="Read the compact live control state for a cataloging job, including auto/manual mode.",
+        input_schema={"job_id": {"type": "string", "description": "Cataloging job ID"}},
+        required=["job_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=get_cataloging_control_state,
     ))
 
     _r(ToolDef(
@@ -2222,6 +2255,18 @@ def _register_all() -> None:
             "phase": {
                 "type": "string",
                 "description": "facts or candidates. facts may be parallel; candidates returns the next chapter allowed by chapter_order.",
+            },
+            "include_content": {
+                "type": "boolean",
+                "description": "Whether to return chapter text in the tool result. Set false when the Agent can read content_file_path directly.",
+            },
+            "include_prompt_pack": {
+                "type": "boolean",
+                "description": "Whether to include the full prompt pack in the tool result. Set false when the task file already contains the shared prompt.",
+            },
+            "include_context_indexes": {
+                "type": "boolean",
+                "description": "Whether to return character/worldbuilding/outline indexes. Set false when the Agent can search the project mirror directly.",
             },
         },
         required=["job_id"],

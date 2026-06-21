@@ -7,7 +7,11 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import Base, Project
+from pathlib import Path
+
+from app.database.models import Base, Chapter, Project
+from app.services.cataloging.local_cli_agent import _task_text, _turn_stage
+from app.services.cataloging.orchestrator import create_cataloging_job
 from app.services.local_cli_agent_worker import start_local_cli_agent_worker, write_task_file
 from app.services.workspace.registry import registry
 
@@ -72,3 +76,49 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIsNotNone(tool)
         self.assertEqual(tool.tool_type, "scheduler")
         self.assertEqual(tool.estimated_cost, "local_cli")
+
+    def test_cataloging_task_reads_chapter_file_and_writes_through_mcp(self):
+        project = self._project()
+        chapter = Chapter(
+            project_id=project.id,
+            title="第一章 旧门",
+            content="这段正文不应被复制进 CLI 任务文件。",
+        )
+        self.db.add(chapter)
+        self.db.commit()
+        job = create_cataloging_job(
+            self.db,
+            project.id,
+            "auto",
+            "opencode_cli:opencode/deepseek-v4-flash-free",
+            [chapter.id],
+            execution_backend="local_cli_agent",
+        )
+        run = job.chapter_runs[0]
+        project_folder = Path(self.tmp.name) / "project"
+        chapter_file = project_folder / "chapters" / "0001.md"
+
+        task = _task_text(
+            job=job,
+            run=run,
+            agent_run_id="agent-run-1",
+            provider="opencode_cli",
+            project=project,
+            project_folder=project_folder,
+            chapter=chapter,
+            chapter_file=chapter_file,
+            stage="full",
+        )
+
+        self.assertIn(str(chapter_file), task)
+        self.assertIn("include_content=false", task)
+        self.assertIn("include_context_indexes=false", task)
+        self.assertIn("所有事实、候选和应用操作必须调用 Moshu MCP 工具", task)
+        self.assertIn("report_agent_progress", task)
+        self.assertNotIn(chapter.content, task)
+        self.assertEqual(_turn_stage(run, "auto"), "full")
+
+        run.status = "facts_saved"
+        self.assertEqual(_turn_stage(run, "auto"), "candidates")
+        run.status = "awaiting_confirmation"
+        self.assertEqual(_turn_stage(run, "auto"), "apply")

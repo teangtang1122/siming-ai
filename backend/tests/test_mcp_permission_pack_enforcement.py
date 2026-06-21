@@ -75,10 +75,24 @@ class ListMcpToolsByPackTest(unittest.TestCase):
         self.assertIn("delete_project", names)
         self.assertIn("delete_chapter", names)
 
+    def test_cataloging_worker_pack_is_compact_and_complete(self):
+        tools = list_mcp_tools(permission_pack="cataloging_worker")
+        names = {t.name for t in tools}
+        self.assertEqual(len(names), 10)
+        self.assertIn("get_next_external_cataloging_chapter", names)
+        self.assertIn("save_external_cataloging_facts", names)
+        self.assertIn("save_external_cataloging_candidates", names)
+        self.assertIn("apply_pending_cataloging", names)
+        self.assertIn("report_agent_progress", names)
+        self.assertNotIn("list_projects", names)
+        self.assertNotIn("chapter_writer", names)
+        self.assertNotIn("delete_project", names)
+
     def test_no_secret_tools_in_any_pack(self):
         from app.mcp.permissions import is_secret_tool
         for pack in ["readonly_collaboration", "draft_generation", "project_writing",
-                     "project_management", "internal_llm", "trusted_local_maintenance"]:
+                     "project_management", "internal_llm", "trusted_local_maintenance",
+                     "cataloging_worker"]:
             tools = list_mcp_tools(permission_pack=pack)
             for t in tools:
                 self.assertFalse(

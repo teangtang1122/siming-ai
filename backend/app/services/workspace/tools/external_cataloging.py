@@ -289,6 +289,7 @@ async def start_external_cataloging_job(
     job = CatalogingJob(
         project_id=project_id,
         execution_mode="external_agent",
+        execution_backend="external_agent",
         status="running",
         total_chapters=len(chapters),
     )
@@ -349,6 +350,9 @@ async def get_next_external_cataloging_chapter(
 
     job_id = str(args.get("job_id") or "").strip()
     phase = str(args.get("phase") or "facts").strip().lower()
+    include_content = bool(args.get("include_content", True))
+    include_prompt_pack = bool(args.get("include_prompt_pack", True))
+    include_context_indexes = bool(args.get("include_context_indexes", True))
     if phase in {"candidate", "resolution", "resolve", "apply"}:
         phase = "candidates"
     if phase not in {"facts", "candidates"}:
@@ -552,32 +556,34 @@ async def get_next_external_cataloging_chapter(
                 "data": None,
             }
 
-    # Build context indexes
-    characters = db.query(Character).filter(
-        Character.project_id == effective_project_id,
-    ).all()
-    char_index = {c.name: c.id for c in characters}
-    # Also include aliases
-    for c in characters:
-        if hasattr(c, 'aliases') and c.aliases:
-            for alias in c.aliases:
-                alias_name = getattr(alias, "alias", None) or getattr(alias, "alias_name", None)
-                if alias_name:
-                    char_index[alias_name] = c.id
+    char_index: dict[str, str] = {}
+    wb_index: dict[str, str] = {}
+    outline_neighborhood: list[dict[str, Any]] = []
+    if include_context_indexes:
+        characters = db.query(Character).filter(
+            Character.project_id == effective_project_id,
+        ).all()
+        char_index = {c.name: c.id for c in characters}
+        # Also include aliases.
+        for c in characters:
+            if hasattr(c, "aliases") and c.aliases:
+                for alias in c.aliases:
+                    alias_name = getattr(alias, "alias", None) or getattr(alias, "alias_name", None)
+                    if alias_name:
+                        char_index[alias_name] = c.id
 
-    wb_entries = db.query(WorldbuildingEntry).filter(
-        WorldbuildingEntry.project_id == effective_project_id,
-    ).all()
-    wb_index = {e.title: e.id for e in wb_entries}
+        wb_entries = db.query(WorldbuildingEntry).filter(
+            WorldbuildingEntry.project_id == effective_project_id,
+        ).all()
+        wb_index = {e.title: e.id for e in wb_entries}
 
-    # Get outline neighborhood
-    outline_nodes = db.query(OutlineNode).filter(
-        OutlineNode.project_id == effective_project_id,
-    ).order_by(OutlineNode.sort_order).limit(20).all()
-    outline_neighborhood = [
-        {"id": n.id, "title": n.title, "node_type": n.node_type, "parent_id": n.parent_id}
-        for n in outline_nodes
-    ]
+        outline_nodes = db.query(OutlineNode).filter(
+            OutlineNode.project_id == effective_project_id,
+        ).order_by(OutlineNode.sort_order).limit(20).all()
+        outline_neighborhood = [
+            {"id": n.id, "title": n.title, "node_type": n.node_type, "parent_id": n.parent_id}
+            for n in outline_nodes
+        ]
 
     # Get prompt pack
     pack = db.query(PublicPromptPack).filter(
@@ -586,7 +592,7 @@ async def get_next_external_cataloging_chapter(
     ).first()
 
     prompt_pack_data = None
-    if pack:
+    if pack and include_prompt_pack:
         prompt_pack_data = {
             "pack_id": pack.pack_id,
             "version": pack.version,
@@ -599,6 +605,23 @@ async def get_next_external_cataloging_chapter(
         chapter_run.status = "in_progress"
         db.commit()
 
+    from app.database.models import Project
+    from app.services.content_store import ensure_project_folder, sync_chapter_to_file
+
+    project = db.query(Project).filter(Project.id == effective_project_id).first()
+    project_folder = ""
+    content_file_path = ""
+    if project:
+        folder = ensure_project_folder(db, project)
+        file_path = folder / chapter.content_file_path if chapter.content_file_path else None
+        if not file_path or not file_path.exists():
+            sync_chapter_to_file(db, project, chapter, index=chapter_run.chapter_order + 1)
+            file_path = folder / chapter.content_file_path if chapter.content_file_path else None
+        project_folder = str(folder)
+        if file_path and file_path.exists():
+            content_file_path = str(file_path.resolve())
+        db.commit()
+
     return {
         "tool": "get_next_external_cataloging_chapter",
         "status": "ok",
@@ -608,9 +631,14 @@ async def get_next_external_cataloging_chapter(
             "project_id": effective_project_id,
             "phase": phase,
             "chapter_id": chapter.id,
+            "chapter_run_id": chapter_run.id,
             "chapter_index": chapter_run.chapter_order,
             "title": chapter.title,
-            "content": chapter.content,
+            "content": chapter.content if include_content else None,
+            "content_included": include_content,
+            "context_indexes_included": include_context_indexes,
+            "content_file_path": content_file_path,
+            "project_folder": project_folder,
             "character_alias_index": char_index,
             "worldbuilding_title_index": wb_index,
             "outline_neighborhood": outline_neighborhood,

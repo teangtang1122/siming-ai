@@ -66,6 +66,7 @@ from .import_tools import import_file_as_chapters, import_file_as_project, impor
 from .cataloging import (
     apply_pending_cataloging,
     cancel_cataloging_job,
+    get_cataloging_control_state,
     get_cataloging_job,
     list_cataloging_candidates,
     list_cataloging_facts,
@@ -176,6 +177,7 @@ __all__ = [
     "import_file_as_project",
     "start_cataloging_job",
     "list_cataloging_jobs",
+    "get_cataloging_control_state",
     "get_cataloging_job",
     "set_cataloging_mode",
     "list_cataloging_candidates",

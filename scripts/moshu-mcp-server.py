@@ -93,6 +93,7 @@ def main() -> None:
             "project_management",
             "internal_llm",
             "trusted_local_maintenance",
+            "cataloging_worker",
         ],
         help="MCP permission pack to expose. 'auto' resolves from global/project settings. Fixed packs bypass UI settings.",
     )
@@ -115,7 +116,17 @@ def main() -> None:
 
     # ── Database setup ───────────────────────────────────────────────────
     _prepare_data_environment()
-    from app.database.session import SessionLocal
+    from app.database.backup import backup_sqlite_database
+    from app.database.migrations import ensure_runtime_schema, runtime_schema_needs_sync
+    from app.database.models import Base
+    from app.database.session import SessionLocal, engine
+
+    if runtime_schema_needs_sync(engine):
+        from app.core.config import get_settings
+
+        backup_sqlite_database(get_settings().database_url, reason="pre-mcp-schema-sync")
+    Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema(engine)
     db = SessionLocal()
 
     # ── MCP server ───────────────────────────────────────────────────────

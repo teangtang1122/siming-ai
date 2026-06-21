@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from typing import Any, TextIO
 
@@ -295,7 +296,11 @@ def serve_stdio(
 
     # Resolve "auto" permission pack from settings
     resolved_pack = permission_pack
-    if permission_pack == "auto" and db is not None:
+    managed_agent_kind = os.environ.get("MOSHU_MANAGED_AGENT_KIND", "").strip().lower()
+    if managed_agent_kind == "cataloging":
+        resolved_pack = "cataloging_worker"
+        logger.info("Managed cataloging Agent: using compact MCP permission pack")
+    elif permission_pack == "auto" and db is not None:
         try:
             from app.services.external_agent.permissions import resolve_effective_pack
             result = resolve_effective_pack(db, project_id=project_id or None)

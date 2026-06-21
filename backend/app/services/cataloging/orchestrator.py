@@ -8,9 +8,9 @@ from typing import Any, AsyncGenerator
 from sqlalchemy.orm import Session
 
 from ...ai.gateway import LLMGateway
-from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter
+from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter, Project
 from ...database.session import SessionLocal
-from ..content_store import sync_project_to_files
+from ..content_store import ensure_project_folder, sync_chapter_to_file, sync_project_to_files
 from .applier import apply_candidates_for_run, candidate_to_dict
 from .candidate_store import try_create_candidate
 from .constants import (
@@ -44,6 +44,8 @@ def job_to_dict(job: CatalogingJob) -> dict[str, Any]:
         "project_id": job.project_id,
         "status": job.status,
         "execution_mode": job.execution_mode,
+        "execution_backend": job.execution_backend or "internal_llm",
+        "agent_run_id": job.agent_run_id,
         "current_chapter_id": job.current_chapter_id,
         "last_completed_chapter_id": job.last_completed_chapter_id,
         "blocked_chapter_id": job.blocked_chapter_id,
@@ -80,12 +82,14 @@ def create_cataloging_job(
     execution_mode: str,
     model: str | None,
     chapter_ids: list[str] | None,
+    execution_backend: str = "internal_llm",
 ) -> CatalogingJob:
     chapters = ordered_chapters(db, project_id, chapter_ids)
     job = CatalogingJob(
         project_id=project_id,
         status="queued",
         execution_mode=execution_mode if execution_mode in {"auto", "manual"} else "auto",
+        execution_backend=execution_backend,
         total_chapters=len(chapters),
         completed_chapters=0,
         failed_chapters=0,
@@ -185,6 +189,19 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         db.commit()
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
         return
+    project = db.query(Project).filter(Project.id == job.project_id).first()
+    project_folder = ""
+    chapter_file = ""
+    if project:
+        folder = ensure_project_folder(db, project)
+        path = folder / chapter.content_file_path if chapter.content_file_path else None
+        if not path or not path.exists():
+            sync_chapter_to_file(db, project, chapter, index=run.chapter_order + 1)
+            path = folder / chapter.content_file_path if chapter.content_file_path else None
+        project_folder = str(folder)
+        if path and path.exists():
+            chapter_file = str(path.resolve())
+        db.commit()
 
     run.status = "extracting"
     run.started_at = run.started_at or datetime.utcnow()
@@ -225,14 +242,30 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     fact_stream = LLMGateway.stream_chat_completion(
                         messages=[
                             {"role": "system", "content": FACT_EXTRACTION_SYSTEM_PROMPT},
-                            {"role": "user", "content": build_fact_extraction_prompt(chapter.title, chapter.content or "")},
+                            {
+                                "role": "user",
+                                "content": (
+                                    build_fact_extraction_prompt(chapter.title, chapter.content or "")
+                                    if not chapter_file
+                                    else (
+                                        f"当前章节标题：{chapter.title}\n\n"
+                                        f"当前章节 UTF-8 镜像文件：{chapter_file}\n\n"
+                                        "请完整读取附件中的章节正文，按系统规则输出事实 JSONL。"
+                                        "先输出 chapter_overview，再输出角色、关系、世界观、大纲和身份线索事实。"
+                                    )
+                                ),
+                            },
                         ],
                         model=job.model,
                         temperature=0.1,
                         max_tokens=min(CATALOGING_MAX_TOKENS, 12000),
                         timeout=CATALOGING_TIMEOUT_SECONDS,
                         retry=1,
-                        extra_body=cataloging_extra_body(job.model),
+                        extra_body=cataloging_extra_body(
+                            job.model,
+                            cwd=project_folder or None,
+                            attachments=[chapter_file] if chapter_file else None,
+                        ),
                     )
                     async for chunk in fact_stream:
                         raw_fact_parts.append(chunk)
@@ -327,7 +360,10 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     max_tokens=CATALOGING_MAX_TOKENS,
                     timeout=CATALOGING_TIMEOUT_SECONDS,
                     retry=1,
-                    extra_body=cataloging_extra_body(job.model),
+                    extra_body=cataloging_extra_body(
+                        job.model,
+                        cwd=project_folder or None,
+                    ),
                 )
                 async for chunk in candidate_stream:
                     raw_candidate_parts.append(chunk)

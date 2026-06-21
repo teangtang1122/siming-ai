@@ -174,6 +174,7 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
     from app.ai.local_cli_adapter import (
         DEFAULT_CLI_ARGS,
         DEFAULT_CLI_MODELS,
+        OPENCODE_LEGACY_MODEL,
     )
     from app.core.crypto import encrypt
     from app.database.models import APIConfig
@@ -190,6 +191,7 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
         ("openclaw_cli", ["openclaw.cmd", "openclaw", "openclaw.exe"]),
     ]
     created: list[str] = []
+    changed = False
     for provider, commands in descriptors:
         if provider == "cursor_cli":
             command = cursor_command()
@@ -201,6 +203,15 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
             continue
         existing = db.query(APIConfig).filter(APIConfig.provider == provider).first()
         if existing:
+            if provider == "opencode_cli" and existing.default_model == OPENCODE_LEGACY_MODEL:
+                existing.default_model = DEFAULT_CLI_MODELS[provider]
+                legacy_args = json.dumps(
+                    ["run", "--dangerously-skip-permissions", "{prompt}"],
+                    ensure_ascii=False,
+                )
+                if existing.cli_args == legacy_args:
+                    existing.cli_args = json.dumps(DEFAULT_CLI_ARGS[provider], ensure_ascii=False)
+                changed = True
             continue
         db.add(APIConfig(
             provider=provider,
@@ -213,7 +224,7 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
             cli_args=json.dumps(DEFAULT_CLI_ARGS[provider], ensure_ascii=False),
         ))
         created.append(provider)
-    if created:
+    if created or changed:
         db.commit()
     return created
 

@@ -12,7 +12,7 @@ from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
-from ..database.session import get_db
+from ..database.session import SessionLocal, get_db
 from ..schemas.cataloging import (
     CatalogingCandidateBulkUpdate,
     CatalogingCandidateCreate,
@@ -37,6 +37,12 @@ from ..services.cataloging.lookups import find_character_by_name_or_id
 from ..services.cataloging.manual_ops import create_manual_candidate, has_usable_chapter_summary, recover_failed_run_for_review
 from ..services.cataloging.model_selection import default_cataloging_model
 from ..services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
+from ..services.cataloging.local_cli_agent import (
+    cancel_local_cli_cataloging_worker,
+    ensure_local_cli_cataloging_worker,
+    stream_local_cli_cataloging_job,
+)
+from ..ai.local_cli_adapter import is_local_cli_provider
 from ..services.character_merge_service import build_character_merge_preview
 
 router = APIRouter(tags=["cataloging"])
@@ -61,10 +67,27 @@ def _get_candidate_or_404(db: Session, project_id: str, candidate_id: str) -> Ca
 
 
 @router.post("/projects/{project_id}/cataloging/start")
-def start_cataloging(project_id: str, payload: CatalogingStartRequest, db: Session = Depends(get_db)):
+async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     model = default_cataloging_model(payload.model)
-    job = create_cataloging_job(db, project_id, payload.execution_mode, model, payload.chapter_ids)
+    provider = (model or "").split(":", 1)[0].lower()
+    local_cli = is_local_cli_provider(provider)
+    job = create_cataloging_job(
+        db,
+        project_id,
+        payload.execution_mode,
+        model,
+        payload.chapter_ids,
+        execution_backend="local_cli_agent" if local_cli else "internal_llm",
+    )
+    if local_cli:
+        try:
+            ensure_local_cli_cataloging_worker(db, job, provider=provider)
+        except Exception as exc:
+            job.status = "paused_on_failure"
+            job.error = str(exc)
+            db.commit()
+            raise ValidationError(str(exc)) from exc
     return ApiResponse.success(data=job_to_dict(job), message="作品建档任务已创建")
 
 
@@ -96,8 +119,18 @@ def get_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_d
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/stream")
 async def stream_cataloging(project_id: str, job_id: str):
+    db = SessionLocal()
+    try:
+        job = _get_job_or_404(db, project_id, job_id)
+        local_cli = job.execution_backend == "local_cli_agent"
+    finally:
+        db.close()
     return StreamingResponse(
-        stream_cataloging_job(project_id, job_id),
+        (
+            stream_local_cli_cataloging_job(project_id, job_id)
+            if local_cli
+            else stream_cataloging_job(project_id, job_id)
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -113,8 +146,12 @@ def update_cataloging_mode(project_id: str, job_id: str, payload: CatalogingMode
     job = _get_job_or_404(db, project_id, job_id)
     job.execution_mode = payload.execution_mode
     job.updated_at = datetime.utcnow()
+    should_resume = job.status == "waiting_confirmation" and payload.execution_mode == "auto"
+    if should_resume and job.execution_backend == "local_cli_agent":
+        job.status = "running"
+        job.blocked_chapter_id = None
     db.commit()
-    return ApiResponse.success(data={"job": job_to_dict(job), "should_resume": job.status == "waiting_confirmation" and payload.execution_mode == "auto"})
+    return ApiResponse.success(data={"job": job_to_dict(job), "should_resume": should_resume})
 
 
 @router.get("/projects/{project_id}/cataloging/{job_id}/candidates")
@@ -359,6 +396,8 @@ def pause_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get
     if job.status not in {"completed", "cancelled", "failed"}:
         pause_job(job)
         db.commit()
+        if job.execution_backend == "local_cli_agent":
+            cancel_local_cli_cataloging_worker(job.id)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已暂停")
 
 
@@ -380,4 +419,6 @@ def cancel_cataloging_job(project_id: str, job_id: str, db: Session = Depends(ge
         return ApiResponse.success(data={"job": job_to_dict(job)}, message="任务已结束")
     cancel_job(job)
     db.commit()
+    if job.execution_backend == "local_cli_agent":
+        cancel_local_cli_cataloging_worker(job.id, terminal=True)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已取消")

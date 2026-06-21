@@ -310,12 +310,23 @@ def _run_mcp_server() -> None:
         "--permission-pack",
         default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "auto"),
         choices=["auto", "readonly_collaboration", "draft_generation", "project_writing",
-                 "project_management", "internal_llm", "trusted_local_maintenance"],
+                 "project_management", "internal_llm", "trusted_local_maintenance",
+                 "cataloging_worker"],
     )
     args, _ = parser.parse_known_args()
     _configure_stdio_utf8()
     _prepare_data_environment()
-    from app.database.session import SessionLocal
+    from app.database.backup import backup_sqlite_database
+    from app.database.migrations import ensure_runtime_schema, runtime_schema_needs_sync
+    from app.database.models import Base
+    from app.database.session import SessionLocal, engine
+
+    if runtime_schema_needs_sync(engine):
+        from app.core.config import get_settings
+
+        backup_sqlite_database(get_settings().database_url, reason="pre-mcp-schema-sync")
+    Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema(engine)
     from app.mcp.server import serve_stdio
     db = SessionLocal()
     try:

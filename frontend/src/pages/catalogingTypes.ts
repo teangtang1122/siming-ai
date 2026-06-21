@@ -17,6 +17,8 @@ export interface CatalogingJob {
   project_id: string
   status: string
   execution_mode: CatalogingMode
+  execution_backend?: 'internal_llm' | 'local_cli_agent' | 'external_agent' | string
+  agent_run_id?: string | null
   current_chapter_id?: string | null
   last_completed_chapter_id?: string | null
   blocked_chapter_id?: string | null

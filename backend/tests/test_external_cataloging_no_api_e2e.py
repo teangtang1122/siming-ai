@@ -168,6 +168,45 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
         self.assertGreaterEqual(self.db.query(Character).count(), 1)
         self.assertGreaterEqual(self.db.query(OutlineNode).count(), 3)
 
+    def test_file_read_mode_returns_path_without_chapter_or_indexes(self):
+        """Managed CLI workers receive a file pointer instead of duplicate context."""
+        from pathlib import Path
+
+        from app.services.workspace.tools.external_cataloging import (
+            get_next_external_cataloging_chapter,
+            start_external_cataloging_job,
+        )
+
+        project_id = self.project.id
+        result = _run(start_external_cataloging_job(
+            self.db,
+            project_id,
+            {"chapter_ids": [self.chapters[0].id]},
+        ))
+        self.assertEqual(result["status"], "ok")
+
+        result = _run(get_next_external_cataloging_chapter(
+            self.db,
+            project_id,
+            {
+                "job_id": result["data"]["job_id"],
+                "include_content": False,
+                "include_prompt_pack": False,
+                "include_context_indexes": False,
+            },
+        ))
+        self.assertEqual(result["status"], "ok")
+        data = result["data"]
+        self.assertIsNone(data["content"])
+        self.assertFalse(data["content_included"])
+        self.assertFalse(data["context_indexes_included"])
+        self.assertIsNone(data["prompt_pack"])
+        self.assertEqual(data["character_alias_index"], {})
+        self.assertEqual(data["worldbuilding_title_index"], {})
+        self.assertEqual(data["outline_neighborhood"], [])
+        self.assertTrue(Path(data["content_file_path"]).is_file())
+        self.assertTrue(Path(data["project_folder"]).is_dir())
+
     def test_chinese_cataloging_candidates_are_persisted(self):
         """External cataloging must preserve Chinese names and archive text."""
         from app.services.workspace.tools.external_cataloging import (

@@ -51,17 +51,18 @@ function Invoke-LocalJsonGet {
 # Step 1: Build package
 if (-not $SkipBuild) {
     Write-Host "[1/6] Building package..." -ForegroundColor Yellow
-    $buildScript = Join-Path $projectRoot "build-exe.bat"
+    $buildScript = Join-Path $projectRoot "scripts\build-exe.ps1"
     if (-not (Test-Path $buildScript)) {
-        Write-Host "ERROR: build-exe.bat not found at $buildScript" -ForegroundColor Red
+        Write-Host "ERROR: build-exe.ps1 not found at $buildScript" -ForegroundColor Red
         exit 1
     }
     Push-Location $projectRoot
-    & cmd /c build-exe.bat
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $buildScript
+    $buildExitCode = $LASTEXITCODE
     Pop-Location
-    if ($LASTEXITCODE -ne 0) {
+    if ($buildExitCode -ne 0) {
         Write-Host "ERROR: Build failed" -ForegroundColor Red
-        exit 1
+        exit $buildExitCode
     }
     Write-Host "  Build completed successfully" -ForegroundColor Green
 } else {
