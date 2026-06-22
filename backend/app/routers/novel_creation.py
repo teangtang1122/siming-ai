@@ -31,6 +31,7 @@ class NovelCreationStartRequest(BaseModel):
 class NovelCreationDraftRequest(BaseModel):
     session_id: str
     execution_mode: Literal["template", "hybrid", "external_agent", "internal_llm"] = "hybrid"
+    model: str | None = None
     user_brief: str = ""
     feedback: str = ""
     revision_mode: Literal["initial", "refine", "regenerate"] = "initial"
@@ -89,6 +90,7 @@ class RefreshQuestionRequest(BaseModel):
     question: str
     existing_options: list[str] = []
     user_brief: str = ""
+    model: str | None = None
 
 
 @router.post("/novel-creation/refresh-question")
@@ -100,12 +102,14 @@ async def refresh_question(payload: RefreshQuestionRequest, db: Session = Depend
         question=payload.question,
         existing_options=payload.existing_options,
         user_brief=payload.user_brief,
+        model=payload.model,
     )
     return ApiResponse.success(data=result)
 
 
 class SystemChatRequest(BaseModel):
     message: str
+    model: str | None = None
     context: dict[str, Any] | None = None  # {blueprints, sessionId, brief, importedFiles, history}
 
 
@@ -116,6 +120,7 @@ async def system_chat(payload: SystemChatRequest):
     result = await system_chat_completion(
         message=payload.message,
         context=payload.context or {},
+        model=payload.model,
     )
     return ApiResponse.success(data=result)
 

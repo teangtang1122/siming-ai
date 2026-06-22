@@ -338,6 +338,7 @@ def _stream_cataloging_job(
                 project_id=project_id,
                 title=_assistant_title_from_message(message),
                 scope=scope,
+                model=model,
             )
             db.add(conversation)
             db.flush()
@@ -605,6 +606,7 @@ async def detect_and_stream_plan(
                 project_id=project_id,
                 title=_assistant_title_from_message(message),
                 scope=scope,
+                model=model,
             )
             db.add(conversation)
             db.flush()

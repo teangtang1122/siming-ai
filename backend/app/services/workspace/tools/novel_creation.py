@@ -24,6 +24,13 @@ from ....core.json_repair import parse_json_object
 _logger = logging.getLogger(__name__)
 
 
+def _novel_creation_cli_context(model: str | None) -> dict[str, Any] | None:
+    """Keep local CLI planning calls inside the user's novel data directory."""
+    from app.services.content_store import content_root
+
+    return LLMGateway.local_cli_extra_body(model, cwd=str(content_root()))
+
+
 GENRE_LABELS = {
     "xianxia": "仙侠",
     "fantasy": "玄幻",
@@ -2224,6 +2231,7 @@ async def _generate_clarifying_questions(
     genre_label: str,
     target_audience: str,
     platform: str,
+    model: str | None = None,
 ) -> list[dict[str, str]] | None:
     """Generate 3-5 clarifying questions based on genre and what the user already provided.
 
@@ -2881,6 +2889,7 @@ async def _generate_clarifying_questions(
             platform=platform,
             genre_profile=genre_profile,
             ref_questions=ref_questions,
+            model=model,
         )
         if llm_questions:
             for q in llm_questions:
@@ -2916,6 +2925,7 @@ async def _generate_clarifying_questions(
                 user_brief=user_brief,
                 target_audience=target_audience,
                 platform=platform,
+                model=model,
             )
             if llm_questions:
                 for q in llm_questions:
@@ -2980,6 +2990,7 @@ async def _evaluate_answers(
     user_brief: str,
     genre_label: str,
     qa_history: list[dict[str, str]],
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Use LLM to evaluate if collected answers provide enough info to generate blueprints.
 
@@ -3028,10 +3039,12 @@ async def _evaluate_answers(
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.5,
             max_tokens=1500,
             timeout=20,
             retry=0,
+            extra_body=_novel_creation_cli_context(model),
         )
     except Exception as exc:
         _logger.warning("LLM answer evaluation failed: %s", exc)
@@ -3155,6 +3168,7 @@ async def _llm_generate_genre_questions(
     platform: str,
     genre_profile: str = "",
     ref_questions: list[dict[str, Any]] | None = None,
+    model: str | None = None,
 ) -> list[dict[str, str]] | None:
     """Use LLM to generate genre-specific clarifying questions.
 
@@ -3222,10 +3236,12 @@ async def _llm_generate_genre_questions(
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.7,
             max_tokens=1500,
             timeout=20,
             retry=0,
+            extra_body=_novel_creation_cli_context(model),
         )
     except Exception as exc:
         _logger.info("LLM genre questions generation failed (will use generic): %s", exc)
@@ -3259,15 +3275,18 @@ async def _call_llm_for_blueprints(
     messages: list[dict[str, str]],
     *,
     expect_list: bool = False,
+    model: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
     """Call LLM to generate/refine blueprints. Returns parsed JSON or None on failure."""
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.8,
             max_tokens=12000,
             timeout=60,
             retry=1,
+            extra_body=_novel_creation_cli_context(model),
         )
     except Exception as exc:
         _logger.warning("LLM blueprint generation failed: %s", exc)
@@ -3303,15 +3322,19 @@ async def _call_llm_for_blueprints(
 
 async def _call_llm_for_single_blueprint(
     messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
 ) -> dict[str, Any] | None:
     """Call LLM to generate a single blueprint. Returns parsed JSON or None on failure."""
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.9,
             max_tokens=4000,
             timeout=60,
             retry=0,
+            extra_body=_novel_creation_cli_context(model),
         )
     except Exception as exc:
         _logger.warning("LLM single blueprint generation failed: %s", exc)
@@ -3383,6 +3406,7 @@ async def _try_llm_initial_draft(
     session: Any,
     template_blueprints: list[dict[str, Any]],
     user_brief: str,
+    model: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """Attempt LLM-powered generation of original blueprint concepts.
 
@@ -3441,7 +3465,7 @@ async def _try_llm_initial_draft(
 
     _logger.info("Hybrid mode: calling LLM for 3 variants in parallel (genre=%s)...", genre_label)
     llm_results = await asyncio.gather(
-        *[_call_llm_for_single_blueprint(msgs) for msgs in prompts],
+        *[_call_llm_for_single_blueprint(msgs, model=model) for msgs in prompts],
         return_exceptions=True,
     )
 
@@ -3590,6 +3614,7 @@ async def _try_llm_blueprint_refinement(
     feedback: str,
     revision_mode: str,
     user_brief: str,
+    model: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """Attempt LLM-powered blueprint refinement. Returns None if LLM unavailable or fails."""
     genre_label = _genre_label(_clean_text(session.genre, "other"))
@@ -3615,7 +3640,7 @@ async def _try_llm_blueprint_refinement(
             for template_bp in template_blueprints
         ]
         llm_results = await asyncio.gather(
-            *[_call_llm_for_blueprints(msgs, expect_list=False) for msgs in prompts],
+            *[_call_llm_for_blueprints(msgs, expect_list=False, model=model) for msgs in prompts],
             return_exceptions=True,
         )
 
@@ -3658,7 +3683,7 @@ async def _try_llm_blueprint_refinement(
             session_context=session_context,
             session_id=session_id,
         )
-        llm_blueprints = await _call_llm_for_blueprints(messages, expect_list=True)
+        llm_blueprints = await _call_llm_for_blueprints(messages, expect_list=True, model=model)
         if not llm_blueprints or not isinstance(llm_blueprints, list):
             return None
 
@@ -4798,6 +4823,7 @@ async def draft_novel_blueprint(
     feedback = _clean_text(args.get("feedback"))
     revision_mode = _clean_text(args.get("revision_mode"), "initial")
     enhance_with_llm = _as_bool(args.get("enhance_with_llm"), False)
+    model = _clean_text(args.get("model")) or None
 
     if not session_id:
         return {"tool": "draft_novel_blueprint", "status": "skipped", "detail": "session_id is required", "data": None}
@@ -4824,6 +4850,7 @@ async def draft_novel_blueprint(
                 user_brief=_clean_text(user_brief or session.user_brief),
                 genre_label=genre_label,
                 qa_history=qa_history,
+                model=model,
             )
             if evaluation.get("action") == "ask_more" and evaluation.get("questions"):
                 # Need more info — return new questions
@@ -4853,6 +4880,7 @@ async def draft_novel_blueprint(
                 genre_label=_genre_display_label(session.genre, _clean_text(user_brief or session.user_brief)),
                 target_audience=_clean_text(session.target_audience),
                 platform=_clean_text(session.platform),
+                model=model,
             )
             if questions:
                 _logger.info("Brief needs clarification, returning %d questions", len(questions))
@@ -4906,6 +4934,7 @@ async def draft_novel_blueprint(
                     feedback=feedback,
                     revision_mode=revision_mode,
                     user_brief=_clean_text(user_brief or session.user_brief),
+                    model=model,
                 )
             else:
                 # Initial draft: use LLM to enhance template skeleton
@@ -4913,6 +4942,7 @@ async def draft_novel_blueprint(
                     session=session,
                     template_blueprints=template_blueprints,
                     user_brief=_clean_text(user_brief or session.user_brief),
+                    model=model,
                 )
             if llm_result:
                 blueprints = llm_result
@@ -5573,6 +5603,7 @@ async def refresh_question_options(
     question: str,
     existing_options: list[str],
     user_brief: str,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Generate new options for an existing question, avoiding duplicates with existing options.
 
@@ -5608,10 +5639,12 @@ async def refresh_question_options(
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.9,
             max_tokens=800,
             timeout=15,
             retry=0,
+            extra_body=_novel_creation_cli_context(model),
         )
     except Exception as exc:
         _logger.warning("Refresh question options failed: %s", exc)
@@ -5645,6 +5678,7 @@ async def system_chat_completion(
     *,
     message: str,
     context: dict[str, Any],
+    model: str | None = None,
 ) -> dict[str, Any]:
     """General conversation for system assistant without project context.
 
@@ -5689,7 +5723,7 @@ async def system_chat_completion(
     context_desc = "\n".join(context_parts) if context_parts else "当前没有任何特殊上下文。"
 
     try:
-        provider, model_name = LLMGateway.model_identity(None)
+        provider, model_name = LLMGateway.model_identity(model)
         model_identity = f"{provider}:{model_name}"
     except Exception:
         model_identity = "墨枢系统设置中的默认模型"
@@ -5726,18 +5760,14 @@ async def system_chat_completion(
     ]
 
     try:
-        from app.services.content_store import content_root
-
         result = await LLMGateway.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.7,
             max_tokens=800,
             timeout=30,
             retry=0,
-            extra_body=LLMGateway.local_cli_extra_body(
-                None,
-                cwd=str(content_root()),
-            ),
+            extra_body=_novel_creation_cli_context(model),
         )
         reply = (result.get("content") or "").strip()
         if not reply:

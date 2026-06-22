@@ -154,6 +154,7 @@ type AssistantMode = 'fast' | 'quality'
 
 const PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
 const SIDEBAR_STORAGE_KEY = 'moshu.gui.assistant.sidebarCollapsed'
+const MODEL_STORAGE_KEY = 'moshu.assistant.model'
 const CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
 
 interface CreationTemplate {
@@ -279,7 +280,10 @@ function GuiAssistantChat() {
   const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; content: string }>>([])
 
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
-  const [model, setModel] = useState<string | undefined>()
+  const [model, setModel] = useState<string | undefined>(
+    () => localStorage.getItem(MODEL_STORAGE_KEY) || undefined,
+  )
+  const selectedModel = model || defaultModel || undefined
   // Creative slots editor state
   const [slotEditorOpen, setSlotEditorOpen] = useState(false)
   const [slotBlueprintIndex, setSlotBlueprintIndex] = useState<number | null>(null)
@@ -315,6 +319,14 @@ function GuiAssistantChat() {
   useEffect(() => {
     if (!model && defaultModel) setModel(defaultModel)
   }, [model, defaultModel])
+
+  useEffect(() => {
+    if (model) {
+      localStorage.setItem(MODEL_STORAGE_KEY, model)
+    } else {
+      localStorage.removeItem(MODEL_STORAGE_KEY)
+    }
+  }, [model])
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? '1' : '0')
@@ -651,6 +663,7 @@ function GuiAssistantChat() {
         const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
           session_id: sessionId,
           execution_mode: 'hybrid',
+          model: selectedModel,
           user_brief: text,
           enhance_with_llm: false,
         })
@@ -699,6 +712,7 @@ function GuiAssistantChat() {
           const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
             session_id: systemSessionId,
             execution_mode: 'hybrid',
+            model: selectedModel,
             user_brief: systemBrief || text,
             skip_questions: true,
             revision_mode: 'initial',
@@ -727,6 +741,7 @@ function GuiAssistantChat() {
           const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
             session_id: systemSessionId,
             execution_mode: 'hybrid',
+            model: selectedModel,
             user_brief: systemBrief || text,
             answers: answers,
             revision_mode: 'initial',
@@ -768,6 +783,7 @@ function GuiAssistantChat() {
         const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
           session_id: systemSessionId,
           execution_mode: 'hybrid',
+          model: selectedModel,
           user_brief: systemBrief || text,
           feedback: text,
           revision_mode: revisionMode,
@@ -809,6 +825,7 @@ function GuiAssistantChat() {
       try {
         const chatRes = await apiClient.post<ApiResponse<{ reply: string }>>('/novel-creation/system-chat', {
           message: text,
+          model: selectedModel,
           context: {
             blueprints: systemBlueprints,
             sessionId: systemSessionId,
@@ -1154,6 +1171,7 @@ function GuiAssistantChat() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: systemSessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         user_brief: systemBrief,
         answers: answers,
         revision_mode: 'initial',
@@ -1229,6 +1247,7 @@ function GuiAssistantChat() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: systemSessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         user_brief: systemBrief,
         skip_questions: true,
         revision_mode: 'initial',
@@ -1264,6 +1283,7 @@ function GuiAssistantChat() {
           question: activeQuestion.question,
           existing_options: currentOptions,
           user_brief: systemBrief,
+          model: selectedModel,
         },
       )
       const newOptions = res.data?.data?.options || []
@@ -1434,6 +1454,7 @@ function GuiAssistantChat() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: systemSessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         user_brief: systemBrief,
         answers: answers,
         revision_mode: 'initial',

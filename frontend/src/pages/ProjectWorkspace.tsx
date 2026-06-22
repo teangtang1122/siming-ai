@@ -62,7 +62,9 @@ const PAGE_TITLES: Record<MenuKey, string> = {
 
 function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; setAiCollapsed: (v: boolean) => void }) {
   const { projectId } = useParams<{ projectId: string }>()
-  const [aiModel, setAiModel] = useState<string | undefined>()
+  const [aiModel, setAiModel] = useState<string | undefined>(
+    () => localStorage.getItem('moshu.assistant.model') || undefined,
+  )
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const { width: aiWidth, onDragHandleMouseDown: onAiResize, dragging: aiDragging } = usePanelResize({
     initialWidth: Math.min(560, Math.max(280, window.innerWidth * 0.24)),
@@ -80,6 +82,14 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
       setAiModel(defaultModel)
     }
   }, [aiModel, defaultModel])
+
+  useEffect(() => {
+    if (aiModel) {
+      localStorage.setItem('moshu.assistant.model', aiModel)
+    } else {
+      localStorage.removeItem('moshu.assistant.model')
+    }
+  }, [aiModel])
 
   return (
     <AiSidePanel

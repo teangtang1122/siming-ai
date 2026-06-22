@@ -3,7 +3,7 @@ import asyncio
 import sys
 import os
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -118,6 +118,70 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["execution_mode"], "hybrid")
         self.assertEqual(result["data"]["enhancement_mode"], "template_fallback")
+
+    def test_selected_model_is_forwarded_to_blueprint_llm(self):
+        from app.services.workspace.tools.novel_creation import draft_novel_blueprint
+
+        session = MagicMock()
+        session.id = "s1"
+        session.user_brief = "克苏鲁规则怪谈"
+        session.genre = "other"
+        session.target_audience = "all"
+        session.platform = "qidian"
+        session.blueprint_json = []
+
+        db = MagicMock()
+        query_mock = MagicMock()
+        query_mock.filter.return_value = query_mock
+        query_mock.first.return_value = session
+        db.query.return_value = query_mock
+
+        selected_model = "claude_cli:claude-code"
+        with patch(
+            "app.services.workspace.tools.novel_creation._generate_clarifying_questions",
+            new=AsyncMock(return_value=[]),
+        ) as questions_mock, patch(
+            "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
+            new=AsyncMock(return_value=None),
+        ) as draft_mock:
+            result = asyncio.run(draft_novel_blueprint(db, "p1", {
+                "session_id": "s1",
+                "execution_mode": "hybrid",
+                "model": selected_model,
+            }))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(questions_mock.await_args.kwargs["model"], selected_model)
+        self.assertEqual(draft_mock.await_args.kwargs["model"], selected_model)
+
+
+class SystemAssistantModelOverrideTest(unittest.TestCase):
+    def test_system_chat_uses_selected_model(self):
+        from app.services.workspace.tools.novel_creation import system_chat_completion
+
+        selected_model = "codex_cli:codex-cli"
+        with patch(
+            "app.services.workspace.tools.novel_creation.LLMGateway.model_identity",
+            return_value=("codex_cli", "codex-cli"),
+        ), patch(
+            "app.services.workspace.tools.novel_creation._novel_creation_cli_context",
+            return_value={"local_cli_cwd": r"D:\novels"},
+        ), patch(
+            "app.services.workspace.tools.novel_creation.LLMGateway.chat_completion",
+            new=AsyncMock(return_value={"content": "你好，我正在使用 Codex CLI。"}),
+        ) as completion_mock:
+            result = asyncio.run(system_chat_completion(
+                message="你是什么模型？",
+                context={},
+                model=selected_model,
+            ))
+
+        self.assertEqual(result["reply"], "你好，我正在使用 Codex CLI。")
+        self.assertEqual(completion_mock.await_args.kwargs["model"], selected_model)
+        self.assertEqual(
+            completion_mock.await_args.kwargs["extra_body"],
+            {"local_cli_cwd": r"D:\novels"},
+        )
 
     def test_template_mode_generates_full_blueprints(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
