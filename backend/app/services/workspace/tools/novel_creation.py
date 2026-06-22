@@ -5774,7 +5774,13 @@ async def system_chat_completion(
             reply = "抱歉，我没有理解你的意思。你可以告诉我你想写什么类型的小说，或者直接说「查看我的作品列表」。"
     except Exception as exc:
         _logger.warning("System chat failed: %s", exc)
-        reply = "抱歉，出了点问题。你可以直接说「我想写一本新书」来开始创作。"
+        detail = str(exc).strip()
+        if len(detail) > 500:
+            detail = detail[:500] + "..."
+        reply = (
+            f"当前选择的模型 {model_identity} 调用失败：{detail}"
+            "。请在系统设置中点击“测试本机 CLI”查看登录、模型或额度状态。"
+        )
 
     return {"reply": reply}
 
