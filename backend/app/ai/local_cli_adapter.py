@@ -94,6 +94,7 @@ STDIN_PROMPT_PROVIDERS = {
     "kilocode_cli",
     "qwen_code_cli",
 }
+AGENT_FILE_PROMPT_PROVIDERS = LOCAL_CLI_PROVIDERS - {"custom_cli"}
 WINDOWS_SAFE_ARG_CHARS = 12000
 OPENCODE_LEGACY_MODEL = "opencode-cli"
 OPENCODE_DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
@@ -316,6 +317,37 @@ class LocalCLIAdapter(BaseAdapter):
         return attachments
 
     @staticmethod
+    def _write_prompt_file(prompt: str, cwd: str, provider: str) -> str:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".md",
+            prefix=f"moshu-{provider}-task-",
+            dir=cwd,
+            delete=False,
+        ) as handle:
+            handle.write(prompt)
+            return handle.name
+
+    @staticmethod
+    def _file_prompt_instruction(prompt_file: str, attachments: list[str]) -> str:
+        attachment_note = ""
+        if attachments:
+            attachment_note = (
+                "\n任务可能引用以下只读资料文件：\n"
+                + "\n".join(f"- {path}" for path in attachments)
+            )
+        return (
+            "你是墨枢内部的文本生成执行器，不是代码助手。"
+            f"请读取 UTF-8 任务文件：{prompt_file}\n"
+            "严格按文件中的 SYSTEM/USER 指令完成任务。"
+            "除读取该任务文件和其中明确引用的资料外，不要扫描代码仓库，"
+            "不要修改文件，不要调用 Moshu MCP 或其他外部工具。"
+            "最终只输出任务要求的正文或结构化结果，不要回复 Ready。"
+            f"{attachment_note}"
+        )
+
+    @staticmethod
     def _opencode_env() -> dict[str, str]:
         env = os.environ.copy()
         env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
@@ -353,19 +385,10 @@ class LocalCLIAdapter(BaseAdapter):
         attachments: list[str],
     ) -> tuple[CLILaunch, str]:
         execution_model = effective_local_cli_model(self._provider, model)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            suffix=".md",
-            prefix="moshu-opencode-task-",
-            delete=False,
-        ) as handle:
-            handle.write(prompt)
-            prompt_file = handle.name
+        prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
 
         launch = self._launch(
-            "请完整读取附件中的墨枢任务，严格遵守其中的系统规则。"
-            "不要调用任何工具，不要写文件，只在最终回复中输出任务要求的结果。",
+            self._file_prompt_instruction(prompt_file, attachments),
             execution_model,
         )
         args = list(launch.args)
@@ -397,6 +420,10 @@ class LocalCLIAdapter(BaseAdapter):
                 attachments=attachments,
             )
             env = self._opencode_env()
+        elif self._provider in AGENT_FILE_PROMPT_PROVIDERS:
+            prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
+            launch_prompt = self._file_prompt_instruction(prompt_file, attachments)
+            launch = self._launch(launch_prompt, model)
         elif len(prompt) > WINDOWS_SAFE_ARG_CHARS and self._provider not in STDIN_PROMPT_PROVIDERS:
             with tempfile.NamedTemporaryFile(
                 mode="w",

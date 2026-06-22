@@ -1,6 +1,8 @@
 """Tests for local CLI model adapter helpers."""
 
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from app.ai.local_cli_adapter import (
@@ -130,6 +132,23 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         ):
             cwd = LocalCLIAdapter._runtime_cwd(None)
         self.assertEqual(cwd, r"D:\novels")
+
+    def test_agent_cli_prompt_is_written_as_utf8_task_file(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")
+        with tempfile.TemporaryDirectory() as directory:
+            prompt_file = adapter._write_prompt_file("中文任务：写第一章", directory, "claude_cli")
+            self.assertEqual(Path(prompt_file).read_text(encoding="utf-8"), "中文任务：写第一章")
+            self.assertEqual(Path(prompt_file).parent, Path(directory))
+
+    def test_file_prompt_instruction_blocks_repository_scanning_and_mcp_writes(self):
+        instruction = LocalCLIAdapter._file_prompt_instruction(
+            r"D:\novels\moshu-task.md",
+            [r"D:\novels\reference.txt"],
+        )
+        self.assertIn("不是代码助手", instruction)
+        self.assertIn("不要扫描代码仓库", instruction)
+        self.assertIn("不要调用 Moshu MCP", instruction)
+        self.assertIn(r"D:\novels\reference.txt", instruction)
 
     def test_normalize_plain_output_is_preserved(self):
         adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")
