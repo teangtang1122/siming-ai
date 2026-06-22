@@ -1,443 +1,246 @@
 # 墨枢 / Moshu
 
-## 外部 Agent 默认规则
+墨枢是一个本地运行的长篇小说 AI 工作台。它把章节、大纲、角色状态、关系网、世界观、伏笔、写作偏好和 AI 工作流放进同一个项目，让模型在几十万字之后仍能找到该看的资料、记住角色当前状态，并把生成结果真正保存回作品。
 
-Claude Code / Codex 通过 MCP 连接墨枢时，默认应走 **API-free 外部流程**：
+## 它解决什么痛点
 
-- `project_management` 权限包只暴露项目创建、导入、写入、导出、技能和自动任务等 API-free 工具。
-- `chapter_writer`、`start_cataloging_job`、`evaluate_chapter`、`design_plot` 等会消耗墨枢内部模型额度的工具只在 `internal_llm` 权限包中暴露。
-- 除非用户明确说“使用墨枢内部 API / 内部模型 / 系统模型额度”，外部 Agent 不应调用内部模型工具。
-- 中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观，不要因为工具报错改成英文或拼音。
-- 外部 Agent 建档应使用 `get_prompt_pack(pack_id="cataloging_external_no_api")`、`start_external_cataloging_job`、`get_next_external_cataloging_chapter`、`save_external_cataloging_facts`、`save_external_cataloging_candidates`、`apply_pending_cataloging`、`verify_external_cataloging_progress`。
-- 外部 Agent 建档分两段：事实提取可用 `get_next_external_cataloging_chapter(phase="facts")` 并行；候选生成必须用 `get_next_external_cataloging_chapter(phase="candidates")` 按章节顺序串行领取，不要按事实完成顺序生成候选。
-- 外部 Agent 写作应使用 `prepare_external_writing_context`、`save_external_chapter_draft`、`record_external_quality_review`、`create_chapter(draft_id/content_ref)`、`apply_external_story_updates`。
+直接用通用大模型写长篇小说，常见问题并不只是“文笔不够好”：
 
-墨枢是一个本地运行的长篇小说 AI 工作台。它把章节正文、大纲、角色、关系网、世界观、写作偏好、技能提示词和项目记忆放在同一个工作流里，让 AI 不只是“临时写一段”，而是能围绕一部作品持续工作。
+- 上下文越长，越容易忘记前文设定、时间线、伏笔和力量规则。
+- 角色容易 OOC，尤其会忘记当前位置、年龄、境界、伤势、目标、关系变化和已有装备。
+- 完本小说或几十万字资料无法一次塞进上下文，手动整理角色卡和世界观又很耗时。
+- 大纲、正文、角色状态和世界观分别维护，写完一章后经常忘记同步更新。
+- 不同模型、Claude Code、Codex、OpenCode 等工具各有一套调用方式，换入口后工作流和质量容易变化。
+- 禁用句式、文风偏好和创作技巧散落在聊天记录里，模型未必持续遵守。
 
-## 2.1 数据与 Agent 架构
+墨枢通过作品建档、RAG 上下文选择、角色/世界观时间线、Plan Agent、技能提示词、项目记忆和统一工具链解决这些问题。数据库是唯一权威写入源，本地 Markdown/JSON 镜像供模型快速阅读；所有修改通过墨枢写回，前端、索引、版本历史和缓存保持一致。
 
-Moshu 2.1 将数据库重新设为唯一权威写入源，并把用户选择的本地小说数据目录作为 **只读文件镜像**。章节、角色、大纲、关系网和世界观仍会导出为 Markdown / JSON，方便 Claude Code、Codex、OpenCode、Kilo Code、Qwen Code、Hermes、OpenClaw 等外部或本机 CLI Agent 直接读取长篇上下文；但所有创建、修改、删除都必须通过 Moshu API / MCP 工具写入数据库，再由 Moshu 自动刷新文件镜像。
+## 普通用户 3 分钟上手
 
-这样做的目标是同时解决两个问题：
+### 1. 下载并启动
 
-- 外部 Agent 可以像处理 Obsidian 仓库一样直接读文件，不需要把几十万字都塞进 MCP 工具参数。
-- 写入链路只有一条：数据库和 MCP 工具。不会因为 Agent 直接改文件导致前端、索引、版本历史和缓存不同步。
+从 GitHub Release 下载 `Moshu.exe`，双击运行即可。普通用户不需要安装 Python、Node.js，也不需要手动运行 MCP 配置脚本。
 
-首次启动新版 exe 时，用户可以选择一个空目录作为小说数据目录。如果本机已经存在旧版数据库数据，Moshu 会把旧作品导出到该目录，并将数据库记录切换到 `db_mirror` 模式。之后文件目录用于阅读、搜索、上下文定位；规范目录下的 `chapters/`、`characters/`、`worldbuilding/`、`outline/`、`relationships/` 不应被手动编辑。
+首次启动时选择一个小说数据目录。没有特殊需求时直接使用默认目录即可；如果检测到旧版数据，墨枢会自动迁移并保留兼容。
 
-`MOSHU_REDIS_URL` 或 `REDIS_URL` 可选配置 Redis 作为热点缓存；没有 Redis 时会自动使用进程内 TTL 缓存。章节、角色、大纲、世界观等写入后会自动失效对应项目缓存并刷新文件镜像。
+### 2. 选择 AI
 
-外部 Agent 推荐优先使用：
+打开系统设置，任选一种方式：
 
+- 配置 DeepSeek、OpenAI、Claude、Gemini、通义千问或兼容 OpenAI API 的服务。
+- 选择本机已经安装的 Claude Code、Codex、OpenCode、MiMo Code、Cursor Agent、Kilo Code、Qwen Code、Hermes Agent 或 OpenClaw。
+
+选择本机 CLI 后，墨枢会自动检测程序、合并 MCP 配置并设置适合无人值守运行的权限。它只维护名为 `moshu` 的 MCP 条目，不会覆盖用户已有的其他 MCP Server。
+
+助手设置中的模型选择会覆盖全局默认模型，并在桌面助手与作品内助手之间保持。全局默认模型只在用户没有单独选择时使用。
+
+### 3. 创建或导入作品
+
+你可以：
+
+- 对助手说：“帮我创建一本克苏鲁+规则怪谈、能写 1000 章的小说。”
+- 在创建作品时上传已有小说文本。
+- 创建空白作品后手动写作。
+- 导入完本小说并运行作品建档，为续写、同人、番外或改写建立资料库。
+
+### 4. 开始工作
+
+进入作品后，可以直接说：
+
+- “根据当前大纲写第 151 章。”
+- “检查这一章是否和角色状态、世界观冲突。”
+- “规划接下来十章，先给我确认方向。”
+- “把这 150 章逐章建档。”
+- “更新主角当前伤势、位置和目标。”
+
+运行过程会显示模型正在读取什么、调用什么工具、哪一步失败。支持失败步骤重试和从失败处继续，不需要整轮重来。
+
+## 可以用来做什么
+
+- 从零创建小说：生成书名、核心卖点、主角、角色关系、世界规则、卷纲和前三章。
+- 导入完本小说建档：逐章建立摘要、大纲、角色、关系、世界观和时间线。
+- 基于原作资料写同人、番外、续集、if 线或改写版本。
+- 管理原创长篇：从立项、大纲、正文到角色状态和设定维护。
+- 让 AI 判断剧情是否合理、角色是否会行动、设定是否冲突。
+- 使用快速模式直接产出，或使用质量模式进行剧情设计、角色对戏、评估和更新。
+- 通过 Claude Code、Codex 等外部 Agent 直接读取小说文件镜像，并用 MCP 工具安全写回。
+
+## 核心工作流
+
+### 作品建档
+
+建档按章节推进，每章会提取并更新：
+
+- 章节摘要和对应大纲节点
+- 角色档案、别名、关系和出场记录
+- 角色当前位置、年龄/时间变化、境界、身体状态、心理状态、目标、冲突和装备
+- 世界观条目、规则证据和时间线
+- 角色与世界观版本历史，记录由哪一章触发、发生了什么变化
+
+事实提取和候选写入分离。失败时保留已完成阶段，只重试失败阶段；候选按章节顺序写入，避免长篇角色背景被乱序合并。
+
+### 写作与 Plan Agent
+
+快速模式以较少检索和检查完成任务。质量模式会按计划执行：
+
+1. 检索大纲、近期摘要、角色、关系、世界观、记忆和技能
+2. 设计剧情
+3. 进行角色扮演或多角色对戏
+4. 生成正文
+5. 评估章节质量与冲突
+6. 保存章节
+7. 更新角色变化
+8. 更新新增世界观
+
+失败步骤可单独重试，也可以从失败步骤继续。
+
+### RAG 与上下文
+
+当作品有数百条世界观、角色和章节摘要时，墨枢不会固定取前几十条。系统会根据当前任务进行混合检索和预算打包，优先选择：
+
+- 当前大纲节点及附近节点
+- 最近章节摘要和相关详细章节
+- 涉及角色、别名、关系和状态
+- 与本章冲突相关的世界规则
+- 用户偏好、项目记忆和匹配到的技能
+
+前端可查看上下文概览，知道 AI 选中了哪些资料以及为什么。
+
+### 技能与记忆
+
+技能是可复用的 AI 行为模板，可以定义文风审校、题材规则、角色口吻、禁用句式、资料整理方法和推荐工具。项目助手和外部 Agent 可读取同一套公开 Prompt Pack 与技能规则。
+
+项目记忆保存用户偏好、写作风格、工作流偏好和长期项目事实。记忆可管理、可检索，不依赖某一次聊天是否还在上下文里。
+
+## 本机 CLI 与外部 Agent
+
+### 自动配置
+
+Moshu 启动时会扫描受支持的本机 Agent CLI。保存本机 CLI 供应商时也会立即重新检测和配置：
+
+- Claude Code
+- Codex
+- OpenCode
+- MiMo Code
+- Cursor Agent
+- Trae
+- Kilo Code
+- Qwen Code
+- Hermes Agent
+- OpenClaw
+
+默认采用易用性优先的可信本地模式，自动允许读取小说数据目录和调用 Moshu MCP 工具。用户无需把配置文件和 `Moshu.exe` 一起下载，也无需手工修改 Claude/Codex 配置。
+
+在长任务中，本机 CLI 会在小说数据目录读取 UTF-8 任务文件和只读作品镜像，而不是把整章正文塞进 Windows 命令行。写入、修改和删除仍通过 Moshu MCP 完成。
+
+### 外部 Agent 默认规则
+
+外部 Agent 默认走不消耗墨枢内部模型额度的 API-free 流程：
+
+- 只有用户明确要求使用墨枢内部 API 时，才调用 `internal_llm` 工具。
+- 中文小说始终用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观。
+- 读取优先使用本地作品文件镜像；写入必须使用 MCP 工具。
+- 建档先读取 `cataloging_external_no_api` Prompt Pack。
+- 写作先读取外部写作 Prompt Pack、准备上下文、保存草稿、记录评审，再创建章节和更新故事状态。
+
+常用只读工具：
+
+- `list_projects`
 - `get_project_files_info`
 - `list_project_files`
 - `read_project_file`
 - `search_project_files`
-- 对内容写入使用 `create_chapter`、`update_chapter`、`create_character`、`update_character`、`create_outline_node`、`create_worldbuilding_entry` 等数据库工具
-- `write_project_file` 仅用于 `outbox/`、临时资料、草稿等非规范目录
-- `sync_project_files` 默认只执行 `db_to_files`；`files_to_db/import/both` 仅作为修复导入路径，必须显式传 `confirm_import_from_files=true`
+- `get_prompt_pack`
+- `get_moshu_usage_guide`
 
-长正文不要直接输出到聊天或终端。外部 Agent 应使用 `save_external_chapter_draft`、`content_ref`、`create_chapter(draft_id/content_ref)` 等工具保存；本机 CLI Agent 也会收到同样的任务文件规则。
+常用写入工具：
 
-### 本机 CLI Agent Worker
+- `create_project`
+- `create_chapter` / `update_chapter`
+- `create_character` / `update_character`
+- `create_outline_node` / `update_outline_node`
+- `create_worldbuilding_entry` / `update_worldbuilding_entry`
+- `save_external_chapter_draft`
+- `apply_external_story_updates`
 
-如果用户要求“让本机 Agent CLI 自己做建档/写作”，或者明确说不要消耗墨枢内部模型 API，项目助手会调用 `start_local_cli_agent_run`。支持 Claude Code、Codex、OpenCode、MiMo Code、Cursor Agent、Kilo Code、Qwen Code、Hermes Agent 和 OpenClaw。这个工具会：
+### 自动配置失败时
 
-1. 在作品目录的 `.moshu/runs/{run_id}/task.md` 写入任务说明、项目 ID、只读文件镜像规则和必用 MCP 工具。
-2. 启动用户配置好的本机 CLI。
-3. 让 CLI 自己读取项目文件、调用 Moshu MCP 工具写入数据、调用 `report_agent_progress` 汇报进度。
-4. 在前端外部 Agent 运行面板显示 `AgentRun` 事件，避免只能等 CLI 最后吐出一大段结果。
-
-## 解决什么痛点
-
-当前大模型直接写长篇小说时，经常会遇到这些问题：
-
-- 上下文一长就忘记前文设定，写着写着把世界观规则、伏笔、时间线写乱。
-- 角色容易 OOC，尤其是人物关系、当前位置、身体状态、境界、当前目标变化后，模型很难长期记住。
-- 已完本小说、长篇同人资料、几十万字设定集很难一次性塞进上下文。
-- 用户手动整理角色卡、大纲、世界观很耗时，后续还要反复提醒 AI。
-- 写作质量要求高时，需要先查资料、设计剧情、角色对戏、生成正文、检查问题、保存更新，这些步骤很容易漏。
-- 禁用句式、文风偏好、技巧提示词散落在聊天记录里，模型未必每次都会遵守。
-
-墨枢的目标是把这些内容沉淀成可检索、可更新、可追踪的项目资料，让 AI 在写作时自动读取相关信息，而不是每次从零开始。
-
-## 项目怎么解决
-
-### 作品建档
-
-可以导入已有小说章节，按章节逐步建档。系统会提取并更新：
-
-- 章节摘要和对应大纲节点
-- 角色档案、别名、关系、出场记录
-- 角色当前状态，如位置、境界、身体状况、心理状态、当前目标、冲突和装备
-- 世界观条目和时间线
-- 角色/世界观版本历史，方便追踪某次更新来自哪一章
-
-这适合把已经完本的小说导入后快速初始化项目资料，也适合为同人创作、续写、番外和改写做资料准备。
-
-### RAG 与上下文选择
-
-当世界观、角色和章节摘要数量很多时，系统不会简单取前几条，而是通过 RAG 检索和预算打包选择本次写作最相关的资料。写章节时会优先读取：
-
-- 当前大纲节点及附近上下文
-- 最近章节摘要
-- 相关角色档案和关系
-- 相关世界观设定
-- 项目记忆和写作偏好
-
-前端可以看到上下文概览，知道 AI 为什么选中这些资料。
-
-### Plan Agent
-
-写作助手支持计划式执行。用户说“帮我写第 154 章”时，系统会把任务拆成多个步骤，而不是只做一次模型调用。
-
-质量模式下的章节工作流包括：
-
-1. 预览写作上下文
-2. 设计剧情
-3. 角色扮演或多角色对戏
-4. 生成正文
-5. 评估章节质量
-6. 保存章节
-7. 检测角色变化
-8. 检测新增世界观
-
-如果前端开启质量模式，即使用户没有在消息里写“高质量”，章节 Plan 也会走质量路径。失败步骤可以重试或从失败处继续，避免整轮对话重来。
-
-### 技能与记忆
-
-技能管理允许用户配置可复用的 AI 行为模板，比如：
-
-- 某种文风审校
-- 禁用句式检查
-- 特定题材的写作规则
-- 角色口吻控制
-- 资料搜索和整理方式
-
-技能可以设置触发词、适用范围、优先级和推荐工具。系统会在对话时匹配相关技能，并把技能提示词注入到本次任务中。
-
-项目记忆会保存用户偏好、写作风格、工作流偏好和项目事实。质量模式下，Plan Agent 也会读取相关记忆。
-
-### 模型供应商
-
-系统设置中可以配置多个模型供应商。目前内置支持 OpenAI、Anthropic Claude、DeepSeek、通义千问和 Google Gemini。
-
-如果新的供应商提供 OpenAI-compatible API，可以在系统设置中选择“自定义 OpenAI 兼容”，填写：
-
-- 提供商标识，如 `openrouter`、`siliconflow`、`moonshot`
-- API Key
-- 默认模型名
-- API 端点，如 `https://api.example.com/v1`
-
-自定义供应商会使用 OpenAI-compatible 调用方式，因此适合接入兼容 `/v1/chat/completions` 和 `/v1/models` 的服务。
-
-### 风格与禁用句式
-
-项目可以配置：
-
-- 叙事视角
-- 文风偏好
-- 自定义风格提示词
-- 禁用句式
-- 修辞限制
-- 短句偏好
-
-章节保存前会自动尝试修复项目配置的禁用句式，降低“AI 味”和重复模板句式。
-
-## 可以用来做什么
-
-- 导入完本小说进行建档，生成角色、大纲和世界观资料库。
-- 基于原作资料写同人小说、番外、后续卷、if 线。
-- 管理原创长篇小说，从大纲规划到章节写作再到设定维护。
-- 让 AI 根据已有角色状态和世界观规则判断剧情是否合理。
-- 生成新章节后自动更新角色变化和新增设定。
-- 做拆书分析、资料整理、角色关系管理和世界观维护。
-- 给不同作品配置不同的技能提示词和写作偏好。
-
-## 外部 Agent 快速接入
-
-墨枢可以作为 MCP Server 接入 Claude Code、Codex、OpenCode、MiMo Code、Cursor、Trae、Kilo Code、Qwen Code、Hermes Agent 和 OpenClaw。接入后，外部 Agent 可以读取所有作品、获取墨枢写作 Prompt Pack、执行无 API 写作流程、创建新小说、写入章节和更新角色/世界观。
-
-推荐先使用 `project_management` 权限包。它可以管理作品、写章节、创建新小说、管理技能和导出数据，但不会暴露 API Key、模型密钥等敏感配置，也不会暴露危险删除/合并工具。
-
-长上下文对话中，建议让 Claude Code / Codex 反复以墨枢工具结果为准：不确定流程时先调用 `get_moshu_usage_guide`，需要建档时读取 `get_prompt_pack(pack_id="cataloging_external_no_api")`。中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观，不要改成英文或拼音。无 API 建档时，事实阶段可以并行调用 `get_next_external_cataloging_chapter(phase="facts") -> save_external_cataloging_facts`；候选阶段必须反复调用 `get_next_external_cataloging_chapter(phase="candidates")` 领取系统允许的下一章，再执行 `save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress`，最后再用 `get_project_archive_status` 验证真实入库数量。
-
-### 自动配置
-
-Moshu 启动时会自动扫描本机已安装的 Claude Code、Codex、OpenCode、MiMo Code、Cursor、Trae、Kilo Code、Qwen Code、Hermes Agent 和 OpenClaw，把自己的 MCP Server 以 `--permission-pack auto` 合并到对应客户端。它只更新名为 `moshu` 的条目，保留用户已有的其他 MCP Server。保存任一本机 CLI 提供商时也会立即重试配置。
-
-默认采用易用性优先的可信本地模式：
-
-- Claude Code 自动允许 Moshu MCP、文件读取，并启用 `bypassPermissions`。
-- Codex 使用 `approval_policy="never"` 与 `sandbox_mode="danger-full-access"`。
-- OpenCode / MiMo Code 使用全局 `permission: "allow"`。
-- Cursor Agent 使用 `--force --approve-mcps --trust`。
-- Kilo Code 使用 `permission: "allow"` 和 `--auto`。
-- Qwen Code 使用 `tools.approvalMode: "yolo"`，并关闭工作区信任拦截。
-- Hermes Agent 自动接受 hooks，并启用 Moshu MCP。
-- OpenClaw 使用 `exec-policy preset yolo`。
-- Moshu 侧开放除内部模型额度和密钥管理外的项目读写、管理及维护工具。
-
-系统设置内置全部可无头运行的本机 CLI 提供商。Trae 检测到安装后会自动配置 MCP；它没有稳定的无头模型 CLI，因此在 Trae Agent 界面直接使用 Moshu 工具。
-
-如果自动配置失败，或你想预览将写入的配置，再使用下面的脚本方式作为备用。
-
-备用脚本会检测全部受支持客户端，自动寻找同目录、下载目录、桌面、`release` 目录或 `%LOCALAPPDATA%` 下的 `Moshu.exe`，找不到 exe 时会回退到源码里的 `scripts\moshu-mcp-server.py`。
-
-如果你下载的是 GitHub Release，请把 `setup-external-agent-mcp.ps1` 放在 `Moshu.exe` 旁边，然后运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1
-```
-
-如果你从源码运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -PreferSource
-```
-
-想先预览将要写入什么配置，可以加 `-DryRun`：
+普通用户应先在墨枢的“外部 Agent / MCP”界面点击重新检测。源码仓库中的 `scripts/setup-external-agent-mcp.ps1` 只作为高级排障工具，不作为 GitHub Release 资产分发：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1
 ```
 
-常用参数：
+配置成功后重启对应 Agent，让它调用 `list_projects` 即可验证。
 
-```powershell
-# 只配置 Claude Code
-powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -Client claude
+## 数据与架构
 
-# 只配置 Codex
-powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -Client codex
+### 权威数据与文件镜像
 
-# 只配置 OpenCode / MiMo Code
-powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -Client opencode
-powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -Client mimocode
+- SQLite/数据库：唯一权威写入源，保存作品、章节、角色、关系、世界观、历史、对话和任务状态。
+- 本地小说目录：数据库导出的只读 Markdown/JSON 镜像，供 CLI Agent 和搜索读取。
+- Redis：可选热点缓存；未配置时自动使用进程内 TTL 缓存。
+- RAG 索引：用于在长篇资料中检索当前任务最相关的片段。
 
-# 手动指定 exe 路径
-powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1 -MoshuExe "C:\path\to\Moshu.exe"
-```
+规范目录下的 `chapters/`、`characters/`、`worldbuilding/`、`outline/` 和 `relationships/` 不应手工修改。内容写入后，墨枢会失效缓存、更新索引并刷新镜像。
 
-配置成功后重启对应 Agent，然后让它调用：
+### 模型供应商
+
+内置支持 OpenAI、Anthropic Claude、DeepSeek、通义千问、Google Gemini 和多种本机 CLI。其他服务只要兼容 OpenAI `/v1/chat/completions` 与 `/v1/models`，即可通过“自定义 OpenAI 兼容”接入。
+
+模型标识使用 `provider:model`，例如：
 
 ```text
-list_projects
+deepseek:deepseek-v4-flash
+claude_cli:claude-code
+codex_cli:codex-cli
 ```
 
-如果能列出墨枢里的作品，就说明接入成功。
+## 开发者指南
 
-### 手动配置
+### 环境
 
-如果自动脚本不适合你的环境，可以手动配置。下面示例里的路径都需要换成你自己电脑上的实际路径：
+- Python 3.11+
+- Node.js 20+
+- Git
+- PowerShell
 
-- 源码方式：把 `C:\path\to\agent` 换成墨枢源码目录。
-- exe 方式：把 `C:\path\to\Moshu.exe` 换成你下载或安装的 `Moshu.exe` 完整路径。
-
-### Claude Code
-
-Claude Code 推荐用命令添加 MCP Server，不需要手动找配置文件：
-
-```powershell
-claude mcp add -s user moshu -- python "C:\path\to\agent\scripts\moshu-mcp-server.py" --permission-pack auto
-```
-
-如果使用打包后的 exe：
-
-```powershell
-claude mcp add -s user moshu -- "C:\path\to\Moshu.exe" --mcp-server --permission-pack auto
-```
-
-验证：
-
-```powershell
-claude mcp list
-```
-
-### Codex
-
-Codex 修改配置文件：
-
-```text
-%USERPROFILE%\.codex\config.toml
-```
-
-源码方式添加：
-
-```toml
-[mcp_servers.moshu]
-type = "stdio"
-command = "python"
-args = ["C:\\path\\to\\agent\\scripts\\moshu-mcp-server.py", "--permission-pack", "project_management"]
-```
-
-exe 方式添加：
-
-```toml
-[mcp_servers.moshu]
-type = "stdio"
-command = "C:\\path\\to\\Moshu.exe"
-args = ["--mcp-server", "--permission-pack", "project_management"]
-```
-
-改完后重启 Codex。连接成功后，在 Claude Code / Codex 中让它调用：
-
-```text
-list_projects
-```
-
-如果能列出墨枢里的作品，就说明接入成功。
-
-### 不绑定单个作品
-
-默认不要加 `--project-id`，这样外部 Agent 可以通过 `list_projects` 查看所有作品，并在调用具体工具时传入 `project_id`。如果只想暴露某一个作品，再添加：
-
-```text
---project-id YOUR_PROJECT_ID
-```
-
-### 无 API 写作模式
-
-如果墨枢没有配置模型 API，外部 Agent 不要调用 `chapter_writer` / `evaluate_chapter` 这类内部模型工具。应使用：
-
-- `get_prompt_pack`
-- `get_quality_rubric`
-- `prepare_external_writing_context`
-- `save_external_chapter_draft`
-- `record_external_quality_review`
-- `create_chapter`
-- `apply_external_story_updates`
-
-完整说明见 [Claude Code / Codex MCP Client Setup Guide](docs/mcp/claude-code-codex-client.md)。
-
-## 开发环境依赖
-
-如果只是运行已经打包好的 `Moshu.exe`，不需要安装下面这些开发依赖。
-
-如果要从源码启动、测试或打包，需要先安装：
-
-- Git，用于拉取代码和发布版本。
-- Python 3.11 或更高版本。Windows 安装 Python 时建议勾选 `py launcher`。
-- Node.js 20 LTS 或更高版本，内含 npm。
-- PowerShell，用于运行本项目的 Windows 启动和打包脚本。
-
-可以先检查本机是否已经安装：
-
-```powershell
-git --version
-py --version
-python --version
-node --version
-npm --version
-```
-
-如果 `python --version` 不可用，但 `py --version` 可用，下面所有 `python` 命令都可以改成 `py`，或直接使用虚拟环境里的 `.\.venv\Scripts\python.exe`。
-
-后端直接依赖写在 `backend\requirements.txt` 中，首次运行会安装：
-
-- `fastapi`
-- `uvicorn[standard]`
-- `sqlalchemy`
-- `alembic`
-- `pydantic`
-- `pydantic-settings`
-- `cryptography`
-- `python-multipart`
-- `aiohttp`
-- `httpx`
-- `openai`
-- `anthropic`
-- `python-dotenv`
-- `python-docx`
-- `ddgs`
-
-前端直接依赖写在 `frontend\package.json` 中，首次运行会安装：
-
-- 运行依赖：`react`、`react-dom`、`react-router-dom`、`antd`、`@ant-design/icons`、`axios`、`zustand`、`@tiptap/react`、`@tiptap/starter-kit`、`@tiptap/extension-placeholder`、`vis-data`、`vis-network`
-- 开发和测试依赖：`vite`、`typescript`、`vitest`、`jsdom`、`@vitejs/plugin-react`、`@testing-library/react`、`@testing-library/jest-dom`、`@testing-library/user-event`、`@types/react`、`@types/react-dom`
-
-## 本地开发
-
-首次运行需要先安装后端依赖：
+后端：
 
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-如果默认 PyPI 下载很慢，可以临时使用国内镜像：
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com -r requirements.txt
-```
-
-启动后端：
-
-```powershell
 $env:PYTHONPATH='.'
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-前端建议新开一个终端，在项目根目录运行。首次运行需要先安装前端依赖：
+前端：
 
 ```powershell
 cd frontend
 npm install
-```
-
-启动前端：
-
-```powershell
 npm run dev
 ```
 
-## 参与贡献
-
-欢迎通过 Issue 和 Pull Request 参与改进。建议先从 `main` 拉取最新代码，再为每个改动创建独立分支：
+测试：
 
 ```powershell
-git checkout main
-git pull
-git checkout -b feature/your-change
-```
-
-贡献前请先按「开发环境依赖」和「本地开发」完成本地启动。改动时尽量保持范围清晰：
-
-- Bug 修复请说明复现步骤、原因和修复方式。
-- 新功能请说明使用场景、主要交互和涉及的后端/前端模块。
-- 文案、提示词、模型适配和数据迁移类改动，请在 PR 中写清楚影响范围。
-- 不要提交 `.env`、API Key、本地数据库、`.crypto_key`、`.venv`、`node_modules`、`frontend\dist`、`.build`、`release`、`artifacts` 等本地文件或构建产物。
-
-提交前建议至少运行相关检查：
-
-```powershell
-# 后端测试。pytest 当前是测试工具依赖，如本机未安装，请先在后端虚拟环境中安装。
 cd backend
-.\.venv\Scripts\python.exe -m pip install pytest
 .\.venv\Scripts\python.exe -m pytest
-```
 
-前端构建和测试建议新开终端，在项目根目录运行：
-
-```powershell
-cd frontend
+cd ..\frontend
 npm run build
-npm exec vitest -- run
 ```
 
-如果只改了 README 或发布文档，可以在 PR 中说明未运行代码测试的原因。
-
-## 打包 Windows 可执行程序
-
-在项目根目录运行：
+### 打包
 
 ```powershell
 .\build-exe.bat
 ```
 
-生成文件：
+生成：
 
 ```text
 release\Moshu.exe
@@ -446,124 +249,41 @@ release\update.json
 release\sha256.txt
 ```
 
-`Moshu.exe` 是正式分发文件。`NovelWritingAgent.exe` 是旧品牌兼容别名，用于让已经安装旧版本的用户继续自动更新。
+`NovelWritingAgent.exe` 仅用于旧品牌自动更新兼容。Release 不再包含 MCP 配置脚本，因为 MCP 自动检测和配置已经由程序完成。
 
-普通用户只需要运行 exe，不需要安装 Git、Python、Node.js 或 npm。
+### 发布
 
-## 自动更新
-
-exe 启动时会自动检查 GitHub 最新 Release。默认更新仓库：
-
-```text
-teangtang1122/NovelWritingAgent
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-github.ps1 -Tag vX.Y.Z
 ```
 
-发布新版本时，GitHub Release 中应包含：
+发布时应把同一用户功能的代码、测试、文档和版本号合并成一个发布提交，完成验证后一次推送并创建标签，避免把每个小步骤分别推到 GitHub。不要提交 `.env`、API Key、本地数据库、用户 MCP 配置、`.venv`、`node_modules`、`frontend/dist`、`.build`、`release` 或 `artifacts`。
 
-```text
-Moshu.exe
-NovelWritingAgent.exe
-sha256.txt
-update.json
+### MCP Server
+
+从源码启动 MCP Server：
+
+```powershell
+python scripts\moshu-mcp-server.py --permission-pack auto
 ```
 
-如果检测到 Release 版本号高于本地版本，程序会下载新的 exe，退出当前进程后自动替换并重启。
+打包程序：
 
-可选环境变量：
-
-```text
-MOSHU_DISABLE_UPDATE=1
-MOSHU_UPDATE_REPO=owner/repo
-MOSHU_UPDATE_MANIFEST_URL=https://example.com/update.json
-MOSHU_GITHUB_TOKEN=...
+```powershell
+Moshu.exe --mcp-server --permission-pack auto
 ```
 
-旧环境变量 `NOVEL_AGENT_DISABLE_UPDATE`、`NOVEL_AGENT_UPDATE_REPO`、`NOVEL_AGENT_UPDATE_MANIFEST_URL`、`NOVEL_AGENT_GITHUB_TOKEN` 仍然兼容。
+默认不绑定单一作品，外部 Agent 可先调用 `list_projects`，再为具体工具传入 `project_id`。完整协议和任务板位于 `docs/mcp/`。
 
 ## 旧数据兼容
 
-新版本默认使用：
+Moshu 保留旧品牌数据目录和旧可执行文件名兼容。升级后会自动识别旧数据库、迁移运行时字段并刷新文件镜像。迁移完成前不会主动删除旧数据；确认新版本可以正常读取后，再由迁移流程清理已废弃副本。
 
-```text
-%LOCALAPPDATA%\Moshu
-```
+## 参与贡献
 
-如果用户机器上已经有旧版数据：
+欢迎通过 Issue 和 Pull Request 改进墨枢。提交前请至少运行相关后端测试和前端构建，并说明：
 
-```text
-%LOCALAPPDATA%\NovelWritingAgent\novel_agent.db
-```
-
-并且新目录还没有有效数据库，启动器会自动继续使用旧数据目录，保证旧 exe 产生的数据可以被新版本直接读取。
-
-## MCP Server
-
-墨枢内置 MCP (Model Context Protocol) Server，允许外部 AI 客户端（如 Claude Desktop、Cursor）直接读取项目数据。
-
-### 从源码运行
-
-```bash
-python scripts/moshu-mcp-server.py --permission-pack auto
-```
-
-### MCP 客户端配置
-
-在 Claude Desktop 的 `claude_desktop_config.json` 中添加：
-
-```json
-{
-  "mcpServers": {
-    "moshu": {
-      "command": "python",
-      "args": ["scripts/moshu-mcp-server.py", "--permission-pack", "project_management"],
-      "cwd": "D:\\AI\\agent"
-    }
-  }
-}
-```
-
-或使用打包后的 exe：
-
-```json
-{
-  "mcpServers": {
-    "moshu": {
-      "command": "C:\\path\\to\\Moshu.exe",
-      "args": ["--mcp-server", "--permission-pack", "project_management"]
-    }
-  }
-}
-```
-
-### 功能
-
-- **只读模式**（默认）：暴露查询和分析工具，不修改项目数据
-- **资源**：通过 `moshu://` URI 访问项目、章节、角色、世界观、大纲
-- **提示词**：提供 `moshu_writing_context`、`moshu_continuity_check`、`moshu_fanfic_draft` 等结构化提示词
-
-详细文档见 `docs/mcp/spec.md` 和 `docs/mcp/security.md`。
-
-### Claude Code / Codex 集成
-
-墨枢支持通过 MCP 让 Claude Code 或 Codex 直接操作项目数据，并在 Web UI 中实时显示外部 Agent 的工作进度。详见 `docs/mcp/claude-code-codex-client.md`。
-
-### 无 API 写作模式
-
-Claude Code / Codex 可以在墨枢**没有配置模型 API** 的情况下写作。墨枢提供上下文、提示词包、存储和遥测，外部模型负责生成和评审。详见 `docs/mcp/claude-code-codex-client.md` 的 "No Moshu API Mode" 章节。
-
-## 发布到 GitHub
-
-确保已经安装并登录 GitHub CLI：
-
-```powershell
-gh auth login
-```
-
-打包并发布：
-
-```powershell
-.\build-exe.bat
-.\scripts\publish-github.ps1 -Tag v1.3.9
-```
-
-发布脚本会提交当前改动、推送到 `main`，创建或更新 GitHub Release，并上传 exe、sha256 和 update manifest。
+- 用户遇到的问题和复现步骤
+- 修改后的行为
+- 涉及的数据兼容、提示词、模型适配或迁移风险
+- 已执行的验证
