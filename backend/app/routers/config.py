@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from ..ai.gateway import LLMGateway
 from ..ai.local_cli_adapter import (
+    LocalCLIAdapter,
     DEFAULT_CLI_ARGS,
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
@@ -520,7 +521,7 @@ async def _list_anthropic_models(api_key: str, base_url: str) -> list[dict]:
 @router.post("/config/models/list")
 async def list_provider_models(payload: ModelListRequest):
     if is_local_cli_provider(payload.provider):
-        models = local_cli_model_options(payload.provider)
+        models = local_cli_model_options(payload.provider, payload.cli_command)
     else:
         if not payload.api_key:
             raise ValidationError("API Key is required")
@@ -539,7 +540,32 @@ async def test_connection(payload: ConnectionTestRequest):
     if is_local_cli_provider(payload.provider):
         command = payload.cli_command or _default_cli_command(payload.provider)
         _validate_cli_command(command)
-        return ApiResponse.success(message=f"{_provider_label(payload.provider)} command is available")
+        adapter = LocalCLIAdapter(
+            api_key="",
+            base_url=payload.provider,
+            cli_command=command,
+            cli_args=payload.cli_args or _default_cli_args(payload.provider),
+        )
+        model = payload.model or DEFAULT_CLI_MODELS.get(payload.provider, f"{payload.provider}-default")
+        result = await asyncio.wait_for(
+            adapter.chat_completion(
+                messages=[
+                    {"role": "system", "content": "你是连接测试执行器。"},
+                    {"role": "user", "content": "只回复：连接成功"},
+                ],
+                model=model,
+                temperature=0,
+                max_tokens=32,
+                extra_body={"local_cli_cwd": str(resolve_content_root())},
+            ),
+            timeout=60,
+        )
+        if not (result.get("content") or "").strip():
+            raise LLMError(f"{_provider_label(payload.provider)} returned an empty response")
+        return ApiResponse.success(
+            data={"model": model, "reply": result["content"].strip()[:200]},
+            message=f"{_provider_label(payload.provider)} real conversation succeeded",
+        )
 
     if not payload.api_key:
         raise ValidationError("API Key is required")

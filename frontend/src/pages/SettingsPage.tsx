@@ -186,7 +186,7 @@ const LOCAL_CLI_MODEL_OPTIONS: Record<string, ModelOption[]> = {
   claude_cli: [{ id: 'claude-code', display_name: 'claude-code' }],
   codex_cli: [{ id: 'codex-cli', display_name: 'codex-cli' }],
   opencode_cli: [{ id: 'opencode-cli', display_name: 'opencode-cli' }],
-  mimocode_cli: [{ id: 'mimocode-cli', display_name: 'mimocode-cli' }],
+  mimocode_cli: [{ id: 'xiaomi/mimo-v2.5-pro', display_name: 'xiaomi/mimo-v2.5-pro' }],
   cursor_cli: [{ id: 'cursor-agent', display_name: 'cursor-agent' }],
   kilocode_cli: [{ id: 'kilocode-cli', display_name: 'kilocode-cli' }],
   qwen_code_cli: [{ id: 'qwen-code-cli', display_name: 'qwen-code-cli' }],
@@ -217,7 +217,7 @@ const DEFAULT_CLI_ARGS: Record<string, string> = {
   kilocode_cli: '["run","--auto","{prompt}"]',
   qwen_code_cli: '["--approval-mode","yolo","--output-format","text","{prompt}"]',
   hermes_cli: '["--yolo","--oneshot","{prompt}"]',
-  openclaw_cli: '["agent","--local","--json","--message","{prompt}"]',
+  openclaw_cli: '["agent","--local","--json","--session-key","agent:moshu:local-cli","--message","{prompt}"]',
   custom_cli: '["{prompt}"]',
 }
 
@@ -543,7 +543,14 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     try {
       const res = await apiClient.post<{ code: number; data: { models: ModelOption[] } }>(
         '/config/models/list',
-        { provider, api_key: apiKey, base_url_override: baseUrl }
+        {
+          provider,
+          api_key: apiKey,
+          base_url_override: baseUrl,
+          cli_command: isLocalCliProvider(provider)
+            ? form.getFieldValue('cli_command') || DEFAULT_CLI_COMMANDS[provider]
+            : undefined,
+        }
       )
       setModelOptions(normalizeProviderModelOptions(provider, res.data.data.models || []))
     } catch (err: any) {
@@ -577,8 +584,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         base_url_override: isCli ? undefined : baseUrl,
         cli_command: isCli ? values.cli_command || DEFAULT_CLI_COMMANDS[provider] : undefined,
         cli_args: isCli ? values.cli_args || DEFAULT_CLI_ARGS[provider] : undefined,
+        model: isCli ? values.default_model : undefined,
       })
-      setConnectionTestResult({ success: true, message: isCli ? '本机 CLI 可用' : '连接成功，API Key 有效' })
+      setConnectionTestResult({ success: true, message: isCli ? '本机 CLI 真实对话成功' : '连接成功，API Key 有效' })
     } catch (err: any) {
       setConnectionTestResult({ success: false, message: err.message || '连接失败' })
     } finally {

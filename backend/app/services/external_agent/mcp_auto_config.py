@@ -175,6 +175,7 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
         DEFAULT_CLI_ARGS,
         DEFAULT_CLI_MODELS,
         OPENCODE_LEGACY_MODEL,
+        preferred_local_cli_model,
     )
     from app.core.crypto import encrypt
     from app.database.models import APIConfig
@@ -212,11 +213,15 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
                 if existing.cli_args == legacy_args:
                     existing.cli_args = json.dumps(DEFAULT_CLI_ARGS[provider], ensure_ascii=False)
                 changed = True
+            elif provider == "mimocode_cli" and existing.default_model == "mimocode-cli":
+                existing.default_model = preferred_local_cli_model(provider, command)
+                changed = True
             continue
+        default_model = preferred_local_cli_model(provider, command) if provider == "mimocode_cli" else DEFAULT_CLI_MODELS[provider]
         db.add(APIConfig(
             provider=provider,
             api_key_encrypted=encrypt("__local_cli__"),
-            default_model=DEFAULT_CLI_MODELS[provider],
+            default_model=default_model,
             is_global_default=False,
             base_url_override=None,
             provider_type="local_cli",

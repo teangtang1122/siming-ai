@@ -259,13 +259,43 @@ class McpAutoConfigTest(unittest.TestCase):
             with patch("app.services.external_agent.mcp_auto_config.cursor_command", return_value=None):
                 with patch("app.services.external_agent.mcp_auto_config.hermes_command", return_value=None):
                     with patch("app.core.crypto.encrypt", return_value="encrypted"):
-                        created = mcp_auto_config.ensure_detected_local_cli_model_configs(db)
+                        with patch(
+                            "app.ai.local_cli_adapter.preferred_local_cli_model",
+                            return_value="xiaomi/mimo-v2.5-pro",
+                        ):
+                            created = mcp_auto_config.ensure_detected_local_cli_model_configs(db)
 
         self.assertEqual(created, ["mimocode_cli"])
         added = db.add.call_args.args[0]
         self.assertEqual(added.provider, "mimocode_cli")
         self.assertEqual(added.cli_command, "mimo.cmd")
+        self.assertEqual(added.default_model, "xiaomi/mimo-v2.5-pro")
         self.assertIn("--dangerously-skip-permissions", added.cli_args)
+        db.commit.assert_called_once()
+
+    def test_legacy_mimocode_placeholder_model_is_migrated(self):
+        existing = MagicMock()
+        existing.provider = "mimocode_cli"
+        existing.default_model = "mimocode-cli"
+        db = MagicMock()
+        query = MagicMock()
+        query.filter.return_value = query
+        query.first.return_value = existing
+        db.query.return_value = query
+
+        def resolve(_command, fallbacks):
+            return "mimo.cmd" if "mimo.cmd" in fallbacks else None
+
+        with patch("app.services.external_agent.mcp_auto_config._resolve_command", side_effect=resolve):
+            with patch("app.services.external_agent.mcp_auto_config.cursor_command", return_value=None):
+                with patch("app.services.external_agent.mcp_auto_config.hermes_command", return_value=None):
+                    with patch(
+                        "app.ai.local_cli_adapter.preferred_local_cli_model",
+                        return_value="xiaomi/mimo-v2.5-pro",
+                    ):
+                        mcp_auto_config.ensure_detected_local_cli_model_configs(db)
+
+        self.assertEqual(existing.default_model, "xiaomi/mimo-v2.5-pro")
         db.commit.assert_called_once()
 
     def test_legacy_permission_defaults_are_migrated_once(self):

@@ -8,6 +8,8 @@ from unittest.mock import patch
 from app.ai.local_cli_adapter import (
     LocalCLIAdapter,
     OPENCODE_DEFAULT_MODEL,
+    discover_local_cli_models,
+    extract_cli_error,
     hidden_subprocess_kwargs,
     messages_to_prompt,
     parse_cli_args,
@@ -79,6 +81,43 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             ["run", "--dangerously-skip-permissions", "hello"],
         )
 
+    @patch("app.ai.local_cli_adapter.subprocess.run")
+    @patch("app.ai.local_cli_adapter.shutil.which", return_value=r"C:\tools\mimo.cmd")
+    def test_mimocode_model_discovery_uses_native_models_command(self, _which, run_mock):
+        run_mock.return_value.returncode = 0
+        run_mock.return_value.stdout = "mimo/mimo-auto\nxiaomi/mimo-v2.5-pro\n"
+        models = discover_local_cli_models("mimocode_cli", "mimo")
+        self.assertEqual(
+            [item["id"] for item in models],
+            ["mimo/mimo-auto", "xiaomi/mimo-v2.5-pro"],
+        )
+        command = run_mock.call_args.args[0]
+        self.assertTrue(any(str(part).endswith("mimo.cmd") for part in command))
+        self.assertEqual(command[-1], "models")
+
+    def test_mimocode_file_launch_attaches_prompt_and_selected_model(self):
+        adapter = LocalCLIAdapter(
+            api_key="",
+            base_url="mimocode_cli",
+            cli_command="mimo",
+            cli_args='["run","--dangerously-skip-permissions","{prompt}"]',
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            launch, prompt_file = adapter._opencode_family_launch(
+                prompt="中文任务",
+                model="xiaomi/mimo-v2.5-pro",
+                cwd=directory,
+                attachments=[],
+            )
+            self.assertIn("--model", launch.args)
+            self.assertIn("xiaomi/mimo-v2.5-pro", launch.args)
+            self.assertIn("--format", launch.args)
+            self.assertIn("json", launch.args)
+            self.assertIn("--dir", launch.args)
+            self.assertIn("--file", launch.args)
+            self.assertEqual(launch.args[-1], prompt_file)
+            self.assertEqual(Path(prompt_file).read_text(encoding="utf-8"), "中文任务")
+
     def test_cursor_default_args_bypass_permissions(self):
         launch = parse_cli_launch(None, "cursor_cli", "hello", "cursor-agent")
         self.assertIn("--force", launch.args)
@@ -104,7 +143,15 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         launch = parse_cli_launch(None, "openclaw_cli", "hello", "openclaw-agent")
         self.assertEqual(
             launch.args,
-            ["agent", "--local", "--json", "--message", "hello"],
+            [
+                "agent",
+                "--local",
+                "--json",
+                "--session-key",
+                "agent:moshu:local-cli",
+                "--message",
+                "hello",
+            ],
         )
 
     def test_normalize_jsonl_output_extracts_text(self):
@@ -120,6 +167,12 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             '{"type":"step_finish","part":{"type":"step-finish"}}\n'
         )
         self.assertEqual(text, "你好，世界")
+
+    def test_json_error_event_is_detected_even_with_zero_exit_code(self):
+        error = extract_cli_error(
+            '{"type":"error","error":{"data":{"message":"Please sign in"}}}\n'
+        )
+        self.assertEqual(error, "Please sign in")
 
     def test_runtime_cwd_does_not_fall_back_to_process_cwd(self):
         with patch.dict(

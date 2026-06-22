@@ -101,6 +101,7 @@ class ConnectionTestRequest(BaseModel):
     base_url_override: Optional[str] = Field(None, max_length=500, description="Custom API endpoint")
     cli_command: Optional[str] = Field(None, max_length=500, description="Local CLI command")
     cli_args: Optional[str] = Field(None, max_length=2000, description="Local CLI args")
+    model: Optional[str] = Field(None, max_length=200, description="Model used by the local CLI smoke test")
 
     @field_validator("provider")
     @classmethod

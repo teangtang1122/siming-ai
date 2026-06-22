@@ -69,7 +69,15 @@ DEFAULT_CLI_ARGS: dict[str, list[str]] = {
     "kilocode_cli": ["run", "--auto", "{prompt}"],
     "qwen_code_cli": ["--approval-mode", "yolo", "--output-format", "text", "{prompt}"],
     "hermes_cli": ["--yolo", "--oneshot", "{prompt}"],
-    "openclaw_cli": ["agent", "--local", "--json", "--message", "{prompt}"],
+    "openclaw_cli": [
+        "agent",
+        "--local",
+        "--json",
+        "--session-key",
+        "agent:moshu:local-cli",
+        "--message",
+        "{prompt}",
+    ],
     "custom_cli": ["{prompt}"],
 }
 
@@ -77,13 +85,32 @@ DEFAULT_CLI_MODELS: dict[str, str] = {
     "claude_cli": "claude-code",
     "codex_cli": "codex-cli",
     "opencode_cli": "opencode/deepseek-v4-flash-free",
-    "mimocode_cli": "mimocode-cli",
+    "mimocode_cli": "xiaomi/mimo-v2.5-pro",
     "cursor_cli": "cursor-agent",
     "kilocode_cli": "kilocode-cli",
     "qwen_code_cli": "qwen-code-cli",
     "hermes_cli": "hermes-agent",
     "openclaw_cli": "openclaw-agent",
     "custom_cli": "custom-cli",
+}
+
+CLI_MODEL_DISCOVERY_ARGS: dict[str, list[str]] = {
+    "opencode_cli": ["models"],
+    "mimocode_cli": ["models"],
+    "cursor_cli": ["--list-models"],
+    "kilocode_cli": ["models"],
+}
+
+CLI_MODEL_SENTINELS: dict[str, set[str]] = {
+    "claude_cli": {"claude-code"},
+    "codex_cli": {"codex-cli"},
+    "mimocode_cli": {"mimocode-cli"},
+    "cursor_cli": {"cursor-agent"},
+    "kilocode_cli": {"kilocode-cli"},
+    "qwen_code_cli": {"qwen-code-cli"},
+    "hermes_cli": {"hermes-agent"},
+    "openclaw_cli": {"openclaw-agent"},
+    "custom_cli": {"custom-cli"},
 }
 
 STDIN_PROMPT_PROVIDERS = {
@@ -95,6 +122,7 @@ STDIN_PROMPT_PROVIDERS = {
     "qwen_code_cli",
 }
 AGENT_FILE_PROMPT_PROVIDERS = LOCAL_CLI_PROVIDERS - {"custom_cli"}
+OPENCODE_FAMILY_PROVIDERS = {"opencode_cli", "mimocode_cli", "kilocode_cli"}
 WINDOWS_SAFE_ARG_CHARS = 12000
 OPENCODE_LEGACY_MODEL = "opencode-cli"
 OPENCODE_DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
@@ -123,11 +151,74 @@ def effective_local_cli_model(provider: str, model: str) -> str:
     return model
 
 
-def local_cli_model_options(provider: str) -> list[dict]:
+def is_cli_model_sentinel(provider: str, model: str | None) -> bool:
+    return not model or model in CLI_MODEL_SENTINELS.get(provider, set())
+
+
+def _subprocess_command(command: str, args: list[str]) -> list[str]:
+    if os.name == "nt" and Path(command).suffix.lower() in {".cmd", ".bat"}:
+        return ["cmd.exe", "/d", "/s", "/c", command, *args]
+    return [command, *args]
+
+
+def discover_local_cli_models(
+    provider: str,
+    command: str | None = None,
+    *,
+    timeout: int = 15,
+) -> list[dict]:
+    discovery_args = CLI_MODEL_DISCOVERY_ARGS.get(provider)
+    resolved = (
+        shutil.which(command or "")
+        or (command if command and os.path.exists(command) else None)
+        or shutil.which(DEFAULT_CLI_COMMANDS.get(provider, ""))
+    )
+    if not discovery_args or not resolved:
+        return []
+    try:
+        completed = subprocess.run(
+            _subprocess_command(resolved, discovery_args),
+            cwd=tempfile.gettempdir(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            **hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    models: list[dict] = []
+    seen: set[str] = set()
+    for raw_line in completed.stdout.splitlines():
+        model = raw_line.strip()
+        if not model or "/" not in model or model in seen:
+            continue
+        seen.add(model)
+        models.append({"id": model, "display_name": model})
+    return models
+
+
+def preferred_local_cli_model(provider: str, command: str | None = None) -> str:
+    models = discover_local_cli_models(provider, command)
+    ids = {item["id"] for item in models}
+    preferred = DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
+    if preferred in ids or not models:
+        return preferred
+    return models[0]["id"]
+
+
+def local_cli_model_options(provider: str, command: str | None = None) -> list[dict]:
+    discovered = discover_local_cli_models(provider, command)
+    if discovered:
+        return discovered
     if provider == "opencode_cli":
         return [{"id": model, "display_name": model} for model in OPENCODE_MODELS]
     model = DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
-    return [{"id": model, "display_name": model}]
+    label = f"跟随 {provider.removesuffix('_cli')} 当前默认模型" if is_cli_model_sentinel(provider, model) else model
+    return [{"id": model, "display_name": label}]
 
 
 def hidden_subprocess_kwargs() -> dict:
@@ -257,6 +348,33 @@ def _extract_text_from_json_event(data: dict) -> str:
     return ""
 
 
+def _extract_error_from_json_event(data: dict) -> str:
+    if data.get("type") != "error" and "error" not in data:
+        return ""
+    error = data.get("error")
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        nested = error.get("data")
+        if isinstance(nested, dict):
+            return str(nested.get("message") or nested.get("error") or nested)
+        return str(error.get("message") or error)
+    return str(data.get("message") or data)
+
+
+def extract_cli_error(text: str) -> str:
+    for line in text.splitlines():
+        try:
+            data = json.loads(line.strip())
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            error = _extract_error_from_json_event(data)
+            if error:
+                return error
+    return ""
+
+
 class LocalCLIAdapter(BaseAdapter):
     """Adapter for local agent CLIs used as text generation backends."""
 
@@ -361,9 +479,11 @@ class LocalCLIAdapter(BaseAdapter):
                 }
             },
             # Internal model execution must be side-effect free. The complete
-            # prompt and source documents are attached before the run, so no
-            # filesystem, shell, web, or MCP tool is required.
-            "permission": {"*": "deny"},
+            # prompt and source documents are attached before the run. Some
+            # OpenCode models still choose the read tool for attachments, so
+            # allow read-only access while keeping writes, shell, web, and MCP
+            # disabled.
+            "permission": {"*": "deny", "read": "allow"},
         }, ensure_ascii=False)
         return env
 
@@ -376,7 +496,54 @@ class LocalCLIAdapter(BaseAdapter):
         if value is not None:
             args.insert(insert_at + 1, value)
 
-    def _opencode_launch(
+    @staticmethod
+    def _insert_before_prompt(args: list[str], values: list[str]) -> None:
+        insert_at = max(0, len(args) - 1)
+        args[insert_at:insert_at] = values
+
+    def _apply_provider_runtime_options(
+        self,
+        args: list[str],
+        *,
+        model: str,
+        cwd: str,
+    ) -> None:
+        provider = self._provider
+        if not is_cli_model_sentinel(provider, model) and "--model" not in args and "-m" not in args:
+            if provider == "openclaw_cli" and "--message" in args:
+                args[args.index("--message"):args.index("--message")] = ["--model", model]
+            else:
+                self._insert_before_prompt(args, ["--model", model])
+        if provider == "claude_cli":
+            if "--dangerously-skip-permissions" not in args and "--permission-mode" not in args:
+                self._insert_before_prompt(args, ["--dangerously-skip-permissions"])
+        elif provider == "codex_cli":
+            if "--dangerously-bypass-approvals-and-sandbox" not in args:
+                self._insert_before_prompt(args, ["--dangerously-bypass-approvals-and-sandbox"])
+            if "--cd" not in args and "-C" not in args:
+                self._insert_before_prompt(args, ["--cd", cwd])
+            if "--skip-git-repo-check" not in args:
+                self._insert_before_prompt(args, ["--skip-git-repo-check"])
+            if "--ephemeral" not in args:
+                self._insert_before_prompt(args, ["--ephemeral"])
+        elif provider == "cursor_cli":
+            for flag in ("--force", "--approve-mcps", "--trust"):
+                if flag not in args:
+                    self._insert_before_prompt(args, [flag])
+            if "--workspace" not in args:
+                self._insert_before_prompt(args, ["--workspace", cwd])
+        elif provider == "qwen_code_cli":
+            if "--approval-mode" not in args and "--yolo" not in args:
+                self._insert_before_prompt(args, ["--approval-mode", "yolo"])
+            if "--include-directories" not in args and "--add-dir" not in args:
+                self._insert_before_prompt(args, ["--include-directories", cwd])
+        elif provider == "hermes_cli" and "--yolo" not in args:
+            self._insert_before_prompt(args, ["--yolo"])
+        elif provider == "openclaw_cli" and "--session-key" not in args:
+            insert_at = args.index("--message") if "--message" in args else max(0, len(args) - 1)
+            args[insert_at:insert_at] = ["--session-key", "agent:moshu:local-cli"]
+
+    def _opencode_family_launch(
         self,
         *,
         prompt: str,
@@ -394,8 +561,13 @@ class LocalCLIAdapter(BaseAdapter):
         args = list(launch.args)
         self._ensure_opencode_option(args, "--pure")
         self._ensure_opencode_option(args, "--format", "json")
-        self._ensure_opencode_option(args, "--model", execution_model)
         self._ensure_opencode_option(args, "--dir", cwd)
+        if not is_cli_model_sentinel(self._provider, execution_model):
+            self._ensure_opencode_option(args, "--model", execution_model)
+        if self._provider == "mimocode_cli":
+            self._ensure_opencode_option(args, "--dangerously-skip-permissions")
+        elif self._provider == "kilocode_cli":
+            self._ensure_opencode_option(args, "--auto")
         for path in [prompt_file, *attachments]:
             args.extend(["--file", path])
         return CLILaunch(args=args), prompt_file
@@ -412,18 +584,22 @@ class LocalCLIAdapter(BaseAdapter):
         cwd = self._runtime_cwd(extra_body)
         attachments = self._runtime_attachments(extra_body)
         env = os.environ.copy()
-        if self._provider == "opencode_cli":
-            launch, prompt_file = self._opencode_launch(
+        if self._provider in OPENCODE_FAMILY_PROVIDERS:
+            launch, prompt_file = self._opencode_family_launch(
                 prompt=prompt,
                 model=model,
                 cwd=cwd,
                 attachments=attachments,
             )
-            env = self._opencode_env()
+            if self._provider == "opencode_cli":
+                env = self._opencode_env()
         elif self._provider in AGENT_FILE_PROMPT_PROVIDERS:
             prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
             launch_prompt = self._file_prompt_instruction(prompt_file, attachments)
             launch = self._launch(launch_prompt, model)
+            args = list(launch.args)
+            self._apply_provider_runtime_options(args, model=model, cwd=cwd)
+            launch = CLILaunch(args=args, stdin_text=launch.stdin_text)
         elif len(prompt) > WINDOWS_SAFE_ARG_CHARS and self._provider not in STDIN_PROMPT_PROVIDERS:
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -472,6 +648,9 @@ class LocalCLIAdapter(BaseAdapter):
         if proc.returncode != 0:
             detail = err_text or out_text or f"exit code {proc.returncode}"
             raise LLMError(f"本机 CLI 调用失败: {detail}")
+        event_error = extract_cli_error(out_text)
+        if event_error:
+            raise LLMError(f"本机 CLI 调用失败: {event_error}")
         return self._normalize_output(out_text)
 
     def _normalize_output(self, text: str) -> str:
