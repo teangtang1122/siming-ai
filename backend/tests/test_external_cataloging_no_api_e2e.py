@@ -613,10 +613,60 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
 
         self.assertEqual(saved["status"], "ok")
         fact = self.db.query(CatalogingFact).filter(CatalogingFact.chapter_run_id == run.id).one()
-        self.assertEqual(fact.fact_type, "character_appearance")
+        self.assertEqual(fact.fact_type, "character_fact")
         self.assertEqual(json.loads(fact.raw_payload)["character_name"], "Alice")
         self.assertEqual(fact.confidence, 0.9)
         self.assertEqual(fact.evidence, "Alice wore a red coat.")
+
+    def test_fact_type_is_inferred_for_provider_specific_shapes(self):
+        from app.services.workspace.tools.external_cataloging import (
+            save_external_cataloging_facts,
+            start_external_cataloging_job,
+        )
+
+        started = _run(start_external_cataloging_job(self.db, self.project.id, {}))
+        job_id = started["data"]["job_id"]
+        run = (
+            self.db.query(CatalogingChapterRun)
+            .filter(CatalogingChapterRun.job_id == job_id)
+            .order_by(CatalogingChapterRun.chapter_order)
+            .first()
+        )
+        saved = _run(save_external_cataloging_facts(
+            self.db,
+            self.project.id,
+            {
+                "job_id": job_id,
+                "chapter_id": run.chapter_id,
+                "facts": [
+                    {"name": "Alice", "updates": {"traits": ["careful"]}},
+                    {"title": "Forest law", "description": "Do not whistle after dark."},
+                    {"title": "Chapter 1", "summary": "Alice enters the forest."},
+                    {"title": "First warning", "parent_title": "Chapter 1", "summary": "A sign appears."},
+                    {"source_name": "Alice", "target_name": "Bob", "relationship_type": "friend"},
+                ],
+            },
+        ))
+        self.assertEqual(saved["status"], "ok")
+        types = [
+            item.fact_type
+            for item in (
+                self.db.query(CatalogingFact)
+                .filter(CatalogingFact.chapter_run_id == run.id)
+                .order_by(CatalogingFact.sort_order)
+                .all()
+            )
+        ]
+        self.assertEqual(
+            types,
+            [
+                "character_fact",
+                "worldbuilding_fact",
+                "chapter_overview",
+                "outline_fact",
+                "relationship_fact",
+            ],
+        )
 
     def test_empty_or_incomplete_candidates_cannot_complete_chapter(self):
         from app.services.workspace.tools.external_cataloging import (

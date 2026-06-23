@@ -36,6 +36,14 @@ CANONICAL_CANDIDATE_TYPES = {
 }
 
 COMPLETED_RUN_STATUSES = {"completed", "completed_with_warnings"}
+CANONICAL_FACT_TYPES = {
+    "chapter_overview",
+    "character_fact",
+    "relationship_fact",
+    "worldbuilding_fact",
+    "outline_fact",
+    "identity_hint",
+}
 
 
 def _managed_cataloging_binding() -> dict[str, str] | None:
@@ -183,6 +191,37 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except Exception:
         return None
+
+
+def _canonical_external_fact_type(raw_type: Any, payload: dict[str, Any]) -> str:
+    text = str(raw_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if text in CANONICAL_FACT_TYPES:
+        return text
+    if text.startswith("character") or text in {"new_character", "role", "角色"}:
+        return "character_fact"
+    if "relationship" in text or text in {"relation", "角色关系"}:
+        return "relationship_fact"
+    if text.startswith("world") or text.startswith("setting") or text in {"new_worldbuilding", "设定"}:
+        return "worldbuilding_fact"
+    if text.startswith("outline") or text in {"scene", "section", "大纲"}:
+        return "outline_fact"
+    if text.startswith("chapter") or "summary" in text or text in {"overview", "摘要"}:
+        return "chapter_overview"
+    if "identity" in text or "alias" in text or text in {"身份", "别名"}:
+        return "identity_hint"
+
+    keys = set(payload)
+    if {"source_name", "target_name"} <= keys or {"character_a", "character_b"} <= keys:
+        return "relationship_fact"
+    if "name" in keys or "character_name" in keys or "updates" in keys:
+        return "character_fact"
+    if "parent_title" in keys or "node_type" in keys:
+        return "outline_fact"
+    if "title" in keys and "summary" in keys:
+        return "chapter_overview"
+    if "title" in keys or "entry_title" in keys or "dimension" in keys or "category" in keys:
+        return "worldbuilding_fact"
+    return "unknown"
 
 
 def _job_project_id(job: Any, provided_project_id: str) -> tuple[str, str | None]:
@@ -827,7 +866,6 @@ async def save_external_cataloging_facts(
     for index, fact_data in enumerate(facts):
         if not isinstance(fact_data, dict):
             continue
-        fact_type = str(fact_data.get("fact_type") or fact_data.get("type") or "unknown").strip()
         payload = (
             fact_data.get("payload")
             if isinstance(fact_data.get("payload"), dict)
@@ -838,6 +876,10 @@ async def save_external_cataloging_facts(
                 for key, value in fact_data.items()
                 if key not in {"fact_type", "type", "confidence", "evidence", "sort_order"}
             }
+        )
+        fact_type = _canonical_external_fact_type(
+            fact_data.get("fact_type") or fact_data.get("type"),
+            payload,
         )
         fact = CatalogingFact(
             job_id=job_id,
