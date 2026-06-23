@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_external_cataloging_e2e.db"
 
@@ -489,6 +490,89 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
         ))
         self.assertEqual(result["status"], "ok", result)
         self.assertEqual(result["data"]["chapter_id"], second_chapter_id)
+
+    def test_managed_cli_turn_cannot_advance_to_another_chapter(self):
+        from app.services.workspace.tools.external_cataloging import (
+            get_next_external_cataloging_chapter,
+            save_external_cataloging_candidates,
+            save_external_cataloging_facts,
+            start_external_cataloging_job,
+        )
+        from app.services.workspace.tools.cataloging import apply_pending_cataloging
+
+        project_id = self.project.id
+        started = _run(start_external_cataloging_job(self.db, project_id, {}))
+        job_id = started["data"]["job_id"]
+        runs = (
+            self.db.query(CatalogingChapterRun)
+            .filter(CatalogingChapterRun.job_id == job_id)
+            .order_by(CatalogingChapterRun.chapter_order)
+            .all()
+        )
+        first_run, second_run = runs[:2]
+        env = {
+            "MOSHU_MANAGED_AGENT_KIND": "cataloging",
+            "MOSHU_MANAGED_CATALOGING_PROJECT_ID": project_id,
+            "MOSHU_MANAGED_CATALOGING_JOB_ID": job_id,
+            "MOSHU_MANAGED_CATALOGING_CHAPTER_ID": first_run.chapter_id,
+            "MOSHU_MANAGED_CATALOGING_CHAPTER_RUN_ID": first_run.id,
+            "MOSHU_MANAGED_CATALOGING_STAGE": "full",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            assigned = _run(get_next_external_cataloging_chapter(
+                self.db,
+                project_id,
+                {"job_id": job_id, "phase": "facts"},
+            ))
+            self.assertEqual(assigned["data"]["chapter_id"], first_run.chapter_id)
+
+            saved = _run(save_external_cataloging_facts(
+                self.db,
+                project_id,
+                {
+                    "job_id": job_id,
+                    "chapter_id": first_run.chapter_id,
+                    "facts": [{"type": "event", "data": {"summary": "first"}}],
+                },
+            ))
+            self.assertEqual(saved["status"], "ok")
+
+            saved = _run(save_external_cataloging_candidates(
+                self.db,
+                project_id,
+                {
+                    "job_id": job_id,
+                    "chapter_id": first_run.chapter_id,
+                    "candidates": [
+                        {"type": "chapter_summary", "action": "create", "summary": "first"},
+                    ],
+                },
+            ))
+            self.assertEqual(saved["status"], "ok")
+            applied = _run(apply_pending_cataloging(self.db, project_id, {"job_id": job_id}))
+            self.assertEqual(applied["status"], "ok")
+
+            blocked = _run(get_next_external_cataloging_chapter(
+                self.db,
+                project_id,
+                {"job_id": job_id, "phase": "facts"},
+            ))
+            self.assertEqual(blocked["status"], "skipped")
+            self.assertTrue(blocked["data"]["managed_turn_complete"])
+
+            wrong_write = _run(save_external_cataloging_facts(
+                self.db,
+                project_id,
+                {
+                    "job_id": job_id,
+                    "chapter_id": second_run.chapter_id,
+                    "facts": [{"type": "event", "data": {"summary": "second"}}],
+                },
+            ))
+            self.assertEqual(wrong_write["status"], "skipped")
+
+        self.db.refresh(second_run)
+        self.assertEqual(second_run.status, "pending")
 
 
 if __name__ == "__main__":

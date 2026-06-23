@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -35,6 +36,54 @@ CANONICAL_CANDIDATE_TYPES = {
 }
 
 COMPLETED_RUN_STATUSES = {"completed", "completed_with_warnings"}
+
+
+def _managed_cataloging_binding() -> dict[str, str] | None:
+    if os.environ.get("MOSHU_MANAGED_AGENT_KIND", "").strip().lower() != "cataloging":
+        return None
+    return {
+        "project_id": os.environ.get("MOSHU_MANAGED_CATALOGING_PROJECT_ID", "").strip(),
+        "job_id": os.environ.get("MOSHU_MANAGED_CATALOGING_JOB_ID", "").strip(),
+        "chapter_id": os.environ.get("MOSHU_MANAGED_CATALOGING_CHAPTER_ID", "").strip(),
+        "chapter_run_id": os.environ.get("MOSHU_MANAGED_CATALOGING_CHAPTER_RUN_ID", "").strip(),
+        "stage": os.environ.get("MOSHU_MANAGED_CATALOGING_STAGE", "").strip(),
+    }
+
+
+def _managed_binding_error(
+    *,
+    project_id: str,
+    job_id: str,
+    chapter_id: str = "",
+) -> str | None:
+    binding = _managed_cataloging_binding()
+    if not binding:
+        return None
+    if binding["project_id"] and binding["project_id"] != project_id:
+        return "Managed cataloging turn is bound to a different project"
+    if binding["job_id"] and binding["job_id"] != job_id:
+        return "Managed cataloging turn is bound to a different job"
+    if chapter_id and binding["chapter_id"] and binding["chapter_id"] != chapter_id:
+        return "Managed cataloging turn may only write its bound chapter"
+    return None
+
+
+def _managed_stop_result(job_id: str, project_id: str, detail: str) -> dict[str, Any]:
+    return {
+        "tool": "get_next_external_cataloging_chapter",
+        "status": "skipped",
+        "detail": detail,
+        "data": {
+            "job_id": job_id,
+            "project_id": project_id,
+            "managed_turn_complete": True,
+            "next_tool": None,
+            "workflow_reminder": {
+                "mode": "managed_single_chapter",
+                "note": "This CLI turn handles exactly one chapter. End the turn now; Moshu will start a fresh turn for the next chapter.",
+            },
+        },
+    }
 
 
 def _normalize_candidate_input(candidate: dict[str, Any]) -> tuple[dict[str, Any], str, str, str | None]:
@@ -381,6 +430,32 @@ async def get_next_external_cataloging_chapter(
             "detail": mismatch,
             "data": None,
         }
+    binding_error = _managed_binding_error(
+        project_id=effective_project_id,
+        job_id=job_id,
+    )
+    if binding_error:
+        return _managed_stop_result(job_id, effective_project_id, binding_error)
+
+    managed_binding = _managed_cataloging_binding()
+    managed_run = None
+    if managed_binding and managed_binding["chapter_run_id"]:
+        managed_run = db.query(CatalogingChapterRun).filter(
+            CatalogingChapterRun.id == managed_binding["chapter_run_id"],
+            CatalogingChapterRun.job_id == job_id,
+        ).first()
+        if not managed_run:
+            return _managed_stop_result(
+                job_id,
+                effective_project_id,
+                "Managed cataloging chapter run no longer exists",
+            )
+        if managed_run.status in COMPLETED_RUN_STATUSES | {"skipped_by_user"}:
+            return _managed_stop_result(
+                job_id,
+                effective_project_id,
+                "The bound chapter is complete. Do not fetch or process another chapter in this CLI turn.",
+            )
 
     if phase == "candidates":
         awaiting_run = db.query(CatalogingChapterRun).filter(
@@ -556,6 +631,20 @@ async def get_next_external_cataloging_chapter(
                 "data": None,
             }
 
+    if managed_binding:
+        if managed_binding["chapter_run_id"] and chapter_run.id != managed_binding["chapter_run_id"]:
+            return _managed_stop_result(
+                job_id,
+                effective_project_id,
+                "The next available chapter belongs to another CLI turn. End this turn now.",
+            )
+        if managed_binding["chapter_id"] and chapter_run.chapter_id != managed_binding["chapter_id"]:
+            return _managed_stop_result(
+                job_id,
+                effective_project_id,
+                "The next available chapter is not the chapter bound to this CLI turn.",
+            )
+
     char_index: dict[str, str] = {}
     wb_index: dict[str, str] = {}
     outline_neighborhood: list[dict[str, Any]] = []
@@ -696,6 +785,18 @@ async def save_external_cataloging_facts(
             "detail": mismatch,
             "data": None,
         }
+    binding_error = _managed_binding_error(
+        project_id=effective_project_id,
+        job_id=job_id,
+        chapter_id=chapter_id,
+    )
+    if binding_error:
+        return {
+            "tool": "save_external_cataloging_facts",
+            "status": "skipped",
+            "detail": binding_error,
+            "data": None,
+        }
 
     # Find the chapter run
     chapter_run = db.query(CatalogingChapterRun).filter(
@@ -808,6 +909,18 @@ async def save_external_cataloging_candidates(
             "tool": "save_external_cataloging_candidates",
             "status": "skipped",
             "detail": mismatch,
+            "data": None,
+        }
+    binding_error = _managed_binding_error(
+        project_id=effective_project_id,
+        job_id=job_id,
+        chapter_id=chapter_id,
+    )
+    if binding_error:
+        return {
+            "tool": "save_external_cataloging_candidates",
+            "status": "skipped",
+            "detail": binding_error,
             "data": None,
         }
 

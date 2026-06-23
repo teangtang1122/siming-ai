@@ -18,8 +18,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.ai.local_cli_adapter import (
+    CLILaunch,
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
+    OPENCODE_FAMILY_PROVIDERS,
     effective_local_cli_model,
     hidden_subprocess_kwargs,
     parse_cli_launch,
@@ -45,6 +47,7 @@ _COORDINATORS: dict[str, asyncio.Task] = {}
 _PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 _TERMINAL_JOBS = {"completed", "failed", "cancelled"}
 _TERMINAL_RUNS = {"completed", "completed_with_warnings", "skipped_by_user"}
+_MAX_NO_SAVE_ATTEMPTS = 3
 
 
 def _provider_from_model(model: str | None) -> str | None:
@@ -365,6 +368,7 @@ def _task_text(
    `project_id="{job.project_id}"`, `job_id="{job.id}"`, `run_id="{agent_run_id}"`。
 2. 只有 execution_mode 仍为 `auto` 时，调用 `apply_pending_cataloging` 写入当前候选。
 3. 调用 `verify_external_cataloging_progress`，然后结束本轮。
+4. 禁止再次领取或处理下一章；下一章必须由墨枢启动全新的 CLI 回合。
 """
     else:
         phase = "facts" if stage == "full" else "candidates"
@@ -399,6 +403,8 @@ def _task_text(
    - `auto`：调用 `apply_pending_cataloging`。
    - `manual`：不要应用候选，停在等待用户确认状态。
 9. 调用 `verify_external_cataloging_progress`，然后结束本轮。
+10. 验证完成后必须立即结束当前 CLI 回合。禁止再次调用
+    `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由墨枢启动全新的 CLI 回合。
 """
 
     return f"""# 墨枢本机 CLI 作品建档任务
@@ -438,12 +444,47 @@ def _task_text(
 """
 
 
-def _task_prompt(task_file: Path) -> str:
+def _task_prompt(task_file: Path, run: CatalogingChapterRun, chapter: Chapter) -> str:
     return (
-        "你是墨枢本机作品建档 Agent。请读取并严格执行以下 UTF-8 任务文件：\n"
+        "你是墨枢本机作品建档 Agent。本轮是全新的单章任务，不得沿用之前章节的任务绑定。\n"
+        f"本轮唯一 chapter_run_id={run.id}，chapter_id={chapter.id}，章节={chapter.title}。\n"
+        "请只读取并严格执行以下 UTF-8 任务文件；即使缓存、历史或目录里出现其他任务文件，也必须忽略：\n"
         f"{task_file}\n"
         "章节正文和档案由你从任务指定的作品目录自行读取；所有写入必须使用 Moshu MCP。"
     )
+
+
+def _build_cataloging_cli_launch(
+    *,
+    config: APIConfig,
+    prompt: str,
+    model: str,
+    task_file: Path,
+    project_folder: Path,
+    run: CatalogingChapterRun,
+) -> CLILaunch:
+    launch = parse_cli_launch(config.cli_args, config.provider, prompt, model)
+    if config.provider not in OPENCODE_FAMILY_PROVIDERS:
+        return launch
+
+    args = list(launch.args)
+    if "--dir" not in args:
+        args.extend(["--dir", str(project_folder)])
+    if "--file" not in args:
+        args.extend(["--file", str(task_file)])
+    if "--title" not in args:
+        args.extend(["--title", f"Moshu cataloging {run.chapter_order + 1:04d} {run.id[:8]}"])
+    return CLILaunch(args=args, stdin_text=launch.stdin_text)
+
+
+def _turn_has_no_saved_progress(stage: str, status: str) -> bool:
+    if stage == "full":
+        return status in {"pending", "in_progress", "extracting"}
+    if stage == "candidates":
+        return status == "facts_saved"
+    if stage == "apply":
+        return status == "awaiting_confirmation"
+    return False
 
 
 async def _run_cli_turn(
@@ -496,10 +537,23 @@ async def _run_cli_turn(
         config.provider,
         config.default_model or DEFAULT_CLI_MODELS.get(config.provider, config.provider),
     )
-    launch = parse_cli_launch(config.cli_args, config.provider, _task_prompt(task_file), model)
+    launch = _build_cataloging_cli_launch(
+        config=config,
+        prompt=_task_prompt(task_file, run, chapter),
+        model=model,
+        task_file=task_file,
+        project_folder=project_folder,
+        run=run,
+    )
     env = os.environ.copy()
     env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")
     env["MOSHU_MANAGED_AGENT_KIND"] = "cataloging"
+    env["MOSHU_MANAGED_CATALOGING_PROJECT_ID"] = job.project_id
+    env["MOSHU_MANAGED_CATALOGING_JOB_ID"] = job.id
+    env["MOSHU_MANAGED_CATALOGING_CHAPTER_ID"] = chapter.id
+    env["MOSHU_MANAGED_CATALOGING_CHAPTER_RUN_ID"] = run.id
+    env["MOSHU_MANAGED_CATALOGING_AGENT_RUN_ID"] = agent_run_id
+    env["MOSHU_MANAGED_CATALOGING_STAGE"] = stage
     process = await asyncio.create_subprocess_exec(
         resolved,
         *launch.args,
@@ -532,6 +586,7 @@ async def _run_cli_turn(
 
 
 async def _coordinate_cataloging(job_id: str, provider: str) -> None:
+    no_save_attempts: dict[str, int] = {}
     try:
         while True:
             db = SessionLocal()
@@ -637,18 +692,44 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                         "stderr_tail": stderr[-1500:],
                     }, ensure_ascii=False),
                 )
+                no_saved_progress = returncode == 0 and _turn_has_no_saved_progress(stage, run.status)
+                if no_saved_progress:
+                    attempt = no_save_attempts.get(run.id, 0) + 1
+                    no_save_attempts[run.id] = attempt
+                    if attempt < _MAX_NO_SAVE_ATTEMPTS:
+                        if stage == "full":
+                            run.status = "pending"
+                        job.status = "running"
+                        job.blocked_chapter_id = None
+                        job.error = None
+                        add_event(
+                            db,
+                            agent_run_id,
+                            "chapter_agent_retry",
+                            status="running",
+                            message=(
+                                f"本机 CLI 未保存第 {run.chapter_order + 1} 章，"
+                                f"正在自动重试 {attempt + 1}/{_MAX_NO_SAVE_ATTEMPTS}"
+                            ),
+                            payload_json=json.dumps({
+                                "job_id": job.id,
+                                "chapter_id": run.chapter_id,
+                                "chapter_run_id": run.id,
+                                "stage": stage,
+                                "attempt": attempt + 1,
+                                "max_attempts": _MAX_NO_SAVE_ATTEMPTS,
+                                "stdout_tail": stdout[-1500:],
+                                "stderr_tail": stderr[-1500:],
+                            }, ensure_ascii=False),
+                        )
+                        db.commit()
+                        continue
                 if returncode != 0:
                     run.status = "failed"
                     run.error = stderr[-2000:] or stdout[-2000:] or f"CLI exit code {returncode}"
-                elif run.status in {"pending", "in_progress", "extracting"}:
+                elif _turn_has_no_saved_progress(stage, run.status):
                     run.status = "failed"
                     run.error = "本机 CLI 未通过 MCP 保存本章事实或候选"
-                elif stage == "candidates" and run.status == "facts_saved":
-                    run.status = "failed"
-                    run.error = "本机 CLI 未通过 MCP 保存本章候选"
-                elif stage == "apply" and run.status == "awaiting_confirmation":
-                    run.status = "failed"
-                    run.error = "本机 CLI 未应用当前章节候选"
                 if run.status == "failed":
                     job.status = "paused_on_failure"
                     job.blocked_chapter_id = run.chapter_id

@@ -12,7 +12,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import APIConfig, Base, CatalogingJob, Chapter, Project
-from app.services.cataloging.local_cli_agent import _coordinate_cataloging
+from app.services.cataloging.local_cli_agent import (
+    _build_cataloging_cli_launch,
+    _coordinate_cataloging,
+    _task_prompt,
+)
 from app.services.cataloging.orchestrator import create_cataloging_job
 from app.services.workspace.tools.cataloging import apply_pending_cataloging
 from app.services.workspace.tools.external_cataloging import (
@@ -194,6 +198,69 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             self.assertEqual(job.chapter_runs[0].status, "awaiting_confirmation")
             self.assertGreater(len(job.chapter_runs[0].candidates), 0)
             self.assertIsNone(job.chapter_runs[0].chapter.summary)
+        finally:
+            db.close()
+
+    def test_opencode_turn_attaches_the_exact_chapter_task_file(self):
+        from app.database.models import CatalogingChapterRun
+
+        config = APIConfig(
+            provider="opencode_cli",
+            provider_type="local_cli",
+            cli_args='["run","--pure","--format","json","{prompt}"]',
+        )
+        run = CatalogingChapterRun(
+            id="chapter-run-7",
+            chapter_id=self.chapter_id,
+            chapter_order=6,
+        )
+        chapter = Chapter(id=self.chapter_id, title="第七章 寿宴发难")
+        with tempfile.TemporaryDirectory() as directory:
+            task_file = __import__("pathlib").Path(directory) / "0007-full.md"
+            task_file.write_text("第七章唯一任务", encoding="utf-8")
+            prompt = _task_prompt(task_file, run, chapter)
+            launch = _build_cataloging_cli_launch(
+                config=config,
+                prompt=prompt,
+                model="opencode/deepseek-v4-flash-free",
+                task_file=task_file,
+                project_folder=__import__("pathlib").Path(directory),
+                run=run,
+            )
+
+        self.assertIn("chapter-run-7", prompt)
+        self.assertIn(self.chapter_id, prompt)
+        self.assertIn("--file", launch.args)
+        self.assertEqual(launch.args[launch.args.index("--file") + 1], str(task_file))
+        self.assertIn("--title", launch.args)
+        self.assertIn("0007", launch.args[launch.args.index("--title") + 1])
+
+    def test_no_save_turn_is_retried_before_pausing_job(self):
+        job_id = self._create_job("auto")
+        attempts = 0
+
+        async def flaky_cli_turn(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return 0, "stale task binding", ""
+            return await self._fake_cli_turn(**kwargs)
+
+        with (
+            patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session),
+            patch(
+                "app.services.cataloging.local_cli_agent._run_cli_turn",
+                side_effect=flaky_cli_turn,
+            ),
+        ):
+            asyncio.run(_coordinate_cataloging(job_id, "opencode_cli"))
+
+        db = self.Session()
+        try:
+            job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+            self.assertEqual(attempts, 2)
+            self.assertEqual(job.status, "completed", job.error)
+            self.assertEqual(job.chapter_runs[0].status, "completed")
         finally:
             db.close()
 
