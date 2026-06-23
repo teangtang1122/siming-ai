@@ -444,11 +444,22 @@ def _task_text(
 """
 
 
-def _task_prompt(task_file: Path, run: CatalogingChapterRun, chapter: Chapter) -> str:
+def _task_prompt(
+    task_file: Path,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+    chapter: Chapter,
+    agent_run_id: str,
+    stage: str,
+) -> str:
     return (
-        "你是墨枢本机作品建档 Agent。本轮是全新的单章任务，不得沿用之前章节的任务绑定。\n"
-        f"本轮唯一 chapter_run_id={run.id}，chapter_id={chapter.id}，章节={chapter.title}。\n"
-        "请只读取并严格执行以下 UTF-8 任务文件；即使缓存、历史或目录里出现其他任务文件，也必须忽略：\n"
+        "立即执行，不要向用户提问，也不要等待补充信息。所有任务绑定已经完整给出。\n"
+        "你是墨枢本机作品建档 Agent。本轮是全新的单章任务，禁止沿用任何旧会话或旧章节绑定。\n"
+        f"当前阶段={stage}；job_id={job.id}；agent_run_id={agent_run_id}；"
+        f"chapter_run_id={run.id}；chapter_id={chapter.id}；章节={chapter.title}。\n"
+        "第一步必须调用 report_agent_plan，然后严格按附件任务文件执行 MCP 工具链。"
+        "不得回答“请告知章节”“是否沿用任务”或任何澄清问题。\n"
+        "唯一允许读取的任务文件如下；缓存、历史或目录里的其他任务文件全部忽略：\n"
         f"{task_file}\n"
         "章节正文和档案由你从任务指定的作品目录自行读取；所有写入必须使用 Moshu MCP。"
     )
@@ -468,12 +479,20 @@ def _build_cataloging_cli_launch(
         return launch
 
     args = list(launch.args)
+    prompt_index = args.index(prompt) if prompt in args else len(args)
+    options: list[str] = []
     if "--dir" not in args:
-        args.extend(["--dir", str(project_folder)])
+        options.extend(["--dir", str(project_folder)])
     if "--file" not in args:
-        args.extend(["--file", str(task_file)])
+        options.extend(["--file", str(task_file)])
     if "--title" not in args:
-        args.extend(["--title", f"Moshu cataloging {run.chapter_order + 1:04d} {run.id[:8]}"])
+        unique_suffix = datetime.utcnow().strftime("%H%M%S%f")
+        options.extend([
+            "--title",
+            f"Moshu cataloging {run.chapter_order + 1:04d} {run.id[:8]} {unique_suffix}",
+        ])
+    if options:
+        args[prompt_index:prompt_index] = options
     return CLILaunch(args=args, stdin_text=launch.stdin_text)
 
 
@@ -539,7 +558,7 @@ async def _run_cli_turn(
     )
     launch = _build_cataloging_cli_launch(
         config=config,
-        prompt=_task_prompt(task_file, run, chapter),
+        prompt=_task_prompt(task_file, job, run, chapter, agent_run_id, stage),
         model=model,
         task_file=task_file,
         project_folder=project_folder,

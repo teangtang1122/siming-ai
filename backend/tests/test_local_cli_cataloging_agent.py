@@ -214,11 +214,15 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             chapter_id=self.chapter_id,
             chapter_order=6,
         )
+        job = CatalogingJob(
+            id="job-7",
+            project_id=self.project_id,
+        )
         chapter = Chapter(id=self.chapter_id, title="第七章 寿宴发难")
         with tempfile.TemporaryDirectory() as directory:
             task_file = __import__("pathlib").Path(directory) / "0007-full.md"
             task_file.write_text("第七章唯一任务", encoding="utf-8")
-            prompt = _task_prompt(task_file, run, chapter)
+            prompt = _task_prompt(task_file, job, run, chapter, "agent-run-7", "full")
             launch = _build_cataloging_cli_launch(
                 config=config,
                 prompt=prompt,
@@ -232,6 +236,9 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         self.assertIn(self.chapter_id, prompt)
         self.assertIn("--file", launch.args)
         self.assertEqual(launch.args[launch.args.index("--file") + 1], str(task_file))
+        self.assertLess(launch.args.index("--file"), launch.args.index(prompt))
+        self.assertIn("--dir", launch.args)
+        self.assertLess(launch.args.index("--dir"), launch.args.index(prompt))
         self.assertIn("--title", launch.args)
         self.assertIn("0007", launch.args[launch.args.index("--title") + 1])
 
