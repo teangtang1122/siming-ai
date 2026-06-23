@@ -88,7 +88,13 @@ def _managed_stop_result(job_id: str, project_id: str, detail: str) -> dict[str,
 
 def _normalize_candidate_input(candidate: dict[str, Any]) -> tuple[dict[str, Any], str, str, str | None]:
     """Normalize external-agent candidate shorthand to the internal apply contract."""
-    payload = candidate.get("data") if isinstance(candidate.get("data"), dict) else None
+    payload = (
+        candidate.get("payload")
+        if isinstance(candidate.get("payload"), dict)
+        else candidate.get("data")
+        if isinstance(candidate.get("data"), dict)
+        else None
+    )
     normalized_payload = dict(payload or candidate)
     # Map character_name to name if name is not present
     if "character_name" in candidate and "name" not in candidate:
@@ -104,8 +110,10 @@ def _normalize_candidate_input(candidate: dict[str, Any]) -> tuple[dict[str, Any
 
     raw_type = str(
         candidate.get("item_type")
+        or candidate.get("candidate_type")
         or candidate.get("type")
         or normalized_payload.get("item_type")
+        or normalized_payload.get("candidate_type")
         or normalized_payload.get("type")
         or ""
     ).strip()
@@ -812,18 +820,35 @@ async def save_external_cataloging_facts(
             "data": None,
         }
 
-    # Save facts
+    # Save facts. External CLIs commonly use the canonical first-stage shape
+    # {fact_type, payload, confidence, evidence}; keep accepting the older
+    # shorthand {type, data} as well.
     saved = 0
-    for fact_data in facts:
+    for index, fact_data in enumerate(facts):
         if not isinstance(fact_data, dict):
             continue
+        fact_type = str(fact_data.get("fact_type") or fact_data.get("type") or "unknown").strip()
+        payload = (
+            fact_data.get("payload")
+            if isinstance(fact_data.get("payload"), dict)
+            else fact_data.get("data")
+            if isinstance(fact_data.get("data"), dict)
+            else {
+                key: value
+                for key, value in fact_data.items()
+                if key not in {"fact_type", "type", "confidence", "evidence", "sort_order"}
+            }
+        )
         fact = CatalogingFact(
             job_id=job_id,
             chapter_run_id=chapter_run.id,
             project_id=job.project_id,
             chapter_id=chapter_id,
-            fact_type=str(fact_data.get("type", "unknown")),
-            raw_payload=json.dumps(fact_data.get("data", fact_data), ensure_ascii=False),
+            fact_type=fact_type[:50] or "unknown",
+            raw_payload=json.dumps(payload, ensure_ascii=False),
+            confidence=_float_or_none(fact_data.get("confidence")),
+            evidence=str(fact_data.get("evidence") or "")[:2000] or None,
+            sort_order=int(fact_data.get("sort_order") or index),
         )
         db.add(fact)
         saved += 1
@@ -882,6 +907,7 @@ async def save_external_cataloging_candidates(
     API-free: stores candidates in CatalogingCandidate table.
     """
     from app.database.models import CatalogingJob, CatalogingChapterRun, CatalogingCandidate
+    from app.services.cataloging.candidate_validation import inspect_candidate_coverage
 
     job_id = str(args.get("job_id") or "").strip()
     chapter_id = str(args.get("chapter_id") or "").strip()
@@ -1002,28 +1028,64 @@ async def save_external_cataloging_candidates(
         db.add(candidate)
         saved += 1
 
-    # Saved candidates still need to be applied to project data. Keep the run
-    # blocking here so external agents cannot report completion before writes
-    # are actually applied.
-    chapter_run.status = "awaiting_confirmation"
-    job.status = "waiting_confirmation"
-    job.blocked_chapter_id = chapter_id
+    db.flush()
+    stored_candidates = (
+        db.query(CatalogingCandidate)
+        .filter(CatalogingCandidate.chapter_run_id == chapter_run.id)
+        .all()
+    )
+    coverage = inspect_candidate_coverage(stored_candidates)
+    candidate_set_complete = coverage.is_complete
+    if candidate_set_complete:
+        # Saved candidates still need to be applied to project data. Keep the
+        # run blocking here so external agents cannot report completion before
+        # writes are actually applied.
+        chapter_run.status = "awaiting_confirmation"
+        job.status = "waiting_confirmation"
+        job.blocked_chapter_id = chapter_id
+        next_tool = "apply_pending_cataloging"
+        note = (
+            "Candidates are only staged until apply_pending_cataloging writes them into "
+            "characters, outline, worldbuilding, and summaries."
+        )
+    else:
+        # A partial or empty call is not a completed candidate stage. Preserve
+        # any valid rows so a fresh CLI turn can add the missing required data.
+        chapter_run.status = "facts_saved"
+        job.status = "running"
+        job.blocked_chapter_id = chapter_id
+        missing_text = ", ".join(coverage.missing)
+        warnings.append(
+            f"Candidate set is incomplete; missing required items: {missing_text}"
+        )
+        next_tool = "save_external_cataloging_candidates"
+        note = (
+            "The candidate set is incomplete. Add the missing required items for this same "
+            "chapter before calling apply_pending_cataloging."
+        )
     db.commit()
 
     result = {
         "tool": "save_external_cataloging_candidates",
         "status": "ok",
-        "detail": f"Saved {saved} candidates",
+        "detail": (
+            f"Saved {saved} candidates"
+            if candidate_set_complete
+            else f"Saved {saved} candidates; candidate set is incomplete"
+        ),
         "data": {
             "job_id": job_id,
             "project_id": effective_project_id,
             "chapter_id": chapter_id,
             "candidates_saved": saved,
+            "candidates_total": coverage.total,
+            "candidate_set_complete": candidate_set_complete,
+            "missing_required_items": coverage.missing,
             "chapter_run_status": chapter_run.status,
-            "next_tool": "apply_pending_cataloging",
+            "next_tool": next_tool,
             "workflow_reminder": _workflow_reminder(
-                "apply_pending_cataloging",
-                note="Candidates are only staged until apply_pending_cataloging writes them into characters, outline, worldbuilding, and summaries.",
+                next_tool,
+                note=note,
             ),
             "warnings": warnings,
         },

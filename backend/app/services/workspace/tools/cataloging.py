@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ....database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
 from ....services.content_store import sync_project_to_files
 from ....services.cataloging.applier import apply_candidates_for_run
+from ....services.cataloging.candidate_validation import inspect_candidate_coverage
 from ....services.cataloging.candidate_io import candidate_to_dict
 from ....services.cataloging.fact_store import fact_to_dict, load_facts_for_run
 from ....services.cataloging.job_control import (
@@ -202,6 +203,29 @@ async def apply_pending_cataloging(db: Session, project_id: str, args: dict[str,
     )
     if not run:
         return {"tool": "apply_pending_cataloging", "status": "skipped", "detail": "当前没有等待确认的章节"}
+    candidates = (
+        db.query(CatalogingCandidate)
+        .filter(CatalogingCandidate.chapter_run_id == run.id)
+        .all()
+    )
+    coverage = inspect_candidate_coverage(candidates)
+    if not coverage.is_complete:
+        run.status = "facts_saved"
+        job.status = "running"
+        job.blocked_chapter_id = run.chapter_id
+        db.flush()
+        return {
+            "tool": "apply_pending_cataloging",
+            "status": "skipped",
+            "detail": "候选不完整，未执行写入",
+            "data": {
+                "job_id": job.id,
+                "chapter_id": run.chapter_id,
+                "candidate_count": coverage.total,
+                "missing_required_items": coverage.missing,
+                "next_tool": "save_external_cataloging_candidates",
+            },
+        }
     events = apply_candidates_for_run(db, job, run)
     has_failed = any(event.get("type") == "candidate_apply_failed" for event in events)
     run.status = "completed_with_warnings" if has_failed else "completed"
