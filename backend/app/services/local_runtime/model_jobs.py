@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ...core.crypto import encrypt
-from ...database.models import APIConfig, LocalModel, LocalRuntimeInstallation, ModelDownloadTask
+from ...database.models import APIConfig, LocalModel, LocalModelTaskSetting, LocalRuntimeInstallation, ModelDownloadTask
 from ...database.session import SessionLocal
 from .downloads import download_with_fallback
 from .hardware import detect_hardware
@@ -24,7 +24,9 @@ def ensure_catalog_rows() -> None:
     from .manifest import model_catalog
 
     with SessionLocal() as db:
+        context_by_model: dict[str, int] = {}
         for item in model_catalog():
+            context_by_model[item["model_key"]] = int(item["context_length"])
             row = db.query(LocalModel).filter(LocalModel.model_key == item["model_key"]).first()
             if not row:
                 row = LocalModel(
@@ -42,9 +44,20 @@ def ensure_catalog_rows() -> None:
                     status="available",
                 )
                 db.add(row)
-            elif row.status == "installed" and (not row.file_path or not Path(row.file_path).exists()):
-                row.status = "available"
-                row.file_path = None
+            else:
+                row.display_name = item["display_name"]
+                row.family = item["family"]
+                row.parameter_size = item["parameter_size"]
+                row.quantization = item["quantization"]
+                row.context_length = item["context_length"]
+                row.license_name = item["license_name"]
+                row.source = "catalog"
+                row.source_urls = item["sources"]
+                row.min_ram_gb = item["min_ram_gb"]
+                row.recommended_vram_gb = item["recommended_vram_gb"]
+                if row.status == "installed" and (not row.file_path or not Path(row.file_path).exists()):
+                    row.status = "available"
+                    row.file_path = None
         runtime = db.query(LocalRuntimeInstallation).filter(
             LocalRuntimeInstallation.runtime_key == "llama_cpp"
         ).first()
@@ -55,6 +68,10 @@ def ensure_catalog_rows() -> None:
             runtime.port = None
             runtime.pid = None
             runtime.active_model_id = None
+        for setting in db.query(LocalModelTaskSetting).all():
+            model_context = context_by_model.get(setting.model_key)
+            if model_context and (not setting.context_length or setting.context_length < model_context):
+                setting.context_length = model_context
         db.commit()
 
 

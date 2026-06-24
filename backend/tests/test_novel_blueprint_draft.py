@@ -583,7 +583,7 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
         with patch(
             "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
             new=AsyncMock(return_value=None),
-        ):
+        ) as draft_mock:
             result = asyncio.run(draft_novel_blueprint(db, "p1", {
                 "session_id": "s1",
                 "execution_mode": "hybrid",
@@ -593,12 +593,31 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
             }))
 
         self.assertEqual(result["status"], "ok")
+        draft_mock.assert_not_awaited()
         self.assertNotIn("questions", result["data"])
         first = result["data"]["blueprints"][0]
         flat_text = str(first)
         self.assertNotEqual(first["protagonist"]["name"], "什么样的人")
         self.assertIn("被秘密组织培养的实验体", flat_text)
         self.assertNotIn("Q:", flat_text)
+
+    def test_local_qa_identity_answer_fills_protagonist_and_generates(self):
+        from app.services.workspace.tools.novel_creation import (
+            _deterministic_answer_evaluation,
+            _qa_slot_summary,
+        )
+
+        qa_history = [
+            {"question": "故事的核心冲突是什么？", "answer": "理想与现实的矛盾"},
+            {"question": "你想写什么类型的小说？", "answer": "玄幻/修仙"},
+            {"question": "主角最核心的身份、能力或处境是什么？", "answer": "现代人穿越到异世界"},
+        ]
+
+        slots = _qa_slot_summary(qa_history)
+        self.assertEqual(slots["protagonist"], "现代人穿越到异世界")
+        self.assertNotIn("power_system", slots)
+        result = _deterministic_answer_evaluation(genre_label="玄幻/修仙", qa_history=qa_history)
+        self.assertEqual(result["action"], "generate")
 
     def test_extract_protagonist_name_rejects_question_placeholder(self):
         from app.services.workspace.tools.novel_creation import _extract_protagonist_name

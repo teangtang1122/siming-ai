@@ -47,6 +47,8 @@ export interface RuntimeStatus {
   running: boolean
   model_key?: string | null
   pid?: number | null
+  context_length?: number | null
+  requested_context_length?: number | null
 }
 
 export interface ModelAdapter {

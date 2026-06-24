@@ -50,6 +50,12 @@ interface Props {
 export default function ModelCatalogPanel({ hardware, catalog, downloads, loading, onRefresh }: Props) {
   const [modelRoot, setModelRoot] = useState('')
 
+  const contextForModel = (modelKey?: string | null) => (
+    catalog?.items.find((item) => item.model_key === modelKey)?.context_length
+    || hardware?.recommended_context
+    || 8192
+  )
+
   useEffect(() => {
     setModelRoot(catalog?.model_root || '')
   }, [catalog?.model_root])
@@ -78,7 +84,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
     try {
       await apiClient.post('/local-models/runtime/start', {
         model_key: model.model_key,
-        context_length: hardware?.recommended_context,
+        context_length: contextForModel(model.model_key),
         task_type: 'chat',
       })
       message.success('本地模型已加载')
@@ -130,7 +136,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
   const saveTaskModel = async (task: string, modelKey: string) => {
     await apiClient.put(`/local-models/task-settings/${task}`, {
       model_key: modelKey,
-      context_length: hardware?.recommended_context,
+      context_length: contextForModel(modelKey),
       allow_api_fallback: false,
     })
     message.success('任务模型已保存')
@@ -288,6 +294,11 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
                   .map((item) => ({ value: item.model_key, label: item.display_name }))}
                 onChange={(value) => saveTaskModel(task, value)}
               />
+              {catalog?.task_settings?.[task]?.context_length ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {Math.round((catalog?.task_settings?.[task]?.context_length || 0) / 1024)}K 上下文
+                </Text>
+              ) : null}
             </div>
           ))}
         </Space>

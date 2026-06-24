@@ -55,6 +55,8 @@ class LocalRuntimeManager:
         self._lock = threading.RLock()
         self._process: subprocess.Popen | None = None
         self._model_key: str | None = None
+        self._context_length: int | None = None
+        self._requested_context_length: int | None = None
         self._adapter_signature = ""
         self._port: int | None = None
         self._last_adjustment: str | None = None
@@ -75,6 +77,8 @@ class LocalRuntimeManager:
             "pid": pid,
             "port": self._port if running else None,
             "model_key": self._model_key if running else None,
+            "context_length": self._context_length if running else None,
+            "requested_context_length": self._requested_context_length if running else None,
             "base_url": self.base_url if running else None,
             "adjustment": self._last_adjustment,
             "log_path": self._last_log_path,
@@ -100,19 +104,20 @@ class LocalRuntimeManager:
                 [(adapter.file_path, adapter.weight) for adapter in adapters],
                 ensure_ascii=False,
             )
+            profile = detect_hardware()
+            context = min(
+                context_length or profile.recommended_context,
+                model.context_length or profile.recommended_context,
+            )
             if (
                 self._model_key == model_key
+                and self._requested_context_length == context
                 and self._adapter_signature == signature
                 and self._healthy()
             ):
                 return self.base_url or ""
 
             self.stop()
-            profile = detect_hardware()
-            context = min(
-                context_length or profile.recommended_context,
-                model.context_length or profile.recommended_context,
-            )
             launch_profiles = (
                 [
                     (99, context),
@@ -153,6 +158,8 @@ class LocalRuntimeManager:
                     )
                 self._port = port
                 self._model_key = model_key
+                self._context_length = attempt_context
+                self._requested_context_length = context
                 self._adapter_signature = signature
                 self._last_adjustment = (
                     None
@@ -203,6 +210,8 @@ class LocalRuntimeManager:
             self._process = None
             self._port = None
             self._model_key = None
+            self._context_length = None
+            self._requested_context_length = None
             self._adapter_signature = ""
             if process and process.poll() is None:
                 try:

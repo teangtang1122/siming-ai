@@ -22,6 +22,7 @@ from app.database.models import (
     WorldbuildingEntry,
 )
 from app.services.cataloging.applier import apply_candidates_for_run
+from app.services.cataloging.candidate_store import try_create_candidate
 from app.services.cataloging.context import build_light_context
 from app.services.context_builders import _build_world_context
 from app.services.cataloging.job_control import (
@@ -150,6 +151,45 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertEqual(job.status, "running")
             self.assertIsNone(job.blocked_chapter_id)
             self.assertEqual(db.query(CatalogingCandidate).count(), 0)
+        finally:
+            db.close()
+
+    def test_try_create_candidate_skips_duplicate_worldbuilding_timeline_for_chapter(self):
+        db = self.Session()
+        try:
+            project = Project(title="Duplicate Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(
+                project_id=project.id,
+                title="第1章",
+                content="特昂糖在议事厅揭露旁支账目问题。",
+            )
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            line = json.dumps({
+                "type": "worldbuilding_timeline",
+                "payload": {
+                    "dimension": "factions",
+                    "title": "主脉与旁支的矛盾",
+                    "event_description": "特昂糖在议事厅揭露旁支账目问题，引发冲突。",
+                    "evidence": "特昂糖在议事厅揭露旁支账目问题",
+                },
+                "evidence": "特昂糖在议事厅揭露旁支账目问题",
+            }, ensure_ascii=False)
+
+            first = try_create_candidate(db, job, run, line, 0)
+            self.assertIn("candidate", first)
+            first["candidate"].status = "approved"
+            db.commit()
+
+            duplicate = try_create_candidate(db, job, run, line, 1)
+
+            self.assertEqual(duplicate, {"duplicate": True})
+            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
         finally:
             db.close()
 

@@ -124,7 +124,7 @@ class LLMGateway:
 
     @staticmethod
     def _model_for_task(model: Optional[str], extra_body: Optional[dict]) -> Optional[str]:
-        if model or not extra_body:
+        if not extra_body:
             return model
         task_type = str(extra_body.get("moshu_task_type") or "").strip()
         if not task_type:
@@ -134,7 +134,11 @@ class LLMGateway:
             setting = db.query(LocalModelTaskSetting).filter(
                 LocalModelTaskSetting.task_type == task_type
             ).first()
-            return f"local_llama_cpp:{setting.model_key}" if setting else model
+            if setting and setting.context_length and not extra_body.get("moshu_context_length"):
+                extra_body["moshu_context_length"] = setting.context_length
+            if not model and setting:
+                return f"local_llama_cpp:{setting.model_key}"
+            return model
         finally:
             db.close()
 
@@ -354,6 +358,7 @@ class LLMGateway:
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[str | dict] = None,
     ) -> AsyncGenerator[dict, None]:
+        model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
         config = cls._load_config(provider)
         adapter_cls = cls._get_adapter(provider)

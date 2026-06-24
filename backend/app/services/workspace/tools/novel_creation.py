@@ -3272,10 +3272,18 @@ _QA_HARD_VAGUE_PATTERNS = _QA_VAGUE_PATTERNS + ["未知", "无所谓", "还不�
 
 def _is_local_planning_model(model: str | None) -> bool:
     try:
-        provider, _ = LLMGateway.model_identity(model)
+        provider, _ = LLMGateway.model_identity(model, {"moshu_task_type": "planning"})
     except Exception:
         provider = (model or "").split(":", 1)[0].lower()
     return provider == "local_llama_cpp" or is_local_cli_provider(provider)
+
+
+def _is_local_runtime_planning_model(model: str | None) -> bool:
+    try:
+        provider, _ = LLMGateway.model_identity(model, {"moshu_task_type": "planning"})
+    except Exception:
+        provider = (model or "").split(":", 1)[0].lower()
+    return provider == "local_llama_cpp"
 
 
 def _strip_answer_key_prefix(question: str) -> str:
@@ -3315,20 +3323,21 @@ def _qa_slot_for(question: str, answer: str = "") -> str:
     q = _clean_text(question)
     a = _clean_text(answer)
     text = f"{q}\n{a}"
+    protagonist_question = any(word in q for word in ("主角", "女主", "男主", "主人公", "身份", "背景", "性格", "处境"))
     if any(word in text for word in ("篇幅", "多长", "章节", "短篇", "中篇", "长篇", "超长篇")):
         return "length"
     if any(word in text for word in ("读者", "受众", "男频", "女频", "平台", "起点", "番茄")):
         return "audience"
     if any(word in text for word in ("基调", "风格", "氛围", "甜虐", "热血", "轻松", "暗黑", "治愈", "史诗")):
         return "tone"
-    if any(word in q for word in ("体系", "力量", "修炼", "境界", "金手指", "天赋", "能力")):
-        return "power_system"
     if any(word in q for word in ("世界", "世界观", "场景", "时代", "发生")):
         return "world"
     if any(word in q for word in ("冲突", "目标", "驱动力", "对抗", "阻碍", "危机", "对手")):
         return "conflict"
-    if any(word in q for word in ("主角", "女主", "男主", "主人公", "身份", "背景", "性格", "能力")):
+    if protagonist_question or any(word in q for word in ("能力", "天赋", "金手指")) and "主角" in q:
         return "protagonist"
+    if any(word in q for word in ("体系", "力量", "修炼", "境界", "金手指", "天赋", "能力")):
+        return "power_system"
     if any(word in text for word in ("玄幻", "修仙", "仙侠", "都市", "现实", "悬疑", "推理", "言情", "末世", "科幻", "历史", "穿越", "重生")):
         return "genre"
     return "other"
@@ -3464,7 +3473,7 @@ def _deterministic_answer_evaluation(
     asked_counts = _qa_repeat_counts(qa_history)
     covered = set(slots)
     has_core = "genre" in covered and "protagonist" in covered and bool({"conflict", "world"} & covered)
-    enough = has_core and (len(covered) >= 4 or asked_counts.get("protagonist", 0) >= 2)
+    enough = has_core and len(covered) >= 3
     if enough or any(count >= 3 for slot, count in asked_counts.items() if slot not in {"other"}):
         return {"action": "generate", "reason": "已收集足够信息，或同一维度已多次回答，继续生成避免重复追问"}
     question = _next_deterministic_question(genre_label=genre_label, slots=slots, asked_counts=asked_counts)
@@ -5069,6 +5078,30 @@ def _score_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _blueprint_is_structurally_usable(blueprint: dict[str, Any]) -> bool:
+    characters = blueprint.get("characters", []) if isinstance(blueprint.get("characters"), list) else []
+    relationships = blueprint.get("relationships", []) if isinstance(blueprint.get("relationships"), list) else []
+    worldbuilding = blueprint.get("worldbuilding", []) if isinstance(blueprint.get("worldbuilding"), list) else []
+    outline = blueprint.get("outline", []) if isinstance(blueprint.get("outline"), list) else []
+    volume_outline = blueprint.get("volume_outline", []) if isinstance(blueprint.get("volume_outline"), list) else []
+    golden_three = blueprint.get("golden_three", {}) if isinstance(blueprint.get("golden_three"), dict) else {}
+    quality = blueprint.get("quality_self_check") if isinstance(blueprint.get("quality_self_check"), dict) else {}
+    score = int(quality.get("total_score") or _score_blueprint(blueprint)["total_score"])
+    return (
+        score >= 72
+        and len(characters) >= 5
+        and len(relationships) >= 5
+        and len(worldbuilding) >= 6
+        and len(outline) >= 10
+        and len(volume_outline) >= 2
+        and len(golden_three) >= 3
+    )
+
+
+def _blueprint_set_is_structurally_usable(blueprints: list[dict[str, Any]]) -> bool:
+    return len(blueprints) >= 3 and all(_blueprint_is_structurally_usable(bp) for bp in blueprints[:3])
+
+
 async def start_novel_creation_session(
     db: Session,
     project_id: str,
@@ -5252,8 +5285,11 @@ async def draft_novel_blueprint(
 
         blueprints = template_blueprints
 
-        # Step 2: LLM enhancement. Hybrid mode always tries; template mode only on refine/regenerate with flag.
+        # Step 2: LLM enhancement. Small local runtime models are used through the
+        # deterministic template path unless the user explicitly asks for LLM deepening.
         should_try_llm = execution_mode == "hybrid" or enhance_with_llm
+        if _is_local_runtime_planning_model(model) and not enhance_with_llm:
+            should_try_llm = False
         if should_try_llm:
             if revision_mode in ("refine", "regenerate"):
                 llm_result = await _try_llm_blueprint_refinement(
@@ -5273,7 +5309,12 @@ async def draft_novel_blueprint(
                     model=model,
                 )
             if llm_result:
-                blueprints = llm_result
+                annotated_llm = [_annotate_blueprint(bp, compiled) for bp in llm_result if isinstance(bp, dict)]
+                if _blueprint_set_is_structurally_usable(annotated_llm):
+                    blueprints = annotated_llm
+                else:
+                    _logger.info("LLM blueprint result rejected by structural quality gate; using template fallback")
+                    blueprints = template_blueprints
         blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)]
 
         session.blueprint_json = blueprints
