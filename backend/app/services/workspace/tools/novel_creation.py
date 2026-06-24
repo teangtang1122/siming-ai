@@ -1533,6 +1533,17 @@ def _is_generic_title(title: str, genre_label: str) -> bool:
     return text in generic_titles or (text.endswith("小说") and len(text) <= 5)
 
 
+def _invalid_protagonist_name_candidate(name: str) -> bool:
+    text = _clean_text(name)
+    if not text:
+        return True
+    if text in {"未命名", "一个", "一位", "可以", "命名为", "什么", "什么样", "什么样的人", "未知", "待定"}:
+        return True
+    if any(word in text for word in ("什么", "怎样", "哪种", "身份", "背景", "性格", "类型", "具体", "故事", "主角")):
+        return True
+    return text.endswith(("？", "?", "吗", "呢"))
+
+
 def _extract_protagonist_name(user_brief: str) -> str:
     text = _clean_text(user_brief)
     for pattern in (
@@ -1543,7 +1554,7 @@ def _extract_protagonist_name(user_brief: str) -> str:
         match = re.search(pattern, text)
         if match:
             name = match.group(1).strip(" ，。,.;；:：")
-            if name not in {"未命名", "一个", "一位", "可以", "命名为"}:
+            if not _invalid_protagonist_name_candidate(name):
                 return name
     return "未命名主角"
 
@@ -1701,6 +1712,12 @@ def _feedback_tone(feedback: str) -> dict[str, str]:
     text = _clean_text(feedback)
     if not text:
         return {"label": "", "direction": "", "style": ""}
+    if _is_structured_qa_feedback(text):
+        return {
+            "label": "问答补充",
+            "direction": "把用户已确认的类型、主角、世界观、冲突、基调和篇幅落到方案里，避免重新发散。",
+            "style": "优先复用用户答案，用具体开局事件和角色压力承接问答信息。",
+        }
     if any(word in text for word in ("暗黑", "压抑", "恐怖", "诡异")):
         return {
             "label": "暗线压迫",
@@ -1740,6 +1757,15 @@ def _revision_feedback_content(feedback: str, revision_mode: str) -> str:
     ):
         return ""
     return text
+
+
+def _is_structured_qa_feedback(text: str) -> bool:
+    value = _clean_text(text)
+    return (
+        "用户已确认的新书方向" in value
+        or bool(re.search(r"(?:^|\n)\s*(?:Q|问)\s*[:：]", value))
+        or bool(re.search(r"(?:^|\n)\s*-\s*(?:类型|主角|冲突|世界观|基调|篇幅|读者|平台)\s*[:：]", value))
+    )
 
 
 def _unique_texts(items: list[str], limit: int | None = None) -> list[str]:
@@ -1868,6 +1894,62 @@ def _compile_creative_brief(
         "target_audience": _clean_text(target_audience),
         "platform": _clean_text(platform),
     }
+
+
+def _structured_brief_slots(user_brief: str) -> dict[str, str]:
+    slots: dict[str, str] = {}
+    for line in _clean_text(user_brief).splitlines():
+        match = re.match(r"\s*-\s*([^：:]{1,16})[：:]\s*(.+?)\s*$", line)
+        if not match:
+            continue
+        label = match.group(1).strip()
+        value = match.group(2).strip(" ；;。")
+        if not value:
+            continue
+        if "类型" in label:
+            slots["genre"] = value
+        elif "主角" in label:
+            slots["protagonist"] = value if "protagonist" not in slots else f"{slots['protagonist']}；{value}"
+        elif "冲突" in label:
+            slots["conflict"] = value
+        elif "世界" in label:
+            slots["world"] = value
+        elif "体系" in label or "力量" in label:
+            slots["power_system"] = value
+        elif "基调" in label or "风格" in label:
+            slots["tone"] = value
+        elif "篇幅" in label:
+            slots["length"] = value
+        elif "读者" in label or "平台" in label:
+            slots["audience"] = value
+    return slots
+
+
+def _merge_user_slot(base: str, slot_value: str, *, prefix: str = "") -> str:
+    value = _clean_text(slot_value)
+    if not value:
+        return _clean_text(base)
+    base_text = _clean_text(base)
+    if value in base_text:
+        return base_text
+    lead = f"{prefix}{value}" if prefix else value
+    if not base_text:
+        return lead
+    return f"{lead}；{base_text}"
+
+
+def _sanitize_blueprint_placeholders(value: Any, protagonist_name: str) -> Any:
+    replacement = _clean_text(protagonist_name, "主角")
+    if isinstance(value, str):
+        text = value.replace("什么样的人", replacement)
+        text = re.sub(r"本轮根据反馈[“\"].{0,2000}(?:[”\"]调整，)?", "本轮按用户问答信息调整，", text, flags=re.S)
+        text = re.sub(r"Q\s*:\s*.+?A\s*:\s*.+?(?=(?:Q\s*:|$))", "", text, flags=re.S)
+        return _clean_text(text)
+    if isinstance(value, list):
+        return [_sanitize_blueprint_placeholders(item, protagonist_name) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_blueprint_placeholders(item, protagonist_name) for key, item in value.items()}
+    return value
 
 
 def _flatten_blueprint_text(blueprint: dict[str, Any]) -> str:
@@ -2049,7 +2131,9 @@ def _annotate_blueprint(
     blueprint: dict[str, Any],
     compiled: dict[str, Any],
 ) -> dict[str, Any]:
-    bp = _repair_blueprint_against_constraints(blueprint, compiled)
+    protagonist_name = _clean_text(compiled.get("protagonist_name"), "主角")
+    sanitized = _sanitize_blueprint_placeholders(blueprint, protagonist_name)
+    bp = _repair_blueprint_against_constraints(sanitized, compiled)
     bp["creative_slots"] = _build_creative_slots(bp, compiled)
     coverage = _blueprint_requirement_coverage(bp, compiled)
     bp["requirement_coverage"] = coverage
@@ -3003,10 +3087,15 @@ async def _evaluate_answers(
         {"action": "generate"} - enough info, proceed to generation
         {"action": "ask_more", "questions": [...]} - need more info, return new questions
     """
+    qa_history = _normalize_qa_history(qa_history)
+    deterministic = _deterministic_answer_evaluation(genre_label=genre_label, qa_history=qa_history)
+    if deterministic.get("action") == "generate" or _is_local_planning_model(model):
+        return deterministic
+
     qa_text = "\n".join([f"问：{item['question']}\n答：{item['answer']}" for item in qa_history])
 
     # Detect vague answers
-    vague_patterns = ["不确定", "暂不确定", "不知道", "你来定", "你决定", "随便", "都行", "没想好", "还没想", "待定", "建议"]
+    vague_patterns = _QA_VAGUE_PATTERNS
     has_vague_answer = any(
         any(p in item["answer"] for p in vague_patterns)
         for item in qa_history
@@ -3107,7 +3196,19 @@ async def _evaluate_answers(
 
     if isinstance(parsed, dict) and "action" in parsed:
         if parsed["action"] == "ask_more" and "questions" in parsed:
-            return {"action": "ask_more", "questions": parsed["questions"]}
+            questions = []
+            asked_counts = _qa_repeat_counts(qa_history)
+            covered_slots = _qa_slot_summary(qa_history)
+            for question in parsed["questions"]:
+                if not isinstance(question, dict):
+                    continue
+                slot = _qa_slot_for(_clean_text(question.get("question")), "")
+                if slot in covered_slots or asked_counts.get(slot, 0) >= 2:
+                    continue
+                questions.append(question)
+            if questions:
+                return {"action": "ask_more", "questions": questions}
+            return deterministic
         return {"action": "generate", "reason": parsed.get("reason", "信息充分")}
 
     return {"action": "generate", "reason": "LLM返回格式异常，默认生成"}
@@ -3163,6 +3264,213 @@ def _get_genre_specific_suggestions(genre_label: str, question: str) -> list[str
         "你可以说说你喜欢的小说类型",
         "或者描述一下你理想中的主角",
     ]
+
+
+_QA_VAGUE_PATTERNS = ["不确定", "暂不确定", "不知道", "你来定", "你决定", "随便", "都行", "没想好", "还没想", "待定", "建议"]
+_QA_HARD_VAGUE_PATTERNS = _QA_VAGUE_PATTERNS + ["未知", "无所谓", "还不知道"]
+
+
+def _is_local_planning_model(model: str | None) -> bool:
+    try:
+        provider, _ = LLMGateway.model_identity(model)
+    except Exception:
+        provider = (model or "").split(":", 1)[0].lower()
+    return provider == "local_llama_cpp" or is_local_cli_provider(provider)
+
+
+def _strip_answer_key_prefix(question: str) -> str:
+    return re.sub(r"^\s*(?:qa[_-]?)?\d+\s*[.、):-]?\s*", "", _clean_text(question), flags=re.IGNORECASE)
+
+
+def _normalize_qa_history(raw_history: Any, answers: Any = None) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    if isinstance(raw_history, list):
+        for item in raw_history:
+            if not isinstance(item, dict):
+                continue
+            question = _clean_text(item.get("question"))
+            answer = _clean_text(item.get("answer"))
+            if question and answer:
+                items.append({"question": question, "answer": answer})
+    if items:
+        return items
+    if isinstance(answers, dict):
+        for key, value in answers.items():
+            question = _strip_answer_key_prefix(str(key))
+            answer = _clean_text(value)
+            if question and answer:
+                items.append({"question": question, "answer": answer})
+    return items
+
+
+def _answer_is_vague(answer: str, *, hard: bool = False) -> bool:
+    text = _clean_text(answer)
+    if not text:
+        return True
+    patterns = _QA_HARD_VAGUE_PATTERNS if hard else _QA_VAGUE_PATTERNS
+    return any(pattern in text for pattern in patterns)
+
+
+def _qa_slot_for(question: str, answer: str = "") -> str:
+    q = _clean_text(question)
+    a = _clean_text(answer)
+    text = f"{q}\n{a}"
+    if any(word in text for word in ("篇幅", "多长", "章节", "短篇", "中篇", "长篇", "超长篇")):
+        return "length"
+    if any(word in text for word in ("读者", "受众", "男频", "女频", "平台", "起点", "番茄")):
+        return "audience"
+    if any(word in text for word in ("基调", "风格", "氛围", "甜虐", "热血", "轻松", "暗黑", "治愈", "史诗")):
+        return "tone"
+    if any(word in q for word in ("体系", "力量", "修炼", "境界", "金手指", "天赋", "能力")):
+        return "power_system"
+    if any(word in q for word in ("世界", "世界观", "场景", "时代", "发生")):
+        return "world"
+    if any(word in q for word in ("冲突", "目标", "驱动力", "对抗", "阻碍", "危机", "对手")):
+        return "conflict"
+    if any(word in q for word in ("主角", "女主", "男主", "主人公", "身份", "背景", "性格", "能力")):
+        return "protagonist"
+    if any(word in text for word in ("玄幻", "修仙", "仙侠", "都市", "现实", "悬疑", "推理", "言情", "末世", "科幻", "历史", "穿越", "重生")):
+        return "genre"
+    return "other"
+
+
+def _qa_slot_label(slot: str) -> str:
+    return {
+        "genre": "类型",
+        "protagonist": "主角",
+        "conflict": "冲突",
+        "world": "世界观",
+        "tone": "基调",
+        "length": "篇幅",
+        "audience": "读者",
+        "power_system": "力量体系",
+    }.get(slot, "补充")
+
+
+def _qa_slot_summary(qa_history: list[dict[str, str]]) -> dict[str, str]:
+    slots: dict[str, str] = {}
+    for item in qa_history:
+        question = _clean_text(item.get("question"))
+        answer = _clean_text(item.get("answer"))
+        if not answer or _answer_is_vague(answer, hard=True):
+            continue
+        slot = _qa_slot_for(question, answer)
+        if slot == "other":
+            continue
+        if slot in slots:
+            if answer not in slots[slot]:
+                slots[slot] = f"{slots[slot]}；{answer}"
+        else:
+            slots[slot] = answer
+    return slots
+
+
+def _qa_repeat_counts(qa_history: list[dict[str, str]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in qa_history:
+        slot = _qa_slot_for(_clean_text(item.get("question")), _clean_text(item.get("answer")))
+        counts[slot] = counts.get(slot, 0) + 1
+    return counts
+
+
+def _answers_brief_from_history(qa_history: list[dict[str, str]]) -> str:
+    slots = _qa_slot_summary(qa_history)
+    lines = ["用户已确认的新书方向："]
+    emitted: set[str] = set()
+    for slot in ("genre", "protagonist", "conflict", "world", "power_system", "tone", "length", "audience"):
+        value = _clean_text(slots.get(slot))
+        if value:
+            lines.append(f"- {_qa_slot_label(slot)}：{value}")
+            emitted.add(slot)
+    for item in qa_history:
+        question = _clean_text(item.get("question"))
+        answer = _clean_text(item.get("answer"))
+        slot = _qa_slot_for(question, answer)
+        if not answer or slot in emitted or _answer_is_vague(answer, hard=True):
+            continue
+        lines.append(f"- 补充：{question} => {answer}")
+    return "\n".join(lines)
+
+
+def _next_deterministic_question(
+    *,
+    genre_label: str,
+    slots: dict[str, str],
+    asked_counts: dict[str, int],
+) -> dict[str, Any] | None:
+    candidates: list[tuple[str, dict[str, Any]]] = [
+        ("genre", {
+            "question": "你想写什么类型的小说？",
+            "purpose": "类型决定世界观、角色设定、冲突模式和读者期待",
+            "options": ["玄幻/修仙", "都市/现实", "悬疑/推理", "言情/甜宠", "末世/科幻", "古代/历史"],
+            "type": "single_select",
+        }),
+        ("protagonist", {
+            "question": "主角最核心的身份、能力或处境是什么？",
+            "purpose": "确定主角的代入点和开局压力",
+            "options": ["被秘密组织培养的实验体", "现代人穿越到异世界", "被家族抛弃的边缘人", "拥有特殊能力但必须隐藏身份"],
+            "type": "single_select",
+        }),
+        ("conflict", {
+            "question": "故事的核心冲突是什么？",
+            "purpose": "确定主线推动力和长期阻碍",
+            "options": ["个人与外界秩序的对抗", "生存危机下的成长", "复仇与真相追查", "守护重要之人与打破规则"],
+            "type": "single_select",
+        }),
+        ("world", {
+            "question": "故事发生在什么样的世界或舞台？",
+            "purpose": "明确世界观和开局场景",
+            "options": ["现实世界", "架空玄幻大陆", "宗门林立的修仙世界", "现代灵气复苏世界"],
+            "type": "single_select",
+        }),
+        ("tone", {
+            "question": "你希望故事的基调是什么？",
+            "purpose": "确定文风、节奏和读者预期",
+            "options": ["热血燃向", "暗黑压迫", "轻松诙谐", "厚重史诗"],
+            "type": "single_select",
+        }),
+        ("length", {
+            "question": "你计划写多长的篇幅？",
+            "purpose": "决定方案的大纲颗粒度和卷纲规模",
+            "options": ["短篇（10-30章）", "中篇（50-100章）", "长篇（200-500章）", "超长篇（500章以上）"],
+            "type": "single_select",
+        }),
+        ("audience", {
+            "question": "你的目标读者群体是？",
+            "purpose": "决定爽点密度、感情线比例和平台节奏",
+            "options": ["男频网文读者", "女频网文读者", "泛二次元/轻小说读者", "大众读者"],
+            "type": "single_select",
+        }),
+    ]
+    if "玄幻" in genre_label or "修仙" in genre_label or "仙侠" in genre_label:
+        candidates.insert(4, ("power_system", {
+            "question": "你的力量或修炼体系更接近哪一种？",
+            "purpose": "确定升级路线和爽点兑现方式",
+            "options": ["经典仙侠体系", "血脉/异能觉醒", "多体系融合", "自创体系"],
+            "type": "single_select",
+        }))
+    for slot, question in candidates:
+        if slot not in slots and asked_counts.get(slot, 0) < 2:
+            return question
+    return None
+
+
+def _deterministic_answer_evaluation(
+    *,
+    genre_label: str,
+    qa_history: list[dict[str, str]],
+) -> dict[str, Any]:
+    slots = _qa_slot_summary(qa_history)
+    asked_counts = _qa_repeat_counts(qa_history)
+    covered = set(slots)
+    has_core = "genre" in covered and "protagonist" in covered and bool({"conflict", "world"} & covered)
+    enough = has_core and (len(covered) >= 4 or asked_counts.get("protagonist", 0) >= 2)
+    if enough or any(count >= 3 for slot, count in asked_counts.items() if slot not in {"other"}):
+        return {"action": "generate", "reason": "已收集足够信息，或同一维度已多次回答，继续生成避免重复追问"}
+    question = _next_deterministic_question(genre_label=genre_label, slots=slots, asked_counts=asked_counts)
+    if question:
+        return {"action": "ask_more", "questions": [question]}
+    return {"action": "generate", "reason": "已无必要追问项"}
 
 
 async def _llm_generate_genre_questions(
@@ -4397,7 +4705,7 @@ def _format_logline(
         intro = f"{protagonist_name}被卷入一场无法用常识解释的危机"
     return (
         f"{intro}。"
-        f"她的目标是{_clean_text(goal, '找出异常背后的真相并保护重要之人')}；"
+        f"主角的目标是{_clean_text(goal, '找出异常背后的真相并保护重要之人')}；"
         f"最大阻碍是{conflict}。"
         f"真正的长线钩子是：{story_hook}。"
     )
@@ -4436,6 +4744,7 @@ def _template_blueprint(
         protagonist_name = _clean_text(auto_names[name_index], _resolve_protagonist_name(user_brief, variant))
     features = _brief_features(user_brief)
     chapter_count = int(compiled.get("chapter_count") or _extract_chapter_count(user_brief))
+    user_slots = _structured_brief_slots(user_brief)
     concept_profiles = _story_concept_profiles(user_brief, generation_cycle)
     concept = concept_profiles[min(max(variant, 0), len(concept_profiles) - 1)]
     profile = {
@@ -4462,13 +4771,27 @@ def _template_blueprint(
         if first_auto_name and first_auto_name in selected_title:
             selected_title = selected_title.replace(first_auto_name, protagonist_name, 1)
     story_hook = _clean_text(concept.get("hook"), preset["hook"])
+    if user_slots.get("world"):
+        story_hook = _merge_user_slot(story_hook, user_slots["world"], prefix="世界舞台：")
+    if user_slots.get("power_system"):
+        story_hook = _merge_user_slot(story_hook, user_slots["power_system"], prefix="力量体系：")
     conflict = _clean_text(concept.get("conflict"), preset["conflict"])
+    if user_slots.get("conflict"):
+        conflict = _merge_user_slot(conflict, user_slots["conflict"])
+    if user_slots.get("tone"):
+        profile["focus"] = _merge_user_slot(profile["focus"], user_slots["tone"], prefix="基调：")
+    protagonist_background = _clean_text(concept.get("background"), _clean_text(user_brief, f"一部{genre_label}小说"))
+    if user_slots.get("protagonist"):
+        protagonist_background = _merge_user_slot(protagonist_background, user_slots["protagonist"], prefix="用户设定主角为")
     premise = (
-        f"{_clean_text(concept.get('background'), _clean_text(user_brief, f'一部{genre_label}小说'))}。"
+        f"{protagonist_background}。"
         f" 本方案主打“{story_hook}”，{profile['focus']}"
     )
     if revision_instruction:
-        premise += f" 本轮根据反馈“{revision_instruction}”调整，重点是{revision_tone['direction']}"
+        if _is_structured_qa_feedback(revision_instruction):
+            premise += f" 已按用户问答信息调整，重点是{revision_tone['direction']}"
+        else:
+            premise += f" 本轮根据反馈“{revision_instruction}”调整，重点是{revision_tone['direction']}"
     logline = _format_logline(
         protagonist_name=protagonist_name,
         opening=_clean_text(concept.get("opening"), _opening_anchor(user_brief)),
@@ -4482,7 +4805,7 @@ def _template_blueprint(
         "goal": _clean_text(concept.get("goal"), "弄清异常背后的规则，保护自己重视的人，并在危机中争取主动权"),
         "conflict": conflict,
         "personality": _clean_text(concept.get("personality"), "观察细致，有行动力，但会因信息不足和关系牵挂付出代价"),
-        "background": _clean_text(concept.get("background"), f"故事开局时与核心异常产生直接关联，是推动《{title}》剧情展开的中心人物。"),
+        "background": protagonist_background,
         "appearance": "外貌可在正式正文中根据年龄、身份和题材进一步细化；第一章应给出一个能被读者记住的动作或神态。",
         "weakness": _default_protagonist_weakness(concept, profile),
         "opening_pressure": _default_opening_pressure(concept, profile),
@@ -4845,11 +5168,11 @@ async def draft_novel_blueprint(
     # ── Clarifying questions: ask before generating if brief is too vague ──
     skip_questions = _as_bool(args.get("skip_questions"), False)
     answers = args.get("answers")  # dict[str, str] | None
+    qa_history = _normalize_qa_history(args.get("qa_history"), answers)
 
     if revision_mode == "initial" and execution_mode in {"hybrid", "auto"}:
-        if answers and isinstance(answers, dict) and len(answers) > 0:
+        if qa_history:
             # ── User provided answers: evaluate if info is sufficient ──
-            qa_history = [{"question": k, "answer": v} for k, v in answers.items()]
             genre_label = _genre_display_label(session.genre, _clean_text(user_brief or session.user_brief))
             evaluation = await _evaluate_answers(
                 user_brief=_clean_text(user_brief or session.user_brief),
@@ -4874,9 +5197,9 @@ async def draft_novel_blueprint(
                 }
             else:
                 # Info sufficient — merge answers into feedback and proceed to generation
-                feedback = "\n".join([f"Q: {q}\nA: {a}" for q, a in answers.items()])
+                feedback = _answers_brief_from_history(qa_history)
                 skip_questions = True
-                _logger.info("Info sufficient after %d answers, proceeding to generation", len(answers))
+                _logger.info("Info sufficient after %d answers, proceeding to generation", len(qa_history))
 
         elif not skip_questions and not feedback:
             # ── No answers yet: generate initial questions ──

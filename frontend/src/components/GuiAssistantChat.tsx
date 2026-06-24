@@ -87,6 +87,16 @@ interface ChatQuestion {
   type?: 'single_select' | 'multi_select' | 'text'
 }
 
+type QuestionAnswer = { question: string; answer: string }
+
+function buildQuestionAnswerPayload(history: QuestionAnswer[]) {
+  const answers: Record<string, string> = {}
+  history.forEach((qa, index) => {
+    answers[`qa_${index + 1}: ${qa.question}`] = qa.answer
+  })
+  return { answers, qa_history: history }
+}
+
 interface ChatMessage {
   id?: string
   role: 'user' | 'assistant'
@@ -271,7 +281,7 @@ function GuiAssistantChat() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   // Single-question flow
   const [activeQuestion, setActiveQuestion] = useState<ChatQuestion | null>(null)
-  const [questionHistory, setQuestionHistory] = useState<Array<{ question: string; answer: string }>>([])
+  const [questionHistory, setQuestionHistory] = useState<QuestionAnswer[]>([])
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
   const [showOtherInput, setShowOtherInput] = useState(false)
   const [otherText, setOtherText] = useState('')
@@ -734,16 +744,13 @@ function GuiAssistantChat() {
           setRunningStartTime(Date.now())
           setLastAssistantMessage('思考中...', 'running')
           const newHistory = [...questionHistory, { question: '用户补充', answer: text }]
-          const answers: Record<string, string> = {}
-          for (const qa of newHistory) {
-            answers[qa.question] = qa.answer
-          }
+          const qaPayload = buildQuestionAnswerPayload(newHistory)
           const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
             session_id: systemSessionId,
             execution_mode: 'hybrid',
             model: selectedModel,
             user_brief: systemBrief || text,
-            answers: answers,
+            ...qaPayload,
             revision_mode: 'initial',
           })
           const draftData = draftRes.data.data
@@ -1162,18 +1169,14 @@ function GuiAssistantChat() {
     ])
 
     try {
-      // Build answers dict from full history
-      const answers: Record<string, string> = {}
-      for (const qa of newHistory) {
-        answers[qa.question] = qa.answer
-      }
+      const qaPayload = buildQuestionAnswerPayload(newHistory)
 
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: systemSessionId,
         execution_mode: 'hybrid',
         model: selectedModel,
         user_brief: systemBrief,
-        answers: answers,
+        ...qaPayload,
         revision_mode: 'initial',
       })
       const draftData = draftRes.data.data
@@ -1428,7 +1431,7 @@ function GuiAssistantChat() {
   }
 
   // ── Regenerate with current Q&A history ──
-  const handleRegenerateWithAnswers = async (updatedHistory?: Array<{ question: string; answer: string }>) => {
+  const handleRegenerateWithAnswers = async (updatedHistory?: QuestionAnswer[]) => {
     if (!systemSessionId) return
     const history = updatedHistory || questionHistory
     if (history.length === 0) {
@@ -1446,17 +1449,14 @@ function GuiAssistantChat() {
     ])
 
     try {
-      const answers: Record<string, string> = {}
-      for (const qa of history) {
-        answers[qa.question] = qa.answer
-      }
+      const qaPayload = buildQuestionAnswerPayload(history)
 
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: systemSessionId,
         execution_mode: 'hybrid',
         model: selectedModel,
         user_brief: systemBrief,
-        answers: answers,
+        ...qaPayload,
         revision_mode: 'initial',
       })
       const draftData = draftRes.data.data
@@ -1519,8 +1519,8 @@ function GuiAssistantChat() {
             <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>{qa.question}</div>
             <Input
               size="small"
-              value={editingAnswers[qa.question] ?? qa.answer}
-              onChange={(e) => setEditingAnswers((prev) => ({ ...prev, [qa.question]: e.target.value }))}
+              value={editingAnswers[String(i)] ?? qa.answer}
+              onChange={(e) => setEditingAnswers((prev) => ({ ...prev, [String(i)]: e.target.value }))}
             />
           </div>
         ))}
@@ -1530,9 +1530,9 @@ function GuiAssistantChat() {
             size="small"
             onClick={() => {
               // Apply edits and regenerate
-              const updatedHistory = questionHistory.map((qa) => ({
+              const updatedHistory = questionHistory.map((qa, i) => ({
                 question: qa.question,
-                answer: editingAnswers[qa.question] ?? qa.answer,
+                answer: editingAnswers[String(i)] ?? qa.answer,
               }))
               setQuestionHistory(updatedHistory)
               handleRegenerateWithAnswers(updatedHistory)

@@ -179,6 +179,8 @@ interface ChatQuestion {
   type?: 'single_select' | 'multi_select' | 'text'
 }
 
+type QuestionAnswer = { question: string; answer: string }
+
 interface AssistantMessage {
   role: 'user' | 'assistant'
   content: string
@@ -200,6 +202,14 @@ function parseTags(value?: string) {
     .split(/[,，、\s]+/)
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+function buildQuestionAnswerPayload(history: QuestionAnswer[]) {
+  const answers: Record<string, string> = {}
+  history.forEach((qa, index) => {
+    answers[`qa_${index + 1}: ${qa.question}`] = qa.answer
+  })
+  return { answers, qa_history: history }
 }
 
 function tagsPayload(value?: string) {
@@ -285,7 +295,7 @@ function DashboardPage() {
   const [assistantDraftText, setAssistantDraftText] = useState('')
   // Question flow state
   const [activeQuestion, setActiveQuestion] = useState<ChatQuestion | null>(null)
-  const [questionHistory, setQuestionHistory] = useState<Array<{ question: string; answer: string }>>([])
+  const [questionHistory, setQuestionHistory] = useState<QuestionAnswer[]>([])
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
   const [showOtherInput, setShowOtherInput] = useState(false)
   const [otherText, setOtherText] = useState('')
@@ -589,16 +599,13 @@ function DashboardPage() {
     ])
 
     try {
-      const answers: Record<string, string> = {}
-      for (const qa of newHistory) {
-        answers[qa.question] = qa.answer
-      }
+      const qaPayload = buildQuestionAnswerPayload(newHistory)
 
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: assistantSessionId,
         execution_mode: 'hybrid',
         user_brief: '',
-        answers: answers,
+        ...qaPayload,
         revision_mode: 'initial',
       })
       const draftData = draftRes.data.data
@@ -736,7 +743,7 @@ function DashboardPage() {
     }
   }
 
-  const handleRegenerateWithAnswers = async (updatedHistory?: Array<{ question: string; answer: string }>) => {
+  const handleRegenerateWithAnswers = async (updatedHistory?: QuestionAnswer[]) => {
     if (!assistantSessionId) return
     const history = updatedHistory || questionHistory
     if (history.length === 0) return
@@ -751,16 +758,13 @@ function DashboardPage() {
     ])
 
     try {
-      const answers: Record<string, string> = {}
-      for (const qa of history) {
-        answers[qa.question] = qa.answer
-      }
+      const qaPayload = buildQuestionAnswerPayload(history)
 
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: assistantSessionId,
         execution_mode: 'hybrid',
         user_brief: '',
-        answers: answers,
+        ...qaPayload,
         revision_mode: 'initial',
       })
       const draftData = draftRes.data.data
@@ -1510,8 +1514,8 @@ function DashboardPage() {
                         <div style={{ fontSize: 12, color: 'var(--ant-color-text-secondary, #666)', marginBottom: 4 }}>{qa.question}</div>
                         <Input
                           size="small"
-                          value={editingAnswers[qa.question] ?? qa.answer}
-                          onChange={(e) => setEditingAnswers((prev) => ({ ...prev, [qa.question]: e.target.value }))}
+                          value={editingAnswers[String(i)] ?? qa.answer}
+                          onChange={(e) => setEditingAnswers((prev) => ({ ...prev, [String(i)]: e.target.value }))}
                         />
                       </div>
                     ))}
@@ -1520,9 +1524,9 @@ function DashboardPage() {
                         type="primary"
                         size="small"
                         onClick={() => {
-                          const updatedHistory = questionHistory.map((qa) => ({
+                          const updatedHistory = questionHistory.map((qa, i) => ({
                             question: qa.question,
-                            answer: editingAnswers[qa.question] ?? qa.answer,
+                            answer: editingAnswers[String(i)] ?? qa.answer,
                           }))
                           setQuestionHistory(updatedHistory)
                           setShowQAEditor(false)

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from sqlalchemy.orm import Session
 
 from ...ai.gateway import LLMGateway
+from ...ai.local_cli_adapter import is_local_cli_provider
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter, Project
 from ...database.session import SessionLocal
 from ..content_store import ensure_project_folder, sync_chapter_to_file, sync_project_to_files
@@ -32,6 +35,13 @@ from .staged_prompts import (
     build_resolution_prompt,
 )
 from .targeted_context import build_targeted_context
+
+
+LOCAL_FACT_EXTRACTION_SYSTEM_PROMPT = """你是作品建档事实抽取器。只读当前章节正文，输出 JSONL。
+每行一个 JSON 对象，不要 Markdown，不要解释，不要输出数组。
+必须先输出 1 行 chapter_overview；再按正文内容输出 1-6 行 outline_fact、character_fact、worldbuilding_fact、relationship_fact 或 identity_hint。
+格式：{"fact_type":"chapter_overview","confidence":0.8,"evidence":"短依据","payload":{"summary":"本章发生了什么","key_events":["事件"]}}
+如果信息不完整，也要根据正文输出最低可用事实；不确定内容写入 payload.uncertainty。"""
 
 
 def sse_event(data: dict[str, Any]) -> str:
@@ -74,6 +84,186 @@ def run_to_dict(run: CatalogingChapterRun) -> dict[str, Any]:
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
     }
+
+
+def _model_provider(model: str | None) -> str:
+    try:
+        provider, _ = LLMGateway.model_identity(model, {"moshu_task_type": "cataloging"})
+        return provider
+    except Exception:
+        return (model or "").split(":", 1)[0].lower()
+
+
+def _is_local_runtime_provider(provider: str) -> bool:
+    return provider == "local_llama_cpp"
+
+
+def _chapter_prompt_content(content: str, *, local_runtime: bool) -> str:
+    text = (content or "").strip()
+    limit = 7000 if local_runtime else 24000
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n\n【系统截断提示】章节过长，已先截取前半部分用于本地建档；请基于可见正文输出最低可用事实。"
+
+
+def _fact_prompt_messages(
+    *,
+    chapter_title: str,
+    chapter_content: str,
+    chapter_file: str,
+    model: str | None,
+) -> list[dict[str, str]]:
+    provider = _model_provider(model)
+    local_runtime = _is_local_runtime_provider(provider)
+    if chapter_file and is_local_cli_provider(provider):
+        user_content = (
+            f"当前章节标题：{chapter_title}\n\n"
+            f"当前章节 UTF-8 镜像文件：{chapter_file}\n\n"
+            "请完整读取附件中的章节正文，按系统规则输出事实 JSONL。"
+            "先输出 chapter_overview，再输出角色、关系、世界观、大纲和身份线索事实。"
+        )
+    elif local_runtime:
+        user_content = (
+            f"当前章节标题：{chapter_title}\n\n"
+            f"当前章节正文：\n{_chapter_prompt_content(chapter_content, local_runtime=True)}\n\n"
+            "请输出 2-7 行事实 JSONL。"
+        )
+    else:
+        user_content = build_fact_extraction_prompt(
+            chapter_title,
+            _chapter_prompt_content(chapter_content, local_runtime=False),
+        )
+    return [
+        {"role": "system", "content": LOCAL_FACT_EXTRACTION_SYSTEM_PROMPT if local_runtime else FACT_EXTRACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _clean_model_json_text(text: str) -> str:
+    value = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S | re.I)
+    return clean_jsonl_text(value).strip()
+
+
+def _facts_from_json_value(value: Any) -> list[dict[str, Any]]:
+    items: list[Any]
+    if isinstance(value, dict) and isinstance(value.get("facts"), list):
+        items = value["facts"]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = [value]
+    facts: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        parsed = try_parse_fact_line(json.dumps(item, ensure_ascii=False))
+        fact = parsed.get("fact")
+        if fact:
+            facts.append(fact)
+    return facts
+
+
+def _salvage_facts_from_text(text: str) -> list[dict[str, Any]]:
+    clean = _clean_model_json_text(text)
+    if not clean:
+        return []
+    try:
+        return _facts_from_json_value(json.loads(clean))
+    except Exception:
+        pass
+    facts: list[dict[str, Any]] = []
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(clean):
+        brace = clean.find("{", index)
+        bracket = clean.find("[", index)
+        starts = [pos for pos in (brace, bracket) if pos >= 0]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            value, offset = decoder.raw_decode(clean[start:])
+        except Exception:
+            index = start + 1
+            continue
+        facts.extend(_facts_from_json_value(value))
+        index = start + max(offset, 1)
+    return facts
+
+
+def _fallback_summary_from_chapter(chapter_title: str, chapter_content: str) -> str:
+    text = re.sub(r"\s+", " ", (chapter_content or "").strip())
+    if not text:
+        return f"{chapter_title}：章节正文为空，已创建最低可用章节概览。"
+    sentences = re.split(r"(?<=[。！？!?])", text)
+    summary = "".join(sentences[:3]).strip() or text[:240]
+    if len(summary) > 260:
+        summary = summary[:260].rstrip() + "..."
+    return summary
+
+
+def _fallback_facts_from_chapter(chapter_title: str, chapter_content: str) -> list[dict[str, Any]]:
+    summary = _fallback_summary_from_chapter(chapter_title, chapter_content)
+    return [
+        {
+            "fact_type": "chapter_overview",
+            "confidence": 0.45,
+            "evidence": "本地模型未输出可解析事实，系统按章节正文生成最低可用概览。",
+            "payload": {"summary": summary, "key_events": [summary[:80]], "uncertainty": "自动兜底事实，建议人工复核"},
+        },
+        {
+            "fact_type": "outline_fact",
+            "confidence": 0.45,
+            "evidence": "章节标题与正文摘要",
+            "payload": {
+                "title_hint": chapter_title or "未命名章节",
+                "node_type": "chapter",
+                "summary": summary,
+                "characters": [],
+                "hook": "自动兜底生成，后续可重新建档优化",
+            },
+        },
+    ]
+
+
+def _fact_summary(facts: list[dict[str, Any]], chapter_title: str, chapter_content: str) -> str:
+    for fact in facts:
+        if fact.get("fact_type") != "chapter_overview":
+            continue
+        payload = fact.get("payload") if isinstance(fact.get("payload"), dict) else {}
+        summary = payload.get("summary") or payload.get("overview") or payload.get("content")
+        if summary:
+            return str(summary)
+    return _fallback_summary_from_chapter(chapter_title, chapter_content)
+
+
+def _fallback_candidate_lines(chapter_title: str, chapter_content: str, facts: list[dict[str, Any]]) -> list[str]:
+    summary = _fact_summary(facts, chapter_title, chapter_content)
+    payloads = [
+        {
+            "type": "chapter_summary",
+            "payload": {
+                "summary_text": summary,
+                "key_events": [summary[:120]],
+                "characters": [],
+                "worldbuilding": [],
+                "outline_hint": chapter_title or "未命名章节",
+            },
+        },
+        {
+            "type": "outline_create",
+            "payload": {
+                "title": chapter_title or "未命名章节",
+                "summary": summary,
+                "actual_summary": summary,
+                "planned_summary": "",
+                "node_type": "chapter",
+                "status": "completed",
+                "related_characters": [],
+            },
+        },
+    ]
+    return [json.dumps(payload, ensure_ascii=False) for payload in payloads]
 
 
 def create_cataloging_job(
@@ -202,6 +392,12 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         if path and path.exists():
             chapter_file = str(path.resolve())
         db.commit()
+    chapter_text = chapter.content or ""
+    if not chapter_text and chapter_file:
+        try:
+            chapter_text = Path(chapter_file).read_text(encoding="utf-8")
+        except Exception:
+            chapter_text = ""
 
     run.status = "extracting"
     run.started_at = run.started_at or datetime.utcnow()
@@ -221,6 +417,8 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         CatalogingCandidate.chapter_run_id == run.id,
         CatalogingCandidate.item_type == "chapter_summary",
     ).first() is not None
+    provider = _model_provider(job.model)
+    local_runtime = _is_local_runtime_provider(provider)
 
     try:
         facts = load_facts_for_run(db, run)
@@ -235,40 +433,32 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
             for attempt in range(1, CATALOGING_STAGE_MAX_ATTEMPTS + 1):
                 fact_buffer = ""
                 fact_bad_lines = []
+                attempt_fact_parts: list[str] = []
                 if attempt > 1:
                     facts = []
                     raw_fact_parts.append(f"\n\n=== FACT EXTRACTION RETRY {attempt} ===\n")
                 try:
                     fact_stream = LLMGateway.stream_chat_completion(
-                        messages=[
-                            {"role": "system", "content": FACT_EXTRACTION_SYSTEM_PROMPT},
-                            {
-                                "role": "user",
-                                "content": (
-                                    build_fact_extraction_prompt(chapter.title, chapter.content or "")
-                                    if not chapter_file
-                                    else (
-                                        f"当前章节标题：{chapter.title}\n\n"
-                                        f"当前章节 UTF-8 镜像文件：{chapter_file}\n\n"
-                                        "请完整读取附件中的章节正文，按系统规则输出事实 JSONL。"
-                                        "先输出 chapter_overview，再输出角色、关系、世界观、大纲和身份线索事实。"
-                                    )
-                                ),
-                            },
-                        ],
+                        messages=_fact_prompt_messages(
+                            chapter_title=chapter.title,
+                            chapter_content=chapter_text,
+                            chapter_file=chapter_file,
+                            model=job.model,
+                        ),
                         model=job.model,
                         temperature=0.1,
-                        max_tokens=min(CATALOGING_MAX_TOKENS, 12000),
+                        max_tokens=1600 if local_runtime else min(CATALOGING_MAX_TOKENS, 12000),
                         timeout=CATALOGING_TIMEOUT_SECONDS,
                         retry=1,
                         extra_body=cataloging_extra_body(
                             job.model,
                             cwd=project_folder or None,
-                            attachments=[chapter_file] if chapter_file else None,
+                            attachments=[chapter_file] if chapter_file and is_local_cli_provider(provider) else None,
                         ),
                     )
                     async for chunk in fact_stream:
                         raw_fact_parts.append(chunk)
+                        attempt_fact_parts.append(chunk)
                         fact_buffer += chunk
                         lines = fact_buffer.splitlines(keepends=True)
                         if lines and not lines[-1].endswith(("\n", "\r")):
@@ -301,9 +491,61 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                             create_fact(db, job, run, parsed["fact"], len(facts) - 1)
                             db.commit()
                     if not facts:
+                        salvaged = _salvage_facts_from_text("".join(attempt_fact_parts))
+                        for fact in salvaged:
+                            facts.append(fact)
+                            create_fact(db, job, run, fact, len(facts) - 1)
+                            db.commit()
+                            yield sse_event({
+                                "type": "fact_extracted",
+                                "message": f"已修复抽取事实: {fact.get('fact_type')}",
+                                "fact": fact,
+                                "run": run_to_dict(run),
+                            })
+                    if not facts and local_runtime and attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
+                        fallback_facts = _fallback_facts_from_chapter(chapter.title, chapter_text)
+                        for fact in fallback_facts:
+                            facts.append(fact)
+                            create_fact(db, job, run, fact, len(facts) - 1)
+                            db.commit()
+                            yield sse_event({
+                                "type": "fact_extracted",
+                                "message": f"已生成兜底事实: {fact.get('fact_type')}",
+                                "fact": fact,
+                                "run": run_to_dict(run),
+                            })
+                        yield sse_event({
+                            "type": "cataloging_warning",
+                            "stage": "fact_extraction",
+                            "message": "本地模型未输出可解析事实，已生成最低可用事实继续建档；建议完成后人工复核。",
+                            "run": run_to_dict(run),
+                        })
+                    if not facts:
                         raise ValueError("模型未输出可用事实")
                     break
                 except Exception as exc:
+                    if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS and local_runtime:
+                        clear_facts_for_run(db, run)
+                        db.commit()
+                        facts = []
+                        fallback_facts = _fallback_facts_from_chapter(chapter.title, chapter_text)
+                        for fact in fallback_facts:
+                            facts.append(fact)
+                            create_fact(db, job, run, fact, len(facts) - 1)
+                            db.commit()
+                            yield sse_event({
+                                "type": "fact_extracted",
+                                "message": f"已生成兜底事实: {fact.get('fact_type')}",
+                                "fact": fact,
+                                "run": run_to_dict(run),
+                            })
+                        yield sse_event({
+                            "type": "cataloging_warning",
+                            "stage": "fact_extraction",
+                            "message": f"第一阶段本地模型失败（{exc}），已用最低可用事实继续建档；建议完成后人工复核。",
+                            "run": run_to_dict(run),
+                        })
+                        break
                     if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                         raise
                     clear_facts_for_run(db, run)
@@ -403,6 +645,26 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                 if not retry_reason:
                     break
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
+                    if local_runtime:
+                        clear_candidates_for_run(db, run)
+                        db.commit()
+                        candidate_count = 0
+                        has_summary = False
+                        bad_lines = []
+                        for line in _fallback_candidate_lines(chapter.title, chapter_text, facts):
+                            created = try_create_candidate(db, job, run, line, candidate_count)
+                            candidate = created.get("candidate")
+                            if candidate:
+                                candidate_count += 1
+                                has_summary = has_summary or candidate.item_type == "chapter_summary"
+                                db.commit()
+                                yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
+                        yield sse_event({
+                            "type": "cataloging_warning",
+                            "stage": "candidate_resolution",
+                            "message": f"第二阶段本地模型未输出完整候选（{retry_reason}），已生成最低可用章节摘要和大纲节点；建议完成后人工复核。",
+                            "run": run_to_dict(run),
+                        })
                     break
                 clear_candidates_for_run(db, run)
                 db.commit()
@@ -418,6 +680,27 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     "run": run_to_dict(run),
                 })
             except Exception as exc:
+                if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS and local_runtime:
+                    clear_candidates_for_run(db, run)
+                    db.commit()
+                    candidate_count = 0
+                    has_summary = False
+                    bad_lines = []
+                    for line in _fallback_candidate_lines(chapter.title, chapter_text, facts):
+                        created = try_create_candidate(db, job, run, line, candidate_count)
+                        candidate = created.get("candidate")
+                        if candidate:
+                            candidate_count += 1
+                            has_summary = has_summary or candidate.item_type == "chapter_summary"
+                            db.commit()
+                            yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
+                    yield sse_event({
+                        "type": "cataloging_warning",
+                        "stage": "candidate_resolution",
+                        "message": f"第二阶段本地模型失败（{exc}），已生成最低可用章节摘要和大纲节点；建议完成后人工复核。",
+                        "run": run_to_dict(run),
+                    })
+                    break
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                     raise
                 clear_candidates_for_run(db, run)

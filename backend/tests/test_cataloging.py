@@ -651,6 +651,59 @@ class CatalogingServiceTestCase(unittest.TestCase):
             cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
             db.close()
 
+    def test_local_runtime_fact_prompt_inlines_chapter_content(self):
+        messages = cataloging_orchestrator._fact_prompt_messages(
+            chapter_title="第1章 开端",
+            chapter_content="张三来到青云宗，发现灵石账目异常。",
+            chapter_file=r"D:\novels\chapter.md",
+            model="local_llama_cpp:qwen3-4b-q4",
+        )
+
+        self.assertIn("张三来到青云宗", messages[1]["content"])
+        self.assertNotIn("镜像文件", messages[1]["content"])
+        self.assertLess(len(messages[0]["content"]), 600)
+
+    def test_extract_run_local_runtime_falls_back_when_fact_stage_empty(self):
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(cls, messages, **kwargs):
+            calls.append(messages[0]["content"])
+            if len(calls) <= 3:
+                yield "我无法抽取。"
+                return
+            body = json.dumps({
+                "type": "chapter_summary",
+                "payload": {"summary_text": "fallback facts reached candidate stage", "key_events": ["ok"]},
+            }, ensure_ascii=False) + "\n"
+            yield body
+
+        try:
+            project = Project(title="Local Runtime Fallback Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第1章 开端", content="张三来到青云宗，发现灵石账目异常。")
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "local_llama_cpp:qwen3-4b-q4", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            events = asyncio.run(collect())
+
+            self.assertEqual(len(calls), 4)
+            self.assertTrue(any('"type":"cataloging_warning"' in event and '"stage":"fact_extraction"' in event for event in events))
+            self.assertGreaterEqual(db.query(CatalogingFact).count(), 2)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
     def test_skip_and_cancel_update_job_state(self):
         db = self.Session()
         try:

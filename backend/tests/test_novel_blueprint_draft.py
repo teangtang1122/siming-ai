@@ -548,6 +548,64 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
         self.assertTrue(any("后宫" in item for item in first["forbidden_patterns"]))
         self.assertGreaterEqual(first["requirement_coverage"]["score"], 85)
 
+    def test_repeated_qa_history_generates_without_placeholder_protagonist(self):
+        from app.services.workspace.tools.novel_creation import draft_novel_blueprint
+
+        session = MagicMock()
+        session.id = "s1"
+        session.user_brief = "用户希望创建一部新小说。"
+        session.genre = "fantasy"
+        session.target_audience = "all"
+        session.platform = "qidian"
+        session.blueprint_json = []
+
+        def query_side_effect(model):
+            q = MagicMock()
+            q.filter.return_value = q
+            model_name = model.__name__ if hasattr(model, "__name__") else str(model)
+            if "NovelCreationSession" in model_name:
+                q.first.return_value = session
+            else:
+                q.first.return_value = None
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = query_side_effect
+
+        qa_history = [
+            {"question": "小说的类型是什么？", "answer": "玄幻"},
+            {"question": "故事的核心冲突是什么？", "answer": "个人与外界的对抗"},
+            {"question": "故事的背景设定在什么样的世界观中？", "answer": "现实世界"},
+            {"question": "主角的具体身份和背景是什么？", "answer": "特殊能力者"},
+            {"question": "主角的具体身份和背景是什么？", "answer": "被秘密组织培养的实验体"},
+        ]
+
+        with patch(
+            "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
+            new=AsyncMock(return_value=None),
+        ):
+            result = asyncio.run(draft_novel_blueprint(db, "p1", {
+                "session_id": "s1",
+                "execution_mode": "hybrid",
+                "model": "local_llama_cpp:qwen3-4b-q4",
+                "qa_history": qa_history,
+                "revision_mode": "initial",
+            }))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("questions", result["data"])
+        first = result["data"]["blueprints"][0]
+        flat_text = str(first)
+        self.assertNotEqual(first["protagonist"]["name"], "什么样的人")
+        self.assertIn("被秘密组织培养的实验体", flat_text)
+        self.assertNotIn("Q:", flat_text)
+
+    def test_extract_protagonist_name_rejects_question_placeholder(self):
+        from app.services.workspace.tools.novel_creation import _extract_protagonist_name
+
+        brief = "Q: 你的主角是什么样的人？\nA: 穿越重生型：现代人穿越到修仙世界"
+        self.assertEqual(_extract_protagonist_name(brief), "未命名主角")
+
 
 if __name__ == "__main__":
     unittest.main()
