@@ -57,9 +57,12 @@ class CatalogingJobResponse(BaseModel):
     completed_chapters: int
     failed_chapters: int
     model: Optional[str]
+    effective_model: Optional[str] = None
+    model_source: Optional[str] = None
+    provider: Optional[str] = None
     error: Optional[str]
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime]
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "protected_namespaces": ()}

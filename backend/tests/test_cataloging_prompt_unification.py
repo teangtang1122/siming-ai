@@ -37,6 +37,22 @@ class CatalogingPromptUnificationTest(unittest.TestCase):
         self.assertIn("只裸读当前章节正文", FACT_EXTRACTION_SYSTEM_PROMPT)
         self.assertIn("outline_fact 要覆盖整章节点和重要场景节点", FACT_EXTRACTION_SYSTEM_PROMPT)
 
+    def test_cataloging_prompts_keep_jsonl_protocol_and_readable_examples(self):
+        external = get_external_cataloging_system_prompt()
+        internal = CATALOGING_RESOLUTION_SYSTEM_PROMPT
+        shared_facts = get_fact_extraction_rules()
+
+        for prompt in (external, internal):
+            self.assertIn("character_state_update", prompt)
+            self.assertIn("worldbuilding_create", prompt)
+            self.assertIn("JSONL", prompt)
+            self.assertIn("角色", prompt)
+            self.assertIn("世界观", prompt)
+            self.assertIn("候选", prompt)
+
+        self.assertIn("只输出 JSONL", shared_facts)
+        self.assertIn("不要输出 Markdown", shared_facts)
+
 
 if __name__ == "__main__":
     unittest.main()

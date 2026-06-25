@@ -24,6 +24,9 @@ export interface CatalogingJob {
   blocked_chapter_id?: string | null
   context_integrity?: string | null
   model?: string | null
+  effective_model?: string | null
+  model_source?: string | null
+  provider?: string | null
   total_chapters: number
   completed_chapters: number
   failed_chapters: number

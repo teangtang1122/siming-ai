@@ -786,6 +786,8 @@ class CatalogingJob(Base):
     completed_chapters = Column(Integer, default=0)
     failed_chapters = Column(Integer, default=0)
     model = Column(String(200), nullable=True)
+    model_source = Column(String(50), nullable=True)
+    provider = Column(String(80), nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -64,6 +64,9 @@ def job_to_dict(job: CatalogingJob) -> dict[str, Any]:
         "completed_chapters": job.completed_chapters or 0,
         "failed_chapters": job.failed_chapters or 0,
         "model": job.model,
+        "effective_model": job.model,
+        "model_source": job.model_source,
+        "provider": job.provider,
         "error": job.error,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
@@ -233,6 +236,8 @@ def create_cataloging_job(
     model: str | None,
     chapter_ids: list[str] | None,
     execution_backend: str = "internal_llm",
+    model_source: str | None = None,
+    provider: str | None = None,
 ) -> CatalogingJob:
     chapters = ordered_chapters(db, project_id, chapter_ids)
     job = CatalogingJob(
@@ -244,6 +249,8 @@ def create_cataloging_job(
         completed_chapters=0,
         failed_chapters=0,
         model=model,
+        model_source=model_source,
+        provider=provider,
     )
     db.add(job)
     db.flush()

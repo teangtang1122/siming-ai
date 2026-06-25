@@ -22,7 +22,7 @@ from ....services.cataloging.job_control import (
     reset_run_for_retry,
     resume_job,
 )
-from ....services.cataloging.model_selection import default_cataloging_model
+from ....services.cataloging.model_selection import cataloging_model_selection
 from ....services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
 from ....services.cataloging.local_cli_agent import (
     cancel_local_cli_cataloging_worker,
@@ -65,8 +65,9 @@ async def start_cataloging_job(db: Session, project_id: str, args: dict[str, Any
     if mode not in {"auto", "manual"}:
         mode = "auto"
     chapter_ids = args.get("chapter_ids") if isinstance(args.get("chapter_ids"), list) else []
-    model = default_cataloging_model(args.get("model"))
-    provider = (model or "").split(":", 1)[0].lower()
+    selection = cataloging_model_selection(args.get("model"))
+    model = selection.model
+    provider = (selection.provider or (model or "").split(":", 1)[0]).lower()
     local_cli = is_local_cli_provider(provider)
     job = create_cataloging_job(
         db,
@@ -75,6 +76,8 @@ async def start_cataloging_job(db: Session, project_id: str, args: dict[str, Any
         model,
         [str(item) for item in chapter_ids],
         execution_backend="local_cli_agent" if local_cli else "internal_llm",
+        model_source=selection.source,
+        provider=provider or None,
     )
     if bool(args.get("run_now", True)) and local_cli:
         ensure_local_cli_cataloging_worker(db, job, provider=provider)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Optional, TypeVar
 
 from ..core.crypto import decrypt
@@ -52,6 +53,14 @@ ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
 DEFAULT_TIMEOUT = 120
 MAX_RETRIES = 3
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class TaskModelSelection:
+    model: Optional[str]
+    source: str
+    provider: Optional[str] = None
+    model_name: Optional[str] = None
 
 
 def _is_auth_error(error: BaseException) -> bool:
@@ -129,18 +138,108 @@ class LLMGateway:
         task_type = str(extra_body.get("moshu_task_type") or "").strip()
         if not task_type:
             return model
+        selection = LLMGateway.select_model_for_task(
+            task_type=task_type,
+            model_override=model,
+            extra_body=extra_body,
+        )
+        return selection.model
+
+    @staticmethod
+    def _identity_from_model_value(model: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        if not model:
+            return None, None, None
+        try:
+            provider, model_name = LLMGateway._parse_model(model)
+            return f"{provider}:{model_name}", provider, model_name
+        except Exception:
+            provider, sep, model_name = model.partition(":")
+            if sep and provider and model_name:
+                return model, provider, model_name
+            return model, None, model
+
+    @staticmethod
+    def _task_setting_model(task_type: str) -> tuple[Optional[str], Optional[LocalModelTaskSetting]]:
         db = SessionLocal()
         try:
             setting = db.query(LocalModelTaskSetting).filter(
                 LocalModelTaskSetting.task_type == task_type
             ).first()
-            if setting and setting.context_length and not extra_body.get("moshu_context_length"):
-                extra_body["moshu_context_length"] = setting.context_length
-            if not model and setting:
-                return f"local_llama_cpp:{setting.model_key}"
-            return model
+            if not setting:
+                return None, None
+            return f"local_llama_cpp:{setting.model_key}", setting
         finally:
             db.close()
+
+    @staticmethod
+    def _global_default_model_value() -> Optional[str]:
+        db = SessionLocal()
+        try:
+            config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
+            if not config:
+                return None
+            return f"{config.provider}:{config.default_model}"
+        finally:
+            db.close()
+
+    @classmethod
+    def select_model_for_task(
+        cls,
+        *,
+        task_type: str,
+        model_override: Optional[str] = None,
+        extra_body: Optional[dict] = None,
+        prefer_task_model: bool = False,
+    ) -> TaskModelSelection:
+        """Resolve a task model without letting local task settings hide globals.
+
+        Priority: explicit model > explicit task-local opt-in > global default >
+        task-local fallback. The fallback keeps old offline-only installs usable,
+        while configured API/CLI defaults remain the normal path.
+        """
+        task_type = str(task_type or "").strip()
+        override = str(model_override or "").strip()
+        setting_model: Optional[str] = None
+        setting: Optional[LocalModelTaskSetting] = None
+        if task_type:
+            setting_model, setting = cls._task_setting_model(task_type)
+
+        if extra_body:
+            prefer_task_model = prefer_task_model or bool(
+                extra_body.get("moshu_prefer_task_model")
+                or extra_body.get("moshu_use_task_model")
+            )
+
+        selected = override
+        source = "explicit" if selected else ""
+        if not selected and prefer_task_model and setting_model:
+            selected = setting_model
+            source = "task_setting"
+        if not selected:
+            selected = cls._global_default_model_value() or ""
+            source = "global_default" if selected else ""
+        if not selected and setting_model:
+            selected = setting_model
+            source = "task_setting_fallback"
+        if not selected:
+            return TaskModelSelection(model=None, source="unconfigured")
+
+        model_value, provider, model_name = cls._identity_from_model_value(selected)
+        if (
+            extra_body is not None
+            and setting
+            and setting.context_length
+            and provider == "local_llama_cpp"
+            and (not model_name or model_name == setting.model_key)
+            and not extra_body.get("moshu_context_length")
+        ):
+            extra_body["moshu_context_length"] = setting.context_length
+        return TaskModelSelection(
+            model=model_value or selected,
+            source=source or "global_default",
+            provider=provider,
+            model_name=model_name,
+        )
 
     @classmethod
     def provider_for_model(cls, model: Optional[str] = None) -> str:

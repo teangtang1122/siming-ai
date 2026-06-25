@@ -111,6 +111,10 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "character_a",
         "character_b",
         "relationship_type",
+        "source",
+        "target",
+        "from_name",
+        "to_name",
         "chapter_id",
         "outline_node_id",
         "id",
@@ -119,10 +123,15 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "parent_title",
         "related_characters",
         "event_description",
+        "event",
         "event_type",
         "key_events",
         "character_names",
         "worldbuilding_titles",
+        "worldbuilding_title",
+        "world_title",
+        "setting_title",
+        "chapter_title",
         "primary_name",
         "secondary_name",
         "canonical_name",
@@ -156,12 +165,14 @@ def _raw_type(raw: dict[str, Any], payload: dict[str, Any]) -> str:
         or raw.get("kind")
         or raw.get("card_type")
         or raw.get("update_type")
+        or raw.get("category_type")
         or payload.get("type")
         or payload.get("item_type")
         or payload.get("candidate_type")
         or payload.get("kind")
         or payload.get("card_type")
         or payload.get("update_type")
+        or payload.get("category_type")
         or ""
     )
     return str(value).strip()
@@ -255,11 +266,15 @@ def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
     keys = {str(key) for key in payload}
     if {"primary_name", "secondary_name"} <= keys:
         return "character_merge_candidate"
-    if {"source_name", "target_name"} <= keys or {"character_a", "character_b"} <= keys:
+    if (
+        {"source_name", "target_name"} <= keys
+        or {"character_a", "character_b"} <= keys
+        or ("relationship_type" in keys and keys & {"source", "target", "from_name", "to_name"})
+    ):
         return "character_relationship"
     if "character_names" in keys or "worldbuilding_titles" in keys or "outline_title" in keys:
         return "chapter_link"
-    if "name" in keys or "character_name" in keys:
+    if "name" in keys or "character_name" in keys or "target_name" in keys:
         if "event_description" in keys or "event" in keys:
             return "character_timeline"
         if keys & {
@@ -277,9 +292,23 @@ def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
         if action in {"create", "new"}:
             return "character_create"
         return "character_update"
+    if keys & {"role_type", "appearance", "personality", "background", "abilities", "tone_style", "catchphrases"}:
+        return "character_create" if action in {"create", "new"} else "character_update"
+    if keys & {
+        "current_location",
+        "current_goal",
+        "life_status",
+        "physical_state",
+        "mental_state",
+        "realm_or_level",
+        "active_conflict",
+        "abilities_state",
+        "items_or_assets",
+    }:
+        return "character_state_update"
     if "event_description" in keys and ("title" in keys or "entry_title" in keys or "dimension" in keys):
         return "worldbuilding_timeline"
-    if keys & {"dimension", "category", "entry_title"}:
+    if keys & {"dimension", "category", "entry_title", "worldbuilding_title", "world_title", "setting_title"}:
         return "worldbuilding_update" if action == "update" else "worldbuilding_create"
     if "node_type" in keys or "parent_title" in keys or "related_characters" in keys:
         return "outline_update" if action == "update" else "outline_create"
@@ -287,6 +316,8 @@ def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
         return "chapter_summary"
     if "title" in keys and "summary" in keys:
         return "outline_update" if action == "update" else "outline_create"
+    if "summary" in keys and not keys & {"content", "dimension", "category"}:
+        return "chapter_summary"
     if "title" in keys and "content" in keys:
         return "worldbuilding_update" if action == "update" else "worldbuilding_create"
     return "unknown"
@@ -322,12 +353,23 @@ def _normalize_payload_fields(
         if name:
             payload["name"] = name
     if item_type == "character_relationship":
+        if not payload.get("source_name"):
+            payload["source_name"] = payload.get("source") or payload.get("from_name")
+        if not payload.get("target_name"):
+            payload["target_name"] = payload.get("target") or payload.get("to_name")
         if not payload.get("source_name") and payload.get("character_a"):
             payload["source_name"] = payload.get("character_a")
         if not payload.get("target_name") and payload.get("character_b"):
             payload["target_name"] = payload.get("character_b")
     if item_type.startswith("worldbuilding_"):
-        title = payload.get("title") or payload.get("entry_title") or raw.get("target_name")
+        title = (
+            payload.get("title")
+            or payload.get("entry_title")
+            or payload.get("worldbuilding_title")
+            or payload.get("world_title")
+            or payload.get("setting_title")
+            or raw.get("target_name")
+        )
         if title:
             payload["title"] = title
         if not payload.get("content"):

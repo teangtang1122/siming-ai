@@ -41,6 +41,12 @@ function CatalogingJobControlCard({
       <Space direction="vertical" style={{ width: '100%' }}>
         <Space wrap>
           <Tag color={catalogingStatusColor[job.status] || 'default'}>{job.status}</Tag>
+          {(job.effective_model || job.model) && (
+            <Tag color={job.provider === 'local_llama_cpp' ? 'volcano' : 'blue'}>
+              {job.effective_model || job.model}
+              {job.model_source ? ` · ${job.model_source}` : ''}
+            </Tag>
+          )}
           <Text>章节 {job.completed_chapters || 0}/{job.total_chapters || 0}</Text>
           {job.error && <Text type="danger">{job.error}</Text>}
         </Space>

@@ -35,6 +35,7 @@ import {
 import SystemNav from '../components/SystemNav'
 import PageWrapper from '../components/PageWrapper'
 import { apiClient } from '../api/client'
+import { useModelOptions } from '../hooks/useModelOptions'
 import { useAppStore } from '../stores'
 import './DashboardPage.css'
 
@@ -162,6 +163,10 @@ interface NovelDraftData {
   questions?: Array<{ question: string; purpose?: string; options?: string[]; type?: 'single_select' | 'multi_select' | 'text' }>
   original_brief?: string
   hint?: string
+  attempted_model?: string | null
+  provider?: string | null
+  llm_attempts?: Array<Record<string, unknown>>
+  failure_reasons?: string[]
 }
 
 interface NovelApplyData {
@@ -196,6 +201,7 @@ interface CreationTemplate {
 }
 
 const CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
+const MODEL_STORAGE_KEY = 'moshu.assistant.model'
 
 function parseTags(value?: string) {
   return (value || '')
@@ -261,6 +267,17 @@ function slotDraftToFeedback(slots: Record<string, string | string[]>) {
     .join('\n')
 }
 
+function formatNeedModelDetail(data: NovelDraftData) {
+  const lines = [data.recommendation || '当前模型没有生成可用的原创新书方案，已停止模板兜底。']
+  if (data.attempted_model || data.provider) {
+    lines.push(`尝试模型：${data.attempted_model || '未指定'}${data.provider ? `（${data.provider}）` : ''}`)
+  }
+  if (data.failure_reasons?.length) {
+    lines.push(`失败原因：${data.failure_reasons.slice(0, 2).join('；')}`)
+  }
+  return lines.join('\n\n')
+}
+
 function readCreationTemplates(): CreationTemplate[] {
   try {
     const raw = localStorage.getItem(CREATION_TEMPLATE_KEY)
@@ -273,6 +290,7 @@ function readCreationTemplates(): CreationTemplate[] {
 
 function DashboardPage() {
   const navigate = useNavigate()
+  const { defaultModel } = useModelOptions()
   const {
     projects,
     loading,
@@ -293,6 +311,10 @@ function DashboardPage() {
   const [assistantSessionId, setAssistantSessionId] = useState('')
   const [assistantRecommendation, setAssistantRecommendation] = useState('')
   const [assistantDraftText, setAssistantDraftText] = useState('')
+  const [assistantModel, setAssistantModel] = useState<string | undefined>(
+    () => localStorage.getItem(MODEL_STORAGE_KEY) || undefined,
+  )
+  const selectedModel = assistantModel || defaultModel || undefined
   // Question flow state
   const [activeQuestion, setActiveQuestion] = useState<ChatQuestion | null>(null)
   const [questionHistory, setQuestionHistory] = useState<QuestionAnswer[]>([])
@@ -325,6 +347,12 @@ function DashboardPage() {
   useEffect(() => {
     fetchProjects()
   }, [fetchProjects])
+
+  useEffect(() => {
+    if (!assistantModel && defaultModel) {
+      setAssistantModel(defaultModel)
+    }
+  }, [assistantModel, defaultModel])
 
   useEffect(() => {
     setCreationTemplates(readCreationTemplates())
@@ -604,6 +632,7 @@ function DashboardPage() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: assistantSessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         user_brief: '',
         ...qaPayload,
         revision_mode: 'initial',
@@ -675,6 +704,7 @@ function DashboardPage() {
           question: activeQuestion.question,
           existing_options: currentOptions,
           user_brief: '',
+          model: selectedModel,
         },
       )
       const newOptions = res.data?.data?.options || []
@@ -710,6 +740,7 @@ function DashboardPage() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: assistantSessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         skip_questions: true,
         revision_mode: 'initial',
       })
@@ -763,6 +794,7 @@ function DashboardPage() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: assistantSessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         user_brief: '',
         ...qaPayload,
         revision_mode: 'initial',
@@ -956,6 +988,7 @@ function DashboardPage() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: sessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         user_brief: userBrief,
         enhance_with_llm: false,
       })
@@ -985,7 +1018,7 @@ function DashboardPage() {
 
       const generatedBlueprints = draftData.blueprints || []
       if (draftData.enhancement_mode === 'llm_required' || generatedBlueprints.length === 0) {
-        const content = draftData.recommendation || '当前模型没有生成可用的原创新书方案，已停止模板兜底。请切换可用模型、使用外部 Agent，或明确选择模板草稿模式。'
+        const content = formatNeedModelDetail(draftData)
         setAssistantRecommendation(content)
         setAssistantMessages((items) => {
           const next = [...items]
@@ -1059,6 +1092,7 @@ function DashboardPage() {
       const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
         session_id: sessionId,
         execution_mode: 'hybrid',
+        model: selectedModel,
         user_brief: userBrief,
         feedback: requestFeedback,
         revision_mode: revisionMode,
@@ -1068,7 +1102,7 @@ function DashboardPage() {
       const draftData = draftRes.data.data
       const revisedBlueprints = draftData.blueprints || []
       if (draftData.enhancement_mode === 'llm_required' || revisedBlueprints.length === 0) {
-        const content = draftData.recommendation || '当前模型没有生成可用的原创调整结果，已停止模板兜底。请切换可用模型或使用外部 Agent。'
+        const content = formatNeedModelDetail(draftData)
         setAssistantRecommendation(content)
         setAssistantMessages((items) => [...items, { role: 'assistant', content }])
         message.warning('模型未生成可用原创方案')

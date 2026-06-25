@@ -35,7 +35,7 @@ from ..services.cataloging.job_control import (
 from ..services.cataloging.fact_store import fact_to_dict, load_facts_for_run
 from ..services.cataloging.lookups import find_character_by_name_or_id
 from ..services.cataloging.manual_ops import create_manual_candidate, has_usable_chapter_summary, recover_failed_run_for_review
-from ..services.cataloging.model_selection import default_cataloging_model
+from ..services.cataloging.model_selection import cataloging_model_selection
 from ..services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
 from ..services.cataloging.local_cli_agent import (
     cancel_local_cli_cataloging_worker,
@@ -69,8 +69,9 @@ def _get_candidate_or_404(db: Session, project_id: str, candidate_id: str) -> Ca
 @router.post("/projects/{project_id}/cataloging/start")
 async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
-    model = default_cataloging_model(payload.model)
-    provider = (model or "").split(":", 1)[0].lower()
+    selection = cataloging_model_selection(payload.model)
+    model = selection.model
+    provider = (selection.provider or (model or "").split(":", 1)[0]).lower()
     local_cli = is_local_cli_provider(provider)
     job = create_cataloging_job(
         db,
@@ -79,6 +80,8 @@ async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db:
         model,
         payload.chapter_ids,
         execution_backend="local_cli_agent" if local_cli else "internal_llm",
+        model_source=selection.source,
+        provider=provider or None,
     )
     if local_cli:
         try:

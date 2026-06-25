@@ -245,6 +245,59 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_try_create_candidate_infers_relationship_and_worldbuilding_without_type(self):
+        db = self.Session()
+        try:
+            project = Project(title="Inferred Relationship Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Chapter", content="A meets B at Cloud Gate.")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            relationship = try_create_candidate(db, job, run, json.dumps({
+                "source": "A",
+                "target": "B",
+                "relationship_type": "ally",
+                "description": "A and B agree to travel together.",
+            }, ensure_ascii=False), 0)
+            worldbuilding = try_create_candidate(db, job, run, json.dumps({
+                "worldbuilding_title": "Cloud Gate",
+                "dimension": "geography",
+                "content": "A mountain gate used by cultivators.",
+            }, ensure_ascii=False), 1)
+
+            self.assertIn("candidate", relationship)
+            self.assertEqual(relationship["candidate"].item_type, "character_relationship")
+            self.assertIn("candidate", worldbuilding)
+            self.assertEqual(worldbuilding["candidate"].item_type, "worldbuilding_create")
+        finally:
+            db.close()
+
+    def test_unknown_empty_type_error_contains_fields_and_snippet(self):
+        db = self.Session()
+        try:
+            project = Project(title="Unknown Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Chapter", content="Nothing useful.")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            result = try_create_candidate(db, job, run, json.dumps({"foo": "bar"}, ensure_ascii=False), 0)
+
+            self.assertIn("error", result)
+            self.assertIn("<empty>", result["error"])
+            self.assertIn("raw_fields", result["error"])
+            self.assertIn("snippet", result["error"])
+            self.assertNotEqual(result["error"].strip(), "未知 type:")
+        finally:
+            db.close()
+
     def test_context_includes_richer_character_and_worldbuilding_details(self):
         db = self.Session()
         try:

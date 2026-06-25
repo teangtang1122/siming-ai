@@ -3,11 +3,37 @@ import asyncio
 import sys
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services.workspace.registry import registry
+
+
+def _usable_blueprint(title="Original Plan"):
+    return {
+        "title": title,
+        "subtitle": "Sub",
+        "logline": "A long-form original concept.",
+        "premise": "Original premise with enough concrete long-form story context, stakes, rules, and serial pressure for testing.",
+        "core_conflict": "Original conflict",
+        "selling_points": [f"selling point {idx}" for idx in range(8)],
+        "protagonist": {"name": "Hero", "goal": "Win"},
+        "characters": [{"name": f"Character {idx}", "role_type": "support"} for idx in range(5)],
+        "relationships": [{"source_name": "Hero", "target_name": f"Character {idx}", "relationship_type": "ally"} for idx in range(5)],
+        "worldbuilding": [{"title": f"World {idx}", "dimension": "setting", "content": "rule"} for idx in range(6)],
+        "volume_outline": [{"title": f"Volume {idx}", "summary": "arc"} for idx in range(2)],
+        "outline": [{"title": f"Chapter {idx}", "summary": "beat"} for idx in range(12)],
+        "golden_three": {
+            "opening_scene": "open",
+            "chapter_1": "one",
+            "chapter_2": "two",
+            "chapter_3": "three",
+            "promise": "promise",
+        },
+        "quality_self_check": {"total_score": 86, "pass": True, "issues": [], "suggestions": []},
+    }
 
 
 class BlueprintDraftToolRegisteredTest(unittest.TestCase):
@@ -154,6 +180,77 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertEqual(result["status"], "need_model")
         self.assertEqual(questions_mock.await_args.kwargs["model"], selected_model)
         self.assertEqual(draft_mock.await_args.kwargs["model"], selected_model)
+
+    def test_initial_draft_accepts_partial_llm_success(self):
+        from app.services.workspace.tools.novel_creation import _try_llm_initial_draft
+
+        session = SimpleNamespace(
+            id="session-partial",
+            genre="other",
+            target_audience="all",
+            platform="qidian",
+        )
+        template_blueprints = [_usable_blueprint(f"Template {idx}") for idx in range(3)]
+        diagnostics = {}
+        with patch(
+            "app.services.workspace.tools.novel_creation._call_llm_for_single_blueprint",
+            new=AsyncMock(side_effect=[
+                _usable_blueprint("LLM Success"),
+                None,
+                None,
+                None,
+                None,
+            ]),
+        ) as call_mock:
+            result = asyncio.run(_try_llm_initial_draft(
+                session=session,
+                template_blueprints=template_blueprints,
+                user_brief="original brief",
+                model="claude_cli:claude-code",
+                diagnostics=diagnostics,
+            ))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["title"], "LLM Success")
+        self.assertEqual(result[0]["creation_engine"], "template_llm_hybrid")
+        self.assertEqual(diagnostics["success_count"], 1)
+        self.assertTrue(diagnostics["failure_reasons"])
+        self.assertEqual(call_mock.await_count, 5)
+
+    def test_draft_returns_one_structurally_usable_llm_blueprint(self):
+        from app.services.workspace.tools.novel_creation import draft_novel_blueprint
+
+        session = MagicMock()
+        session.id = "s1"
+        session.user_brief = "original novel"
+        session.genre = "other"
+        session.target_audience = "all"
+        session.platform = "qidian"
+        session.blueprint_json = []
+
+        db = MagicMock()
+        query_mock = MagicMock()
+        query_mock.filter.return_value = query_mock
+        query_mock.first.return_value = session
+        db.query.return_value = query_mock
+
+        with patch(
+            "app.services.workspace.tools.novel_creation._generate_clarifying_questions",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
+            new=AsyncMock(return_value=[_usable_blueprint("Single Original")]),
+        ):
+            result = asyncio.run(draft_novel_blueprint(db, "p1", {
+                "session_id": "s1",
+                "execution_mode": "hybrid",
+                "model": "claude_cli:claude-code",
+            }))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["data"]["blueprints"]), 1)
+        self.assertEqual(result["data"]["blueprints"][0]["title"], "Single Original")
 
 
 class SystemAssistantModelOverrideTest(unittest.TestCase):

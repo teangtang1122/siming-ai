@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Col, Row, message } from 'antd'
 import { apiClient } from '../api/client'
+import { useModelOptions } from '../hooks/useModelOptions'
 import CatalogingCandidatesPanel from './CatalogingCandidatesPanel'
 import CatalogingHeader from './CatalogingHeader'
 import CatalogingJobControlCard from './CatalogingJobControlCard'
@@ -33,6 +34,9 @@ const candidateRunId = (job: CatalogingJob | null, runs: CatalogingRun[]) => {
 
 function CatalogingPage({ projectId }: CatalogingPageProps) {
   const [mode, setMode] = useState<CatalogingMode>('auto')
+  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
+  const [model, setModel] = useState<string | undefined>()
+  const selectedModel = model || defaultModel || undefined
   const [chapters, setChapters] = useState<ChapterItem[]>([])
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([])
   const [jobs, setJobs] = useState<CatalogingJob[]>([])
@@ -203,6 +207,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     try {
       const res = await apiClient.post<ApiResponse<CatalogingJob>>(`/projects/${projectId}/cataloging/start`, {
         execution_mode: mode,
+        model: selectedModel,
         chapter_ids: selectedChapterIds,
       })
       setJob(res.data.data)
@@ -210,7 +215,10 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       setCandidateDrafts({})
       setRuns([])
       setLogs([])
-      appendLog('作品建档任务已创建')
+      appendLog(
+        `作品建档任务已创建：${res.data.data.effective_model || selectedModel || '跟随全局默认'}`
+        + (res.data.data.model_source ? ` (${res.data.data.model_source})` : ''),
+      )
       fetchJobs().catch(() => undefined)
       streamJob(res.data.data.id)
     } catch (err: any) {
@@ -405,9 +413,13 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     <div>
       <CatalogingHeader
         mode={mode}
+        model={model}
+        modelOptions={modelOptions.map((option) => ({ value: option.value, label: option.label }))}
+        modelsLoading={modelsLoading}
         loading={loading}
         streaming={streaming}
         onModeChange={updateMode}
+        onModelChange={setModel}
         onRefreshChapters={fetchChapters}
         onStartJob={startJob}
       />

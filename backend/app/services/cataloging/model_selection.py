@@ -1,30 +1,19 @@
 """Model selection for project cataloging."""
 from __future__ import annotations
 
-from ...ai.gateway import LLMGateway
+from ...ai.gateway import LLMGateway, TaskModelSelection
 from ...ai.local_cli_adapter import is_local_cli_provider
-from ...database.models import APIConfig, LocalModelTaskSetting
-from ...database.session import SessionLocal
-from .constants import CHEAP_MODEL_BY_PROVIDER
+
+
+def cataloging_model_selection(model_override: str | None = None) -> TaskModelSelection:
+    return LLMGateway.select_model_for_task(
+        task_type="cataloging",
+        model_override=model_override,
+    )
 
 
 def default_cataloging_model(model_override: str | None = None) -> str | None:
-    if model_override:
-        return model_override
-    db = SessionLocal()
-    try:
-        task_setting = db.query(LocalModelTaskSetting).filter(
-            LocalModelTaskSetting.task_type == "cataloging"
-        ).first()
-        if task_setting:
-            return f"local_llama_cpp:{task_setting.model_key}"
-        config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()
-        if not config:
-            return None
-        model = CHEAP_MODEL_BY_PROVIDER.get(config.provider, config.default_model)
-        return f"{config.provider}:{model}"
-    finally:
-        db.close()
+    return cataloging_model_selection(model_override).model
 
 
 def cataloging_extra_body(

@@ -3286,6 +3286,71 @@ def _is_local_runtime_planning_model(model: str | None) -> bool:
     return provider == "local_llama_cpp"
 
 
+def _planning_model_diagnostics(model: str | None) -> tuple[str | None, str | None]:
+    try:
+        provider, model_name = LLMGateway.model_identity(model, {"moshu_task_type": "planning"})
+        return f"{provider}:{model_name}", provider
+    except Exception:
+        provider = (model or "").split(":", 1)[0].lower() or None
+        return model, provider
+
+
+def _init_llm_blueprint_diagnostics(
+    diagnostics: dict[str, Any] | None,
+    *,
+    model: str | None,
+    stage: str,
+) -> None:
+    if diagnostics is None:
+        return
+    attempted_model, provider = _planning_model_diagnostics(model)
+    diagnostics.setdefault("attempted_model", attempted_model)
+    diagnostics.setdefault("provider", provider)
+    diagnostics.setdefault("stage", stage)
+    diagnostics.setdefault("attempts", [])
+    diagnostics.setdefault("failure_reasons", [])
+
+
+def _record_llm_blueprint_attempt(
+    diagnostics: dict[str, Any] | None,
+    *,
+    stage: str,
+    variant: int | str,
+    attempt: int,
+    status: str,
+    reason: str = "",
+    title: str = "",
+) -> None:
+    if diagnostics is None:
+        return
+    item = {
+        "stage": stage,
+        "variant": str(variant),
+        "attempt": attempt,
+        "status": status,
+    }
+    if reason:
+        item["reason"] = reason
+    if title:
+        item["title"] = title
+    diagnostics.setdefault("attempts", []).append(item)
+    if status != "success" and reason:
+        diagnostics.setdefault("failure_reasons", []).append(f"{stage}[{variant}] attempt {attempt}: {reason}")
+
+
+def _finalize_llm_blueprint_diagnostics(
+    diagnostics: dict[str, Any] | None,
+    *,
+    success_count: int,
+) -> None:
+    if diagnostics is None:
+        return
+    diagnostics["success_count"] = success_count
+    reasons = diagnostics.get("failure_reasons")
+    if not reasons and success_count == 0:
+        diagnostics["failure_reasons"] = ["no usable LLM blueprint was returned"]
+
+
 def _strip_answer_key_prefix(question: str) -> str:
     return re.sub(r"^\s*(?:qa[_-]?)?\d+\s*[.、):-]?\s*", "", _clean_text(question), flags=re.IGNORECASE)
 
@@ -3729,6 +3794,7 @@ async def _try_llm_initial_draft(
     template_blueprints: list[dict[str, Any]],
     user_brief: str,
     model: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Attempt LLM-powered generation of original blueprint concepts.
 
@@ -3771,55 +3837,95 @@ async def _try_llm_initial_draft(
         ("强冲突爽点版", "高对抗密度，即时反馈。每一轮判断都带来胜负，爽感密集，适合快节奏连载。"),
     ]
 
-    # Build 3 prompts, one per variant
-    prompts = [
-        _build_single_variant_prompt(
-            variant_label=label,
-            variant_desc=desc,
-            user_brief=user_brief,
-            genre_label=genre_label,
-            session_context=session_context,
-            seed=f"{seed}-{i}",
-            structure_hint=structure_hint,
-        )
-        for i, (label, desc) in enumerate(variants)
-    ]
-
+    _init_llm_blueprint_diagnostics(diagnostics, model=model, stage="initial")
     _logger.info("Hybrid mode: calling LLM for 3 variants in parallel (genre=%s)...", genre_label)
-    llm_results = await asyncio.gather(
-        *[_call_llm_for_single_blueprint(msgs, model=model) for msgs in prompts],
-        return_exceptions=True,
-    )
 
-    result = []
-    for i, llm_bp in enumerate(llm_results):
-        if isinstance(llm_bp, Exception):
-            _logger.warning("Hybrid mode: variant %d raised exception: %s", i, llm_bp)
-            llm_bp = None
-        llm_succeeded = bool(llm_bp and isinstance(llm_bp, dict))
-        if not llm_bp or not isinstance(llm_bp, dict):
-            _logger.warning("Hybrid mode: variant %d failed (type=%s); not falling back to template content for genre=%s",
-                          i, type(llm_bp).__name__, genre_label)
-            return None
-        else:
-            _logger.info("Hybrid mode: variant %d LLM success, title=%s", i, llm_bp.get("title", "unknown"))
-        template_ref = template_blueprints[i] if i < len(template_blueprints) else template_blueprints[0]
-        merged = _merge_llm_blueprint(llm_bp, template_ref)
-        prot_name = _clean_text(
-            (merged.get("protagonist") or {}).get("name")
-            or (template_ref.get("protagonist") or {}).get("name")
-        )
-        validated = _validate_blueprint(
-            merged,
-            fallback_title=merged.get("title", template_ref.get("title", "")),
-            genre_label=genre_label,
-            protagonist_name=prot_name,
-        )
-        validated["creation_engine"] = "template_llm_hybrid" if llm_succeeded else "llm_required"
-        result.append(validated)
+    result_by_index: dict[int, dict[str, Any]] = {}
+    pending = set(range(len(variants)))
+    max_attempts = 2
 
-    _logger.info("Hybrid mode: generated %d blueprints", len(result))
-    return result if len(result) >= 1 else None
+    for attempt in range(1, max_attempts + 1):
+        if not pending:
+            break
+        current = sorted(pending)
+        prompts = [
+            _build_single_variant_prompt(
+                variant_label=variants[i][0],
+                variant_desc=variants[i][1],
+                user_brief=user_brief,
+                genre_label=genre_label,
+                session_context=session_context,
+                seed=f"{seed}-{i}-r{attempt}",
+                structure_hint=structure_hint,
+            )
+            for i in current
+        ]
+        llm_results = await asyncio.gather(
+            *[_call_llm_for_single_blueprint(msgs, model=model) for msgs in prompts],
+            return_exceptions=True,
+        )
+        for result_index, llm_bp in zip(current, llm_results):
+            if isinstance(llm_bp, Exception):
+                reason = f"exception: {llm_bp}"
+                _logger.warning("Hybrid mode: variant %d attempt %d raised exception: %s", result_index, attempt, llm_bp)
+                _record_llm_blueprint_attempt(
+                    diagnostics,
+                    stage="initial",
+                    variant=result_index,
+                    attempt=attempt,
+                    status="failed",
+                    reason=reason,
+                )
+                continue
+            if not isinstance(llm_bp, dict) or not llm_bp:
+                reason = f"invalid result type: {type(llm_bp).__name__}"
+                _logger.warning(
+                    "Hybrid mode: variant %d attempt %d failed (%s); not falling back to template content for genre=%s",
+                    result_index,
+                    attempt,
+                    reason,
+                    genre_label,
+                )
+                _record_llm_blueprint_attempt(
+                    diagnostics,
+                    stage="initial",
+                    variant=result_index,
+                    attempt=attempt,
+                    status="failed",
+                    reason=reason,
+                )
+                continue
+
+            template_ref = template_blueprints[result_index] if result_index < len(template_blueprints) else template_blueprints[0]
+            merged = _merge_llm_blueprint(llm_bp, template_ref)
+            prot_name = _clean_text(
+                (merged.get("protagonist") or {}).get("name")
+                or (template_ref.get("protagonist") or {}).get("name")
+            )
+            validated = _validate_blueprint(
+                merged,
+                fallback_title=merged.get("title", template_ref.get("title", "")),
+                genre_label=genre_label,
+                protagonist_name=prot_name,
+            )
+            validated["creation_engine"] = "template_llm_hybrid"
+            result_by_index[result_index] = validated
+            pending.discard(result_index)
+            title = _clean_text(llm_bp.get("title"), "unknown")
+            _logger.info("Hybrid mode: variant %d attempt %d LLM success, title=%s", result_index, attempt, title)
+            _record_llm_blueprint_attempt(
+                diagnostics,
+                stage="initial",
+                variant=result_index,
+                attempt=attempt,
+                status="success",
+                title=title,
+            )
+
+    result = [result_by_index[i] for i in sorted(result_by_index)]
+    _finalize_llm_blueprint_diagnostics(diagnostics, success_count=len(result))
+    _logger.info("Hybrid mode: generated %d blueprints from LLM", len(result))
+    return result if result else None
 
 
 def _merge_llm_blueprint(
@@ -3937,6 +4043,7 @@ async def _try_llm_blueprint_refinement(
     revision_mode: str,
     user_brief: str,
     model: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Attempt LLM-powered blueprint refinement. Returns None if LLM unavailable or fails."""
     genre_label = _genre_label(_clean_text(session.genre, "other"))
@@ -3947,32 +4054,57 @@ async def _try_llm_blueprint_refinement(
     session_id = str(session.id) if hasattr(session, "id") else ""
 
     _logger.info("Hybrid mode: calling LLM for %s (feedback=%s)...", revision_mode, repr(feedback[:50]) if feedback else "None")
+    _init_llm_blueprint_diagnostics(diagnostics, model=model, stage=revision_mode)
 
     if revision_mode == "refine":
-        # Build all prompts first, then call LLM in parallel
-        prompts = [
-            _build_refine_prompt(
-                blueprint=template_bp,
-                feedback=feedback,
-                revision_mode=revision_mode,
-                user_brief=user_brief,
-                genre_label=genre_label,
-                session_context=session_context,
+        refined_by_index: dict[int, dict[str, Any]] = {}
+        pending = set(range(len(template_blueprints)))
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            if not pending:
+                break
+            current = sorted(pending)
+            prompts = [
+                _build_refine_prompt(
+                    blueprint=template_blueprints[i],
+                    feedback=feedback,
+                    revision_mode=revision_mode,
+                    user_brief=user_brief,
+                    genre_label=genre_label,
+                    session_context=session_context,
+                )
+                for i in current
+            ]
+            llm_results = await asyncio.gather(
+                *[_call_llm_for_blueprints(msgs, expect_list=False, model=model) for msgs in prompts],
+                return_exceptions=True,
             )
-            for template_bp in template_blueprints
-        ]
-        llm_results = await asyncio.gather(
-            *[_call_llm_for_blueprints(msgs, expect_list=False, model=model) for msgs in prompts],
-            return_exceptions=True,
-        )
 
-        refined_blueprints = []
-        any_success = False
-        for i, template_bp in enumerate(template_blueprints):
-            llm_bp = llm_results[i] if i < len(llm_results) else None
-            if isinstance(llm_bp, Exception):
-                llm_bp = None
-            if llm_bp and isinstance(llm_bp, dict):
+            for i, llm_bp in zip(current, llm_results):
+                if isinstance(llm_bp, Exception):
+                    reason = f"exception: {llm_bp}"
+                    _record_llm_blueprint_attempt(
+                        diagnostics,
+                        stage="refine",
+                        variant=i,
+                        attempt=attempt,
+                        status="failed",
+                        reason=reason,
+                    )
+                    continue
+                if not isinstance(llm_bp, dict) or not llm_bp:
+                    reason = f"invalid result type: {type(llm_bp).__name__}"
+                    _record_llm_blueprint_attempt(
+                        diagnostics,
+                        stage="refine",
+                        variant=i,
+                        attempt=attempt,
+                        status="failed",
+                        reason=reason,
+                    )
+                    continue
+
+                template_bp = template_blueprints[i]
                 merged = _merge_llm_blueprint(llm_bp, template_bp)
                 prot_name = _clean_text(
                     (merged.get("protagonist") or {}).get("name")
@@ -3988,11 +4120,20 @@ async def _try_llm_blueprint_refinement(
                 validated["revision_instruction"] = feedback
                 validated["adjustment_notes"] = _feedback_tone(feedback)
                 validated["creation_engine"] = "llm_enhanced"
-                refined_blueprints.append(validated)
-                any_success = True
-            else:
-                return None
-        return refined_blueprints if any_success and len(refined_blueprints) == len(template_blueprints) else None
+                refined_by_index[i] = validated
+                pending.discard(i)
+                _record_llm_blueprint_attempt(
+                    diagnostics,
+                    stage="refine",
+                    variant=i,
+                    attempt=attempt,
+                    status="success",
+                    title=_clean_text(llm_bp.get("title"), "unknown"),
+                )
+
+        refined_blueprints = [refined_by_index[i] for i in sorted(refined_by_index)]
+        _finalize_llm_blueprint_diagnostics(diagnostics, success_count=len(refined_blueprints))
+        return refined_blueprints if refined_blueprints else None
 
     elif revision_mode == "regenerate":
         base_blueprint = template_blueprints[0] if template_blueprints else None
@@ -4007,11 +4148,28 @@ async def _try_llm_blueprint_refinement(
         )
         llm_blueprints = await _call_llm_for_blueprints(messages, expect_list=True, model=model)
         if not llm_blueprints or not isinstance(llm_blueprints, list):
+            _record_llm_blueprint_attempt(
+                diagnostics,
+                stage="regenerate",
+                variant="batch",
+                attempt=1,
+                status="failed",
+                reason=f"invalid result type: {type(llm_blueprints).__name__}",
+            )
+            _finalize_llm_blueprint_diagnostics(diagnostics, success_count=0)
             return None
 
         result = []
         for i, llm_bp in enumerate(llm_blueprints):
             if not isinstance(llm_bp, dict):
+                _record_llm_blueprint_attempt(
+                    diagnostics,
+                    stage="regenerate",
+                    variant=i,
+                    attempt=1,
+                    status="failed",
+                    reason=f"invalid item type: {type(llm_bp).__name__}",
+                )
                 continue
             template_ref = template_blueprints[i] if i < len(template_blueprints) else template_blueprints[0]
             merged = _merge_llm_blueprint(llm_bp, template_ref)
@@ -4030,7 +4188,16 @@ async def _try_llm_blueprint_refinement(
             validated["adjustment_notes"] = _feedback_tone(feedback)
             validated["creation_engine"] = "llm_enhanced"
             result.append(validated)
+            _record_llm_blueprint_attempt(
+                diagnostics,
+                stage="regenerate",
+                variant=i,
+                attempt=1,
+                status="success",
+                title=_clean_text(llm_bp.get("title"), "unknown"),
+            )
 
+        _finalize_llm_blueprint_diagnostics(diagnostics, success_count=len(result))
         return result if len(result) >= 1 else None
 
     return None
@@ -5099,7 +5266,7 @@ def _blueprint_is_structurally_usable(blueprint: dict[str, Any]) -> bool:
 
 
 def _blueprint_set_is_structurally_usable(blueprints: list[dict[str, Any]]) -> bool:
-    return len(blueprints) >= 3 and all(_blueprint_is_structurally_usable(bp) for bp in blueprints[:3])
+    return any(_blueprint_is_structurally_usable(bp) for bp in blueprints)
 
 
 async def start_novel_creation_session(
@@ -5292,8 +5459,19 @@ async def draft_novel_blueprint(
         # template content when the model fails; that makes repeated projects too
         # similar and hard for users to distinguish from original generation.
         should_try_llm = execution_mode in {"hybrid", "auto"} or enhance_with_llm
+        llm_diagnostics: dict[str, Any] = {}
         if _is_local_runtime_planning_model(model) and not enhance_with_llm:
             should_try_llm = False
+            attempted_model, provider = _planning_model_diagnostics(model)
+            llm_diagnostics.update({
+                "attempted_model": attempted_model,
+                "provider": provider,
+                "failure_reasons": [
+                    "local_llama_cpp planning model was not used because enhance_with_llm is false",
+                ],
+                "attempts": [],
+                "success_count": 0,
+            })
         if should_try_llm:
             if revision_mode in ("refine", "regenerate"):
                 llm_result = await _try_llm_blueprint_refinement(
@@ -5303,6 +5481,7 @@ async def draft_novel_blueprint(
                     revision_mode=revision_mode,
                     user_brief=_clean_text(user_brief or session.user_brief),
                     model=model,
+                    diagnostics=llm_diagnostics,
                 )
             else:
                 # Initial draft: use LLM to enhance template skeleton
@@ -5311,13 +5490,18 @@ async def draft_novel_blueprint(
                     template_blueprints=template_blueprints,
                     user_brief=_clean_text(user_brief or session.user_brief),
                     model=model,
+                    diagnostics=llm_diagnostics,
                 )
             if llm_result:
                 annotated_llm = [_annotate_blueprint(bp, compiled) for bp in llm_result if isinstance(bp, dict)]
-                if _blueprint_set_is_structurally_usable(annotated_llm):
-                    blueprints = annotated_llm
+                usable_llm = [bp for bp in annotated_llm if _blueprint_is_structurally_usable(bp)]
+                if usable_llm:
+                    blueprints = usable_llm
                 else:
                     _logger.info("LLM blueprint result rejected by structural quality gate")
+                    llm_diagnostics.setdefault("failure_reasons", []).append(
+                        "LLM returned blueprints but none passed the structural quality gate"
+                    )
                     if template_allowed:
                         blueprints = template_blueprints
                     else:
@@ -5352,6 +5536,10 @@ async def draft_novel_blueprint(
                     "blueprints": [],
                     "recommendation": recommendation,
                     "next_tool": "draft_novel_blueprint",
+                    "attempted_model": llm_diagnostics.get("attempted_model") or model,
+                    "provider": llm_diagnostics.get("provider"),
+                    "llm_attempts": llm_diagnostics.get("attempts", []),
+                    "failure_reasons": llm_diagnostics.get("failure_reasons", []),
                 },
             }
         blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)]

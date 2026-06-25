@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.ai.gateway import LLMGateway
 from app.database.models import (
+    APIConfig,
     Base,
     Chapter,
     LocalModelTaskSetting,
@@ -52,6 +53,41 @@ def test_task_setting_routes_unspecified_model_to_local_runtime():
         selected = LLMGateway._model_for_task(None, {"moshu_task_type": "writing"})
     assert selected == "local_llama_cpp:qwen3-8b-q4"
     assert LLMGateway._model_for_task("deepseek:custom", {"moshu_task_type": "writing"}) == "deepseek:custom"
+
+
+def test_global_default_model_wins_over_task_local_setting_until_opt_in():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="claude_cli",
+            provider_type="local_cli",
+            api_key_encrypted="",
+            default_model="claude-code",
+            is_global_default=True,
+        ))
+        db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3-14b-q4"))
+        db.commit()
+
+    with patch("app.ai.gateway.SessionLocal", Session):
+        selected = LLMGateway.select_model_for_task(task_type="cataloging")
+        opt_in = LLMGateway.select_model_for_task(
+            task_type="cataloging",
+            extra_body={"moshu_task_type": "cataloging", "moshu_prefer_task_model": True},
+        )
+        explicit = LLMGateway.select_model_for_task(
+            task_type="cataloging",
+            model_override="local_llama_cpp:qwen3-14b-q4",
+        )
+
+    assert selected.model == "claude_cli:claude-code"
+    assert selected.source == "global_default"
+    assert selected.provider == "claude_cli"
+    assert opt_in.model == "local_llama_cpp:qwen3-14b-q4"
+    assert opt_in.source == "task_setting"
+    assert explicit.model == "local_llama_cpp:qwen3-14b-q4"
+    assert explicit.source == "explicit"
 
 
 def test_local_runtime_server_uses_single_parallel_slot():

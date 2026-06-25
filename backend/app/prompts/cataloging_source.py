@@ -137,6 +137,7 @@ def get_external_no_api_rules() -> str:
 【编目专用补充规则】
 1. 使用无 API 工具链：start_external_cataloging_job -> get_next_external_cataloging_chapter -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress。
 2. 外部 Agent 自己阅读章节正文并生成 facts/candidates，墨枢只负责保存、应用、验证。
+3. 准备 facts/candidates 时保持 JSONL 颗粒度：一条事实或候选对应一个对象；不要把整章合成一个大对象。
 
 【并行与串行规则】
 编目分两个阶段，执行方式不同：

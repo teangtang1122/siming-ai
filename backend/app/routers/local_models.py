@@ -283,9 +283,12 @@ async def benchmark(payload: BenchmarkRequest):
 @router.put("/task-settings/{task_type}")
 def update_task_setting(task_type: str, payload: dict, db: Session = Depends(get_db)):
     model_key = str(payload.get("model_key") or "").strip()
-    if not model_key:
-        raise ValueError("model_key 不能为空")
     row = db.query(LocalModelTaskSetting).filter(LocalModelTaskSetting.task_type == task_type).first()
+    if not model_key:
+        if row:
+            db.delete(row)
+            db.commit()
+        return ApiResponse.success(message="任务模型设置已清除，将跟随全局默认模型")
     if not row:
         row = LocalModelTaskSetting(task_type=task_type, model_key=model_key)
         db.add(row)
@@ -295,6 +298,15 @@ def update_task_setting(task_type: str, payload: dict, db: Session = Depends(get
     row.allow_api_fallback = bool(payload.get("allow_api_fallback", False))
     db.commit()
     return ApiResponse.success(message="任务模型设置已保存")
+
+
+@router.delete("/task-settings/{task_type}")
+def clear_task_setting(task_type: str, db: Session = Depends(get_db)):
+    row = db.query(LocalModelTaskSetting).filter(LocalModelTaskSetting.task_type == task_type).first()
+    if row:
+        db.delete(row)
+        db.commit()
+    return ApiResponse.success(message="任务模型设置已清除，将跟随全局默认模型")
 
 
 @router.get("/adapters")

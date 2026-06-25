@@ -133,7 +133,13 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
     }
   }
 
-  const saveTaskModel = async (task: string, modelKey: string) => {
+  const saveTaskModel = async (task: string, modelKey?: string | null) => {
+    if (!modelKey) {
+      await apiClient.delete(`/local-models/task-settings/${task}`)
+      message.success('任务模型已清除，将跟随全局默认模型')
+      await onRefresh()
+      return
+    }
     await apiClient.put(`/local-models/task-settings/${task}`, {
       model_key: modelKey,
       context_length: contextForModel(modelKey),
@@ -286,9 +292,10 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
             <div key={task} style={{ minWidth: 220 }}>
               <Text type="secondary">{label}</Text>
               <Select
+                allowClear
                 style={{ width: '100%', marginTop: 4 }}
                 value={catalog?.task_settings?.[task]?.model_key}
-                placeholder="跟随全局默认"
+                placeholder="跟随全局默认/API/CLI"
                 options={(catalog?.items || [])
                   .filter((item) => item.status === 'installed')
                   .map((item) => ({ value: item.model_key, label: item.display_name }))}
@@ -308,7 +315,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
         type="info"
         showIcon
         icon={<ExperimentOutlined />}
-        message="模型权重不会打进 Moshu.exe。首次下载后可完全离线使用，API 回退默认关闭。"
+        message="任务模型是本地运行时的显式覆盖；清空后会跟随系统全局默认模型/API/CLI，不会再自动抢占建档或新书生成。"
       />
     </Space>
   )

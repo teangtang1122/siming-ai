@@ -1,4 +1,4 @@
-import { Button, Radio, Space, Typography } from 'antd'
+import { Button, Radio, Select, Space, Typography } from 'antd'
 import { PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { CatalogingMode } from './catalogingTypes'
 
@@ -6,18 +6,26 @@ const { Text, Title } = Typography
 
 interface CatalogingHeaderProps {
   mode: CatalogingMode
+  model?: string
+  modelOptions: Array<{ value: string; label: string }>
+  modelsLoading: boolean
   loading: boolean
   streaming: boolean
   onModeChange: (mode: CatalogingMode) => void
+  onModelChange: (model?: string) => void
   onRefreshChapters: () => void
   onStartJob: () => void
 }
 
 function CatalogingHeader({
   mode,
+  model,
+  modelOptions,
+  modelsLoading,
   loading,
   streaming,
   onModeChange,
+  onModelChange,
   onRefreshChapters,
   onStartJob,
 }: CatalogingHeaderProps) {
@@ -33,6 +41,17 @@ function CatalogingHeader({
           <Radio.Button value="manual">手动确认</Radio.Button>
           <Radio.Button value="external_agent">外部 Agent / 无 API</Radio.Button>
         </Radio.Group>
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          style={{ width: 260 }}
+          value={model}
+          loading={modelsLoading}
+          placeholder="跟随全局默认模型"
+          options={modelOptions}
+          onChange={(value) => onModelChange(value)}
+        />
         <Button icon={<ReloadOutlined />} onClick={onRefreshChapters}>刷新章节</Button>
         <Button type="primary" icon={<PlayCircleOutlined />} loading={loading || streaming} onClick={onStartJob}>
           开始建档

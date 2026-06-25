@@ -171,7 +171,12 @@ def _unknown_type_message(raw: dict[str, Any], normalized: dict[str, Any]) -> st
         or raw.get("card_type")
         or ""
     )
-    keys = ", ".join(sorted(str(key) for key in normalized.get("payload", {}).keys())[:12])
+    payload_keys = ", ".join(sorted(str(key) for key in normalized.get("payload", {}).keys())[:12])
+    raw_keys = ", ".join(sorted(str(key) for key in raw.keys())[:12])
+    snippet = json.dumps(raw, ensure_ascii=False, default=str)[:240]
     if raw_type:
-        return f"未知 type: {raw_type}"
-    return f"未知 type: <empty>，无法从字段推断候选类型（字段: {keys or 'none'}）"
+        return f"未知 type: {raw_type}（raw_fields: {raw_keys or 'none'}, payload_fields: {payload_keys or 'none'}）"
+    return (
+        "未知 type: <empty>，无法从字段推断候选类型"
+        f"（raw_fields: {raw_keys or 'none'}, payload_fields: {payload_keys or 'none'}, snippet: {snippet}）"
+    )
