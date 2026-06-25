@@ -983,13 +983,31 @@ function DashboardPage() {
         return
       }
 
-      setBlueprints(draftData.blueprints || [])
+      const generatedBlueprints = draftData.blueprints || []
+      if (draftData.enhancement_mode === 'llm_required' || generatedBlueprints.length === 0) {
+        const content = draftData.recommendation || '当前模型没有生成可用的原创新书方案，已停止模板兜底。请切换可用模型、使用外部 Agent，或明确选择模板草稿模式。'
+        setAssistantRecommendation(content)
+        setAssistantMessages((items) => {
+          const next = [...items]
+          const last = next[next.length - 1]
+          if (last?.role === 'assistant' && last?.status === 'running') {
+            last.content = content
+            last.status = 'completed'
+            return next
+          }
+          return [...next, { role: 'assistant', content }]
+        })
+        message.warning('模型未生成可用原创方案')
+        return
+      }
+
+      setBlueprints(generatedBlueprints)
       setAssistantRecommendation(draftData.recommendation || '')
       setAssistantMessages((items) => [
         ...items,
         {
           role: 'assistant',
-          content: `已生成 ${draftData.blueprints?.length || 0} 个方案。你可以直接选一个创建，也可以继续告诉我想加强或删掉的部分。`,
+          content: `已生成 ${generatedBlueprints.length} 个方案。你可以直接选一个创建，也可以继续告诉我想加强或删掉的部分。`,
         },
       ])
       message.success('已生成新书方案')
@@ -1047,10 +1065,19 @@ function DashboardPage() {
         enhance_with_llm: enhanceWithLlm,
         skip_questions: true,
       })
-      setBlueprints(draftRes.data.data.blueprints || [])
-      setAssistantRecommendation(draftRes.data.data.recommendation || '')
+      const draftData = draftRes.data.data
+      const revisedBlueprints = draftData.blueprints || []
+      if (draftData.enhancement_mode === 'llm_required' || revisedBlueprints.length === 0) {
+        const content = draftData.recommendation || '当前模型没有生成可用的原创调整结果，已停止模板兜底。请切换可用模型或使用外部 Agent。'
+        setAssistantRecommendation(content)
+        setAssistantMessages((items) => [...items, { role: 'assistant', content }])
+        message.warning('模型未生成可用原创方案')
+        return
+      }
+      setBlueprints(revisedBlueprints)
+      setAssistantRecommendation(draftData.recommendation || '')
       setAssistantDraftText('')
-      const enhancementMode = draftRes.data.data.enhancement_mode
+      const enhancementMode = draftData.enhancement_mode
       setAssistantMessages((items) => [
         ...items,
         {

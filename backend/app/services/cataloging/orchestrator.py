@@ -226,46 +226,6 @@ def _fallback_facts_from_chapter(chapter_title: str, chapter_content: str) -> li
     ]
 
 
-def _fact_summary(facts: list[dict[str, Any]], chapter_title: str, chapter_content: str) -> str:
-    for fact in facts:
-        if fact.get("fact_type") != "chapter_overview":
-            continue
-        payload = fact.get("payload") if isinstance(fact.get("payload"), dict) else {}
-        summary = payload.get("summary") or payload.get("overview") or payload.get("content")
-        if summary:
-            return str(summary)
-    return _fallback_summary_from_chapter(chapter_title, chapter_content)
-
-
-def _fallback_candidate_lines(chapter_title: str, chapter_content: str, facts: list[dict[str, Any]]) -> list[str]:
-    summary = _fact_summary(facts, chapter_title, chapter_content)
-    payloads = [
-        {
-            "type": "chapter_summary",
-            "payload": {
-                "summary_text": summary,
-                "key_events": [summary[:120]],
-                "characters": [],
-                "worldbuilding": [],
-                "outline_hint": chapter_title or "未命名章节",
-            },
-        },
-        {
-            "type": "outline_create",
-            "payload": {
-                "title": chapter_title or "未命名章节",
-                "summary": summary,
-                "actual_summary": summary,
-                "planned_summary": "",
-                "node_type": "chapter",
-                "status": "completed",
-                "related_characters": [],
-            },
-        },
-    ]
-    return [json.dumps(payload, ensure_ascii=False) for payload in payloads]
-
-
 def create_cataloging_job(
     db: Session,
     project_id: str,
@@ -646,23 +606,10 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     break
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                     if local_runtime:
-                        clear_candidates_for_run(db, run)
-                        db.commit()
-                        candidate_count = 0
-                        has_summary = False
-                        bad_lines = []
-                        for line in _fallback_candidate_lines(chapter.title, chapter_text, facts):
-                            created = try_create_candidate(db, job, run, line, candidate_count)
-                            candidate = created.get("candidate")
-                            if candidate:
-                                candidate_count += 1
-                                has_summary = has_summary or candidate.item_type == "chapter_summary"
-                                db.commit()
-                                yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
                         yield sse_event({
                             "type": "cataloging_warning",
                             "stage": "candidate_resolution",
-                            "message": f"第二阶段本地模型未输出完整候选（{retry_reason}），已生成最低可用章节摘要和大纲节点；建议完成后人工复核。",
+                            "message": f"第二阶段本地模型未输出完整候选（{retry_reason}），已暂停当前章节；不会用模板生成候选。请换更强模型、外部 CLI，或重跑第二阶段。",
                             "run": run_to_dict(run),
                         })
                     break
@@ -681,26 +628,13 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                 })
             except Exception as exc:
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS and local_runtime:
-                    clear_candidates_for_run(db, run)
-                    db.commit()
-                    candidate_count = 0
-                    has_summary = False
-                    bad_lines = []
-                    for line in _fallback_candidate_lines(chapter.title, chapter_text, facts):
-                        created = try_create_candidate(db, job, run, line, candidate_count)
-                        candidate = created.get("candidate")
-                        if candidate:
-                            candidate_count += 1
-                            has_summary = has_summary or candidate.item_type == "chapter_summary"
-                            db.commit()
-                            yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
                     yield sse_event({
                         "type": "cataloging_warning",
                         "stage": "candidate_resolution",
-                        "message": f"第二阶段本地模型失败（{exc}），已生成最低可用章节摘要和大纲节点；建议完成后人工复核。",
+                        "message": f"第二阶段本地模型失败（{exc}），已暂停当前章节；不会用模板生成候选。请换更强模型、外部 CLI，或重跑第二阶段。",
                         "run": run_to_dict(run),
                     })
-                    break
+                    raise ValueError(f"第二阶段本地模型失败（{exc}），已暂停当前章节")
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                     raise
                 clear_candidates_for_run(db, run)

@@ -115,9 +115,10 @@ class DraftNovelBlueprintTest(unittest.TestCase):
                 "session_id": "s1",
                 "execution_mode": "internal_llm",
             }))
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "need_model")
         self.assertEqual(result["data"]["execution_mode"], "hybrid")
-        self.assertEqual(result["data"]["enhancement_mode"], "template_fallback")
+        self.assertEqual(result["data"]["enhancement_mode"], "llm_required")
+        self.assertEqual(result["data"]["blueprints"], [])
 
     def test_selected_model_is_forwarded_to_blueprint_llm(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
@@ -150,7 +151,7 @@ class DraftNovelBlueprintTest(unittest.TestCase):
                 "model": selected_model,
             }))
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "need_model")
         self.assertEqual(questions_mock.await_args.kwargs["model"], selected_model)
         self.assertEqual(draft_mock.await_args.kwargs["model"], selected_model)
 
@@ -592,14 +593,12 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
                 "revision_mode": "initial",
             }))
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "need_model")
         draft_mock.assert_not_awaited()
         self.assertNotIn("questions", result["data"])
-        first = result["data"]["blueprints"][0]
-        flat_text = str(first)
-        self.assertNotEqual(first["protagonist"]["name"], "什么样的人")
-        self.assertIn("被秘密组织培养的实验体", flat_text)
-        self.assertNotIn("Q:", flat_text)
+        self.assertEqual(result["data"]["enhancement_mode"], "llm_required")
+        self.assertEqual(result["data"]["blueprints"], [])
+        self.assertIn("未生成模板兜底方案", result["data"]["recommendation"])
 
     def test_local_qa_identity_answer_fills_protagonist_and_generates(self):
         from app.services.workspace.tools.novel_creation import (

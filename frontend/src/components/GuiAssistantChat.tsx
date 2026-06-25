@@ -150,7 +150,7 @@ interface NovelStartData {
 interface NovelDraftData {
   blueprints: NovelBlueprint[]
   recommendation?: string
-  enhancement_mode?: 'instant_template' | 'template_llm_hybrid' | 'template_fallback'
+  enhancement_mode?: 'instant_template' | 'template_llm_hybrid' | 'template_fallback' | 'llm_required'
   questions?: Array<{ question: string; purpose?: string; options?: string[] }>
   original_brief?: string
   hint?: string
@@ -254,6 +254,14 @@ function formatBlueprintSummary(blueprints: NovelBlueprint[]) {
       bp.golden_three?.chapter_1 ? `首章钩子：${bp.golden_three.chapter_1}` : '',
     ].filter(Boolean).join('\n')
   }).join('\n\n')
+}
+
+function formatDraftBlueprintMessage(draftData: NovelDraftData, successPrefix: string) {
+  const blueprints = draftData.blueprints || []
+  if (draftData.enhancement_mode === 'llm_required' || blueprints.length === 0) {
+    return draftData.recommendation || '当前模型没有生成可用的原创新书方案，已停止模板兜底。请切换可用模型、使用外部 Agent，或明确选择模板草稿模式。'
+  }
+  return [successPrefix, '', formatBlueprintSummary(blueprints)].join('\n')
 }
 
 function GuiAssistantChat() {
@@ -700,11 +708,10 @@ function GuiAssistantChat() {
         setSystemBlueprints(blueprints)
         persistedBlueprints = blueprints
         finish(
-          [
+          formatDraftBlueprintMessage(
+            draftData,
             `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复”使用第1个创建”。`,
-            '',
-            formatBlueprintSummary(blueprints),
-          ].join('\n'),
+          ),
         )
         return
       }
@@ -727,14 +734,14 @@ function GuiAssistantChat() {
             skip_questions: true,
             revision_mode: 'initial',
           })
-          const blueprints = draftRes.data.data.blueprints || []
+          const draftData = draftRes.data.data
+          const blueprints = draftData.blueprints || []
           setSystemBlueprints(blueprints)
           finish(
-            [
+            formatDraftBlueprintMessage(
+              draftData,
               `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-              '',
-              formatBlueprintSummary(blueprints),
-            ].join('\n'),
+            ),
           )
         } else if (activeQuestion) {
           // User typed an answer while a question is active — use submitQuestionAnswer
@@ -768,11 +775,10 @@ function GuiAssistantChat() {
             const blueprints = draftData.blueprints || []
             setSystemBlueprints(blueprints)
             finish(
-              [
+              formatDraftBlueprintMessage(
+                draftData,
                 `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-                '',
-                formatBlueprintSummary(blueprints),
-              ].join('\n'),
+              ),
             )
           }
         }
@@ -800,18 +806,19 @@ function GuiAssistantChat() {
         const blueprints = draftData.blueprints || []
         setSystemBlueprints(blueprints)
         persistedBlueprints = blueprints
-        const engineMessage = draftData.enhancement_mode === 'template_fallback'
-          ? '模型深化暂时不可用，本轮已应用模板调整结果。'
-          : '本轮已用模板保底并由模型深化。'
-        finish(
-          [
-            revisionMode === 'regenerate' ? '已重新生成 3 个方案。' : '已在当前方案基础上调整完成。',
-            engineMessage,
-            '你可以继续修改，或回复“使用第1个创建”。',
-            '',
-            formatBlueprintSummary(blueprints),
-          ].join('\n'),
-        )
+        if (draftData.enhancement_mode === 'llm_required' || blueprints.length === 0) {
+          finish(formatDraftBlueprintMessage(draftData, ''))
+        } else {
+          finish(
+            [
+              revisionMode === 'regenerate' ? '已重新生成 3 个方案。' : '已在当前方案基础上调整完成。',
+              '本轮已由模型生成原创调整结果。',
+              '你可以继续修改，或回复“使用第1个创建”。',
+              '',
+              formatBlueprintSummary(blueprints),
+            ].join('\n'),
+          )
+        }
         return
       }
 
@@ -1211,11 +1218,10 @@ function GuiAssistantChat() {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === 'assistant' && last?.status === 'running') {
-            last.content = [
+            last.content = formatDraftBlueprintMessage(
+              draftData,
               `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-              '',
-              formatBlueprintSummary(blueprints),
-            ].join('\n')
+            )
             last.questions = undefined
             last.status = 'completed'
           }
@@ -1255,15 +1261,15 @@ function GuiAssistantChat() {
         skip_questions: true,
         revision_mode: 'initial',
       })
-      const blueprints = draftRes.data.data.blueprints || []
+      const draftData = draftRes.data.data
+      const blueprints = draftData.blueprints || []
       setSystemBlueprints(blueprints)
       setRunningStartTime(null)
       setLastAssistantMessage(
-        [
+        formatDraftBlueprintMessage(
+          draftData,
           `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-          '',
-          formatBlueprintSummary(blueprints),
-        ].join('\n'),
+        ),
         'completed',
       )
     } catch {
@@ -1485,11 +1491,10 @@ function GuiAssistantChat() {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === 'assistant' && last?.status === 'running') {
-            last.content = [
+            last.content = formatDraftBlueprintMessage(
+              draftData,
               `已重新生成 ${blueprints.length} 个方案。`,
-              '',
-              formatBlueprintSummary(blueprints),
-            ].join('\n')
+            )
             last.status = 'completed'
           }
           return [...next]

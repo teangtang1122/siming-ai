@@ -81,9 +81,9 @@ def _nvidia_gpu() -> tuple[str | None, float]:
 def detect_hardware() -> HardwareProfile:
     gpu_name, vram_gb = _nvidia_gpu()
     ram_gb = _ram_gb()
-    if vram_gb >= 20 or (vram_gb >= 16 and ram_gb >= 24):
+    if vram_gb >= 24 and ram_gb >= 32:
         profile, model, context = "quality", "qwen3-14b-q4", 32768
-    elif vram_gb >= 10 or ram_gb >= 24:
+    elif vram_gb >= 12 or ram_gb >= 32:
         profile, model, context = "standard", "qwen3-8b-q4", 16384
     else:
         profile, model, context = "light", "qwen3-4b-q4", 8192

@@ -56,7 +56,7 @@ class NovelCreationApplyRequest(BaseModel):
 def _tool_response(result: dict[str, Any]) -> ApiResponse:
     status = result.get("status")
     detail = result.get("detail") or status or "success"
-    if status not in ("ok", "need_clarification"):
+    if status not in ("ok", "need_clarification", "need_model"):
         raise HTTPException(status_code=400, detail=detail)
     return ApiResponse.success(data=result.get("data"), message=detail)
 

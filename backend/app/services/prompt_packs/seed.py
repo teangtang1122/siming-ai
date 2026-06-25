@@ -407,7 +407,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "   c. 调用 save_external_cataloging_facts 保存事实 → 检查 status\n"
             "   d. 生成候选更新：\n"
             "      - 新角色：character_create（基本信息）\n"
-            "      - 每个出场角色：character_state（当前状态）⚠️ 必须\n"
+            "      - 每个出场角色：character_state_update（当前状态）⚠️ 必须\n"
             "      - 世界观：worldbuilding_create\n"
             "      - 大纲：outline_create\n"
             "      - 摘要：chapter_summary\n"
@@ -422,12 +422,12 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "- 章节摘要：200字以内的核心情节概括\n\n"
             "【候选更新规则】\n"
             "- 新角色：如果角色名在现有角色列表中不存在，用 character_create 创建\n"
-            "- 角色当前状态：每个本章出场的角色，必须用 character_state 更新当前状态\n"
+            "- 角色当前状态：每个本章出场的角色，必须用 character_state_update 更新当前状态\n"
             "- 世界观更新：如果出现新的设定或现有设定需要修改\n"
             "- 大纲节点：每章对应一个大纲节点\n"
             "- 章节摘要：每章必须有摘要\n\n"
             "⚠️ 重要：character_create 只创建角色基本信息（外貌、性格、背景），不包含当前状态。\n"
-            "每个出场角色都必须额外输出一条 character_state，写入本章结束时的最新状态。\n\n"
+            "每个出场角色都必须额外输出一条 character_state_update，写入本章结束时的最新状态。\n\n"
             "{time_tracking_rules}\n\n"
             "{naming_resolution_rules}\n\n"
             "- 如果角色在本章有重要事件（受伤、突破、关系变化），输出 character_timeline\n"
@@ -455,9 +455,9 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             '"catchphrases": "数据不会说谎", '
             '"emotion_tendency": "表面冷静内心温暖", '
             '"custom_system_prompt": "你是特昂糖，3岁幼女身体里住着一个成年科学家的灵魂。你用数据分析的方式理解修仙世界，说话简洁但精准。你关心家人但不善表达。你有强烈的求知欲和探索精神。在危险面前你保持冷静分析，但内心深处害怕失去来之不易的家人。300-800字，包含身份、已知经历、性格动机、说话方式、当前立场、关系网、行动边界和禁止违背的设定。"}\n\n'
-            "4. 角色状态更新（⚠️ 每个出场角色都必须输出！用 character_state）：\n"
+            "4. 角色状态更新（⚠️ 每个出场角色都必须输出！用 character_state_update）：\n"
             "这是单独的候选类型，不是 character_create 的一部分。\n"
-            '{"type": "character_state", "name": "特昂糖", '
+            '{"type": "character_state_update", "name": "特昂糖", '
             '"age": "3岁", '
             '"current_location": "陆家后院", '
             '"current_goal": "找到回家的方法", '
@@ -477,7 +477,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             '"description": "陆景珩是特昂糖的哥哥，对她保护有加。在修炼中主动帮妹妹挡危险，教她基础吐纳法。"}\n\n'
             "重要规则：\n"
             "- character_create 的 name 字段是必填的\n"
-            "- character_state 用于更新角色当前状态（位置、目标等），不是创建新角色\n"
+            "- character_state_update 用于更新角色当前状态（位置、目标等），不是创建新角色\n"
             "- character_update 用于更新角色基本信息（外貌、性格等），需要 name 字段\n"
             "- 不要使用 new_character、new_worldbuilding 等非标准类型\n"
             "- 所有字段都要尽量详细，不要只写一两个词\n"

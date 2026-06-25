@@ -3798,9 +3798,9 @@ async def _try_llm_initial_draft(
             llm_bp = None
         llm_succeeded = bool(llm_bp and isinstance(llm_bp, dict))
         if not llm_bp or not isinstance(llm_bp, dict):
-            _logger.warning("Hybrid mode: variant %d failed (type=%s), using template fallback for genre=%s",
+            _logger.warning("Hybrid mode: variant %d failed (type=%s); not falling back to template content for genre=%s",
                           i, type(llm_bp).__name__, genre_label)
-            llm_bp = template_blueprints[i] if i < len(template_blueprints) else template_blueprints[0]
+            return None
         else:
             _logger.info("Hybrid mode: variant %d LLM success, title=%s", i, llm_bp.get("title", "unknown"))
         template_ref = template_blueprints[i] if i < len(template_blueprints) else template_blueprints[0]
@@ -3815,7 +3815,7 @@ async def _try_llm_initial_draft(
             genre_label=genre_label,
             protagonist_name=prot_name,
         )
-        validated["creation_engine"] = "template_llm_hybrid" if llm_succeeded else "template_fallback"
+        validated["creation_engine"] = "template_llm_hybrid" if llm_succeeded else "llm_required"
         result.append(validated)
 
     _logger.info("Hybrid mode: generated %d blueprints", len(result))
@@ -3991,8 +3991,8 @@ async def _try_llm_blueprint_refinement(
                 refined_blueprints.append(validated)
                 any_success = True
             else:
-                refined_blueprints.append(template_bp)
-        return refined_blueprints if any_success else None
+                return None
+        return refined_blueprints if any_success and len(refined_blueprints) == len(template_blueprints) else None
 
     elif revision_mode == "regenerate":
         base_blueprint = template_blueprints[0] if template_blueprints else None
@@ -5275,7 +5275,10 @@ async def draft_novel_blueprint(
             target_audience=_clean_text(session.target_audience),
             platform=_clean_text(session.platform),
         )
-        # Step 1: Always generate template blueprints as baseline
+        template_allowed = execution_mode in {"template", "local_template"}
+
+        # Step 1: Generate template blueprints as a schema/scaffold. In hybrid
+        # mode these are context for the model, not user-facing fallback content.
         template_blueprints = _build_template_blueprints(
             session,
             user_brief=user_brief,
@@ -5283,11 +5286,12 @@ async def draft_novel_blueprint(
             revision_mode=revision_mode,
         )
 
-        blueprints = template_blueprints
+        blueprints = template_blueprints if template_allowed else []
 
-        # Step 2: LLM enhancement. Small local runtime models are used through the
-        # deterministic template path unless the user explicitly asks for LLM deepening.
-        should_try_llm = execution_mode == "hybrid" or enhance_with_llm
+        # Step 2: LLM generation. Hybrid/internal modes must not silently publish
+        # template content when the model fails; that makes repeated projects too
+        # similar and hard for users to distinguish from original generation.
+        should_try_llm = execution_mode in {"hybrid", "auto"} or enhance_with_llm
         if _is_local_runtime_planning_model(model) and not enhance_with_llm:
             should_try_llm = False
         if should_try_llm:
@@ -5313,8 +5317,43 @@ async def draft_novel_blueprint(
                 if _blueprint_set_is_structurally_usable(annotated_llm):
                     blueprints = annotated_llm
                 else:
-                    _logger.info("LLM blueprint result rejected by structural quality gate; using template fallback")
-                    blueprints = template_blueprints
+                    _logger.info("LLM blueprint result rejected by structural quality gate")
+                    if template_allowed:
+                        blueprints = template_blueprints
+                    else:
+                        blueprints = []
+        if not blueprints and not template_allowed:
+            session.status = "drafting"
+            if user_brief or feedback:
+                base_brief = _clean_text(user_brief or session.user_brief)
+                session.user_brief = (
+                    f"{base_brief}\n\n{feedback_for_content}".strip()
+                    if feedback_for_content and revision_mode == "regenerate"
+                    else base_brief
+                )
+            db.commit()
+            recommendation = (
+                "模型没有产出可用的原创新书方案。为避免多个用户拿到相同模板内容，本次未生成模板兜底方案；"
+                "请切换可用的云端/CLI 模型、选择 external_agent 模式，或明确使用 template 模式做结构草稿。"
+            )
+            return {
+                "tool": "draft_novel_blueprint",
+                "status": "need_model",
+                "detail": "LLM 未产出可用原创方案，已停止模板兜底",
+                "data": {
+                    "session_id": session_id,
+                    "execution_mode": execution_mode,
+                    "revision_mode": revision_mode,
+                    "enhance_with_llm": enhance_with_llm,
+                    "enhancement_mode": "llm_required",
+                    "feedback": feedback,
+                    "compiled_brief": compiled,
+                    "coverage_summary": [],
+                    "blueprints": [],
+                    "recommendation": recommendation,
+                    "next_tool": "draft_novel_blueprint",
+                },
+            }
         blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)]
 
         session.blueprint_json = blueprints
@@ -5364,8 +5403,8 @@ async def draft_novel_blueprint(
                 "enhancement_mode": (
                     "template_llm_hybrid"
                     if llm_succeeded
-                    else "template_fallback"
-                    if should_try_llm
+                    else "instant_template"
+                    if template_allowed
                     else "instant_template"
                 ),
                 "feedback": feedback,

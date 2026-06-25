@@ -118,30 +118,60 @@ def try_create_candidate(
         parsed = parse_json_line(text)
         if parsed is None:
             return {}
-        normalized = normalize_candidate(parsed)
-        if normalized["item_type"] not in VALID_ITEM_TYPES:
-            return {"bad_line": text, "error": f"未知 type: {normalized['item_type']}"}
-        if _is_duplicate_candidate(db, job, run, normalized):
-            return {"duplicate": True}
-        candidate = CatalogingCandidate(
-            job_id=job.id,
-            chapter_run_id=run.id,
-            project_id=job.project_id,
-            chapter_id=run.chapter_id,
-            item_type=normalized["item_type"],
-            operation=normalized["operation"],
-            target_type=normalized.get("target_type"),
-            target_id=normalized.get("target_id"),
-            target_name=str(normalized.get("target_name") or "")[:200] or None,
-            raw_payload=json.dumps(normalized["payload"], ensure_ascii=False),
-            status="pending",
-            confidence=float_or_none(normalized.get("confidence")),
-            evidence=str(normalized.get("evidence") or "")[:2000] or None,
-            sort_order=sort_order,
-            source_task=normalized.get("source_task"),
-        )
-        db.add(candidate)
-        db.flush()
-        return {"candidate": candidate}
+        return create_candidate_from_raw(db, job, run, parsed, sort_order)
     except Exception as exc:
         return {"bad_line": text, "error": str(exc)}
+
+
+def create_candidate_from_raw(
+    db: Session,
+    job: CatalogingJob,
+    run: CatalogingChapterRun,
+    raw: dict[str, Any],
+    sort_order: int,
+    *,
+    source_task: str | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_candidate(raw)
+    if normalized["item_type"] not in VALID_ITEM_TYPES:
+        return {
+            "bad_line": json.dumps(raw, ensure_ascii=False),
+            "error": _unknown_type_message(raw, normalized),
+        }
+    if _is_duplicate_candidate(db, job, run, normalized):
+        return {"duplicate": True}
+    candidate = CatalogingCandidate(
+        job_id=job.id,
+        chapter_run_id=run.id,
+        project_id=job.project_id,
+        chapter_id=run.chapter_id,
+        item_type=normalized["item_type"],
+        operation=normalized["operation"],
+        target_type=normalized.get("target_type"),
+        target_id=normalized.get("target_id"),
+        target_name=str(normalized.get("target_name") or "")[:200] or None,
+        raw_payload=json.dumps(normalized["payload"], ensure_ascii=False),
+        status="pending",
+        confidence=float_or_none(normalized.get("confidence")),
+        evidence=str(normalized.get("evidence") or "")[:2000] or None,
+        sort_order=sort_order,
+        source_task=source_task or normalized.get("source_task"),
+    )
+    db.add(candidate)
+    db.flush()
+    return {"candidate": candidate}
+
+
+def _unknown_type_message(raw: dict[str, Any], normalized: dict[str, Any]) -> str:
+    raw_type = (
+        raw.get("type")
+        or raw.get("item_type")
+        or raw.get("candidate_type")
+        or raw.get("kind")
+        or raw.get("card_type")
+        or ""
+    )
+    keys = ", ".join(sorted(str(key) for key in normalized.get("payload", {}).keys())[:12])
+    if raw_type:
+        return f"未知 type: {raw_type}"
+    return f"未知 type: <empty>，无法从字段推断候选类型（字段: {keys or 'none'}）"

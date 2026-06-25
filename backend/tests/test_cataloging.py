@@ -193,6 +193,58 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_try_create_candidate_infers_empty_type_from_character_state_fields(self):
+        db = self.Session()
+        try:
+            project = Project(title="Inferred Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第1章", content="张三来到青云宗。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            line = json.dumps({
+                "name": "张三",
+                "current_location": "青云宗山门",
+                "current_goal": "通过入门考核",
+                "life_status": "alive",
+            }, ensure_ascii=False)
+
+            created = try_create_candidate(db, job, run, line, 0)
+
+            self.assertIn("candidate", created)
+            self.assertEqual(created["candidate"].item_type, "character_state_update")
+            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
+        finally:
+            db.close()
+
+    def test_try_create_candidate_accepts_common_noncanonical_type_aliases(self):
+        db = self.Session()
+        try:
+            project = Project(title="Alias Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第1章", content="张三来到青云宗。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            for index, raw in enumerate([
+                {"type": "character_state", "name": "张三", "current_location": "青云宗"},
+                {"type": "new_character", "name": "李四", "role_type": "同门"},
+                {"type": "new_worldbuilding", "title": "青云宗", "category": "宗门", "content": "修仙宗门。"},
+            ]):
+                created = try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
+                self.assertIn("candidate", created)
+
+            item_types = [item.item_type for item in db.query(CatalogingCandidate).order_by(CatalogingCandidate.sort_order).all()]
+            self.assertEqual(item_types, ["character_state_update", "character_create", "worldbuilding_create"])
+        finally:
+            db.close()
+
     def test_context_includes_richer_character_and_worldbuilding_details(self):
         db = self.Session()
         try:
@@ -740,6 +792,47 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertGreaterEqual(db.query(CatalogingFact).count(), 2)
             self.assertEqual(db.query(CatalogingCandidate).count(), 1)
             self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_local_runtime_pauses_instead_of_template_candidate_fallback(self):
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(cls, messages, **kwargs):
+            calls.append(messages[0]["content"])
+            if len(calls) == 1:
+                body = json.dumps({
+                    "fact_type": "chapter_overview",
+                    "payload": {"summary": "张三来到青云宗。"},
+                }, ensure_ascii=False) + "\n"
+            else:
+                body = "我会稍后整理候选。\n"
+            yield body
+
+        try:
+            project = Project(title="Local Candidate Pause Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第1章 开端", content="张三来到青云宗。")
+            db.add(chapter)
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "local_llama_cpp:qwen3-4b-q4", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            events = asyncio.run(collect())
+
+            self.assertEqual(len(calls), 4)
+            self.assertTrue(any("不会用模板生成候选" in event for event in events))
+            self.assertEqual(db.query(CatalogingCandidate).count(), 0)
+            self.assertEqual(run.status, "failed")
+            self.assertIn("JSONL", run.error)
         finally:
             cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
             db.close()

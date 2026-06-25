@@ -14,6 +14,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.prompts.cataloging_source import get_outline_granularity_rules
+from app.services.cataloging.constants import VALID_ITEM_TYPES
+from app.services.cataloging.jsonl import normalize_candidate
 
 
 logger = logging.getLogger(__name__)
@@ -96,124 +98,21 @@ def _managed_stop_result(job_id: str, project_id: str, detail: str) -> dict[str,
 
 def _normalize_candidate_input(candidate: dict[str, Any]) -> tuple[dict[str, Any], str, str, str | None]:
     """Normalize external-agent candidate shorthand to the internal apply contract."""
-    payload = (
-        candidate.get("payload")
-        if isinstance(candidate.get("payload"), dict)
-        else candidate.get("data")
-        if isinstance(candidate.get("data"), dict)
-        else None
-    )
-    normalized_payload = dict(payload or candidate)
-    fields = candidate.get("fields") or normalized_payload.get("fields")
-    if isinstance(fields, dict):
-        normalized_payload.update(fields)
-    changes = candidate.get("changes") or normalized_payload.get("changes")
-    if isinstance(changes, dict):
-        normalized_payload.update(changes)
-    elif isinstance(changes, list):
-        for change in changes:
-            if not isinstance(change, str):
-                continue
-            separator = "：" if "：" in change else ":" if ":" in change else ""
-            if not separator:
-                continue
-            key, value = change.split(separator, 1)
-            if key.strip() and value.strip():
-                normalized_payload[key.strip()] = value.strip()
-
-    for key in [
-        "name", "title", "summary", "content", "dimension", "aliases",
-        "source_name", "target_name", "character_a", "character_b",
-        "relationship_type", "chapter_id", "outline_node_id", "id",
-        "target_id", "entry_title", "summary_text", "node_type", "parent_title",
-    ]:
-        if key in candidate and key not in normalized_payload:
-            normalized_payload[key] = candidate[key]
-
-    raw_type = str(
-        candidate.get("item_type")
-        or candidate.get("candidate_type")
-        or candidate.get("type")
-        or normalized_payload.get("item_type")
-        or normalized_payload.get("candidate_type")
-        or normalized_payload.get("type")
-        or ""
-    ).strip()
-    action = str(
-        candidate.get("operation")
-        or candidate.get("action")
-        or normalized_payload.get("operation")
-        or normalized_payload.get("action")
-        or "create"
-    ).strip().lower()
-
-    item_type = _canonical_candidate_type(raw_type, action)
-    operation = _operation_for(item_type, action)
-    target_id = (
-        normalized_payload.get("id")
-        or normalized_payload.get("target_id")
-        or candidate.get("target_id")
-    )
-    if target_id:
-        normalized_payload["id"] = target_id
-        normalized_payload["target_id"] = target_id
-
-    if item_type.startswith("character_") and item_type != "character_relationship":
-        name = (
-            normalized_payload.get("name")
-            or normalized_payload.get("character_name")
-            or candidate.get("name")
-            or candidate.get("character_name")
-            or candidate.get("target_name")
-        )
-        if name:
-            normalized_payload["name"] = name
-    if item_type.startswith("worldbuilding_"):
-        title = (
-            normalized_payload.get("title")
-            or normalized_payload.get("entry_title")
-            or candidate.get("title")
-            or candidate.get("entry_title")
-            or candidate.get("target_name")
-        )
-        if title:
-            normalized_payload["title"] = title
-        if not normalized_payload.get("content"):
-            normalized_payload["content"] = (
-                normalized_payload.get("description")
-                or normalized_payload.get("event_description")
-                or ""
-            )
-        category = str(
-            normalized_payload.get("dimension")
-            or normalized_payload.get("category")
-            or ""
-        ).strip().lower()
-        if category in {"creature", "species", "race", "妖兽", "生物"}:
-            normalized_payload["dimension"] = "races"
-        elif category in {"item", "technique", "artifact", "magic", "power", "物品", "技术", "功法"}:
-            normalized_payload["dimension"] = "power_system"
-        elif category in {"location", "place", "geography", "地点", "地理"}:
-            normalized_payload["dimension"] = "geography"
-        elif category in {"faction", "organization", "sect", "势力", "组织", "宗门"}:
-            normalized_payload["dimension"] = "factions"
-    if item_type.startswith("outline_") and not normalized_payload.get("title"):
-        normalized_payload["title"] = candidate.get("target_name") or ""
-    if item_type == "chapter_summary" and not normalized_payload.get("summary"):
-        normalized_payload["summary"] = (
-            normalized_payload.get("summary_text")
-            or normalized_payload.get("content")
-            or ""
-        )
-
-    normalized_payload["item_type"] = item_type
-    normalized_payload["operation"] = operation
-    normalized_payload["type"] = item_type
-    normalized_payload["action"] = operation
-
+    normalized = normalize_candidate(candidate)
+    normalized_payload = normalized["payload"]
+    item_type = normalized["item_type"]
+    operation = normalized["operation"]
     warning = None
-    if item_type == "unknown":
-        warning = f"Unsupported candidate type: type={raw_type or '<empty>'} action={action or '<empty>'}"
+    if item_type not in VALID_ITEM_TYPES:
+        raw_type = str(
+            candidate.get("item_type")
+            or candidate.get("candidate_type")
+            or candidate.get("type")
+            or candidate.get("kind")
+            or candidate.get("card_type")
+            or ""
+        ).strip()
+        warning = f"Unsupported candidate type: type={raw_type or '<empty>'}"
     return normalized_payload, item_type, operation, warning
 
 
@@ -1020,6 +919,7 @@ async def save_external_cataloging_candidates(
     API-free: stores candidates in CatalogingCandidate table.
     """
     from app.database.models import CatalogingJob, CatalogingChapterRun, CatalogingCandidate
+    from app.services.cataloging.candidate_store import create_candidate_from_raw
     from app.services.cataloging.candidate_validation import inspect_candidate_coverage
 
     job_id = str(args.get("job_id") or "").strip()
@@ -1114,32 +1014,32 @@ async def save_external_cataloging_candidates(
         }
 
     saved = 0
+    duplicates = 0
     warnings: list[str] = []
+    existing_count = (
+        db.query(CatalogingCandidate)
+        .filter(CatalogingCandidate.chapter_run_id == chapter_run.id)
+        .count()
+    )
     for cand_data in candidates:
         if not isinstance(cand_data, dict):
             continue
-        payload, item_type, operation, warning = _normalize_candidate_input(cand_data)
-        if warning:
-            warnings.append(warning)
-            continue
-        candidate = CatalogingCandidate(
-            job_id=job_id,
-            chapter_run_id=chapter_run.id,
-            project_id=job.project_id,
-            chapter_id=chapter_id,
-            item_type=item_type,
-            operation=operation,
-            target_id=str(payload.get("target_id") or payload.get("id") or "") or None,
-            target_name=str(payload.get("target_name") or payload.get("name") or payload.get("title") or "")[:200] or None,
-            raw_payload=json.dumps(payload, ensure_ascii=False),
-            status="pending",
-            confidence=_float_or_none(payload.get("confidence")),
-            evidence=str(payload.get("evidence") or "")[:2000] or None,
-            sort_order=int(payload.get("sort_order") or saved),
+        created = create_candidate_from_raw(
+            db,
+            job,
+            chapter_run,
+            cand_data,
+            existing_count + saved,
             source_task="external_agent",
         )
-        db.add(candidate)
-        saved += 1
+        if created.get("bad_line"):
+            warnings.append(str(created.get("error") or "Unsupported candidate"))
+            continue
+        if created.get("duplicate"):
+            duplicates += 1
+            continue
+        if created.get("candidate"):
+            saved += 1
 
     db.flush()
     stored_candidates = (
@@ -1191,6 +1091,7 @@ async def save_external_cataloging_candidates(
             "project_id": effective_project_id,
             "chapter_id": chapter_id,
             "candidates_saved": saved,
+            "duplicates_skipped": duplicates,
             "candidates_total": coverage.total,
             "candidate_set_complete": candidate_set_complete,
             "missing_required_items": coverage.missing,
