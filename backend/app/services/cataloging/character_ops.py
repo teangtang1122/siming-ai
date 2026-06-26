@@ -52,6 +52,8 @@ STATE_FIELD_LIMITS = {
     "items_or_assets": 2000,
 }
 
+PLACEHOLDER_CHARACTER_NAMES = {"未命名", "未命名角色", "未命名主角", "未知", "无名", "角色名", "某人"}
+
 CHARACTER_CHANGE_LABELS = {
     "appearance": "外貌",
     "personality": "性格",
@@ -79,7 +81,7 @@ CHARACTER_CHANGE_LABELS = {
 
 def apply_character_create(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
     name, aliases = _identity_from_payload(payload)
-    if not name:
+    if not name or _is_placeholder_character_name(name):
         raise ValueError("角色名为空")
     character = _find_character_by_identity(db, chapter.project_id, [name, *aliases])
     old = character_snapshot(character) if character else None
@@ -119,7 +121,9 @@ def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: 
     name, aliases = _identity_from_payload(payload)
     character = _find_character_by_identity(db, chapter.project_id, [payload.get("id"), name, *aliases])
     if not character:
-        character = Character(project_id=chapter.project_id, name=(name or "未命名角色")[:100], current_version=1)
+        if not name or _is_placeholder_character_name(name):
+            raise ValueError("角色状态更新缺少可识别角色名或ID")
+        character = Character(project_id=chapter.project_id, name=name[:100], current_version=1)
         db.add(character)
         db.flush()
     old = character_snapshot(character)
@@ -308,6 +312,11 @@ def _identity_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
     aliases.extend(parts[1:])
     aliases.extend(derived_character_aliases(canonical))
     return canonical, _dedupe_aliases(canonical, aliases)
+
+
+def _is_placeholder_character_name(name: str | None) -> bool:
+    text = str(name or "").strip()
+    return not text or text in PLACEHOLDER_CHARACTER_NAMES or text.startswith("未命名")
 
 
 def _aliases_from_payload(payload: dict[str, Any], canonical_name: str | None = None) -> list[str]:

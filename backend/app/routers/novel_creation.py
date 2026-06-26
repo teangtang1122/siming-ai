@@ -38,6 +38,7 @@ class NovelCreationDraftRequest(BaseModel):
     enhance_with_llm: bool = False
     skip_questions: bool = False
     answers: dict[str, str] | None = None
+    qa_history: list[dict[str, str]] | None = None
 
 
 class NovelCreationReviewRequest(BaseModel):

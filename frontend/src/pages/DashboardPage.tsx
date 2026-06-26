@@ -661,6 +661,25 @@ function DashboardPage() {
       } else {
         setActiveQuestion(null)
         const blueprints = draftData.blueprints || []
+        if (draftData.enhancement_mode === 'llm_required' || blueprints.length === 0) {
+          const content = formatNeedModelDetail(draftData)
+          setBlueprints([])
+          setAssistantRecommendation(content)
+          setQuestionStartTime(null)
+          setAssistantBusy(false)
+          setAssistantMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last?.role === 'assistant' && last?.status === 'running') {
+              last.content = content
+              last.questions = undefined
+              last.status = 'completed'
+            }
+            return [...next]
+          })
+          message.warning('模型未生成可用原创方案')
+          return
+        }
         setBlueprints(blueprints)
         setAssistantRecommendation(draftData.recommendation || '')
         setQuestionStartTime(null)
@@ -744,9 +763,28 @@ function DashboardPage() {
         skip_questions: true,
         revision_mode: 'initial',
       })
-      const blueprints = draftRes.data.data.blueprints || []
+      const draftData = draftRes.data.data
+      const blueprints = draftData.blueprints || []
+      if (draftData.enhancement_mode === 'llm_required' || blueprints.length === 0) {
+        const content = formatNeedModelDetail(draftData)
+        setBlueprints([])
+        setAssistantRecommendation(content)
+        setQuestionStartTime(null)
+        setAssistantBusy(false)
+        setAssistantMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === 'assistant' && last?.status === 'running') {
+            last.content = content
+            last.status = 'completed'
+          }
+          return [...next]
+        })
+        message.warning('模型未生成可用原创方案')
+        return
+      }
       setBlueprints(blueprints)
-      setAssistantRecommendation(draftRes.data.data.recommendation || '')
+      setAssistantRecommendation(draftData.recommendation || '')
       setQuestionStartTime(null)
       setAssistantBusy(false)
       setAssistantMessages((prev) => {
@@ -820,6 +858,24 @@ function DashboardPage() {
         })
       } else {
         const blueprints = draftData.blueprints || []
+        if (draftData.enhancement_mode === 'llm_required' || blueprints.length === 0) {
+          const content = formatNeedModelDetail(draftData)
+          setBlueprints([])
+          setAssistantRecommendation(content)
+          setQuestionStartTime(null)
+          setAssistantBusy(false)
+          setAssistantMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last?.role === 'assistant' && last?.status === 'running') {
+              last.content = content
+              last.status = 'completed'
+            }
+            return [...next]
+          })
+          message.warning('模型未生成可用原创方案')
+          return
+        }
         setBlueprints(blueprints)
         setAssistantRecommendation(draftData.recommendation || '')
         setQuestionStartTime(null)

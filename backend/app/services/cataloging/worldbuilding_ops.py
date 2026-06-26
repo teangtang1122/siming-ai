@@ -21,6 +21,8 @@ from .lookups import find_worldbuilding_by_title_or_id, next_worldbuilding_sort_
 from .merge import merge_text
 from .snapshots import chapter_change_title, worldbuilding_snapshot
 
+PLACEHOLDER_WORLDBUILDING_TITLES = {"未命名", "未命名设定", "未知", "无标题", "设定名"}
+
 
 def apply_worldbuilding(
     db: Session,
@@ -30,8 +32,11 @@ def apply_worldbuilding(
     create: bool,
 ) -> dict:
     title = str(payload.get("title") or "").strip()
-    if not title:
+    if not title or _is_placeholder_worldbuilding_title(title):
         raise ValueError("世界观标题为空")
+    content = str(payload.get("content") or payload.get("description") or payload.get("evidence") or candidate.evidence or "").strip()
+    if not content:
+        raise ValueError("世界观内容为空")
     dimension = _normalize_dimension(payload.get("dimension"), payload)
     entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, payload.get("id") or title)
     old = worldbuilding_snapshot(entry) if entry else None
@@ -40,7 +45,7 @@ def apply_worldbuilding(
             project_id=chapter.project_id,
             dimension=dimension,
             title=title[:200],
-            content=str(payload.get("content") or "")[:12000],
+            content=content[:12000],
             sort_order=next_worldbuilding_sort_order(db, chapter.project_id, dimension),
             first_seen_chapter_id=chapter.id,
             last_updated_chapter_id=chapter.id,
@@ -51,8 +56,8 @@ def apply_worldbuilding(
         db.flush()
     else:
         entry.dimension = dimension
-        if payload.get("content"):
-            entry.content = merge_text(entry.content, payload.get("content"), chapter, limit=12000)
+        if content:
+            entry.content = merge_text(entry.content, content, chapter, limit=12000)
         entry.title = title[:200]
         entry.last_updated_chapter_id = chapter.id
         entry.confidence = float_or_none(candidate.confidence) or entry.confidence
@@ -70,11 +75,14 @@ def apply_worldbuilding(
 def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
     entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, payload.get("id") or payload.get("title"))
     if not entry:
+        title = str(payload.get("title") or "").strip()
+        if not title or _is_placeholder_worldbuilding_title(title):
+            raise ValueError("世界观时间线缺少可识别设定标题或ID")
         dimension = _normalize_dimension(payload.get("dimension"), payload)
         entry = WorldbuildingEntry(
             project_id=chapter.project_id,
             dimension=dimension,
-            title=str(payload.get("title") or "未命名设定")[:200],
+            title=title[:200],
             content=str(payload.get("event_description") or payload.get("content") or "")[:12000],
             sort_order=next_worldbuilding_sort_order(db, chapter.project_id, dimension),
             first_seen_chapter_id=chapter.id,
@@ -102,6 +110,11 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
         "new_value": payload,
         "detail": f"世界观时间线已写入: {entry.title}",
     }
+
+
+def _is_placeholder_worldbuilding_title(title: str | None) -> bool:
+    text = str(title or "").strip()
+    return not text or text in PLACEHOLDER_WORLDBUILDING_TITLES or text.startswith("未命名")
 
 
 def ensure_worldbuilding_version(

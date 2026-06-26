@@ -298,6 +298,37 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_try_create_candidate_skips_empty_character_and_worldbuilding_shells(self):
+        db = self.Session()
+        try:
+            project = Project(title="Empty Shell Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Chapter", content="A vague chapter.")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            examples = [
+                {"type": "character_state_update", "current_location": "山门"},
+                {"type": "character_create", "name": "未命名角色"},
+                {"type": "worldbuilding_create", "title": "灵气潮汐", "dimension": "power_system"},
+                {"type": "worldbuilding_timeline", "event_description": "灵潮出现"},
+            ]
+
+            results = [
+                try_create_candidate(db, job, run, json.dumps(raw, ensure_ascii=False), index)
+                for index, raw in enumerate(examples)
+            ]
+
+            self.assertTrue(all(item.get("skipped") for item in results))
+            self.assertTrue(any("未命名角色" in item.get("reason", "") for item in results))
+            self.assertTrue(any("世界观候选" in item.get("reason", "") for item in results))
+            self.assertEqual(db.query(CatalogingCandidate).count(), 0)
+        finally:
+            db.close()
+
     def test_context_includes_richer_character_and_worldbuilding_details(self):
         db = self.Session()
         try:

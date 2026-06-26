@@ -587,6 +587,14 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         if created.get("bad_line"):
                             bad_lines.append(created["bad_line"])
                             yield sse_event({"type": "parse_warning", "run": run_to_dict(run), "line": created["bad_line"][:500], "error": created["error"]})
+                        if created.get("skipped"):
+                            reason = created.get("reason") or "候选缺少有效内容，已跳过"
+                            yield sse_event({
+                                "type": "candidate_skipped",
+                                "run": run_to_dict(run),
+                                "message": reason,
+                                "reason": reason,
+                            })
                         candidate = created.get("candidate")
                         if candidate:
                             candidate_count += 1
@@ -598,6 +606,14 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     created = try_create_candidate(db, job, run, tail, candidate_count)
                     if created.get("bad_line"):
                         bad_lines.append(created["bad_line"])
+                    if created.get("skipped"):
+                        reason = created.get("reason") or "候选缺少有效内容，已跳过"
+                        yield sse_event({
+                            "type": "candidate_skipped",
+                            "run": run_to_dict(run),
+                            "message": reason,
+                            "reason": reason,
+                        })
                     if created.get("candidate"):
                         candidate = created["candidate"]
                         candidate_count += 1

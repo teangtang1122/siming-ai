@@ -36,6 +36,39 @@ def _usable_blueprint(title="Original Plan"):
     }
 
 
+def _compact_original_blueprint(title="Compact Original"):
+    return {
+        "title": title,
+        "logline": "A concrete original hook.",
+        "premise": "A compact but concrete original premise with stakes, setting pressure, and a serial conflict engine.",
+        "core_conflict": "The protagonist challenges an external order.",
+        "selling_points": ["fresh opening", "clear pressure", "serial conflict", "genre promise"],
+        "protagonist": {"name": "Lin Yuan", "goal": "Break the imposed order", "conflict": "The cultivation hierarchy suppresses outsiders"},
+        "characters": [
+            {"name": "Mentor", "role_type": "guide", "goal": "Test the protagonist"},
+            {"name": "Rival", "role_type": "rival", "goal": "Defend the old rules"},
+        ],
+        "relationships": [
+            {"character_a": "Lin Yuan", "character_b": "Rival", "relationship_type": "opposition", "description": "They embody incompatible paths."},
+        ],
+        "worldbuilding": [
+            {"title": "Borrowed Heaven System", "dimension": "power_system", "content": "Cultivation advancement requires debt to the sect order."},
+            {"title": "Outer Province", "dimension": "geography", "content": "A border region where modern knowledge first collides with ritual law."},
+        ],
+        "outline": [
+            {"title": f"Beat {idx}", "summary": "A concrete escalation beat.", "purpose": "Push the conflict"}
+            for idx in range(5)
+        ],
+        "golden_three": {
+            "opening_scene": "The protagonist wakes during a failed ascension rite.",
+            "chapter_1": "He survives by reading the ritual as a system.",
+            "chapter_2": "The sect discovers the anomaly.",
+            "chapter_3": "He chooses public defiance.",
+        },
+        "quality_self_check": {"score": 64, "pass": True, "issues": [], "suggestions": []},
+    }
+
+
 class BlueprintDraftToolRegisteredTest(unittest.TestCase):
     """Verify draft_novel_blueprint is registered."""
 
@@ -251,6 +284,11 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(result["data"]["blueprints"]), 1)
         self.assertEqual(result["data"]["blueprints"][0]["title"], "Single Original")
+
+    def test_compact_original_blueprint_passes_structural_gate(self):
+        from app.services.workspace.tools.novel_creation import _blueprint_is_structurally_usable
+
+        self.assertTrue(_blueprint_is_structurally_usable(_compact_original_blueprint()))
 
 
 class SystemAssistantModelOverrideTest(unittest.TestCase):

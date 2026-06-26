@@ -30,6 +30,53 @@ _SIGNATURE_PAYLOAD_KEYS = (
     "evidence",
 )
 
+_PLACEHOLDER_NAMES = {
+    "未命名",
+    "未命名角色",
+    "未命名主角",
+    "未命名设定",
+    "未知",
+    "无名",
+    "角色名",
+    "某人",
+}
+
+_CHARACTER_STATE_KEYS = {
+    "age",
+    "life_status",
+    "current_location",
+    "realm_or_level",
+    "physical_state",
+    "mental_state",
+    "current_goal",
+    "active_conflict",
+    "abilities_state",
+    "items_or_assets",
+}
+
+_CHARACTER_DETAIL_KEYS = _CHARACTER_STATE_KEYS | {
+    "role_type",
+    "appearance",
+    "personality",
+    "background",
+    "abilities",
+    "goal",
+    "conflict",
+    "role_in_scene",
+    "aliases",
+    "description",
+    "summary",
+}
+
+_WORLDBUILDING_DETAIL_KEYS = {
+    "content",
+    "description",
+    "event_description",
+    "constraints",
+    "plot_usage",
+    "summary",
+}
+
 
 def _signature_text(value: Any) -> str:
     if isinstance(value, list):
@@ -62,6 +109,89 @@ def _candidate_signature(
     if len(parts) == 1:
         parts.append(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)[:800])
     return "|".join(parts)
+
+
+def _clean_value(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_clean_value(item) for item in value).strip()
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).strip()
+    return str(value or "").strip()
+
+
+def _has_any_text(payload: dict[str, Any], keys: set[str] | tuple[str, ...]) -> bool:
+    return any(_clean_value(payload.get(key)) for key in keys)
+
+
+def _is_placeholder_name(value: Any) -> bool:
+    text = _clean_value(value)
+    if not text:
+        return True
+    normalized = re.sub(r"[\s　:：;；,.，。]+", "", text)
+    return normalized in _PLACEHOLDER_NAMES or normalized.startswith("未命名")
+
+
+def _candidate_identity(normalized: dict[str, Any], *keys: str) -> str:
+    payload = normalized.get("payload", {})
+    for key in keys:
+        value = normalized.get(key)
+        if value:
+            return _clean_value(value)
+        if isinstance(payload, dict) and payload.get(key):
+            return _clean_value(payload.get(key))
+    return ""
+
+
+def _skip_reason_for_candidate(normalized: dict[str, Any]) -> str | None:
+    item_type = str(normalized.get("item_type") or "")
+    payload = normalized.get("payload", {})
+    if not isinstance(payload, dict):
+        return "候选 payload 不是对象，已跳过"
+    evidence = _clean_value(normalized.get("evidence") or payload.get("evidence"))
+
+    if item_type in {"character_create", "character_update", "character_state_update", "character_timeline"}:
+        identity = _candidate_identity(normalized, "id", "target_id", "target_name", "name", "character_name")
+        if _is_placeholder_name(identity):
+            return "角色候选缺少可识别姓名或ID，已跳过，避免生成未命名角色"
+        if item_type == "character_state_update" and not _has_any_text(payload, _CHARACTER_STATE_KEYS):
+            return f"角色状态候选 {identity} 没有状态字段，已跳过"
+        if item_type in {"character_create", "character_update"} and not (
+            _has_any_text(payload, _CHARACTER_DETAIL_KEYS) or evidence
+        ):
+            return f"角色候选 {identity} 只有姓名、没有可写入内容，已跳过"
+        if item_type == "character_timeline" and not _clean_value(payload.get("event_description") or payload.get("event")):
+            return f"角色时间线候选 {identity} 缺少事件描述，已跳过"
+
+    if item_type == "character_relationship":
+        source = _candidate_identity(normalized, "source_name", "source", "from_name", "character_a")
+        target = _candidate_identity(normalized, "target_name", "target", "to_name", "character_b")
+        if _is_placeholder_name(source) or _is_placeholder_name(target):
+            return "关系候选缺少双方角色名，已跳过"
+        if not (_clean_value(payload.get("relationship_type")) or _clean_value(payload.get("description")) or evidence):
+            return f"关系候选 {source}-{target} 缺少关系内容，已跳过"
+
+    if item_type in {"worldbuilding_create", "worldbuilding_update", "worldbuilding_timeline"}:
+        title = _candidate_identity(normalized, "id", "target_id", "target_name", "title", "entry_title")
+        if _is_placeholder_name(title):
+            return "世界观候选缺少标题或ID，已跳过，避免生成未命名设定"
+        if item_type == "worldbuilding_timeline":
+            if not _clean_value(payload.get("event_description") or payload.get("event") or payload.get("description")):
+                return f"世界观时间线候选 {title} 缺少事件描述，已跳过"
+        elif not (_has_any_text(payload, _WORLDBUILDING_DETAIL_KEYS) or evidence):
+            return f"世界观候选 {title} 没有内容，已跳过"
+
+    if item_type == "chapter_summary":
+        if not _clean_value(payload.get("summary_text") or payload.get("summary") or payload.get("content")):
+            return "章节摘要候选为空，已跳过"
+
+    if item_type in {"outline_create", "outline_update"}:
+        title = _candidate_identity(normalized, "target_name", "title", "chapter_title", "outline_title")
+        if _is_placeholder_name(title):
+            return "大纲候选缺少标题，已跳过"
+        if not (_clean_value(payload.get("summary")) or _clean_value(payload.get("description")) or _clean_value(payload.get("purpose"))):
+            return f"大纲候选 {title} 缺少摘要/作用，已跳过"
+
+    return None
 
 
 def _payload_from_candidate(candidate: CatalogingCandidate) -> dict[str, Any]:
@@ -138,6 +268,9 @@ def create_candidate_from_raw(
             "bad_line": json.dumps(raw, ensure_ascii=False),
             "error": _unknown_type_message(raw, normalized),
         }
+    skip_reason = _skip_reason_for_candidate(normalized)
+    if skip_reason:
+        return {"skipped": True, "reason": skip_reason}
     if _is_duplicate_candidate(db, job, run, normalized):
         return {"duplicate": True}
     candidate = CatalogingCandidate(

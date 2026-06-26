@@ -1035,6 +1035,9 @@ async def save_external_cataloging_candidates(
         if created.get("bad_line"):
             warnings.append(str(created.get("error") or "Unsupported candidate"))
             continue
+        if created.get("skipped"):
+            warnings.append(str(created.get("reason") or "Candidate skipped because it lacks usable content"))
+            continue
         if created.get("duplicate"):
             duplicates += 1
             continue

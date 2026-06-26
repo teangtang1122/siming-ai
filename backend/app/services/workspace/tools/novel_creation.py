@@ -3278,12 +3278,26 @@ def _is_local_planning_model(model: str | None) -> bool:
     return provider == "local_llama_cpp" or is_local_cli_provider(provider)
 
 
-def _is_local_runtime_planning_model(model: str | None) -> bool:
+def _planning_provider(model: str | None) -> str:
     try:
         provider, _ = LLMGateway.model_identity(model, {"moshu_task_type": "planning"})
     except Exception:
         provider = (model or "").split(":", 1)[0].lower()
-    return provider == "local_llama_cpp"
+    return provider or ""
+
+
+def _is_local_cli_planning_model(model: str | None) -> bool:
+    return is_local_cli_provider(_planning_provider(model))
+
+
+def _is_local_runtime_planning_model(model: str | None) -> bool:
+    return _planning_provider(model) == "local_llama_cpp"
+
+
+def _blueprint_llm_limits(model: str | None, *, single: bool) -> tuple[int, int]:
+    if _is_local_cli_planning_model(model):
+        return DEFAULT_LOCAL_CLI_TIMEOUT, 12000 if single else 18000
+    return (120 if single else 180), 9000 if single else 18000
 
 
 def _planning_model_diagnostics(model: str | None) -> tuple[str | None, str | None]:
@@ -3665,13 +3679,14 @@ async def _call_llm_for_blueprints(
     model: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
     """Call LLM to generate/refine blueprints. Returns parsed JSON or None on failure."""
+    timeout_seconds, max_output_tokens = _blueprint_llm_limits(model, single=False)
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
             model=model,
             temperature=0.8,
-            max_tokens=12000,
-            timeout=60,
+            max_tokens=max_output_tokens,
+            timeout=timeout_seconds,
             retry=1,
             extra_body=_novel_creation_cli_context(model),
         )
@@ -3695,16 +3710,25 @@ async def _call_llm_for_blueprints(
         try:
             parsed = json.loads(clean)
         except (json.JSONDecodeError, ValueError):
-            _logger.warning("Failed to parse LLM blueprint response as JSON")
+            _logger.warning("Failed to parse LLM blueprint response as JSON; raw snippet=%s", raw[:500])
             return None
 
     if expect_list:
         if isinstance(parsed, dict) and "blueprints" in parsed:
             return parsed["blueprints"]
+        if isinstance(parsed, dict) and isinstance(parsed.get("blueprint"), dict):
+            return [parsed["blueprint"]]
         if isinstance(parsed, list):
             return parsed
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    if isinstance(parsed.get("blueprint"), dict):
+        return parsed["blueprint"]
+    if isinstance(parsed.get("blueprints"), list):
+        first = next((item for item in parsed["blueprints"] if isinstance(item, dict)), None)
+        return first
+    return parsed
 
 
 async def _call_llm_for_single_blueprint(
@@ -3713,13 +3737,14 @@ async def _call_llm_for_single_blueprint(
     model: str | None = None,
 ) -> dict[str, Any] | None:
     """Call LLM to generate a single blueprint. Returns parsed JSON or None on failure."""
+    timeout_seconds, max_output_tokens = _blueprint_llm_limits(model, single=True)
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
             model=model,
             temperature=0.9,
-            max_tokens=4000,
-            timeout=60,
+            max_tokens=max_output_tokens,
+            timeout=timeout_seconds,
             retry=0,
             extra_body=_novel_creation_cli_context(model),
         )
@@ -3742,9 +3767,17 @@ async def _call_llm_for_single_blueprint(
         try:
             parsed = json.loads(clean)
         except (json.JSONDecodeError, ValueError):
+            _logger.warning("Failed to parse single LLM blueprint response as JSON; raw snippet=%s", raw[:500])
             return None
 
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    if isinstance(parsed.get("blueprint"), dict):
+        return parsed["blueprint"]
+    if isinstance(parsed.get("blueprints"), list):
+        first = next((item for item in parsed["blueprints"] if isinstance(item, dict)), None)
+        return first
+    return parsed
 
 
 def _build_single_variant_prompt(
@@ -3838,7 +3871,12 @@ async def _try_llm_initial_draft(
     ]
 
     _init_llm_blueprint_diagnostics(diagnostics, model=model, stage="initial")
-    _logger.info("Hybrid mode: calling LLM for 3 variants in parallel (genre=%s)...", genre_label)
+    serial_cli = _is_local_cli_planning_model(model)
+    _logger.info(
+        "Hybrid mode: calling LLM for 3 variants (%s, genre=%s)...",
+        "serial CLI" if serial_cli else "parallel",
+        genre_label,
+    )
 
     result_by_index: dict[int, dict[str, Any]] = {}
     pending = set(range(len(variants)))
@@ -3860,10 +3898,18 @@ async def _try_llm_initial_draft(
             )
             for i in current
         ]
-        llm_results = await asyncio.gather(
-            *[_call_llm_for_single_blueprint(msgs, model=model) for msgs in prompts],
-            return_exceptions=True,
-        )
+        if serial_cli:
+            llm_results = []
+            for msgs in prompts:
+                try:
+                    llm_results.append(await _call_llm_for_single_blueprint(msgs, model=model))
+                except Exception as exc:
+                    llm_results.append(exc)
+        else:
+            llm_results = await asyncio.gather(
+                *[_call_llm_for_single_blueprint(msgs, model=model) for msgs in prompts],
+                return_exceptions=True,
+            )
         for result_index, llm_bp in zip(current, llm_results):
             if isinstance(llm_bp, Exception):
                 reason = f"exception: {llm_bp}"
@@ -5245,23 +5291,50 @@ def _score_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _count_text_items(items: Any, *fields: str) -> int:
+    if not isinstance(items, list):
+        return 0
+    count = 0
+    for item in items:
+        if isinstance(item, dict):
+            if any(_clean_text(item.get(field)) for field in fields):
+                count += 1
+        elif _clean_text(item):
+            count += 1
+    return count
+
+
+def _count_nonempty_dict_fields(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    return sum(1 for item in value.values() if _clean_text(item))
+
+
 def _blueprint_is_structurally_usable(blueprint: dict[str, Any]) -> bool:
     characters = blueprint.get("characters", []) if isinstance(blueprint.get("characters"), list) else []
     relationships = blueprint.get("relationships", []) if isinstance(blueprint.get("relationships"), list) else []
     worldbuilding = blueprint.get("worldbuilding", []) if isinstance(blueprint.get("worldbuilding"), list) else []
     outline = blueprint.get("outline", []) if isinstance(blueprint.get("outline"), list) else []
-    volume_outline = blueprint.get("volume_outline", []) if isinstance(blueprint.get("volume_outline"), list) else []
     golden_three = blueprint.get("golden_three", {}) if isinstance(blueprint.get("golden_three"), dict) else {}
+    protagonist = blueprint.get("protagonist", {}) if isinstance(blueprint.get("protagonist"), dict) else {}
     quality = blueprint.get("quality_self_check") if isinstance(blueprint.get("quality_self_check"), dict) else {}
-    score = int(quality.get("total_score") or _score_blueprint(blueprint)["total_score"])
+    score = int(quality.get("total_score") or quality.get("score") or _score_blueprint(blueprint)["total_score"])
+    title = _clean_text(blueprint.get("title"))
+    premise = _clean_text(blueprint.get("premise")) or _clean_text(blueprint.get("logline"))
+    protagonist_name = _clean_text(protagonist.get("name"))
+    conflict = _clean_text(blueprint.get("core_conflict")) or _clean_text(protagonist.get("conflict"))
     return (
-        score >= 72
-        and len(characters) >= 5
-        and len(relationships) >= 5
-        and len(worldbuilding) >= 6
-        and len(outline) >= 10
-        and len(volume_outline) >= 2
-        and len(golden_three) >= 3
+        score >= 58
+        and bool(title)
+        and bool(premise)
+        and bool(protagonist_name)
+        and protagonist_name not in {"未命名主角", "未命名角色", "角色名"}
+        and bool(conflict)
+        and _count_text_items(characters, "name", "role_type", "personality", "background", "goal") >= 2
+        and _count_text_items(relationships, "character_a", "source_name", "description", "relationship_type") >= 1
+        and _count_text_items(worldbuilding, "title", "content", "description") >= 2
+        and _count_text_items(outline, "title", "summary", "purpose") >= 5
+        and _count_nonempty_dict_fields(golden_three) >= 3
     )
 
 
