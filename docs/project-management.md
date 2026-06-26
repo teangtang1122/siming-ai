@@ -50,6 +50,22 @@ PR 描述至少包含：
 - 数据兼容或迁移风险。
 - 已执行验证。
 
+## 主分支保护
+
+`main` 是发布基线，默认不直接提交代码。建议在 GitHub 仓库设置中启用 branch protection 或 ruleset，并至少打开以下规则：
+
+- 目标分支：`main`。
+- Require a pull request before merging。
+- Require approvals：个人项目可设为 0 或 1；如果只有自己维护，重点是强制走 PR。
+- Dismiss stale pull request approvals when new commits are pushed。
+- Require status checks to pass before merging：有 CI 后再启用必需检查；没有 CI 前不要勾选不存在的检查。
+- Require branches to be up to date before merging：有稳定 CI 后启用。
+- Block force pushes。
+- Block deletions。
+- Do not allow bypassing the above settings：如果希望自己也被规则约束，则启用。
+
+个人项目的最低保护策略：禁止 force push 和删除 `main`，所有变更通过 PR 合并。等测试和构建 CI 建好后，再把后端测试、前端构建和打包验证加入必需检查。
+
 ## 开发检查清单
 
 后端变更：
