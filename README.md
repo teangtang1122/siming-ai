@@ -14,6 +14,19 @@
 - 新的外部 Agent / MCP 自动配置默认写入 `siming` 服务器条目；旧的 `moshu` 条目会被迁移或清理。
 - 为了不破坏旧项目和旧客户端，部分内部协议名仍保留兼容 ID，例如 `moshu://`、`get_moshu_usage_guide`、`moshu_task_type`。
 
+## 它解决什么痛点
+
+直接用通用大模型写长篇小说，常见问题并不只是“文笔不够好”：
+
+- 上下文越长，越容易忘记前文设定、时间线、伏笔和力量规则。
+- 角色容易 OOC，尤其会忘记当前位置、年龄、境界、伤势、目标、关系变化和已有装备。
+- 完本小说或几十万字资料无法一次塞进上下文，手动整理角色卡和世界观又很耗时。
+- 大纲、正文、角色状态和世界观分别维护，写完一章后经常忘记同步更新。
+- 不同模型、Claude Code、Codex、OpenCode 等工具各有一套调用方式，换入口后工作流和质量容易变化。
+- 禁用句式、文风偏好和创作技巧散落在聊天记录里，模型未必持续遵守。
+
+司命通过作品建档、RAG 上下文选择、角色/世界观时间线、Plan Agent、技能提示词、项目记忆和统一工具链解决这些问题。数据库是唯一权威写入源，本地 Markdown/JSON 镜像供模型快速阅读；所有修改通过司命写回，前端、索引、版本历史和缓存保持一致。
+
 ## 杀毒软件误报
 
 Windows 杀毒软件如果把打包版识别为木马，最常见原因不是业务代码本身，而是未签名的 PyInstaller/内嵌 Python 运行时具备这些特征：
@@ -23,7 +36,7 @@ Windows 杀毒软件如果把打包版识别为木马，最常见原因不是业
 - 程序可能启动 Claude Code、Codex、OpenCode 等本机 CLI。
 - 用户选择本地模型时，程序会启动 llama.cpp 或训练/推理相关进程。
 
-司命不会把模型权重打包进 exe，也不会主动上传用户作品数据。正式分发前建议对发布包做代码签名、固定 Release 资产来源，并在说明里提示用户从官方 GitHub Release 下载。
+司命不会把模型权重打包进 exe，也不会主动上传用户作品数据。正式分发前建议对发布包做代码签名、固定 Release 资产来源，并提示用户只从官方 GitHub Release 下载。
 
 ## 3 分钟上手
 
@@ -138,19 +151,29 @@ save_external_chapter_draft
 apply_external_story_updates
 ```
 
+## v2.6.0 重点
+
+- 全项目更名为 `司命 / Siming`，仓库为 `siming-ai`，宣传语为“长篇小说的命运织机”。
+- 修复建档模型路由：显式模型优先，其次全局默认 API/CLI，只有明确选择本地任务模型或无全局默认时才进入本地任务模型。
+- 新书生成和建档入口补齐模型传递，减少 CLI 可用却误报 `need_model` 或被本地模型抢跑的问题。
+- 新书生成取消模板兜底冒充 LLM 输出；候选允许部分成功并重试失败分支。
+- 建档候选解析兼容 `character_state`、缺失 `type` 但字段可推断的角色/世界观/关系/大纲候选。
+- 候选写入会跳过未命名角色、空壳角色状态、无内容世界观和缺少摘要的大纲，避免污染作品档案。
+- MCP/外部 Agent 默认服务器名迁移为 `siming`，并保留旧 `moshu` 配置迁移。
+
 ## 开发
 
-### 后端
+后端：
 
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-$env:PYTHONPATH='.'
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
 ```
 
-### 前端
+前端：
 
 ```powershell
 cd frontend
@@ -158,23 +181,34 @@ npm install
 npm run dev
 ```
 
-### 测试
+常用检查：
 
 ```powershell
-cd backend
-.\.venv\Scripts\python.exe -m pytest
-
-cd ..\frontend
+backend\.venv\Scripts\python.exe -m pytest backend/tests -q
+cd frontend
 npm run build
 ```
 
-## 打包与发布
+打包：
 
 ```powershell
 .\build-exe.bat
 ```
 
-生成：
+发布：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\publish-github.ps1
+```
+
+项目管理和路线图见：
+
+- [docs/project-management.md](docs/project-management.md)
+- [docs/roadmap.md](docs/roadmap.md)
+
+## 打包产物
+
+默认打包输出：
 
 ```text
 release\Siming.exe
@@ -184,60 +218,18 @@ release\update.json
 release\sha256.txt
 ```
 
-发布：
+`Siming.exe` 是正式分发文件。两个旧 exe 名仅为兼容旧自动更新和旧快捷方式；如果本机旧 exe 正在运行，打包脚本会仍然准备 Release 上传用的兼容资产到 `.build\release-assets\`。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\publish-github.ps1 -Tag vX.Y.Z
-```
+## 外部 Agent MCP
 
-## MCP Server
-
-源码运行：
+手动启动 MCP 入口：
 
 ```powershell
 python scripts\moshu-mcp-server.py --permission-pack auto
 ```
 
-打包程序运行：
+入口脚本文件名暂时保留 `moshu-mcp-server.py`，用于兼容旧文档和旧配置；客户端里的服务器条目应使用 `siming`。
 
-```powershell
-Siming.exe --mcp-server --permission-pack auto
-```
+## 许可证
 
-新配置示例：
-
-```json
-{
-  "mcpServers": {
-    "siming": {
-      "command": "C:\\path\\to\\Siming.exe",
-      "args": ["--mcp-server", "--permission-pack", "project_management"],
-      "env": {}
-    }
-  }
-}
-```
-
-默认不绑定单一作品，外部 Agent 可先调用 `list_projects`，再为具体工具传入 `project_id`。
-
-## 旧数据兼容
-
-司命保留旧品牌数据目录、旧环境变量和旧可执行文件名兼容。升级后会自动识别旧数据库、迁移运行时字段并刷新文件镜像。迁移完成前不会主动删除旧数据；确认新版本可以正常读取后，再由迁移流程清理已废弃副本。
-
-优先使用的新环境变量：
-
-```text
-SIMING_HOME
-SIMING_MODEL_ROOT
-SIMING_CONTENT_ROOT
-SIMING_UPDATE_REPO
-SIMING_UPDATE_MANIFEST_URL
-SIMING_DISABLE_UPDATE
-SIMING_GITHUB_TOKEN
-```
-
-旧的 `MOSHU_*` 和 `NOVEL_AGENT_*` 变量仍会被读取。
-
-## 参与贡献
-
-欢迎通过 Issue 和 Pull Request 改进司命。提交前请至少运行相关后端测试和前端构建，并说明用户遇到的问题、复现步骤、修改后的行为、数据兼容/提示词/模型适配风险，以及已执行的验证。
+本项目采用 Apache License 2.0，详见 [LICENSE](LICENSE)。
