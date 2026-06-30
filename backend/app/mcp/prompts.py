@@ -1,4 +1,4 @@
-"""MCP prompt definitions for Moshu.
+"""MCP prompt definitions for Siming.
 
 Exposes MCP prompts that external clients can use to get structured
 writing context, continuity checks, and draft assistance.
@@ -38,16 +38,16 @@ def list_prompts() -> list[McpPrompt]:
     return [
         McpPrompt(
             name="moshu_quickstart",
-            description="Explain how an external agent should use Moshu safely. Covers project selection, import, API-free cataloging, writing, and verification.",
+            description="Explain how an external agent should use Siming safely. Covers project selection, import, API-free cataloging, writing, and verification.",
             args=[
                 McpPromptArg(name="task", description="User task or scenario (optional)"),
                 McpPromptArg(name="project_id", description="Project ID when known (optional)"),
-                McpPromptArg(name="no_api", description="true when Moshu internal model API should not be used (optional)"),
+                McpPromptArg(name="no_api", description="true when Siming internal model API should not be used (optional)"),
             ],
         ),
         McpPrompt(
             name="moshu_external_cataloging",
-            description="API-free cataloging workflow for Claude Code/Codex. Use when Moshu API is unavailable and the external agent must analyze chapters itself.",
+            description="API-free cataloging workflow for Claude Code/Codex. Use when Siming API is unavailable and the external agent must analyze chapters itself.",
             args=[
                 McpPromptArg(name="project_id", description="Project ID when known (optional)"),
                 McpPromptArg(name="job_id", description="Cataloging job ID when already started (optional)"),
@@ -105,10 +105,10 @@ def render_quickstart(
     """Render a project-optional quickstart prompt."""
     no_api_flag = str(no_api or "").lower() in {"1", "true", "yes", "y", "是"}
     parts = [
-        "# Moshu / 墨枢外部 Agent 快速入口",
+        "# Siming / 司命外部 Agent 快速入口",
         "",
         "## 必读规则",
-        "- 默认使用 API-free 外部流程：除非用户明确说“使用墨枢内部 API/内部模型/系统模型额度”，不要调用内部模型工具。",
+        "- 默认使用 API-free 外部流程：除非用户明确说“使用司命内部 API/内部模型/系统模型额度”，不要调用内部模型工具。",
         "- 内部模型工具只通过 MCP permission pack: internal_llm 暴露；project_management 只用于 API-free 的项目创建、导入、写入、导出、技能和自动任务管理。",
         "- 中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观；不要因为工具报错就改成英文或拼音。",
         "- 先调用 list_projects 或 get_project_info 确认作品；所有项目写入工具都必须传入正确 project_id。",
@@ -121,16 +121,16 @@ def render_quickstart(
         "## 默认外部写作流程",
         "prepare_external_writing_context -> 外部 Agent 自己写作和自检 -> save_external_chapter_draft -> record_external_quality_review -> create_chapter(draft_id/content_ref) -> apply_external_story_updates。",
         "",
-        "# Moshu / 墨枢外部 Agent 快速入门",
+        "# Siming / 司命外部 Agent 快速入门",
         "",
-        "你正在通过 MCP 操作墨枢。不要把工具列表当成普通 CRUD 猜着用，先根据任务选择工作流。",
+        "你正在通过 MCP 操作司命。不要把工具列表当成普通 CRUD 猜着用，先根据任务选择工作流。",
         "",
         "## 通用规则",
         "- 第一步通常调用 get_moshu_usage_guide；不确定时 scenario=quickstart。",
         "- 中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观；不要因为一次工具错误就改成英文或拼音。",
         "- 先调用 list_projects 或 get_project_info 确认作品；所有项目写入都必须使用正确 project_id。",
         "- 完成导入、建档、写作后，必须调用 get_project_archive_status 或 search/list 工具验证数据真的存在。",
-        "- 如果用户说墨枢 API 欠费、未配置 API、或要求由 Claude/Codex 自己分析，禁止调用内部 LLM 工具。",
+        "- 如果用户说司命 API 欠费、未配置 API、或要求由 Claude/Codex 自己分析，禁止调用内部 LLM 工具。",
         "- 内部 LLM 工具包括 start_cataloging_job、chapter_writer、character_writer、outline_writer、worldbuilding_writer、design_plot、evaluate_chapter。",
         "",
         "## 导入本地小说",
@@ -157,7 +157,7 @@ def render_quickstart(
     if project_id:
         parts.append(f"\n## 当前 project_id\n{project_id}")
     if no_api_flag:
-        parts.append("\n## 当前限制\n用户要求不使用墨枢内部 API。请走 external/no-api 工具链。")
+        parts.append("\n## 当前限制\n用户要求不使用司命内部 API。请走 external/no-api 工具链。")
     return [McpPromptMessage(role="user", content="\n".join(parts))]
 
 
@@ -178,9 +178,9 @@ def render_external_cataloging(
     return [McpPromptMessage(role="user", content="\n".join(parts))]
 
     parts = [
-        "# 墨枢无 API 建档工作流",
+        "# 司命无 API 建档工作流",
         "",
-        "目标：外部 Agent 自己阅读章节，提取事实，生成候选，交给墨枢工具落库。全过程不调用墨枢内部模型 API。",
+        "目标：外部 Agent 自己阅读章节，提取事实，生成候选，交给司命工具落库。全过程不调用司命内部模型 API。",
         "",
         "## 工具顺序",
         "1. get_prompt_pack(pack_id='cataloging_external_no_api')",
@@ -248,7 +248,7 @@ def render_writing_context(
         return [McpPromptMessage(role="user", content=f"Error: Project {project_id} not found.")]
 
     parts: list[str] = []
-    parts.append(f"# Moshu Quality Writing Context: {project.title}")
+    parts.append(f"# Siming Quality Writing Context: {project.title}")
     parts.append("")
     parts.append("## Unified Quality Prompt")
     parts.append(_quality_writing_prompt_for_project(project))

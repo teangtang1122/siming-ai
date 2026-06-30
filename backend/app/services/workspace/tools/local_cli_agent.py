@@ -13,7 +13,7 @@ async def start_local_cli_agent_run(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    """Start Claude/Codex/opencode as a Moshu-managed CLI Agent worker."""
+    """Start Claude/Codex/opencode as a Siming-managed CLI Agent worker."""
     task_type = str(args.get("task_type") or args.get("mode") or "general").strip().lower()
     if task_type not in {"general", "cataloging", "writing"}:
         task_type = "general"

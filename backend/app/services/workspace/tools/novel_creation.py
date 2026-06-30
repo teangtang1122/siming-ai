@@ -5903,7 +5903,7 @@ async def apply_novel_blueprint(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    """Apply a confirmed blueprint to create a real Moshu project."""
+    """Apply a confirmed blueprint to create a real Siming project."""
     from app.database.models import (
         Character,
         CharacterRelationship,
@@ -6389,7 +6389,7 @@ async def system_chat_completion(
     history_text = ""
     if history and len(history) > 0:
         recent = history[-6:]  # Last 3 turns
-        history_text = "\n".join([f"{'用户' if h.get('role') == 'user' else '墨枢'}：{h.get('content', '')[:200]}" for h in recent])
+        history_text = "\n".join([f"{'用户' if h.get('role') == 'user' else '司命'}：{h.get('content', '')[:200]}" for h in recent])
 
     context_desc = "\n".join(context_parts) if context_parts else "当前没有任何特殊上下文。"
 
@@ -6397,10 +6397,10 @@ async def system_chat_completion(
         provider, model_name = LLMGateway.model_identity(model)
         model_identity = f"{provider}:{model_name}"
     except Exception:
-        model_identity = "墨枢系统设置中的默认模型"
+        model_identity = "司命系统设置中的默认模型"
 
     system = (
-        f"你是墨枢，一个专业的中文小说创作助手。你正在和用户进行系统级对话（没有绑定具体作品）。\n"
+        f"你是司命，一个专业的中文小说创作助手。你正在和用户进行系统级对话（没有绑定具体作品）。\n"
         f"当前执行模型：{model_identity}。\n\n"
         f"## 当前上下文\n{context_desc}\n\n"
         f"## 近期对话\n{history_text}\n\n"
@@ -6411,7 +6411,7 @@ async def system_chat_completion(
         f"4. 基于参考文件写新书\n"
         f"5. 回答关于小说创作的问题\n\n"
         f"## 回复原则\n"
-        f"- 你在墨枢内部工作，不要把自己介绍成 OpenCode、代码助手或软件工程 Agent\n"
+        f"- 你在司命内部工作，不要把自己介绍成 OpenCode、代码助手或软件工程 Agent\n"
         f"- 默认始终使用中文；除非用户明确要求，否则不要用英文回复\n"
         f"- 不要自行寻找 requirements.md、代码仓库任务或编程配置，也不要讨论当前工作目录\n"
         f"- 用户问当前模型时，直接依据“当前执行模型”回答，不要回避\n"

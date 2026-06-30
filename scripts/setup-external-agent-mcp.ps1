@@ -2,6 +2,7 @@ param(
   [ValidateSet("auto", "readonly_collaboration", "draft_generation", "project_writing", "project_management", "internal_llm", "trusted_local_maintenance")]
   [string]$PermissionPack = "auto",
   [string]$ProjectId = "",
+  [string]$SimingExe = "",
   [string]$MoshuExe = "",
   [string]$SourceRoot = "",
   [ValidateSet("auto", "claude", "codex", "opencode", "mimocode", "cursor", "trae", "kilocode", "qwen-code", "hermes", "openclaw", "all")]
@@ -16,7 +17,7 @@ $ErrorActionPreference = "Stop"
 
 function Write-Step {
   param([string]$Message)
-  Write-Host "[Moshu MCP] $Message"
+  Write-Host "[Siming MCP] $Message"
 }
 
 function Get-CommandPath {
@@ -53,9 +54,9 @@ function Add-OptionalProjectId {
   return $result
 }
 
-function Test-MoshuExe {
+function Test-SimingExe {
   param([string]$Path)
-  return ($Path -and (Test-Path -LiteralPath $Path) -and ((Split-Path -Leaf $Path) -match '^(Moshu|NovelWritingAgent)\.exe$'))
+  return ($Path -and (Test-Path -LiteralPath $Path) -and ((Split-Path -Leaf $Path) -match '^(Siming|Moshu|NovelWritingAgent)\.exe$'))
 }
 
 function Find-NearbyExe {
@@ -63,17 +64,26 @@ function Find-NearbyExe {
   $repoRoot = Split-Path -Parent $scriptDir
   $candidates = @()
 
+  if ($SimingExe) {
+    $candidates += $SimingExe
+  }
   if ($MoshuExe) {
     $candidates += $MoshuExe
+  }
+  if ($env:SIMING_EXE) {
+    $candidates += $env:SIMING_EXE
   }
   if ($env:MOSHU_EXE) {
     $candidates += $env:MOSHU_EXE
   }
   $candidates += @(
+    (Join-Path $repoRoot "release\Siming.exe"),
     (Join-Path $repoRoot "release\Moshu.exe"),
     (Join-Path $repoRoot "release\NovelWritingAgent.exe"),
+    (Join-Path $scriptDir "Siming.exe"),
     (Join-Path $scriptDir "Moshu.exe"),
     (Join-Path $scriptDir "NovelWritingAgent.exe"),
+    (Join-Path (Get-Location) "Siming.exe"),
     (Join-Path (Get-Location) "Moshu.exe"),
     (Join-Path (Get-Location) "NovelWritingAgent.exe")
   )
@@ -87,6 +97,7 @@ function Find-NearbyExe {
   }
   if ($env:LOCALAPPDATA) {
     $commonDirs += @(
+      (Join-Path $env:LOCALAPPDATA "Siming"),
       (Join-Path $env:LOCALAPPDATA "Moshu"),
       (Join-Path $env:LOCALAPPDATA "NovelWritingAgent")
     )
@@ -96,11 +107,13 @@ function Find-NearbyExe {
     if (-not (Test-Path -LiteralPath $dir)) {
       continue
     }
+    $candidates += (Join-Path $dir "Siming.exe")
     $candidates += (Join-Path $dir "Moshu.exe")
     $candidates += (Join-Path $dir "NovelWritingAgent.exe")
     try {
       $children = Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue | Select-Object -First 40
       foreach ($child in $children) {
+        $candidates += (Join-Path $child.FullName "Siming.exe")
         $candidates += (Join-Path $child.FullName "Moshu.exe")
         $candidates += (Join-Path $child.FullName "NovelWritingAgent.exe")
       }
@@ -111,7 +124,7 @@ function Find-NearbyExe {
 
   $found = @()
   foreach ($candidate in $candidates) {
-    if (Test-MoshuExe $candidate) {
+    if (Test-SimingExe $candidate) {
       $found += (Get-Item -LiteralPath $candidate)
     }
   }
@@ -121,7 +134,7 @@ function Find-NearbyExe {
   return (
     $found |
       Sort-Object `
-        @{ Expression = { if ($_.Name -eq "Moshu.exe") { 0 } else { 1 } } }, `
+        @{ Expression = { if ($_.Name -eq "Siming.exe") { 0 } elseif ($_.Name -eq "Moshu.exe") { 1 } else { 2 } } }, `
         @{ Expression = { $_.LastWriteTime }; Descending = $true } |
       Select-Object -First 1
   ).FullName
@@ -171,7 +184,7 @@ function Resolve-McpCommand {
     $python = Get-CommandPath @("python", "py")
     if (-not $python) {
       if ($PreferSource) {
-        throw "Could not find python/py for source MCP entrypoint. Install Python or pass -MoshuExe."
+        throw "Could not find python/py for source MCP entrypoint. Install Python or pass -SimingExe."
       }
     } else {
       $args = Add-OptionalProjectId -BaseArgs @($source.Entry, "--permission-pack", $PermissionPack)
@@ -195,7 +208,7 @@ function Resolve-McpCommand {
     }
   }
 
-  throw "Could not find Moshu.exe or scripts\moshu-mcp-server.py. Pass -MoshuExe or -SourceRoot."
+  throw "Could not find Siming.exe or scripts\moshu-mcp-server.py. Pass -SimingExe or -SourceRoot."
 }
 
 function Configure-ClaudeCode {
@@ -207,7 +220,7 @@ function Configure-ClaudeCode {
     return $false
   }
 
-  $addArgs = @("mcp", "add", "-s", $ClaudeScope, "moshu", "--", $Server.Command) + $Server.Args
+  $addArgs = @("mcp", "add", "-s", $ClaudeScope, "siming", "--", $Server.Command) + $Server.Args
   Write-Step "Claude Code detected: $claude"
   Write-Step "Claude command: claude $($addArgs -join ' ')"
   if ($DryRun) {
@@ -215,6 +228,7 @@ function Configure-ClaudeCode {
   }
 
   try {
+    & $claude "mcp" "remove" "-s" $ClaudeScope "siming" *> $null
     & $claude "mcp" "remove" "-s" $ClaudeScope "moshu" *> $null
   } catch {
     # It is fine if the server did not exist yet.
@@ -239,7 +253,7 @@ function Configure-Codex {
   }
 
   $block = @(
-    "[mcp_servers.moshu]",
+    "[mcp_servers.siming]",
     'type = "stdio"',
     "command = $(Escape-TomlString $Server.Command)",
     "args = $(Format-TomlArray $Server.Args)"
@@ -263,9 +277,12 @@ function Configure-Codex {
     Write-Step "Backed up existing Codex config to $backup"
   }
 
-  $pattern = '(?ms)^\[mcp_servers\.moshu\]\r?\n.*?(?=^\[|\z)'
-  if ($old -match $pattern) {
-    $new = [regex]::Replace($old, $pattern, ($block + [Environment]::NewLine))
+  $activePattern = '(?ms)^\[mcp_servers\.siming\]\r?\n.*?(?=^\[|\z)'
+  $legacyPattern = '(?ms)^\[mcp_servers\.moshu\]\r?\n.*?(?=^\[|\z)'
+  if ($old -match $activePattern) {
+    $new = [regex]::Replace($old, $activePattern, ($block + [Environment]::NewLine))
+  } elseif ($old -match $legacyPattern) {
+    $new = [regex]::Replace($old, $legacyPattern, ($block + [Environment]::NewLine))
   } else {
     $trimmed = $old.TrimEnd()
     if ($trimmed) {
@@ -274,6 +291,7 @@ function Configure-Codex {
       $new = $block + [Environment]::NewLine
     }
   }
+  $new = [regex]::Replace($new, $legacyPattern, "")
   Set-Content -LiteralPath $configPath -Encoding UTF8 -Value $new
   return $true
 }
@@ -324,7 +342,10 @@ function Configure-OpenCodeFamily {
     command = @($Server.Command) + @($Server.Args)
     enabled = $true
   }
-  Set-JsonProperty $config.mcp "moshu" $entry
+  if ($config.mcp.PSObject.Properties["moshu"]) {
+    $config.mcp.PSObject.Properties.Remove("moshu")
+  }
+  Set-JsonProperty $config.mcp "siming" $entry
   $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
   return $true
 }
@@ -362,7 +383,10 @@ function Configure-McpJsonClient {
     command = $Server.Command
     args = @($Server.Args)
   }
-  Set-JsonProperty $config.mcpServers "moshu" $entry
+  if ($config.mcpServers.PSObject.Properties["moshu"]) {
+    $config.mcpServers.PSObject.Properties.Remove("moshu")
+  }
+  Set-JsonProperty $config.mcpServers "siming" $entry
   $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
   return $true
 }
@@ -377,8 +401,8 @@ function Configure-QwenCode {
     Set-JsonProperty $config "tools" ([PSCustomObject]@{})
   }
   Set-JsonProperty $config.tools "approvalMode" "yolo"
-  Set-JsonProperty $config.mcpServers.moshu "trust" $true
-  Set-JsonProperty $config.mcpServers.moshu "timeout" 30000
+  Set-JsonProperty $config.mcpServers.siming "trust" $true
+  Set-JsonProperty $config.mcpServers.siming "timeout" 30000
   $json = $config | ConvertTo-Json -Depth 20
   [System.IO.File]::WriteAllText(
     $configPath,
@@ -401,8 +425,9 @@ function Configure-Hermes {
   }
   Write-Step "Hermes Agent detected: $hermes"
   if ($DryRun) { return $true }
+  try { & $hermes mcp remove siming *> $null } catch {}
   try { & $hermes mcp remove moshu *> $null } catch {}
-  $commandArgs = @("mcp", "add", "moshu", "--command", $Server.Command, "--args") + $Server.Args
+  $commandArgs = @("mcp", "add", "siming", "--command", $Server.Command, "--args") + $Server.Args
   "Y" | & $hermes @commandArgs
   if ($LASTEXITCODE -ne 0) { throw "Hermes MCP configuration failed." }
   return $true
@@ -417,8 +442,9 @@ function Configure-OpenClaw {
   }
   Write-Step "OpenClaw detected: $openclaw"
   if ($DryRun) { return $true }
+  try { & $openclaw mcp unset siming *> $null } catch {}
   try { & $openclaw mcp unset moshu *> $null } catch {}
-  $args = @("mcp", "add", "moshu", "--command", $Server.Command)
+  $args = @("mcp", "add", "siming", "--command", $Server.Command)
   foreach ($item in $Server.Args) {
     $args += "--arg=$item"
   }
@@ -437,7 +463,7 @@ Write-Step "Selected MCP server mode: $($server.Mode)"
 Write-Step "Command: $($server.Command)"
 Write-Step "Args: $($server.Args -join ' ')"
 if ($PermissionPack -ne "auto") {
-  Write-Host "[Moshu MCP] WARNING: Using fixed permission pack '$PermissionPack'. This bypasses UI global permission changes." -ForegroundColor Yellow
+  Write-Host "[Siming MCP] WARNING: Using fixed permission pack '$PermissionPack'. This bypasses UI global permission changes." -ForegroundColor Yellow
 }
 if ($server.Cwd) {
   Write-Step "Source root: $($server.Cwd)"

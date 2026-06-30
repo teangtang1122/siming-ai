@@ -1,7 +1,7 @@
-"""MCP resource URI scheme for Moshu.
+"""MCP resource URI scheme for Siming.
 
 Defines the moshu:// URI scheme, parsing, and resource types.
-All Moshu resources use a stable, hierarchical URI format.
+All Siming resources use a stable, hierarchical URI format.
 
 URI patterns:
     moshu://projects
@@ -129,7 +129,7 @@ _RESOURCE_DESCRIPTIONS: dict[str, str] = {
 
 def get_resource_description(resource_type: str) -> str:
     """Return a human-readable description for a resource type."""
-    return _RESOURCE_DESCRIPTIONS.get(resource_type, "Moshu resource")
+    return _RESOURCE_DESCRIPTIONS.get(resource_type, "Siming resource")
 
 
 def list_resource_uris(project_id: str) -> list[str]:

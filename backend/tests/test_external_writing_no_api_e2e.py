@@ -1,6 +1,6 @@
-"""End-to-end test for external writing without Moshu API.
+"""End-to-end test for external writing without Siming API.
 
-Proves external agents can write a chapter without any Moshu model API.
+Proves external agents can write a chapter without any Siming model API.
 Monkeypatches all LLM gateway calls to fail.
 """
 import asyncio

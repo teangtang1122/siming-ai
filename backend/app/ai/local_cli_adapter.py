@@ -1,8 +1,8 @@
 """Local CLI adapter for supported local coding-agent CLIs.
 
 This adapter treats local coding-agent CLIs as model executors. It is designed
-for short, bounded generation tasks controlled by Moshu, not for exposing
-Moshu secrets or letting the child process own Moshu's workflow state.
+for short, bounded generation tasks controlled by Siming, not for exposing
+Siming secrets or letting the child process own Siming's workflow state.
 """
 from __future__ import annotations
 
@@ -51,9 +51,9 @@ DEFAULT_CLI_COMMANDS: dict[str, str] = {
 }
 
 DEFAULT_CLI_ARGS: dict[str, list[str]] = {
-    # Claude Code is used as a trusted local worker inside Moshu. Bypass
-    # interactive permission prompts so file reads and Moshu MCP tool calls can
-    # run unattended while Moshu still enforces its own MCP permission boundary.
+    # Claude Code is used as a trusted local worker inside Siming. Bypass
+    # interactive permission prompts so file reads and Siming MCP tool calls can
+    # run unattended while Siming still enforces its own MCP permission boundary.
     "claude_cli": ["--permission-mode", "bypassPermissions", "-p", "{prompt}"],
     "codex_cli": ["exec", "--dangerously-bypass-approvals-and-sandbox", "{prompt}"],
     "opencode_cli": [
@@ -76,7 +76,7 @@ DEFAULT_CLI_ARGS: dict[str, list[str]] = {
         "--local",
         "--json",
         "--session-key",
-        "agent:moshu:local-cli",
+        "agent:siming:local-cli",
         "--message",
         "{prompt}",
     ],
@@ -224,7 +224,7 @@ def local_cli_model_options(provider: str, command: str | None = None) -> list[d
 
 
 def hidden_subprocess_kwargs() -> dict:
-    """Hide transient CLI windows when Moshu launches model CLIs on Windows."""
+    """Hide transient CLI windows when Siming launches model CLIs on Windows."""
     if os.name != "nt":
         return {}
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -408,8 +408,8 @@ class LocalCLIAdapter(BaseAdapter):
         requested = str((extra_body or {}).get("local_cli_cwd") or "").strip()
         candidates = [
             requested,
-            os.environ.get("MOSHU_CONTENT_ROOT") or "",
-            str(Path(os.environ.get("MOSHU_HOME") or tempfile.gettempdir()) / "projects"),
+            os.environ.get("SIMING_CONTENT_ROOT") or os.environ.get("MOSHU_CONTENT_ROOT") or "",
+            str(Path(os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or tempfile.gettempdir()) / "projects"),
         ]
         for candidate in candidates:
             if not candidate:
@@ -420,7 +420,7 @@ class LocalCLIAdapter(BaseAdapter):
                 return str(path.resolve())
             except OSError:
                 continue
-        fallback = Path(tempfile.gettempdir()) / "moshu-cli-workspace"
+        fallback = Path(tempfile.gettempdir()) / "siming-cli-workspace"
         fallback.mkdir(parents=True, exist_ok=True)
         return str(fallback.resolve())
 
@@ -442,7 +442,7 @@ class LocalCLIAdapter(BaseAdapter):
             mode="w",
             encoding="utf-8",
             suffix=".md",
-            prefix=f"moshu-{provider}-task-",
+            prefix=f"siming-{provider}-task-",
             dir=cwd,
             delete=False,
         ) as handle:
@@ -458,11 +458,11 @@ class LocalCLIAdapter(BaseAdapter):
                 + "\n".join(f"- {path}" for path in attachments)
             )
         return (
-            "你是墨枢内部的文本生成执行器，不是代码助手。"
+            "你是司命内部的文本生成执行器，不是代码助手。"
             f"请读取 UTF-8 任务文件：{prompt_file}\n"
             "严格按文件中的 SYSTEM/USER 指令完成任务。"
             "除读取该任务文件和其中明确引用的资料外，不要扫描代码仓库，"
-            "不要修改文件，不要调用 Moshu MCP 或其他外部工具。"
+            "不要修改文件，不要调用 Siming MCP 或其他外部工具。"
             "最终只输出任务要求的正文或结构化结果，不要回复 Ready。"
             f"{attachment_note}"
         )
@@ -474,7 +474,7 @@ class LocalCLIAdapter(BaseAdapter):
         env["OPENCODE_PURE"] = "1"
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps({
             "mcp": {
-                "moshu": {
+                "siming": {
                     "type": "local",
                     "command": ["cmd", "/c", "exit", "0"],
                     "enabled": False,
@@ -543,7 +543,7 @@ class LocalCLIAdapter(BaseAdapter):
             self._insert_before_prompt(args, ["--yolo"])
         elif provider == "openclaw_cli" and "--session-key" not in args:
             insert_at = args.index("--message") if "--message" in args else max(0, len(args) - 1)
-            args[insert_at:insert_at] = ["--session-key", "agent:moshu:local-cli"]
+            args[insert_at:insert_at] = ["--session-key", "agent:siming:local-cli"]
 
     def _opencode_family_launch(
         self,
@@ -607,7 +607,7 @@ class LocalCLIAdapter(BaseAdapter):
                 mode="w",
                 encoding="utf-8",
                 suffix=".md",
-                prefix="moshu-cli-prompt-",
+                prefix="siming-cli-prompt-",
                 delete=False,
             ) as handle:
                 handle.write(prompt)

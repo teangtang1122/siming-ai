@@ -1,4 +1,4 @@
-"""Tests for Moshu 2.x folder-backed content store."""
+"""Tests for Siming 2.x folder-backed content store."""
 
 import asyncio
 import os

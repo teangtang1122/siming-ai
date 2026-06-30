@@ -1,7 +1,7 @@
-"""Moshu-managed local CLI cataloging coordinator.
+"""Siming-managed local CLI cataloging coordinator.
 
 Each chapter is handled in a fresh CLI turn. The Agent reads the UTF-8 project
-mirror directly and performs every model-originated write through Moshu MCP.
+mirror directly and performs every model-originated write through Siming MCP.
 This keeps chapter text out of command arguments and avoids carrying an entire
 novel through one ever-growing CLI conversation.
 """
@@ -175,7 +175,7 @@ async def stream_local_cli_cataloging_job(project_id: str, job_id: str):
             ensure_local_cli_cataloging_worker(db, job)
         yield sse_event({
             "type": "cataloging_stage",
-            "message": "本机 CLI Agent 已连接，将直接读取作品文件并通过 Moshu MCP 写入",
+            "message": "本机 CLI Agent 已连接，将直接读取作品文件并通过 Siming MCP 写入",
             "job": job_to_dict(job),
         })
 
@@ -369,7 +369,7 @@ def _task_text(
    `project_id="{job.project_id}"`, `job_id="{job.id}"`, `run_id="{agent_run_id}"`。
 2. 只有 execution_mode 仍为 `auto` 时，调用 `apply_pending_cataloging` 写入当前候选。
 3. 调用 `verify_external_cataloging_progress`，然后结束本轮。
-4. 禁止再次领取或处理下一章；下一章必须由墨枢启动全新的 CLI 回合。
+4. 禁止再次领取或处理下一章；下一章必须由司命启动全新的 CLI 回合。
 """
     else:
         if stage == "full":
@@ -390,7 +390,7 @@ def _task_text(
    事实必须充分覆盖章节，不得为了缩短 JSON 而漏信息。
 5. 调用 `verify_external_cataloging_progress`，然后结束本轮。
 6. 本轮禁止调用 `save_external_cataloging_candidates`、`apply_pending_cataloging`，
-   禁止处理下一章；候选阶段必须由墨枢启动下一次 CLI 回合。
+   禁止处理下一章；候选阶段必须由司命启动下一次 CLI 回合。
 """
         else:
             phase = "candidates"
@@ -421,14 +421,14 @@ def _task_text(
    - `manual`：不要应用候选，停在等待用户确认状态。
 9. 调用 `verify_external_cataloging_progress`，然后结束本轮。
 10. 验证完成后必须立即结束当前 CLI 回合。禁止再次调用
-    `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由墨枢启动全新的 CLI 回合。
+    `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由司命启动全新的 CLI 回合。
 """
 
-    return f"""# 墨枢本机 CLI 作品建档任务
+    return f"""# 司命本机 CLI 作品建档任务
 
 ## 固定身份
-你是墨枢启动的作品建档 Agent，不是代码助手。始终使用中文。
-你必须直接读取小说文件，不得要求墨枢把完整章节塞进提示词或 MCP 返回值。
+你是司命启动的作品建档 Agent，不是代码助手。始终使用中文。
+你必须直接读取小说文件，不得要求司命把完整章节塞进提示词或 MCP 返回值。
 
 ## 任务绑定
 - project_id: `{job.project_id}`
@@ -447,7 +447,7 @@ def _task_text(
 - 数据库是唯一权威写入源；项目目录是只读镜像。
 - 可以使用文件读取、Glob、Grep 搜索 `{project_folder}`。
 - 禁止直接修改 `chapters/`、`characters/`、`worldbuilding/`、`outline/`、`relationships/`。
-- 所有事实、候选和应用操作必须调用 Moshu MCP 工具。
+- 所有事实、候选和应用操作必须调用 Siming MCP 工具。
 - 每个 MCP 调用都必须带 `project_id="{job.project_id}"` 和 `run_id="{agent_run_id}"`。
 - 不要创建 candidates.jsonl、临时档案或其他旁路数据文件。
 
@@ -471,14 +471,14 @@ def _task_prompt(
 ) -> str:
     return (
         "立即执行，不要向用户提问，也不要等待补充信息。所有任务绑定已经完整给出。\n"
-        "你是墨枢本机作品建档 Agent。本轮是全新的单章任务，禁止沿用任何旧会话或旧章节绑定。\n"
+        "你是司命本机作品建档 Agent。本轮是全新的单章任务，禁止沿用任何旧会话或旧章节绑定。\n"
         f"当前阶段={stage}；job_id={job.id}；agent_run_id={agent_run_id}；"
         f"chapter_run_id={run.id}；chapter_id={chapter.id}；章节={chapter.title}。\n"
         "第一步必须调用 report_agent_plan，然后严格按附件任务文件执行 MCP 工具链。"
         "不得回答“请告知章节”“是否沿用任务”或任何澄清问题。\n"
         "唯一允许读取的任务文件如下；缓存、历史或目录里的其他任务文件全部忽略：\n"
         f"{task_file}\n"
-        "章节正文和档案由你从任务指定的作品目录自行读取；所有写入必须使用 Moshu MCP。"
+        "章节正文和档案由你从任务指定的作品目录自行读取；所有写入必须使用 Siming MCP。"
     )
 
 
@@ -506,7 +506,7 @@ def _build_cataloging_cli_launch(
         unique_suffix = datetime.utcnow().strftime("%H%M%S%f")
         options.extend([
             "--title",
-            f"Moshu cataloging {run.chapter_order + 1:04d} {run.id[:8]} {unique_suffix}",
+            f"Siming cataloging {run.chapter_order + 1:04d} {run.id[:8]} {unique_suffix}",
         ])
     if options:
         args[prompt_index:prompt_index] = options
@@ -540,7 +540,7 @@ async def _run_direct_jsonl_cataloging_fallback(
 ) -> tuple[bool, str]:
     """Fallback when a managed CLI turn exits without calling MCP writes.
 
-    The selected CLI model is still used through LLMGateway, but Moshu receives
+    The selected CLI model is still used through LLMGateway, but Siming receives
     JSONL directly and writes through the normal internal parser instead of
     relying on the CLI agent to call MCP tools.
     """
@@ -621,7 +621,7 @@ async def _run_cli_turn(
     finally:
         db.close()
 
-    run_dir = project_folder / ".moshu" / "cataloging" / job.id
+    run_dir = project_folder / ".siming" / "cataloging" / job.id
     run_dir.mkdir(parents=True, exist_ok=True)
     task_file = run_dir / f"{run.chapter_order + 1:04d}-{stage}.md"
     task_file.write_text(
@@ -658,13 +658,18 @@ async def _run_cli_turn(
     )
     env = os.environ.copy()
     env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")
-    env["MOSHU_MANAGED_AGENT_KIND"] = "cataloging"
-    env["MOSHU_MANAGED_CATALOGING_PROJECT_ID"] = job.project_id
-    env["MOSHU_MANAGED_CATALOGING_JOB_ID"] = job.id
-    env["MOSHU_MANAGED_CATALOGING_CHAPTER_ID"] = chapter.id
-    env["MOSHU_MANAGED_CATALOGING_CHAPTER_RUN_ID"] = run.id
-    env["MOSHU_MANAGED_CATALOGING_AGENT_RUN_ID"] = agent_run_id
-    env["MOSHU_MANAGED_CATALOGING_STAGE"] = stage
+    managed_env = {
+        "MANAGED_AGENT_KIND": "cataloging",
+        "MANAGED_CATALOGING_PROJECT_ID": job.project_id,
+        "MANAGED_CATALOGING_JOB_ID": job.id,
+        "MANAGED_CATALOGING_CHAPTER_ID": chapter.id,
+        "MANAGED_CATALOGING_CHAPTER_RUN_ID": run.id,
+        "MANAGED_CATALOGING_AGENT_RUN_ID": agent_run_id,
+        "MANAGED_CATALOGING_STAGE": stage,
+    }
+    for suffix, value in managed_env.items():
+        env[f"SIMING_{suffix}"] = value
+        env[f"MOSHU_{suffix}"] = value
     process = await asyncio.create_subprocess_exec(
         resolved,
         *launch.args,

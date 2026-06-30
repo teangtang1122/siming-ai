@@ -15,29 +15,31 @@ class UpdaterVersionTestCase(unittest.TestCase):
         self.assertFalse(is_newer_version("0.1.0", "0.1.1"))
         self.assertFalse(is_newer_version("", "0.1.1"))
 
-    def test_accepts_moshu_and_legacy_exe_names(self):
+    def test_accepts_siming_and_legacy_exe_names(self):
+        self.assertIn("siming.exe", updater.COMPATIBLE_EXE_NAMES)
         self.assertIn("moshu.exe", updater.COMPATIBLE_EXE_NAMES)
         self.assertIn("novelwritingagent.exe", updater.COMPATIBLE_EXE_NAMES)
 
     @patch("app.updater._request")
     @patch("app.updater._request_json")
-    def test_github_manifest_prefers_moshu_asset(self, mock_request_json, mock_request):
+    def test_github_manifest_prefers_siming_asset(self, mock_request_json, mock_request):
         mock_request_json.return_value = {
             "tag_name": "v0.1.2",
             "html_url": "https://github.com/example/repo/releases/tag/v0.1.2",
             "assets": [
                 {"name": "NovelWritingAgent.exe", "browser_download_url": "https://example.test/legacy.exe"},
                 {"name": "Moshu.exe", "browser_download_url": "https://example.test/moshu.exe"},
+                {"name": "Siming.exe", "browser_download_url": "https://example.test/siming.exe"},
                 {"name": "sha256.txt", "browser_download_url": "https://example.test/sha256.txt"},
             ],
         }
-        mock_request.return_value = b"abc  Moshu.exe\n"
+        mock_request.return_value = b"abc  Siming.exe\n"
 
         manifest = updater._manifest_from_github_release("example/repo")
 
         self.assertIsNotNone(manifest)
         self.assertEqual(manifest["version"], "0.1.2")
-        self.assertEqual(manifest["download_url"], "https://example.test/moshu.exe")
+        self.assertEqual(manifest["download_url"], "https://example.test/siming.exe")
 
     @patch("app.updater._request_json")
     def test_github_manifest_falls_back_to_legacy_asset(self, mock_request_json):
@@ -53,8 +55,8 @@ class UpdaterVersionTestCase(unittest.TestCase):
         self.assertIsNotNone(manifest)
         self.assertEqual(manifest["download_url"], "https://example.test/legacy.exe")
 
-    @patch.dict("os.environ", {"MOSHU_DISABLE_UPDATE": "1"}, clear=True)
-    def test_moshu_disable_update_env_var(self):
+    @patch.dict("os.environ", {"SIMING_DISABLE_UPDATE": "1"}, clear=True)
+    def test_siming_disable_update_env_var(self):
         self.assertIsNone(updater.find_latest_update())
 
     @patch("app.updater._request_json")

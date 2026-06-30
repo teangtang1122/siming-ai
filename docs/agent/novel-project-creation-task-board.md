@@ -1,8 +1,8 @@
 # Novel Creation And External Writing Task Board
 
-> Project: Moshu / 墨枢
+> Project: Siming / 司命
 >
-> Purpose: make the project assistant and external agents share the same novel-writing method prompts, support new-novel creation, and allow Claude Code / Codex to write novels through Moshu without requiring any model API keys configured inside Moshu.
+> Purpose: make the project assistant and external agents share the same novel-writing method prompts, support new-novel creation, and allow Claude Code / Codex to write novels through Siming without requiring any model API keys configured inside Siming.
 >
 > Product design source: `docs/agent/novel-project-creation-agent-tasks.md`
 
@@ -18,7 +18,7 @@
 1. Claim exactly one task by changing `[ ]` to `[-]` and writing your name or handle.
 2. Stay inside the listed file scope. If another file must be touched, write the reason under the task before editing.
 3. Do not duplicate prompt logic. Shared prompt/method content must come from one source used by both internal assistant and MCP/external agents.
-4. External-agent workflows must work when Moshu has no model API configured. In that mode, Moshu provides context, prompt packs, storage, telemetry, and write APIs; Claude Code / Codex performs generation and review.
+4. External-agent workflows must work when Siming has no model API configured. In that mode, Siming provides context, prompt packs, storage, telemetry, and write APIs; Claude Code / Codex performs generation and review.
 5. Internal API-backed tools may still exist, but every writing workflow must have a no-internal-API external path.
 6. Never expose API keys, model secrets, tokens, or secret-management tools to MCP or prompt-pack APIs.
 7. Do not expose hidden chain-of-thought. Expose plans, tool calls, selected context, method prompts, quality rubrics, draft chunks, warnings, and write results.
@@ -33,7 +33,7 @@ The final system must support two equivalent writing modes:
 
 ```mermaid
 flowchart TD
-  U["User request"] --> A["Moshu project assistant"]
+  U["User request"] --> A["Siming project assistant"]
   U --> E["External Agent: Claude Code / Codex"]
 
   A --> P["Shared Prompt Pack / Method Cards"]
@@ -42,24 +42,24 @@ flowchart TD
   A --> C["Shared Context Builder"]
   E --> C
 
-  A -->|Moshu API key configured| IW["Internal LLM tools: chapter_writer, evaluate_chapter"]
-  A -->|No Moshu API key| EW["External writing mode"]
+  A -->|Siming API key configured| IW["Internal LLM tools: chapter_writer, evaluate_chapter"]
+  A -->|No Siming API key| EW["External writing mode"]
   E --> EW
 
   EW --> X["External model writes / reviews"]
-  X --> S["Moshu storage tools: save draft, create chapter, update cards"]
+  X --> S["Siming storage tools: save draft, create chapter, update cards"]
   IW --> S
 ```
 
 Required boundary:
 
 - Project assistant and external agents must read the same public writing prompt pack and quality rubric summaries.
-- External agents must not need `chapter_writer` or `evaluate_chapter` when Moshu has no API key.
+- External agents must not need `chapter_writer` or `evaluate_chapter` when Siming has no API key.
 - External agents should still be able to call API-free tools: context preparation, prompt pack retrieval, draft saving, quality review recording, chapter creation, and story-data updates.
 
 ## Consistency Contract
 
-Every implementation task must preserve the existing Moshu architecture:
+Every implementation task must preserve the existing Siming architecture:
 
 - **Backend layering**: routers only validate HTTP/API shape and call services; services hold business logic; workspace tools remain thin command handlers; prompt construction stays under `backend/app/prompts` or `backend/app/services/agent`.
 - **Tool source**: every new callable capability is registered once in `backend/app/services/workspace/registry.py`; internal assistant, scheduler, MCP, and frontend catalog must all derive from that registry.
@@ -70,7 +70,7 @@ Every implementation task must preserve the existing Moshu architecture:
 - **Prompt consistency**: project assistant, external agent prompt tools, scheduled tasks, and plan agent must use the same public prompt-pack versions for the same workflow.
 - **Context consistency**: RAG/context selection must expose source metadata and warnings in the same format used by existing `context_snapshot` / context preview panels.
 - **UI consistency**: new frontend pages should follow existing Ant Design table/modal/drawer patterns, sidebar menu conventions, and live run display components.
-- **Documentation consistency**: README, MCP docs, packaging docs, and task boards must use the same terminology: "project assistant", "external agent", "Prompt Pack", "Method Card", "permission pack", and "No Moshu API mode".
+- **Documentation consistency**: README, MCP docs, packaging docs, and task boards must use the same terminology: "project assistant", "external agent", "Prompt Pack", "Method Card", "permission pack", and "No Siming API mode".
 
 ## Phase 0 - Spec And Safety
 
@@ -100,11 +100,11 @@ Every implementation task must preserve the existing Moshu architecture:
 - File scope:
   - `docs/agent/external-no-api-writing.md`
 - Goal:
-  - Document the exact workflow when Moshu has no model API configured and Claude Code / Codex does the writing.
+  - Document the exact workflow when Siming has no model API configured and Claude Code / Codex does the writing.
 - Required content:
   - Step-by-step flow: list projects -> select project -> get prompt pack -> prepare context -> external model writes -> external model self-reviews -> save draft -> create/update chapter -> update character/worldbuilding/outline.
   - Which tools are API-free and safe to call.
-  - Which tools require Moshu API keys and must be skipped in external-only mode.
+  - Which tools require Siming API keys and must be skipped in external-only mode.
   - Required frontend telemetry events for external writing.
   - Failure handling: missing outline, missing context, user rejects draft, write confirmation needed.
 - Verification:
@@ -170,7 +170,7 @@ Every implementation task must preserve the existing Moshu architecture:
 - Required behavior:
   - Seed on first access.
   - Built-ins cannot be deleted, but can be disabled or overridden per project.
-  - Prompt content should summarize Moshu writing methodology and tool workflow, not copy private hidden prompts verbatim.
+  - Prompt content should summarize Siming writing methodology and tool workflow, not copy private hidden prompts verbatim.
 - Verification:
   - `py -m pytest backend/tests/test_prompt_pack_seed.py -q`
   - Test confirms all required pack ids exist after seeding.
@@ -304,7 +304,7 @@ Every implementation task must preserve the existing Moshu architecture:
 - Required behavior:
   - Store full content server-side and return `draft_id/content_ref`.
   - Support title, outline_node_id, source_agent, quality_review_json, context_snapshot.
-  - Do not require Moshu API key.
+  - Do not require Siming API key.
   - Drafts can be passed to `create_chapter`, `update_chapter`, `detect_character_changes`, and `detect_new_worldbuilding`.
 - Verification:
   - `py -m pytest backend/tests/test_external_draft_storage.py -q`
@@ -320,7 +320,7 @@ Every implementation task must preserve the existing Moshu architecture:
   - `backend/app/database/models.py`
   - `backend/tests/test_external_quality_review.py`
 - Goal:
-  - Let Claude Code / Codex record its own quality review when Moshu has no API key.
+  - Let Claude Code / Codex record its own quality review when Siming has no API key.
 - Tool:
   - `record_external_quality_review`
 - Required behavior:
@@ -366,7 +366,7 @@ Every implementation task must preserve the existing Moshu architecture:
 - File scope:
   - `backend/tests/test_external_writing_no_api_e2e.py`
 - Goal:
-  - Prove external agents can write a chapter without any Moshu model API.
+  - Prove external agents can write a chapter without any Siming model API.
 - Required behavior:
   - Monkeypatch all LLM gateway calls to fail.
   - Call `prepare_external_writing_context`.
@@ -430,12 +430,12 @@ Every implementation task must preserve the existing Moshu architecture:
   - `backend/app/services/workspace/tools/novel_creation.py`
   - `backend/tests/test_novel_blueprint_draft.py`
 - Goal:
-  - Support both Moshu-internal and external-agent blueprint generation.
+  - Support both Siming-internal and external-agent blueprint generation.
 - Tool:
   - `draft_novel_blueprint`
 - Required behavior:
-  - `execution_mode="internal_llm"` may call Moshu API if configured.
-  - `execution_mode="external_agent"` must not call Moshu API; it returns prompt/context/output schema for external agent to fill.
+  - `execution_mode="internal_llm"` may call Siming API if configured.
+  - `execution_mode="external_agent"` must not call Siming API; it returns prompt/context/output schema for external agent to fill.
   - Output contract includes `blueprints[]`, `next_questions`, and `apply_requirements`.
   - Save draft blueprint to session.
 - Verification:
@@ -456,7 +456,7 @@ Every implementation task must preserve the existing Moshu architecture:
 - Tool:
   - `review_novel_blueprint`
 - Required behavior:
-  - Internal mode may call Moshu API.
+  - Internal mode may call Siming API.
   - External mode returns review prompt, rubric, expected JSON schema, and lets external agent submit filled review.
   - Review dimensions: premise clarity, protagonist goal, conflict engine, world rules, character relationship pressure, golden-three hook, 30-chapter runway, trope freshness.
   - Store review on session.
@@ -474,7 +474,7 @@ Every implementation task must preserve the existing Moshu architecture:
   - `backend/app/services/workspace/tools/novel_creation.py`
   - `backend/tests/test_apply_novel_blueprint.py`
 - Goal:
-  - Turn a confirmed blueprint into a real Moshu project with useful starter data.
+  - Turn a confirmed blueprint into a real Siming project with useful starter data.
 - Tool:
   - `apply_novel_blueprint`
 - Required behavior:
@@ -506,7 +506,7 @@ Every implementation task must preserve the existing Moshu architecture:
 - Required behavior:
   - Fast mode: one blueprint, lightweight review, ask confirmation before apply unless auto_apply true.
   - Quality mode: 2-3 blueprints, stronger review, user choice required before apply.
-  - If Moshu API is unavailable, switch to external-agent prompt/context mode and explain next action.
+  - If Siming API is unavailable, switch to external-agent prompt/context mode and explain next action.
 - Verification:
   - `py -m pytest backend/tests/test_plan_create_novel.py -q`
 
@@ -560,7 +560,7 @@ Every implementation task must preserve the existing Moshu architecture:
   - `backend/app/mcp/adapter.py`
   - `backend/tests/test_mcp_prompt_pack_tools.py`
 - Goal:
-  - Claude Code / Codex can fetch Moshu writing methods from MCP.
+  - Claude Code / Codex can fetch Siming writing methods from MCP.
 - Required behavior:
   - `list_prompt_packs`, `get_prompt_pack`, `get_tool_playbook`, and `get_quality_rubric` appear in `readonly_collaboration`.
   - No secret tools appear in any pack.
@@ -577,7 +577,7 @@ Every implementation task must preserve the existing Moshu architecture:
   - `backend/app/mcp/adapter.py`
   - `backend/tests/test_mcp_external_writing_tools.py`
 - Goal:
-  - External agents can write without Moshu API through MCP.
+  - External agents can write without Siming API through MCP.
 - Required behavior:
   - `prepare_external_writing_context` is readonly.
   - `save_external_chapter_draft` is draft_generation or project_writing depending on persistence risk, as defined in permission policy.
@@ -617,16 +617,16 @@ Every implementation task must preserve the existing Moshu architecture:
   - `docs/mcp/claude-code-codex-client.md`
   - `README.md`
 - Goal:
-  - Explain exactly how external agents should write and create novels through Moshu.
+  - Explain exactly how external agents should write and create novels through Siming.
 - Required content:
   - How to configure MCP for all projects.
   - How to fetch prompt packs.
-  - How to write a chapter without Moshu API.
-  - How to create a new novel without Moshu API.
+  - How to write a chapter without Siming API.
+  - How to create a new novel without Siming API.
   - Which tools require confirmation.
   - Troubleshooting: "chapter_writer fails because no API key".
 - Verification:
-  - `Get-Content docs/mcp/claude-code-codex-client.md | Select-String "No Moshu API"`
+  - `Get-Content docs/mcp/claude-code-codex-client.md | Select-String "No Siming API"`
   - `Get-Content README.md | Select-String "external agent"`
 
 ## Phase 6 - Frontend And Observability
@@ -707,7 +707,7 @@ Every implementation task must preserve the existing Moshu architecture:
 - Required behavior:
   - Every writing run displays prompt pack id/version.
   - Context snapshot displays selected sections and warnings.
-  - Quality review displays reviewer source: internal Moshu model or external agent.
+  - Quality review displays reviewer source: internal Siming model or external agent.
 - Verification:
   - `cd frontend; npm run build`
   - `py -m pytest backend/tests/test_external_agent_runs.py -q`
@@ -754,8 +754,8 @@ Every implementation task must preserve the existing Moshu architecture:
   - Document and run a human smoke test before release.
 - Required smoke cases:
   - Internal API-backed project assistant writes a chapter in quality mode.
-  - External Claude/Codex writes a chapter with no Moshu API key.
-  - External Claude/Codex creates a new novel with no Moshu API key.
+  - External Claude/Codex writes a chapter with no Siming API key.
+  - External Claude/Codex creates a new novel with no Siming API key.
   - User can inspect the prompt pack used by both paths.
   - Old projects still open and can write chapters.
 - Verification:

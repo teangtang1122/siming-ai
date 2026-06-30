@@ -1,4 +1,4 @@
-"""Packaged desktop launcher for 墨枢 (Moshu)."""
+"""Packaged desktop launcher for 司命 (Siming)."""
 from __future__ import annotations
 
 import os
@@ -13,8 +13,8 @@ from pathlib import Path
 import uvicorn
 
 
-APP_NAME = "Moshu"
-LEGACY_APP_NAME = "NovelWritingAgent"
+APP_NAME = "Siming"
+LEGACY_APP_NAMES = ("Moshu", "NovelWritingAgent")
 DEFAULT_PORT = 8765
 _STDIO_LOG_HANDLES = []
 
@@ -25,7 +25,7 @@ def _launcher_log_path() -> Path:
         (home / "logs").mkdir(parents=True, exist_ok=True)
         return home / "logs" / "launcher.log"
     except Exception:
-        return Path(tempfile.gettempdir()) / "moshu-launcher.log"
+        return Path(tempfile.gettempdir()) / "siming-launcher.log"
 
 
 def _log(message: str) -> None:
@@ -87,7 +87,7 @@ def _configure_stdio_utf8() -> None:
 
 
 def _app_home() -> Path:
-    env_home = os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+    env_home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
     if env_home:
         return Path(env_home).expanduser().resolve()
     local_app_data = os.environ.get("LOCALAPPDATA")
@@ -96,9 +96,9 @@ def _app_home() -> Path:
     else:
         base = Path.home()
     current = base / APP_NAME
-    legacy = base / LEGACY_APP_NAME
-    legacy_dot = Path.home() / f".{LEGACY_APP_NAME}"
-    for legacy_dir in (legacy, legacy_dot):
+    legacy_dirs = [base / name for name in LEGACY_APP_NAMES]
+    legacy_dirs.extend(Path.home() / f".{name}" for name in LEGACY_APP_NAMES)
+    for legacy_dir in legacy_dirs:
         if not legacy_dir.exists():
             continue
         legacy_db = legacy_dir / "novel_agent.db"
@@ -143,11 +143,11 @@ def _pick_content_root(home: Path) -> Path | None:
         root = tkinter.Tk()
         root.withdraw()
         messagebox.showinfo(
-            "Moshu 2.5",
+            "Siming 2.5",
             "请选择一个空文件夹作为小说文件镜像目录。\n数据库仍是权威数据源，旧数据会导出为可读镜像，方便 Claude/Codex 读取。",
         )
         while True:
-            selected = filedialog.askdirectory(title="选择 Moshu 小说数据目录")
+            selected = filedialog.askdirectory(title="选择 Siming 小说数据目录")
             if not selected:
                 root.destroy()
                 return None
@@ -158,7 +158,7 @@ def _pick_content_root(home: Path) -> Path | None:
                 root.destroy()
                 return path
             messagebox.showwarning(
-                "Moshu 2.5",
+                "Siming 2.5",
                 "请选择空目录，避免和已有文件混在一起。\n\n可以新建一个空文件夹后再选择。",
             )
     except Exception as exc:
@@ -179,15 +179,23 @@ def _prepare_data_environment() -> Path:
     home = _app_home()
     home.mkdir(parents=True, exist_ok=True)
     launcher_settings = _load_launcher_settings(home)
-    content_root = os.environ.get("MOSHU_CONTENT_ROOT") or launcher_settings.get("content_root")
+    content_root = (
+        os.environ.get("SIMING_CONTENT_ROOT")
+        or os.environ.get("MOSHU_CONTENT_ROOT")
+        or launcher_settings.get("content_root")
+    )
     if not content_root:
         content_root = str(home / "projects")
+    os.environ.setdefault("SIMING_HOME", str(home))
     os.environ.setdefault("MOSHU_HOME", str(home))
+    os.environ.setdefault("SIMING_CONTENT_ROOT", str(Path(content_root).expanduser().resolve()))
     os.environ.setdefault("MOSHU_CONTENT_ROOT", str(Path(content_root).expanduser().resolve()))
-    model_root = os.environ.get("MOSHU_MODEL_ROOT") or launcher_settings.get("model_root")
+    model_root = os.environ.get("SIMING_MODEL_ROOT") or os.environ.get("MOSHU_MODEL_ROOT") or launcher_settings.get("model_root")
     if not model_root:
         model_root = str(home / "models")
+    os.environ.setdefault("SIMING_MODEL_ROOT", str(Path(model_root).expanduser().resolve()))
     os.environ.setdefault("MOSHU_MODEL_ROOT", str(Path(model_root).expanduser().resolve()))
+    os.environ.setdefault("SIMING_KEY_FILE", str(home / ".crypto_key"))
     os.environ.setdefault("MOSHU_KEY_FILE", str(home / ".crypto_key"))
     os.environ.setdefault("NOVEL_AGENT_HOME", str(home))
     os.environ.setdefault("NOVEL_AGENT_KEY_FILE", str(home / ".crypto_key"))
@@ -210,7 +218,7 @@ SPLASH_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>墨枢</title>
+<title>司命</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -294,8 +302,8 @@ SPLASH_HTML = """<!DOCTYPE html>
         <circle cx="48" cy="48" r="4" fill="#7c5e2a" opacity="0.25"/>
       </svg>
     </div>
-    <div class="splash-title">墨枢</div>
-    <div class="splash-sub">笔下生花，万象归枢</div>
+    <div class="splash-title">司命</div>
+    <div class="splash-sub">长篇小说的命运织机</div>
     <div class="splash-divider"></div>
     <div class="splash-status" id="status">正在启动</div>
     <div class="splash-dots" id="dots"><div class="splash-dot"></div><div class="splash-dot"></div><div class="splash-dot"></div></div>

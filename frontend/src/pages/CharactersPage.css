@@ -96,7 +96,7 @@
 
 .characters-list-item-active {
   background: var(--ant-color-primary-bg);
-  border-left-color: var(--moshu-accent, var(--ant-color-primary));
+  border-left-color: var(--siming-accent, var(--ant-color-primary));
 }
 
 /* ── Editor ── */

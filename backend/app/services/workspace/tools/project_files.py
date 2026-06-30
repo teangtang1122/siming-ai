@@ -1,4 +1,4 @@
-"""Project-folder tools for Moshu 2.x file-backed content."""
+"""Project-folder tools for Siming 2.x file-backed content."""
 from __future__ import annotations
 
 from pathlib import Path

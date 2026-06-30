@@ -1,12 +1,12 @@
 # External Agent Cataloging And Permission Task Board
 
-> Project: Moshu / 墨枢
+> Project: Siming / 司命
 >
 > Purpose: make Claude Code / Codex and the internal project assistant use the same reliable workflows for importing, cataloging, writing, permission control, and progress visibility.
 >
 > Triggering incident:
-> - A local TXT novel was imported successfully as a Moshu project.
-> - The external agent then attempted to "catalog/build archive" without using Moshu's model API.
+> - A local TXT novel was imported successfully as a Siming project.
+> - The external agent then attempted to "catalog/build archive" without using Siming's model API.
 > - It improvised a shallow manual workflow, reported success, but no outline/character/worldbuilding data was actually saved.
 > - External Agent permission UI is currently project-scoped and does not reliably represent the actual MCP stdio permission pack.
 >
@@ -31,9 +31,9 @@
 
 ## Current Diagnosis
 
-### D1. Why Claude's cataloging flow diverged from Moshu
+### D1. Why Claude's cataloging flow diverged from Siming
 
-Current Moshu has an external no-API writing workflow, but not an external no-API cataloging workflow.
+Current Siming has an external no-API writing workflow, but not an external no-API cataloging workflow.
 
 Evidence:
 - `docs/agent/external-no-api-writing.md` documents API-free chapter writing.
@@ -42,7 +42,7 @@ Evidence:
 - `backend/app/services/cataloging/orchestrator.py` imports and calls `LLMGateway`.
 - `backend/app/services/agent/planner.py` maps project initialization/cataloging intent to `start_cataloging_job`.
 
-Result: when the user says "Moshu API is out of credit; use Claude itself", the external agent has no official cataloging playbook and falls back to ad-hoc CRUD.
+Result: when the user says "Siming API is out of credit; use Claude itself", the external agent has no official cataloging playbook and falls back to ad-hoc CRUD.
 
 ### D2. Why "done" can be false
 
@@ -65,7 +65,7 @@ Current permission settings are per-project:
 - `McpPage` is only rendered inside `ProjectWorkspace`.
 
 Actual Claude/Codex MCP exposure is configured by stdio CLI args:
-- `Moshu.exe --mcp-server --permission-pack project_management`
+- `Siming.exe --mcp-server --permission-pack project_management`
 - `scripts/setup-external-agent-mcp.ps1` writes that static permission pack into client config.
 
 Result: the frontend setting and the actual MCP permission source are not the same thing. The UI can say "updated" while Claude/Codex still use the CLI pack.
@@ -106,7 +106,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 - Implementation:
   - Delete the dead pseudo-tool version.
   - Add a test that "建档" intent produces the currently supported internal cataloging plan.
-  - Add a second test that "不用墨枢 API 建档" is not routed to internal cataloging once EAC-0301 exists.
+  - Add a second test that "不用司命 API 建档" is not routed to internal cataloging once EAC-0301 exists.
 - Verification:
   - `py -m pytest backend/tests/test_agent_planner_cataloging.py -q`
 
@@ -275,7 +275,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
   - `backend/tests/test_prompt_packs_external_cataloging.py`
   - `docs/agent/external-no-api-cataloging.md`
 - Goal:
-  - Give external agents the same cataloging method Moshu expects, without using Moshu's API.
+  - Give external agents the same cataloging method Siming expects, without using Siming's API.
 - Prompt pack:
   - `pack_id`: `cataloging_external_no_api`
   - `scope`: `cataloging`
@@ -301,7 +301,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
   - `backend/app/services/workspace/tools/__init__.py`
   - `backend/tests/test_external_cataloging_tools.py`
 - Goal:
-  - Add API-free tools that let Claude/Codex catalog imported chapters through Moshu.
+  - Add API-free tools that let Claude/Codex catalog imported chapters through Siming.
 - Tools:
   - `start_external_cataloging_job`
     - Creates a `CatalogingJob` with mode `external_agent`.
@@ -353,11 +353,11 @@ Result: the frontend setting and the actual MCP permission source are not the sa
   - `frontend/src/components/cataloging/`
   - `frontend/src/__tests__/CatalogingExternalMode.test.tsx`
 - Goal:
-  - Let users choose "External Agent / No Moshu API" when starting project cataloging.
+  - Let users choose "External Agent / No Siming API" when starting project cataloging.
 - UX:
   - Mode selector:
-    - Internal Moshu API
-    - External Agent / No Moshu API
+    - Internal Siming API
+    - External Agent / No Siming API
   - External mode shows:
     - Copyable Claude/Codex instruction block.
     - Required MCP tools.
@@ -379,8 +379,8 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 - Goal:
   - Internal project assistant must not start internal cataloging when the user asks for no-API/external-agent cataloging.
 - Behavior:
-  - If message includes "API欠费", "不用墨枢 API", "用 Claude 建档", "用 Codex 建档", route to external cataloging handoff.
-  - If Moshu model call fails due billing or missing key, assistant suggests external cataloging mode.
+  - If message includes "API欠费", "不用司命 API", "用 Claude 建档", "用 Codex 建档", route to external cataloging handoff.
+  - If Siming model call fails due billing or missing key, assistant suggests external cataloging mode.
   - Normal "建档" still uses internal cataloging when API is available.
 - Verification:
   - `py -m pytest backend/tests/test_agent_external_cataloging_plan.py -q`
@@ -477,7 +477,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
     - then call `get_project_archive_status`
   - Internal cataloging:
     - use `start_cataloging_job`
-    - requires Moshu API/model config
+    - requires Siming API/model config
   - External no-API cataloging:
     - use `get_prompt_pack(scope="cataloging", mode="external_no_api")`
     - use external cataloging tools
@@ -497,7 +497,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 - File scope:
   - `backend/tests/test_external_cataloging_no_api_e2e.py`
 - Goal:
-  - Prove a long imported novel can be cataloged without Moshu LLM calls.
+  - Prove a long imported novel can be cataloged without Siming LLM calls.
 - Test:
   - Create project with 3 sample chapters.
   - Start external cataloging job.
@@ -520,7 +520,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
   - Verify the exe path that normal users use.
 - Steps:
   - Build package.
-  - Start `Moshu.exe`.
+  - Start `Siming.exe`.
   - Configure MCP with `setup-external-agent-mcp.ps1 -DryRun`.
   - Import a small TXT file via MCP.
   - Run external no-API cataloging sample.
@@ -549,9 +549,9 @@ Result: the frontend setting and the actual MCP permission source are not the sa
 - [x] Claude Code / Codex configured with `--permission-pack auto` reflect global UI settings after restart.
 - [x] UI warns when an explicit CLI permission pack overrides UI settings.
 - [x] External agent can import a local TXT as a new project.
-- [x] External agent can catalog imported chapters without Moshu API.
+- [x] External agent can catalog imported chapters without Siming API.
 - [x] External agent can see and use the same prompt packs as internal assistant.
-- [x] External agent progress appears in Moshu UI during cataloging.
+- [x] External agent progress appears in Siming UI during cataloging.
 - [x] External agent cannot report cataloging complete unless verification counts pass.
-- [x] Internal assistant routes "不用墨枢 API 建档" to external-agent workflow instead of internal cataloging.
+- [x] Internal assistant routes "不用司命 API 建档" to external-agent workflow instead of internal cataloging.
 - [x] README clearly distinguishes internal API cataloging from external no-API cataloging.

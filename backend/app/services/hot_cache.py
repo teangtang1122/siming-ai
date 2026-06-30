@@ -1,6 +1,6 @@
 """Small project-scoped hot cache with optional Redis backend.
 
-Moshu 2.1 keeps the database authoritative. This cache only stores derived
+Siming 2.1 keeps the database authoritative. This cache only stores derived
 read payloads such as outline trees and lightweight indexes. It is safe to drop
 at any time and is invalidated after project writes refresh the file mirror.
 """
@@ -27,7 +27,7 @@ def _redis_client() -> Any | None:
         return None
     if _REDIS_CLIENT is not None:
         return _REDIS_CLIENT
-    url = os.environ.get("MOSHU_REDIS_URL") or os.environ.get("REDIS_URL")
+    url = os.environ.get("SIMING_REDIS_URL") or os.environ.get("MOSHU_REDIS_URL") or os.environ.get("REDIS_URL")
     if not url:
         _REDIS_CLIENT = False
         return None
@@ -44,7 +44,7 @@ def _redis_client() -> Any | None:
 
 
 def project_cache_key(project_id: str, namespace: str, variant: str = "default") -> str:
-    return f"moshu:project:{project_id}:{namespace}:{variant}"
+    return f"siming:project:{project_id}:{namespace}:{variant}"
 
 
 def get_json(key: str) -> Any | None:
@@ -110,4 +110,4 @@ def delete_pattern(pattern: str) -> int:
 def invalidate_project(project_id: str) -> int:
     if not project_id:
         return 0
-    return delete_pattern(f"moshu:project:{project_id}:*")
+    return delete_pattern(f"siming:project:{project_id}:*")

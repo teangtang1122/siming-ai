@@ -12,9 +12,9 @@ $FrontendDir = Join-Path $Root "frontend"
 $BuildDir = Join-Path $Root ".build"
 $VenvDir = Join-Path $BuildDir "packager-venv"
 $DistDir = Join-Path $Root "release"
-$AppName = "Moshu"
-$LegacyAppName = "NovelWritingAgent"
-$DefaultUpdateRepo = "teangtang1122/NovelWritingAgent"
+$AppName = "Siming"
+$LegacyAppNames = @("Moshu", "NovelWritingAgent")
+$DefaultUpdateRepo = "teangtang1122/siming-ai"
 
 function Write-Step {
   param([string]$Message)
@@ -80,7 +80,10 @@ $Separator = ":"
 $FrontendDist = Join-Path $FrontendDir "dist"
 
 Write-Step "Creating Windows executable..."
-$IconPath = Join-Path $BackendDir "Moshu.ico"
+$IconPath = Join-Path $BackendDir "Siming.ico"
+if (-not (Test-Path -LiteralPath $IconPath)) {
+  $IconPath = Join-Path $BackendDir "Moshu.ico"
+}
 Push-Location $Root
 try {
   $PyInstallerArgs = [System.Collections.ArrayList]@(
@@ -124,19 +127,37 @@ $ExePath = if ($OneDir) {
 } else {
   Join-Path $DistDir "$AppName.exe"
 }
+$ReleaseAssetDir = Join-Path $BuildDir "release-assets"
+New-Item -ItemType Directory -Force -Path $ReleaseAssetDir | Out-Null
 $BackendPathForPython = $BackendDir.Replace("\", "\\")
 $Version = (& $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.version import APP_VERSION; print(APP_VERSION)").Trim()
 $Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
-$LegacyExePath = if ($OneDir) {
-  Join-Path (Join-Path $DistDir $AppName) "$LegacyAppName.exe"
-} else {
-  Join-Path $DistDir "$LegacyAppName.exe"
+$LegacyExePaths = @()
+$LegacyReleaseAssetPaths = @()
+foreach ($LegacyAppName in $LegacyAppNames) {
+  $LegacyReleaseAssetPath = Join-Path $ReleaseAssetDir "$LegacyAppName.exe"
+  Copy-Item -LiteralPath $ExePath -Destination $LegacyReleaseAssetPath -Force
+  $LegacyReleaseAssetPaths += $LegacyReleaseAssetPath
+  $LegacyExePath = if ($OneDir) {
+    Join-Path (Join-Path $DistDir $AppName) "$LegacyAppName.exe"
+  } else {
+    Join-Path $DistDir "$LegacyAppName.exe"
+  }
+  try {
+    Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
+    $LegacyExePaths += $LegacyExePath
+  } catch {
+    Write-Warning "Could not update local legacy alias $LegacyExePath because it is locked. Release upload asset was still prepared at $LegacyReleaseAssetPath."
+  }
 }
-Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
 $Manifest = [ordered]@{
   version = $Version
   download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/$AppName.exe"
-  legacy_download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/$LegacyAppName.exe"
+  legacy_download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/Moshu.exe"
+  legacy_download_urls = @(
+    "https://github.com/$DefaultUpdateRepo/releases/latest/download/Moshu.exe",
+    "https://github.com/$DefaultUpdateRepo/releases/latest/download/NovelWritingAgent.exe"
+  )
   sha256 = $Sha256
   repo = $DefaultUpdateRepo
 } | ConvertTo-Json -Depth 3
@@ -153,8 +174,10 @@ $ShaPath = if ($OneDir) {
 }
 $ShaLinesArray = @(
   "$Sha256  $AppName.exe"
-  "$Sha256  $LegacyAppName.exe"
 )
+foreach ($LegacyAppName in $LegacyAppNames) {
+  $ShaLinesArray += "$Sha256  $LegacyAppName.exe"
+}
 $ShaLines = $ShaLinesArray -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($ShaPath, $ShaLines + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 Write-Host "Update manifest: $ManifestPath"
@@ -164,5 +187,10 @@ if ($OneDir) {
   Write-Host "Run: $(Join-Path (Join-Path $DistDir $AppName) "$AppName.exe")"
 } else {
   Write-Host "Executable: $ExePath"
-  Write-Host "Legacy-compatible alias: $LegacyExePath"
+  foreach ($LegacyExePath in $LegacyExePaths) {
+    Write-Host "Legacy-compatible alias: $LegacyExePath"
+  }
+  foreach ($LegacyReleaseAssetPath in $LegacyReleaseAssetPaths) {
+    Write-Host "Release upload alias: $LegacyReleaseAssetPath"
+  }
 }

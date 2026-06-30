@@ -199,10 +199,14 @@ class LLMGateway:
         """
         task_type = str(task_type or "").strip()
         override = str(model_override or "").strip()
-        setting_model: Optional[str] = None
-        setting: Optional[LocalModelTaskSetting] = None
-        if task_type:
-            setting_model, setting = cls._task_setting_model(task_type)
+        if override:
+            model_value, provider, model_name = cls._identity_from_model_value(override)
+            return TaskModelSelection(
+                model=model_value or override,
+                source="explicit",
+                provider=provider,
+                model_name=model_name,
+            )
 
         if extra_body:
             prefer_task_model = prefer_task_model or bool(
@@ -210,14 +214,21 @@ class LLMGateway:
                 or extra_body.get("moshu_use_task_model")
             )
 
-        selected = override
-        source = "explicit" if selected else ""
-        if not selected and prefer_task_model and setting_model:
+        setting_model: Optional[str] = None
+        setting: Optional[LocalModelTaskSetting] = None
+        if task_type and prefer_task_model:
+            setting_model, setting = cls._task_setting_model(task_type)
+
+        selected = ""
+        source = ""
+        if prefer_task_model and setting_model:
             selected = setting_model
             source = "task_setting"
         if not selected:
             selected = cls._global_default_model_value() or ""
             source = "global_default" if selected else ""
+        if not selected and task_type and setting_model is None:
+            setting_model, setting = cls._task_setting_model(task_type)
         if not selected and setting_model:
             selected = setting_model
             source = "task_setting_fallback"

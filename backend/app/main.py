@@ -53,8 +53,8 @@ with SessionLocal() as db:
     mark_interrupted_assistant_runs(db)
 
 app = FastAPI(
-    title="墨枢 API",
-    description="Backend API for the Moshu novel-writing tool.",
+    title="司命 API",
+    description="Backend API for the Siming novel-writing tool.",
     version=APP_VERSION,
 )
 
@@ -101,7 +101,7 @@ async def root():
     """Health check endpoint."""
     if FRONTEND_DIST:
         return FileResponse(FRONTEND_DIST / "index.html")
-    return {"status": "ok", "service": "moshu-api"}
+    return {"status": "ok", "service": "siming-api"}
 
 
 @app.get("/health")

@@ -665,14 +665,15 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
     if any(kw in text for kw in ("拆书", "拆书分析", "阅读分析", "分析全书", "分析作品")):
         return {"intent_type": _INTENT_DECONSTRUCT, "requirements": text}
 
-    # 1.3 External cataloging (Claude Code / Codex catalogs without Moshu API)
+    # 1.3 External cataloging (Claude Code / Codex catalogs without Siming API)
     # Must be checked BEFORE project_init because _INIT_KEYWORDS contains "建档"
     # which is a substring of external cataloging keywords like "外部agent建档".
     _EXTERNAL_CATALOGING_KEYWORDS = [
         "外部建档", "外部agent建档", "用claude建档", "用codex建档",
         "用 Claude 建档", "用 Codex 建档",
-        "不用墨枢api建档", "不用墨枢 API 建档", "不用api建档", "不用 API 建档",
-        "不用墨枢 API", "不用墨枢api",
+        "不用司命api建档", "不用司命 API 建档", "不用api建档", "不用 API 建档",
+        "不用司命 API", "不用司命api",
+        "不用墨枢api建档", "不用墨枢 API 建档", "不用墨枢 API", "不用墨枢api",
         "API欠费", "api欠费",
         "外部编目",
     ]

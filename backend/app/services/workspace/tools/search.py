@@ -19,7 +19,7 @@ from ....services.hot_cache import get_json, project_cache_key, set_json
 def _refresh(db: Session, project_id: str) -> None:
     """Compatibility no-op.
 
-    Moshu 2.1 treats the database as authoritative. File mirrors are read-only
+    Siming 2.1 treats the database as authoritative. File mirrors are read-only
     context for external/local agents and are never auto-imported during normal
     search because that makes reads slow and can overwrite newer DB data.
     """

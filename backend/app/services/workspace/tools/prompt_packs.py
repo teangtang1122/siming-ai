@@ -20,7 +20,7 @@ async def get_moshu_usage_guide(
 
     This tool is intentionally API-free. It gives Claude Code, Codex, and the
     in-app assistant a deterministic first stop when they do not know which
-    Moshu workflow to use.
+    Siming workflow to use.
     """
     from app.services.prompt_packs.seed import ensure_builtin_packs
 
@@ -53,15 +53,15 @@ async def get_moshu_usage_guide(
 
     workflows = {
         "quickstart": {
-            "title": "墨枢外部 Agent 快速入口",
+            "title": "司命外部 Agent 快速入口",
             "rules": [
-                "Moshu 2.1 uses the database as the authoritative source. The project folder is a read-only mirror for context: chapters/*.md, characters/*.json, worldbuilding/**/*.json, outline/outline.json, relationships/relationships.json.",
+                "Siming 2.1 uses the database as the authoritative source. The project folder is a read-only mirror for context: chapters/*.md, characters/*.json, worldbuilding/**/*.json, outline/outline.json, relationships/relationships.json.",
                 "When you need long text or exact source material, use get_project_files_info -> list_project_files/read_project_file/search_project_files, or read the mirrored files directly if you are a local CLI agent.",
-                "Trusted local mode is the default. Do not ask the user to approve tool calls in the Moshu web UI; there is no per-call approval UI. Use the available file reads and Moshu MCP tools directly, and report any real permission error as a configuration problem.",
-                "If the task is only information lookup and you are a local CLI agent, prefer reading the mirrored project files first. Use Moshu MCP tools for writes, deletes, verification, progress reporting, and when the file mirror is missing or stale.",
-                "Do not edit project files directly. All writes/deletes/updates must use Moshu MCP/API tools; Moshu will refresh the file mirror after database writes.",
-                "默认使用 API-free 外部流程：除非用户明确说“使用墨枢内部 API/内部模型/系统模型额度”，不要调用内部模型工具。",
-                "如果用户希望 Moshu 代为启动本机 Claude/Codex/opencode，而不是手动在外部 Agent 中操作，调用 start_local_cli_agent_run。",
+                "Trusted local mode is the default. Do not ask the user to approve tool calls in the Siming web UI; there is no per-call approval UI. Use the available file reads and Siming MCP tools directly, and report any real permission error as a configuration problem.",
+                "If the task is only information lookup and you are a local CLI agent, prefer reading the mirrored project files first. Use Siming MCP tools for writes, deletes, verification, progress reporting, and when the file mirror is missing or stale.",
+                "Do not edit project files directly. All writes/deletes/updates must use Siming MCP/API tools; Siming will refresh the file mirror after database writes.",
+                "默认使用 API-free 外部流程：除非用户明确说“使用司命内部 API/内部模型/系统模型额度”，不要调用内部模型工具。",
+                "如果用户希望 Siming 代为启动本机 Claude/Codex/opencode，而不是手动在外部 Agent 中操作，调用 start_local_cli_agent_run。",
                 "内部模型工具现在只通过 MCP permission pack: internal_llm 暴露；project_management 只用于 API-free 的项目创建、导入、写入、导出、技能和自动任务管理。",
                 "中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观；不要因为工具报错就改成英文或拼音。",
                 "先调用 list_projects 或 get_project_info 确认作品；所有项目写入工具都必须传入正确 project_id。",
@@ -88,13 +88,13 @@ async def get_moshu_usage_guide(
                 "读取返回的 project.id；之后所有写入都使用这个 project_id。",
                 "调用 get_project_archive_status 验证 chapters_count 是否正确。",
                 "如果用户还要建档，默认继续 cataloging_no_api；只有用户明确授权内部 API 时才走 cataloging_internal。",
-                "如果用户希望 Moshu 启动本机 CLI 完成后续建档，调用 start_local_cli_agent_run(task_type='cataloging')。",
+                "如果用户希望 Siming 启动本机 CLI 完成后续建档，调用 start_local_cli_agent_run(task_type='cataloging')。",
             ],
         },
         "cataloging_no_api": {
             "title": "API-free 建档，由外部 Agent 自己读章节并写入",
             "steps": [
-                "如果需要 Moshu 代为启动本机 CLI，调用 start_local_cli_agent_run(task_type='cataloging')，再通过 AgentRun 事件查看进度。",
+                "如果需要 Siming 代为启动本机 CLI，调用 start_local_cli_agent_run(task_type='cataloging')，再通过 AgentRun 事件查看进度。",
                 "调用 get_prompt_pack(pack_id='cataloging_external_no_api') 读取建档提示词和输出契约。",
                 "调用 start_external_cataloging_job 创建外部建档任务。",
                 "事实阶段可并行：多个外部 Agent 可调用 get_next_external_cataloging_chapter(phase='facts') 阅读不同章节，并分别 save_external_cataloging_facts。",
@@ -105,9 +105,9 @@ async def get_moshu_usage_guide(
             "forbidden_tools": internal_llm_tools,
         },
         "cataloging_internal": {
-            "title": "使用墨枢内部 API 建档",
+            "title": "使用司命内部 API 建档",
             "steps": [
-                "只有用户明确授权使用墨枢内部 API/内部模型时才能进入此流程。",
+                "只有用户明确授权使用司命内部 API/内部模型时才能进入此流程。",
                 "确认 MCP 权限包为 internal_llm，且系统设置里的模型 API 可用。",
                 "调用 start_cataloging_job；前端会显示实时进度。",
                 "失败时使用 retry_current_cataloging_chapter 或 rerun_cataloging_resolution_current。",
@@ -117,7 +117,7 @@ async def get_moshu_usage_guide(
         "writing_no_api": {
             "title": "API-free 写作，由外部 Agent 生成正文",
             "steps": [
-                "如果需要 Moshu 代为启动本机 CLI，调用 start_local_cli_agent_run(task_type='writing')，再通过 AgentRun 事件查看进度。",
+                "如果需要 Siming 代为启动本机 CLI，调用 start_local_cli_agent_run(task_type='writing')，再通过 AgentRun 事件查看进度。",
                 "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要、质量规则和禁用句式。",
                 "外部 Agent 必须按质量版 prompt pack 自己写正文并自检；fast 请求也只影响外围流程，不降低正文写作标准。",
                 "调用 save_external_chapter_draft 保存完整草稿；聊天里不要完整输出正文。",
@@ -127,9 +127,9 @@ async def get_moshu_usage_guide(
             "forbidden_tools": internal_llm_tools,
         },
         "writing_internal": {
-            "title": "使用墨枢内部 API 写作",
+            "title": "使用司命内部 API 写作",
             "steps": [
-                "只有用户明确授权使用墨枢内部 API/内部模型时才能进入此流程。",
+                "只有用户明确授权使用司命内部 API/内部模型时才能进入此流程。",
                 "确认 MCP 权限包为 internal_llm。",
                 "内部写作统一使用质量版总控和质量版章节提示词：检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
                 "fast 请求只允许减少外围轮次，不能切换到低配正文提示词。",
@@ -163,11 +163,11 @@ async def get_moshu_usage_guide(
 
     workflows = {
         "quickstart": {
-            "title": "墨枢外部 Agent 快速入口",
+            "title": "司命外部 Agent 快速入口",
             "rules": [
                 "中文小说必须用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观；不要因为工具调用失败就改成英文或拼音，除非用户明确要求翻译。",
                 "先调用 list_projects 或 get_project_info 确认作品；所有写入工具都必须传入正确 project_id。",
-                "如果用户说 API 欠费、没有在墨枢配置 API、或要求由 Claude/Codex 自己分析，禁止调用 start_cataloging_job、chapter_writer、character_writer、outline_writer、worldbuilding_writer 这类内部 LLM 工具。",
+                "如果用户说 API 欠费、没有在司命配置 API、或要求由 Claude/Codex 自己分析，禁止调用 start_cataloging_job、chapter_writer、character_writer、outline_writer、worldbuilding_writer 这类内部 LLM 工具。",
                 "创建或导入后不要只凭工具返回口头确认，必须调用 get_project_archive_status 或对应 search/list 工具验证数据真的存在。",
                 "遇到不确定流程，先调用 get_prompt_pack(pack_id='cataloging_external_no_api') 或 get_tool_playbook，而不是手动猜 CRUD。",
                 "长正文、完整章节、完整档案和大量候选 JSON 不要完整输出到聊天里；必须写入 save_external_chapter_draft、save_external_cataloging_facts、save_external_cataloging_candidates 或对应写入工具，聊天只返回摘要、ID、字数、数量和验证结果。",
@@ -190,7 +190,7 @@ async def get_moshu_usage_guide(
             ],
         },
         "cataloging_no_api": {
-            "title": "无墨枢 API 建档，由外部 Agent 自己读章节并写入",
+            "title": "无司命 API 建档，由外部 Agent 自己读章节并写入",
             "steps": [
                 "语言规则：中文小说全程用中文建档；角色名、别名、章节标题、摘要、大纲、世界观和证据都保留原文语言。",
                 "调用 get_prompt_pack(pack_id='cataloging_external_no_api') 读取建档提示词和输出契约。",
@@ -226,7 +226,7 @@ async def get_moshu_usage_guide(
             ],
         },
         "cataloging_internal": {
-            "title": "使用墨枢内部 API 建档",
+            "title": "使用司命内部 API 建档",
             "steps": [
                 "确认系统设置里 API 可用且用户允许消耗模型额度。",
                 "调用 start_cataloging_job；前端会显示实时进度。",
@@ -235,7 +235,7 @@ async def get_moshu_usage_guide(
             ],
         },
         "writing_no_api": {
-            "title": "无墨枢 API 写作，由外部 Agent 生成正文",
+            "title": "无司命 API 写作，由外部 Agent 生成正文",
             "steps": [
                 "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要、质量规则和禁用句式。",
                 "外部 Agent 按 prompt pack 自己写正文并自检。",
@@ -245,7 +245,7 @@ async def get_moshu_usage_guide(
             ],
         },
         "writing_internal": {
-            "title": "使用墨枢内部 API 写作",
+            "title": "使用司命内部 API 写作",
             "steps": [
                 "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
                 "快速模式是兼容入口，正文写作提示词和质量标准仍与质量模式一致；只能减少外围非必要轮次，不能降低正文质量规则。",

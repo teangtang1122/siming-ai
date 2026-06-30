@@ -47,7 +47,7 @@ output.mkdir(parents=True, exist_ok=True)
 def emit(event, **payload):
     print(json.dumps({"event": event, **payload}, ensure_ascii=False), flush=True)
 
-class MoshuCallback(TrainerCallback):
+class SimingCallback(TrainerCallback):
     def on_step_end(self, args, state, control_state, **kwargs):
         emit("progress", step=state.global_step, total=state.max_steps, progress=(state.global_step / max(1, state.max_steps)))
         command = control.read_text(encoding="utf-8").strip() if control.exists() else ""
@@ -65,7 +65,7 @@ def format_record(row):
     instruction = row.get("instruction", "")
     source = row.get("input", "")
     answer = row.get("output", "")
-    return {"text": f"<|im_start|>system\n你是墨枢小说写作模型。<|im_end|>\n<|im_start|>user\n{instruction}\n{source}<|im_end|>\n<|im_start|>assistant\n{answer}<|im_end|>"}
+    return {"text": f"<|im_start|>system\n你是司命小说写作模型。<|im_end|>\n<|im_start|>user\n{instruction}\n{source}<|im_end|>\n<|im_start|>assistant\n{answer}<|im_end|>"}
 
 train_ds = Dataset.from_list([format_record(r) for r in train])
 eval_ds = Dataset.from_list([format_record(r) for r in evaluation])
@@ -90,7 +90,7 @@ args = SFTConfig(
     report_to="none",
     dataset_text_field="text",
 )
-trainer = SFTTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=eval_ds if evaluation else None, peft_config=peft, processing_class=tokenizer, callbacks=[MoshuCallback()])
+trainer = SFTTrainer(model=model, args=args, train_dataset=train_ds, eval_dataset=eval_ds if evaluation else None, peft_config=peft, processing_class=tokenizer, callbacks=[SimingCallback()])
 emit("started")
 resume = cfg.get("resume_from_checkpoint")
 result = trainer.train(resume_from_checkpoint=resume or None)
@@ -146,7 +146,7 @@ def start_training_job(job_id: str) -> None:
         worker = _WORKERS.get(job_id)
         if worker and worker.is_alive():
             return
-        worker = threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"moshu-train-{job_id}")
+        worker = threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"siming-train-{job_id}")
         _WORKERS[job_id] = worker
         worker.start()
 

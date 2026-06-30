@@ -1,6 +1,6 @@
 # Tool Authoring Guide
 
-> How to add a new tool to Moshu's workspace ToolRegistry so it works everywhere:
+> How to add a new tool to Siming's workspace ToolRegistry so it works everywhere:
 > internal project assistant, scheduler, MCP clients, external Agents, and frontend.
 
 ## Quick Checklist
@@ -141,7 +141,7 @@ Tools are automatically assigned to a permission pack based on their metadata:
 | memory (write) | True | low | `project_writing` |
 
 Important: `project_management` and `trusted_local_maintenance` must not imply
-`internal_llm`. External agents should only receive Moshu internal model tools
+`internal_llm`. External agents should only receive Siming internal model tools
 when the user explicitly chooses the `internal_llm` pack.
 
 ## Common Mistakes

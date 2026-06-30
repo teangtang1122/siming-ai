@@ -240,7 +240,7 @@ describe('DashboardPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('从一个想法创建完整小说项目')).toBeInTheDocument()
-      expect(screen.getByText('告诉墨枢你想写什么')).toBeInTheDocument()
+      expect(screen.getByText('告诉司命你想写什么')).toBeInTheDocument()
       expect(screen.getByText('直接创建空作品')).toBeInTheDocument()
     })
   })

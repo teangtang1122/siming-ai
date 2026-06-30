@@ -26,8 +26,8 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     # Gemini OpenAI-compatible endpoint can reject tool_choice when the selected
     # model is in thinking mode. Leaving tools present still lets it call tools.
     "gemini": ProviderCapabilities(supports_tool_choice=False),
-    # Local agent CLIs are text executors in Moshu's provider layer. Tool use
-    # must be orchestrated by Moshu itself, not encoded as OpenAI tool calls.
+    # Local agent CLIs are text executors in Siming's provider layer. Tool use
+    # must be orchestrated by Siming itself, not encoded as OpenAI tool calls.
     "claude_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
     "codex_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
     "opencode_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),

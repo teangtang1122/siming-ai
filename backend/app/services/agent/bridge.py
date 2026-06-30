@@ -486,7 +486,7 @@ def _stream_cataloging_job(
             if isinstance(exc, (LLMError, NotFoundError)) or "API" in str(exc) or "Key" in str(exc) or "credit" in str(exc).lower() or "quota" in str(exc).lower() or "欠费" in str(exc) or "额度" in str(exc):
                 yield _sse_event({
                     "type": "error",
-                    "message": f"建档任务异常: {exc}\n\n提示：墨枢模型 API 不可用。您可以用 Claude Code 或 Codex 直接进行外部编目（无需墨枢 API）。请发送「用 Claude 建档」或「外部编目」启动。",
+                    "message": f"建档任务异常: {exc}\n\n提示：司命模型 API 不可用。您可以用 Claude Code 或 Codex 直接进行外部编目（无需司命 API）。请发送「用 Claude 建档」或「外部编目」启动。",
                 })
             else:
                 yield _sse_event({"type": "error", "message": f"建档任务异常: {exc}"})

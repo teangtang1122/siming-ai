@@ -3,23 +3,23 @@
 > This guide covers Claude Code, Codex, OpenCode, MiMo Code, Cursor, Trae,
 > Kilo Code, Qwen Code, Hermes Agent, and OpenClaw.
 
-By default, Moshu MCP can run without binding to a single project. In that mode,
+By default, Siming MCP can run without binding to a single project. In that mode,
 external agents should first call `list_projects`, then pass the selected
 `project_id`/`id` to project-scoped tools.
 
 ## Prerequisites
 
-- Moshu installed (from source or packaged exe)
-- A Moshu project created with some content
+- Siming installed (from source or packaged exe)
+- A Siming project created with some content
 - At least one supported local Agent client installed
 
 ## Quick Start
 
 ### Option 0: Automatic Windows Setup
 
-Moshu now performs this setup automatically on startup. It detects supported
+Siming now performs this setup automatically on startup. It detects supported
 clients, finds the packaged exe or source MCP entrypoint, merges only the
-`moshu` entry, and preserves unrelated client configuration. The script below
+`siming` entry, and preserves unrelated client configuration. The script below
 is a fallback and dry-run tool.
 
 The automatic setup also applies each client's non-interactive trusted mode:
@@ -28,7 +28,7 @@ Cursor approves MCPs, Kilo uses `permission=allow`, Qwen Code uses
 exec policy. Trae is configured as an IDE MCP client but is not exposed as a
 headless model provider.
 
-From a GitHub Release, place `setup-external-agent-mcp.ps1` next to `Moshu.exe`
+From a GitHub Release, place `setup-external-agent-mcp.ps1` next to `Siming.exe`
 and run:
 
 ```powershell
@@ -54,7 +54,7 @@ Add to your MCP client configuration:
 ```json
 {
   "mcpServers": {
-    "moshu": {
+    "siming": {
       "command": "python",
       "args": [
         "scripts/moshu-mcp-server.py",
@@ -72,8 +72,8 @@ Add to your MCP client configuration:
 ```json
 {
   "mcpServers": {
-    "moshu": {
-      "command": "C:\\path\\to\\Moshu.exe",
+    "siming": {
+      "command": "C:\\path\\to\\Siming.exe",
       "args": ["--mcp-server", "--permission-pack", "project_management"]
     }
   }
@@ -86,39 +86,39 @@ can see all projects through `list_projects`.
 
 ### Finding Your Project ID
 
-1. Open Moshu in your browser
+1. Open Siming in your browser
 2. Go to your project
 3. The project ID is in the URL: `http://localhost:8765/projects/YOUR_PROJECT_ID/...`
 
 ## Permission Packs
 
 - `readonly_collaboration`: read/search/API-free context tools only.
-- `draft_generation`: legacy compatibility pack; does not expose Moshu internal LLM tools.
-- `project_writing`: can create/update chapters, characters, outline, worldbuilding, and external drafts without calling Moshu's model API.
+- `draft_generation`: legacy compatibility pack; does not expose Siming internal LLM tools.
+- `project_writing`: can create/update chapters, characters, outline, worldbuilding, and external drafts without calling Siming's model API.
 - `project_management`: project CRUD, import/export, scheduler and skill management. It does **not** expose internal LLM tools.
-- `internal_llm`: explicit opt-in pack for tools that spend Moshu's configured model API, such as `chapter_writer` and `start_cataloging_job`.
+- `internal_llm`: explicit opt-in pack for tools that spend Siming's configured model API, such as `chapter_writer` and `start_cataloging_job`.
 - `trusted_local_maintenance`: exposes destructive tools such as delete/merge. It does **not** imply `internal_llm`.
 
-For local desktop clients, use `--permission-pack auto`. Moshu defaults to
+For local desktop clients, use `--permission-pack auto`. Siming defaults to
 trusted local maintenance, including project reads, writes, management, and
 maintenance while still excluding secret-management and internal model-spend
 tools. Select `internal_llm` only when the user explicitly wants to spend the
-model API configured inside Moshu.
+model API configured inside Siming.
 
 Default rule for external agents: do your own reading, reasoning, cataloging,
-and writing unless the user explicitly says to use Moshu's internal API/model
+and writing unless the user explicitly says to use Siming's internal API/model
 quota. Use `internal_llm` only for that explicit opt-in mode.
 
-## Moshu 2.1 Data Boundary
+## Siming 2.1 Data Boundary
 
-Moshu 2.1 uses the database as the authoritative data source. The project
+Siming 2.1 uses the database as the authoritative data source. The project
 folder is a readable mirror for long-context work:
 
 - External agents may read `chapters/`, `characters/`, `worldbuilding/`,
   `outline/`, and `relationships/` directly from disk.
 - External agents must not edit those canonical mirror folders.
 - All creates, updates, deletes, chapter saves, cataloging candidates, outline
-  changes, character states, and worldbuilding changes must go through Moshu
+  changes, character states, and worldbuilding changes must go through Siming
   MCP tools with the correct `project_id`.
 - `write_project_file` is only for non-canonical folders such as `outbox/` or
   temporary notes.
@@ -126,12 +126,12 @@ folder is a readable mirror for long-context work:
   `both` are repair paths and require `confirm_import_from_files=true`.
 
 This lets Claude Code / Codex read a whole novel like a local workspace while
-Moshu still keeps versions, frontend state, RAG, cache invalidation, and file
+Siming still keeps versions, frontend state, RAG, cache invalidation, and file
 mirrors consistent.
 
 ## Operating Rules for External Agents
 
-When Claude Code or Codex operates Moshu through MCP, follow these rules for the best experience:
+When Claude Code or Codex operates Siming through MCP, follow these rules for the best experience:
 
 ### 1. Start a Run
 
@@ -161,9 +161,9 @@ Arguments: {
 }
 ```
 
-### 3. Use Moshu Resources/RAG Before Writing
+### 3. Use Siming Resources/RAG Before Writing
 
-Read project context before generating content. For focused lookup, use Moshu
+Read project context before generating content. For focused lookup, use Siming
 tools; for long chapters or broad inspection, read the project folder mirror
 directly after calling `get_project_files_info`.
 
@@ -186,7 +186,7 @@ Arguments: { "query": "magic system" }
 
 ### 4. Report Selected Context
 
-Tell Moshu which context you're using:
+Tell Siming which context you're using:
 
 ```
 Tool: report_context_selected
@@ -237,7 +237,7 @@ Arguments: {
 }
 ```
 
-The user will see the request in the Moshu UI and can confirm or reject.
+The user will see the request in the Siming UI and can confirm or reject.
 
 ### 8. Finish the Run
 
@@ -253,7 +253,7 @@ Arguments: {
 
 ## Tool Result Contract
 
-Every Moshu MCP tool returns a JSON result with a `status` field. Follow these rules:
+Every Siming MCP tool returns a JSON result with a `status` field. Follow these rules:
 
 1. **Always check `status`** — after every tool call, parse the result JSON.
 2. **`status != "ok"` means failure** — stop immediately, report the exact error
@@ -278,7 +278,7 @@ If a tool returns `isError: true`, the error payload includes:
 
 ## Importing Local Novels
 
-When the user asks to import a local TXT/DOCX novel as a new Moshu project,
+When the user asks to import a local TXT/DOCX novel as a new Siming project,
 prefer `import_file_as_project` instead of reading the whole file and passing the
 full text through MCP arguments.
 
@@ -292,7 +292,7 @@ Arguments: {
 }
 ```
 
-Use `import_file_as_chapters` only when the target Moshu project already exists.
+Use `import_file_as_chapters` only when the target Siming project already exists.
 
 After import, verify the import succeeded:
 
@@ -303,7 +303,7 @@ Arguments: { "project_id": "YOUR_PROJECT_ID" }
 
 This returns chapter count, character count, outline count, etc. If chapters > 0 but everything else is 0, the project needs cataloging.
 
-Start a cataloging job if the user wants Moshu to initialize
+Start a cataloging job if the user wants Siming to initialize
 chapter summaries, character cards, outline nodes, worldbuilding, and links.
 
 ## Available MCP Tools
@@ -350,7 +350,7 @@ chapter summaries, character cards, outline nodes, worldbuilding, and links.
 
 | Tool | Description |
 |------|-------------|
-| `create_project` | Create a new Moshu project |
+| `create_project` | Create a new Siming project |
 | `import_file_as_project` | Create a project from a local TXT/DOCX file and import chapters |
 | `import_file_as_chapters` | Import a local TXT/DOCX file into an existing project |
 | `import_text_as_chapters` | Import pasted text into an existing project |
@@ -359,7 +359,7 @@ chapter summaries, character cards, outline nodes, worldbuilding, and links.
 
 ## Permission Packs
 
-By default, trusted local Claude Code / Codex clients get API-free project read/write/management access through `--permission-pack auto`. Moshu still blocks API keys, model secrets, and internal model-spend tools unless the user explicitly selects the `internal_llm` pack.
+By default, trusted local Claude Code / Codex clients get API-free project read/write/management access through `--permission-pack auto`. Siming still blocks API keys, model secrets, and internal model-spend tools unless the user explicitly selects the `internal_llm` pack.
 
 ### Available Packs
 
@@ -381,7 +381,7 @@ Packs form a hierarchy — enabling a higher pack automatically enables all lowe
 
 ### How to Enable More Packs
 
-1. Open Moshu web UI
+1. Open Siming web UI
 2. Go to your project
 3. Find the "外部 Agent 权限设置" panel
 4. Toggle the packs you want to enable
@@ -389,10 +389,10 @@ Packs form a hierarchy — enabling a higher pack automatically enables all lowe
 
 ### Global Settings vs CLI Override
 
-Moshu has two levels of permission settings:
+Siming has two levels of permission settings:
 
 **Global settings** (system-wide):
-- Configured in the Moshu web UI under "External Agent / MCP"
+- Configured in the Siming web UI under "External Agent / MCP"
 - Apply to all projects unless overridden
 - Default: `trusted_local_maintenance` without `internal_llm`
 
@@ -426,7 +426,7 @@ Returns:
 
 ### Trusted Local Mode
 
-Trusted local mode allows Claude Code / Codex to skip write confirmations for project content. Moshu enables it by default for local desktop clients; disable it if you are connecting an untrusted client.
+Trusted local mode allows Claude Code / Codex to skip write confirmations for project content. Siming enables it by default for local desktop clients; disable it if you are connecting an untrusted client.
 
 Requirements:
 - It is enabled by default for local desktop clients, and can be disabled in global/project settings
@@ -444,24 +444,24 @@ When enabled:
 If a tool you expect is not available:
 
 1. **Project ID missing** — Make sure you're using `--project-id YOUR_PROJECT_ID`
-2. **Permission pack disabled** — Check project settings in Moshu UI
+2. **Permission pack disabled** — Check project settings in Siming UI
 3. **Tool marked internal-only** — Some tools are only for the internal assistant
 4. **Secret deny-list** — API key/model secret tools are permanently blocked
 5. **Schema validation failure** — Check linter: `python scripts/check-tool-registry.py`
 
-## No Moshu API Mode
+## No Siming API Mode
 
-Claude Code / Codex can write novels through Moshu **without any model API configured inside Moshu**. In this mode, Moshu provides context, prompt packs, storage, and telemetry — the external model does all generation and review.
+Claude Code / Codex can write novels through Siming **without any model API configured inside Siming**. In this mode, Siming provides context, prompt packs, storage, and telemetry — the external model does all generation and review.
 
 ### How It Works
 
-1. Moshu stores your project data (outline, characters, worldbuilding)
-2. Claude Code / Codex fetches writing context and prompt packs from Moshu
+1. Siming stores your project data (outline, characters, worldbuilding)
+2. Claude Code / Codex fetches writing context and prompt packs from Siming
 3. The external model generates chapter text using its own capabilities
-4. The external model self-reviews using Moshu's quality rubric
-5. The draft is saved to Moshu and promoted to a chapter after confirmation
+4. The external model self-reviews using Siming's quality rubric
+5. The draft is saved to Siming and promoted to a chapter after confirmation
 
-### Writing a Chapter Without Moshu API
+### Writing a Chapter Without Siming API
 
 ```
 # 1. Get writing context
@@ -507,7 +507,7 @@ apply_external_story_updates({
 })
 ```
 
-### Creating a New Novel Without Moshu API
+### Creating a New Novel Without Siming API
 
 ```
 # 1. Start creation session
@@ -539,12 +539,12 @@ apply_novel_blueprint({
 })
 ```
 
-### Cataloging Without Moshu API
+### Cataloging Without Siming API
 
 After importing a novel, you can catalog it (extract characters, worldbuilding,
-outline, and chapter summaries) without Moshu's model API:
+outline, and chapter summaries) without Siming's model API:
 
-For long Claude Code / Codex conversations, treat Moshu's tool results as the
+For long Claude Code / Codex conversations, treat Siming's tool results as the
 current source of truth. If the agent is unsure what to do next, call
 `get_moshu_usage_guide({"scenario":"cataloging_no_api","no_api":true})` again.
 For Chinese novels, keep all archive data in Chinese: character names, aliases,
@@ -552,7 +552,7 @@ chapter titles, summaries, outline nodes, facts, evidence, and worldbuilding.
 Do not translate to English or pinyin unless the user explicitly requests it.
 
 ```
-# 0. Ask Moshu which workflow to use
+# 0. Ask Siming which workflow to use
 get_moshu_usage_guide({
   "scenario": "cataloging_no_api",
   "no_api": true
@@ -582,7 +582,7 @@ save_external_cataloging_facts({
   "facts": [...]
 })
 
-# 3B. Candidate stage must be serial by chapter_order. Always ask Moshu
+# 3B. Candidate stage must be serial by chapter_order. Always ask Siming
 # which chapter is allowed next; never use fact-completion order.
 get_next_external_cataloging_chapter({
   "job_id": "JOB_ID",
@@ -621,7 +621,7 @@ serialized. Candidate generation merges into cumulative character backgrounds,
 current status, outline nodes, and worldbuilding entries, so it must follow
 `chapter_order` rather than the order in which fact extraction finishes.
 
-### Tools That Work Without Moshu API
+### Tools That Work Without Siming API
 
 | Tool | Purpose |
 |------|---------|
@@ -652,7 +652,7 @@ current status, outline nodes, and worldbuilding entries, so it must follow
 | `save_external_cataloging_candidates` | Save proposed candidates |
 | `verify_external_cataloging_progress` | Check cataloging progress |
 
-### Tools That Require Moshu API
+### Tools That Require Siming API
 
 These tools call the configured model API and will fail if no API key is set:
 
@@ -673,16 +673,16 @@ These tools call the configured model API and will fail if no API key is set:
 | `detect_character_changes` | Character-change analysis using LLM |
 | `detect_new_worldbuilding` | Worldbuilding detection using LLM |
 | `detect_worldbuilding_conflicts` | Worldbuilding conflict check using LLM |
-| `start_cataloging_job` | Internal cataloging job using Moshu's configured LLM |
+| `start_cataloging_job` | Internal cataloging job using Siming's configured LLM |
 
 ## Troubleshooting
 
 ### Wrong Database Path
 
-If Moshu can't find your project:
+If Siming can't find your project:
 
 1. Check that `MOSHU_HOME` environment variable points to the correct directory
-2. Default location: `%LOCALAPPDATA%\Moshu`
+2. Default location: `%LOCALAPPDATA%\Siming`
 3. The database file should be `novel_agent.db` in that directory
 
 ### Missing Project ID
@@ -690,14 +690,14 @@ If Moshu can't find your project:
 If you get "Project not found":
 
 1. Make sure you're using the correct project ID
-2. Open Moshu web UI and check the URL
+2. Open Siming web UI and check the URL
 3. The project ID is a UUID like `550e8400-e29b-41d4-a716-446655440000`
 
 ### Insufficient Model Balance
 
 If tools fail with model errors:
 
-1. Moshu uses your configured model API (OpenAI, Anthropic, etc.)
+1. Siming uses your configured model API (OpenAI, Anthropic, etc.)
 2. Check your API key balance
 3. The MCP server itself doesn't need a model — only the tools that call LLMs do
 
@@ -705,8 +705,8 @@ If tools fail with model errors:
 
 If `chapter_writer` or other LLM tools fail with "no API key configured":
 
-1. You're trying to use tools that require Moshu's model API
-2. Use the **No Moshu API mode** instead (see above)
+1. You're trying to use tools that require Siming's model API
+2. Use the **No Siming API mode** instead (see above)
 3. Replace `chapter_writer` with:
    - `prepare_external_writing_context` to get context
    - External model generates text
@@ -717,7 +717,7 @@ If `chapter_writer` or other LLM tools fail with "no API key configured":
 
 If the frontend doesn't show live updates:
 
-1. Make sure the Moshu backend is running
+1. Make sure the Siming backend is running
 2. Check browser console for SSE errors
 3. The SSE endpoint is: `/api/v1/projects/{project_id}/agent-runs/{run_id}/stream`
 
@@ -726,7 +726,7 @@ If the frontend doesn't show live updates:
 If MCP tools don't appear in your client:
 
 1. Restart your MCP client after changing configuration
-2. Check that the Moshu server starts without errors
+2. Check that the Siming server starts without errors
 3. Run `python scripts/moshu-mcp-server.py --help` to verify the entrypoint works
 
 ## Security Notes

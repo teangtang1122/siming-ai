@@ -1,4 +1,4 @@
-"""Tests for Moshu-managed local CLI agent worker contracts."""
+"""Tests for Siming-managed local CLI agent worker contracts."""
 
 import os
 import tempfile
@@ -55,7 +55,7 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIn(f'project_id="{project.id}"', text)
         self.assertIn("The database is the only authoritative source.", text)
         self.assertIn("The project folder is a read-only mirror", text)
-        self.assertIn("Every write/delete/update must use Moshu MCP tools", text)
+        self.assertIn("Every write/delete/update must use Siming MCP tools", text)
         self.assertIn("Facts stage may be parallel", text)
         self.assertIn("candidate/apply stage must be strictly sequential", text)
         self.assertIn("Preserve the source novel language", text)
@@ -115,7 +115,7 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIn("include_context_indexes=false", task)
         self.assertIn("本轮唯一任务：只保存事实，不生成候选", task)
         self.assertIn("本轮禁止调用 `save_external_cataloging_candidates`", task)
-        self.assertIn("所有事实、候选和应用操作必须调用 Moshu MCP 工具", task)
+        self.assertIn("所有事实、候选和应用操作必须调用 Siming MCP 工具", task)
         self.assertIn("report_agent_progress", task)
         self.assertNotIn(chapter.content, task)
         self.assertEqual(_turn_stage(run, "auto"), "full")

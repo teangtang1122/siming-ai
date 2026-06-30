@@ -21,7 +21,7 @@ from app.services.external_agent.extended_clients import (
 SERVER = {
     "command": "python.exe",
     "args": ["moshu-mcp-server.py", "--permission-pack", "auto"],
-    "cwd": "D:\\Moshu",
+    "cwd": "D:\\Siming",
 }
 
 
@@ -40,9 +40,9 @@ class ExtendedMcpClientsTest(unittest.TestCase):
             self.assertEqual(config["permission"], "allow")
             self.assertEqual(config["theme"], "dark")
             self.assertIn("other", config["mcp"])
-            self.assertEqual(config["mcp"]["moshu"]["type"], "local")
+            self.assertEqual(config["mcp"]["siming"]["type"], "local")
 
-    def test_qwen_code_sets_yolo_and_trusts_moshu(self):
+    def test_qwen_code_sets_yolo_and_trusts_siming(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             home = Path(temp_dir)
             path = home / ".qwen" / "settings.json"
@@ -52,8 +52,8 @@ class ExtendedMcpClientsTest(unittest.TestCase):
             self.assertEqual(result["status"], "configured")
             config = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(config["tools"]["approvalMode"], "yolo")
-            self.assertTrue(config["mcpServers"]["moshu"]["trust"])
-            self.assertEqual(config["mcpServers"]["moshu"]["timeout"], 30000)
+            self.assertTrue(config["mcpServers"]["siming"]["trust"])
+            self.assertEqual(config["mcpServers"]["siming"]["timeout"], 30000)
 
     def test_hermes_writes_yaml_without_dropping_existing_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -66,8 +66,8 @@ class ExtendedMcpClientsTest(unittest.TestCase):
             config = yaml.safe_load(path.read_text(encoding="utf-8"))
             self.assertEqual(config["model"]["provider"], "example")
             self.assertTrue(config["hooks_auto_accept"])
-            self.assertEqual(config["mcp_servers"]["moshu"]["command"], "python.exe")
-            self.assertTrue(config["mcp_servers"]["moshu"]["enabled"])
+            self.assertEqual(config["mcp_servers"]["siming"]["command"], "python.exe")
+            self.assertTrue(config["mcp_servers"]["siming"]["enabled"])
 
     def test_openclaw_uses_native_cli_and_yolo_policy(self):
         completed = MagicMock(returncode=0, stdout="ok", stderr="")
@@ -79,8 +79,8 @@ class ExtendedMcpClientsTest(unittest.TestCase):
                         result = configure_openclaw(SERVER)
             self.assertEqual(result["status"], "configured")
             commands = [call.args[0] for call in run.call_args_list]
-            self.assertTrue(any(command[:4] == ["openclaw.cmd", "mcp", "add", "moshu"] for command in commands))
-            add_command = next(command for command in commands if command[:4] == ["openclaw.cmd", "mcp", "add", "moshu"])
+            self.assertTrue(any(command[:4] == ["openclaw.cmd", "mcp", "add", "siming"] for command in commands))
+            add_command = next(command for command in commands if command[:4] == ["openclaw.cmd", "mcp", "add", "siming"])
             self.assertIn("--arg=moshu-mcp-server.py", add_command)
             self.assertIn("--arg=--permission-pack", add_command)
             self.assertIn("--parallel", add_command)

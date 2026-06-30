@@ -1,4 +1,4 @@
-"""Lifecycle manager for Moshu's managed llama.cpp server."""
+"""Lifecycle manager for Siming's managed llama.cpp server."""
 from __future__ import annotations
 
 import atexit

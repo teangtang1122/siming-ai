@@ -97,9 +97,9 @@ def get_api_free_mode_rules() -> str:
     Both prompt packs and tool responses reference this.
     """
     return """【API-free 模式 — 默认生效】
-除非用户明确说"用墨枢 API"或"用内部模型"，否则你必须自己完成所有分析和生成工作，不要调用以下需要墨枢内部 LLM 的工具。
+除非用户明确说"用司命 API"或"用内部模型"，否则你必须自己完成所有分析和生成工作，不要调用以下需要司命内部 LLM 的工具。
 
-需要墨枢内部 LLM 的工具（禁止自动调用）：
+需要司命内部 LLM 的工具（禁止自动调用）：
 - chapter_writer → 你自己写章节正文
 - character_writer → 你自己设计角色
 - outline_writer → 你自己写大纲

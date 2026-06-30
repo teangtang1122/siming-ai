@@ -1,9 +1,9 @@
 """Human-readable project content mirror.
 
-Moshu 2.1 makes the database the authoritative source for chapters, outline,
+Siming 2.1 makes the database the authoritative source for chapters, outline,
 characters, relationships, and worldbuilding. Project folders are a readable
 mirror for humans and local CLI agents. Normal reads must use the database;
-writes/deletes go through Moshu tools/API and then refresh the mirror.
+writes/deletes go through Siming tools/API and then refresh the mirror.
 """
 from __future__ import annotations
 
@@ -45,15 +45,15 @@ FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 
 def content_root() -> Path:
-    configured = os.environ.get("MOSHU_CONTENT_ROOT")
+    configured = os.environ.get("SIMING_CONTENT_ROOT") or os.environ.get("MOSHU_CONTENT_ROOT")
     if configured:
         root = Path(configured).expanduser()
     else:
-        home = os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+        home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
         if home:
             root = Path(home).expanduser() / "projects"
         else:
-            root = Path.cwd() / "moshu-projects"
+            root = Path.cwd() / "siming-projects"
     root.mkdir(parents=True, exist_ok=True)
     return root.resolve()
 
@@ -365,7 +365,7 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
     """Explicit repair/import path from the readable mirror into the database.
 
     This is intentionally not called by normal read endpoints in 2.1. External
-    agents may read files directly, but all writes must go through Moshu
+    agents may read files directly, but all writes must go through Siming
     tools/MCP so the database remains authoritative.
     """
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -595,7 +595,7 @@ def migrate_projects_to_content_root(
     previous_root: str | Path | None = None,
     cleanup_old: bool = True,
 ) -> dict[str, Any]:
-    """Move all project content folders under a new Moshu content root.
+    """Move all project content folders under a new Siming content root.
 
     This explicit migration path may import the old folder first so users who
     edited 2.0 files do not lose changes. Normal read paths never do this.

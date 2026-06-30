@@ -7,13 +7,13 @@
 
 ## 1. Overview
 
-This document defines how Moshu exposes one canonical workspace tool registry to all consumers: internal project assistant, scheduled tasks, MCP clients, external Agent live sessions, and frontend tool inspection.
+This document defines how Siming exposes one canonical workspace tool registry to all consumers: internal project assistant, scheduled tasks, MCP clients, external Agent live sessions, and frontend tool inspection.
 
 ### 1.1 Design Goals
 
 1. **Register once, expose everywhere.** A new tool is added to `ToolRegistry` with metadata, and it automatically becomes available to internal Agent, scheduler, MCP, docs, and frontend.
 2. **Configurable permissions.** External Agents (Claude Code, Codex) get tools based on permission packs configured per project.
-3. **Local-first defaults.** Trusted local desktop clients start with API-free project read/write/management access so Moshu works without per-call approval prompts. Secret tools and internal model-spend tools still require explicit opt-in and remain outside trusted local maintenance.
+3. **Local-first defaults.** Trusted local desktop clients start with API-free project read/write/management access so Siming works without per-call approval prompts. Secret tools and internal model-spend tools still require explicit opt-in and remain outside trusted local maintenance.
 4. **No secret exposure.** API keys, model secrets, and credentials are permanently denied regardless of permission pack.
 
 ## 2. Permission Packs
@@ -25,10 +25,10 @@ Permission packs are named groups of tools that can be enabled/disabled per proj
 | Pack | Intent | Default |
 |------|--------|---------|
 | `readonly_collaboration` | Read/search/context tools. Safe for any external client. | **Enabled** |
-| `draft_generation` | Legacy compatibility pack. It must not expose Moshu internal LLM tools. | Disabled |
+| `draft_generation` | Legacy compatibility pack. It must not expose Siming internal LLM tools. | Disabled |
 | `project_writing` | API-free create/update tools for chapters, characters, outline, worldbuilding, external drafts, and external cataloging candidates. | **Enabled** |
 | `project_management` | API-free project CRUD, import/export, scheduler, skill, MCP-server management. Does not imply internal LLM access. | **Enabled** |
-| `internal_llm` | Explicit opt-in pack for tools that spend Moshu's configured model API (`chapter_writer`, `start_cataloging_job`, etc.). | Disabled |
+| `internal_llm` | Explicit opt-in pack for tools that spend Siming's configured model API (`chapter_writer`, `start_cataloging_job`, etc.). | Disabled |
 | `trusted_local_maintenance` | Dangerous maintenance tools (delete, merge, reset). Enabled by default for trusted local desktop clients. Does not imply internal LLM access. | **Enabled** |
 
 ### 2.2 Pack Assignment Rules
@@ -64,7 +64,7 @@ capability, not a side effect of project management or trusted maintenance.
 | `internal_llm` | `readonly_collaboration`, `project_writing`, `project_management`, `internal_llm` |
 | `trusted_local_maintenance` | `readonly_collaboration`, `project_writing`, `project_management`, `trusted_local_maintenance` |
 
-Default external Agent rule: unless the user explicitly asks to use Moshu's
+Default external Agent rule: unless the user explicitly asks to use Siming's
 internal API/model quota, tools in `internal_llm` must remain unavailable and
 the Agent should use the API-free external workflows.
 

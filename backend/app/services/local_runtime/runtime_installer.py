@@ -16,7 +16,7 @@ GITHUB_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/l
 
 
 def _release() -> dict:
-    request = Request(GITHUB_RELEASE_API, headers={"User-Agent": "Moshu/2.5"})
+    request = Request(GITHUB_RELEASE_API, headers={"User-Agent": "Siming/2.5"})
     with urlopen(request, timeout=20) as response:
         return json.loads(response.read().decode("utf-8"))
 

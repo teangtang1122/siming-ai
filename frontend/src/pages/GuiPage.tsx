@@ -101,7 +101,7 @@ function GuiPage() {
                 whiteSpace: 'nowrap',
               }}
             >
-              墨枢
+              司命
             </Title>
           )}
         </div>

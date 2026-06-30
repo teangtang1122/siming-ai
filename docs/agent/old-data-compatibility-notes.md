@@ -30,7 +30,7 @@ These are SQLAlchemy-only relationships and do not modify the `projects` table s
 
 ## Migration Strategy
 
-Moshu uses **runtime schema sync** via `ensure_runtime_schema()`. On startup:
+Siming uses **runtime schema sync** via `ensure_runtime_schema()`. On startup:
 
 1. All `Base.metadata.create_all(engine)` is called.
 2. Missing tables are created.

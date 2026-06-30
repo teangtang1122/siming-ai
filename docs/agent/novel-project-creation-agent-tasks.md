@@ -1,4 +1,4 @@
-# 墨枢新小说创建 Agent 能力任务书
+# 司命新小说创建 Agent 能力任务书
 
 > 目标：让项目助手和外部 Agent 在用户“从 0 创建新小说”时，不再只是调用 `create_project` 建一条空作品记录，而是能完成“需求访谈 → 创意方案 → 世界观/角色/大纲/风格/禁用规则 → 首批可写章节 → 后续写作工作流”的完整开书流程。
 >
@@ -10,7 +10,7 @@
 
 目前不能完整看到。
 
-外部 Agent 通过 MCP 调用墨枢时，能看到的是：
+外部 Agent 通过 MCP 调用司命时，能看到的是：
 
 - `tools/list` 返回的工具名、描述、参数 schema。
 - 工具调用后的结果，例如 `chapter_writer` 产出的草稿、`evaluate_chapter` 的评分结果、`context_snapshot` 等。
@@ -80,7 +80,7 @@
 - 不要求一次生成全书所有章节大纲。
 - 不要求联网抓取平台榜单作为默认流程，除非用户明确要求“参考热门趋势/上网找资料”。
 - 不暴露 API Key、模型密钥、完整内部系统提示词。
-- 不直接复制参考项目的提示词文本进入墨枢，应提炼为方法卡片和工作流规则。
+- 不直接复制参考项目的提示词文本进入司命，应提炼为方法卡片和工作流规则。
 
 ## 2. 总体架构
 
@@ -175,7 +175,7 @@ flowchart TD
 
 - MethodCard 纳入 RAG 索引。
 - 提供初始化脚本或 runtime seed。
-- 不直接复制参考项目长段原文，所有卡片是墨枢自己的摘要/规则。
+- 不直接复制参考项目长段原文，所有卡片是司命自己的摘要/规则。
 
 ## 4. 工具任务
 
@@ -444,7 +444,7 @@ Plan Graph：
 
 负责人：Prompt 工程 B
 
-目标：让 Claude Code/Codex 不需要看到完整 system prompt，也知道如何调用墨枢工具。
+目标：让 Claude Code/Codex 不需要看到完整 system prompt，也知道如何调用司命工具。
 
 新增文档：
 
@@ -591,13 +591,13 @@ UI：
 新增示例：
 
 ```powershell
-claude mcp add moshu -- py "D:\AI\agent\scripts\moshu-mcp-server.py" --permission-pack project_management
+claude mcp add siming -- py "D:\AI\agent\scripts\moshu-mcp-server.py" --permission-pack project_management
 ```
 
 外部 Agent 开书指令示例：
 
 ```text
-使用 moshu：先列出作品。如果我要创建新作品，调用 draft_novel_blueprint 给出两个方案；我确认后再 apply_novel_blueprint。
+使用 siming：先列出作品。如果我要创建新作品，调用 draft_novel_blueprint 给出两个方案；我确认后再 apply_novel_blueprint。
 ```
 
 ## 10. 测试任务

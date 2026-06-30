@@ -32,7 +32,7 @@ export const PERMISSION_PACKS: PermissionPack[] = [
   {
     name: 'project_writing',
     label: '项目写入',
-    description: '允许外部 Agent 写入章节、角色、大纲、世界观、外部草稿和外部建档候选。不会调用墨枢内部模型。',
+    description: '允许外部 Agent 写入章节、角色、大纲、世界观、外部草稿和外部建档候选。不会调用司命内部模型。',
     tools: ['create_chapter', 'update_chapter', 'create_character', 'update_character', 'create_outline_node', 'update_outline_node', 'create_worldbuilding_entry', 'update_worldbuilding_entry', 'save_external_chapter_draft', 'apply_external_story_updates'],
     riskLevel: 'medium',
     dependsOn: ['readonly_collaboration'],
@@ -48,7 +48,7 @@ export const PERMISSION_PACKS: PermissionPack[] = [
   {
     name: 'internal_llm',
     label: '内部模型',
-    description: '允许外部 Agent 调用 chapter_writer、start_cataloging_job 等会消耗墨枢内置 API 额度的工具。只有明确需要使用墨枢内部模型时才开启。',
+    description: '允许外部 Agent 调用 chapter_writer、start_cataloging_job 等会消耗司命内置 API 额度的工具。只有明确需要使用司命内部模型时才开启。',
     tools: ['chapter_writer', 'outline_writer', 'character_writer', 'worldbuilding_writer', 'design_plot', 'evaluate_chapter', 'detect_character_changes', 'start_cataloging_job'],
     riskLevel: 'high',
     dependsOn: ['readonly_collaboration', 'project_writing', 'project_management'],

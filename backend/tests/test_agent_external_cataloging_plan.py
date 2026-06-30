@@ -26,6 +26,11 @@ class DetectExternalCatalogingIntentTest(unittest.TestCase):
         self.assertIsNotNone(intent)
         self.assertEqual(intent["intent_type"], "external_cataloging")
 
+    def test_detects_no_siming_api_cataloging(self):
+        intent = detect_intent("不用司命 API 建档")
+        self.assertIsNotNone(intent)
+        self.assertEqual(intent["intent_type"], "external_cataloging")
+
     def test_detects_external_cataloging_cn(self):
         intent = detect_intent("外部编目")
         self.assertIsNotNone(intent)

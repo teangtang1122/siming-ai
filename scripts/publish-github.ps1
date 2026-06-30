@@ -1,8 +1,8 @@
 param(
-  [string]$Repo = "teangtang1122/NovelWritingAgent",
+  [string]$Repo = "teangtang1122/siming-ai",
   [ValidateSet("public", "private")]
   [string]$Visibility = "private",
-  [string]$Tag = "v0.1.1",
+  [string]$Tag = "v2.6.0",
   [string]$CommitMessage = "",
   [switch]$SkipBuild
 )
@@ -10,10 +10,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$AppName = "Moshu"
-$LegacyAppName = "NovelWritingAgent"
+$AppName = "Siming"
+$LegacyAppNames = @("Moshu", "NovelWritingAgent")
 $ExePath = Join-Path $Root "release\$AppName.exe"
-$LegacyExePath = Join-Path $Root "release\$LegacyAppName.exe"
+$ReleaseAssetDir = Join-Path $Root ".build\release-assets"
+$LegacyExePaths = @()
 $ManifestPath = Join-Path $Root "release\update.json"
 $ShaPath = Join-Path $Root "release\sha256.txt"
 
@@ -50,28 +51,35 @@ try {
   if (-not (Test-Path $ExePath)) {
     throw "Release executable not found. Run build-exe.bat or publish without -SkipBuild."
   }
-  if (-not (Test-Path $LegacyExePath)) {
+  New-Item -ItemType Directory -Force -Path $ReleaseAssetDir | Out-Null
+  foreach ($LegacyExePath in $LegacyExePaths) {
+    Remove-Item -LiteralPath $LegacyExePath -Force -ErrorAction SilentlyContinue
+  }
+  $LegacyExePaths = @()
+  foreach ($LegacyAppName in $LegacyAppNames) {
+    $LegacyExePath = Join-Path $ReleaseAssetDir "$LegacyAppName.exe"
     Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
+    $LegacyExePaths += $LegacyExePath
   }
 
   $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
-  $shaLines = @(
-    "$sha  $AppName.exe",
-    "$sha  $LegacyAppName.exe"
-  )
+  $shaLines = @("$sha  $AppName.exe")
+  foreach ($LegacyAppName in $LegacyAppNames) {
+    $shaLines += "$sha  $LegacyAppName.exe"
+  }
   Set-Content -LiteralPath $ShaPath -Encoding UTF8 -Value $shaLines
 
   $status = git status --porcelain
   if ($status) {
     if (-not $CommitMessage) {
-      $CommitMessage = "release: Moshu $Tag"
+      $CommitMessage = "release: Siming $Tag"
     }
     git add .
     git commit -m $CommitMessage
   }
 
   if (-not (git tag --list $Tag)) {
-    git tag -a $Tag -m "Moshu $Tag"
+    git tag -a $Tag -m "Siming $Tag"
   }
   git push -u origin main --follow-tags
 
@@ -81,9 +89,9 @@ try {
   $ReleaseExists = $LASTEXITCODE -eq 0
   $ErrorActionPreference = $PreviousErrorActionPreference
   if (-not $ReleaseExists) {
-    gh release create $Tag -R $Repo --title $Tag --notes "Moshu $Tag"
+    gh release create $Tag -R $Repo --title $Tag --notes "Siming $Tag"
   }
-  $assets = @($ExePath, $LegacyExePath, $ShaPath, $ManifestPath)
+  $assets = @($ExePath, $ShaPath, $ManifestPath) + $LegacyExePaths
   gh release upload $Tag -R $Repo @assets --clobber
 } finally {
   Pop-Location

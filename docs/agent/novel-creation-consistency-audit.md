@@ -106,7 +106,7 @@ Verification: No API key/model secret tools exposed in any pack.
 - `ExternalAgentRunPanel.tsx` — uses Ant Design Collapse/Badge/Tag patterns
 - `ExternalAgentPermissionPanel.tsx` — uses Ant Design Card/Switch/Alert patterns
 
-All follow existing Moshu UI conventions.
+All follow existing Siming UI conventions.
 
 ### 9. Documentation Consistent
 
@@ -115,7 +115,7 @@ All follow existing Moshu UI conventions.
 - `docs/agent/shared-prompt-pack-contract.md` — uses "Prompt Pack", "Method Card", "permission pack"
 - `docs/agent/external-no-api-writing.md` — uses "external agent", "API-free"
 - `docs/agent/novel-project-creation-task-board.md` — consistent terminology
-- `docs/mcp/claude-code-codex-client.md` — updated with "No Moshu API mode"
+- `docs/mcp/claude-code-codex-client.md` — updated with "No Siming API mode"
 - `README.md` — updated with external agent writing reference
 
 ### 10. Tests Cover Both Modes

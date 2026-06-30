@@ -2,12 +2,12 @@
 """Development smoke test for external Agent live session.
 
 Simulates an external MCP client (like Claude Code) interacting with
-the Moshu backend through the Agent run API.
+the Siming backend through the Agent run API.
 
 Usage:
     python scripts/dev-external-agent-smoke.py --project-id YOUR_PROJECT_ID
 
-This script requires a running Moshu backend.
+This script requires a running Siming backend.
 """
 from __future__ import annotations
 

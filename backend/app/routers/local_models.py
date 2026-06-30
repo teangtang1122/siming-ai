@@ -58,10 +58,10 @@ _ADAPTER_COMPARISONS: dict[str, dict] = {}
 
 
 def _launcher_settings_path() -> Path:
-    home = os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+    home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
     if home:
         return Path(home) / "launcher-settings.json"
-    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Moshu" / "launcher-settings.json"
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Siming" / "launcher-settings.json"
 
 
 def _model_payload(model: LocalModel) -> dict:
@@ -163,6 +163,7 @@ def update_model_root(payload: ModelRootUpdateRequest, db: Session = Depends(get
             settings = {}
         settings["model_root"] = str(target)
         settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.environ["SIMING_MODEL_ROOT"] = str(target)
         os.environ["MOSHU_MODEL_ROOT"] = str(target)
         db.commit()
     return ApiResponse.success(data={"model_root": str(target)}, message="模型目录已更新")

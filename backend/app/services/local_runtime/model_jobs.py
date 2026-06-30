@@ -152,7 +152,7 @@ def _start_thread(key: str, target, *args) -> None:
         current = _THREADS.get(key)
         if current and current.is_alive():
             return
-        thread = threading.Thread(target=target, args=args, daemon=True, name=f"moshu-download-{key}")
+        thread = threading.Thread(target=target, args=args, daemon=True, name=f"siming-download-{key}")
         _THREADS[key] = thread
         thread.start()
 

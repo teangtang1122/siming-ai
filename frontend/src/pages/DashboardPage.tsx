@@ -200,8 +200,10 @@ interface CreationTemplate {
   creative_slots?: Record<string, string | string[]>
 }
 
-const CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
-const MODEL_STORAGE_KEY = 'moshu.assistant.model'
+const CREATION_TEMPLATE_KEY = 'siming:novelCreationTemplates'
+const LEGACY_CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
+const MODEL_STORAGE_KEY = 'siming.assistant.model'
+const LEGACY_MODEL_STORAGE_KEY = 'moshu.assistant.model'
 
 function parseTags(value?: string) {
   return (value || '')
@@ -280,7 +282,7 @@ function formatNeedModelDetail(data: NovelDraftData) {
 
 function readCreationTemplates(): CreationTemplate[] {
   try {
-    const raw = localStorage.getItem(CREATION_TEMPLATE_KEY)
+    const raw = localStorage.getItem(CREATION_TEMPLATE_KEY) || localStorage.getItem(LEGACY_CREATION_TEMPLATE_KEY)
     const parsed = raw ? JSON.parse(raw) : []
     return Array.isArray(parsed) ? parsed : []
   } catch {
@@ -312,7 +314,7 @@ function DashboardPage() {
   const [assistantRecommendation, setAssistantRecommendation] = useState('')
   const [assistantDraftText, setAssistantDraftText] = useState('')
   const [assistantModel, setAssistantModel] = useState<string | undefined>(
-    () => localStorage.getItem(MODEL_STORAGE_KEY) || undefined,
+    () => localStorage.getItem(MODEL_STORAGE_KEY) || localStorage.getItem(LEGACY_MODEL_STORAGE_KEY) || undefined,
   )
   const selectedModel = assistantModel || defaultModel || undefined
   // Question flow state
@@ -1300,12 +1302,12 @@ function DashboardPage() {
       <div className="dashboard-hero">
         <h1 className="dashboard-hero-title">
           <BookOutlined />
-          墨枢
+          司命
         </h1>
-        <p className="dashboard-hero-sub">管理作品，导入长篇，从一个设想创建完整小说项目</p>
+        <p className="dashboard-hero-sub">长篇小说的命运织机</p>
       </div>
 
-      <div className="dashboard-actions moshu-animate-in moshu-stagger-1">
+      <div className="dashboard-actions siming-animate-in siming-stagger-1">
         <Input.Search
           placeholder="搜索作品标题或简介"
           allowClear
@@ -1327,7 +1329,7 @@ function DashboardPage() {
             type="primary"
             icon={<PlusOutlined />}
             size="large"
-            className="moshu-btn-press"
+            className="siming-btn-press"
             onClick={openAssistant}
           >
             创建新作品
@@ -1341,7 +1343,7 @@ function DashboardPage() {
           <div style={{ marginTop: 16, color: 'var(--ant-color-text-secondary)', fontSize: 15 }}>加载中...</div>
         </div>
       ) : projects.length === 0 ? (
-        <div className="dashboard-empty moshu-animate-fade">
+        <div className="dashboard-empty siming-animate-fade">
           <Empty
             description={
               searchKeyword
@@ -1433,7 +1435,7 @@ function DashboardPage() {
               description="助手会生成多个方案供你挑选和调整。选择后自动创建作品、角色、世界观和大纲。"
             />
 
-            <Card size="small" title="告诉墨枢你想写什么">
+            <Card size="small" title="告诉司命你想写什么">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <TextArea
                   placeholder="例如：我想写一本1000章的克苏鲁+修仙+规则怪谈小说..."

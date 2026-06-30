@@ -48,16 +48,30 @@ def _get_job(db: Session, project_id: str, args: dict[str, Any]) -> CatalogingJo
     return job
 
 
+def _managed_cataloging_bindings() -> list[dict[str, str]]:
+    bindings: list[dict[str, str]] = []
+    for prefix in ("SIMING", "MOSHU"):
+        managed_kind = os.environ.get(f"{prefix}_MANAGED_AGENT_KIND", "")
+        if managed_kind.strip().lower() != "cataloging":
+            continue
+        bindings.append({
+            "project_id": os.environ.get(f"{prefix}_MANAGED_CATALOGING_PROJECT_ID", "").strip(),
+            "job_id": os.environ.get(f"{prefix}_MANAGED_CATALOGING_JOB_ID", "").strip(),
+            "chapter_run_id": os.environ.get(f"{prefix}_MANAGED_CATALOGING_CHAPTER_RUN_ID", "").strip(),
+        })
+    return bindings
+
+
 def _managed_cataloging_run_id(job: CatalogingJob) -> str:
-    if os.environ.get("MOSHU_MANAGED_AGENT_KIND", "").strip().lower() != "cataloging":
-        return ""
-    bound_project = os.environ.get("MOSHU_MANAGED_CATALOGING_PROJECT_ID", "").strip()
-    bound_job = os.environ.get("MOSHU_MANAGED_CATALOGING_JOB_ID", "").strip()
-    if bound_project and bound_project != job.project_id:
-        return ""
-    if bound_job and bound_job != job.id:
-        return ""
-    return os.environ.get("MOSHU_MANAGED_CATALOGING_CHAPTER_RUN_ID", "").strip()
+    for binding in _managed_cataloging_bindings():
+        bound_project = binding["project_id"]
+        bound_job = binding["job_id"]
+        if bound_project and bound_project != job.project_id:
+            continue
+        if bound_job and bound_job != job.id:
+            continue
+        return binding["chapter_run_id"]
+    return ""
 
 
 async def start_cataloging_job(db: Session, project_id: str, args: dict[str, Any]) -> dict:

@@ -7,11 +7,11 @@
 
 ## 1. Overview
 
-This document defines how external MCP clients (Claude Code, Codex, etc.) report their progress to Moshu in real time. Users watch the external Agent working inside their project through the Moshu web UI.
+This document defines how external MCP clients (Claude Code, Codex, etc.) report their progress to Siming in real time. Users watch the external Agent working inside their project through the Siming web UI.
 
 ### 1.1 Design Goals
 
-1. **Observability, not control.** The external Agent drives its own execution. Moshu observes and displays.
+1. **Observability, not control.** The external Agent drives its own execution. Siming observes and displays.
 2. **No hidden reasoning.** Only explicit plans, tool calls, progress messages, selected context, draft chunks, warnings, and committed writes are shown. Chain-of-thought is never requested, stored, or displayed.
 3. **Backward compatible.** The existing internal project assistant SSE stream (`/api/v1/projects/{project_id}/assistant/stream`) continues to work unchanged.
 4. **Security-first.** API keys, model secrets, auth tokens, local credentials, and raw confirmation tokens are never stored in events or displayed in the UI.
@@ -41,7 +41,7 @@ created → running → waiting_confirmation → running → ... → completed
 
 ### 2.2 Cancellation
 
-- The user cancels a run through the Moshu UI or API.
+- The user cancels a run through the Siming UI or API.
 - The backend records a `cancelled` event.
 - The external client checks for cancellation by reading the run status (via `GET /api/v1/projects/{project_id}/agent-runs/{run_id}`) before reporting the next event.
 - If cancelled, the client should stop work and not report further events.
@@ -56,7 +56,7 @@ Every event has a `sequence` number (monotonically increasing per run), an `even
 |------------|-------------|----------------|
 | `plan` | Agent reports its plan before starting work | `plan`: array of step descriptions |
 | `progress` | Agent reports a progress update | `step`: current step index, `detail`: what's happening |
-| `tool_start` | Agent begins calling a Moshu tool | `tool`: tool name, `args_summary`: truncated arguments |
+| `tool_start` | Agent begins calling a Siming tool | `tool`: tool name, `args_summary`: truncated arguments |
 | `tool_result` | Tool call completed | `tool`: tool name, `status`: ok/skipped/error, `detail`: result summary |
 | `context_selected` | Agent reports which context it selected for reasoning | `sources`: array of {source_type, source_id, title, reason} |
 | `draft_chunk` | Agent streams a chunk of draft content | `content`: text chunk, `chunk_index`: sequence number |
@@ -115,7 +115,7 @@ The following must never appear in any event payload, message, or summary:
 - Database connection strings
 - Raw confirmation tokens (the token ID is ok; the token value is not)
 - Internal file system paths outside the project scope
-- Raw LLM system prompts used by Moshu
+- Raw LLM system prompts used by Siming
 
 ### 5.2 Secret Detection
 
@@ -235,4 +235,4 @@ These tools write run telemetry only, not project content. They are allowed in r
 - Multi-turn Agent conversations through MCP (the external Agent manages its own conversation).
 - Streaming the external Agent's internal reasoning.
 - Real-time collaboration between multiple external Agents.
-- Agent-to-Agent communication through Moshu.
+- Agent-to-Agent communication through Siming.

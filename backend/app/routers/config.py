@@ -81,7 +81,7 @@ PROVIDER_LABELS: dict[str, str] = {
     "hermes_cli": "Hermes Agent CLI",
     "openclaw_cli": "OpenClaw CLI",
     "custom_cli": "Custom Local CLI",
-    "local_llama_cpp": "Moshu Local AI",
+    "local_llama_cpp": "Siming Local AI",
 }
 
 DEEPSEEK_SUPPORTED_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash"}
@@ -93,13 +93,13 @@ LOCAL_RUNTIME_PLACEHOLDER_KEY = "__local_runtime__"
 
 
 def _app_home() -> Path:
-    app_home = os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME") or ""
+    app_home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME") or ""
     if app_home:
         return Path(app_home)
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if local_app_data:
-        return Path(local_app_data) / "Moshu"
-    return Path.home() / "Moshu"
+        return Path(local_app_data) / "Siming"
+    return Path.home() / "Siming"
 
 
 def _launcher_settings_path() -> Path:
@@ -133,7 +133,7 @@ def _path_is_empty(path: Path) -> bool:
     return not any(item.name not in ignored for item in path.iterdir())
 
 
-def _looks_like_moshu_content_root(path: Path) -> bool:
+def _looks_like_siming_content_root(path: Path) -> bool:
     if not path.exists() or not path.is_dir():
         return False
     for child in path.iterdir():
@@ -147,6 +147,7 @@ def _content_root_payload(extra: dict | None = None) -> dict:
     configured = settings.get("content_root")
     current = resolve_content_root()
     default = _default_content_root()
+    looks_like_root = _looks_like_siming_content_root(current)
     payload = {
         "current_path": str(current),
         "configured_path": configured,
@@ -154,7 +155,8 @@ def _content_root_payload(extra: dict | None = None) -> dict:
         "is_default": not configured and current == default,
         "exists": current.exists(),
         "is_empty": _path_is_empty(current),
-        "looks_like_moshu_root": _looks_like_moshu_content_root(current),
+        "looks_like_siming_root": looks_like_root,
+        "looks_like_moshu_root": looks_like_root,
     }
     if extra:
         payload.update(extra)
@@ -165,10 +167,11 @@ def _apply_content_root(db: Session, raw_path: str) -> dict:
     target = Path(raw_path).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
     current = resolve_content_root()
-    if target != current and not _path_is_empty(target) and not _looks_like_moshu_content_root(target):
-        raise ValidationError("小说数据目录必须是空文件夹，或已经是 Moshu 小说数据目录")
+    if target != current and not _path_is_empty(target) and not _looks_like_siming_content_root(target):
+        raise ValidationError("小说数据目录必须是空文件夹，或已经是 Siming 小说数据目录")
     settings = _load_launcher_settings()
     previous = current
+    os.environ["SIMING_CONTENT_ROOT"] = str(target)
     os.environ["MOSHU_CONTENT_ROOT"] = str(target)
     settings["content_root"] = str(target)
     _save_launcher_settings(settings)
@@ -185,18 +188,18 @@ def _pick_empty_content_root() -> Path | None:
         root = tkinter.Tk()
         root.withdraw()
         while True:
-            selected = filedialog.askdirectory(title="选择 Moshu 小说数据目录")
+            selected = filedialog.askdirectory(title="选择 Siming 小说数据目录")
             if not selected:
                 root.destroy()
                 return None
             path = Path(selected).expanduser().resolve()
             path.mkdir(parents=True, exist_ok=True)
-            if _path_is_empty(path) or _looks_like_moshu_content_root(path):
+            if _path_is_empty(path) or _looks_like_siming_content_root(path):
                 root.destroy()
                 return path
             messagebox.showwarning(
-                "Moshu 小说数据目录",
-                "请选择空目录，或已经由 Moshu 创建过的小说数据目录。",
+                "Siming 小说数据目录",
+                "请选择空目录，或已经由 Siming 创建过的小说数据目录。",
             )
     except Exception as exc:
         raise ValidationError(f"无法打开文件夹选择器：{exc}")
@@ -204,28 +207,28 @@ def _pick_empty_content_root() -> Path | None:
 
 @router.post("/system/open-home")
 def open_home_in_default_browser(request: Request):
-    """Open the Moshu web home in the user's default browser."""
+    """Open the Siming web home in the user's default browser."""
 
     home_url = str(request.base_url).rstrip("/") + "/"
     webbrowser.open(home_url)
-    return ApiResponse.success(data={"url": home_url}, message="Moshu home opened in the default browser")
+    return ApiResponse.success(data={"url": home_url}, message="Siming home opened in the default browser")
 
 
 @router.get("/config/content-root")
 def get_content_root_settings():
-    """Return the current Moshu 2.x novel data directory setting."""
+    """Return the current Siming 2.x novel data directory setting."""
     return ApiResponse.success(data=_content_root_payload())
 
 
 @router.put("/config/content-root")
 def update_content_root_settings(payload: ContentRootUpdateRequest, db: Session = Depends(get_db)):
-    """Set the Moshu novel data directory and migrate existing project files."""
+    """Set the Siming novel data directory and migrate existing project files."""
     return ApiResponse.success(data=_apply_content_root(db, payload.path), message="小说数据目录已更新")
 
 
 @router.post("/config/content-root/pick")
 def pick_content_root_settings(db: Session = Depends(get_db)):
-    """Open a native folder picker and set the selected Moshu data directory."""
+    """Open a native folder picker and set the selected Siming data directory."""
     selected = _pick_empty_content_root()
     if not selected:
         return ApiResponse.success(data=_content_root_payload({"cancelled": True}), message="已取消选择")

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # ── MCP protocol constants ───────────────────────────────────────────────
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_NAME = "moshu"
+SERVER_NAME = "siming"
 SERVER_VERSION = APP_VERSION
 
 # JSON-RPC error codes
@@ -178,7 +178,7 @@ def _handle_prompts_get(msg_id: Any, params: dict, db: Any) -> str:
     if messages is None:
         return _jsonrpc_error(msg_id, METHOD_NOT_FOUND, f"Prompt not found: {name}")
     return _jsonrpc_result(msg_id, {
-        "description": f"Moshu prompt: {name}",
+        "description": f"Siming prompt: {name}",
         "messages": [
             {
                 "role": message.role,
@@ -296,7 +296,10 @@ def serve_stdio(
 
     # Resolve "auto" permission pack from settings
     resolved_pack = permission_pack
-    managed_agent_kind = os.environ.get("MOSHU_MANAGED_AGENT_KIND", "").strip().lower()
+    managed_agent_kind = (
+        os.environ.get("SIMING_MANAGED_AGENT_KIND")
+        or os.environ.get("MOSHU_MANAGED_AGENT_KIND", "")
+    ).strip().lower()
     if managed_agent_kind == "cataloging":
         resolved_pack = "cataloging_worker"
         logger.info("Managed cataloging Agent: using compact MCP permission pack")

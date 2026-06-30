@@ -6,12 +6,12 @@
 
 ## 1. Overview
 
-This document defines the exact workflow when Moshu has **no model API configured** and Claude Code / Codex performs cataloging (extracting characters, worldbuilding, outline, and chapter summaries from imported text).
+This document defines the exact workflow when Siming has **no model API configured** and Claude Code / Codex performs cataloging (extracting characters, worldbuilding, outline, and chapter summaries from imported text).
 
-Moshu 2.1 data boundary: the database is authoritative, while the project
+Siming 2.1 data boundary: the database is authoritative, while the project
 folder is a read-only mirror. External agents may read mirrored chapter and
 card files directly, but all facts, candidates, applies, creates, updates, and
-deletes must be saved through Moshu MCP tools with the correct `project_id`.
+deletes must be saved through Siming MCP tools with the correct `project_id`.
 Do not edit `chapters/`, `characters/`, `worldbuilding/`, `outline/`, or
 `relationships/` files directly.
 
@@ -45,7 +45,7 @@ Result: {
 
 **API-free**: Yes. Reads authoritative state from the database. The agent may
 also use `get_project_files_info` / `search_project_files` or direct file reads
-for long context, but writes still go through Moshu tools.
+for long context, but writes still go through Siming tools.
 
 Use `phase: "facts"` for the parallel fact extraction stage. Multiple external
 agents may fetch and analyze different chapters in this phase.
@@ -58,7 +58,7 @@ The external agent analyzes the chapter text and extracts:
 - Plot events and conflicts
 - Chapter summary (200 words max)
 
-**No Moshu tool called** — this happens entirely in the external model.
+**No Siming tool called** — this happens entirely in the external model.
 
 ### Step 4: Save Facts
 
@@ -86,11 +86,11 @@ The external agent generates candidate updates:
 - Outline nodes (one per chapter)
 - Chapter summaries
 
-**No Moshu tool called** — this happens entirely in the external model.
+**No Siming tool called** — this happens entirely in the external model.
 
 Before generating candidates, call `get_next_external_cataloging_chapter` with
 `phase: "candidates"` and only generate candidates for the chapter returned by
-Moshu. Candidate generation must follow chapter order, not the order in which
+Siming. Candidate generation must follow chapter order, not the order in which
 fact extraction finished. This keeps character backgrounds, aliases, current
 status, outline nodes, and worldbuilding merges chronological.
 
@@ -194,7 +194,7 @@ These tools must NOT be called in external no-API mode:
 ## 5. Example Session
 
 ```
-# Claude Code cataloging a 150-chapter novel (no Moshu API)
+# Claude Code cataloging a 150-chapter novel (no Siming API)
 
 ## 1. Start job
 > start_external_cataloging_job({ "project_id": "proj-123" })

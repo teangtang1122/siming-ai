@@ -1,6 +1,6 @@
 """Seed built-in prompt packs for novel writing.
 
-These packs summarize Moshu's writing methodology and are exposed
+These packs summarize Siming's writing methodology and are exposed
 to both internal project assistant and external agents (Claude Code, Codex).
 
 IMPORTANT: Writing quality content comes from backend/app/prompts/prompt_source.py.
@@ -307,7 +307,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         ],
     },
     # ── Analysis prompt packs (same prompts as internal LLM tools) ──
-    # These allow external agents to perform analysis without calling Moshu's LLM.
+    # These allow external agents to perform analysis without calling Siming's LLM.
     # The system_prompt is populated at runtime from prompt_source.py (single source of truth).
     {
         "pack_id": "character_change_detection",
@@ -376,7 +376,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "cataloging_external_no_api",
         "scope": "cataloging",
         "title": "外部 Agent 编目（无 API）",
-        "summary": "外部 Agent（Claude Code / Codex）在没有墨枢模型 API 的情况下对导入的小说进行编目。按章节逐步提取事实、生成候选更新、验证结果。",
+        "summary": "外部 Agent（Claude Code / Codex）在没有司命模型 API 的情况下对导入的小说进行编目。按章节逐步提取事实、生成候选更新、验证结果。",
         "system_prompt": (
             "你是一个外部编目 Agent。你的任务是对导入的小说项目进行编目——提取角色、世界观、大纲和章节摘要。\n\n"
             "【语言规则】\n"
@@ -394,7 +394,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "5. 验证必须从新的查询获取，不能使用缓存结果\n\n"
             "【禁止行为】\n"
             "- 不要因为一次工具调用编码错误就把中文小说改为英文或拼音建档\n"
-            "- 不要调用以下工具（它们需要墨枢 API）：chapter_writer, character_writer, outline_writer, "
+            "- 不要调用以下工具（它们需要司命 API）：chapter_writer, character_writer, outline_writer, "
             "worldbuilding_writer, design_plot, evaluate_chapter, start_cataloging_job\n"
             "- 不要在任何工具返回 status != 'ok' 后继续处理下一章\n"
             "- 不要报告'编目完成'除非最终验证通过\n"
@@ -521,7 +521,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         },
         "forbidden_patterns_json": [
             "不要把中文小说档案改成英文或拼音",
-            "不要调用需要墨枢 API 的工具",
+            "不要调用需要司命 API 的工具",
             "不要报告完成除非 get_project_archive_status 验证通过",
             "不要跳过读写验证",
             "不要创建重复的角色或世界观条目",

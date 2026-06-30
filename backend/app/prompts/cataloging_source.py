@@ -136,7 +136,7 @@ def get_external_no_api_rules() -> str:
 
 【编目专用补充规则】
 1. 使用无 API 工具链：start_external_cataloging_job -> get_next_external_cataloging_chapter -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress。
-2. 外部 Agent 自己阅读章节正文并生成 facts/candidates，墨枢只负责保存、应用、验证。
+2. 外部 Agent 自己阅读章节正文并生成 facts/candidates，司命只负责保存、应用、验证。
 3. 准备 facts/candidates 时保持 JSONL 颗粒度：一条事实或候选对应一个对象；不要把整章合成一个大对象。
 
 【并行与串行规则】
@@ -178,7 +178,7 @@ def get_internal_cataloging_system_prompt() -> str:
 
 def get_external_cataloging_system_prompt() -> str:
     return "\n\n".join([
-        "你是一个外部编目 Agent。你的任务是在不调用墨枢内部模型 API 的情况下，对导入的小说项目进行编目：提取角色、世界观、大纲和章节摘要，并通过墨枢工具保存到正确作品。",
+        "你是一个外部编目 Agent。你的任务是在不调用司命内部模型 API 的情况下，对导入的小说项目进行编目：提取角色、世界观、大纲和章节摘要，并通过司命工具保存到正确作品。",
         get_project_binding_rules(),
         get_language_rules(),
         get_external_no_api_rules(),
@@ -274,7 +274,7 @@ def get_external_cataloging_workflow() -> list[dict[str, object]]:
 def get_external_cataloging_forbidden_patterns() -> list[str]:
     return [
         "不要把中文小说档案改成英文或拼音",
-        "不要调用需要墨枢 API 的内部 LLM 工具",
+        "不要调用需要司命 API 的内部 LLM 工具",
         "不要在工具 status != ok 后继续处理下一章",
         "不要报告完成除非 get_project_archive_status 验证通过",
         "不要跳过 apply_pending_cataloging",

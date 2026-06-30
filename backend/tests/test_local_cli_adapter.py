@@ -148,7 +148,7 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
                 "--local",
                 "--json",
                 "--session-key",
-                "agent:moshu:local-cli",
+                "agent:siming:local-cli",
                 "--message",
                 "hello",
             ],
@@ -200,7 +200,7 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         )
         self.assertIn("不是代码助手", instruction)
         self.assertIn("不要扫描代码仓库", instruction)
-        self.assertIn("不要调用 Moshu MCP", instruction)
+        self.assertIn("不要调用 Siming MCP", instruction)
         self.assertIn(r"D:\novels\reference.txt", instruction)
 
     def test_normalize_plain_output_is_preserved(self):

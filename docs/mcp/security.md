@@ -1,4 +1,4 @@
-# Moshu MCP Security Policy
+# Siming MCP Security Policy
 
 > Version: 0.1.0
 > Date: 2026-06-07
@@ -149,7 +149,7 @@ Every MCP tool call is logged with:
 - Permission tier at time of call
 - Result status (success / denied / error)
 
-Logs are stored in the existing run-log system (`backend/app/services/workspace/run_log.py`). They are accessible to the project owner through the Moshu UI.
+Logs are stored in the existing run-log system (`backend/app/services/workspace/run_log.py`). They are accessible to the project owner through the Siming UI.
 
 ## 9. Security Checklist for Implementers
 

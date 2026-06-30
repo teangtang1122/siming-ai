@@ -18,6 +18,7 @@ release/
 artifacts/
 frontend/dist/
 frontend/node_modules/
+siming-projects/
 moshu-projects/
 
 # Python

@@ -427,7 +427,7 @@ def _register_all() -> None:
     _r(ToolDef(
         name="write_project_file",
         description=(
-            "写入作品目录内的非规范文本文件。Moshu 2.1 起数据库是唯一写入源，"
+            "写入作品目录内的非规范文本文件。Siming 2.1 起数据库是唯一写入源，"
             "chapters/characters/worldbuilding/outline/relationships 目录只是只读镜像；"
             "如需创建或修改章节、角色、大纲、世界观、关系，必须使用对应 create/update/delete 工具。"
         ),
@@ -580,7 +580,7 @@ def _register_all() -> None:
         name="import_file_as_chapters",
         description="Import a local TXT/DOCX file from file_path into an existing project as chapters. Prefer this over passing a whole novel as text through MCP.",
         input_schema={
-            "file_path": {"type": "string", "description": "Local .txt or .docx path on the same machine as Moshu"},
+            "file_path": {"type": "string", "description": "Local .txt or .docx path on the same machine as Siming"},
             "splits": {"type": "array", "items": {"type": "object"}, "description": "Optional split suggestions from preview_import_splits"},
             "outline_node_id": {"type": "string", "description": "Optional outline node ID to link imported chapters"},
             "auto_split": {"type": "boolean", "description": "Auto-detect chapter boundaries when splits are omitted; default true"},
@@ -597,7 +597,7 @@ def _register_all() -> None:
         name="import_file_as_project",
         description="Create a new project from a local TXT/DOCX file and import the file as chapters in one step. Best tool for requests like '导入这本小说为新作品'.",
         input_schema={
-            "file_path": {"type": "string", "description": "Local .txt or .docx path on the same machine as Moshu"},
+            "file_path": {"type": "string", "description": "Local .txt or .docx path on the same machine as Siming"},
             "title": {"type": "string", "description": "Project title; defaults to the file name without extension"},
             "description": {"type": "string", "description": "Project description"},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Project tags"},
@@ -2018,8 +2018,8 @@ def _register_all() -> None:
     _r(ToolDef(
         name="start_local_cli_agent_run",
         description=(
-            "Start a Moshu-managed local CLI Agent worker (Claude/Codex/opencode). "
-            "The CLI reads project files directly but must write/delete/update only through Moshu MCP tools. "
+            "Start a Siming-managed local CLI Agent worker (Claude/Codex/opencode). "
+            "The CLI reads project files directly but must write/delete/update only through Siming MCP tools. "
             "Returns an Agent run_id whose events can be streamed in the UI."
         ),
         input_schema={
@@ -2189,7 +2189,7 @@ def _register_all() -> None:
 
     _r(ToolDef(
         name="apply_novel_blueprint",
-        description="Apply a confirmed blueprint to create a real Moshu project with characters, worldbuilding, and outline.",
+        description="Apply a confirmed blueprint to create a real Siming project with characters, worldbuilding, and outline.",
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},
             "blueprint_index": {"type": "integer", "description": "Which blueprint to apply (default 0)"},
@@ -2339,10 +2339,10 @@ def _register_all() -> None:
 
     _r(ToolDef(
         name="get_moshu_usage_guide",
-        description="First-stop guide for Claude Code/Codex/external agents. Explains the correct Moshu workflow for importing, API-free cataloging, internal cataloging, external writing, and verification. API-free; call this when unsure which tools to use.",
+        description="First-stop guide for Claude Code/Codex/external agents. Explains the correct Siming workflow for importing, API-free cataloging, internal cataloging, external writing, and verification. API-free; call this when unsure which tools to use.",
         input_schema={
             "scenario": {"type": "string", "description": "quickstart|import_file|cataloging_no_api|cataloging_internal|writing_no_api|writing_internal"},
-            "no_api": {"type": "boolean", "description": "True when Moshu internal API is unavailable or the external agent should do the reasoning itself."},
+            "no_api": {"type": "boolean", "description": "True when Siming internal API is unavailable or the external agent should do the reasoning itself."},
         },
         tool_type="read",
         estimated_cost="free",

@@ -132,7 +132,7 @@ function ExternalAgentPage({ embedded = false }: ExternalAgentPageProps = {}) {
       </Title>
 
       <Paragraph type="secondary" style={{ marginBottom: 24 }}>
-        配置 Claude Code、Codex 等外部 AI 客户端如何通过 MCP 连接墨枢。
+        配置 Claude Code、Codex 等外部 AI 客户端如何通过 MCP 连接司命。
         全局设置适用于所有项目，项目级设置可以覆盖全局设置。
       </Paragraph>
 
@@ -255,9 +255,9 @@ function ExternalAgentPage({ embedded = false }: ExternalAgentPageProps = {}) {
         <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4, fontSize: 13 }}>
 {`{
   "mcpServers": {
-    "moshu": {
+    "siming": {
       "command": "python",
-      "args": ["scripts/moshu-mcp-server.py", "--permission-pack", "auto"],
+      "args": ["scripts/siming-mcp-server.py", "--permission-pack", "auto"],
       "cwd": "D:\\\\AI\\\\agent"
     }
   }

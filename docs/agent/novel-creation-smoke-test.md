@@ -4,10 +4,10 @@
 
 ## Test 1: Internal API-Backed Project Assistant Writes a Chapter in Quality Mode
 
-**Prerequisites:** Moshu backend running with a configured model API key.
+**Prerequisites:** Siming backend running with a configured model API key.
 
 **Steps:**
-1. Open Moshu web UI
+1. Open Siming web UI
 2. Select a project with existing outline, characters, and worldbuilding
 3. Ask the assistant: "帮我写第三章，用质量模式"
 4. Verify: assistant calls preview_writing_context → design_plot → chapter_writer → evaluate_chapter → create_chapter
@@ -16,12 +16,12 @@
 
 **Expected Result:** Chapter created with quality evaluation. All tools work through the agent tool chain.
 
-## Test 2: External Claude/Codex Writes a Chapter with No Moshu API Key
+## Test 2: External Claude/Codex Writes a Chapter with No Siming API Key
 
-**Prerequisites:** Moshu backend running WITHOUT a model API key. Claude Code connected via MCP.
+**Prerequisites:** Siming backend running WITHOUT a model API key. Claude Code connected via MCP.
 
 **Steps:**
-1. Configure Claude Code to connect to Moshu MCP server
+1. Configure Claude Code to connect to Siming MCP server
 2. Ask Claude Code: "帮我写第三章"
 3. Claude Code should:
    - Call `prepare_external_writing_context` to get context and prompt pack
@@ -29,14 +29,14 @@
    - Call `save_external_chapter_draft` to store the draft
    - Call `record_external_quality_review` to log self-review
    - Call `create_chapter` with `draft_id` to save
-4. Verify: chapter appears in Moshu web UI
+4. Verify: chapter appears in Siming web UI
 5. Verify: no "API key not configured" errors
 
-**Expected Result:** Chapter created without any Moshu model API call. All tools are API-free.
+**Expected Result:** Chapter created without any Siming model API call. All tools are API-free.
 
-## Test 3: External Claude/Codex Creates a New Novel with No Moshu API Key
+## Test 3: External Claude/Codex Creates a New Novel with No Siming API Key
 
-**Prerequisites:** Moshu backend running WITHOUT a model API key. Claude Code connected via MCP.
+**Prerequisites:** Siming backend running WITHOUT a model API key. Claude Code connected via MCP.
 
 **Steps:**
 1. Ask Claude Code: "帮我开一本仙侠小说"
@@ -46,15 +46,15 @@
    - Generate blueprints using its own model
    - Call `review_novel_blueprint` with the blueprint
    - Call `apply_novel_blueprint` to create the project
-3. Verify: new project appears in Moshu with characters, worldbuilding, and outline
+3. Verify: new project appears in Siming with characters, worldbuilding, and outline
 4. Verify: no "API key not configured" errors
 
-**Expected Result:** New novel project created without any Moshu model API call.
+**Expected Result:** New novel project created without any Siming model API call.
 
 ## Test 4: User Can Inspect the Prompt Pack Used by Both Paths
 
 **Steps:**
-1. Open Moshu web UI
+1. Open Siming web UI
 2. Navigate to the Prompt Packs page
 3. Verify: built-in prompt packs are listed (chapter_writing_quality, chapter_writing_fast, etc.)
 4. Verify: each pack shows scope, version, and summary
@@ -67,10 +67,10 @@
 
 ## Test 5: Old Projects Still Open and Can Write Chapters
 
-**Prerequisites:** A project created by a previous version of Moshu.
+**Prerequisites:** A project created by a previous version of Siming.
 
 **Steps:**
-1. Open the old project in the updated Moshu
+1. Open the old project in the updated Siming
 2. Verify: project loads without errors
 3. Verify: chapters, characters, outline, worldbuilding are all visible
 4. Write a new chapter using the internal assistant

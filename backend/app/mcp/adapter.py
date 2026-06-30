@@ -71,7 +71,7 @@ def _add_project_id_argument(tool: McpTool, *, required: bool = False) -> McpToo
     properties.setdefault("run_id", {
         "type": "string",
         "description": (
-            "Optional Moshu Agent run ID. Managed local/external Agents should pass "
+            "Optional Siming Agent run ID. Managed local/external Agents should pass "
             "the run_id supplied by their task so tool calls and progress appear in "
             "the frontend execution timeline."
         ),
@@ -373,7 +373,7 @@ def _missing_project_payload(tool_name: str) -> dict[str, Any]:
         "status": "denied",
         "tool": tool_name,
         "detail": (
-            "project_id is required for this Moshu tool. Call list_projects or "
+            "project_id is required for this Siming tool. Call list_projects or "
             "use the project_id returned by create_project/import_file_as_project, "
             "then pass that same project_id to every project-scoped tool call."
         ),
@@ -475,7 +475,7 @@ async def execute_tool(
         arguments.pop("run_id", None)  # Strip if passed explicitly
 
     # Check confirmation token for legacy write tiers and explicitly sensitive tools.
-    # Trusted local mode is intentionally frictionless: it can execute Moshu MCP
+    # Trusted local mode is intentionally frictionless: it can execute Siming MCP
     # project tools without an extra frontend confirmation prompt. Secret/internal
     # model tools remain excluded by the permission-pack registry boundary.
     from app.mcp.permissions import get_tier, validate_confirmation_token

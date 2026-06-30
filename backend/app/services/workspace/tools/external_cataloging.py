@@ -1,6 +1,6 @@
 """External cataloging tools — API-free tools for external agents to catalog imported chapters.
 
-These tools work without any Moshu model API configured. They allow
+These tools work without any Siming model API configured. They allow
 Claude Code / Codex to extract characters, worldbuilding, outline,
 and chapter summaries from imported text.
 """
@@ -48,16 +48,40 @@ CANONICAL_FACT_TYPES = {
 }
 
 
-def _managed_cataloging_binding() -> dict[str, str] | None:
-    if os.environ.get("MOSHU_MANAGED_AGENT_KIND", "").strip().lower() != "cataloging":
-        return None
-    return {
-        "project_id": os.environ.get("MOSHU_MANAGED_CATALOGING_PROJECT_ID", "").strip(),
-        "job_id": os.environ.get("MOSHU_MANAGED_CATALOGING_JOB_ID", "").strip(),
-        "chapter_id": os.environ.get("MOSHU_MANAGED_CATALOGING_CHAPTER_ID", "").strip(),
-        "chapter_run_id": os.environ.get("MOSHU_MANAGED_CATALOGING_CHAPTER_RUN_ID", "").strip(),
-        "stage": os.environ.get("MOSHU_MANAGED_CATALOGING_STAGE", "").strip(),
-    }
+def _managed_cataloging_bindings() -> list[dict[str, str]]:
+    bindings: list[dict[str, str]] = []
+    for prefix in ("SIMING", "MOSHU"):
+        managed_kind = os.environ.get(f"{prefix}_MANAGED_AGENT_KIND", "")
+        if managed_kind.strip().lower() != "cataloging":
+            continue
+        bindings.append({
+            "project_id": os.environ.get(f"{prefix}_MANAGED_CATALOGING_PROJECT_ID", "").strip(),
+            "job_id": os.environ.get(f"{prefix}_MANAGED_CATALOGING_JOB_ID", "").strip(),
+            "chapter_id": os.environ.get(f"{prefix}_MANAGED_CATALOGING_CHAPTER_ID", "").strip(),
+            "chapter_run_id": os.environ.get(f"{prefix}_MANAGED_CATALOGING_CHAPTER_RUN_ID", "").strip(),
+            "stage": os.environ.get(f"{prefix}_MANAGED_CATALOGING_STAGE", "").strip(),
+        })
+    return bindings
+
+
+def _managed_cataloging_binding(
+    *,
+    project_id: str = "",
+    job_id: str = "",
+    chapter_id: str = "",
+) -> dict[str, str] | None:
+    bindings = _managed_cataloging_bindings()
+    if not (project_id or job_id or chapter_id):
+        return bindings[0] if bindings else None
+    for binding in bindings:
+        if project_id and binding["project_id"] and binding["project_id"] != project_id:
+            continue
+        if job_id and binding["job_id"] and binding["job_id"] != job_id:
+            continue
+        if chapter_id and binding["chapter_id"] and binding["chapter_id"] != chapter_id:
+            continue
+        return binding
+    return None
 
 
 def _managed_binding_error(
@@ -66,9 +90,14 @@ def _managed_binding_error(
     job_id: str,
     chapter_id: str = "",
 ) -> str | None:
-    binding = _managed_cataloging_binding()
-    if not binding:
+    bindings = _managed_cataloging_bindings()
+    if not bindings:
         return None
+    binding = _managed_cataloging_binding(
+        project_id=project_id,
+        job_id=job_id,
+        chapter_id=chapter_id,
+    ) or bindings[0]
     if binding["project_id"] and binding["project_id"] != project_id:
         return "Managed cataloging turn is bound to a different project"
     if binding["job_id"] and binding["job_id"] != job_id:
@@ -90,7 +119,7 @@ def _managed_stop_result(job_id: str, project_id: str, detail: str) -> dict[str,
             "next_tool": None,
             "workflow_reminder": {
                 "mode": "managed_single_chapter",
-                "note": "This CLI turn handles exactly one chapter. End the turn now; Moshu will start a fresh turn for the next chapter.",
+                "note": "This CLI turn handles exactly one chapter. End the turn now; Siming will start a fresh turn for the next chapter.",
             },
         },
     }
@@ -220,7 +249,7 @@ def _workflow_reminder(next_tool: str, *, note: str = "") -> dict[str, Any]:
         ),
         "outline_granularity_policy": get_outline_granularity_rules(),
         "no_api_rule": (
-            "When the user says Moshu API is unavailable, do not call internal LLM tools such as "
+            "When the user says Siming API is unavailable, do not call internal LLM tools such as "
             "start_cataloging_job, chapter_writer, character_writer, outline_writer, worldbuilding_writer, "
             "design_plot, or evaluate_chapter."
         ),
@@ -454,7 +483,10 @@ async def get_next_external_cataloging_chapter(
     if binding_error:
         return _managed_stop_result(job_id, effective_project_id, binding_error)
 
-    managed_binding = _managed_cataloging_binding()
+    managed_binding = _managed_cataloging_binding(
+        project_id=effective_project_id,
+        job_id=job_id,
+    )
     managed_run = None
     if managed_binding and managed_binding["chapter_run_id"]:
         managed_run = db.query(CatalogingChapterRun).filter(

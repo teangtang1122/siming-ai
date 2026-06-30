@@ -1,6 +1,6 @@
 """External writing tools — API-free tools for external agents (Claude Code, Codex).
 
-These tools work without any Moshu model API configured. They provide
+These tools work without any Siming model API configured. They provide
 context, prompt packs, draft storage, and quality review recording
 for external agents that do their own generation.
 """
@@ -75,7 +75,7 @@ async def prepare_external_writing_context(
     if requested_mode != mode:
         result["warnings"].append(
             f"Requested mode '{requested_mode}' was normalized to quality. "
-            "Moshu uses the highest-quality writing prompt for all entrypoints."
+            "Siming uses the highest-quality writing prompt for all entrypoints."
         )
 
     # API-free mode rules + all analysis prompts — one call gets everything
@@ -286,7 +286,7 @@ async def prepare_external_writing_context(
         {"tool": "detect_character_changes", "description": "检测角色状态变化"},
         {"tool": "detect_new_worldbuilding", "description": "检测新增世界观元素"},
         {"tool": "apply_external_story_updates", "description": "应用角色/世界观更新"},
-        {"tool": "evaluate_chapter", "description": "8维度80分质量评估（需要墨枢API）"},
+        {"tool": "evaluate_chapter", "description": "8维度80分质量评估（需要司命API）"},
     ]
 
     return {

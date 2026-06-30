@@ -1,6 +1,6 @@
 # MCP Development Task Board
 
-> Project: Moshu / 墨枢
+> Project: Siming / 司命
 >
 > Purpose: add MCP support in a strict, auditable, incremental workflow.
 >
@@ -29,7 +29,7 @@
 - File scope:
   - `docs/mcp/spec.md`
 - Goal:
-  - Define the first MCP version: Moshu as an MCP Server.
+  - Define the first MCP version: Siming as an MCP Server.
   - Define supported transport, local database access, tool naming, resource URI format, prompt names, and versioning.
   - Explicitly state that MCP Client integration is a later phase.
 - Required content:
@@ -171,7 +171,7 @@
   - `backend/app/mcp/resources.py`
   - `backend/tests/test_mcp_resources.py`
 - Goal:
-  - Define and parse stable Moshu resource URIs.
+  - Define and parse stable Siming resource URIs.
 - URI examples:
   - `moshu://projects`
   - `moshu://projects/{project_id}`
@@ -410,7 +410,7 @@
   - `PACKAGING.md`
   - `docs/mcp/*.md`
 - Goal:
-  - Document how to run Moshu MCP Server from local exe/source.
+  - Document how to run Siming MCP Server from local exe/source.
 - Verification:
   - Fresh user can configure an MCP client using docs only.
 
@@ -445,7 +445,7 @@
 
 ## Phase 8 - External Agent Live Session
 
-> Purpose: let Claude Code, Codex, and other external MCP clients operate Moshu projects while Moshu users can watch the run in the web UI.
+> Purpose: let Claude Code, Codex, and other external MCP clients operate Siming projects while Siming users can watch the run in the web UI.
 >
 > Strict rule for this phase: no hidden chain-of-thought is requested, stored, or displayed. Only explicit plans, tool calls, progress messages, selected context, draft chunks, warnings, and committed writes may be shown.
 
@@ -458,7 +458,7 @@
   - `docs/mcp/tasks.md`
 - Goal:
   - Define the first version of the external Agent observability protocol.
-  - Specify how Claude Code / Codex starts a run, reports progress, streams draft content, calls Moshu tools, requests confirmed writes, and finishes the run.
+  - Specify how Claude Code / Codex starts a run, reports progress, streams draft content, calls Siming tools, requests confirmed writes, and finishes the run.
 - Required content:
   - Run lifecycle: `created`, `running`, `waiting_confirmation`, `failed`, `cancelled`, `completed`.
   - Event types: `plan`, `progress`, `tool_start`, `tool_result`, `context_selected`, `draft_chunk`, `draft_ready`, `write_requested`, `write_committed`, `warning`, `error`, `run_finished`.
@@ -528,7 +528,7 @@
   - `backend/app/mcp/permissions.py`
   - `backend/tests/test_mcp_external_agent_tools.py`
 - Goal:
-  - Give Claude Code / Codex explicit MCP tools for reporting what they are doing to Moshu.
+  - Give Claude Code / Codex explicit MCP tools for reporting what they are doing to Siming.
 - Required tools:
   - `start_agent_run`
   - `report_agent_plan`
@@ -556,7 +556,7 @@
   - `backend/app/services/external_agent/run_service.py`
   - `backend/tests/test_mcp_tool_run_events.py`
 - Goal:
-  - When an external client passes `run_id` to any Moshu MCP tool call, Moshu should automatically log `tool_start` and `tool_result` events.
+  - When an external client passes `run_id` to any Siming MCP tool call, Siming should automatically log `tool_start` and `tool_result` events.
 - Required behavior:
   - `run_id` may be accepted as an out-of-band MCP argument and stripped before calling the underlying workspace tool if the tool schema does not define it.
   - Log tool name, status, safe argument summary, safe result summary, warnings, and error message.
@@ -577,7 +577,7 @@
   - `frontend/src/api/client.ts`
   - `frontend/src/types/agentRun.ts`
 - Goal:
-  - Let users watch Claude Code / Codex working inside Moshu in real time.
+  - Let users watch Claude Code / Codex working inside Siming in real time.
 - Required UI:
   - Collapsible panel in project workspace.
   - Active run selector and historical run list.
@@ -601,7 +601,7 @@
   - `frontend/src/components/ExternalAgentRunPanel.tsx`
   - `backend/tests/test_external_agent_confirmed_writes.py`
 - Goal:
-  - Allow external Agent drafts to become real Moshu project writes only after explicit user confirmation.
+  - Allow external Agent drafts to become real Siming project writes only after explicit user confirmation.
 - Required behavior:
   - External clients can request writes such as create chapter, update chapter, create outline, update character, and create worldbuilding.
   - Backend creates a pending write request linked to `run_id`.
@@ -622,14 +622,14 @@
   - `README.md`
   - `PACKAGING.md`
 - Goal:
-  - Give users a copyable setup for making Claude Code / Codex operate Moshu through MCP and report progress to the Moshu UI.
+  - Give users a copyable setup for making Claude Code / Codex operate Siming through MCP and report progress to the Siming UI.
 - Required content:
   - Source and exe MCP server command examples.
   - Sample MCP client config.
   - Recommended external Agent operating rules:
     - Start a run before reading project data.
     - Report a short plan before tool work.
-    - Use Moshu resources/RAG before writing.
+    - Use Siming resources/RAG before writing.
     - Report selected context.
     - Stream draft chunks for long writing.
     - Request confirmed writes instead of directly modifying data.
@@ -637,7 +637,7 @@
   - Troubleshooting section: wrong database path, missing project id, insufficient model balance, SSE not connected.
 - Verification:
   - Fresh user can connect Claude Code / Codex from docs only.
-  - Docs mention that Moshu itself still uses configured model APIs unless external Agent workflow is used.
+  - Docs mention that Siming itself still uses configured model APIs unless external Agent workflow is used.
 
 ### MCP-0809 - Add End-To-End External Agent Smoke Test
 
@@ -684,7 +684,7 @@
 
 ## Phase 9 - External Agent Permission Packs And Single Tool Source
 
-> Purpose: make Claude Code / Codex permissions configurable without exposing secrets, and make every future Moshu project-assistant tool register once and become available to internal Agent, scheduler, MCP, docs, and frontend inspection through one shared registry contract.
+> Purpose: make Claude Code / Codex permissions configurable without exposing secrets, and make every future Siming project-assistant tool register once and become available to internal Agent, scheduler, MCP, docs, and frontend inspection through one shared registry contract.
 >
 > Strict rule for this phase: API key/model secret/config-secret tools remain permanently non-exposable through MCP and external Agent permission packs. Trusted local mode may reduce friction for project writes, but must not bypass secret boundaries or audit logging.
 
@@ -696,7 +696,7 @@
   - `docs/mcp/permission-packs-and-tools.md`
   - `docs/mcp/tasks.md`
 - Goal:
-  - Define how Moshu exposes one canonical workspace tool registry to internal project assistant, scheduled tasks, MCP clients, external Agent live sessions, and frontend tool inspection.
+  - Define how Siming exposes one canonical workspace tool registry to internal project assistant, scheduled tasks, MCP clients, external Agent live sessions, and frontend tool inspection.
   - Define configurable external Agent permission packs, including a trusted local mode.
 - Required content:
   - Permission pack names and intent:

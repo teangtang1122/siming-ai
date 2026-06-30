@@ -139,7 +139,7 @@
 .workspace-assistant-message {
   background: var(--ant-color-bg-container);
   border: 1px solid var(--ant-color-border-secondary);
-  border-left: 3px solid var(--moshu-accent, var(--ant-color-primary));
+  border-left: 3px solid var(--siming-accent, var(--ant-color-primary));
   border-radius: 6px;
   margin-bottom: 10px;
   padding: 10px 12px;

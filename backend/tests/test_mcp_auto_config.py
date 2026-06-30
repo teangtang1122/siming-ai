@@ -13,7 +13,7 @@ from app.services.external_agent import mcp_auto_config
 
 
 class McpAutoConfigTest(unittest.TestCase):
-    def test_codex_config_replaces_only_moshu_block(self):
+    def test_codex_config_replaces_legacy_moshu_block_with_siming(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir)
             config_path = config_dir / "config.toml"
@@ -46,7 +46,8 @@ class McpAutoConfigTest(unittest.TestCase):
             new_text = config_path.read_text(encoding="utf-8")
             self.assertIn("[mcp_servers.other]", new_text)
             self.assertIn("[ui]", new_text)
-            self.assertIn("[mcp_servers.moshu]", new_text)
+            self.assertIn("[mcp_servers.siming]", new_text)
+            self.assertNotIn("[mcp_servers.moshu]", new_text)
             self.assertIn("--permission-pack", new_text)
             self.assertIn('"auto"', new_text)
             self.assertNotIn('command = "old"', new_text)
@@ -69,12 +70,14 @@ class McpAutoConfigTest(unittest.TestCase):
             self.assertEqual(result["status"], "configured")
             calls = [call.args[0] for call in run.call_args_list]
             self.assertEqual(calls[0][:5], ["claude", "mcp", "remove", "-s", "user"])
-            self.assertEqual(calls[1][:7], ["claude", "mcp", "add", "-s", "user", "moshu", "--"])
-            self.assertIn("--permission-pack", calls[1])
-            self.assertIn("auto", calls[1])
+            self.assertEqual(calls[1][:6], ["claude", "mcp", "remove", "-s", "user", "moshu"])
+            self.assertEqual(calls[2][:7], ["claude", "mcp", "add", "-s", "user", "siming", "--"])
+            self.assertIn("--permission-pack", calls[2])
+            self.assertIn("auto", calls[2])
             # Verify permission was auto-added
             self.assertTrue(settings_path.exists())
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertIn("mcp__siming__*", settings.get("permissions", {}).get("allow", []))
             self.assertIn("mcp__moshu__*", settings.get("permissions", {}).get("allow", []))
 
     def test_claude_config_permission_added_to_existing_settings(self):
@@ -105,7 +108,8 @@ class McpAutoConfigTest(unittest.TestCase):
             allow = settings["permissions"]["allow"]
             # Existing entries preserved
             self.assertIn("Bash(git *)", allow)
-            # Moshu wildcard added
+            # Siming wildcard added; legacy wildcard remains allowed for existing clients
+            self.assertIn("mcp__siming__*", allow)
             self.assertIn("mcp__moshu__*", allow)
             # Other settings preserved
             self.assertEqual(settings["theme"], "dark")
@@ -134,7 +138,8 @@ class McpAutoConfigTest(unittest.TestCase):
 
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
             allow = settings["permissions"]["allow"]
-            # No duplicate added
+            self.assertIn("mcp__siming__*", allow)
+            # No duplicate legacy entry added
             self.assertEqual(allow.count("mcp__moshu__*"), 1)
 
     def test_disabled_by_env(self):
@@ -156,8 +161,8 @@ class McpAutoConfigTest(unittest.TestCase):
             self.assertTrue(config_path.exists())
             config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(config["permission"], "allow")
-            self.assertIn("moshu", config["mcp"])
-            self.assertIn("--permission-pack", config["mcp"]["moshu"]["command"])
+            self.assertIn("siming", config["mcp"])
+            self.assertIn("--permission-pack", config["mcp"]["siming"]["command"])
 
     def test_opencode_config_preserves_existing_servers(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -185,15 +190,15 @@ class McpAutoConfigTest(unittest.TestCase):
             # Existing server preserved
             self.assertIn("other-server", config["mcp"])
             self.assertEqual(config["mcp"]["other-server"]["command"], ["other", "--flag"])
-            # Moshu added
-            self.assertIn("moshu", config["mcp"])
+            # Siming added
+            self.assertIn("siming", config["mcp"])
             # Other settings preserved
             self.assertEqual(config["theme"], "dark")
             self.assertEqual(config["permission"], "allow")
             # Backup created
             self.assertTrue(list(config_dir.glob("opencode.json.bak-*")))
 
-    def test_opencode_config_updates_existing_moshu(self):
+    def test_opencode_config_migrates_existing_moshu_to_siming(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir)
             config_path = config_dir / "opencode.json"
@@ -214,9 +219,10 @@ class McpAutoConfigTest(unittest.TestCase):
                     mcp_auto_config.auto_configure_mcp_for_provider("opencode_cli")
 
             config = json.loads(config_path.read_text(encoding="utf-8"))
-            # Old entry replaced
-            self.assertNotEqual(config["mcp"]["moshu"]["command"][0], "old-command")
-            self.assertIn("--permission-pack", config["mcp"]["moshu"]["command"])
+            # Old entry replaced under the new server name
+            self.assertNotIn("moshu", config["mcp"])
+            self.assertNotEqual(config["mcp"]["siming"]["command"][0], "old-command")
+            self.assertIn("--permission-pack", config["mcp"]["siming"]["command"])
 
     def test_mimocode_config_uses_native_global_schema(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -229,9 +235,9 @@ class McpAutoConfigTest(unittest.TestCase):
             self.assertEqual(result["status"], "configured")
             config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(config["permission"], "allow")
-            self.assertEqual(config["mcp"]["moshu"]["type"], "local")
-            self.assertTrue(config["mcp"]["moshu"]["enabled"])
-            self.assertIn("--permission-pack", config["mcp"]["moshu"]["command"])
+            self.assertEqual(config["mcp"]["siming"]["type"], "local")
+            self.assertTrue(config["mcp"]["siming"]["enabled"])
+            self.assertIn("--permission-pack", config["mcp"]["siming"]["command"])
 
     def test_codex_config_enables_noninteractive_trusted_mode(self):
         with tempfile.TemporaryDirectory() as temp_dir:

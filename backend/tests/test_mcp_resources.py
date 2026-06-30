@@ -178,7 +178,7 @@ class ResourceDescriptionTest(unittest.TestCase):
 
     def test_unknown_type_returns_generic(self):
         desc = get_resource_description("unknown_type")
-        self.assertIn("Moshu", desc)
+        self.assertIn("Siming", desc)
 
 
 class ReadResourceTest(unittest.TestCase):

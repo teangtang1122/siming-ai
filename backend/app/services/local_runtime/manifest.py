@@ -81,8 +81,11 @@ def model_spec(model_key: str) -> dict | None:
 
 def _load_verified_remote_manifest() -> dict | None:
     """Load an optional signed manifest without weakening the offline catalog."""
-    url = os.environ.get("MOSHU_MODEL_MANIFEST_URL", "").strip()
-    public_key_b64 = os.environ.get("MOSHU_MODEL_MANIFEST_PUBLIC_KEY", "").strip()
+    url = (os.environ.get("SIMING_MODEL_MANIFEST_URL") or os.environ.get("MOSHU_MODEL_MANIFEST_URL", "")).strip()
+    public_key_b64 = (
+        os.environ.get("SIMING_MODEL_MANIFEST_PUBLIC_KEY")
+        or os.environ.get("MOSHU_MODEL_MANIFEST_PUBLIC_KEY", "")
+    ).strip()
     cache = moshu_home() / "model-manifest.json"
     if url and public_key_b64:
         try:

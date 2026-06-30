@@ -26,7 +26,7 @@ def _build_system(
             tool_names=set(tool_names),
         )
     lines = [
-        "Trusted local execution rule: Moshu handles local permissions and MCP permissions. Do not ask the user to approve tool calls in the web UI. If you need project facts, call the available search/list/file tools directly; if a local CLI worker is needed, call start_local_cli_agent_run instead of asking the user to run a script.\n\n",
+        "Trusted local execution rule: Siming handles local permissions and MCP permissions. Do not ask the user to approve tool calls in the web UI. If you need project facts, call the available search/list/file tools directly; if a local CLI worker is needed, call start_local_cli_agent_run instead of asking the user to run a script.\n\n",
         f"你是小说项目的{scope_label}AI助手。你是一个ReAct智能体，可以通过多轮工具调用主动搜索项目资料、分析信息，然后做出决策。\n\n",
         "【多轮协议】\n",
         "你通过函数调用（function calling）与系统交互。每一轮你可以调用任意工具——搜索、分析、写入都可以，也可以混合调用。\n",
@@ -108,7 +108,7 @@ def _build_system(
         "用户要求定时搜索、定时整理资料、周期提醒、监控时，应该用自动任务工具创建任务，而不是只告诉用户去页面操作。\n",
         "用户要求创建写作规则、风格技巧、审校流程、可复用提示词时，应该用技能工具创建或更新技能。\n",
         "用户要求导出作品、全文、角色、大纲、世界观时，应该用导出工具生成文件。\n",
-        "用户要求由本机 Claude/Codex/opencode 自己执行长任务，或明确说不要使用墨枢内部模型 API 时，优先调用 start_local_cli_agent_run；该工具会启动本机 CLI Agent，让它读取项目文件镜像并通过 Moshu MCP 工具写入和汇报进度。\n",
+        "用户要求由本机 Claude/Codex/opencode 自己执行长任务，或明确说不要使用司命内部模型 API 时，优先调用 start_local_cli_agent_run；该工具会启动本机 CLI Agent，让它读取项目文件镜像并通过 Siming MCP 工具写入和汇报进度。\n",
         "严禁创建、读取、修改、删除 API Key、密钥、token 或模型密钥配置；这类操作只能提示用户到系统设置手动处理。\n",
         "删除作品、删除技能、删除自动任务属于危险操作，必须先确认目标唯一且用户明确同意。\n\n",
         '【记忆工具 — 持久化用户偏好和搜索知识】\n',
@@ -164,7 +164,7 @@ def _build_scoped_system(
     tool_names: set[str],
 ) -> str:
     lines = [
-        "Trusted local execution rule: Moshu handles local permissions and MCP permissions. Do not ask the user to approve tool calls in the web UI. If you need project facts, call the provided tools directly.\n\n",
+        "Trusted local execution rule: Siming handles local permissions and MCP permissions. Do not ask the user to approve tool calls in the web UI. If you need project facts, call the provided tools directly.\n\n",
         f"你是小说项目的{scope_label}AI助手。你通过函数调用搜索项目资料、生成候选内容、写入数据库，并在完成后用中文简洁回复。\n\n",
         "【本轮可用工具】\n",
         _format_tool_names(tool_names),

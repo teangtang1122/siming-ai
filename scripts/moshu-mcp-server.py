@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Moshu MCP Server — stdio entrypoint for MCP clients.
+"""Siming MCP Server — stdio entrypoint for MCP clients.
 
 Usage:
     python scripts/moshu-mcp-server.py [--project-id ID] [--permission-pack PACK]
 
-This script starts a stdio-based MCP server that exposes Moshu workspace
+This script starts a stdio-based MCP server that exposes Siming workspace
 tools to MCP clients such as Claude Desktop, Cursor, and other editors.
 
 The server defaults to readonly collaboration mode. Omit --project-id to let
@@ -13,7 +13,8 @@ still receive a project_id/id argument when needed.
 
 Environment variables:
     DATABASE_URL — override the database connection string.
-    MOSHU_HOME  — override the data directory (default: %LOCALAPPDATA%\\Moshu).
+    SIMING_HOME — override the data directory (default: %LOCALAPPDATA%\\Siming).
+    MOSHU_HOME  — legacy override, still supported.
 """
 from __future__ import annotations
 
@@ -43,16 +44,15 @@ def _configure_stdio_utf8() -> None:
 
 
 def _app_home() -> Path:
-    env_home = os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+    env_home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
     if env_home:
         return Path(env_home).expanduser().resolve()
 
     local_app_data = os.environ.get("LOCALAPPDATA")
     base = Path(local_app_data) if local_app_data else Path.home()
-    current = base / "Moshu"
-    legacy = base / "NovelWritingAgent"
-    legacy_dot = Path.home() / ".NovelWritingAgent"
-    for legacy_dir in (legacy, legacy_dot):
+    current = base / "Siming"
+    legacy_dirs = [base / "Moshu", base / "NovelWritingAgent", Path.home() / ".Moshu", Path.home() / ".NovelWritingAgent"]
+    for legacy_dir in legacy_dirs:
         legacy_db = legacy_dir / "novel_agent.db"
         current_db = current / "novel_agent.db"
         if legacy_db.exists() and legacy_db.stat().st_size > 0:
@@ -64,6 +64,8 @@ def _app_home() -> Path:
 def _prepare_data_environment() -> Path:
     home = _app_home()
     home.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("SIMING_HOME", str(home))
+    os.environ.setdefault("SIMING_KEY_FILE", str(home / ".crypto_key"))
     os.environ.setdefault("MOSHU_HOME", str(home))
     os.environ.setdefault("MOSHU_KEY_FILE", str(home / ".crypto_key"))
     os.environ.setdefault("NOVEL_AGENT_HOME", str(home))
@@ -75,7 +77,7 @@ def _prepare_data_environment() -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="moshu-mcp-server",
-        description="Moshu MCP Server — exposes Moshu workspace tools over stdio.",
+        description="Siming MCP Server — exposes Siming workspace tools over stdio.",
     )
     parser.add_argument(
         "--project-id",
@@ -84,7 +86,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--permission-pack",
-        default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "auto"),
+        default=os.environ.get("SIMING_MCP_PERMISSION_PACK") or os.environ.get("MOSHU_MCP_PERMISSION_PACK", "auto"),
         choices=[
             "auto",
             "readonly_collaboration",
@@ -111,7 +113,7 @@ def main() -> None:
     logging.basicConfig(
         level=level,
         stream=sys.stderr,
-        format="[moshu-mcp] %(levelname)s %(name)s: %(message)s",
+        format="[siming-mcp] %(levelname)s %(name)s: %(message)s",
     )
 
     # ── Database setup ───────────────────────────────────────────────────

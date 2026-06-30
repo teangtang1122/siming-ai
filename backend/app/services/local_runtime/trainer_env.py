@@ -36,7 +36,7 @@ def _hidden_kwargs() -> dict:
 
 def _download(url: str, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    request = Request(url, headers={"User-Agent": "Moshu/2.5"})
+    request = Request(url, headers={"User-Agent": "Siming/2.5"})
     with urlopen(request, timeout=60) as response, target.open("wb") as output:
         shutil.copyfileobj(response, output)
 
@@ -45,7 +45,7 @@ def ensure_uv() -> Path:
     existing = runtime_root() / "trainer" / "uv.exe"
     if existing.exists():
         return existing
-    request = Request(UV_RELEASE_API, headers={"User-Agent": "Moshu/2.5"})
+    request = Request(UV_RELEASE_API, headers={"User-Agent": "Siming/2.5"})
     with urlopen(request, timeout=20) as response:
         release = json.loads(response.read().decode("utf-8"))
     asset = next(
@@ -85,7 +85,7 @@ def ensure_training_environment(log) -> Path:
         )
         if result.returncode:
             raise RuntimeError(result.stderr or result.stdout or "创建训练环境失败")
-    marker = environment / ".moshu-training-ready"
+    marker = environment / ".siming-training-ready"
     if not marker.exists():
         log("首次安装 QLoRA 训练依赖，下载时间取决于网络")
         result = subprocess.run(

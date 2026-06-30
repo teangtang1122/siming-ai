@@ -14,7 +14,7 @@ EXTERNAL_CATALOGING_PACK = PromptPack(
     name="cataloging_external_no_api",
     version="1.0",
     pack_type="cataloging",
-    description="API-free cataloging for external agents (Claude Code / Codex). Extracts characters, worldbuilding, outline, and chapter summaries without Moshu model API.",
+    description="API-free cataloging for external agents (Claude Code / Codex). Extracts characters, worldbuilding, outline, and chapter summaries without Siming model API.",
     input_fields=["project_id", "chapter_ids"],
     max_token_budget=8000,
     output_format="jsonl",
@@ -37,7 +37,7 @@ EXTERNAL_CATALOGING_PACK = PromptPack(
         "start_cataloging_job",
     ],
     forbidden_behaviors=[
-        "不要调用需要墨枢 API 的工具",
+        "不要调用需要司命 API 的工具",
         "不要报告完成除非验证通过",
         "不要跳过读写验证",
         "不要创建重复的角色或世界观条目",

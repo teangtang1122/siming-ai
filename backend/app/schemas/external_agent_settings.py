@@ -70,7 +70,7 @@ class EffectivePermissions(BaseModel):
 
 # Default settings for new projects.
 #
-# Moshu is a local-first desktop app. The default should favor "it just works"
+# Siming is a local-first desktop app. The default should favor "it just works"
 # for local Claude/Codex/opencode clients while still keeping internal model
 # spend and secret-management tools out of MCP.
 DEFAULT_ENABLED_PACKS = [

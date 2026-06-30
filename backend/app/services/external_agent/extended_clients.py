@@ -13,6 +13,9 @@ import yaml
 
 from app.ai.local_cli_adapter import hidden_subprocess_kwargs
 
+MCP_SERVER_NAME = "siming"
+LEGACY_MCP_SERVER_NAMES = ("moshu",)
+
 
 def resolve_command(command_names: list[str], known_paths: list[Path] | None = None) -> str | None:
     for name in command_names:
@@ -61,6 +64,11 @@ def _result(client: str, status: str, detail: str, path: Path | None = None) -> 
     return result
 
 
+def _remove_legacy_mcp_entries(mapping: dict[str, Any]) -> None:
+    for name in LEGACY_MCP_SERVER_NAMES:
+        mapping.pop(name, None)
+
+
 def configure_kilocode(server: dict[str, Any]) -> dict[str, Any]:
     command = resolve_command(["kilo.cmd", "kilo", "kilocode.cmd", "kilocode"])
     config_path = Path.home() / ".config" / "kilo" / "kilo.jsonc"
@@ -74,7 +82,8 @@ def configure_kilocode(server: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(mcp, dict):
             mcp = {}
             config["mcp"] = mcp
-        mcp["moshu"] = {
+        _remove_legacy_mcp_entries(mcp)
+        mcp[MCP_SERVER_NAME] = {
             "type": "local",
             "command": [server["command"], *server["args"]],
             "enabled": True,
@@ -85,7 +94,7 @@ def configure_kilocode(server: dict[str, Any]) -> dict[str, Any]:
     return _result(
         "kilocode",
         "configured",
-        "Kilo Code MCP server 'moshu' configured with permission=allow",
+        f"Kilo Code MCP server '{MCP_SERVER_NAME}' configured with permission=allow",
         config_path,
     )
 
@@ -114,14 +123,15 @@ def configure_qwen_code(server: dict[str, Any]) -> dict[str, Any]:
         }
         if server.get("cwd"):
             entry["cwd"] = server["cwd"]
-        servers["moshu"] = entry
+        _remove_legacy_mcp_entries(servers)
+        servers[MCP_SERVER_NAME] = entry
         _write_json(config_path, config, old_text)
     except Exception as exc:
         return _result("qwen-code", "error", f"Qwen Code MCP auto-setup failed: {exc}", config_path)
     return _result(
         "qwen-code",
         "configured",
-        "Qwen Code MCP server 'moshu' configured with approvalMode=yolo",
+        f"Qwen Code MCP server '{MCP_SERVER_NAME}' configured with approvalMode=yolo",
         config_path,
     )
 
@@ -157,7 +167,8 @@ def configure_hermes(server: dict[str, Any]) -> dict[str, Any]:
         }
         if server.get("cwd"):
             entry["cwd"] = server["cwd"]
-        servers["moshu"] = entry
+        _remove_legacy_mcp_entries(servers)
+        servers[MCP_SERVER_NAME] = entry
         new_text = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
         if new_text != old_text:
             config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,7 +179,7 @@ def configure_hermes(server: dict[str, Any]) -> dict[str, Any]:
     return _result(
         "hermes",
         "configured",
-        "Hermes Agent MCP server 'moshu' configured with hooks auto-accepted",
+        f"Hermes Agent MCP server '{MCP_SERVER_NAME}' configured with hooks auto-accepted",
         config_path,
     )
 
@@ -199,17 +210,25 @@ def configure_openclaw(server: dict[str, Any]) -> dict[str, Any]:
                 **hidden_subprocess_kwargs(),
             )
         subprocess.run(
-            [command, "mcp", "unset", "moshu"],
+            [command, "mcp", "unset", MCP_SERVER_NAME],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=30,
             **hidden_subprocess_kwargs(),
         )
+        for legacy_name in LEGACY_MCP_SERVER_NAMES:
+            subprocess.run(
+                [command, "mcp", "unset", legacy_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                **hidden_subprocess_kwargs(),
+            )
         configure_args = [
             command,
             "mcp",
             "add",
-            "moshu",
+            MCP_SERVER_NAME,
             "--command",
             server["command"],
         ]
@@ -251,7 +270,7 @@ def configure_openclaw(server: dict[str, Any]) -> dict[str, Any]:
     return _result(
         "openclaw",
         "configured",
-        "OpenClaw MCP server 'moshu' configured with yolo exec policy",
+        f"OpenClaw MCP server '{MCP_SERVER_NAME}' configured with yolo exec policy",
         config_path,
     )
 

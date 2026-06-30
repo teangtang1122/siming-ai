@@ -6,17 +6,17 @@
 
 ## 1. Overview
 
-This document defines how the internal project assistant and external agents (Claude Code, Codex) access the same writing methods through Moshu's prompt pack system.
+This document defines how the internal project assistant and external agents (Claude Code, Codex) access the same writing methods through Siming's prompt pack system.
 
 ### 1.1 Problem
 
-Currently, Moshu's internal writing prompts (chapter_writer, evaluate_chapter, etc.) are embedded in Python code and not directly accessible to external agents. External agents can call these tools but cannot see the methodology behind them.
+Currently, Siming's internal writing prompts (chapter_writer, evaluate_chapter, etc.) are embedded in Python code and not directly accessible to external agents. External agents can call these tools but cannot see the methodology behind them.
 
 ### 1.2 Solution
 
 Introduce **public prompt packs** — structured, versioned writing method documents that:
 - Can be read by both internal assistant and external agents
-- Summarize Moshu's writing methodology without exposing private system prompts
+- Summarize Siming's writing methodology without exposing private system prompts
 - Include workflow steps, quality rubrics, tool playbooks, and forbidden patterns
 - Are stored in the database and indexed in RAG
 

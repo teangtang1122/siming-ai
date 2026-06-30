@@ -1,6 +1,6 @@
 """End-to-end test for external no-API cataloging (EAC-0502).
 
-Proves that a novel can be cataloged without Moshu LLM calls by using
+Proves that a novel can be cataloged without Siming LLM calls by using
 the external cataloging tools directly with test-provided data.
 """
 import asyncio
@@ -43,7 +43,7 @@ def _run(coro):
 
 
 class ExternalCatalogingE2ETest(unittest.TestCase):
-    """End-to-end external cataloging without Moshu LLM calls."""
+    """End-to-end external cataloging without Siming LLM calls."""
 
     @classmethod
     def setUpClass(cls):
@@ -395,7 +395,7 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
                 {"job_id": job_id, "chapter_id": chapter_id,
                  "candidates": [
                      {"type": "chapter_summary", "summary": "Chapter summary"},
-                     {"type": "outline_create", "action": "create", "title": "Ch1", "node_type": "chapter"},
+                     {"type": "outline_create", "action": "create", "title": "Ch1", "node_type": "chapter", "summary": "Alice appears in the forest."},
                  ]},
             ))
             self.assertEqual(result["status"], "ok")
@@ -572,7 +572,7 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
                     "chapter_id": first_run.chapter_id,
                     "candidates": [
                         {"type": "chapter_summary", "action": "create", "summary": "first"},
-                        {"type": "outline_create", "action": "create", "title": "Chapter 1", "node_type": "chapter"},
+                        {"type": "outline_create", "action": "create", "title": "Chapter 1", "node_type": "chapter", "summary": "first chapter events"},
                     ],
                 },
             ))

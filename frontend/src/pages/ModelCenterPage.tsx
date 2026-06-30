@@ -118,7 +118,7 @@ export default function ModelCenterPage({ embedded = false }: Props) {
     <div style={{ padding: embedded ? 24 : '24px max(24px, 5vw)', maxWidth: 1500, margin: '0 auto' }}>
       <Title level={2} style={{ marginBottom: 4 }}>本地 AI 模型中心</Title>
       <Paragraph type="secondary">
-        下载一次即可离线使用。Moshu 自动管理模型、运行时、任务路由和写作适配器。
+        下载一次即可离线使用。司命自动管理模型、运行时、任务路由和写作适配器。
       </Paragraph>
       <Tabs items={[
         {

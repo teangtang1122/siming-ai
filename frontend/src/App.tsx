@@ -37,7 +37,7 @@ function LoadingScreen() {
           marginBottom: 4,
         }}
       >
-        墨枢
+        司命
       </div>
       <Spin size="default" />
       <div
@@ -131,7 +131,7 @@ function GlobalErrorBanner() {
 
 function App() {
   return (
-    <Layout style={{ minHeight: '100vh' }} className="moshu-grain">
+    <Layout style={{ minHeight: '100vh' }} className="siming-grain">
       <GlobalErrorBanner />
       <Content style={{ padding: 0 }}>
         <ProjectPreloader />

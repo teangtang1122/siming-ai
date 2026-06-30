@@ -1,11 +1,11 @@
-# Moshu 本地 AI 与 LoRA 训练
+# Siming 本地 AI 与 LoRA 训练
 
 ## 数据与目录
 
-- 推理模型：`%LOCALAPPDATA%\Moshu\models`
-- llama.cpp：`%LOCALAPPDATA%\Moshu\runtimes\llama_cpp`
-- 训练环境：`%LOCALAPPDATA%\Moshu\runtimes\trainer`
-- 训练集、检查点与适配器：`%LOCALAPPDATA%\Moshu\training`
+- 推理模型：`%LOCALAPPDATA%\Siming\models`
+- llama.cpp：`%LOCALAPPDATA%\Siming\runtimes\llama_cpp`
+- 训练环境：`%LOCALAPPDATA%\Siming\runtimes\trainer`
+- 训练集、检查点与适配器：`%LOCALAPPDATA%\Siming\training`
 
 这些目录可以与小说数据目录分开。模型目录可在桌面控制面板的“本地 AI”页面修改。
 
@@ -33,7 +33,7 @@
 
 ## 结构化输出
 
-本地模型通过 llama.cpp 的 OpenAI 兼容接口接入 `LLMGateway`。工具型任务继续使用 Moshu 的工具注册表；要求 JSON 的任务会启用 JSON 模式，支持调用方传入 JSON Schema。
+本地模型通过 llama.cpp 的 OpenAI 兼容接口接入 `LLMGateway`。工具型任务继续使用 Siming 的工具注册表；要求 JSON 的任务会启用 JSON 模式，支持调用方传入 JSON Schema。
 
 ## LoRA 训练 Beta
 

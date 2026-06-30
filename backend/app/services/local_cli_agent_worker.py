@@ -1,9 +1,9 @@
-"""Launch local CLI agents as Moshu workers.
+"""Launch local CLI agents as Siming workers.
 
 Unlike the LLM adapter path, this worker does not ask the CLI to return a long
 JSON/prose blob through stdout. The CLI receives a small task file path and is
 instructed to read project files directly, then write/delete/update only via
-Moshu MCP tools. Progress is visible through AgentRun events.
+Siming MCP tools. Progress is visible through AgentRun events.
 """
 from __future__ import annotations
 
@@ -38,9 +38,9 @@ def _select_cli_config(db: Session, provider: str | None = None) -> APIConfig | 
 
 def _task_prompt(task_file: Path) -> str:
     return (
-        "你是 Moshu 启动的本机 CLI Agent。请读取这个任务文件并严格执行：\n"
+        "你是 Siming 启动的本机 CLI Agent。请读取这个任务文件并严格执行：\n"
         f"{task_file}\n\n"
-        "不要把长正文或大量 JSON 输出到聊天/终端；必须通过任务文件指定的 Moshu MCP 工具写入数据和汇报进度。"
+        "不要把长正文或大量 JSON 输出到聊天/终端；必须通过任务文件指定的 Siming MCP 工具写入数据和汇报进度。"
     )
 
 
@@ -55,14 +55,14 @@ def _workflow_section(task_type: str) -> str:
 5. Facts stage may be parallel, but candidate/apply stage must be strictly sequential by `chapter_order`.
 6. For each chapter: `get_next_external_cataloging_chapter(phase="facts")` -> read chapter file/context -> `save_external_cataloging_facts`.
 7. Then chapter order only: `get_next_external_cataloging_chapter(phase="candidates")` -> `save_external_cataloging_candidates` -> `apply_pending_cataloging` -> `verify_external_cataloging_progress`.
-8. Never call `start_cataloging_job` unless the user explicitly allows Moshu internal API usage.
+8. Never call `start_cataloging_job` unless the user explicitly allows Siming internal API usage.
 """
     if task_type == "writing":
         return """
 ## Required Workflow: Writing
 1. Call `get_mcp_permission_status` and `report_agent_plan`.
 2. Call `prepare_external_writing_context` to get the unified quality prompt and target context.
-3. Read relevant project files directly when useful, but write only through Moshu MCP tools.
+3. Read relevant project files directly when useful, but write only through Siming MCP tools.
 4. Call `save_external_chapter_draft` for long chapter text instead of printing it.
 5. Call `record_external_quality_review`, then `create_chapter` with `draft_id/content_ref`.
 6. Call `apply_external_story_updates` for character/worldbuilding/outline/chapter summary changes.
@@ -72,7 +72,7 @@ def _workflow_section(task_type: str) -> str:
 ## Required Workflow: General Project Work
 1. Call `get_mcp_permission_status` and `report_agent_plan`.
 2. Read project files directly for context when helpful.
-3. Use Moshu MCP tools for every write/delete/update.
+3. Use Siming MCP tools for every write/delete/update.
 4. Use `report_agent_progress` at meaningful milestones and `finish_agent_run` at the end.
 """
 
@@ -87,10 +87,10 @@ def write_task_file(
     provider: str,
 ) -> Path:
     folder = ensure_project_folder(db, project)
-    run_dir = folder / ".moshu" / "runs" / run_id
+    run_dir = folder / ".siming" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     task_file = run_dir / "task.md"
-    text = f"""# Moshu Local CLI Agent Task
+    text = f"""# Siming Local CLI Agent Task
 
 ## Run
 - run_id: `{run_id}`
@@ -108,8 +108,8 @@ def write_task_file(
 - The project folder is a read-only mirror for context.
 - You may read files under `project_folder` directly.
 - Do not edit, delete, rename, or create files in canonical folders: `chapters`, `characters`, `worldbuilding`, `outline`, `relationships`.
-- Every write/delete/update must use Moshu MCP tools with `project_id="{project.id}"`.
-- Long text must be stored through Moshu tools such as `save_external_chapter_draft`, not printed to stdout.
+- Every write/delete/update must use Siming MCP tools with `project_id="{project.id}"`.
+- Long text must be stored through Siming tools such as `save_external_chapter_draft`, not printed to stdout.
 
 ## Required Telemetry
 - First, call `report_agent_plan` with this `run_id`.
@@ -124,8 +124,8 @@ def write_task_file(
 - Do not switch Chinese content to English or pinyin because of terminal encoding.
 
 ## Quality Rules
-- Use Moshu prompt packs and workflow guides instead of guessing tool contracts.
-- For chapter writing, use the unified quality prompt returned by Moshu.
+- Use Siming prompt packs and workflow guides instead of guessing tool contracts.
+- For chapter writing, use the unified quality prompt returned by Siming.
 - For cataloging, section-level outline nodes are required when the chapter contains distinct scenes/beats.
 """
     task_file.write_text(text, encoding="utf-8", newline="\n")

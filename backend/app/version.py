@@ -1,4 +1,4 @@
 """Application version and update defaults."""
 
-APP_VERSION = "2.5.6"
-DEFAULT_UPDATE_REPO = "teangtang1122/NovelWritingAgent"
+APP_VERSION = "2.6.0"
+DEFAULT_UPDATE_REPO = "teangtang1122/siming-ai"

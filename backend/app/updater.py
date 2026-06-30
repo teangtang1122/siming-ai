@@ -15,11 +15,13 @@ from typing import Any
 from .version import APP_VERSION, DEFAULT_UPDATE_REPO
 
 
-USER_AGENT = f"Moshu/{APP_VERSION}"
-EXE_NAME = "Moshu.exe"
-LEGACY_EXE_NAME = "NovelWritingAgent.exe"
-COMPATIBLE_EXE_NAMES = {EXE_NAME.lower(), LEGACY_EXE_NAME.lower()}
-CHECKSUM_ASSET_NAMES = {"sha256.txt", f"{EXE_NAME.lower()}.sha256", f"{LEGACY_EXE_NAME.lower()}.sha256"}
+USER_AGENT = f"Siming/{APP_VERSION}"
+EXE_NAME = "Siming.exe"
+LEGACY_EXE_NAMES = ("Moshu.exe", "NovelWritingAgent.exe")
+COMPATIBLE_EXE_NAMES = {EXE_NAME.lower(), *(name.lower() for name in LEGACY_EXE_NAMES)}
+CHECKSUM_ASSET_NAMES = {"sha256.txt", f"{EXE_NAME.lower()}.sha256"} | {
+    f"{name.lower()}.sha256" for name in LEGACY_EXE_NAMES
+}
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
@@ -38,7 +40,8 @@ def is_newer_version(latest: str, current: str = APP_VERSION) -> bool:
 
 def _github_token() -> str | None:
     return (
-        os.environ.get("MOSHU_GITHUB_TOKEN")
+        os.environ.get("SIMING_GITHUB_TOKEN")
+        or os.environ.get("MOSHU_GITHUB_TOKEN")
         or os.environ.get("NOVEL_AGENT_GITHUB_TOKEN")
         or os.environ.get("GITHUB_TOKEN")
     )
@@ -81,7 +84,7 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
     version = tag.removeprefix("v")
     assets = release.get("assets") if isinstance(release.get("assets"), list) else []
     exe_asset = None
-    legacy_exe_asset = None
+    legacy_exe_assets: list[dict[str, Any]] = []
     checksum_asset = None
     for asset in assets:
         if not isinstance(asset, dict):
@@ -89,11 +92,11 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
         name = str(asset.get("name") or "")
         if name.lower() == EXE_NAME.lower():
             exe_asset = asset
-        elif name.lower() == LEGACY_EXE_NAME.lower():
-            legacy_exe_asset = asset
+        elif name.lower() in {legacy.lower() for legacy in LEGACY_EXE_NAMES}:
+            legacy_exe_assets.append(asset)
         elif name.lower() in CHECKSUM_ASSET_NAMES:
             checksum_asset = asset
-    exe_asset = exe_asset or legacy_exe_asset
+    exe_asset = exe_asset or (legacy_exe_assets[0] if legacy_exe_assets else None)
     if not version or not exe_asset:
         return None
     sha256 = ""
@@ -113,15 +116,21 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
 
 
 def find_latest_update() -> dict[str, Any] | None:
-    if os.environ.get("MOSHU_DISABLE_UPDATE") == "1" or os.environ.get("NOVEL_AGENT_DISABLE_UPDATE") == "1":
+    if (
+        os.environ.get("SIMING_DISABLE_UPDATE") == "1"
+        or os.environ.get("MOSHU_DISABLE_UPDATE") == "1"
+        or os.environ.get("NOVEL_AGENT_DISABLE_UPDATE") == "1"
+    ):
         return None
     manifest_url = (
-        os.environ.get("MOSHU_UPDATE_MANIFEST_URL")
+        os.environ.get("SIMING_UPDATE_MANIFEST_URL")
+        or os.environ.get("MOSHU_UPDATE_MANIFEST_URL")
         or os.environ.get("NOVEL_AGENT_UPDATE_MANIFEST_URL")
         or ""
     ).strip()
     repo = (
-        os.environ.get("MOSHU_UPDATE_REPO")
+        os.environ.get("SIMING_UPDATE_REPO")
+        or os.environ.get("MOSHU_UPDATE_REPO")
         or os.environ.get("NOVEL_AGENT_UPDATE_REPO")
         or DEFAULT_UPDATE_REPO
     ).strip()
@@ -139,7 +148,7 @@ def find_latest_update() -> dict[str, Any] | None:
 def _download_update(manifest: dict[str, Any], updates_dir: Path) -> Path:
     updates_dir.mkdir(parents=True, exist_ok=True)
     version = str(manifest["version"]).strip().removeprefix("v")
-    target = updates_dir / f"Moshu-{version}.exe"
+    target = updates_dir / f"Siming-{version}.exe"
     data = _request(str(manifest["download_url"]), timeout=120)
     digest = hashlib.sha256(data).hexdigest().lower()
     expected = str(manifest.get("sha256") or "").strip().lower()

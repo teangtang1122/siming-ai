@@ -207,7 +207,7 @@ class HandleMessageToolsCallTest(unittest.TestCase):
         })
         resp = json.loads(handle_message(msg))
         self.assertIn("result", resp)
-        self.assertEqual(resp["result"]["serverInfo"]["name"], "moshu")
+        self.assertEqual(resp["result"]["serverInfo"]["name"], "siming")
         self.assertIn("prompts", resp["result"]["capabilities"])
 
     def test_ping_still_works(self):

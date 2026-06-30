@@ -43,6 +43,8 @@ import ThemeSwitcher from '../themes/ThemeSwitcher'
 const { Sider, Content } = Layout
 
 type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'skills' | 'scheduler'
+const MODEL_STORAGE_KEY = 'siming.assistant.model'
+const LEGACY_MODEL_STORAGE_KEY = 'moshu.assistant.model'
 
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
@@ -63,7 +65,7 @@ const PAGE_TITLES: Record<MenuKey, string> = {
 function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; setAiCollapsed: (v: boolean) => void }) {
   const { projectId } = useParams<{ projectId: string }>()
   const [aiModel, setAiModel] = useState<string | undefined>(
-    () => localStorage.getItem('moshu.assistant.model') || undefined,
+    () => localStorage.getItem(MODEL_STORAGE_KEY) || localStorage.getItem(LEGACY_MODEL_STORAGE_KEY) || undefined,
   )
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const { width: aiWidth, onDragHandleMouseDown: onAiResize, dragging: aiDragging } = usePanelResize({
@@ -85,9 +87,11 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
 
   useEffect(() => {
     if (aiModel) {
-      localStorage.setItem('moshu.assistant.model', aiModel)
+      localStorage.setItem(MODEL_STORAGE_KEY, aiModel)
+      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
     } else {
-      localStorage.removeItem('moshu.assistant.model')
+      localStorage.removeItem(MODEL_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
     }
   }, [aiModel])
 
@@ -122,14 +126,17 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
 function usePersistedState(key: string, defaultValue: boolean): [boolean, (v: boolean | ((prev: boolean) => boolean)) => void] {
   const [state, setState] = useState<boolean>(() => {
     try {
-      const stored = localStorage.getItem(`moshu_${key}`)
+      const stored = localStorage.getItem(`siming_${key}`) ?? localStorage.getItem(`moshu_${key}`)
       return stored !== null ? stored === 'true' : defaultValue
     } catch { return defaultValue }
   })
   const setPersisted = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setState(prev => {
       const next = typeof v === 'function' ? v(prev) : v
-      try { localStorage.setItem(`moshu_${key}`, String(next)) } catch {}
+      try {
+        localStorage.setItem(`siming_${key}`, String(next))
+        localStorage.removeItem(`moshu_${key}`)
+      } catch {}
       return next
     })
   }, [key])

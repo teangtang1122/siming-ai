@@ -11,13 +11,13 @@ def _get_or_create_key() -> bytes:
     If not set, generates a new key and stores it in a local file.
     The key is a 32-byte url-safe base64-encoded bytes string.
     """
-    env_key = os.environ.get("NOVEL_AGENT_KEY")
+    env_key = os.environ.get("SIMING_KEY") or os.environ.get("MOSHU_KEY") or os.environ.get("NOVEL_AGENT_KEY")
     if env_key:
         return env_key.encode()
 
-    key_file = os.environ.get("NOVEL_AGENT_KEY_FILE")
+    key_file = os.environ.get("SIMING_KEY_FILE") or os.environ.get("MOSHU_KEY_FILE") or os.environ.get("NOVEL_AGENT_KEY_FILE")
     if not key_file:
-        app_home = os.environ.get("NOVEL_AGENT_HOME")
+        app_home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
         if app_home:
             key_file = os.path.join(app_home, ".crypto_key")
         else:

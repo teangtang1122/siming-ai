@@ -6,13 +6,13 @@
 
 ## 1. Overview
 
-This document defines the exact workflow when Moshu has **no model API configured** and Claude Code / Codex performs all writing and review tasks. In this mode, Moshu provides context, prompt packs, storage, telemetry, and write APIs — the external model does generation and review.
+This document defines the exact workflow when Siming has **no model API configured** and Claude Code / Codex performs all writing and review tasks. In this mode, Siming provides context, prompt packs, storage, telemetry, and write APIs — the external model does generation and review.
 
-Moshu 2.1 data boundary: the database is authoritative. The project folder is
+Siming 2.1 data boundary: the database is authoritative. The project folder is
 a read-only mirror that external agents may inspect for long-context reading.
 Do not edit canonical mirror folders directly; all chapter saves, story
 updates, character state changes, outline changes, and worldbuilding changes
-must use Moshu MCP tools with the correct `project_id`.
+must use Siming MCP tools with the correct `project_id`.
 
 ## 2. Step-By-Step Flow
 
@@ -73,7 +73,7 @@ The external agent (Claude Code / Codex) generates chapter text using:
 - The quality rubric for self-guidance
 - The forbidden patterns list for anti-AI rules
 
-**No Moshu tool called** — this happens entirely in the external model.
+**No Siming tool called** — this happens entirely in the external model.
 
 ### Step 6: External Model Self-Reviews
 
@@ -83,7 +83,7 @@ The external agent reviews its own output using:
 - Character consistency checks
 - Worldbuilding rule checks
 
-**No Moshu tool called** — this happens entirely in the external model.
+**No Siming tool called** — this happens entirely in the external model.
 
 ### Step 7: Save Draft
 
@@ -160,7 +160,7 @@ Result: Applied update counts
 
 ## 3. API-Free Tools
 
-These tools work without any Moshu model API configured:
+These tools work without any Siming model API configured:
 
 | Tool | Purpose |
 |------|---------|
@@ -186,7 +186,7 @@ These tools work without any Moshu model API configured:
 
 ## 4. API-Backed Tools (Skip in No-API Mode)
 
-These tools require Moshu's configured model API and should be **skipped** when no API is available:
+These tools require Siming's configured model API and should be **skipped** when no API is available:
 
 | Tool | Why It Needs API |
 |------|-----------------|
@@ -245,13 +245,13 @@ If the user rejects the external draft:
 
 If the project requires write confirmation:
 - `create_chapter` returns a confirmation request
-- The user must confirm in the Moshu UI
+- The user must confirm in the Siming UI
 - The external agent waits for confirmation before proceeding
 
 ## 7. Example Session
 
 ```
-# Claude Code session with Moshu (no Moshu API key)
+# Claude Code session with Siming (no Siming API key)
 
 ## 1. List projects
 > list_projects()

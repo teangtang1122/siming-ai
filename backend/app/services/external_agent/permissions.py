@@ -148,6 +148,6 @@ def _packs_up_to(pack: str) -> list[str]:
     The permission model is intentionally non-linear: project management does
     not imply internal LLM access, and trusted maintenance does not imply it
     either. ``internal_llm`` must be selected explicitly when users want to
-    spend the model API configured inside Moshu.
+    spend the model API configured inside Siming.
     """
     return PACK_INCLUDES.get(pack, [pack])

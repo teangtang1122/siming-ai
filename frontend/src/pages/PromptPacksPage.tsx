@@ -107,7 +107,7 @@ function PromptPacksPage(_props: PromptPacksPageProps) {
       </div>
 
       <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-        提示词包定义了墨枢的写作方法。内部助手和外部 Agent（Claude Code / Codex）使用相同的提示词包。
+        提示词包定义了司命的写作方法。内部助手和外部 Agent（Claude Code / Codex）使用相同的提示词包。
       </Paragraph>
 
       {packs.length === 0 ? (

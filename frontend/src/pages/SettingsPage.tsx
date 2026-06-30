@@ -65,7 +65,8 @@ interface ContentRootSettings {
   is_default: boolean
   exists: boolean
   is_empty: boolean
-  looks_like_moshu_root: boolean
+  looks_like_siming_root?: boolean
+  looks_like_moshu_root?: boolean
   cancelled?: boolean
   migration?: {
     previous_root?: string
@@ -108,7 +109,7 @@ const PROVIDER_LABEL_MAP: Record<string, string> = {
   deepseek: 'DeepSeek',
   qwen: '通义千问',
   gemini: 'Google Gemini',
-  local_llama_cpp: 'Moshu 本地 AI',
+  local_llama_cpp: '司命本地 AI',
   claude_cli: 'Claude Code CLI',
   codex_cli: 'Codex CLI',
   opencode_cli: 'opencode CLI',
@@ -219,7 +220,7 @@ const DEFAULT_CLI_ARGS: Record<string, string> = {
   kilocode_cli: '["run","--auto","{prompt}"]',
   qwen_code_cli: '["--approval-mode","yolo","--output-format","text","{prompt}"]',
   hermes_cli: '["--yolo","--oneshot","{prompt}"]',
-  openclaw_cli: '["agent","--local","--json","--session-key","agent:moshu:local-cli","--message","{prompt}"]',
+  openclaw_cli: '["agent","--local","--json","--session-key","agent:siming:local-cli","--message","{prompt}"]',
   custom_cli: '["{prompt}"]',
 }
 
@@ -391,7 +392,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     }
     Modal.confirm({
       title: '切换小说数据目录',
-      content: '新目录必须为空，或已经是 Moshu 小说数据目录。保存后会把现有作品资料迁移到新目录。',
+      content: '新目录必须为空，或已经是司命小说数据目录。保存后会把现有作品资料迁移到新目录。',
       okText: '保存并迁移',
       onOk: async () => {
         setContentRootLoading(true)
@@ -719,7 +720,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 {contentRoot?.exists ? '目录存在' : '目录未创建'}
               </Tag>
               <Tag color={contentRoot?.is_empty ? 'default' : 'green'}>
-                {contentRoot?.is_empty ? '当前为空' : contentRoot?.looks_like_moshu_root ? 'Moshu 数据目录' : '已有文件'}
+                {contentRoot?.is_empty ? '当前为空' : (contentRoot?.looks_like_siming_root || contentRoot?.looks_like_moshu_root) ? '司命数据目录' : '已有文件'}
               </Tag>
             </Space>
           </Descriptions.Item>
@@ -742,7 +743,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         </Space.Compact>
 
         <p style={{ marginTop: 12, color: '#888' }}>
-          未指定时自动使用默认目录。切换目录会迁移现有作品资料；为了避免混入无关文件，新目录必须为空，或是已经由 Moshu 创建过的小说数据目录。
+          未指定时自动使用默认目录。切换目录会迁移现有作品资料；为了避免混入无关文件，新目录必须为空，或是已经由司命创建过的小说数据目录。
         </p>
       </Card>
 

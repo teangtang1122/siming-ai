@@ -1,4 +1,4 @@
-"""Generate Moshu.ico from the SVG favicon for use with PyInstaller."""
+"""Generate Siming.ico from the SVG favicon for use with PyInstaller."""
 import struct
 import zlib
 from pathlib import Path
@@ -7,7 +7,7 @@ from pathlib import Path
 # We render it as a simple raster ICO with multiple sizes.
 
 def _create_png(width: int, height: int) -> bytes:
-    """Create a minimal PNG with the Moshu icon rendered as raw pixel data."""
+    """Create a minimal PNG with the Siming icon rendered as raw pixel data."""
     # We'll draw a simplified version of the ink-brush icon
     # Background: #f8f5ef (warm paper), Ink: gradient from #2c2417 to #7c5e2a
 
@@ -107,6 +107,6 @@ def _create_ico(sizes: list[int], output_path: Path) -> None:
 
 
 if __name__ == '__main__':
-    out = Path(__file__).resolve().parent.parent / 'backend' / 'Moshu.ico'
+    out = Path(__file__).resolve().parent.parent / 'backend' / 'Siming.ico'
     _create_ico([16, 24, 32, 48, 64, 128, 256], out)
     print(f'Icon created: {out} ({out.stat().st_size} bytes)')

@@ -1,4 +1,4 @@
-"""State-machine tests for Moshu-managed local CLI cataloging."""
+"""State-machine tests for Siming-managed local CLI cataloging."""
 
 from __future__ import annotations
 

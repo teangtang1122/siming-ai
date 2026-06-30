@@ -1,4 +1,4 @@
-"""Build user-owned SFT datasets from Moshu project content."""
+"""Build user-owned SFT datasets from Siming project content."""
 from __future__ import annotations
 
 import json

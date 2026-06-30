@@ -1,4 +1,4 @@
-# Moshu MCP Architecture Specification
+# Siming MCP Architecture Specification
 
 > Version: 0.1.0 (draft)
 > Date: 2026-06-07
@@ -6,10 +6,10 @@
 
 ## 1. Scope
 
-This document defines the first MCP version for Moshu (墨枢). In this version:
+This document defines the first MCP version for Siming (司命). In this version:
 
-- Moshu acts as an **MCP Server** only.
-- MCP Client integration (connecting Moshu to external MCP servers) is a **later phase** and is out of scope for this spec.
+- Siming acts as an **MCP Server** only.
+- MCP Client integration (connecting Siming to external MCP servers) is a **later phase** and is out of scope for this spec.
 - The server is **readonly by default**. Write and generator tools are gated behind explicit permission tiers and are not exposed in the initial release.
 
 ## 2. Transport
@@ -19,11 +19,11 @@ This document defines the first MCP version for Moshu (墨枢). In this version:
 | **stdio** | Supported (v1) | Recommended for local use with MCP clients such as Claude Desktop, Cursor, and other editors. The server reads JSON-RPC from stdin and writes to stdout. |
 | Streamable HTTP | Deferred | May be added in a later version for remote access. Requires authentication and is not part of v1. |
 
-The v1 entrypoint is a standalone Python script (`scripts/moshu-mcp-server.py`) that loads the Moshu database, registers tools, and serves over stdio.
+The v1 entrypoint is a standalone Python script (`scripts/moshu-mcp-server.py`) that loads the Siming database, registers tools, and serves over stdio.
 
 ## 3. Resource URI Scheme
 
-All Moshu resources use the `moshu://` scheme. URIs are stable, hierarchical, and case-sensitive.
+All Siming resources use the `moshu://` scheme. URIs are stable, hierarchical, and case-sensitive.
 
 ### 3.1 URI Patterns
 
@@ -215,7 +215,7 @@ When the MCP server receives a `tools/call` request:
 
 ## 7. Error Contract
 
-All errors returned by the Moshu MCP server follow a consistent structure.
+All errors returned by the Siming MCP server follow a consistent structure.
 
 ### 7.1 Error Response Format
 
@@ -293,8 +293,8 @@ The following must never appear in any MCP response, regardless of tool tier:
 The MCP server identifies itself as:
 
 ```
-name: "moshu"
-version: "<moshu-app-version>"
+name: "siming"
+version: "<siming-app-version>"
 ```
 
 The protocol version follows the MCP specification version supported by the server.

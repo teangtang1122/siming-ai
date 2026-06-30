@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Smoke test for Moshu release package.
+    Smoke test for Siming release package.
 
 .DESCRIPTION
     Verifies the packaged exe path that normal users use:
     1. Build package (optional, skip with -SkipBuild)
-    2. Start Moshu.exe
+    2. Start Siming.exe
     3. Verify the source-only MCP auto-configuration fallback
     4. Import a small TXT file via MCP
     5. Run external no-API cataloging sample
@@ -14,8 +14,8 @@
 .PARAMETER SkipBuild
     Skip the build step if the exe already exists.
 
-.PARAMETER MoshuExePath
-    Path to Moshu.exe. Default: release\Moshu.exe
+.PARAMETER SimingExePath
+    Path to Siming.exe. Default: release\Siming.exe
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test-release.ps1
@@ -24,14 +24,14 @@
 
 param(
     [switch]$SkipBuild,
-    [string]$MoshuExePath = "release\Moshu.exe"
+    [string]$SimingExePath = "release\Siming.exe"
 )
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 
-Write-Host "=== Moshu Release Smoke Test ===" -ForegroundColor Cyan
+Write-Host "=== Siming Release Smoke Test ===" -ForegroundColor Cyan
 Write-Host ""
 
 function Invoke-LocalJsonGet {
@@ -70,14 +70,14 @@ if (-not $SkipBuild) {
 }
 
 # Step 2: Verify exe exists
-Write-Host "[2/6] Verifying Moshu.exe..." -ForegroundColor Yellow
-$exePath = Join-Path $projectRoot $MoshuExePath
+Write-Host "[2/6] Verifying Siming.exe..." -ForegroundColor Yellow
+$exePath = Join-Path $projectRoot $SimingExePath
 if (-not (Test-Path $exePath)) {
-    Write-Host "ERROR: Moshu.exe not found at $exePath" -ForegroundColor Red
+    Write-Host "ERROR: Siming.exe not found at $exePath" -ForegroundColor Red
     exit 1
 }
 $exeSize = (Get-Item $exePath).Length / 1MB
-Write-Host "  Moshu.exe found: $([math]::Round($exeSize, 1)) MB" -ForegroundColor Green
+Write-Host "  Siming.exe found: $([math]::Round($exeSize, 1)) MB" -ForegroundColor Green
 
 # Step 3: Check source-only MCP troubleshooting script
 Write-Host "[3/6] Checking automatic MCP configuration fallback..." -ForegroundColor Yellow
@@ -98,10 +98,10 @@ if (Test-Path $setupScript) {
     Write-Host "  WARNING: Source troubleshooting script not found" -ForegroundColor Yellow
 }
 
-# Step 4: Start Moshu.exe
-Write-Host "[4/6] Starting Moshu.exe..." -ForegroundColor Yellow
-$moshuProcess = Start-Process -FilePath $exePath -PassThru -WindowStyle Hidden
-Write-Host "  Moshu.exe started (PID: $($moshuProcess.Id))" -ForegroundColor Green
+# Step 4: Start Siming.exe
+Write-Host "[4/6] Starting Siming.exe..." -ForegroundColor Yellow
+$simingProcess = Start-Process -FilePath $exePath -PassThru -WindowStyle Hidden
+Write-Host "  Siming.exe started (PID: $($simingProcess.Id))" -ForegroundColor Green
 
 # Wait for server to start
 Write-Host "  Waiting for server to start..." -ForegroundColor Yellow
@@ -132,7 +132,7 @@ while ($waited -lt $maxWait) {
 
 if (-not $serverReady) {
     Write-Host "  ERROR: Server did not start within $maxWait seconds" -ForegroundColor Red
-    Get-Process Moshu,NovelWritingAgent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process Siming,Moshu,NovelWritingAgent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     exit 1
 }
 Write-Host "  Server is ready at $serverBaseUrl (waited $waited seconds)" -ForegroundColor Green
@@ -174,14 +174,14 @@ try {
 
 # Step 6: Cleanup
 Write-Host "[6/6] Cleanup..." -ForegroundColor Yellow
-Get-Process Moshu,NovelWritingAgent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Write-Host "  Moshu.exe stopped" -ForegroundColor Green
+Get-Process Siming,Moshu,NovelWritingAgent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Write-Host "  Siming.exe stopped" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "=== Smoke Test Complete ===" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Summary:" -ForegroundColor White
-Write-Host "  - Moshu.exe: OK" -ForegroundColor Green
+Write-Host "  - Siming.exe: OK" -ForegroundColor Green
 Write-Host "  - MCP Setup Script: OK" -ForegroundColor Green
 Write-Host "  - Server Startup: OK" -ForegroundColor Green
 Write-Host "  - API Endpoints: OK" -ForegroundColor Green

@@ -162,10 +162,14 @@ interface NovelApplyData {
 
 type AssistantMode = 'fast' | 'quality'
 
-const PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
-const SIDEBAR_STORAGE_KEY = 'moshu.gui.assistant.sidebarCollapsed'
-const MODEL_STORAGE_KEY = 'moshu.assistant.model'
-const CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
+const PROJECT_STORAGE_KEY = 'siming.gui.assistant.projectId'
+const LEGACY_PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
+const SIDEBAR_STORAGE_KEY = 'siming.gui.assistant.sidebarCollapsed'
+const LEGACY_SIDEBAR_STORAGE_KEY = 'moshu.gui.assistant.sidebarCollapsed'
+const MODEL_STORAGE_KEY = 'siming.assistant.model'
+const LEGACY_MODEL_STORAGE_KEY = 'moshu.assistant.model'
+const CREATION_TEMPLATE_KEY = 'siming:novelCreationTemplates'
+const LEGACY_CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
 
 interface CreationTemplate {
   id: string
@@ -200,7 +204,7 @@ function slotDraftToFeedback(slots: Record<string, string | string[]>): string {
 
 function readCreationTemplates(): CreationTemplate[] {
   try {
-    const raw = localStorage.getItem(CREATION_TEMPLATE_KEY)
+    const raw = localStorage.getItem(CREATION_TEMPLATE_KEY) || localStorage.getItem(LEGACY_CREATION_TEMPLATE_KEY)
     const parsed = raw ? JSON.parse(raw) : []
     return Array.isArray(parsed) ? parsed : []
   } catch {
@@ -275,7 +279,9 @@ function GuiAssistantChat() {
   const [loading, setLoading] = useState(false)
   const [projectsLoading, setProjectsLoading] = useState(false)
   const [conversationsLoading, setConversationsLoading] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => (localStorage.getItem(SIDEBAR_STORAGE_KEY) || localStorage.getItem(LEGACY_SIDEBAR_STORAGE_KEY)) === '1',
+  )
   const [assistantMode, setAssistantMode] = useState<AssistantMode>('fast')
   const [temperature, setTemperature] = useState(0.3)
   const [maxTokens, setMaxTokens] = useState<number | null>(null)
@@ -299,7 +305,7 @@ function GuiAssistantChat() {
 
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const [model, setModel] = useState<string | undefined>(
-    () => localStorage.getItem(MODEL_STORAGE_KEY) || undefined,
+    () => localStorage.getItem(MODEL_STORAGE_KEY) || localStorage.getItem(LEGACY_MODEL_STORAGE_KEY) || undefined,
   )
   const selectedModel = model || defaultModel || undefined
   // Creative slots editor state
@@ -341,13 +347,16 @@ function GuiAssistantChat() {
   useEffect(() => {
     if (model) {
       localStorage.setItem(MODEL_STORAGE_KEY, model)
+      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
     } else {
       localStorage.removeItem(MODEL_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
     }
   }, [model])
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? '1' : '0')
+    localStorage.removeItem(LEGACY_SIDEBAR_STORAGE_KEY)
   }, [sidebarCollapsed])
 
   useEffect(() => {
@@ -361,13 +370,14 @@ function GuiAssistantChat() {
       const items = res.data?.data?.items || []
       setProjects(items)
 
-      const savedProjectId = localStorage.getItem(PROJECT_STORAGE_KEY) || undefined
+      const savedProjectId = localStorage.getItem(PROJECT_STORAGE_KEY) || localStorage.getItem(LEGACY_PROJECT_STORAGE_KEY) || undefined
       const nextProject = items.find((item) => item.id === savedProjectId)
       if (nextProject) {
         setActiveProjectId((current) => current || nextProject.id)
         localStorage.setItem(PROJECT_STORAGE_KEY, nextProject.id)
       } else if (savedProjectId) {
         localStorage.removeItem(PROJECT_STORAGE_KEY)
+        localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
       }
     } catch (err: any) {
       message.error(err.message || '加载作品失败')
@@ -440,12 +450,14 @@ function GuiAssistantChat() {
       setActiveConvId(null)
       setMessages([])
       localStorage.removeItem(PROJECT_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
       fetchConversations(undefined).then((items) => {
         if (items[0]) fetchMessages(items[0].id)
       })
       return
     }
     localStorage.setItem(PROJECT_STORAGE_KEY, activeProjectId)
+    localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
     setActiveConvId(null)
     setMessages([])
     fetchConversations(activeProjectId).then((items) => {
@@ -2004,7 +2016,7 @@ function GuiAssistantChat() {
                 <RobotOutlined />
               </div>
               <Title level={3} style={{ margin: '0 0 8px', fontFamily: "'Noto Serif SC', serif" }}>
-                墨枢系统助手
+                司命系统助手
               </Title>
               <Paragraph type="secondary" style={{ fontSize: 15, maxWidth: 460, textAlign: 'center' }}>
                 不需要先创建作品。你可以直接说"我想写1000章，克苏鲁+修仙+规则怪谈"，我会生成新书方案，并在你确认后创建作品。
@@ -2024,7 +2036,7 @@ function GuiAssistantChat() {
                 <RobotOutlined />
               </div>
               <Title level={3} style={{ margin: '0 0 8px', fontFamily: "'Noto Serif SC', serif" }}>
-                墨枢 AI 助手
+                司命 AI 助手
               </Title>
               <Paragraph type="secondary" style={{ fontSize: 15, maxWidth: 460, textAlign: 'center' }}>
                 当前绑定作品：{activeProject?.title || '未选择'}。写章节、查角色会进入作品助手；创建新小说会自动切到系统立项流程。
@@ -2046,7 +2058,7 @@ function GuiAssistantChat() {
             <>
               {messages.map((msg, index) => (
                 <div key={msg.id || `${msg.role}-${index}`} className={`gui-chat-msg gui-chat-msg-${msg.role}`}>
-                  <div className="gui-chat-msg-role">{msg.role === 'user' ? '你' : '墨枢'}</div>
+                  <div className="gui-chat-msg-role">{msg.role === 'user' ? '你' : '司命'}</div>
                   <div className="gui-chat-msg-content">
                     {msg.content || (streaming && msg.role === 'assistant' ? '思考中...' : '')}
                     {msg.status === 'running' && elapsedSeconds > 0 && (

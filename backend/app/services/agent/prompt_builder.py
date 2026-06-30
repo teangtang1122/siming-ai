@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def get_workspace_pack(mode: str) -> PromptPack:
     """Return the workspace prompt pack.
 
-    Moshu keeps the UI-facing ``mode`` flag for workflow hints, but the
+    Siming keeps the UI-facing ``mode`` flag for workflow hints, but the
     controlling agent prompt is intentionally unified on the highest-quality
     pack. This prevents the same user request from behaving differently when
     it enters through the web UI, Plan Agent, MCP, or a local CLI model.
