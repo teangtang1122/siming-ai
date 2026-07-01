@@ -11,10 +11,7 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $AppName = "Siming"
-$LegacyAppNames = @("Moshu", "NovelWritingAgent")
 $ExePath = Join-Path $Root "release\$AppName.exe"
-$ReleaseAssetDir = Join-Path $Root ".build\release-assets"
-$LegacyExePaths = @()
 $ManifestPath = Join-Path $Root "release\update.json"
 $ShaPath = Join-Path $Root "release\sha256.txt"
 
@@ -51,22 +48,9 @@ try {
   if (-not (Test-Path $ExePath)) {
     throw "Release executable not found. Run build-exe.bat or publish without -SkipBuild."
   }
-  New-Item -ItemType Directory -Force -Path $ReleaseAssetDir | Out-Null
-  foreach ($LegacyExePath in $LegacyExePaths) {
-    Remove-Item -LiteralPath $LegacyExePath -Force -ErrorAction SilentlyContinue
-  }
-  $LegacyExePaths = @()
-  foreach ($LegacyAppName in $LegacyAppNames) {
-    $LegacyExePath = Join-Path $ReleaseAssetDir "$LegacyAppName.exe"
-    Copy-Item -LiteralPath $ExePath -Destination $LegacyExePath -Force
-    $LegacyExePaths += $LegacyExePath
-  }
 
   $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
   $shaLines = @("$sha  $AppName.exe")
-  foreach ($LegacyAppName in $LegacyAppNames) {
-    $shaLines += "$sha  $LegacyAppName.exe"
-  }
   Set-Content -LiteralPath $ShaPath -Encoding UTF8 -Value $shaLines
 
   $status = git status --porcelain
@@ -91,7 +75,10 @@ try {
   if (-not $ReleaseExists) {
     gh release create $Tag -R $Repo --title $Tag --notes "Siming $Tag"
   }
-  $assets = @($ExePath, $ShaPath, $ManifestPath) + $LegacyExePaths
+  foreach ($LegacyAssetName in @("Moshu.exe", "NovelWritingAgent.exe")) {
+    gh release delete-asset $Tag $LegacyAssetName -R $Repo -y 1>$null 2>$null
+  }
+  $assets = @($ExePath, $ShaPath, $ManifestPath)
   gh release upload $Tag -R $Repo @assets --clobber
 } finally {
   Pop-Location

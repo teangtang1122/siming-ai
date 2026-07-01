@@ -15,10 +15,10 @@ class UpdaterVersionTestCase(unittest.TestCase):
         self.assertFalse(is_newer_version("0.1.0", "0.1.1"))
         self.assertFalse(is_newer_version("", "0.1.1"))
 
-    def test_accepts_siming_and_legacy_exe_names(self):
+    def test_accepts_only_siming_exe_name(self):
         self.assertIn("siming.exe", updater.COMPATIBLE_EXE_NAMES)
-        self.assertIn("moshu.exe", updater.COMPATIBLE_EXE_NAMES)
-        self.assertIn("novelwritingagent.exe", updater.COMPATIBLE_EXE_NAMES)
+        self.assertNotIn("moshu.exe", updater.COMPATIBLE_EXE_NAMES)
+        self.assertNotIn("novelwritingagent.exe", updater.COMPATIBLE_EXE_NAMES)
 
     @patch("app.updater._request")
     @patch("app.updater._request_json")
@@ -42,7 +42,7 @@ class UpdaterVersionTestCase(unittest.TestCase):
         self.assertEqual(manifest["download_url"], "https://example.test/siming.exe")
 
     @patch("app.updater._request_json")
-    def test_github_manifest_falls_back_to_legacy_asset(self, mock_request_json):
+    def test_github_manifest_requires_siming_asset(self, mock_request_json):
         mock_request_json.return_value = {
             "tag_name": "v0.1.2",
             "assets": [
@@ -52,15 +52,14 @@ class UpdaterVersionTestCase(unittest.TestCase):
 
         manifest = updater._manifest_from_github_release("example/repo")
 
-        self.assertIsNotNone(manifest)
-        self.assertEqual(manifest["download_url"], "https://example.test/legacy.exe")
+        self.assertIsNone(manifest)
 
     @patch.dict("os.environ", {"SIMING_DISABLE_UPDATE": "1"}, clear=True)
     def test_siming_disable_update_env_var(self):
         self.assertIsNone(updater.find_latest_update())
 
     @patch("app.updater._request_json")
-    def test_url_manifest_accepts_legacy_download_url(self, mock_request_json):
+    def test_url_manifest_requires_download_url(self, mock_request_json):
         mock_request_json.return_value = {
             "version": "0.1.2",
             "legacy_download_url": "https://example.test/NovelWritingAgent.exe",
@@ -69,8 +68,7 @@ class UpdaterVersionTestCase(unittest.TestCase):
 
         manifest = updater._manifest_from_url("https://example.test/update.json")
 
-        self.assertIsNotNone(manifest)
-        self.assertEqual(manifest["download_url"], "https://example.test/NovelWritingAgent.exe")
+        self.assertIsNone(manifest)
 
 
 if __name__ == "__main__":

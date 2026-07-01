@@ -3,7 +3,6 @@ param(
   [string]$PermissionPack = "auto",
   [string]$ProjectId = "",
   [string]$SimingExe = "",
-  [string]$MoshuExe = "",
   [string]$SourceRoot = "",
   [ValidateSet("auto", "claude", "codex", "opencode", "mimocode", "cursor", "trae", "kilocode", "qwen-code", "hermes", "openclaw", "all")]
   [string]$Client = "auto",
@@ -56,7 +55,7 @@ function Add-OptionalProjectId {
 
 function Test-SimingExe {
   param([string]$Path)
-  return ($Path -and (Test-Path -LiteralPath $Path) -and ((Split-Path -Leaf $Path) -match '^(Siming|Moshu|NovelWritingAgent)\.exe$'))
+  return ($Path -and (Test-Path -LiteralPath $Path) -and ((Split-Path -Leaf $Path) -eq "Siming.exe"))
 }
 
 function Find-NearbyExe {
@@ -67,25 +66,13 @@ function Find-NearbyExe {
   if ($SimingExe) {
     $candidates += $SimingExe
   }
-  if ($MoshuExe) {
-    $candidates += $MoshuExe
-  }
   if ($env:SIMING_EXE) {
     $candidates += $env:SIMING_EXE
   }
-  if ($env:MOSHU_EXE) {
-    $candidates += $env:MOSHU_EXE
-  }
   $candidates += @(
     (Join-Path $repoRoot "release\Siming.exe"),
-    (Join-Path $repoRoot "release\Moshu.exe"),
-    (Join-Path $repoRoot "release\NovelWritingAgent.exe"),
     (Join-Path $scriptDir "Siming.exe"),
-    (Join-Path $scriptDir "Moshu.exe"),
-    (Join-Path $scriptDir "NovelWritingAgent.exe"),
-    (Join-Path (Get-Location) "Siming.exe"),
-    (Join-Path (Get-Location) "Moshu.exe"),
-    (Join-Path (Get-Location) "NovelWritingAgent.exe")
+    (Join-Path (Get-Location) "Siming.exe")
   )
 
   $commonDirs = @()
@@ -108,14 +95,10 @@ function Find-NearbyExe {
       continue
     }
     $candidates += (Join-Path $dir "Siming.exe")
-    $candidates += (Join-Path $dir "Moshu.exe")
-    $candidates += (Join-Path $dir "NovelWritingAgent.exe")
     try {
       $children = Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue | Select-Object -First 40
       foreach ($child in $children) {
         $candidates += (Join-Path $child.FullName "Siming.exe")
-        $candidates += (Join-Path $child.FullName "Moshu.exe")
-        $candidates += (Join-Path $child.FullName "NovelWritingAgent.exe")
       }
     } catch {
       # Ignore folders we cannot inspect.
@@ -133,9 +116,7 @@ function Find-NearbyExe {
   }
   return (
     $found |
-      Sort-Object `
-        @{ Expression = { if ($_.Name -eq "Siming.exe") { 0 } elseif ($_.Name -eq "Moshu.exe") { 1 } else { 2 } } }, `
-        @{ Expression = { $_.LastWriteTime }; Descending = $true } |
+      Sort-Object @{ Expression = { $_.LastWriteTime }; Descending = $true } |
       Select-Object -First 1
   ).FullName
 }

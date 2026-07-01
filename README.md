@@ -10,7 +10,7 @@
 
 - 项目品牌已更名为 `司命 / Siming`，正式发布产物为 `Siming.exe`。
 - GitHub 更新仓库默认指向 `teangtang1122/siming-ai`。
-- `Moshu.exe` 和 `NovelWritingAgent.exe` 仅作为旧版本自动更新、旧数据目录和旧用户快捷方式的兼容别名保留。
+- 发布资产只保留 `Siming.exe`；不再生成或上传 `Moshu.exe`、`NovelWritingAgent.exe`。
 - 新的外部 Agent / MCP 自动配置默认写入 `siming` 服务器条目；旧的 `moshu` 条目会被迁移或清理。
 - 为了不破坏旧项目和旧客户端，部分内部协议名仍保留兼容 ID，例如 `moshu://`、`get_moshu_usage_guide`、`moshu_task_type`。
 
@@ -151,6 +151,12 @@ save_external_chapter_draft
 apply_external_story_updates
 ```
 
+## v2.6.1 重点
+
+- 发布链路改为只生成、上传和校验 `Siming.exe`。
+- `update.json` 和 `sha256.txt` 只包含 `Siming.exe`，更新器不再回退下载旧 exe 名。
+- 旧数据目录、旧环境变量和旧 MCP 协议名仍按兼容层读取，但不再作为发布产物。
+
 ## v2.6.0 重点
 
 - 全项目更名为 `司命 / Siming`，仓库为 `siming-ai`，宣传语为“长篇小说的命运织机”。
@@ -212,13 +218,11 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-github.ps1
 
 ```text
 release\Siming.exe
-release\Moshu.exe
-release\NovelWritingAgent.exe
 release\update.json
 release\sha256.txt
 ```
 
-`Siming.exe` 是正式分发文件。两个旧 exe 名仅为兼容旧自动更新和旧快捷方式；如果本机旧 exe 正在运行，打包脚本会仍然准备 Release 上传用的兼容资产到 `.build\release-assets\`。
+`Siming.exe` 是唯一正式分发文件。旧数据目录仍会自动兼容读取，但旧 exe 名不再生成、不再上传。
 
 ## 外部 Agent MCP
 

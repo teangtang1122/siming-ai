@@ -12,13 +12,11 @@ build-exe.bat
 
 ```text
 release\Siming.exe
-release\Moshu.exe
-release\NovelWritingAgent.exe
 release\update.json
 release\sha256.txt
 ```
 
-`Siming.exe` 是正式分发文件。`Moshu.exe` 和 `NovelWritingAgent.exe` 是旧品牌自动更新和旧快捷方式兼容别名，内容与 `Siming.exe` 相同。
+`Siming.exe` 是唯一正式分发文件。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
 
 ## 给普通用户运行
 
@@ -70,21 +68,17 @@ teangtang1122/siming-ai
 
 ```text
 Siming.exe
-Moshu.exe
-NovelWritingAgent.exe
 sha256.txt
 update.json
 ```
 
-`sha256.txt` 应同时包含：
+`sha256.txt` 只包含：
 
 ```text
 <sha256>  Siming.exe
-<sha256>  Moshu.exe
-<sha256>  NovelWritingAgent.exe
 ```
 
-新更新器优先下载 `Siming.exe`，找不到时才回退到旧名资产。旧版本更新器仍可下载 `Moshu.exe` 或 `NovelWritingAgent.exe`。
+更新器只下载 `Siming.exe`。Release 中不要上传旧 exe 名资产。
 
 可用环境变量覆盖更新源：
 

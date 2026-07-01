@@ -17,11 +17,8 @@ from .version import APP_VERSION, DEFAULT_UPDATE_REPO
 
 USER_AGENT = f"Siming/{APP_VERSION}"
 EXE_NAME = "Siming.exe"
-LEGACY_EXE_NAMES = ("Moshu.exe", "NovelWritingAgent.exe")
-COMPATIBLE_EXE_NAMES = {EXE_NAME.lower(), *(name.lower() for name in LEGACY_EXE_NAMES)}
-CHECKSUM_ASSET_NAMES = {"sha256.txt", f"{EXE_NAME.lower()}.sha256"} | {
-    f"{name.lower()}.sha256" for name in LEGACY_EXE_NAMES
-}
+COMPATIBLE_EXE_NAMES = {EXE_NAME.lower()}
+CHECKSUM_ASSET_NAMES = {"sha256.txt", f"{EXE_NAME.lower()}.sha256"}
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
@@ -67,7 +64,7 @@ def _request_json(url: str, timeout: float = 8.0) -> dict[str, Any]:
 def _manifest_from_url(url: str) -> dict[str, Any] | None:
     data = _request_json(url)
     version = str(data.get("version") or data.get("tag_name") or "").strip().removeprefix("v")
-    download_url = str(data.get("download_url") or data.get("url") or data.get("legacy_download_url") or "").strip()
+    download_url = str(data.get("download_url") or data.get("url") or "").strip()
     if not version or not download_url:
         return None
     return {
@@ -84,7 +81,6 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
     version = tag.removeprefix("v")
     assets = release.get("assets") if isinstance(release.get("assets"), list) else []
     exe_asset = None
-    legacy_exe_assets: list[dict[str, Any]] = []
     checksum_asset = None
     for asset in assets:
         if not isinstance(asset, dict):
@@ -92,11 +88,8 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
         name = str(asset.get("name") or "")
         if name.lower() == EXE_NAME.lower():
             exe_asset = asset
-        elif name.lower() in {legacy.lower() for legacy in LEGACY_EXE_NAMES}:
-            legacy_exe_assets.append(asset)
         elif name.lower() in CHECKSUM_ASSET_NAMES:
             checksum_asset = asset
-    exe_asset = exe_asset or (legacy_exe_assets[0] if legacy_exe_assets else None)
     if not version or not exe_asset:
         return None
     sha256 = ""

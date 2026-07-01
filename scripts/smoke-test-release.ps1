@@ -132,7 +132,7 @@ while ($waited -lt $maxWait) {
 
 if (-not $serverReady) {
     Write-Host "  ERROR: Server did not start within $maxWait seconds" -ForegroundColor Red
-    Get-Process Siming,Moshu,NovelWritingAgent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process Siming -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     exit 1
 }
 Write-Host "  Server is ready at $serverBaseUrl (waited $waited seconds)" -ForegroundColor Green
@@ -174,7 +174,7 @@ try {
 
 # Step 6: Cleanup
 Write-Host "[6/6] Cleanup..." -ForegroundColor Yellow
-Get-Process Siming,Moshu,NovelWritingAgent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process Siming -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Write-Host "  Siming.exe stopped" -ForegroundColor Green
 
 Write-Host ""
