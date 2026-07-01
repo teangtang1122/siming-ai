@@ -171,6 +171,18 @@ async def stream_local_cli_cataloging_job(project_id: str, job_id: str):
             yield sse_event({"type": "error", "message": "作品建档任务不存在"})
             yield "data: [DONE]\n\n"
             return
+        seen_facts = {
+            row.id
+            for row in db.query(CatalogingFact.id)
+            .filter(CatalogingFact.job_id == job.id)
+            .all()
+        }
+        seen_candidates = {
+            row.id
+            for row in db.query(CatalogingCandidate.id)
+            .filter(CatalogingCandidate.job_id == job.id)
+            .all()
+        }
         if job.status not in _TERMINAL_JOBS and job.status not in {"paused", "waiting_confirmation"}:
             ensure_local_cli_cataloging_worker(db, job)
         yield sse_event({
@@ -345,7 +357,7 @@ def _turn_stage(run: CatalogingChapterRun, mode: str) -> str:
         return "apply"
     if run.status == "facts_saved":
         return "candidates"
-    return "full"
+    return "merged"
 
 
 def _task_text(
@@ -361,6 +373,16 @@ def _task_text(
     stage: str,
 ) -> str:
     shared_prompt = get_external_cataloging_system_prompt()
+    if stage == "merged":
+        shared_prompt += """
+
+## Experimental Single-Stage Override
+This CLI turn uses the merged cataloging experiment. The stage instructions in
+this task file override any older two-stage facts/candidates workflow in the
+shared prompt. Do not call `save_external_cataloging_facts` or
+`list_cataloging_facts`. Read the chapter and archive files directly, then call
+`save_external_cataloging_candidates` with `phase="merged"`.
+"""
     if stage == "apply":
         stage_steps = f"""
 ## 本轮唯一任务
@@ -372,7 +394,30 @@ def _task_text(
 4. 禁止再次领取或处理下一章；下一章必须由司命启动全新的 CLI 回合。
 """
     else:
-        if stage == "full":
+        if stage == "merged":
+            stage_steps = f"""
+## 本轮唯一任务：单阶段建档，直接生成候选
+0. 立即调用 `report_agent_plan`，上报本轮计划：领取 merged 阶段章节、读取章节文件、读取全部角色/世界观/大纲镜像、生成候选、按模式应用或等待确认、验证进度。
+1. 调用 `get_next_external_cataloging_chapter`：
+   - `project_id="{job.project_id}"`
+   - `job_id="{job.id}"`
+   - `phase="merged"`
+   - `include_content=false`
+   - `include_prompt_pack=false`
+   - `include_context_indexes=false`
+   - `run_id="{agent_run_id}"`
+2. 工具返回的 chapter_id 必须是 `{chapter.id}`。若不一致，立即停止并说明阻塞。
+3. 调用 `report_agent_progress` 说明正在读取当前章节和档案镜像。
+4. 直接读取 `chapter_file` 指向的章节正文，并读取 `{project_folder}` 下的 `characters/`、`worldbuilding/`、`outline/`、`summaries/` 等镜像文件。不要要求司命把正文或卡片粘贴进提示词。
+5. 关注点与第一阶段事实抽取相同：只采集会影响大纲、角色、关系、世界观或后续连续性的内容；但不要输出 fact，不要调用 `save_external_cataloging_facts` 或 `list_cataloging_facts`。
+6. 直接调用 `save_external_cataloging_candidates` 保存候选，参数必须包含 `phase="merged"`。候选必须包含 chapter_summary、chapter 级 outline_create；有独立场景时创建 section 级 outline_create；同时创建/更新角色、世界观、关系和 chapter_link。
+7. 调用 `get_cataloging_control_state` 获取实时 execution_mode：
+   - `auto`：调用 `apply_pending_cataloging`。
+   - `manual`：不要应用候选，停在等待用户确认状态。
+8. 调用 `verify_external_cataloging_progress`，然后结束本轮。
+9. 验证完成后必须立即结束当前 CLI 回合。禁止再次调用 `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由司命启动全新的 CLI 回合。
+"""
+        elif stage == "full":
             stage_steps = f"""
 ## 本轮唯一任务：只保存事实，不生成候选
 0. 立即调用 `report_agent_plan`，上报本轮计划：读取控制状态、领取 facts 阶段章节、读取章节文件、保存事实、验证进度。
@@ -514,7 +559,7 @@ def _build_cataloging_cli_launch(
 
 
 def _turn_has_no_saved_progress(stage: str, status: str) -> bool:
-    if stage == "full":
+    if stage in {"full", "merged"}:
         return status in {"pending", "in_progress", "extracting"}
     if stage == "candidates":
         return status == "facts_saved"
@@ -561,7 +606,7 @@ async def _run_direct_jsonl_cataloging_fallback(
     )
     db.commit()
     try:
-        if stage in {"full", "candidates"}:
+        if stage in {"full", "merged", "candidates"}:
             await _consume_cataloging_events(cataloging_orchestrator._extract_run(db, job, run))
             db.refresh(job)
             db.refresh(run)
@@ -779,15 +824,46 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
             finally:
                 db.close()
 
-            returncode, stdout, stderr = await _run_cli_turn(
-                job=job_snapshot,
-                run=run_snapshot,
-                project=project_snapshot,
-                chapter=chapter_snapshot,
-                config=config_snapshot,
-                agent_run_id=agent_run_id,
-                stage=stage,
-            )
+            try:
+                returncode, stdout, stderr = await _run_cli_turn(
+                    job=job_snapshot,
+                    run=run_snapshot,
+                    project=project_snapshot,
+                    chapter=chapter_snapshot,
+                    config=config_snapshot,
+                    agent_run_id=agent_run_id,
+                    stage=stage,
+                )
+            except Exception as exc:
+                db = SessionLocal()
+                try:
+                    job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+                    run = db.query(CatalogingChapterRun).filter(CatalogingChapterRun.id == run_snapshot.id).first()
+                    if job and run:
+                        run.status = "failed"
+                        run.error = str(exc)
+                        job.status = "paused_on_failure"
+                        job.blocked_chapter_id = run.chapter_id
+                        job.current_chapter_id = run.chapter_id
+                        job.error = run.error
+                        add_event(
+                            db,
+                            agent_run_id,
+                            "chapter_agent_failed",
+                            status="error",
+                            message=run.error,
+                            payload_json=json.dumps({
+                                "job_id": job.id,
+                                "chapter_id": run.chapter_id,
+                                "chapter_run_id": run.id,
+                                "stage": stage,
+                            }, ensure_ascii=False),
+                        )
+                        db.commit()
+                        update_run_status(db, agent_run_id, "failed", summary=run.error)
+                    return
+                finally:
+                    db.close()
 
             db = SessionLocal()
             try:
@@ -813,7 +889,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     attempt = no_save_attempts.get(run.id, 0) + 1
                     no_save_attempts[run.id] = attempt
                     if attempt < _MAX_NO_SAVE_ATTEMPTS:
-                        if stage == "full":
+                        if stage in {"full", "merged"}:
                             run.status = "pending"
                         job.status = "running"
                         job.blocked_chapter_id = None

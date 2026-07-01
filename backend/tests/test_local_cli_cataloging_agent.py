@@ -11,7 +11,7 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import APIConfig, Base, CatalogingJob, Chapter, Project
+from app.database.models import APIConfig, Base, CatalogingFact, CatalogingJob, Chapter, Project
 from app.services.cataloging.local_cli_agent import (
     _MAX_NO_SAVE_ATTEMPTS,
     _build_cataloging_cli_launch,
@@ -23,7 +23,6 @@ from app.services.workspace.tools.cataloging import apply_pending_cataloging
 from app.services.workspace.tools.external_cataloging import (
     get_next_external_cataloging_chapter,
     save_external_cataloging_candidates,
-    save_external_cataloging_facts,
 )
 
 
@@ -78,26 +77,33 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
     async def _fake_cli_turn(self, *, job, run, agent_run_id, stage, **_kwargs):
         db = self.Session()
         try:
-            if stage == "full":
+            if stage == "merged":
                 assigned = await get_next_external_cataloging_chapter(
                     db,
                     job.project_id,
                     {
                         "job_id": job.id,
-                        "phase": "facts",
+                        "phase": "merged",
                         "include_content": False,
                         "include_prompt_pack": False,
                         "include_context_indexes": False,
                     },
                 )
                 self.assertIsNone(assigned["data"]["content"])
-                await save_external_cataloging_facts(
+                await save_external_cataloging_candidates(
                     db,
                     job.project_id,
                     {
                         "job_id": job.id,
                         "chapter_id": run.chapter_id,
-                        "facts": [
+                        "phase": "merged",
+                        "candidates": [
+                            {
+                                "type": "outline",
+                                "action": "create",
+                                "title": "chapter outline",
+                                "summary": "single-stage outline",
+                            },
                             {
                                 "type": "chapter_overview",
                                 "data": {"summary": "林舟推开旧门并看见另一个自己。"},
@@ -105,6 +111,13 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                         ],
                     },
                 )
+                if job.execution_mode == "auto":
+                    await apply_pending_cataloging(
+                        db,
+                        job.project_id,
+                        {"job_id": job.id},
+                    )
+                    db.commit()
             elif stage == "candidates":
                 assigned = await get_next_external_cataloging_chapter(
                     db,
@@ -191,6 +204,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             self.assertIsNotNone(job.agent_run_id)
             self.assertEqual(job.chapter_runs[0].status, "completed")
             self.assertIsNotNone(job.chapter_runs[0].chapter.summary)
+            self.assertEqual(db.query(CatalogingFact).count(), 0)
         finally:
             db.close()
 
@@ -234,9 +248,9 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         )
         chapter = Chapter(id=self.chapter_id, title="第七章 寿宴发难")
         with tempfile.TemporaryDirectory() as directory:
-            task_file = __import__("pathlib").Path(directory) / "0007-full.md"
+            task_file = __import__("pathlib").Path(directory) / "0007-merged.md"
             task_file.write_text("第七章唯一任务", encoding="utf-8")
-            prompt = _task_prompt(task_file, job, run, chapter, "agent-run-7", "full")
+            prompt = _task_prompt(task_file, job, run, chapter, "agent-run-7", "merged")
             launch = _build_cataloging_cli_launch(
                 config=config,
                 prompt=prompt,
@@ -281,8 +295,8 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         db = self.Session()
         try:
             job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-            self.assertEqual(attempts, 3)
-            self.assertEqual(stages, ["full", "full", "candidates"])
+            self.assertEqual(attempts, 2)
+            self.assertEqual(stages, ["merged", "merged"])
             self.assertEqual(job.status, "completed", job.error)
             self.assertEqual(job.chapter_runs[0].status, "completed")
         finally:
@@ -301,7 +315,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         async def direct_fallback(db, *, job, run, stage, **_kwargs):
             nonlocal fallback_calls
             fallback_calls += 1
-            self.assertEqual(stage, "full")
+            self.assertEqual(stage, "merged")
             run.status = "completed"
             job.status = "completed"
             job.completed_chapters = 1

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import unittest
 
 from sqlalchemy import create_engine
@@ -44,9 +45,17 @@ from app.services.character_merge_service import build_character_merge_preview, 
 
 class CatalogingServiceTestCase(unittest.TestCase):
     def setUp(self):
+        self.old_cataloging_pipeline = os.environ.get("SIMING_CATALOGING_PIPELINE")
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "staged"
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=self.engine)
         self.Session = sessionmaker(bind=self.engine)
+
+    def tearDown(self):
+        if self.old_cataloging_pipeline is None:
+            os.environ.pop("SIMING_CATALOGING_PIPELINE", None)
+        else:
+            os.environ["SIMING_CATALOGING_PIPELINE"] = self.old_cataloging_pipeline
 
     def test_apply_candidates_updates_project_knowledge(self):
         db = self.Session()
@@ -709,6 +718,56 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertTrue(any('"type":"fact_extracted"' in event for event in events))
             self.assertEqual(db.query(CatalogingFact).count(), 2)
             self.assertEqual(db.query(CatalogingCandidate).count(), 2)
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_merged_stage_generates_candidates_without_facts(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(cls, messages, **kwargs):
+            calls.append(messages)
+            body = "\n".join([
+                json.dumps({
+                    "type": "chapter_summary",
+                    "payload": {"summary_text": "The door opens.", "key_events": ["door opens"]},
+                }, ensure_ascii=False),
+                json.dumps({
+                    "type": "outline_create",
+                    "payload": {"title": "Door", "node_type": "chapter", "summary": "The door opens."},
+                }, ensure_ascii=False),
+            ]) + "\n"
+            yield body
+
+        try:
+            project = Project(title="Merged Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Door", content="The door opens.")
+            db.add_all([
+                chapter,
+                Character(project_id=project.id, name="Lin"),
+                WorldbuildingEntry(project_id=project.id, title="Old Door", dimension="geography", content="A sealed door."),
+            ])
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", None, [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            events = asyncio.run(collect())
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("single_stage_cataloging", calls[0][1]["content"])
+            self.assertEqual(db.query(CatalogingFact).count(), 0)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 2)
+            self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
             self.assertEqual(run.status, "awaiting_confirmation")
         finally:
             cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream

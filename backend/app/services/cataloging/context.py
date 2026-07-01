@@ -7,6 +7,11 @@ from sqlalchemy.orm import Session
 
 from ...database.models import Chapter, Character, ChapterSummary, OutlineNode, WorldbuildingEntry
 from ...services.outline_service import load_outline_nodes, outline_sort_context
+from .constants import (
+    CATALOGING_FULL_CONTEXT_CHARACTER_LIMIT,
+    CATALOGING_FULL_CONTEXT_OUTLINE_LIMIT,
+    CATALOGING_FULL_CONTEXT_WORLDBUILDING_LIMIT,
+)
 
 
 def ordered_chapters(db: Session, project_id: str, chapter_ids: list[str] | None = None) -> list[Chapter]:
@@ -116,6 +121,75 @@ def build_light_context(db: Session, project_id: str, chapter: Chapter) -> dict:
         ],
         "previous_character_states": previous_states,
     }
+
+
+def build_full_cataloging_context(db: Session, project_id: str, chapter: Chapter) -> dict:
+    """Build the single-stage cataloging context for non-CLI models.
+
+    CLI providers receive file paths and read the project mirror directly. This
+    bounded JSON context is only for cloud/API/local runtime models that need
+    Siming to assemble the prompt payload.
+    """
+    chapters = ordered_chapters(db, project_id)
+    index = next((idx for idx, item in enumerate(chapters) if item.id == chapter.id), 0)
+    characters = (
+        db.query(Character)
+        .filter(Character.project_id == project_id)
+        .order_by(Character.updated_at.desc(), Character.created_at.desc())
+        .limit(CATALOGING_FULL_CONTEXT_CHARACTER_LIMIT)
+        .all()
+    )
+    world_entries = (
+        db.query(WorldbuildingEntry)
+        .filter(WorldbuildingEntry.project_id == project_id)
+        .order_by(WorldbuildingEntry.updated_at.desc(), WorldbuildingEntry.created_at.desc())
+        .limit(CATALOGING_FULL_CONTEXT_WORLDBUILDING_LIMIT)
+        .all()
+    )
+    outline_nodes = (
+        db.query(OutlineNode)
+        .filter(OutlineNode.project_id == project_id)
+        .order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc())
+        .limit(CATALOGING_FULL_CONTEXT_OUTLINE_LIMIT)
+        .all()
+    )
+    return {
+        "mode": "single_stage_cataloging",
+        "current_chapter": {
+            "index": index + 1,
+            "total": len(chapters),
+            "title": chapter.title,
+        },
+        "recent_chapter_summaries": _recent_summaries(db, chapters, index, limit=8),
+        "characters": [_character_detail(item) for item in characters],
+        "worldbuilding": [_worldbuilding_detail(item) for item in world_entries],
+        "outline_nodes": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "node_type": item.node_type,
+                "parent_id": item.parent_id,
+                "status": item.status,
+                "summary": _clip(item.summary, 420),
+                "actual_summary": _clip(item.actual_summary, 420),
+                "planned_summary": _clip(item.planned_summary, 420),
+            }
+            for item in outline_nodes
+        ],
+    }
+
+
+def _recent_summaries(db: Session, chapters: list[Chapter], index: int, *, limit: int) -> list[dict]:
+    summaries = []
+    for item in chapters[max(0, index - limit):index]:
+        summary = db.query(ChapterSummary).filter(ChapterSummary.chapter_id == item.id).first()
+        if summary:
+            summaries.append({
+                "title": item.title,
+                "summary": summary.summary_text[:800],
+                "key_events": _parse_list(summary.key_events)[:8],
+            })
+    return summaries
 
 
 def _character_detail(character: Character) -> dict:

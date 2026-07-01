@@ -56,8 +56,8 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIn("The database is the only authoritative source.", text)
         self.assertIn("The project folder is a read-only mirror", text)
         self.assertIn("Every write/delete/update must use Siming MCP tools", text)
-        self.assertIn("Facts stage may be parallel", text)
-        self.assertIn("candidate/apply stage must be strictly sequential", text)
+        self.assertIn('phase="merged"', text)
+        self.assertIn("Do not call `save_external_cataloging_facts`", text)
         self.assertIn("Preserve the source novel language", text)
 
     def test_worker_requires_local_cli_config(self):
@@ -107,18 +107,19 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
             project_folder=project_folder,
             chapter=chapter,
             chapter_file=chapter_file,
-            stage="full",
+            stage="merged",
         )
 
         self.assertIn(str(chapter_file), task)
         self.assertIn("include_content=false", task)
         self.assertIn("include_context_indexes=false", task)
-        self.assertIn("本轮唯一任务：只保存事实，不生成候选", task)
-        self.assertIn("本轮禁止调用 `save_external_cataloging_candidates`", task)
+        self.assertIn('phase="merged"', task)
+        self.assertIn("save_external_cataloging_candidates", task)
+        self.assertIn("Do not call `save_external_cataloging_facts`", task)
         self.assertIn("所有事实、候选和应用操作必须调用 Siming MCP 工具", task)
         self.assertIn("report_agent_progress", task)
         self.assertNotIn(chapter.content, task)
-        self.assertEqual(_turn_stage(run, "auto"), "full")
+        self.assertEqual(_turn_stage(run, "auto"), "merged")
 
         run.status = "facts_saved"
         self.assertEqual(_turn_stage(run, "auto"), "candidates")

@@ -65,7 +65,7 @@ def reset_run_for_resolution_retry(db: Session, job: CatalogingJob, run: Catalog
     if candidate_ids:
         db.query(CatalogingApplyLog).filter(CatalogingApplyLog.candidate_id.in_(candidate_ids)).delete(synchronize_session=False)
         db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(synchronize_session=False)
-    run.status = "pending"
+    run.status = "facts_saved"
     run.completed_at = None
     run.error = None
     job.status = "running"

@@ -52,9 +52,9 @@ def _workflow_section(task_type: str) -> str:
 2. Call `get_moshu_usage_guide` with `scenario="cataloging_no_api"` and `no_api=true`.
 3. Call `get_prompt_pack` with `pack_id="cataloging_external_no_api"`.
 4. Call `start_external_cataloging_job`.
-5. Facts stage may be parallel, but candidate/apply stage must be strictly sequential by `chapter_order`.
-6. For each chapter: `get_next_external_cataloging_chapter(phase="facts")` -> read chapter file/context -> `save_external_cataloging_facts`.
-7. Then chapter order only: `get_next_external_cataloging_chapter(phase="candidates")` -> `save_external_cataloging_candidates` -> `apply_pending_cataloging` -> `verify_external_cataloging_progress`.
+5. Process chapters strictly in `chapter_order` with the experimental single-stage flow.
+6. For each chapter: `get_next_external_cataloging_chapter(phase="merged", include_content=false)` -> read the chapter file and project mirror directly -> `save_external_cataloging_candidates` with `phase="merged"` -> `apply_pending_cataloging` -> `verify_external_cataloging_progress`.
+7. Do not call `save_external_cataloging_facts` or `list_cataloging_facts` in this experimental flow.
 8. Never call `start_cataloging_job` unless the user explicitly allows Siming internal API usage.
 """
     if task_type == "writing":

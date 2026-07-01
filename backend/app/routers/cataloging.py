@@ -365,7 +365,7 @@ def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Sessio
         run = (
             db.query(CatalogingChapterRun)
             .filter(CatalogingChapterRun.job_id == job.id)
-            .filter(CatalogingChapterRun.status.in_(["extracting", "awaiting_confirmation", "failed"]))
+            .filter(CatalogingChapterRun.status.in_(["extracting", "facts_saved", "awaiting_confirmation", "failed"]))
             .order_by(CatalogingChapterRun.chapter_order.asc())
             .first()
         )
