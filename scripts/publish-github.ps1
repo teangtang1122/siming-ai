@@ -2,7 +2,7 @@ param(
   [string]$Repo = "teangtang1122/siming-ai",
   [ValidateSet("public", "private")]
   [string]$Visibility = "private",
-  [string]$Tag = "v2.6.0",
+  [string]$Tag = "v2.6.1",
   [string]$CommitMessage = "",
   [switch]$SkipBuild
 )
@@ -75,8 +75,12 @@ try {
   if (-not $ReleaseExists) {
     gh release create $Tag -R $Repo --title $Tag --notes "Siming $Tag"
   }
+  $ExistingRelease = gh release view $Tag -R $Repo --json assets | ConvertFrom-Json
+  $ExistingAssetNames = @($ExistingRelease.assets | ForEach-Object { $_.name })
   foreach ($LegacyAssetName in @("Moshu.exe", "NovelWritingAgent.exe")) {
-    gh release delete-asset $Tag $LegacyAssetName -R $Repo -y 1>$null 2>$null
+    if ($ExistingAssetNames -contains $LegacyAssetName) {
+      gh release delete-asset $Tag $LegacyAssetName -R $Repo -y
+    }
   }
   $assets = @($ExePath, $ShaPath, $ManifestPath)
   gh release upload $Tag -R $Repo @assets --clobber
