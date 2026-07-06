@@ -91,6 +91,22 @@ function Require-Command {
   throw "$Hint"
 }
 
+function Resolve-BackendPython {
+  $VenvPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+  if (Test-Path $VenvPython) {
+    return $VenvPython
+  }
+  $Python = Get-Command "python" -ErrorAction SilentlyContinue
+  if ($Python) {
+    return $Python.Source
+  }
+  $Py = Get-Command "py" -ErrorAction SilentlyContinue
+  if ($Py) {
+    return $Py.Source
+  }
+  throw "Python was not found. Install Python or create backend\.venv and try again."
+}
+
 function Test-TcpPort {
   param(
     [string]$HostName,
@@ -175,7 +191,6 @@ Write-Host 'Process exited. Press any key to close this window.'
 }
 
 Write-Step "Checking runtime dependencies..."
-$PythonExe = Require-Command -Names @("py", "python") -Hint "Python was not found. Install Python and try again."
 Require-Command -Names @("node") -Hint "Node.js was not found. Install Node.js and try again." | Out-Null
 Require-Command -Names @("npm") -Hint "npm was not found. Install Node.js/npm and try again." | Out-Null
 
@@ -185,6 +200,8 @@ if (-not (Test-Path $BackendDir)) {
 if (-not (Test-Path $FrontendDir)) {
   throw "Frontend directory not found: $FrontendDir"
 }
+$PythonExe = Resolve-BackendPython
+Write-Step "Using backend Python: $PythonExe"
 
 if (-not (Test-Path (Join-Path $FrontendDir "node_modules"))) {
   Write-Warn "frontend\node_modules was not found; running npm install first."
@@ -215,11 +232,7 @@ if ($BackendAlreadyRunning) {
   throw "Port $BackendPort is already in use, but $BackendUrl/health did not respond. Close that process or change the backend port."
 } else {
   $BackendLog = Join-Path $LogDir "backend.log"
-  $BackendCommand = if ((Split-Path -Leaf $PythonExe) -eq "py.exe" -or (Split-Path -Leaf $PythonExe) -eq "py") {
-    "`$env:PYTHONPATH='.'; py -m uvicorn app.main:app --host 127.0.0.1 --port $BackendPort --reload"
-  } else {
-    "`$env:PYTHONPATH='.'; python -m uvicorn app.main:app --host 127.0.0.1 --port $BackendPort --reload"
-  }
+  $BackendCommand = "`$env:PYTHONPATH='.'; & '$PythonExe' -m uvicorn app.main:app --host 127.0.0.1 --port $BackendPort --reload"
   Start-ServiceWindow -Title "Novel Agent Backend" -WorkingDirectory $BackendDir -Command $BackendCommand -LogFile $BackendLog
 }
 
