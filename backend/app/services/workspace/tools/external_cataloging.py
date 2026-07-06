@@ -238,8 +238,9 @@ def _workflow_reminder(next_tool: str, *, note: str = "") -> dict[str, Any]:
     return {
         "mode": "external_cataloging_no_api",
         "phase_policy": {
-            "facts": "Fact extraction may run in parallel across chapters. Save facts for each chapter as soon as they are extracted.",
-            "candidates": "Candidate generation and apply must be sequential by chapter_order. Never generate candidates for a later chapter before every earlier chapter is applied.",
+            "default": "Use the merged single-stage flow unless a tool explicitly says this is a legacy two-stage chapter.",
+            "merged": "Process exactly one chapter at a time: get_next_external_cataloging_chapter(phase='merged') -> read chapter and archive mirror -> save_external_cataloging_candidates(phase='merged') -> apply_pending_cataloging -> verify_external_cataloging_progress.",
+            "legacy": "Only use phase='facts', phase='candidates', save_external_cataloging_facts, or list_cataloging_facts to finish an older job that already has facts_saved chapters.",
             "why": "Candidates merge into cumulative character, outline, and worldbuilding cards. Later chapters must see earlier applied cards to avoid scrambled backgrounds and duplicate entities.",
         },
         "language_rule": (
@@ -257,8 +258,7 @@ def _workflow_reminder(next_tool: str, *, note: str = "") -> dict[str, Any]:
             "get_moshu_usage_guide(scenario='cataloging_no_api', no_api=true)",
             "get_prompt_pack(pack_id='cataloging_external_no_api')",
             "start_external_cataloging_job",
-            "Parallel fact stage: get_next_external_cataloging_chapter(phase='facts') -> save_external_cataloging_facts for many chapters",
-            "Sequential candidate stage: get_next_external_cataloging_chapter(phase='candidates') -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress, one chapter at a time in chapter_order",
+            "For each chapter in order: get_next_external_cataloging_chapter(phase='merged') -> save_external_cataloging_candidates(phase='merged') -> apply_pending_cataloging -> verify_external_cataloging_progress",
             "Finish with get_project_archive_status and verify counts before reporting completion",
         ],
         "next_tool": next_tool,
@@ -454,8 +454,8 @@ async def start_external_cataloging_job(
             "workflow_reminder": _workflow_reminder(
                 "get_prompt_pack",
                 note=(
-                    "Read the cataloging_external_no_api prompt pack before extracting facts. "
-                    "Facts may be extracted in parallel, but candidates must later be generated and applied in chapter_order."
+                    "Read the cataloging_external_no_api prompt pack before direct cataloging. "
+                    "Use phase='merged' and process one chapter at a time in chapter_order."
                 ),
             ),
         },
@@ -481,7 +481,7 @@ async def get_next_external_cataloging_chapter(
     ensure_builtin_packs(db)
 
     job_id = str(args.get("job_id") or "").strip()
-    phase = str(args.get("phase") or "facts").strip().lower()
+    phase = str(args.get("phase") or "merged").strip().lower()
     include_content = bool(args.get("include_content", True))
     include_prompt_pack = bool(args.get("include_prompt_pack", True))
     include_context_indexes = bool(args.get("include_context_indexes", True))
@@ -490,7 +490,7 @@ async def get_next_external_cataloging_chapter(
     if phase in {"merged", "direct", "single", "single_stage", "single-stage", "full"}:
         phase = "merged"
     if phase not in {"facts", "candidates", "merged"}:
-        phase = "facts"
+        phase = "merged"
     if not job_id:
         return {
             "tool": "get_next_external_cataloging_chapter",
@@ -1394,11 +1394,11 @@ async def verify_external_cataloging_progress(
         next_arguments = {"job_id": job_id, "phase": "candidates"}
     elif pending_runs > 0:
         next_tool = "get_next_external_cataloging_chapter"
-        note = "Continue parallel fact extraction with phase='facts'."
-        next_arguments = {"job_id": job_id, "phase": "facts"}
+        note = "Continue direct cataloging with phase='merged'."
+        next_arguments = {"job_id": job_id, "phase": "merged"}
     elif in_progress_runs > 0:
         next_tool = "verify_external_cataloging_progress"
-        note = "Wait for in-progress fact extraction to save facts, then verify again."
+        note = "Wait for the in-progress chapter turn to save candidates or apply them, then verify again."
         next_arguments = {"job_id": job_id}
     else:
         next_tool = "get_project_archive_status"

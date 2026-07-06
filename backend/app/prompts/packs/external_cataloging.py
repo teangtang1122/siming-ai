@@ -14,7 +14,7 @@ EXTERNAL_CATALOGING_PACK = PromptPack(
     name="cataloging_external_no_api",
     version="1.0",
     pack_type="cataloging",
-    description="API-free cataloging for external agents (Claude Code / Codex). Extracts characters, worldbuilding, outline, and chapter summaries without Siming model API.",
+    description="API-free merged cataloging for external agents (Claude Code / Codex). Reads chapter files and archive mirrors directly, then writes candidates without Siming model API.",
     input_fields=["project_id", "chapter_ids"],
     max_token_budget=8000,
     output_format="jsonl",
@@ -22,7 +22,6 @@ EXTERNAL_CATALOGING_PACK = PromptPack(
     available_tools=[
         "start_external_cataloging_job",
         "get_next_external_cataloging_chapter",
-        "save_external_cataloging_facts",
         "save_external_cataloging_candidates",
         "verify_external_cataloging_progress",
         "apply_pending_cataloging",
