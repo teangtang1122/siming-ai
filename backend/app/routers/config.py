@@ -580,6 +580,7 @@ async def test_connection(payload: ConnectionTestRequest):
             cli_args=payload.cli_args or _default_cli_args(payload.provider),
         )
         model = payload.model or DEFAULT_CLI_MODELS.get(payload.provider, f"{payload.provider}-default")
+        expected_token = "连接成功"
         try:
             result = await asyncio.wait_for(
                 adapter.chat_completion(
@@ -601,10 +602,15 @@ async def test_connection(payload: ConnectionTestRequest):
             raise LLMError(
                 f"{_provider_label(payload.provider)} 在 {DEFAULT_LOCAL_CLI_TIMEOUT} 秒内未响应"
             ) from exc
-        if not (result.get("content") or "").strip():
+        reply = (result.get("content") or "").strip()
+        if not reply:
             raise LLMError(f"{_provider_label(payload.provider)} returned an empty response")
+        if expected_token not in reply:
+            raise LLMError(
+                f"{_provider_label(payload.provider)} returned an unexpected test reply: {reply[:200]}"
+            )
         return ApiResponse.success(
-            data={"model": model, "reply": result["content"].strip()[:200]},
+            data={"model": model, "reply": reply[:200]},
             message=f"{_provider_label(payload.provider)} real conversation succeeded",
         )
     if payload.provider == "local_llama_cpp":

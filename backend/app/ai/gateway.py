@@ -72,6 +72,8 @@ def _is_auth_error(error: BaseException) -> bool:
 
 def _is_non_retryable(error: BaseException) -> bool:
     text = str(error)
+    if "InvalidToken" in text or "登录凭据无效" in text:
+        return True
     return (
         _is_auth_error(error)
         or bool(detect_cli_quota_error(text))

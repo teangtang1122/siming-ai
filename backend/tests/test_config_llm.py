@@ -1692,6 +1692,28 @@ class TestConfigLLMIntegration(unittest.TestCase):
 
 
 class TestLocalCLIConnectionTimeout(unittest.TestCase):
+    def test_unexpected_local_cli_reply_is_not_reported_as_success(self):
+        from app.core.exceptions import LLMError
+        from app.routers.config import test_connection
+        from app.schemas.config import ConnectionTestRequest
+
+        payload = ConnectionTestRequest(
+            provider="codex_cli",
+            cli_command="codex",
+            cli_args='["exec", "{prompt}"]',
+            model="codex-cli",
+        )
+        with patch("app.routers.config._validate_cli_command"), patch(
+            "app.routers.config.LocalCLIAdapter"
+        ), patch(
+            "app.routers.config.asyncio.wait_for",
+            new=AsyncMock(return_value={"content": "I read the file, but it contained question marks."}),
+        ):
+            with self.assertRaises(LLMError) as caught:
+                asyncio.run(test_connection(payload))
+
+        self.assertIn("unexpected test reply", caught.exception.message)
+
     def test_timeout_returns_provider_specific_llm_error(self):
         from app.core.exceptions import LLMError
         from app.routers.config import test_connection

@@ -13,6 +13,7 @@ from app.core.exceptions import LLMError
 from app.ai.local_cli_adapter import (
     LocalCLIAdapter,
     OPENCODE_DEFAULT_MODEL,
+    detect_cli_auth_error,
     detect_cli_quota_error,
     discover_local_cli_models,
     ensure_opencode_logging_args,
@@ -58,6 +59,32 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             launch.args,
             ["--permission-mode", "bypassPermissions", "-p", "hello"],
         )
+
+    def test_codex_default_launch_reads_prompt_from_stdin(self):
+        launch = parse_cli_launch(None, "codex_cli", "hello", "codex-cli")
+        self.assertEqual(
+            launch.args,
+            ["exec", "--dangerously-bypass-approvals-and-sandbox", "-"],
+        )
+        self.assertEqual(launch.stdin_text, "hello")
+
+    def test_codex_runtime_options_keep_stdin_dash_as_prompt_marker(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="codex_cli", cli_command="codex")
+        with tempfile.TemporaryDirectory() as directory:
+            launch = adapter._launch("hello", "codex-cli")
+            args = list(launch.args)
+            adapter._apply_provider_runtime_options(args, model="codex-cli", cwd=directory)
+            output_file, cleanup = adapter._ensure_codex_output_file(args, directory)
+            try:
+                self.assertTrue(cleanup)
+                self.assertEqual(args[-1], "-")
+                self.assertIn("--cd", args)
+                self.assertIn("--skip-git-repo-check", args)
+                self.assertIn("--ephemeral", args)
+                self.assertIn("--output-last-message", args)
+                self.assertEqual(args[args.index("--output-last-message") + 1], output_file)
+            finally:
+                Path(output_file).unlink(missing_ok=True)
 
     def test_opencode_default_args_bypass_permissions(self):
         launch = parse_cli_launch(None, "opencode_cli", "hello", OPENCODE_DEFAULT_MODEL)
@@ -180,6 +207,22 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             '{"type":"error","error":{"data":{"message":"Please sign in"}}}\n'
         )
         self.assertEqual(error, "Please sign in")
+
+    def test_codex_transient_json_errors_do_not_hide_final_message(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="codex_cli", cli_command="codex")
+        text = (
+            '{"type":"error","message":"Reconnecting... 2/5 (request timed out)"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}\n'
+        )
+        self.assertEqual(extract_cli_error(text), "")
+        self.assertEqual(adapter._normalize_output(text), "OK")
+
+    def test_cli_auth_errors_are_detected_from_plain_and_json_output(self):
+        self.assertIn("登录凭据", detect_cli_auth_error("(InvalidToken)"))
+        self.assertIn(
+            "Please sign in",
+            detect_cli_auth_error('{"type":"error","error":{"data":{"message":"Please sign in"}}}'),
+        )
 
     def test_quota_errors_are_detected_from_plain_and_json_output(self):
         self.assertIn(

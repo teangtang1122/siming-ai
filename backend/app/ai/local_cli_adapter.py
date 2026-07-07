@@ -126,7 +126,8 @@ STDIN_PROMPT_PROVIDERS = {
     "kilocode_cli",
     "qwen_code_cli",
 }
-AGENT_FILE_PROMPT_PROVIDERS = LOCAL_CLI_PROVIDERS - {"custom_cli"}
+DASH_STDIN_PROMPT_PROVIDERS = {"codex_cli"}
+AGENT_FILE_PROMPT_PROVIDERS = LOCAL_CLI_PROVIDERS - {"custom_cli", "codex_cli"}
 OPENCODE_FAMILY_PROVIDERS = {"opencode_cli", "mimocode_cli", "kilocode_cli"}
 WINDOWS_SAFE_ARG_CHARS = 12000
 OPENCODE_LEGACY_MODEL = "opencode-cli"
@@ -311,10 +312,14 @@ def parse_cli_launch(raw: str | None, provider: str, prompt: str, model: str) ->
         parts = DEFAULT_CLI_ARGS.get(provider, ["{prompt}"])
 
     can_use_stdin = provider in STDIN_PROMPT_PROVIDERS and "{prompt}" in parts
-    use_stdin = can_use_stdin and len(prompt) > WINDOWS_SAFE_ARG_CHARS
+    use_stdin = can_use_stdin and (
+        provider in DASH_STDIN_PROMPT_PROVIDERS or len(prompt) > WINDOWS_SAFE_ARG_CHARS
+    )
     result: list[str] = []
     for part in parts:
         if use_stdin and part == "{prompt}":
+            if provider in DASH_STDIN_PROMPT_PROVIDERS:
+                result.append("-")
             continue
         result.append(part.replace("{prompt}", prompt).replace("{model}", model))
     if use_stdin:
@@ -326,6 +331,8 @@ def parse_cli_launch(raw: str | None, provider: str, prompt: str, model: str) ->
 
 def _extract_text_from_json_event(data: dict) -> str:
     """Best-effort extraction across Claude/Codex/opencode JSONL variants."""
+    if data.get("type") == "error" or "error" in data:
+        return ""
     candidates = [
         data.get("delta"),
         data.get("content"),
@@ -379,6 +386,8 @@ def _extract_error_from_json_event(data: dict) -> str:
 
 
 def extract_cli_error(text: str) -> str:
+    first_error = ""
+    has_text = False
     for line in text.splitlines():
         try:
             data = json.loads(line.strip())
@@ -387,8 +396,11 @@ def extract_cli_error(text: str) -> str:
         if isinstance(data, dict):
             error = _extract_error_from_json_event(data)
             if error:
-                return error
-    return ""
+                first_error = first_error or error
+                continue
+            if _extract_text_from_json_event(data):
+                has_text = True
+    return "" if has_text else first_error
 
 
 _CLI_QUOTA_PATTERNS = [
@@ -417,6 +429,21 @@ _CLI_QUOTA_PATTERNS = [
         r"(余额|点数|积分|额度|配额).{0,8}不足",
         r"(今日|每日|本月|免费).{0,8}(额度|配额|次数|用量).{0,8}(用完|耗尽|达到上限)",
         r"(请求过多|速率限制|频率限制)",
+    ]
+]
+_CLI_AUTH_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bInvalidToken\b",
+        r"\binvalid[_\s-]*token\b",
+        r"\bexpired[_\s-]*token\b",
+        r"\bunauthenticated\b",
+        r"\bauthentication\s+(required|failed)\b",
+        r"\blog\s*in\s+required\b",
+        r"\b(sign|log)\s*in\b",
+        r"\bplease\s+(sign|log)\s*in\b",
+        r"\bnot\s+authenticated\b",
+        r"\b401\s+(Unauthorized|Unauthenticated)\b",
     ]
 ]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -460,6 +487,23 @@ def detect_cli_quota_error(*texts: str) -> str:
     detail = _first_relevant_line(combined)
     suffix = f"：{detail}" if detail else ""
     return f"本机 CLI 提供方额度/限额已耗尽或触发速率限制{suffix}"
+
+
+def detect_cli_auth_error(*texts: str) -> str:
+    combined = "\n".join(str(text or "") for text in texts if text)
+    if not combined:
+        return ""
+    combined = _ANSI_ESCAPE_RE.sub("", combined)
+    if not any(pattern.search(combined) for pattern in _CLI_AUTH_PATTERNS):
+        return ""
+    detail = ""
+    for line in combined.splitlines():
+        stripped = line.strip()
+        if stripped and any(pattern.search(stripped) for pattern in _CLI_AUTH_PATTERNS):
+            detail = stripped[:500]
+            break
+    suffix = f"：{detail}" if detail else ""
+    return f"本机 CLI 登录凭据无效或已过期{suffix}"
 
 
 async def terminate_cli_process_tree(process: asyncio.subprocess.Process) -> None:
@@ -715,6 +759,35 @@ class LocalCLIAdapter(BaseAdapter):
         insert_at = max(0, len(args) - 1)
         args[insert_at:insert_at] = values
 
+    @staticmethod
+    def _codex_output_last_message_path(args: list[str], cwd: str) -> str | None:
+        for index, value in enumerate(args):
+            if value in {"--output-last-message", "-o"} and index + 1 < len(args):
+                path = Path(args[index + 1])
+                if not path.is_absolute():
+                    path = Path(cwd) / path
+                return str(path)
+        return None
+
+    def _ensure_codex_output_file(self, args: list[str], cwd: str) -> tuple[str, bool]:
+        existing = self._codex_output_last_message_path(args, cwd)
+        if existing:
+            return existing, False
+        handle = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".txt",
+            prefix="siming-codex-output-",
+            dir=cwd,
+            delete=False,
+        )
+        try:
+            output_file = handle.name
+        finally:
+            handle.close()
+        self._insert_before_prompt(args, ["--output-last-message", output_file])
+        return output_file, True
+
     def _apply_provider_runtime_options(
         self,
         args: list[str],
@@ -804,6 +877,8 @@ class LocalCLIAdapter(BaseAdapter):
     ) -> str:
         command = self._command()
         prompt_file: str | None = None
+        codex_output_file: str | None = None
+        cleanup_codex_output_file = False
         launch_prompt = prompt
         cwd = self._runtime_cwd(extra_body)
         attachments = self._runtime_attachments(extra_body)
@@ -817,6 +892,12 @@ class LocalCLIAdapter(BaseAdapter):
             )
             if self._provider == "opencode_cli":
                 env = self._opencode_env()
+        elif self._provider == "codex_cli":
+            launch = self._launch(launch_prompt, model)
+            args = list(launch.args)
+            self._apply_provider_runtime_options(args, model=model, cwd=cwd)
+            codex_output_file, cleanup_codex_output_file = self._ensure_codex_output_file(args, cwd)
+            launch = CLILaunch(args=args, stdin_text=launch.stdin_text)
         elif self._provider in AGENT_FILE_PROMPT_PROVIDERS:
             prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
             launch_prompt = self._file_prompt_instruction(prompt_file, attachments)
@@ -853,6 +934,11 @@ class LocalCLIAdapter(BaseAdapter):
                 **hidden_subprocess_kwargs(),
             )
         except OSError as exc:
+            if cleanup_codex_output_file and codex_output_file:
+                try:
+                    os.unlink(codex_output_file)
+                except OSError:
+                    pass
             if prompt_file:
                 try:
                     os.unlink(prompt_file)
@@ -868,8 +954,18 @@ class LocalCLIAdapter(BaseAdapter):
                 timeout_seconds=self._timeout_seconds(extra_body),
             )
         except CLIQuotaLimitError as exc:
+            if cleanup_codex_output_file and codex_output_file:
+                try:
+                    os.unlink(codex_output_file)
+                except OSError:
+                    pass
             raise LLMError(str(exc)) from exc
         except CLITimeoutError as exc:
+            if cleanup_codex_output_file and codex_output_file:
+                try:
+                    os.unlink(codex_output_file)
+                except OSError:
+                    pass
             raise LLMError(str(exc)) from exc
         finally:
             if prompt_file:
@@ -880,10 +976,44 @@ class LocalCLIAdapter(BaseAdapter):
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
         event_error = extract_cli_error(out_text)
+        auth_error = detect_cli_auth_error(err_text, event_error, out_text)
+        if auth_error:
+            if cleanup_codex_output_file and codex_output_file:
+                try:
+                    os.unlink(codex_output_file)
+                except OSError:
+                    pass
+            raise LLMError(auth_error)
+        if codex_output_file and proc.returncode == 0:
+            try:
+                file_text = Path(codex_output_file).read_text(encoding="utf-8").strip()
+            except OSError:
+                file_text = ""
+            finally:
+                if cleanup_codex_output_file:
+                    try:
+                        os.unlink(codex_output_file)
+                    except OSError:
+                        pass
+            if file_text:
+                return file_text
+        out_text = stdout.decode("utf-8", errors="replace").strip()
+        err_text = stderr.decode("utf-8", errors="replace").strip()
+        event_error = extract_cli_error(out_text)
         quota_error = detect_cli_quota_error(err_text, event_error, out_text)
         if quota_error:
+            if cleanup_codex_output_file and codex_output_file:
+                try:
+                    os.unlink(codex_output_file)
+                except OSError:
+                    pass
             raise LLMError(quota_error)
         if proc.returncode != 0:
+            if cleanup_codex_output_file and codex_output_file:
+                try:
+                    os.unlink(codex_output_file)
+                except OSError:
+                    pass
             detail = err_text or out_text or f"exit code {proc.returncode}"
             raise LLMError(f"本机 CLI 调用失败: {detail}")
         if event_error:
