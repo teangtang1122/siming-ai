@@ -266,6 +266,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
 
         self.assertIn("chapter-run-7", prompt)
         self.assertIn(self.chapter_id, prompt)
+        self.assertEqual(launch.args[:4], ["--print-logs", "--log-level", "WARN", "run"])
         self.assertIn("--file", launch.args)
         self.assertEqual(launch.args[launch.args.index("--file") + 1], str(task_file))
         self.assertLess(launch.args.index("--file"), launch.args.index(prompt))

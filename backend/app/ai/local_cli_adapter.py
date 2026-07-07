@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ LOCAL_CLI_PROVIDERS = {
 }
 
 DEFAULT_LOCAL_CLI_TIMEOUT = 180
+LOCAL_CLI_TIMEOUT_GRACE_SECONDS = 15
 
 DEFAULT_CLI_COMMANDS: dict[str, str] = {
     "claude_cli": "claude",
@@ -232,6 +234,17 @@ def hidden_subprocess_kwargs() -> dict:
     return {"creationflags": creationflags} if creationflags else {}
 
 
+def ensure_opencode_logging_args(provider: str, args: list[str]) -> None:
+    """Make opencode surface provider retry/quota errors on stderr."""
+    if provider != "opencode_cli":
+        return
+    if "--print-logs" not in args:
+        args.insert(0, "--print-logs")
+    if "--log-level" not in args:
+        insert_at = args.index("--print-logs") + 1 if "--print-logs" in args else 0
+        args[insert_at:insert_at] = ["--log-level", "WARN"]
+
+
 def _message_text(content) -> str:
     if content is None:
         return ""
@@ -418,6 +431,15 @@ class CLIQuotaLimitError(RuntimeError):
         self.stderr = stderr
 
 
+class CLITimeoutError(RuntimeError):
+    """Raised when a CLI is silent or retrying beyond Siming's timeout."""
+
+    def __init__(self, message: str, *, stdout: str = "", stderr: str = ""):
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 def _first_relevant_line(text: str) -> str:
     for line in str(text or "").splitlines():
         stripped = line.strip()
@@ -474,11 +496,19 @@ async def communicate_with_cli_quota_detection(
     *,
     input_bytes: bytes | None = None,
     extra_texts: tuple[str, ...] = (),
+    timeout_seconds: float | None = None,
 ) -> tuple[bytes, bytes]:
     """Communicate with a CLI while scanning live output for quota failures."""
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
     queue: asyncio.Queue[tuple[str, bytes | None]] = asyncio.Queue()
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
+
+    def _decoded_output() -> tuple[str, str]:
+        return (
+            b"".join(stdout_chunks).decode("utf-8", errors="replace"),
+            b"".join(stderr_chunks).decode("utf-8", errors="replace"),
+        )
 
     async def _read_stream(name: str, stream: asyncio.StreamReader | None, chunks: list[bytes]) -> None:
         if stream is None:
@@ -514,12 +544,30 @@ async def communicate_with_cli_quota_detection(
     active_readers = len(readers)
     try:
         while active_readers:
-            _name, chunk = await queue.get()
+            try:
+                if deadline is None:
+                    _name, chunk = await queue.get()
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    _name, chunk = await asyncio.wait_for(queue.get(), timeout=remaining)
+            except asyncio.TimeoutError as exc:
+                out_text, err_text = _decoded_output()
+                quota_error = detect_cli_quota_error(*extra_texts, err_text, out_text)
+                await terminate_cli_process_tree(process)
+                if quota_error:
+                    raise CLIQuotaLimitError(quota_error, stdout=out_text, stderr=err_text) from exc
+                seconds = int(timeout_seconds or 0)
+                raise CLITimeoutError(
+                    f"本机 CLI 请求超时（{seconds}秒）",
+                    stdout=out_text,
+                    stderr=err_text,
+                ) from exc
             if chunk is None:
                 active_readers -= 1
                 continue
-            out_text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
-            err_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+            out_text, err_text = _decoded_output()
             quota_error = detect_cli_quota_error(*extra_texts, err_text, out_text)
             if quota_error:
                 await terminate_cli_process_tree(process)
@@ -528,7 +576,11 @@ async def communicate_with_cli_quota_detection(
         await stdin_task
         return b"".join(stdout_chunks), b"".join(stderr_chunks)
     except asyncio.CancelledError:
+        out_text, err_text = _decoded_output()
+        quota_error = detect_cli_quota_error(*extra_texts, err_text, out_text)
         await terminate_cli_process_tree(process)
+        if quota_error:
+            raise CLIQuotaLimitError(quota_error, stdout=out_text, stderr=err_text)
         raise
     finally:
         for task in [*readers, stdin_task]:
@@ -730,9 +782,19 @@ class LocalCLIAdapter(BaseAdapter):
             self._ensure_opencode_option(args, "--dangerously-skip-permissions")
         elif self._provider == "kilocode_cli":
             self._ensure_opencode_option(args, "--auto")
+        ensure_opencode_logging_args(self._provider, args)
         for path in [prompt_file, *attachments]:
             args.extend(["--file", path])
         return CLILaunch(args=args), prompt_file
+
+    @staticmethod
+    def _timeout_seconds(extra_body: Optional[dict]) -> float:
+        raw = (extra_body or {}).get("local_cli_timeout_seconds", DEFAULT_LOCAL_CLI_TIMEOUT)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return float(DEFAULT_LOCAL_CLI_TIMEOUT)
+        return value if value > 0 else float(DEFAULT_LOCAL_CLI_TIMEOUT)
 
     async def _run(
         self,
@@ -803,8 +865,11 @@ class LocalCLIAdapter(BaseAdapter):
             stdout, stderr = await communicate_with_cli_quota_detection(
                 proc,
                 input_bytes=stdin_bytes,
+                timeout_seconds=self._timeout_seconds(extra_body),
             )
         except CLIQuotaLimitError as exc:
+            raise LLMError(str(exc)) from exc
+        except CLITimeoutError as exc:
             raise LLMError(str(exc)) from exc
         finally:
             if prompt_file:

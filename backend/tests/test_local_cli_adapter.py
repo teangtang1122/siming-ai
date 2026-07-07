@@ -15,6 +15,7 @@ from app.ai.local_cli_adapter import (
     OPENCODE_DEFAULT_MODEL,
     detect_cli_quota_error,
     discover_local_cli_models,
+    ensure_opencode_logging_args,
     extract_cli_error,
     hidden_subprocess_kwargs,
     messages_to_prompt,
@@ -197,6 +198,32 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             "Free usage exceeded",
             detect_cli_quota_error("Free usage exceeded, subscribe to Go [retrying in 9h 28m attempt #1]"),
         )
+        self.assertIn(
+            "Rate limit exceeded",
+            detect_cli_quota_error('error.error="AI_APICallError: Rate limit exceeded. Please try again later."'),
+        )
+
+    def test_opencode_logging_args_are_inserted_before_run(self):
+        args = ["run", "--pure", "hello"]
+        ensure_opencode_logging_args("opencode_cli", args)
+
+        self.assertEqual(args[:4], ["--print-logs", "--log-level", "WARN", "run"])
+
+        ensure_opencode_logging_args("opencode_cli", args)
+        self.assertEqual(args.count("--print-logs"), 1)
+        self.assertEqual(args.count("--log-level"), 1)
+
+    def test_opencode_file_launch_enables_warn_logs(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        with tempfile.TemporaryDirectory() as directory:
+            launch, _prompt_file = adapter._opencode_family_launch(
+                prompt="task",
+                model=OPENCODE_DEFAULT_MODEL,
+                cwd=directory,
+                attachments=[],
+            )
+
+        self.assertEqual(launch.args[:4], ["--print-logs", "--log-level", "WARN", "run"])
 
     def test_local_cli_adapter_raises_clear_quota_error_even_with_zero_exit_code(self):
         adapter = LocalCLIAdapter(

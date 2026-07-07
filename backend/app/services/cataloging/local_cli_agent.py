@@ -26,6 +26,7 @@ from app.ai.local_cli_adapter import (
     OPENCODE_FAMILY_PROVIDERS,
     communicate_with_cli_quota_detection,
     detect_cli_quota_error,
+    ensure_opencode_logging_args,
     effective_local_cli_model,
     hidden_subprocess_kwargs,
     parse_cli_launch,
@@ -609,6 +610,7 @@ def _build_cataloging_cli_launch(
         return launch
 
     args = list(launch.args)
+    ensure_opencode_logging_args(config.provider, args)
     prompt_index = args.index(prompt) if prompt in args else len(args)
     options: list[str] = []
     if "--dir" not in args:

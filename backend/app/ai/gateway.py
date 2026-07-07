@@ -22,6 +22,7 @@ from .capabilities import (
 from .deepseek_adapter import DeepSeekAdapter
 from .gemini_adapter import GeminiAdapter
 from .local_cli_adapter import (
+    LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     LocalCLIAdapter,
     detect_cli_quota_error,
     effective_local_cli_model,
@@ -345,6 +346,18 @@ class LLMGateway:
 
         raise last_error or LLMError("请求失败，已达到最大重试次数")
 
+    @staticmethod
+    def _local_cli_timeout_body(
+        adapter_cls: type[BaseAdapter],
+        extra_body: Optional[dict],
+        timeout_seconds: int,
+    ) -> tuple[Optional[dict], int]:
+        if adapter_cls is not LocalCLIAdapter:
+            return extra_body, timeout_seconds
+        body = dict(extra_body or {})
+        body.setdefault("local_cli_timeout_seconds", timeout_seconds)
+        return body, timeout_seconds + LOCAL_CLI_TIMEOUT_GRACE_SECONDS
+
     @classmethod
     async def chat_completion(
         cls,
@@ -369,6 +382,11 @@ class LLMGateway:
             cli_args=getattr(config, "cli_args", None),
         )
         timeout_seconds = timeout or DEFAULT_TIMEOUT
+        call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
+            adapter_cls,
+            extra_body,
+            timeout_seconds,
+        )
         attempts = normalize_retry_count(retry)
         safe_tools, safe_tool_choice, notes = sanitize_tool_request(provider, tools, tool_choice)
 
@@ -378,7 +396,7 @@ class LLMGateway:
                 model=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                extra_body=extra_body,
+                extra_body=call_extra_body,
                 tools=safe_tools,
                 tool_choice=safe_tool_choice,
             )
@@ -386,7 +404,7 @@ class LLMGateway:
         try:
             result = await cls._call_with_retry(
                 attempts=attempts,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=wait_timeout_seconds,
                 call_factory=_call,
             )
         except LLMError as exc:
@@ -394,13 +412,13 @@ class LLMGateway:
                 notes.append("接口拒绝 tool_choice，已自动去掉该参数重试")
                 result = await cls._call_with_retry(
                     attempts=1,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=wait_timeout_seconds,
                     call_factory=lambda: adapter.chat_completion(
                         messages=messages,
                         model=model_name,
                         temperature=temperature,
                         max_tokens=max_tokens,
-                        extra_body=extra_body,
+                        extra_body=call_extra_body,
                         tools=safe_tools,
                         tool_choice=None,
                     ),
@@ -434,6 +452,11 @@ class LLMGateway:
             cli_args=getattr(config, "cli_args", None),
         )
         timeout_seconds = timeout or DEFAULT_TIMEOUT
+        call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
+            adapter_cls,
+            extra_body,
+            timeout_seconds,
+        )
         attempts = normalize_retry_count(retry)
         last_error: BaseException | None = None
 
@@ -445,11 +468,11 @@ class LLMGateway:
                     model=model_name,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    extra_body=extra_body,
+                    extra_body=call_extra_body,
                 )
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(gen.__anext__(), timeout=timeout_seconds)
+                        chunk = await asyncio.wait_for(gen.__anext__(), timeout=wait_timeout_seconds)
                     except StopAsyncIteration:
                         return
                     produced = True
@@ -494,6 +517,11 @@ class LLMGateway:
             cli_args=getattr(config, "cli_args", None),
         )
         timeout_seconds = timeout or DEFAULT_TIMEOUT
+        call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
+            adapter_cls,
+            extra_body,
+            timeout_seconds,
+        )
         attempts = normalize_retry_count(retry)
         safe_tools, safe_tool_choice, notes = sanitize_tool_request(provider, tools, tool_choice)
         last_error: BaseException | None = None
@@ -506,13 +534,13 @@ class LLMGateway:
                     model=model_name,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    extra_body=extra_body,
+                    extra_body=call_extra_body,
                     tools=safe_tools,
                     tool_choice=safe_tool_choice,
                 )
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(gen.__anext__(), timeout=timeout_seconds)
+                        chunk = await asyncio.wait_for(gen.__anext__(), timeout=wait_timeout_seconds)
                     except StopAsyncIteration:
                         return
                     produced = True

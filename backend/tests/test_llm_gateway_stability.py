@@ -9,6 +9,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
 from app.ai.base import BaseAdapter
 from app.ai.gateway import ADAPTER_MAP, LLMGateway
+from app.ai.local_cli_adapter import LOCAL_CLI_TIMEOUT_GRACE_SECONDS, LocalCLIAdapter
 from app.core.crypto import encrypt
 from app.core.exceptions import LLMError
 from app.database.models import APIConfig
@@ -111,6 +112,25 @@ class GatewayStabilityTestCase(unittest.TestCase):
             ))
 
         self.assertEqual(FakeAdapter.calls, 1)
+
+
+    def test_local_cli_timeout_is_owned_by_adapter_before_gateway_wait(self):
+        body, wait_timeout = LLMGateway._local_cli_timeout_body(
+            LocalCLIAdapter,
+            {"local_cli_cwd": r"D:\novels"},
+            180,
+        )
+
+        self.assertEqual(body["local_cli_cwd"], r"D:\novels")
+        self.assertEqual(body["local_cli_timeout_seconds"], 180)
+        self.assertEqual(wait_timeout, 180 + LOCAL_CLI_TIMEOUT_GRACE_SECONDS)
+
+    def test_non_local_cli_timeout_body_is_unchanged(self):
+        body = {"x": 1}
+        updated_body, wait_timeout = LLMGateway._local_cli_timeout_body(FakeAdapter, body, 30)
+
+        self.assertIs(updated_body, body)
+        self.assertEqual(wait_timeout, 30)
 
 
 if __name__ == "__main__":

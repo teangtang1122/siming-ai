@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from pathlib import Path
 
-from app.database.models import AgentRun, AgentRunEvent, Base, Chapter, Project
+from app.database.models import APIConfig, AgentRun, AgentRunEvent, Base, Chapter, Project
 from app.services.external_agent.run_service import create_run
 from app.services.cataloging.local_cli_agent import _task_text, _turn_stage
 from app.services.cataloging.orchestrator import create_cataloging_job
@@ -80,6 +80,48 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIsNotNone(tool)
         self.assertEqual(tool.tool_type, "scheduler")
         self.assertEqual(tool.estimated_cost, "local_cli")
+
+    def test_start_worker_enables_opencode_warn_logs(self):
+        project = self._project()
+        self.db.add(APIConfig(
+            provider="opencode_cli",
+            provider_type="local_cli",
+            api_key_encrypted="",
+            default_model="opencode/deepseek-v4-flash-free",
+            cli_command="opencode",
+            cli_args='["run","--pure","{prompt}"]',
+            is_global_default=True,
+        ))
+        self.db.commit()
+        created_coroutines = []
+
+        def capture_task(coroutine):
+            created_coroutines.append(coroutine)
+
+            class DummyTask:
+                pass
+
+            return DummyTask()
+
+        with unittest.mock.patch(
+            "app.services.local_cli_agent_worker.asyncio.create_task",
+            side_effect=capture_task,
+        ):
+            result = start_local_cli_agent_worker(
+                self.db,
+                project.id,
+                user_request="test",
+                task_type="general",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(created_coroutines), 1)
+        coroutine = created_coroutines[0]
+        try:
+            args = coroutine.cr_frame.f_locals["args"]
+            self.assertEqual(args[:4], ["--print-logs", "--log-level", "WARN", "run"])
+        finally:
+            coroutine.close()
 
     def test_cataloging_task_reads_chapter_file_and_writes_through_mcp(self):
         project = self._project()

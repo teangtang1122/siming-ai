@@ -20,6 +20,7 @@ from app.ai.local_cli_adapter import (
     DEFAULT_CLI_MODELS,
     communicate_with_cli_quota_detection,
     detect_cli_quota_error,
+    ensure_opencode_logging_args,
     hidden_subprocess_kwargs,
     parse_cli_launch,
 )
@@ -263,13 +264,15 @@ def start_local_cli_agent_worker(
 
     model = cfg.default_model or DEFAULT_CLI_MODELS.get(provider, provider)
     launch = parse_cli_launch(cfg.cli_args, provider, _task_prompt(task_file), model)
+    args = list(launch.args)
+    ensure_opencode_logging_args(provider, args)
     asyncio.create_task(
         _run_cli_process(
             run_id=run.id,
             project_id=project_id,
             provider=provider,
             command=command,
-            args=launch.args,
+            args=args,
             stdin_text=launch.stdin_text,
             cwd=str(Path(project.folder_path or task_file.parent).resolve()),
         )

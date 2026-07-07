@@ -27,6 +27,7 @@ from ..ai.local_cli_adapter import (
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
     DEFAULT_LOCAL_CLI_TIMEOUT,
+    LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     is_local_cli_provider,
     local_cli_model_options,
 )
@@ -589,9 +590,12 @@ async def test_connection(payload: ConnectionTestRequest):
                     model=model,
                     temperature=0,
                     max_tokens=32,
-                    extra_body={"local_cli_cwd": str(resolve_content_root())},
+                    extra_body={
+                        "local_cli_cwd": str(resolve_content_root()),
+                        "local_cli_timeout_seconds": DEFAULT_LOCAL_CLI_TIMEOUT,
+                    },
                 ),
-                timeout=DEFAULT_LOCAL_CLI_TIMEOUT,
+                timeout=DEFAULT_LOCAL_CLI_TIMEOUT + LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
             )
         except asyncio.TimeoutError as exc:
             raise LLMError(
