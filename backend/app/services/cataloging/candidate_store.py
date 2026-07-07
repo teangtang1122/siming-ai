@@ -42,6 +42,7 @@ _PLACEHOLDER_NAMES = {
 }
 
 _CHARACTER_STATE_KEYS = {
+    "appearance",
     "age",
     "life_status",
     "current_location",

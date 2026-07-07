@@ -17,10 +17,11 @@ from sqlalchemy.orm import Session
 from app.ai.local_cli_adapter import (
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
+    detect_cli_quota_error,
     hidden_subprocess_kwargs,
     parse_cli_launch,
 )
-from app.database.models import APIConfig, Project
+from app.database.models import APIConfig, AgentRun, Project
 from app.database.session import SessionLocal
 from app.services.content_store import ensure_project_folder
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
@@ -173,6 +174,21 @@ async def _run_cli_process(
             "stdout_tail": out_text[-4000:],
             "stderr_tail": err_text[-4000:],
         }
+        quota_error = detect_cli_quota_error(err_text, out_text)
+        if quota_error:
+            add_event(
+                db,
+                run_id,
+                "error",
+                status="error",
+                message=quota_error,
+                payload_json=__import__("json").dumps(payload, ensure_ascii=False),
+            )
+            run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+            if run:
+                run.summary = quota_error[:1000]
+                db.commit()
+            return
         if proc.returncode == 0:
             add_event(
                 db,

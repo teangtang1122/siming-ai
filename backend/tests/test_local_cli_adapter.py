@@ -1,13 +1,18 @@
 """Tests for local CLI model adapter helpers."""
 
 import unittest
+import asyncio
+import json
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from app.core.exceptions import LLMError
 from app.ai.local_cli_adapter import (
     LocalCLIAdapter,
     OPENCODE_DEFAULT_MODEL,
+    detect_cli_quota_error,
     discover_local_cli_models,
     extract_cli_error,
     hidden_subprocess_kwargs,
@@ -173,6 +178,34 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             '{"type":"error","error":{"data":{"message":"Please sign in"}}}\n'
         )
         self.assertEqual(error, "Please sign in")
+
+    def test_quota_errors_are_detected_from_plain_and_json_output(self):
+        self.assertIn(
+            "额度/限额",
+            detect_cli_quota_error("Error: quota exceeded for provider"),
+        )
+        self.assertIn(
+            "额度/限额",
+            detect_cli_quota_error('{"type":"error","error":{"message":"HTTP 429 Too Many Requests"}}'),
+        )
+        self.assertIn(
+            "额度/限额",
+            detect_cli_quota_error("今日免费额度已用完，请明天再试"),
+        )
+
+    def test_local_cli_adapter_raises_clear_quota_error_even_with_zero_exit_code(self):
+        adapter = LocalCLIAdapter(
+            api_key="",
+            base_url="custom_cli",
+            cli_command=sys.executable,
+            cli_args=json.dumps(["-c", "print('Error: quota exceeded for provider')"]),
+        )
+
+        with self.assertRaisesRegex(LLMError, "额度/限额"):
+            asyncio.run(adapter.chat_completion(
+                messages=[{"role": "user", "content": "hello"}],
+                model="custom-cli",
+            ))
 
     def test_runtime_cwd_does_not_fall_back_to_process_cwd(self):
         with patch.dict(

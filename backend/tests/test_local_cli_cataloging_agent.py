@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -16,6 +18,7 @@ from app.services.cataloging.local_cli_agent import (
     _MAX_NO_SAVE_ATTEMPTS,
     _build_cataloging_cli_launch,
     _coordinate_cataloging,
+    _run_cli_turn,
     _task_prompt,
 )
 from app.services.cataloging.orchestrator import create_cataloging_job
@@ -345,6 +348,90 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             self.assertEqual(fallback_calls, 1)
             self.assertEqual(job.status, "completed", job.error)
             self.assertEqual(job.chapter_runs[0].status, "completed")
+        finally:
+            db.close()
+
+    def test_cli_turn_aborts_when_agent_stops_reporting_progress(self):
+        old_env = {
+            name: os.environ.get(name)
+            for name in [
+                "SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS",
+                "SIMING_CATALOGING_CLI_POLL_SECONDS",
+            ]
+        }
+        os.environ["SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS"] = "0.2"
+        os.environ["SIMING_CATALOGING_CLI_POLL_SECONDS"] = "0.05"
+        db = self.Session()
+        try:
+            job = create_cataloging_job(
+                db,
+                self.project_id,
+                "auto",
+                "custom_cli:custom-cli",
+                [self.chapter_id],
+                execution_backend="local_cli_agent",
+            )
+            run = job.chapter_runs[0]
+            db.commit()
+            config = APIConfig(
+                provider="custom_cli",
+                provider_type="local_cli",
+                cli_command=sys.executable,
+                cli_args=json.dumps(["-c", "import time; time.sleep(2)"]),
+                default_model="custom-cli",
+            )
+
+            with patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session):
+                with self.assertRaisesRegex(RuntimeError, "没有汇报进度"):
+                    asyncio.run(_run_cli_turn(
+                        job=job,
+                        run=run,
+                        project=self.project,
+                        chapter=self.chapter,
+                        config=config,
+                        agent_run_id="agent-run-without-events",
+                        stage="merged",
+                    ))
+        finally:
+            for name, value in old_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            db.close()
+
+    def test_cli_turn_reports_provider_quota_as_terminal_error(self):
+        db = self.Session()
+        try:
+            job = create_cataloging_job(
+                db,
+                self.project_id,
+                "auto",
+                "custom_cli:custom-cli",
+                [self.chapter_id],
+                execution_backend="local_cli_agent",
+            )
+            run = job.chapter_runs[0]
+            db.commit()
+            config = APIConfig(
+                provider="custom_cli",
+                provider_type="local_cli",
+                cli_command=sys.executable,
+                cli_args=json.dumps(["-c", "print('Error: quota exceeded for provider')"]),
+                default_model="custom-cli",
+            )
+
+            with patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session):
+                with self.assertRaisesRegex(RuntimeError, "额度/限额"):
+                    asyncio.run(_run_cli_turn(
+                        job=job,
+                        run=run,
+                        project=self.project,
+                        chapter=self.chapter,
+                        config=config,
+                        agent_run_id="agent-run-quota",
+                        stage="merged",
+                    ))
         finally:
             db.close()
 

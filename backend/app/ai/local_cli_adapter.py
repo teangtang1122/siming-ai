@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -377,6 +378,54 @@ def extract_cli_error(text: str) -> str:
     return ""
 
 
+_CLI_QUOTA_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\binsufficient[_\s-]*quota\b",
+        r"\bquota[_\s-]*(exceeded|reached|exhausted)\b",
+        r"\b(rate|request|usage|daily|monthly|credit|billing)[_\s-]*(limit|quota)\b",
+        r"\b(limit|quota)[_\s-]*(exceeded|reached|exhausted)\b",
+        r"\btoo\s+many\s+requests\b",
+        r"\bresource\s+exhausted\b",
+        r"\binsufficient\s+(credits|balance)\b",
+        r"\bcredits?\s+(exhausted|depleted|used\s+up)\b",
+        r"\bpayment\s+required\b",
+        r"\bfree\s+(tier|usage)\s+limit\b",
+        r"\bHTTP\s*(402|429)\b",
+        r"\bstatus\s*(code)?\s*[:=]?\s*(402|429)\b",
+        r"\b(402|429)\s+(Payment Required|Too Many Requests)\b",
+        r"额度[已已经]*\s*(用尽|耗尽|不足|达到|超过)",
+        r"配额[已已经]*\s*(用尽|耗尽|不足|达到|超过)",
+        r"限额[已已经]*\s*(用尽|耗尽|不足|达到|超过)",
+        r"(达到|超过).{0,12}(额度|配额|限额|用量上限|请求上限)",
+        r"(余额|点数|积分|额度|配额).{0,8}不足",
+        r"(今日|每日|本月|免费).{0,8}(额度|配额|次数|用量).{0,8}(用完|耗尽|达到上限)",
+        r"(请求过多|速率限制|频率限制)",
+    ]
+]
+
+
+def _first_relevant_line(text: str) -> str:
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(pattern.search(stripped) for pattern in _CLI_QUOTA_PATTERNS):
+            return stripped[:500]
+    return str(text or "").strip()[:500]
+
+
+def detect_cli_quota_error(*texts: str) -> str:
+    combined = "\n".join(str(text or "") for text in texts if text)
+    if not combined:
+        return ""
+    if not any(pattern.search(combined) for pattern in _CLI_QUOTA_PATTERNS):
+        return ""
+    detail = _first_relevant_line(combined)
+    suffix = f"：{detail}" if detail else ""
+    return f"本机 CLI 提供方额度/限额已耗尽或触发速率限制{suffix}"
+
+
 class LocalCLIAdapter(BaseAdapter):
     """Adapter for local agent CLIs used as text generation backends."""
 
@@ -647,10 +696,13 @@ class LocalCLIAdapter(BaseAdapter):
                 pass
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
+        event_error = extract_cli_error(out_text)
+        quota_error = detect_cli_quota_error(err_text, event_error, out_text)
+        if quota_error:
+            raise LLMError(quota_error)
         if proc.returncode != 0:
             detail = err_text or out_text or f"exit code {proc.returncode}"
             raise LLMError(f"本机 CLI 调用失败: {detail}")
-        event_error = extract_cli_error(out_text)
         if event_error:
             raise LLMError(f"本机 CLI 调用失败: {event_error}")
         return self._normalize_output(out_text)

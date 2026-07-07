@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from app.ai.local_cli_adapter import (
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
     OPENCODE_FAMILY_PROVIDERS,
+    detect_cli_quota_error,
     effective_local_cli_model,
     hidden_subprocess_kwargs,
     parse_cli_launch,
@@ -29,6 +31,7 @@ from app.ai.local_cli_adapter import (
 from app.database.models import (
     APIConfig,
     AgentRun,
+    AgentRunEvent,
     CatalogingChapterRun,
     CatalogingJob,
     Chapter,
@@ -49,6 +52,69 @@ _PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 _TERMINAL_JOBS = {"completed", "failed", "cancelled"}
 _TERMINAL_RUNS = {"completed", "completed_with_warnings", "skipped_by_user"}
 _MAX_NO_SAVE_ATTEMPTS = 3
+_DEFAULT_CLI_TOTAL_TIMEOUT_SECONDS = 1200
+_DEFAULT_CLI_IDLE_TIMEOUT_SECONDS = 600
+_DEFAULT_CLI_POLL_SECONDS = 15
+
+
+def _timeout_seconds_from_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _latest_agent_event_at(agent_run_id: str) -> datetime | None:
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(AgentRunEvent.created_at)
+            .filter(AgentRunEvent.run_id == agent_run_id)
+            .order_by(AgentRunEvent.sequence.desc())
+            .first()
+        )
+        return row[0] if row and row[0] else None
+    finally:
+        db.close()
+
+
+async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/F", "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                **hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+    else:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=10)
+    except Exception:
+        pass
+
+
+async def _cancel_communicate_task(task: asyncio.Task) -> None:
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def _provider_from_model(model: str | None) -> str | None:
@@ -726,23 +792,62 @@ async def _run_cli_turn(
         **hidden_subprocess_kwargs(),
     )
     _PROCESSES[job.id] = process
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(
-                input=launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None
-            ),
-            timeout=1200,
+    communicate_task = asyncio.create_task(
+        process.communicate(
+            input=launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None
         )
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-        raise RuntimeError("本机 CLI 单章建档超过 20 分钟，已终止")
+    )
+    started_at = datetime.utcnow()
+    last_progress_at = started_at
+    total_timeout = _timeout_seconds_from_env(
+        "SIMING_CATALOGING_CLI_TOTAL_TIMEOUT_SECONDS",
+        _DEFAULT_CLI_TOTAL_TIMEOUT_SECONDS,
+    )
+    idle_timeout = _timeout_seconds_from_env(
+        "SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS",
+        _DEFAULT_CLI_IDLE_TIMEOUT_SECONDS,
+    )
+    poll_seconds = _timeout_seconds_from_env(
+        "SIMING_CATALOGING_CLI_POLL_SECONDS",
+        _DEFAULT_CLI_POLL_SECONDS,
+    )
+    try:
+        while True:
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.shield(communicate_task),
+                    timeout=max(0.1, min(poll_seconds, idle_timeout, total_timeout)),
+                )
+                break
+            except asyncio.TimeoutError:
+                now = datetime.utcnow()
+                latest_event_at = _latest_agent_event_at(agent_run_id)
+                if latest_event_at and latest_event_at > last_progress_at:
+                    last_progress_at = latest_event_at
+                elapsed = (now - started_at).total_seconds()
+                idle = (now - last_progress_at).total_seconds()
+                if elapsed >= total_timeout:
+                    await _terminate_process_tree(process)
+                    await _cancel_communicate_task(communicate_task)
+                    raise RuntimeError(f"本机 CLI 单章建档超过 {int(total_timeout)} 秒，已终止")
+                if idle >= idle_timeout:
+                    await _terminate_process_tree(process)
+                    await _cancel_communicate_task(communicate_task)
+                    raise RuntimeError(
+                        f"本机 CLI 单章建档超过 {int(idle_timeout)} 秒没有汇报进度，已终止；"
+                        "请重试当前章节或切换模型。"
+                    )
     finally:
         _PROCESSES.pop(job.id, None)
+    out_text = stdout.decode("utf-8", errors="replace").strip()
+    err_text = stderr.decode("utf-8", errors="replace").strip()
+    quota_error = detect_cli_quota_error(err_text, out_text)
+    if quota_error:
+        raise RuntimeError(quota_error)
     return (
         process.returncode or 0,
-        stdout.decode("utf-8", errors="replace").strip(),
-        stderr.decode("utf-8", errors="replace").strip(),
+        out_text,
+        err_text,
     )
 
 

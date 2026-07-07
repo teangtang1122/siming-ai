@@ -201,6 +201,15 @@ class LLMGateway:
         override = str(model_override or "").strip()
         if override:
             model_value, provider, model_name = cls._identity_from_model_value(override)
+            if (
+                extra_body is not None
+                and task_type
+                and provider == "local_llama_cpp"
+                and not extra_body.get("moshu_context_length")
+            ):
+                _setting_model, setting = cls._task_setting_model(task_type)
+                if setting and setting.context_length and (not model_name or model_name == setting.model_key):
+                    extra_body["moshu_context_length"] = setting.context_length
             return TaskModelSelection(
                 model=model_value or override,
                 source="explicit",

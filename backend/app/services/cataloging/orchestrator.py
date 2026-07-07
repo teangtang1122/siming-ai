@@ -104,7 +104,9 @@ def _is_local_runtime_provider(provider: str) -> bool:
     return provider == "local_llama_cpp"
 
 
-def _cataloging_pipeline_mode() -> str:
+def _cataloging_pipeline_mode(provider: str | None = None) -> str:
+    if _is_local_runtime_provider(provider or ""):
+        return "staged"
     value = os.getenv("SIMING_CATALOGING_PIPELINE", "merged").strip().lower()
     if value in {"staged", "two_stage", "two-stage"}:
         return "staged"
@@ -573,7 +575,8 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
 
 
 async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:
-    if _cataloging_pipeline_mode() == "merged" and run.status != "facts_saved":
+    provider = _model_provider(job.model)
+    if _cataloging_pipeline_mode(provider) == "merged" and run.status != "facts_saved":
         async for event in _extract_run_merged(db, job, run):
             yield event
         return
@@ -623,7 +626,6 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         CatalogingCandidate.chapter_run_id == run.id,
         CatalogingCandidate.item_type == "chapter_summary",
     ).first() is not None
-    provider = _model_provider(job.model)
     local_runtime = _is_local_runtime_provider(provider)
 
     try:
@@ -774,6 +776,8 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
             raise ValueError("模型未输出可用事实，已暂停在当前章节")
 
         targeted_context = build_targeted_context(db, job.project_id, chapter, facts)
+        if local_runtime:
+            targeted_context = _compact_local_runtime_context(targeted_context)
         yield sse_event({
             "type": "cataloging_stage",
             "message": (
@@ -805,7 +809,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     ],
                     model=job.model,
                     temperature=0.1,
-                    max_tokens=CATALOGING_MAX_TOKENS,
+                    max_tokens=4096 if local_runtime else CATALOGING_MAX_TOKENS,
                     timeout=CATALOGING_TIMEOUT_SECONDS,
                     retry=1,
                     extra_body=cataloging_extra_body(
@@ -972,6 +976,145 @@ def _combined_raw_output(raw_fact_parts: list[str], raw_candidate_parts: list[st
 def _merged_raw_output(raw_parts: list[str]) -> str:
     value = "=== MERGED CATALOGING ===\n" + "".join(raw_parts)
     return value[-60000:]
+
+
+def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Keep staged resolution prompts small enough for managed local models."""
+    def clip(value: Any, limit: int) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        return text[:limit]
+
+    def aliases(value: Any, limit: int = 6) -> list[Any]:
+        if not isinstance(value, list):
+            return []
+        compacted = []
+        for item in value[:limit]:
+            if isinstance(item, dict):
+                compacted.append({
+                    "alias": clip(item.get("alias"), 80),
+                    "alias_type": clip(item.get("alias_type"), 40),
+                })
+            else:
+                compacted.append(clip(item, 80))
+        return [item for item in compacted if item]
+
+    def character(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "aliases": aliases(item.get("aliases")),
+            "role_type": item.get("role_type"),
+            "age": item.get("age"),
+            "appearance": clip(item.get("appearance"), 180),
+            "personality": clip(item.get("personality"), 180),
+            "background": clip(item.get("background"), 260),
+            "abilities": (item.get("abilities") or [])[:8] if isinstance(item.get("abilities"), list) else [],
+            "life_status": item.get("life_status"),
+            "current_location": clip(item.get("current_location"), 120),
+            "realm_or_level": clip(item.get("realm_or_level"), 120),
+            "physical_state": clip(item.get("physical_state"), 140),
+            "mental_state": clip(item.get("mental_state"), 140),
+            "current_goal": clip(item.get("current_goal"), 160),
+            "active_conflict": clip(item.get("active_conflict"), 160),
+            "abilities_state": clip(item.get("abilities_state"), 160),
+            "items_or_assets": clip(item.get("items_or_assets"), 160),
+            "recent_timeline": [
+                {
+                    "event_type": event.get("event_type"),
+                    "event_description": clip(event.get("event_description"), 140),
+                }
+                for event in (item.get("recent_timeline") or [])[:2]
+                if isinstance(event, dict)
+            ],
+        }
+
+    def worldbuilding(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item.get("id"),
+            "dimension": item.get("dimension"),
+            "title": item.get("title"),
+            "status": item.get("status"),
+            "content": clip(item.get("content"), 320),
+            "recent_timeline": [
+                {
+                    "event_type": event.get("event_type"),
+                    "event_description": clip(event.get("event_description"), 140),
+                }
+                for event in (item.get("recent_timeline") or [])[:2]
+                if isinstance(event, dict)
+            ],
+        }
+
+    lookup_terms = context.get("lookup_terms") or {}
+    return {
+        "current_chapter": context.get("current_chapter"),
+        "recent_chapter_summaries": [
+            {
+                "title": item.get("title"),
+                "summary": clip(item.get("summary"), 280),
+                "key_events": (item.get("key_events") or [])[:4] if isinstance(item.get("key_events"), list) else [],
+            }
+            for item in (context.get("recent_chapter_summaries") or [])[-4:]
+            if isinstance(item, dict)
+        ],
+        "character_name_index": [
+            {
+                "name": item.get("name"),
+                "age": item.get("age"),
+                "role_type": item.get("role_type"),
+                "life_status": item.get("life_status"),
+                "aliases": aliases(item.get("aliases"), 4),
+            }
+            for item in (context.get("character_name_index") or [])[:80]
+            if isinstance(item, dict)
+        ],
+        "relevant_characters": [
+            character(item)
+            for item in (context.get("relevant_characters") or [])[:6]
+            if isinstance(item, dict)
+        ],
+        "relevant_relationships": [
+            {
+                "source_name": item.get("source_name"),
+                "target_name": item.get("target_name"),
+                "relationship_type": item.get("relationship_type"),
+                "description": clip(item.get("description"), 140),
+            }
+            for item in (context.get("relevant_relationships") or [])[:16]
+            if isinstance(item, dict)
+        ],
+        "worldbuilding_title_index": [
+            {
+                "dimension": item.get("dimension"),
+                "title": item.get("title"),
+            }
+            for item in (context.get("worldbuilding_title_index") or [])[:100]
+            if isinstance(item, dict)
+        ],
+        "relevant_worldbuilding": [
+            worldbuilding(item)
+            for item in (context.get("relevant_worldbuilding") or [])[:6]
+            if isinstance(item, dict)
+        ],
+        "nearby_outline_nodes": [
+            {
+                "title": item.get("title"),
+                "node_type": item.get("node_type"),
+                "summary": clip(item.get("summary"), 180),
+                "actual_summary": clip(item.get("actual_summary"), 180),
+                "planned_summary": clip(item.get("planned_summary"), 180),
+            }
+            for item in (context.get("nearby_outline_nodes") or [])[:18]
+            if isinstance(item, dict)
+        ],
+        "lookup_terms": {
+            "names": lookup_terms.get("names", [])[:40],
+            "titles": lookup_terms.get("titles", [])[:40],
+            "keywords": lookup_terms.get("keywords", [])[:40],
+        },
+    }
 
 
 async def _apply_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:
