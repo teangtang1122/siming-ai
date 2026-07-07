@@ -124,7 +124,8 @@ API-free 工具（可以自由使用）：
 - save_external_chapter_draft → 保存草稿
 - record_external_quality_review → 记录质量自评
 - apply_external_story_updates → 应用故事更新
-- start_external_cataloging_job / get_next_external_cataloging_chapter / save_external_cataloging_facts / save_external_cataloging_candidates / apply_pending_cataloging / verify_external_cataloging_progress → 外部编目全套
+- start_external_cataloging_job / get_next_external_cataloging_chapter(phase="merged") / save_external_cataloging_candidates(phase="merged") / apply_pending_cataloging / verify_external_cataloging_progress → 外部融合编目全套
+- save_external_cataloging_facts / list_cataloging_facts → 仅用于恢复旧两阶段编目任务
 - get_project_archive_status → 验证数据
 - get_prompt_pack → 获取写作方法论
 - remember / recall / forget → 记忆管理
@@ -135,8 +136,8 @@ API-free 工具（可以自由使用）：
 1. 不要在聊天回复里完整输出长正文、完整章节、完整角色档案、完整世界观档案或大量候选 JSON；聊天里只写摘要、数量、关键警告和下一步。
 2. 写章节正文时，先调用 save_external_chapter_draft 保存完整正文，再把返回的 draft_id/content_ref 传给 create_chapter；不要把整章正文再次塞进 create_chapter.content。
 3. 重写或扩写长文本时，优先把完整结果写入 save_external_chapter_draft 或对应写入工具；回复用户时只报告保存位置、字数、标题和是否通过自检。
-4. 建档时，事实和候选必须写入 save_external_cataloging_facts / save_external_cataloging_candidates；不要把整章事实清单或完整 candidates 数组全部贴在聊天回复里。
-5. 外部建档时，事实提取可以并行；候选生成必须通过 get_next_external_cataloging_chapter(phase="candidates") 按章节顺序串行领取，不能按事实完成顺序生成候选。
+4. 建档时默认使用融合流程：调用 get_next_external_cataloging_chapter(phase="merged") 领取当前章节，自己读取章节正文和档案镜像，然后用 save_external_cataloging_candidates(phase="merged") 直接保存候选；不要把完整 candidates 数组贴在聊天回复里。
+5. 外部建档必须按章节顺序串行生成并应用候选；不要并行处理后续章节。只有工具明确提示当前任务是旧两阶段残留时，才使用 phase="facts" / phase="candidates" 和 save_external_cataloging_facts。
 6. 如果需要让用户确认长内容，只展示摘要、差异点和可编辑字段；完整内容以 draft_id、chapter_id、candidate_id 或工具返回数据为准。
 
 工作方式：

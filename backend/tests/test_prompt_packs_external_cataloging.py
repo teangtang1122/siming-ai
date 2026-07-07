@@ -64,11 +64,11 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         prompt = pack["system_prompt"]
         self.assertIn("get_prompt_pack", prompt)
         self.assertIn("start_external_cataloging_job", prompt)
-        self.assertIn("save_external_cataloging_facts", prompt)
+        self.assertIn("save_external_cataloging_candidates", prompt)
         self.assertIn("apply_pending_cataloging", prompt)
-        self.assertIn("phase=\"facts\"", prompt)
-        self.assertIn("phase=\"candidates\"", prompt)
-        self.assertIn("禁止按照事实提取完成顺序生成候选", prompt)
+        self.assertIn("phase=\"merged\"", prompt)
+        self.assertIn("读取章节正文和档案镜像", prompt)
+        self.assertIn("旧两阶段残留", prompt)
 
     def test_pack_requires_unified_outline_granularity(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")

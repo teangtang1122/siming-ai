@@ -376,7 +376,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "cataloging_external_no_api",
         "scope": "cataloging",
         "title": "外部 Agent 编目（无 API）",
-        "summary": "外部 Agent（Claude Code / Codex）在没有司命模型 API 的情况下对导入的小说进行编目。按章节逐步提取事实、生成候选更新、验证结果。",
+        "summary": "外部 Agent（Claude Code / Codex）在没有司命模型 API 的情况下对导入的小说进行融合编目。按章节直接读取正文和档案镜像，生成候选、应用并验证结果。",
         "system_prompt": (
             "你是一个外部编目 Agent。你的任务是对导入的小说项目进行编目——提取角色、世界观、大纲和章节摘要。\n\n"
             "【语言规则】\n"

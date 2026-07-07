@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,11 +13,12 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import APIConfig, Base, CatalogingJob, Chapter, Project
+from app.database.models import APIConfig, Base, CatalogingFact, CatalogingJob, Chapter, Project
 from app.services.cataloging.local_cli_agent import (
     _MAX_NO_SAVE_ATTEMPTS,
     _build_cataloging_cli_launch,
     _coordinate_cataloging,
+    _run_cli_turn,
     _task_prompt,
 )
 from app.services.cataloging.orchestrator import create_cataloging_job
@@ -23,7 +26,6 @@ from app.services.workspace.tools.cataloging import apply_pending_cataloging
 from app.services.workspace.tools.external_cataloging import (
     get_next_external_cataloging_chapter,
     save_external_cataloging_candidates,
-    save_external_cataloging_facts,
 )
 
 
@@ -78,26 +80,33 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
     async def _fake_cli_turn(self, *, job, run, agent_run_id, stage, **_kwargs):
         db = self.Session()
         try:
-            if stage == "full":
+            if stage == "merged":
                 assigned = await get_next_external_cataloging_chapter(
                     db,
                     job.project_id,
                     {
                         "job_id": job.id,
-                        "phase": "facts",
+                        "phase": "merged",
                         "include_content": False,
                         "include_prompt_pack": False,
                         "include_context_indexes": False,
                     },
                 )
                 self.assertIsNone(assigned["data"]["content"])
-                await save_external_cataloging_facts(
+                await save_external_cataloging_candidates(
                     db,
                     job.project_id,
                     {
                         "job_id": job.id,
                         "chapter_id": run.chapter_id,
-                        "facts": [
+                        "phase": "merged",
+                        "candidates": [
+                            {
+                                "type": "outline",
+                                "action": "create",
+                                "title": "chapter outline",
+                                "summary": "single-stage outline",
+                            },
                             {
                                 "type": "chapter_overview",
                                 "data": {"summary": "林舟推开旧门并看见另一个自己。"},
@@ -105,6 +114,13 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                         ],
                     },
                 )
+                if job.execution_mode == "auto":
+                    await apply_pending_cataloging(
+                        db,
+                        job.project_id,
+                        {"job_id": job.id},
+                    )
+                    db.commit()
             elif stage == "candidates":
                 assigned = await get_next_external_cataloging_chapter(
                     db,
@@ -191,6 +207,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             self.assertIsNotNone(job.agent_run_id)
             self.assertEqual(job.chapter_runs[0].status, "completed")
             self.assertIsNotNone(job.chapter_runs[0].chapter.summary)
+            self.assertEqual(db.query(CatalogingFact).count(), 0)
         finally:
             db.close()
 
@@ -234,9 +251,9 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         )
         chapter = Chapter(id=self.chapter_id, title="第七章 寿宴发难")
         with tempfile.TemporaryDirectory() as directory:
-            task_file = __import__("pathlib").Path(directory) / "0007-full.md"
+            task_file = __import__("pathlib").Path(directory) / "0007-merged.md"
             task_file.write_text("第七章唯一任务", encoding="utf-8")
-            prompt = _task_prompt(task_file, job, run, chapter, "agent-run-7", "full")
+            prompt = _task_prompt(task_file, job, run, chapter, "agent-run-7", "merged")
             launch = _build_cataloging_cli_launch(
                 config=config,
                 prompt=prompt,
@@ -281,8 +298,8 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         db = self.Session()
         try:
             job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
-            self.assertEqual(attempts, 3)
-            self.assertEqual(stages, ["full", "full", "candidates"])
+            self.assertEqual(attempts, 2)
+            self.assertEqual(stages, ["merged", "merged"])
             self.assertEqual(job.status, "completed", job.error)
             self.assertEqual(job.chapter_runs[0].status, "completed")
         finally:
@@ -301,7 +318,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         async def direct_fallback(db, *, job, run, stage, **_kwargs):
             nonlocal fallback_calls
             fallback_calls += 1
-            self.assertEqual(stage, "full")
+            self.assertEqual(stage, "merged")
             run.status = "completed"
             job.status = "completed"
             job.completed_chapters = 1
@@ -331,6 +348,90 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             self.assertEqual(fallback_calls, 1)
             self.assertEqual(job.status, "completed", job.error)
             self.assertEqual(job.chapter_runs[0].status, "completed")
+        finally:
+            db.close()
+
+    def test_cli_turn_aborts_when_agent_stops_reporting_progress(self):
+        old_env = {
+            name: os.environ.get(name)
+            for name in [
+                "SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS",
+                "SIMING_CATALOGING_CLI_POLL_SECONDS",
+            ]
+        }
+        os.environ["SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS"] = "0.2"
+        os.environ["SIMING_CATALOGING_CLI_POLL_SECONDS"] = "0.05"
+        db = self.Session()
+        try:
+            job = create_cataloging_job(
+                db,
+                self.project_id,
+                "auto",
+                "custom_cli:custom-cli",
+                [self.chapter_id],
+                execution_backend="local_cli_agent",
+            )
+            run = job.chapter_runs[0]
+            db.commit()
+            config = APIConfig(
+                provider="custom_cli",
+                provider_type="local_cli",
+                cli_command=sys.executable,
+                cli_args=json.dumps(["-c", "import time; time.sleep(2)"]),
+                default_model="custom-cli",
+            )
+
+            with patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session):
+                with self.assertRaisesRegex(RuntimeError, "没有汇报进度"):
+                    asyncio.run(_run_cli_turn(
+                        job=job,
+                        run=run,
+                        project=self.project,
+                        chapter=self.chapter,
+                        config=config,
+                        agent_run_id="agent-run-without-events",
+                        stage="merged",
+                    ))
+        finally:
+            for name, value in old_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            db.close()
+
+    def test_cli_turn_reports_provider_quota_as_terminal_error(self):
+        db = self.Session()
+        try:
+            job = create_cataloging_job(
+                db,
+                self.project_id,
+                "auto",
+                "custom_cli:custom-cli",
+                [self.chapter_id],
+                execution_backend="local_cli_agent",
+            )
+            run = job.chapter_runs[0]
+            db.commit()
+            config = APIConfig(
+                provider="custom_cli",
+                provider_type="local_cli",
+                cli_command=sys.executable,
+                cli_args=json.dumps(["-c", "print('Error: quota exceeded for provider')"]),
+                default_model="custom-cli",
+            )
+
+            with patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session):
+                with self.assertRaisesRegex(RuntimeError, "额度/限额"):
+                    asyncio.run(_run_cli_turn(
+                        job=job,
+                        run=run,
+                        project=self.project,
+                        chapter=self.chapter,
+                        config=config,
+                        agent_run_id="agent-run-quota",
+                        stage="merged",
+                    ))
         finally:
             db.close()
 

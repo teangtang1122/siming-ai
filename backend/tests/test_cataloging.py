@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import unittest
 
 from sqlalchemy import create_engine
@@ -44,9 +45,17 @@ from app.services.character_merge_service import build_character_merge_preview, 
 
 class CatalogingServiceTestCase(unittest.TestCase):
     def setUp(self):
+        self.old_cataloging_pipeline = os.environ.get("SIMING_CATALOGING_PIPELINE")
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "staged"
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=self.engine)
         self.Session = sessionmaker(bind=self.engine)
+
+    def tearDown(self):
+        if self.old_cataloging_pipeline is None:
+            os.environ.pop("SIMING_CATALOGING_PIPELINE", None)
+        else:
+            os.environ["SIMING_CATALOGING_PIPELINE"] = self.old_cataloging_pipeline
 
     def test_apply_candidates_updates_project_knowledge(self):
         db = self.Session()
@@ -210,6 +219,32 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 "current_location": "青云宗山门",
                 "current_goal": "通过入门考核",
                 "life_status": "alive",
+            }, ensure_ascii=False)
+
+            created = try_create_candidate(db, job, run, line, 0)
+
+            self.assertIn("candidate", created)
+            self.assertEqual(created["candidate"].item_type, "character_state_update")
+            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
+        finally:
+            db.close()
+
+    def test_try_create_candidate_accepts_appearance_only_character_state(self):
+        db = self.Session()
+        try:
+            project = Project(title="Appearance State Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="第9章", content="张三换上黑衣。")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            line = json.dumps({
+                "type": "character_state_update",
+                "name": "张三",
+                "appearance": "黑衣少年，袖口有新烧痕。",
             }, ensure_ascii=False)
 
             created = try_create_candidate(db, job, run, line, 0)
@@ -459,6 +494,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             character = Character(
                 project_id=project.id,
                 name="Mira",
+                appearance="三岁幼女，穿旧外袍。",
                 age="三岁《第一章》：三岁半",
                 current_location="Hall《第一章》：Courtyard",
                 current_goal="Wait for orders",
@@ -476,6 +512,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 item_type="character_state_update",
                 raw_payload=json.dumps({
                     "name": "Mira",
+                    "appearance": "三岁半幼女，换上练功短衫，左臂仍有绷带。",
                     "age": "三岁半",
                     "current_location": "Courtyard",
                     "current_goal": "Learn breathing",
@@ -486,6 +523,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             apply_candidates_for_run(db, job, run)
 
             self.assertEqual(character.age, "三岁半")
+            self.assertEqual(character.appearance, "三岁半幼女，换上练功短衫，左臂仍有绷带。")
             self.assertEqual(character.current_location, "Courtyard")
             self.assertEqual(character.current_goal, "Learn breathing")
             version = (
@@ -494,6 +532,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 .order_by(CharacterVersion.version_number.desc())
                 .first()
             )
+            self.assertIn("外貌", version.change_summary)
             self.assertIn("年龄/时间状态", version.change_summary)
             self.assertIn("当前位置", version.change_summary)
             self.assertIn("当前目标", version.change_summary)
@@ -696,7 +735,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 Character(project_id=project.id, name="Black Cloak"),
             ])
             db.commit()
-            job = create_cataloging_job(db, project.id, "manual", None, [])
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
             run = job.chapter_runs[0]
             cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
 
@@ -709,6 +748,114 @@ class CatalogingServiceTestCase(unittest.TestCase):
             self.assertTrue(any('"type":"fact_extracted"' in event for event in events))
             self.assertEqual(db.query(CatalogingFact).count(), 2)
             self.assertEqual(db.query(CatalogingCandidate).count(), 2)
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_merged_stage_generates_candidates_without_facts(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(cls, messages, **kwargs):
+            calls.append(messages)
+            body = "\n".join([
+                json.dumps({
+                    "type": "chapter_summary",
+                    "payload": {"summary_text": "The door opens.", "key_events": ["door opens"]},
+                }, ensure_ascii=False),
+                json.dumps({
+                    "type": "outline_create",
+                    "payload": {"title": "Door", "node_type": "chapter", "summary": "The door opens."},
+                }, ensure_ascii=False),
+            ]) + "\n"
+            yield body
+
+        try:
+            project = Project(title="Merged Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Door", content="The door opens.")
+            db.add_all([
+                chapter,
+                Character(project_id=project.id, name="Lin"),
+                WorldbuildingEntry(project_id=project.id, title="Old Door", dimension="geography", content="A sealed door."),
+            ])
+            db.commit()
+            job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            events = asyncio.run(collect())
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("single_stage_cataloging", calls[0][1]["content"])
+            self.assertEqual(db.query(CatalogingFact).count(), 0)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 2)
+            self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
+            self.assertEqual(run.status, "awaiting_confirmation")
+        finally:
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream
+            db.close()
+
+    def test_extract_run_local_runtime_forces_staged_pipeline(self):
+        os.environ["SIMING_CATALOGING_PIPELINE"] = "merged"
+        db = self.Session()
+        original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
+        calls = []
+
+        async def fake_stream(cls, messages, **kwargs):
+            calls.append((messages, kwargs))
+            if len(calls) == 1:
+                body = json.dumps({
+                    "fact_type": "chapter_overview",
+                    "payload": {"summary": "The local model should use staged facts."},
+                }, ensure_ascii=False) + "\n"
+            else:
+                body = json.dumps({
+                    "type": "chapter_summary",
+                    "payload": {"summary_text": "The local model resolved compact candidates.", "key_events": ["ok"]},
+                }, ensure_ascii=False) + "\n"
+            yield body
+
+        try:
+            project = Project(title="Local Runtime Cataloging Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Local Door", content="The door opens locally.")
+            db.add_all([
+                chapter,
+                Character(project_id=project.id, name="Lin", background="A very long background." * 80),
+            ])
+            db.commit()
+            job = create_cataloging_job(
+                db,
+                project.id,
+                "manual",
+                "local_llama_cpp:qwen3-14b-q4",
+                [],
+            )
+            run = job.chapter_runs[0]
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+
+            async def collect():
+                return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
+
+            events = asyncio.run(collect())
+
+            self.assertEqual(len(calls), 2)
+            self.assertIn("事实抽取器", calls[0][0][0]["content"])
+            self.assertIn("第二阶段决策器", calls[1][0][0]["content"])
+            self.assertNotIn("single_stage_cataloging", calls[1][0][1]["content"])
+            self.assertEqual(calls[1][1]["max_tokens"], 4096)
+            self.assertEqual(db.query(CatalogingFact).count(), 1)
+            self.assertEqual(db.query(CatalogingCandidate).count(), 1)
+            self.assertTrue(any('"type":"chapter_extracted"' in event for event in events))
             self.assertEqual(run.status, "awaiting_confirmation")
         finally:
             cataloging_orchestrator.LLMGateway.stream_chat_completion = original_stream

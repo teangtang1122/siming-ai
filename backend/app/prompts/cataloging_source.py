@@ -135,32 +135,23 @@ def get_external_no_api_rules() -> str:
     return get_api_free_mode_rules() + """
 
 【编目专用补充规则】
-1. 使用无 API 工具链：start_external_cataloging_job -> get_next_external_cataloging_chapter -> save_external_cataloging_facts -> save_external_cataloging_candidates -> apply_pending_cataloging -> verify_external_cataloging_progress。
-2. 外部 Agent 自己阅读章节正文并生成 facts/candidates，司命只负责保存、应用、验证。
-3. 准备 facts/candidates 时保持 JSONL 颗粒度：一条事实或候选对应一个对象；不要把整章合成一个大对象。
+1. 默认使用融合无 API 工具链：start_external_cataloging_job -> get_next_external_cataloging_chapter(phase="merged") -> save_external_cataloging_candidates(phase="merged") -> apply_pending_cataloging -> verify_external_cataloging_progress。
+2. 外部 Agent 自己阅读章节正文和档案镜像，直接生成可写入候选；司命只负责保存、应用、验证。
+3. 准备 candidates 时保持 JSONL 颗粒度：一条候选对应一个对象；不要把整章合成一个大对象。
+4. 不要调用 save_external_cataloging_facts 或 list_cataloging_facts，除非工具明确提示当前章节是旧两阶段残留且需要继续 phase="candidates"。
 
-【并行与串行规则】
-编目分两个阶段，执行方式不同：
-
-阶段一：事实提取（可并行）
-- 多个子 agent 可以同时处理不同章节的 save_external_cataloging_facts
-- 事实是章节级别的原始数据，章节之间互不影响
-- 可以同时提取第1章、第2章、第3章的事实
-- 每个子 agent 调用 get_next_external_cataloging_chapter(phase="facts") 获取章节 → 分析 → save_external_cataloging_facts
-
-阶段二：候选生成与应用（必须串行）
-- 必须只通过 get_next_external_cataloging_chapter(phase="candidates") 获取当前允许生成候选的章节
-- 必须一章一章按章节顺序执行 save_external_cataloging_candidates → apply_pending_cataloging
-- 禁止按照事实提取完成顺序生成候选；如果第5章事实先完成，也必须等第1-4章候选全部应用后再处理第5章
-- 原因：候选引用了已有的角色、世界观、大纲。前一章创建的角色会影响后一章的候选生成（如角色已存在则用 update 而非 create）
-- 每章必须完成 apply_pending_cataloging 后才能处理下一章
-- 候选只是暂存，不应用就不会出现在角色、大纲、世界观、章节摘要里
+【顺序规则】
+- 融合建档必须按章节顺序串行：get_next_external_cataloging_chapter(phase="merged") → save_external_cataloging_candidates(phase="merged") → apply_pending_cataloging → verify_external_cataloging_progress。
+- 禁止并行处理后续章节；前一章创建/更新的角色、世界观和大纲会影响后一章应使用 create 还是 update。
+- 每章必须完成 apply_pending_cataloging 后才能处理下一章。
+- 候选只是暂存，不应用就不会出现在角色、大纲、世界观、章节摘要里。
 
 推荐工作流：
-1. 并行提取所有章节的事实（阶段一）
-2. 等所有事实保存完成后
-3. 反复调用 get_next_external_cataloging_chapter(phase="candidates")，按系统返回的章节串行生成候选和应用（阶段二）
-4. 最终 verify_external_cataloging_progress + get_project_archive_status 验证"""
+1. 调用 start_external_cataloging_job 创建任务。
+2. 反复调用 get_next_external_cataloging_chapter(phase="merged")，按系统返回的最早未完成章节读取章节正文和档案镜像。
+3. 直接生成 chapter_summary、outline_create、character_create/update/state_update、worldbuilding_create/update、character_relationship、chapter_link 等候选，并调用 save_external_cataloging_candidates(phase="merged") 保存。
+4. apply_pending_cataloging 后立刻 verify_external_cataloging_progress。
+5. 最终 verify_external_cataloging_progress + get_project_archive_status 验证。"""
 
 
 def get_internal_cataloging_system_prompt() -> str:
@@ -265,8 +256,8 @@ def get_external_cataloging_workflow() -> list[dict[str, object]]:
     return [
         {"step": 1, "name": "select_project", "description": "导入或选择作品，记录 project_id"},
         {"step": 2, "name": "start_job", "description": "使用 project_id 创建外部无 API 建档任务"},
-        {"step": 3, "name": "extract_facts_parallel", "description": "【可并行】多个子 agent 同时处理不同章节：读取章节 → 提取事实 → save_external_cataloging_facts", "parallel": True},
-        {"step": 4, "name": "generate_and_apply_sequential", "description": "【必须串行】逐章处理：save_external_cataloging_candidates → apply_pending_cataloging → 验证 → 再处理下一章", "parallel": False},
+        {"step": 3, "name": "generate_candidates_directly", "description": "【必须串行】逐章领取 phase='merged'：读取章节和档案镜像 → 直接生成候选 → save_external_cataloging_candidates", "parallel": False},
+        {"step": 4, "name": "apply_and_verify", "description": "apply_pending_cataloging → verify_external_cataloging_progress → 再处理下一章", "parallel": False},
         {"step": 5, "name": "final_verify", "description": "verify_external_cataloging_progress + get_project_archive_status 验证作品档案计数"},
     ]
 

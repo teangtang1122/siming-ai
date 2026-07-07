@@ -67,7 +67,7 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
             default_model="claude-code",
             is_global_default=True,
         ))
-        db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3-14b-q4"))
+        db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3-14b-q4", context_length=32768))
         db.commit()
 
     with patch("app.ai.gateway.SessionLocal", Session):
@@ -76,9 +76,11 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
             task_type="cataloging",
             extra_body={"moshu_task_type": "cataloging", "moshu_prefer_task_model": True},
         )
+        explicit_body = {"moshu_task_type": "cataloging"}
         explicit = LLMGateway.select_model_for_task(
             task_type="cataloging",
             model_override="local_llama_cpp:qwen3-14b-q4",
+            extra_body=explicit_body,
         )
 
     assert selected.model == "claude_cli:claude-code"
@@ -88,6 +90,7 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
     assert opt_in.source == "task_setting"
     assert explicit.model == "local_llama_cpp:qwen3-14b-q4"
     assert explicit.source == "explicit"
+    assert explicit_body["moshu_context_length"] == 32768
 
 
 def test_local_runtime_server_uses_single_parallel_slot():

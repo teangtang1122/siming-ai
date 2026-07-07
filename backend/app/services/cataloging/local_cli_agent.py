@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from app.ai.local_cli_adapter import (
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
     OPENCODE_FAMILY_PROVIDERS,
+    detect_cli_quota_error,
     effective_local_cli_model,
     hidden_subprocess_kwargs,
     parse_cli_launch,
@@ -29,6 +31,7 @@ from app.ai.local_cli_adapter import (
 from app.database.models import (
     APIConfig,
     AgentRun,
+    AgentRunEvent,
     CatalogingChapterRun,
     CatalogingJob,
     Chapter,
@@ -49,6 +52,69 @@ _PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 _TERMINAL_JOBS = {"completed", "failed", "cancelled"}
 _TERMINAL_RUNS = {"completed", "completed_with_warnings", "skipped_by_user"}
 _MAX_NO_SAVE_ATTEMPTS = 3
+_DEFAULT_CLI_TOTAL_TIMEOUT_SECONDS = 1200
+_DEFAULT_CLI_IDLE_TIMEOUT_SECONDS = 600
+_DEFAULT_CLI_POLL_SECONDS = 15
+
+
+def _timeout_seconds_from_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _latest_agent_event_at(agent_run_id: str) -> datetime | None:
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(AgentRunEvent.created_at)
+            .filter(AgentRunEvent.run_id == agent_run_id)
+            .order_by(AgentRunEvent.sequence.desc())
+            .first()
+        )
+        return row[0] if row and row[0] else None
+    finally:
+        db.close()
+
+
+async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/F", "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                **hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+    else:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=10)
+    except Exception:
+        pass
+
+
+async def _cancel_communicate_task(task: asyncio.Task) -> None:
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def _provider_from_model(model: str | None) -> str | None:
@@ -171,6 +237,18 @@ async def stream_local_cli_cataloging_job(project_id: str, job_id: str):
             yield sse_event({"type": "error", "message": "作品建档任务不存在"})
             yield "data: [DONE]\n\n"
             return
+        seen_facts = {
+            row.id
+            for row in db.query(CatalogingFact.id)
+            .filter(CatalogingFact.job_id == job.id)
+            .all()
+        }
+        seen_candidates = {
+            row.id
+            for row in db.query(CatalogingCandidate.id)
+            .filter(CatalogingCandidate.job_id == job.id)
+            .all()
+        }
         if job.status not in _TERMINAL_JOBS and job.status not in {"paused", "waiting_confirmation"}:
             ensure_local_cli_cataloging_worker(db, job)
         yield sse_event({
@@ -345,7 +423,7 @@ def _turn_stage(run: CatalogingChapterRun, mode: str) -> str:
         return "apply"
     if run.status == "facts_saved":
         return "candidates"
-    return "full"
+    return "merged"
 
 
 def _task_text(
@@ -361,6 +439,16 @@ def _task_text(
     stage: str,
 ) -> str:
     shared_prompt = get_external_cataloging_system_prompt()
+    if stage == "merged":
+        shared_prompt += """
+
+## Experimental Single-Stage Override
+This CLI turn uses the merged cataloging experiment. The stage instructions in
+this task file override any older two-stage facts/candidates workflow in the
+shared prompt. Do not call `save_external_cataloging_facts` or
+`list_cataloging_facts`. Read the chapter and archive files directly, then call
+`save_external_cataloging_candidates` with `phase="merged"`.
+"""
     if stage == "apply":
         stage_steps = f"""
 ## 本轮唯一任务
@@ -372,7 +460,30 @@ def _task_text(
 4. 禁止再次领取或处理下一章；下一章必须由司命启动全新的 CLI 回合。
 """
     else:
-        if stage == "full":
+        if stage == "merged":
+            stage_steps = f"""
+## 本轮唯一任务：单阶段建档，直接生成候选
+0. 立即调用 `report_agent_plan`，上报本轮计划：领取 merged 阶段章节、读取章节文件、读取全部角色/世界观/大纲镜像、生成候选、按模式应用或等待确认、验证进度。
+1. 调用 `get_next_external_cataloging_chapter`：
+   - `project_id="{job.project_id}"`
+   - `job_id="{job.id}"`
+   - `phase="merged"`
+   - `include_content=false`
+   - `include_prompt_pack=false`
+   - `include_context_indexes=false`
+   - `run_id="{agent_run_id}"`
+2. 工具返回的 chapter_id 必须是 `{chapter.id}`。若不一致，立即停止并说明阻塞。
+3. 调用 `report_agent_progress` 说明正在读取当前章节和档案镜像。
+4. 直接读取 `chapter_file` 指向的章节正文，并读取 `{project_folder}` 下的 `characters/`、`worldbuilding/`、`outline/`、`summaries/` 等镜像文件。不要要求司命把正文或卡片粘贴进提示词。
+5. 关注点与第一阶段事实抽取相同：只采集会影响大纲、角色、关系、世界观或后续连续性的内容；但不要输出 fact，不要调用 `save_external_cataloging_facts` 或 `list_cataloging_facts`。
+6. 直接调用 `save_external_cataloging_candidates` 保存候选，参数必须包含 `phase="merged"`。候选必须包含 chapter_summary、chapter 级 outline_create；有独立场景时创建 section 级 outline_create；同时创建/更新角色、世界观、关系和 chapter_link。
+7. 调用 `get_cataloging_control_state` 获取实时 execution_mode：
+   - `auto`：调用 `apply_pending_cataloging`。
+   - `manual`：不要应用候选，停在等待用户确认状态。
+8. 调用 `verify_external_cataloging_progress`，然后结束本轮。
+9. 验证完成后必须立即结束当前 CLI 回合。禁止再次调用 `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由司命启动全新的 CLI 回合。
+"""
+        elif stage == "full":
             stage_steps = f"""
 ## 本轮唯一任务：只保存事实，不生成候选
 0. 立即调用 `report_agent_plan`，上报本轮计划：读取控制状态、领取 facts 阶段章节、读取章节文件、保存事实、验证进度。
@@ -514,7 +625,7 @@ def _build_cataloging_cli_launch(
 
 
 def _turn_has_no_saved_progress(stage: str, status: str) -> bool:
-    if stage == "full":
+    if stage in {"full", "merged"}:
         return status in {"pending", "in_progress", "extracting"}
     if stage == "candidates":
         return status == "facts_saved"
@@ -561,7 +672,7 @@ async def _run_direct_jsonl_cataloging_fallback(
     )
     db.commit()
     try:
-        if stage in {"full", "candidates"}:
+        if stage in {"full", "merged", "candidates"}:
             await _consume_cataloging_events(cataloging_orchestrator._extract_run(db, job, run))
             db.refresh(job)
             db.refresh(run)
@@ -681,23 +792,62 @@ async def _run_cli_turn(
         **hidden_subprocess_kwargs(),
     )
     _PROCESSES[job.id] = process
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(
-                input=launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None
-            ),
-            timeout=1200,
+    communicate_task = asyncio.create_task(
+        process.communicate(
+            input=launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None
         )
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-        raise RuntimeError("本机 CLI 单章建档超过 20 分钟，已终止")
+    )
+    started_at = datetime.utcnow()
+    last_progress_at = started_at
+    total_timeout = _timeout_seconds_from_env(
+        "SIMING_CATALOGING_CLI_TOTAL_TIMEOUT_SECONDS",
+        _DEFAULT_CLI_TOTAL_TIMEOUT_SECONDS,
+    )
+    idle_timeout = _timeout_seconds_from_env(
+        "SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS",
+        _DEFAULT_CLI_IDLE_TIMEOUT_SECONDS,
+    )
+    poll_seconds = _timeout_seconds_from_env(
+        "SIMING_CATALOGING_CLI_POLL_SECONDS",
+        _DEFAULT_CLI_POLL_SECONDS,
+    )
+    try:
+        while True:
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.shield(communicate_task),
+                    timeout=max(0.1, min(poll_seconds, idle_timeout, total_timeout)),
+                )
+                break
+            except asyncio.TimeoutError:
+                now = datetime.utcnow()
+                latest_event_at = _latest_agent_event_at(agent_run_id)
+                if latest_event_at and latest_event_at > last_progress_at:
+                    last_progress_at = latest_event_at
+                elapsed = (now - started_at).total_seconds()
+                idle = (now - last_progress_at).total_seconds()
+                if elapsed >= total_timeout:
+                    await _terminate_process_tree(process)
+                    await _cancel_communicate_task(communicate_task)
+                    raise RuntimeError(f"本机 CLI 单章建档超过 {int(total_timeout)} 秒，已终止")
+                if idle >= idle_timeout:
+                    await _terminate_process_tree(process)
+                    await _cancel_communicate_task(communicate_task)
+                    raise RuntimeError(
+                        f"本机 CLI 单章建档超过 {int(idle_timeout)} 秒没有汇报进度，已终止；"
+                        "请重试当前章节或切换模型。"
+                    )
     finally:
         _PROCESSES.pop(job.id, None)
+    out_text = stdout.decode("utf-8", errors="replace").strip()
+    err_text = stderr.decode("utf-8", errors="replace").strip()
+    quota_error = detect_cli_quota_error(err_text, out_text)
+    if quota_error:
+        raise RuntimeError(quota_error)
     return (
         process.returncode or 0,
-        stdout.decode("utf-8", errors="replace").strip(),
-        stderr.decode("utf-8", errors="replace").strip(),
+        out_text,
+        err_text,
     )
 
 
@@ -779,15 +929,46 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
             finally:
                 db.close()
 
-            returncode, stdout, stderr = await _run_cli_turn(
-                job=job_snapshot,
-                run=run_snapshot,
-                project=project_snapshot,
-                chapter=chapter_snapshot,
-                config=config_snapshot,
-                agent_run_id=agent_run_id,
-                stage=stage,
-            )
+            try:
+                returncode, stdout, stderr = await _run_cli_turn(
+                    job=job_snapshot,
+                    run=run_snapshot,
+                    project=project_snapshot,
+                    chapter=chapter_snapshot,
+                    config=config_snapshot,
+                    agent_run_id=agent_run_id,
+                    stage=stage,
+                )
+            except Exception as exc:
+                db = SessionLocal()
+                try:
+                    job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+                    run = db.query(CatalogingChapterRun).filter(CatalogingChapterRun.id == run_snapshot.id).first()
+                    if job and run:
+                        run.status = "failed"
+                        run.error = str(exc)
+                        job.status = "paused_on_failure"
+                        job.blocked_chapter_id = run.chapter_id
+                        job.current_chapter_id = run.chapter_id
+                        job.error = run.error
+                        add_event(
+                            db,
+                            agent_run_id,
+                            "chapter_agent_failed",
+                            status="error",
+                            message=run.error,
+                            payload_json=json.dumps({
+                                "job_id": job.id,
+                                "chapter_id": run.chapter_id,
+                                "chapter_run_id": run.id,
+                                "stage": stage,
+                            }, ensure_ascii=False),
+                        )
+                        db.commit()
+                        update_run_status(db, agent_run_id, "failed", summary=run.error)
+                    return
+                finally:
+                    db.close()
 
             db = SessionLocal()
             try:
@@ -813,7 +994,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     attempt = no_save_attempts.get(run.id, 0) + 1
                     no_save_attempts[run.id] = attempt
                     if attempt < _MAX_NO_SAVE_ATTEMPTS:
-                        if stage == "full":
+                        if stage in {"full", "merged"}:
                             run.status = "pending"
                         job.status = "running"
                         job.blocked_chapter_id = None

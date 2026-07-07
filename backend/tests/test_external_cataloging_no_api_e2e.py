@@ -82,11 +82,10 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
         self.db.close()
 
     def test_full_cataloging_workflow(self):
-        """Full external cataloging: start -> get chapter -> save facts -> save candidates -> verify."""
+        """Full external cataloging: start -> get chapter -> save candidates -> verify."""
         from app.services.workspace.tools.external_cataloging import (
             start_external_cataloging_job,
             get_next_external_cataloging_chapter,
-            save_external_cataloging_facts,
             save_external_cataloging_candidates,
             verify_external_cataloging_progress,
         )
@@ -107,24 +106,12 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
             result = _run(get_next_external_cataloging_chapter(self.db, project_id, {"job_id": job_id}))
             self.assertEqual(result["status"], "ok", f"get_next_chapter {i} failed: {result}")
             self.assertFalse(result["data"].get("all_done"))
-            self.assertEqual(result["data"]["next_tool"], "save_external_cataloging_facts")
+            self.assertEqual(result["data"]["phase"], "merged")
+            self.assertEqual(result["data"]["next_tool"], "save_external_cataloging_candidates")
             self.assertIn("source language", result["data"]["workflow_reminder"]["language_rule"])
             self.assertIn('node_type="section"', result["data"]["outline_granularity_policy"])
             self.assertIn("outline_granularity_policy", result["data"]["workflow_reminder"])
             chapter_id = result["data"]["chapter_id"]
-
-            # Save facts
-            facts = [
-                {"type": "character_appearance", "data": {"name": "Alice"}},
-                {"type": "setting", "data": {"location": "mystical forest"}},
-            ]
-            result = _run(save_external_cataloging_facts(
-                self.db, project_id,
-                {"job_id": job_id, "chapter_id": chapter_id, "facts": facts},
-            ))
-            self.assertEqual(result["status"], "ok", f"save_facts {i} failed: {result}")
-            self.assertEqual(result["data"]["facts_saved"], 2)
-            self.assertEqual(result["data"]["next_tool"], "save_external_cataloging_candidates")
 
             # Save candidates
             candidates = [
@@ -137,7 +124,7 @@ class ExternalCatalogingE2ETest(unittest.TestCase):
             ]
             result = _run(save_external_cataloging_candidates(
                 self.db, project_id,
-                {"job_id": job_id, "chapter_id": chapter_id, "candidates": candidates},
+                {"job_id": job_id, "chapter_id": chapter_id, "phase": "merged", "candidates": candidates},
             ))
             self.assertEqual(result["status"], "ok", f"save_candidates {i} failed: {result}")
             self.assertEqual(result["data"]["candidates_saved"], 3)

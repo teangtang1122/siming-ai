@@ -54,7 +54,7 @@ function CatalogingCandidatesPanel({
           style={{ marginBottom: 12 }}
           items={[{
             key: 'facts',
-            label: `第一阶段事实（${facts.length}）`,
+            label: `事实线索（旧任务兼容，${facts.length}）`,
             children: <CatalogingFactsList facts={facts} />,
           }]}
         />
@@ -157,7 +157,7 @@ function CatalogingCandidatesPanel({
 
 function CatalogingFactsList({ facts }: { facts: CatalogingFact[] }) {
   if (!facts.length) {
-    return <Text type="secondary">当前章节还没有可回看的第一阶段事实。</Text>
+    return <Text type="secondary">当前章节没有单独保存的事实线索；融合建档会直接生成候选项。</Text>
   }
   return (
     <List

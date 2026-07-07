@@ -1,6 +1,8 @@
 """Tests for Siming-managed local CLI agent worker contracts."""
 
 import os
+import asyncio
+import sys
 import tempfile
 import unittest
 
@@ -9,10 +11,11 @@ from sqlalchemy.orm import sessionmaker
 
 from pathlib import Path
 
-from app.database.models import Base, Chapter, Project
+from app.database.models import AgentRun, AgentRunEvent, Base, Chapter, Project
+from app.services.external_agent.run_service import create_run
 from app.services.cataloging.local_cli_agent import _task_text, _turn_stage
 from app.services.cataloging.orchestrator import create_cataloging_job
-from app.services.local_cli_agent_worker import start_local_cli_agent_worker, write_task_file
+from app.services.local_cli_agent_worker import _run_cli_process, start_local_cli_agent_worker, write_task_file
 from app.services.workspace.registry import registry
 
 
@@ -56,8 +59,8 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIn("The database is the only authoritative source.", text)
         self.assertIn("The project folder is a read-only mirror", text)
         self.assertIn("Every write/delete/update must use Siming MCP tools", text)
-        self.assertIn("Facts stage may be parallel", text)
-        self.assertIn("candidate/apply stage must be strictly sequential", text)
+        self.assertIn('phase="merged"', text)
+        self.assertIn("Do not call `save_external_cataloging_facts`", text)
         self.assertIn("Preserve the source novel language", text)
 
     def test_worker_requires_local_cli_config(self):
@@ -107,20 +110,55 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
             project_folder=project_folder,
             chapter=chapter,
             chapter_file=chapter_file,
-            stage="full",
+            stage="merged",
         )
 
         self.assertIn(str(chapter_file), task)
         self.assertIn("include_content=false", task)
         self.assertIn("include_context_indexes=false", task)
-        self.assertIn("本轮唯一任务：只保存事实，不生成候选", task)
-        self.assertIn("本轮禁止调用 `save_external_cataloging_candidates`", task)
+        self.assertIn('phase="merged"', task)
+        self.assertIn("save_external_cataloging_candidates", task)
+        self.assertIn("Do not call `save_external_cataloging_facts`", task)
         self.assertIn("所有事实、候选和应用操作必须调用 Siming MCP 工具", task)
         self.assertIn("report_agent_progress", task)
         self.assertNotIn(chapter.content, task)
-        self.assertEqual(_turn_stage(run, "auto"), "full")
+        self.assertEqual(_turn_stage(run, "auto"), "merged")
 
         run.status = "facts_saved"
         self.assertEqual(_turn_stage(run, "auto"), "candidates")
         run.status = "awaiting_confirmation"
         self.assertEqual(_turn_stage(run, "auto"), "apply")
+
+    def test_worker_marks_run_failed_when_cli_reports_quota(self):
+        project = self._project()
+        run = create_run(
+            self.db,
+            project.id,
+            source="internal_cli",
+            client_name="custom_cli",
+            title="quota test",
+        )
+        self.db.commit()
+
+        with unittest.mock.patch("app.services.local_cli_agent_worker.SessionLocal", self.Session):
+            asyncio.run(_run_cli_process(
+                run_id=run.id,
+                project_id=project.id,
+                provider="custom_cli",
+                command=sys.executable,
+                args=["-c", "print('HTTP 429 Too Many Requests: quota exceeded')"],
+                stdin_text=None,
+                cwd=self.tmp.name,
+            ))
+
+        self.db.expire_all()
+        refreshed = self.db.query(AgentRun).filter(AgentRun.id == run.id).first()
+        event = (
+            self.db.query(AgentRunEvent)
+            .filter(AgentRunEvent.run_id == run.id, AgentRunEvent.status == "error")
+            .order_by(AgentRunEvent.sequence.desc())
+            .first()
+        )
+        self.assertEqual(refreshed.status, "failed")
+        self.assertIn("额度/限额", refreshed.summary)
+        self.assertIn("额度/限额", event.message)

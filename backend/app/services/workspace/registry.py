@@ -2254,7 +2254,7 @@ def _register_all() -> None:
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "phase": {
                 "type": "string",
-                "description": "facts or candidates. facts may be parallel; candidates returns the next chapter allowed by chapter_order.",
+                "description": "facts, candidates, or merged. merged is the experimental single-stage flow that directly saves candidates in chapter_order.",
             },
             "include_content": {
                 "type": "boolean",
@@ -2297,6 +2297,7 @@ def _register_all() -> None:
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "chapter_id": {"type": "string", "description": "Chapter ID"},
+            "phase": {"type": "string", "description": "Optional. Use merged for the experimental single-stage flow."},
             "candidates": {"type": "array", "items": {"type": "object"}, "description": "Proposed candidates"},
         },
         required=["job_id", "chapter_id"],

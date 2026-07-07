@@ -25,8 +25,9 @@ from .name_utils import derived_character_aliases, split_character_name
 from .snapshots import character_snapshot, chapter_change_title
 
 
-CHARACTER_TEXT_FIELDS = ["appearance", "personality", "background", "role_type"]
+CHARACTER_TEXT_FIELDS = ["personality", "background", "role_type"]
 CHARACTER_STATE_FIELDS = [
+    "appearance",
     "age",
     "life_status",
     "current_location",
@@ -40,6 +41,7 @@ CHARACTER_STATE_FIELDS = [
 ]
 
 STATE_FIELD_LIMITS = {
+    "appearance": 8000,
     "age": 100,
     "life_status": 50,
     "current_location": 200,

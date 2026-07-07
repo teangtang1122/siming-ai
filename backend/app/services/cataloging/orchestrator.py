@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -22,16 +23,18 @@ from .constants import (
     CATALOGING_STAGE_MAX_ATTEMPTS,
     CATALOGING_TIMEOUT_SECONDS,
 )
-from .context import ordered_chapters
+from .context import build_full_cataloging_context, ordered_chapters
 from .facts import facts_text, try_parse_fact_line
 from .fact_store import clear_candidates_for_run, clear_facts_for_run, create_fact, load_facts_for_run
 from .jsonl import clean_jsonl_text
 from .job_control import refresh_job_progress
 from .model_selection import cataloging_extra_body
 from .staged_prompts import (
+    CATALOGING_MERGED_SYSTEM_PROMPT,
     CATALOGING_RESOLUTION_SYSTEM_PROMPT,
     FACT_EXTRACTION_SYSTEM_PROMPT,
     build_fact_extraction_prompt,
+    build_merged_cataloging_prompt,
     build_resolution_prompt,
 )
 from .targeted_context import build_targeted_context
@@ -99,6 +102,15 @@ def _model_provider(model: str | None) -> str:
 
 def _is_local_runtime_provider(provider: str) -> bool:
     return provider == "local_llama_cpp"
+
+
+def _cataloging_pipeline_mode(provider: str | None = None) -> str:
+    if _is_local_runtime_provider(provider or ""):
+        return "staged"
+    value = os.getenv("SIMING_CATALOGING_PIPELINE", "merged").strip().lower()
+    if value in {"staged", "two_stage", "two-stage"}:
+        return "staged"
+    return "merged"
 
 
 def _chapter_prompt_content(content: str, *, local_runtime: bool) -> str:
@@ -338,7 +350,237 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
         db.close()
 
 
+async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:
+    chapter = db.query(Chapter).filter(Chapter.id == run.chapter_id, Chapter.project_id == job.project_id).first()
+    if not chapter:
+        run.status = "failed"
+        run.error = "章节不存在"
+        db.commit()
+        yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
+        return
+
+    project = db.query(Project).filter(Project.id == job.project_id).first()
+    project_folder = ""
+    chapter_file = ""
+    if project:
+        folder = ensure_project_folder(db, project)
+        path = folder / chapter.content_file_path if chapter.content_file_path else None
+        if not path or not path.exists():
+            sync_chapter_to_file(db, project, chapter, index=run.chapter_order + 1)
+            path = folder / chapter.content_file_path if chapter.content_file_path else None
+        project_folder = str(folder)
+        if path and path.exists():
+            chapter_file = str(path.resolve())
+        db.commit()
+
+    chapter_text = chapter.content or ""
+    if not chapter_text and chapter_file:
+        try:
+            chapter_text = Path(chapter_file).read_text(encoding="utf-8")
+        except Exception:
+            chapter_text = ""
+
+    run.status = "extracting"
+    run.started_at = run.started_at or datetime.utcnow()
+    job.status = "running"
+    job.current_chapter_id = chapter.id
+    job.blocked_chapter_id = None
+    db.commit()
+    yield sse_event({"type": "chapter_started", "job": job_to_dict(job), "run": run_to_dict(run)})
+
+    clear_candidates_for_run(db, run)
+    clear_facts_for_run(db, run)
+    db.commit()
+
+    provider = _model_provider(job.model)
+    use_file_references = bool(chapter_file and is_local_cli_provider(provider))
+    context_json = ""
+    if not use_file_references:
+        context_json = json.dumps(
+            build_full_cataloging_context(db, job.project_id, chapter),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    raw_parts: list[str] = []
+    bad_lines: list[str] = []
+    candidate_count = 0
+    has_summary = False
+    yield sse_event({
+        "type": "cataloging_stage",
+        "message": "单阶段建档：读取章节与已有角色/世界观/大纲，直接生成候选卡片",
+        "run": run_to_dict(run),
+    })
+
+    try:
+        for attempt in range(1, CATALOGING_STAGE_MAX_ATTEMPTS + 1):
+            candidate_buffer = ""
+            bad_lines = []
+            if attempt > 1:
+                raw_parts.append(f"\n\n=== MERGED CATALOGING RETRY {attempt} ===\n")
+            try:
+                stream = LLMGateway.stream_chat_completion(
+                    messages=[
+                        {"role": "system", "content": CATALOGING_MERGED_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": build_merged_cataloging_prompt(
+                                chapter_title=chapter.title,
+                                chapter_content=_chapter_prompt_content(
+                                    chapter_text,
+                                    local_runtime=_is_local_runtime_provider(provider),
+                                ),
+                                context_json=context_json,
+                                chapter_file=chapter_file,
+                                project_folder=project_folder,
+                                use_file_references=use_file_references,
+                            ),
+                        },
+                    ],
+                    model=job.model,
+                    temperature=0.1,
+                    max_tokens=CATALOGING_MAX_TOKENS,
+                    timeout=CATALOGING_TIMEOUT_SECONDS,
+                    retry=1,
+                    extra_body=cataloging_extra_body(
+                        job.model,
+                        cwd=project_folder or None,
+                        attachments=[chapter_file] if use_file_references else None,
+                    ),
+                )
+                async for chunk in stream:
+                    raw_parts.append(chunk)
+                    candidate_buffer += chunk
+                    lines = candidate_buffer.splitlines(keepends=True)
+                    if lines and not lines[-1].endswith(("\n", "\r")):
+                        candidate_buffer = lines.pop()
+                    else:
+                        candidate_buffer = ""
+                    for line in lines:
+                        created = try_create_candidate(db, job, run, line, candidate_count)
+                        if created.get("bad_line"):
+                            bad_lines.append(created["bad_line"])
+                            yield sse_event({"type": "parse_warning", "run": run_to_dict(run), "line": created["bad_line"][:500], "error": created["error"]})
+                        if created.get("skipped"):
+                            reason = created.get("reason") or "候选缺少有效内容，已跳过"
+                            yield sse_event({
+                                "type": "candidate_skipped",
+                                "run": run_to_dict(run),
+                                "message": reason,
+                                "reason": reason,
+                            })
+                        candidate = created.get("candidate")
+                        if candidate:
+                            candidate_count += 1
+                            has_summary = has_summary or candidate.item_type == "chapter_summary"
+                            db.commit()
+                            yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
+                tail = clean_jsonl_text(candidate_buffer)
+                if tail:
+                    created = try_create_candidate(db, job, run, tail, candidate_count)
+                    if created.get("bad_line"):
+                        bad_lines.append(created["bad_line"])
+                    if created.get("skipped"):
+                        reason = created.get("reason") or "候选缺少有效内容，已跳过"
+                        yield sse_event({
+                            "type": "candidate_skipped",
+                            "run": run_to_dict(run),
+                            "message": reason,
+                            "reason": reason,
+                        })
+                    if created.get("candidate"):
+                        candidate = created["candidate"]
+                        candidate_count += 1
+                        has_summary = has_summary or candidate.item_type == "chapter_summary"
+                        db.commit()
+                        yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
+
+                retry_reason = ""
+                if bad_lines:
+                    retry_reason = f"{len(bad_lines)} 行 JSONL 解析失败"
+                elif not has_summary:
+                    retry_reason = "模型未输出 chapter_summary"
+                if not retry_reason:
+                    break
+                if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
+                    break
+                clear_candidates_for_run(db, run)
+                db.commit()
+                candidate_count = 0
+                has_summary = False
+                yield sse_event({
+                    "type": "cataloging_retry",
+                    "stage": "merged_candidate_generation",
+                    "message": f"单阶段建档失败，正在自动重试 {attempt + 1}/{CATALOGING_STAGE_MAX_ATTEMPTS}",
+                    "attempt": attempt + 1,
+                    "max_attempts": CATALOGING_STAGE_MAX_ATTEMPTS,
+                    "error": retry_reason,
+                    "run": run_to_dict(run),
+                })
+            except Exception as exc:
+                if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
+                    raise
+                clear_candidates_for_run(db, run)
+                db.commit()
+                candidate_count = 0
+                has_summary = False
+                candidate_buffer = ""
+                bad_lines = []
+                raw_parts.append(f"\n[MERGED CATALOGING FAILED: {exc}]\n")
+                yield sse_event({
+                    "type": "cataloging_retry",
+                    "stage": "merged_candidate_generation",
+                    "message": f"单阶段建档失败，正在自动重试 {attempt + 1}/{CATALOGING_STAGE_MAX_ATTEMPTS}",
+                    "attempt": attempt + 1,
+                    "max_attempts": CATALOGING_STAGE_MAX_ATTEMPTS,
+                    "error": str(exc),
+                    "run": run_to_dict(run),
+                })
+    except Exception as exc:
+        run.status = "failed"
+        run.error = str(exc)
+        run.raw_output = _merged_raw_output(raw_parts)
+        job.status = "paused_on_failure"
+        job.blocked_chapter_id = run.chapter_id
+        job.error = run.error
+        db.commit()
+        yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
+        return
+
+    run.raw_output = _merged_raw_output(raw_parts)
+    if bad_lines:
+        run.status = "failed"
+        run.error = f"{len(bad_lines)} 行 JSONL 解析失败，已暂停在当前章节"
+        job.status = "paused_on_failure"
+        job.blocked_chapter_id = run.chapter_id
+        job.error = run.error
+        db.commit()
+        yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error, "bad_lines": bad_lines[:5]})
+        return
+    if not has_summary:
+        run.status = "failed"
+        run.error = "模型未输出 chapter_summary，已暂停在当前章节"
+        job.status = "paused_on_failure"
+        job.blocked_chapter_id = run.chapter_id
+        job.error = run.error
+        db.commit()
+        yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
+        return
+
+    run.status = "awaiting_confirmation"
+    run.completed_at = datetime.utcnow()
+    run.error = None
+    db.commit()
+    yield sse_event({"type": "chapter_extracted", "run": run_to_dict(run), "candidate_count": candidate_count})
+
+
 async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:
+    provider = _model_provider(job.model)
+    if _cataloging_pipeline_mode(provider) == "merged" and run.status != "facts_saved":
+        async for event in _extract_run_merged(db, job, run):
+            yield event
+        return
+
     chapter = db.query(Chapter).filter(Chapter.id == run.chapter_id, Chapter.project_id == job.project_id).first()
     if not chapter:
         run.status = "failed"
@@ -384,7 +626,6 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         CatalogingCandidate.chapter_run_id == run.id,
         CatalogingCandidate.item_type == "chapter_summary",
     ).first() is not None
-    provider = _model_provider(job.model)
     local_runtime = _is_local_runtime_provider(provider)
 
     try:
@@ -535,6 +776,8 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
             raise ValueError("模型未输出可用事实，已暂停在当前章节")
 
         targeted_context = build_targeted_context(db, job.project_id, chapter, facts)
+        if local_runtime:
+            targeted_context = _compact_local_runtime_context(targeted_context)
         yield sse_event({
             "type": "cataloging_stage",
             "message": (
@@ -566,7 +809,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     ],
                     model=job.model,
                     temperature=0.1,
-                    max_tokens=CATALOGING_MAX_TOKENS,
+                    max_tokens=4096 if local_runtime else CATALOGING_MAX_TOKENS,
                     timeout=CATALOGING_TIMEOUT_SECONDS,
                     retry=1,
                     extra_body=cataloging_extra_body(
@@ -728,6 +971,150 @@ def _combined_raw_output(raw_fact_parts: list[str], raw_candidate_parts: list[st
         + "".join(raw_candidate_parts)
     )
     return value[-60000:]
+
+
+def _merged_raw_output(raw_parts: list[str]) -> str:
+    value = "=== MERGED CATALOGING ===\n" + "".join(raw_parts)
+    return value[-60000:]
+
+
+def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Keep staged resolution prompts small enough for managed local models."""
+    def clip(value: Any, limit: int) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        return text[:limit]
+
+    def aliases(value: Any, limit: int = 6) -> list[Any]:
+        if not isinstance(value, list):
+            return []
+        compacted = []
+        for item in value[:limit]:
+            if isinstance(item, dict):
+                compacted.append({
+                    "alias": clip(item.get("alias"), 80),
+                    "alias_type": clip(item.get("alias_type"), 40),
+                })
+            else:
+                compacted.append(clip(item, 80))
+        return [item for item in compacted if item]
+
+    def character(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "aliases": aliases(item.get("aliases")),
+            "role_type": item.get("role_type"),
+            "age": item.get("age"),
+            "appearance": clip(item.get("appearance"), 180),
+            "personality": clip(item.get("personality"), 180),
+            "background": clip(item.get("background"), 260),
+            "abilities": (item.get("abilities") or [])[:8] if isinstance(item.get("abilities"), list) else [],
+            "life_status": item.get("life_status"),
+            "current_location": clip(item.get("current_location"), 120),
+            "realm_or_level": clip(item.get("realm_or_level"), 120),
+            "physical_state": clip(item.get("physical_state"), 140),
+            "mental_state": clip(item.get("mental_state"), 140),
+            "current_goal": clip(item.get("current_goal"), 160),
+            "active_conflict": clip(item.get("active_conflict"), 160),
+            "abilities_state": clip(item.get("abilities_state"), 160),
+            "items_or_assets": clip(item.get("items_or_assets"), 160),
+            "recent_timeline": [
+                {
+                    "event_type": event.get("event_type"),
+                    "event_description": clip(event.get("event_description"), 140),
+                }
+                for event in (item.get("recent_timeline") or [])[:2]
+                if isinstance(event, dict)
+            ],
+        }
+
+    def worldbuilding(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item.get("id"),
+            "dimension": item.get("dimension"),
+            "title": item.get("title"),
+            "status": item.get("status"),
+            "content": clip(item.get("content"), 320),
+            "recent_timeline": [
+                {
+                    "event_type": event.get("event_type"),
+                    "event_description": clip(event.get("event_description"), 140),
+                }
+                for event in (item.get("recent_timeline") or [])[:2]
+                if isinstance(event, dict)
+            ],
+        }
+
+    lookup_terms = context.get("lookup_terms") or {}
+    return {
+        "current_chapter": context.get("current_chapter"),
+        "recent_chapter_summaries": [
+            {
+                "title": item.get("title"),
+                "summary": clip(item.get("summary"), 280),
+                "key_events": (item.get("key_events") or [])[:4] if isinstance(item.get("key_events"), list) else [],
+            }
+            for item in (context.get("recent_chapter_summaries") or [])[-4:]
+            if isinstance(item, dict)
+        ],
+        "character_name_index": [
+            {
+                "name": item.get("name"),
+                "age": item.get("age"),
+                "role_type": item.get("role_type"),
+                "life_status": item.get("life_status"),
+                "aliases": aliases(item.get("aliases"), 4),
+            }
+            for item in (context.get("character_name_index") or [])[:80]
+            if isinstance(item, dict)
+        ],
+        "relevant_characters": [
+            character(item)
+            for item in (context.get("relevant_characters") or [])[:6]
+            if isinstance(item, dict)
+        ],
+        "relevant_relationships": [
+            {
+                "source_name": item.get("source_name"),
+                "target_name": item.get("target_name"),
+                "relationship_type": item.get("relationship_type"),
+                "description": clip(item.get("description"), 140),
+            }
+            for item in (context.get("relevant_relationships") or [])[:16]
+            if isinstance(item, dict)
+        ],
+        "worldbuilding_title_index": [
+            {
+                "dimension": item.get("dimension"),
+                "title": item.get("title"),
+            }
+            for item in (context.get("worldbuilding_title_index") or [])[:100]
+            if isinstance(item, dict)
+        ],
+        "relevant_worldbuilding": [
+            worldbuilding(item)
+            for item in (context.get("relevant_worldbuilding") or [])[:6]
+            if isinstance(item, dict)
+        ],
+        "nearby_outline_nodes": [
+            {
+                "title": item.get("title"),
+                "node_type": item.get("node_type"),
+                "summary": clip(item.get("summary"), 180),
+                "actual_summary": clip(item.get("actual_summary"), 180),
+                "planned_summary": clip(item.get("planned_summary"), 180),
+            }
+            for item in (context.get("nearby_outline_nodes") or [])[:18]
+            if isinstance(item, dict)
+        ],
+        "lookup_terms": {
+            "names": lookup_terms.get("names", [])[:40],
+            "titles": lookup_terms.get("titles", [])[:40],
+            "keywords": lookup_terms.get("keywords", [])[:40],
+        },
+    }
 
 
 async def _apply_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:

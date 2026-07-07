@@ -77,8 +77,9 @@ class GetMoshuUsageGuideTest(unittest.TestCase):
         self.assertIn("start_external_cataloging_job", text)
         self.assertIn("apply_pending_cataloging", text)
         self.assertIn("start_cataloging_job", text)
-        self.assertIn("phase='facts'", text)
-        self.assertIn("phase='candidates'", text)
+        self.assertIn("phase='merged'", text)
+        self.assertIn("save_external_cataloging_candidates", text)
+        self.assertNotIn("phase='facts'", text)
 
     def test_quickstart_tells_external_agents_to_store_long_content(self):
         from app.services.workspace.tools.prompt_packs import get_moshu_usage_guide

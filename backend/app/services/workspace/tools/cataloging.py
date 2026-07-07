@@ -289,6 +289,14 @@ async def retry_current_cataloging_chapter(db: Session, project_id: str, args: d
         return {"tool": "retry_current_cataloging_chapter", "status": "skipped", "detail": "未找到建档任务"}
     run = first_blocking_run(db, job)
     if not run:
+        run = (
+            db.query(CatalogingChapterRun)
+            .filter(CatalogingChapterRun.job_id == job.id)
+            .filter(CatalogingChapterRun.status == "facts_saved")
+            .order_by(CatalogingChapterRun.chapter_order.asc())
+            .first()
+        )
+    if not run:
         return {"tool": "retry_current_cataloging_chapter", "status": "skipped", "detail": "当前没有可重试章节"}
     reset_run_for_retry(db, job, run)
     db.flush()
@@ -302,6 +310,14 @@ async def rerun_cataloging_resolution_current(db: Session, project_id: str, args
     if not job:
         return {"tool": "rerun_cataloging_resolution_current", "status": "skipped", "detail": "未找到建档任务"}
     run = first_blocking_run(db, job)
+    if not run:
+        run = (
+            db.query(CatalogingChapterRun)
+            .filter(CatalogingChapterRun.job_id == job.id)
+            .filter(CatalogingChapterRun.status == "facts_saved")
+            .order_by(CatalogingChapterRun.chapter_order.asc())
+            .first()
+        )
     if not run or not load_facts_for_run(db, run):
         return {"tool": "rerun_cataloging_resolution_current", "status": "skipped", "detail": "当前章节没有可复用事实，无法只重跑第二阶段"}
     reset_run_for_resolution_retry(db, job, run)

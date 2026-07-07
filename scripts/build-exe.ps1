@@ -29,6 +29,22 @@ function Require-Command {
   throw $Hint
 }
 
+function Resolve-BuildPython {
+  $BackendPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+  if (Test-Path $BackendPython) {
+    return $BackendPython
+  }
+  $Python = Get-Command "python" -ErrorAction SilentlyContinue
+  if ($Python) {
+    return $Python.Source
+  }
+  $Py = Get-Command "py" -ErrorAction SilentlyContinue
+  if ($Py) {
+    return $Py.Source
+  }
+  throw "Python is required on the packaging machine."
+}
+
 function Invoke-Native {
   param(
     [Parameter(Mandatory=$true)][string]$FilePath,
@@ -41,7 +57,8 @@ function Invoke-Native {
 }
 
 Write-Step "Checking build tools..."
-$PythonExe = Require-Command -Names @("py", "python") -Hint "Python is required on the packaging machine."
+$PythonExe = Resolve-BuildPython
+Write-Step "Using build Python: $PythonExe"
 Require-Command -Names @("node") -Hint "Node.js is required on the packaging machine." | Out-Null
 Require-Command -Names @("npm") -Hint "npm is required on the packaging machine." | Out-Null
 
@@ -59,11 +76,7 @@ try {
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 if (-not (Test-Path (Join-Path $VenvDir "Scripts\python.exe"))) {
   Write-Step "Creating packaging virtual environment..."
-  if ((Split-Path -Leaf $PythonExe) -eq "py.exe" -or (Split-Path -Leaf $PythonExe) -eq "py") {
-    py -m venv $VenvDir
-  } else {
-    python -m venv $VenvDir
-  }
+  Invoke-Native $PythonExe @("-m", "venv", $VenvDir)
 }
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"

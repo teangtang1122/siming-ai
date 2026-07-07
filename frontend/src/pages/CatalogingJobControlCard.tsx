@@ -59,7 +59,7 @@ function CatalogingJobControlCard({
             重试当前章节
           </Button>
           <Button disabled={!['paused_on_failure', 'waiting_confirmation'].includes(job.status)} onClick={onRerunResolutionCurrent}>
-            只重跑第二阶段
+            重跑候选生成
           </Button>
           <Button disabled={job.status !== 'paused_on_failure'} onClick={onRecoverCurrent}>
             使用候选项确认

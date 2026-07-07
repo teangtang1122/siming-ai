@@ -72,6 +72,11 @@ async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db:
     selection = cataloging_model_selection(payload.model)
     model = selection.model
     provider = (selection.provider or (model or "").split(":", 1)[0]).lower()
+    if provider == "local_llama_cpp" and selection.source != "explicit":
+        raise ValidationError(
+            "本地 llama.cpp 模型上下文不足，不能自动用于作品建档；"
+            "请选择 API/本机 CLI 模型，或在高级设置中显式选择本地模型进行短章节实验。"
+        )
     local_cli = is_local_cli_provider(provider)
     job = create_cataloging_job(
         db,
@@ -365,7 +370,7 @@ def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Sessio
         run = (
             db.query(CatalogingChapterRun)
             .filter(CatalogingChapterRun.job_id == job.id)
-            .filter(CatalogingChapterRun.status.in_(["extracting", "awaiting_confirmation", "failed"]))
+            .filter(CatalogingChapterRun.status.in_(["extracting", "facts_saved", "awaiting_confirmation", "failed"]))
             .order_by(CatalogingChapterRun.chapter_order.asc())
             .first()
         )

@@ -316,7 +316,7 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
       streamJob(job.id)
     } catch (err: any) {
-      message.error(err.message || '重跑第二阶段失败')
+      message.error(err.message || '重跑候选生成失败')
     } finally {
       setLoading(false)
     }
