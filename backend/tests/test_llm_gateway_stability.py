@@ -10,6 +10,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 from app.ai.base import BaseAdapter
 from app.ai.gateway import ADAPTER_MAP, LLMGateway
 from app.core.crypto import encrypt
+from app.core.exceptions import LLMError
 from app.database.models import APIConfig
 from app.database.session import Base, SessionLocal, engine
 
@@ -17,6 +18,7 @@ from app.database.session import Base, SessionLocal, engine
 class FakeAdapter(BaseAdapter):
     last_tool_choice = object()
     calls = 0
+    error: Exception | None = None
 
     @property
     def provider_name(self) -> str:
@@ -33,6 +35,8 @@ class FakeAdapter(BaseAdapter):
         tool_choice: Optional[str | dict] = None,
     ) -> dict:
         FakeAdapter.calls += 1
+        if FakeAdapter.error:
+            raise FakeAdapter.error
         FakeAdapter.last_tool_choice = tool_choice
         return {"content": "ok", "model": model, "usage": {}, "tool_calls": None}
 
@@ -71,6 +75,7 @@ class GatewayStabilityTestCase(unittest.TestCase):
             db.close()
         FakeAdapter.calls = 0
         FakeAdapter.last_tool_choice = object()
+        FakeAdapter.error = None
         self._old_adapter = ADAPTER_MAP.get("gemini")
         ADAPTER_MAP["gemini"] = FakeAdapter
 
@@ -91,6 +96,21 @@ class GatewayStabilityTestCase(unittest.TestCase):
         self.assertIsNone(FakeAdapter.last_tool_choice)
         self.assertEqual(FakeAdapter.calls, 1)
         self.assertIn("tool_choice", result["request_meta"]["adjustments"][0])
+
+    def test_quota_errors_are_not_retried(self):
+        FakeAdapter.error = LLMError(
+            "本机 CLI 提供方额度/限额已耗尽或触发速率限制："
+            "Free usage exceeded, subscribe to Go [retrying in 9h 28m attempt #1]"
+        )
+
+        with self.assertRaisesRegex(LLMError, "Free usage exceeded"):
+            asyncio.run(LLMGateway.chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gemini:gemini-2.5-flash",
+                retry=2,
+            ))
+
+        self.assertEqual(FakeAdapter.calls, 1)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ from .deepseek_adapter import DeepSeekAdapter
 from .gemini_adapter import GeminiAdapter
 from .local_cli_adapter import (
     LocalCLIAdapter,
+    detect_cli_quota_error,
     effective_local_cli_model,
     is_local_cli_provider,
 )
@@ -70,7 +71,12 @@ def _is_auth_error(error: BaseException) -> bool:
 
 def _is_non_retryable(error: BaseException) -> bool:
     text = str(error)
-    return _is_auth_error(error) or "未找到" in text or "不支持的模型提供商" in text
+    return (
+        _is_auth_error(error)
+        or bool(detect_cli_quota_error(text))
+        or "未找到" in text
+        or "不支持的模型提供商" in text
+    )
 
 
 class LLMGateway:

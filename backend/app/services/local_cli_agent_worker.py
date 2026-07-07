@@ -15,8 +15,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.ai.local_cli_adapter import (
+    CLIQuotaLimitError,
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
+    communicate_with_cli_quota_detection,
     detect_cli_quota_error,
     hidden_subprocess_kwargs,
     parse_cli_launch,
@@ -164,9 +166,14 @@ async def _run_cli_process(
             env=env,
             **hidden_subprocess_kwargs(),
         )
-        stdout, stderr = await proc.communicate(
-            input=stdin_text.encode("utf-8") if stdin_text is not None else None
-        )
+        try:
+            stdout, stderr = await communicate_with_cli_quota_detection(
+                proc,
+                input_bytes=stdin_text.encode("utf-8") if stdin_text is not None else None,
+            )
+        except CLIQuotaLimitError as exc:
+            stdout = exc.stdout.encode("utf-8")
+            stderr = exc.stderr.encode("utf-8")
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
         payload = {

@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -192,6 +193,10 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             "额度/限额",
             detect_cli_quota_error("今日免费额度已用完，请明天再试"),
         )
+        self.assertIn(
+            "Free usage exceeded",
+            detect_cli_quota_error("Free usage exceeded, subscribe to Go [retrying in 9h 28m attempt #1]"),
+        )
 
     def test_local_cli_adapter_raises_clear_quota_error_even_with_zero_exit_code(self):
         adapter = LocalCLIAdapter(
@@ -206,6 +211,28 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
                 messages=[{"role": "user", "content": "hello"}],
                 model="custom-cli",
             ))
+
+    def test_local_cli_adapter_aborts_retrying_quota_process_before_timeout(self):
+        code = (
+            "import sys, time; "
+            "print('Free usage exceeded, subscribe to Go [retrying in 9h 28m attempt #1]', flush=True); "
+            "time.sleep(5)"
+        )
+        adapter = LocalCLIAdapter(
+            api_key="",
+            base_url="custom_cli",
+            cli_command=sys.executable,
+            cli_args=json.dumps(["-c", code]),
+        )
+
+        started = time.monotonic()
+        with self.assertRaisesRegex(LLMError, "Free usage exceeded"):
+            asyncio.run(adapter.chat_completion(
+                messages=[{"role": "user", "content": "hello"}],
+                model="custom-cli",
+            ))
+
+        self.assertLess(time.monotonic() - started, 3)
 
     def test_runtime_cwd_does_not_fall_back_to_process_cwd(self):
         with patch.dict(

@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -432,6 +433,49 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                         agent_run_id="agent-run-quota",
                         stage="merged",
                     ))
+        finally:
+            db.close()
+
+    def test_cli_turn_aborts_retrying_quota_process_before_idle_timeout(self):
+        db = self.Session()
+        try:
+            job = create_cataloging_job(
+                db,
+                self.project_id,
+                "auto",
+                "custom_cli:custom-cli",
+                [self.chapter_id],
+                execution_backend="local_cli_agent",
+            )
+            run = job.chapter_runs[0]
+            db.commit()
+            code = (
+                "import time; "
+                "print('Free usage exceeded, subscribe to Go [retrying in 9h 28m attempt #1]', flush=True); "
+                "time.sleep(5)"
+            )
+            config = APIConfig(
+                provider="custom_cli",
+                provider_type="local_cli",
+                cli_command=sys.executable,
+                cli_args=json.dumps(["-c", code]),
+                default_model="custom-cli",
+            )
+
+            started = time.monotonic()
+            with patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session):
+                with self.assertRaisesRegex(RuntimeError, "Free usage exceeded"):
+                    asyncio.run(_run_cli_turn(
+                        job=job,
+                        run=run,
+                        project=self.project,
+                        chapter=self.chapter,
+                        config=config,
+                        agent_run_id="agent-run-quota-retry",
+                        stage="merged",
+                    ))
+
+            self.assertLess(time.monotonic() - started, 3)
         finally:
             db.close()
 

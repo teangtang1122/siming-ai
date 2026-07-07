@@ -381,6 +381,9 @@ def extract_cli_error(text: str) -> str:
 _CLI_QUOTA_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
+        r"\bfree\s+usage\s+exceeded\b",
+        r"\bfree\s+(plan|tier|usage).{0,60}(exceeded|exhausted|limit|quota)\b",
+        r"\busage\s+(exceeded|exhausted)\b",
         r"\binsufficient[_\s-]*quota\b",
         r"\bquota[_\s-]*(exceeded|reached|exhausted)\b",
         r"\b(rate|request|usage|daily|monthly|credit|billing)[_\s-]*(limit|quota)\b",
@@ -403,6 +406,16 @@ _CLI_QUOTA_PATTERNS = [
         r"(请求过多|速率限制|频率限制)",
     ]
 ]
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+class CLIQuotaLimitError(RuntimeError):
+    """Raised when a running CLI reports provider quota/rate-limit exhaustion."""
+
+    def __init__(self, message: str, *, stdout: str = "", stderr: str = ""):
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def _first_relevant_line(text: str) -> str:
@@ -419,11 +432,109 @@ def detect_cli_quota_error(*texts: str) -> str:
     combined = "\n".join(str(text or "") for text in texts if text)
     if not combined:
         return ""
+    combined = _ANSI_ESCAPE_RE.sub("", combined)
     if not any(pattern.search(combined) for pattern in _CLI_QUOTA_PATTERNS):
         return ""
     detail = _first_relevant_line(combined)
     suffix = f"：{detail}" if detail else ""
     return f"本机 CLI 提供方额度/限额已耗尽或触发速率限制{suffix}"
+
+
+async def terminate_cli_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Best-effort termination for CLIs that spawn child retry processes."""
+    if process.returncode is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/F", "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                **hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+    else:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=10)
+    except Exception:
+        pass
+
+
+async def communicate_with_cli_quota_detection(
+    process: asyncio.subprocess.Process,
+    *,
+    input_bytes: bytes | None = None,
+    extra_texts: tuple[str, ...] = (),
+) -> tuple[bytes, bytes]:
+    """Communicate with a CLI while scanning live output for quota failures."""
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    queue: asyncio.Queue[tuple[str, bytes | None]] = asyncio.Queue()
+
+    async def _read_stream(name: str, stream: asyncio.StreamReader | None, chunks: list[bytes]) -> None:
+        if stream is None:
+            await queue.put((name, None))
+            return
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            await queue.put((name, chunk))
+        await queue.put((name, None))
+
+    async def _write_stdin() -> None:
+        if input_bytes is None or process.stdin is None:
+            return
+        try:
+            process.stdin.write(input_bytes)
+            await process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+
+    readers = [
+        asyncio.create_task(_read_stream("stdout", process.stdout, stdout_chunks)),
+        asyncio.create_task(_read_stream("stderr", process.stderr, stderr_chunks)),
+    ]
+    stdin_task = asyncio.create_task(_write_stdin())
+    active_readers = len(readers)
+    try:
+        while active_readers:
+            _name, chunk = await queue.get()
+            if chunk is None:
+                active_readers -= 1
+                continue
+            out_text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+            err_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+            quota_error = detect_cli_quota_error(*extra_texts, err_text, out_text)
+            if quota_error:
+                await terminate_cli_process_tree(process)
+                raise CLIQuotaLimitError(quota_error, stdout=out_text, stderr=err_text)
+        await process.wait()
+        await stdin_task
+        return b"".join(stdout_chunks), b"".join(stderr_chunks)
+    except asyncio.CancelledError:
+        await terminate_cli_process_tree(process)
+        raise
+    finally:
+        for task in [*readers, stdin_task]:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*readers, stdin_task, return_exceptions=True)
 
 
 class LocalCLIAdapter(BaseAdapter):
@@ -688,12 +799,19 @@ class LocalCLIAdapter(BaseAdapter):
             raise LLMError(f"启动本机 CLI 失败: {exc}")
 
         stdin_bytes = launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None
-        stdout, stderr = await proc.communicate(input=stdin_bytes)
-        if prompt_file:
-            try:
-                os.unlink(prompt_file)
-            except OSError:
-                pass
+        try:
+            stdout, stderr = await communicate_with_cli_quota_detection(
+                proc,
+                input_bytes=stdin_bytes,
+            )
+        except CLIQuotaLimitError as exc:
+            raise LLMError(str(exc)) from exc
+        finally:
+            if prompt_file:
+                try:
+                    os.unlink(prompt_file)
+                except OSError:
+                    pass
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
         event_error = extract_cli_error(out_text)

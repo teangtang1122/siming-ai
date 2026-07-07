@@ -4,6 +4,7 @@ import os
 import asyncio
 import sys
 import tempfile
+import time
 import unittest
 
 from sqlalchemy import create_engine
@@ -162,3 +163,44 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertEqual(refreshed.status, "failed")
         self.assertIn("额度/限额", refreshed.summary)
         self.assertIn("额度/限额", event.message)
+
+    def test_worker_aborts_retrying_quota_process_before_timeout(self):
+        project = self._project()
+        run = create_run(
+            self.db,
+            project.id,
+            source="internal_cli",
+            client_name="custom_cli",
+            title="retrying quota test",
+        )
+        self.db.commit()
+        code = (
+            "import time; "
+            "print('Free usage exceeded, subscribe to Go [retrying in 9h 28m attempt #1]', flush=True); "
+            "time.sleep(5)"
+        )
+
+        started = time.monotonic()
+        with unittest.mock.patch("app.services.local_cli_agent_worker.SessionLocal", self.Session):
+            asyncio.run(_run_cli_process(
+                run_id=run.id,
+                project_id=project.id,
+                provider="custom_cli",
+                command=sys.executable,
+                args=["-c", code],
+                stdin_text=None,
+                cwd=self.tmp.name,
+            ))
+
+        self.assertLess(time.monotonic() - started, 3)
+        self.db.expire_all()
+        refreshed = self.db.query(AgentRun).filter(AgentRun.id == run.id).first()
+        event = (
+            self.db.query(AgentRunEvent)
+            .filter(AgentRunEvent.run_id == run.id, AgentRunEvent.status == "error")
+            .order_by(AgentRunEvent.sequence.desc())
+            .first()
+        )
+        self.assertEqual(refreshed.status, "failed")
+        self.assertIn("Free usage exceeded", refreshed.summary)
+        self.assertIn("Free usage exceeded", event.message)
