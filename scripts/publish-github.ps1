@@ -42,7 +42,7 @@ try {
   }
 
   if (-not $SkipBuild) {
-    & (Join-Path $Root "build-exe.bat")
+    & (Join-Path $Root "scripts\build-exe.ps1")
   }
 
   if (-not (Test-Path $ExePath)) {
