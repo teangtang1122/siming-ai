@@ -38,7 +38,10 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     "hermes_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
     "openclaw_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
     "custom_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "local_llama_cpp": ProviderCapabilities(),
+    # llama.cpp's OpenAI-compatible surface is used as a local text runtime here.
+    # Its tool-call behavior varies by model/template and can return empty tool
+    # streams for small local models, so Siming should orchestrate tools itself.
+    "local_llama_cpp": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
 }
 
 

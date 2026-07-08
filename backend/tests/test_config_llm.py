@@ -1087,6 +1087,7 @@ class TestLLMGatewayModelParsing(unittest.TestCase):
         self.assertFalse(LLMGateway.supports_tool_calling("qwen_code_cli:qwen-code-cli"))
         self.assertFalse(LLMGateway.supports_tool_calling("hermes_cli:hermes-agent"))
         self.assertFalse(LLMGateway.supports_tool_calling("openclaw_cli:openclaw-agent"))
+        self.assertFalse(LLMGateway.supports_tool_calling("local_llama_cpp:qwen3-8b-q4"))
 
 
 class TestLLMGatewayChatCompletion(unittest.TestCase):

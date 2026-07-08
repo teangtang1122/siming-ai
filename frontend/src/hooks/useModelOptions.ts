@@ -47,6 +47,7 @@ const PROVIDER_LABEL_MAP: Record<string, string> = {
   hermes_cli: 'Hermes Agent CLI',
   openclaw_cli: 'OpenClaw CLI',
   custom_cli: '自定义本机 CLI',
+  local_llama_cpp: '司命本地 AI',
 }
 
 const modelValue = (provider: string, model: string) => (
@@ -86,9 +87,10 @@ export function useModelOptions() {
   const modelOptions = useMemo<ModelSelectOption[]>(() => (
     configs.map((config) => {
       const model = normalizeModel(config.provider, config.default_model)
+      const localRuntimeSuffix = config.provider === 'local_llama_cpp' ? '（本地文本）' : ''
       return {
         value: modelValue(config.provider, model),
-        label: `${PROVIDER_LABEL_MAP[config.provider] || config.provider} · ${model}${config.is_global_default ? '（全局默认）' : ''}`,
+        label: `${PROVIDER_LABEL_MAP[config.provider] || config.provider} · ${model}${localRuntimeSuffix}${config.is_global_default ? '（全局默认）' : ''}`,
         provider: config.provider,
         model,
         isGlobalDefault: config.is_global_default,

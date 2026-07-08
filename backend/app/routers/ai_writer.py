@@ -1425,10 +1425,11 @@ async def workspace_assistant_stream(
             except Exception:
                 supports_function_calling = True
             use_function_calling = supports_function_calling
+            allow_plain_text_fallback = not supports_function_calling
             if not supports_function_calling:
                 yield _sse_event({
                     "type": "status",
-                    "message": "当前模型是本机 CLI，已切换为文本/计划编排模式。",
+                    "message": "当前模型不支持稳定工具调用，已切换为文本/计划编排模式。",
                     "tool": "local_cli_mode",
                 })
 
@@ -1521,7 +1522,7 @@ async def workspace_assistant_stream(
                         yield _sse_event({"type": "status", "message": f"流式输出中断，尝试用已接收内容继续：{stream_err}", "tool": "stream_error"})
                     raw_content = "".join(raw_buffer)
                     parsed = _parse_json_object(raw_content)
-                    if parsed is None and not supports_function_calling:
+                    if parsed is None and allow_plain_text_fallback:
                         final_reply = raw_content.strip() or "我在。"
                         all_actions = []
                         final_model = payload.model or ""
@@ -1733,6 +1734,20 @@ async def workspace_assistant_stream(
 
                 # Agent decides it's done — no tool calls, just text
                 if not tool_calls:
+                    if not reply_text.strip():
+                        use_function_calling = False
+                        allow_plain_text_fallback = True
+                        yield _sse_event({
+                            "type": "status",
+                            "message": "模型未返回正文或工具调用，正在降级为文本/JSON模式重试。",
+                            "tool": "empty_tool_stream_fallback",
+                        })
+                        yield _sse_event({
+                            "type": "iteration_end",
+                            "iteration": iteration,
+                            "message": "工具调用流为空，改用文本/JSON模式",
+                        })
+                        continue
                     if iteration <= 2 and reply_text.strip():
                         # Guard: agent stopped too early with a text reply
                         _asst_msg: dict = {"role": "assistant", "content": reply_text}

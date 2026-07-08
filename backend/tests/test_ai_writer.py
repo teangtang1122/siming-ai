@@ -270,10 +270,12 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertNotIn("模型返回的工具格式不合法", response.text)
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
-    def test_workspace_stream_empty_tool_call_response_does_not_say_completed(self, mock_stream, mock_supports):
+    def test_workspace_stream_empty_tool_call_response_falls_back_to_text(self, mock_tool_stream, mock_text_stream, mock_supports):
         project_id = self.create_project("Empty Reply Project")
-        mock_stream.return_value = async_dict_chunks({"type": "done", "finish_reason": "stop", "usage": None})
+        mock_tool_stream.return_value = async_dict_chunks({"type": "done", "finish_reason": "stop", "usage": None})
+        mock_text_stream.return_value = async_chunks("你好，我在。")
 
         response = self.client.post(
             f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
@@ -286,8 +288,30 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("没有收到模型的文字回复", response.text)
+        self.assertIn("empty_tool_stream_fallback", response.text)
+        self.assertIn("你好，我在。", response.text)
         self.assertNotIn("已完成。", response.text)
+
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_local_runtime_uses_text_mode(self, mock_text_stream, mock_tool_stream):
+        project_id = self.create_project("Local Runtime Chat Project")
+        mock_text_stream.return_value = async_chunks("你好，我在。")
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "你好？",
+                "model": "local_llama_cpp:qwen3-8b-q4",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("当前模型不支持稳定工具调用", response.text)
+        self.assertIn("你好，我在。", response.text)
+        mock_tool_stream.assert_not_called()
 
     @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
