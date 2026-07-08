@@ -283,21 +283,6 @@ def _model_options_from_env(provider: str) -> list[dict]:
     return _merge_model_options(options)
 
 
-def _provider_accepts_configured_model(provider: str, model: str) -> bool:
-    if provider != "claude_cli":
-        return True
-    normalized = model.lower()
-    return normalized in {"sonnet", "opus", "haiku"} or normalized.startswith("claude-")
-
-
-def _filter_configured_model_options(provider: str, options: list[dict]) -> list[dict]:
-    return [
-        option
-        for option in options
-        if _provider_accepts_configured_model(provider, str(option.get("id") or ""))
-    ]
-
-
 def _config_files_from_path(path: Path) -> list[Path]:
     try:
         if path.is_file():
@@ -362,12 +347,11 @@ def _model_options_from_config_files(provider: str) -> list[dict]:
 
 
 def _configured_local_cli_model_options(provider: str, cli_args: str | None = None) -> list[dict]:
-    options = _merge_model_options(
+    return _merge_model_options(
         _model_options_from_cli_args(cli_args),
         _model_options_from_env(provider),
         _model_options_from_config_files(provider),
     )
-    return _filter_configured_model_options(provider, options)
 
 
 @dataclass(frozen=True)

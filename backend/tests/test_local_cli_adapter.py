@@ -142,12 +142,12 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         self.assertIn("codex-cli", ids)
         self.assertIn("Codex 配置", models[0]["display_name"])
 
-    def test_non_listing_cli_model_options_include_env_config_and_fallback(self):
+    def test_non_listing_cli_model_options_include_env_non_claude_config_and_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             (home / ".claude").mkdir()
             (home / ".claude" / "settings.json").write_text(
-                json.dumps({"model": "sonnet", "profiles": [{"default_model": "opus"}]}),
+                json.dumps({"model": "mimo-v2.5-pro", "profiles": [{"default_model": "opus"}]}),
                 encoding="utf-8",
             )
             with patch.dict(
@@ -158,9 +158,9 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
                 models = local_cli_model_options("claude_cli", command=None)
 
         ids = [item["id"] for item in models]
-        self.assertEqual(ids[:3], ["haiku", "sonnet", "opus"])
+        self.assertEqual(ids[:3], ["haiku", "mimo-v2.5-pro", "opus"])
         self.assertIn("claude-code", ids)
-        self.assertIn("环境变量 CLAUDE_MODEL", models[0]["display_name"])
+        self.assertIn("CLAUDE_MODEL", models[0]["display_name"])
 
     def test_custom_cli_model_options_include_fixed_cli_arg_model(self):
         models = local_cli_model_options(
