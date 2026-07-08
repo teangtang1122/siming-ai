@@ -4,7 +4,7 @@ from typing import AsyncGenerator, Optional
 from openai import APIConnectionError, APIError, APITimeoutError, AuthenticationError
 
 from .base import BaseAdapter
-from .openai_adapter import create_openai_compatible_client, _extract_tool_calls
+from .openai_adapter import compact_openai_kwargs, create_openai_compatible_client, _extract_tool_calls
 from ..core.exceptions import LLMError
 
 
@@ -55,12 +55,12 @@ class GeminiAdapter(BaseAdapter):
     ) -> dict:
         client = self._get_client()
         model = self._normalize_model(model)
-        kwargs = dict(
+        kwargs = compact_openai_kwargs(dict(
             model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-        )
+        ))
         if extra_body:
             kwargs["extra_body"] = extra_body
         if tools:
@@ -98,13 +98,13 @@ class GeminiAdapter(BaseAdapter):
     ) -> AsyncGenerator[str, None]:
         client = self._get_client()
         model = self._normalize_model(model)
-        kwargs = dict(
+        kwargs = compact_openai_kwargs(dict(
             model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
-        )
+        ))
         if extra_body:
             kwargs["extra_body"] = extra_body
 
@@ -137,13 +137,13 @@ class GeminiAdapter(BaseAdapter):
     ) -> AsyncGenerator[dict, None]:
         client = self._get_client()
         model = self._normalize_model(model)
-        kwargs = dict(
+        kwargs = compact_openai_kwargs(dict(
             model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
-        )
+        ))
         if extra_body:
             kwargs["extra_body"] = extra_body
         if tools:

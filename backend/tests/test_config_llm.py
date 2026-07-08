@@ -48,8 +48,13 @@ from app.database.models import APIConfig
 from app.core.crypto import encrypt, decrypt
 from app.ai.base import BaseAdapter
 from app.ai.gateway import LLMGateway, ADAPTER_MAP
+from app.ai.openai_adapter import OpenAIAdapter
 
 API_PREFIX = "/api/v1"
+
+
+async def _collect_async_chunks(generator):
+    return [chunk async for chunk in generator]
 
 
 # ===========================================================================
@@ -1261,10 +1266,42 @@ class TestLLMGatewayChatCompletion(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["content"], "custom provider reply")
+        called_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertNotIn("max_tokens", called_kwargs)
         mock_openai.assert_called_with(
             api_key="sk-openrouter",
             base_url="https://openrouter.example.test/v1",
         )
+
+    @patch("app.ai.openai_adapter.AsyncOpenAI")
+    def test_openai_stream_with_tools_omits_null_max_tokens(self, mock_openai):
+        """Streaming tool calls should not send max_tokens when the value is unset."""
+        mock_client = MagicMock()
+
+        async def mock_stream_generator():
+            chunk = MagicMock()
+            chunk.choices = [MagicMock(delta=MagicMock(content=None, tool_calls=None), finish_reason="stop")]
+            chunk.usage = None
+            yield chunk
+
+        mock_stream = MagicMock()
+        mock_stream.__aiter__ = lambda s: mock_stream_generator().__aiter__()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
+        mock_openai.return_value = mock_client
+
+        adapter = OpenAIAdapter(api_key="sk-test")
+        chunks = asyncio.run(_collect_async_chunks(adapter.stream_chat_completion_with_tools(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-4o",
+            tools=[{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+            tool_choice="auto",
+        )))
+
+        self.assertEqual(chunks[-1]["type"], "done")
+        called_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertTrue(called_kwargs["stream"])
+        self.assertIn("tools", called_kwargs)
+        self.assertNotIn("max_tokens", called_kwargs)
 
     # ------------------------------------------------------------------
     # TC-42: Chat completion validation — missing messages

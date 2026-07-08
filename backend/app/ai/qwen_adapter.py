@@ -4,7 +4,7 @@ from typing import AsyncGenerator, Optional
 from openai import APIError, APITimeoutError, APIConnectionError, AuthenticationError
 
 from .base import BaseAdapter
-from .openai_adapter import create_openai_compatible_client, _extract_tool_calls
+from .openai_adapter import compact_openai_kwargs, create_openai_compatible_client, _extract_tool_calls
 from ..core.exceptions import LLMError
 
 
@@ -35,16 +35,18 @@ class QwenAdapter(BaseAdapter):
     ) -> dict:
         client = self._get_client()
         try:
-            kwargs = dict(
+            kwargs = compact_openai_kwargs(dict(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-            )
+            ))
             if tools:
                 kwargs["tools"] = tools
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
+            if extra_body:
+                kwargs["extra_body"] = extra_body
 
             response = await client.chat.completions.create(**kwargs)
             choice = response.choices[0]
@@ -80,13 +82,17 @@ class QwenAdapter(BaseAdapter):
         """Text-only streaming."""
         client = self._get_client()
         try:
-            stream = await client.chat.completions.create(
+            kwargs = compact_openai_kwargs(dict(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
-            )
+            ))
+            if extra_body:
+                kwargs["extra_body"] = extra_body
+
+            stream = await client.chat.completions.create(**kwargs)
             async for chunk in stream:
                 delta = chunk.choices[0].delta.content
                 if delta:
@@ -114,17 +120,19 @@ class QwenAdapter(BaseAdapter):
     ) -> AsyncGenerator[dict, None]:
         client = self._get_client()
         try:
-            kwargs = dict(
+            kwargs = compact_openai_kwargs(dict(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
-            )
+            ))
             if tools:
                 kwargs["tools"] = tools
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
+            if extra_body:
+                kwargs["extra_body"] = extra_body
 
             stream = await client.chat.completions.create(**kwargs)
             tool_call_buffers: dict[int, dict] = {}

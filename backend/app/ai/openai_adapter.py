@@ -59,6 +59,11 @@ def _extract_tool_calls(message) -> list[dict] | None:
     return result or None
 
 
+def compact_openai_kwargs(kwargs: dict) -> dict:
+    """Remove unset top-level parameters before sending OpenAI-compatible JSON."""
+    return {key: value for key, value in kwargs.items() if value is not None}
+
+
 class OpenAIAdapter(BaseAdapter):
     """Adapter for OpenAI API (GPT-4, GPT-4o, etc.)."""
 
@@ -81,12 +86,12 @@ class OpenAIAdapter(BaseAdapter):
     ) -> dict:
         client = self._get_client()
         try:
-            kwargs = dict(
+            kwargs = compact_openai_kwargs(dict(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-            )
+            ))
             if tools:
                 kwargs["tools"] = tools
             if tool_choice is not None:
@@ -128,13 +133,13 @@ class OpenAIAdapter(BaseAdapter):
         """Text-only streaming — no tool calls surfaced. Use stream_chat_completion_with_tools for tools."""
         client = self._get_client()
         try:
-            kwargs = dict(
+            kwargs = compact_openai_kwargs(dict(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
-            )
+            ))
             if extra_body:
                 kwargs["extra_body"] = extra_body
             stream = await client.chat.completions.create(**kwargs)
@@ -166,13 +171,13 @@ class OpenAIAdapter(BaseAdapter):
         """Streaming chat completion that yields both text and tool call deltas."""
         client = self._get_client()
         try:
-            kwargs = dict(
+            kwargs = compact_openai_kwargs(dict(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
-            )
+            ))
             if tools:
                 kwargs["tools"] = tools
             if tool_choice is not None:
