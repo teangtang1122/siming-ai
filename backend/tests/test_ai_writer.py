@@ -11,6 +11,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
 from fastapi.testclient import TestClient
 
+from app.core.exceptions import LLMError
 from app.database.models import (
     Chapter,
     ChapterCharacter,
@@ -40,6 +41,12 @@ API_PREFIX = "/api/v1"
 
 async def async_chunks(text: str):
     yield text
+
+
+async def async_error_chunks(exc: Exception):
+    if False:
+        yield ""
+    raise exc
 
 
 async def async_dict_chunks(*chunks: dict):
@@ -269,6 +276,28 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertNotIn("json_repair", response.text)
         self.assertNotIn("模型返回的工具格式不合法", response.text)
 
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    def test_workspace_stream_cli_quota_error_does_not_fall_back_to_i_am_here(self, mock_stream, mock_supports):
+        project_id = self.create_project("CLI Quota Project")
+        mock_stream.return_value = async_error_chunks(LLMError("本机 CLI 提供方额度/限额已耗尽或触发速率限制：Free usage exceeded"))
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "你好？",
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("stream_error", response.text)
+        self.assertIn("额度/限额", response.text)
+        self.assertIn("模型调用中断，未执行写入", response.text)
+        self.assertNotIn("我在。", response.text)
+
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
@@ -331,6 +360,73 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertIn("司命本地 AI", response.text)
         self.assertIn("plan_preflight", response.text)
         self.assertNotIn("plan_created", response.text)
+
+    @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
+    def test_workspace_outline_plan_infers_missing_chapter_and_creates_outline(self, mock_chat):
+        project_id = self.create_project("Create Missing Outline Project")
+        self.create_outline_node(project_id, "第150章 死线蔓延")
+        outline_payload = {
+            "nodes": [{
+                "title": "第151章 抢网",
+                "node_type": "chapter",
+                "summary": "主角团在死线继续蔓延前抢占网络节点，准备切断病毒的下一轮扩散。",
+                "character_names": [],
+                "status": "pending",
+            }],
+            "design_notes": "承接第150章危机，先补大纲，不生成正文。",
+        }
+        mock_chat.return_value = {
+            "content": "",
+            "tool_calls": [{"function": {"arguments": json.dumps(outline_payload, ensure_ascii=False)}}],
+        }
+
+        first = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "帮我写第151章",
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "auto_apply": True,
+            },
+        )
+        self.assertIn("未找到第 151 章的大纲节点", first.text)
+        conversation_id = None
+        for line in first.text.splitlines():
+            if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                continue
+            event = json.loads(line[6:])
+            if event.get("type") == "conversation":
+                conversation_id = event["conversation"]["id"]
+                break
+        self.assertIsNotNone(conversation_id)
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "那就先帮我创建大纲",
+                "conversation_id": conversation_id,
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("create_outline", response.text)
+        self.assertIn("outline_writer", response.text)
+        self.assertIn("create_outline_nodes", response.text)
+        self.assertIn("第151章 抢网", response.text)
+
+        db = SessionLocal()
+        try:
+            node = db.query(OutlineNode).filter(
+                OutlineNode.project_id == project_id,
+                OutlineNode.title == "第151章 抢网",
+            ).one_or_none()
+            self.assertIsNotNone(node)
+            self.assertIn("抢占网络节点", node.summary)
+        finally:
+            db.close()
 
     def test_workspace_chapter_plan_local_runtime_reports_preflight(self):
         project_id = self.create_project("Local Runtime Chapter Project")

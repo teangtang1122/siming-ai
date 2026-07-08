@@ -242,6 +242,7 @@ def _register_all() -> None:
         create_chapter,
         create_character,
         create_outline_node,
+        create_outline_nodes,
         create_project,
         create_relationship,
         create_scheduled_task,
@@ -1346,6 +1347,24 @@ def _register_all() -> None:
     ))
 
     _r(ToolDef(
+        name="create_outline_nodes",
+        description="批量创建新的大纲节点。通常用于保存 outline_writer 生成的一组节点。",
+        input_schema={
+            "nodes": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "大纲节点列表，每个节点可包含 title/node_type/summary/status/character_names/parent_id",
+            },
+            "parent_id": {"type": "string", "description": "可选，批量节点的默认父节点ID"},
+        },
+        required=["nodes"],
+        tool_type="write",
+        idempotent=True,
+        estimated_cost="free",
+        handler=create_outline_nodes,
+    ))
+
+    _r(ToolDef(
         name="update_outline_node",
         description="更新大纲节点。用ID或标题定位。",
         input_schema={
@@ -2416,7 +2435,7 @@ def _classify_all() -> None:
     _WRITE_PROJECT_DATA = {
         "create_chapter", "update_chapter", "delete_chapter",
         "create_character", "update_character", "delete_character",
-        "create_outline_node", "update_outline_node", "delete_outline_node",
+        "create_outline_node", "create_outline_nodes", "update_outline_node", "delete_outline_node",
         "create_worldbuilding_entry", "update_worldbuilding_entry", "delete_worldbuilding_entry",
         "create_relationship", "update_relationship", "delete_relationship",
         "remember", "forget",

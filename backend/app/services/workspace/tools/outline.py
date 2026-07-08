@@ -37,6 +37,22 @@ async def create_outline_node(
     summary = str(args.get("summary") or "").strip()
     if not title:
         return {"tool": "create_outline_node", "status": "skipped", "detail": "标题为空"}
+    existing = (
+        db.query(OutlineNode)
+        .filter(
+            OutlineNode.project_id == project_id,
+            OutlineNode.parent_id == parent_id,
+            OutlineNode.title == title[:200],
+        )
+        .first()
+    )
+    if existing:
+        return {
+            "tool": "create_outline_node",
+            "status": "ok",
+            "detail": f"大纲已存在：{existing.title}",
+            "data": outline_node_payload(existing),
+        }
 
     from ..run_recovery import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_outline_node", project_id, args)
@@ -73,6 +89,62 @@ async def create_outline_node(
         "status": "ok",
         "detail": f"已创建大纲：{node.title}{parent_warning}",
         "data": outline_node_payload(node),
+    }
+
+
+async def create_outline_nodes(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    nodes = args.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return {"tool": "create_outline_nodes", "status": "skipped", "detail": "没有可创建的大纲节点", "data": {"nodes": []}}
+
+    parent_id = str(args.get("parent_id") or "").strip()
+    created: list[dict] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+    for index, item in enumerate(nodes[:8], start=1):
+        if not isinstance(item, dict):
+            skipped.append(f"第 {index} 个节点格式无效")
+            continue
+        node_args = dict(item)
+        if parent_id and not node_args.get("parent_id"):
+            node_args["parent_id"] = parent_id
+        result = await create_outline_node(db, project_id, node_args)
+        status = str(result.get("status") or "")
+        if status == "ok":
+            data = result.get("data")
+            if isinstance(data, dict):
+                created.append(data)
+        elif status == "error":
+            errors.append(str(result.get("detail") or f"第 {index} 个节点创建失败"))
+        else:
+            skipped.append(str(result.get("detail") or f"第 {index} 个节点已跳过"))
+
+    if errors:
+        return {
+            "tool": "create_outline_nodes",
+            "status": "error",
+            "detail": "；".join(errors[:3]),
+            "data": {"nodes": created, "skipped": skipped},
+        }
+    if not created:
+        return {
+            "tool": "create_outline_nodes",
+            "status": "skipped",
+            "detail": "未创建新的大纲节点" + (f"：{'；'.join(skipped[:3])}" if skipped else ""),
+            "data": {"nodes": [], "skipped": skipped},
+        }
+    detail = f"已创建 {len(created)} 个大纲节点"
+    if skipped:
+        detail += f"，跳过 {len(skipped)} 个"
+    return {
+        "tool": "create_outline_nodes",
+        "status": "ok",
+        "detail": detail,
+        "data": {"nodes": created, "skipped": skipped},
     }
 
 

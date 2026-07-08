@@ -862,7 +862,7 @@ BUILTIN_SKILLS: list[dict] = [
             "4. 每个大纲节点要包含：标题、摘要、涉及角色。\n"
             "5. 使用 outline_writer 生成大纲节点，确保节奏合理。"
         ),
-        "recommended_tools": ["search_outline", "search_outline_tree", "search_chapters", "outline_writer", "create_outline_node"],
+        "recommended_tools": ["search_outline", "search_outline_tree", "search_chapters", "outline_writer", "create_outline_nodes", "create_outline_node"],
         "scope": "outline",
         "priority": 65,
     },

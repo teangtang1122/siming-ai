@@ -864,6 +864,16 @@ def _chapter_action_needs_outline_confirmation(
             title = str(args.get("title") or "").strip()
             if title:
                 pending_outline_titles.add(title)
+        elif isinstance(action, dict) and action.get("tool") == "create_outline_nodes":
+            args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+            nodes = args.get("nodes")
+            if isinstance(nodes, list):
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    title = str(node.get("title") or "").strip()
+                    if title:
+                        pending_outline_titles.add(title)
     if pending_outline_titles and _user_requests_chapter_creation(user_message) and not confirmed:
         return True
     for action in actions:
@@ -1221,6 +1231,7 @@ async def workspace_assistant_stream(
             scope=payload.scope,
             model=payload.model,
             assistant_mode=payload.assistant_mode,
+            outline_batch_count=payload.outline_batch_count,
         )
         if plan_gen is not None:
             async for event in plan_gen:
@@ -1505,6 +1516,7 @@ async def workspace_assistant_stream(
                 if not use_function_calling:
                     # --- JSON fallback path ---
                     raw_buffer: list[str] = []
+                    stream_error: Exception | None = None
                     stream_gen = LLMGateway.stream_chat_completion(
                         messages=messages,
                         model=payload.model,
@@ -1519,11 +1531,25 @@ async def workspace_assistant_stream(
                             raw_buffer.append(chunk)
                             yield _sse_event({"type": "thinking_delta", "delta": chunk})
                     except Exception as stream_err:
+                        stream_error = stream_err
                         yield _sse_event({"type": "status", "message": f"流式输出中断，尝试用已接收内容继续：{stream_err}", "tool": "stream_error"})
                     raw_content = "".join(raw_buffer)
+                    if stream_error is not None:
+                        detail = str(stream_error)
+                        tool_logs.append({"tool": "stream_error", "status": "error", "detail": detail})
+                        final_reply = f"模型调用中断，未执行写入：{detail}"
+                        all_actions = []
+                        final_model = payload.model or ""
+                        final_usage = None
+                        yield _sse_event({
+                            "type": "iteration_end",
+                            "iteration": iteration,
+                            "message": "模型输出中断，本轮已停止执行",
+                        })
+                        break
                     parsed = _parse_json_object(raw_content)
                     if parsed is None and allow_plain_text_fallback:
-                        final_reply = raw_content.strip() or "我在。"
+                        final_reply = raw_content.strip()
                         all_actions = []
                         final_model = payload.model or ""
                         final_usage = None
@@ -1911,7 +1937,7 @@ async def workspace_assistant_stream(
                         if outline_title and outline_title in created_outline_ids_by_title:
                             args["outline_node_id"] = created_outline_ids_by_title[outline_title]
                             action["arguments"] = args
-                    idem_key = generate_idempotency_key(db, tool, project_id, args) if tool in ("create_chapter", "create_character", "create_outline_node", "create_worldbuilding_entry", "create_relationship") else None
+                    idem_key = generate_idempotency_key(db, tool, project_id, args) if tool in ("create_chapter", "create_character", "create_outline_node", "create_outline_nodes", "create_worldbuilding_entry", "create_relationship") else None
                     step = start_run_step(
                         db,
                         assistant_run,
@@ -1943,6 +1969,16 @@ async def workspace_assistant_stream(
                         node_id = str(data.get("id") or "").strip()
                         if title and node_id:
                             created_outline_ids_by_title[title] = node_id
+                    elif tool == "create_outline_nodes" and action_result.get("status") == "ok":
+                        data = action_result.get("data") if isinstance(action_result.get("data"), dict) else {}
+                        nodes = data.get("nodes") if isinstance(data.get("nodes"), list) else []
+                        for node in nodes:
+                            if not isinstance(node, dict):
+                                continue
+                            title = str(node.get("title") or "").strip()
+                            node_id = str(node.get("id") or "").strip()
+                            if title and node_id:
+                                created_outline_ids_by_title[title] = node_id
                     applied_actions.append(action_result)
                     tool_logs.append({
                         "tool": action_result.get("tool") or tool,
@@ -1958,7 +1994,7 @@ async def workspace_assistant_stream(
                     tool = str(ar.get("tool") or "")
                     if ar.get("status") != "ok":
                         continue
-                    if tool in ("create_outline_node", "update_outline_node", "delete_outline_node"):
+                    if tool in ("create_outline_node", "create_outline_nodes", "update_outline_node", "delete_outline_node"):
                         refresh_tools["search_outline_tree"] = "{}"
                     elif tool in ("create_character", "update_character", "delete_character"):
                         refresh_tools["list_characters"] = "{}"
@@ -2043,7 +2079,13 @@ async def workspace_assistant_stream(
             assistant_msg_db.updated_at = datetime.utcnow()
             conversation.updated_at = datetime.utcnow()
             db.commit()
-            mark_assistant_run(db, assistant_run, status="completed", phase="completed", final_reply=final_reply_for_save)
+            mark_assistant_run(
+                db,
+                assistant_run,
+                status="error" if failed_logs else "completed",
+                phase="error" if failed_logs else "completed",
+                final_reply=final_reply_for_save,
+            )
 
             # --- Auto-extract memories from conversation (fire-and-forget) ---
             try:

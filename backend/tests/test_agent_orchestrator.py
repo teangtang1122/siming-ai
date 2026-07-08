@@ -26,6 +26,7 @@ from app.services.agent.orchestrator import PlanOrchestrator, _serialize_step
 from app.services.agent.plan_graph import PlanGraph, StepDef
 from app.services.agent.planner import (
     detect_intent,
+    plan_create_outline,
     plan_cataloging_init,
     plan_fast_chapter,
     plan_quality_chapter,
@@ -204,6 +205,14 @@ class PlannerTestCase(unittest.TestCase):
         self.assertEqual(graph.steps["start_cataloging_job"].depends_on, ["list_chapters"])
         self.assertEqual(graph.steps["start_cataloging_job"].args["chapter_ids"], ["c1", "c2"])
 
+    def test_create_outline_plan_generation(self):
+        graph = plan_create_outline(requirements="补第151章", batch_count=2)
+        self.assertEqual(graph.name, "create_outline")
+        self.assertEqual(set(graph.steps.keys()), {"outline_writer", "create_outline_nodes"})
+        self.assertEqual(graph.steps["create_outline_nodes"].depends_on, ["outline_writer"])
+        self.assertEqual(graph.steps["create_outline_nodes"].args["nodes"], "{outline_writer.data.nodes}")
+        self.assertEqual(graph.steps["outline_writer"].args["batch_count"], 2)
+
     def test_detect_intent_fast_chapter(self):
         result = detect_intent("写第151章")
         self.assertIsNotNone(result)
@@ -220,6 +229,11 @@ class PlannerTestCase(unittest.TestCase):
         result = detect_intent("给这个项目建档")
         self.assertIsNotNone(result)
         self.assertEqual(result["intent_type"], "project_init")
+
+    def test_detect_intent_create_outline(self):
+        result = detect_intent("那就先帮我创建大纲")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["intent_type"], "outline")
 
     def test_assistant_mode_quality_overrides_chapter_plan_mode(self):
         intent = {

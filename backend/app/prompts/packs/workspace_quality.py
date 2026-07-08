@@ -82,7 +82,7 @@ def _build_system(
         "  - 流程：character_writer → create_character\n\n",
         "【大纲写作工具 — outline_writer】\n",
         "  - outline_writer: 生成有因果推进和节奏变化的大纲节点\n",
-        "  - 流程：outline_writer → create_outline_node\n\n",
+        "  - 流程：outline_writer → create_outline_nodes；只需手工补单个节点时可用 create_outline_node\n\n",
         "【世界观写作工具 — worldbuilding_writer】\n",
         "  - worldbuilding_writer: 创造有深度、逻辑自洽的设定\n",
         "  - 流程：worldbuilding_writer → create_worldbuilding_entry\n\n",
@@ -192,10 +192,10 @@ def _build_scoped_system(
             "- 正文必须先用 chapter_writer 生成；保存章节时优先传 draft_id/content_ref，避免复制长正文。\n",
             "- 如果有 evaluate_chapter，保存前先评估；低于60分时依据改进建议重写，最多循环3次。\n\n",
         ])
-    if _has_any(tool_names, {"outline_writer", "create_outline_node", "update_outline_node"}):
+    if _has_any(tool_names, {"outline_writer", "create_outline_node", "create_outline_nodes", "update_outline_node"}):
         lines.extend([
             "【大纲规划】\n",
-            "- 先查已有大纲树和相关章节，再用 outline_writer 生成有因果推进的大纲节点，最后 create/update_outline_node 写入。\n\n",
+            "- 先查已有大纲树和相关章节，再用 outline_writer 生成有因果推进的大纲节点，最后用 create_outline_nodes 批量写入；手工补单个节点时才用 create_outline_node。\n\n",
         ])
     if _has_any(tool_names, {"character_writer", "create_character", "update_character"}):
         lines.extend([

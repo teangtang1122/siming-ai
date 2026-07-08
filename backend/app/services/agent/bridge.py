@@ -101,6 +101,83 @@ def _latest_outline_label(db: Session, project_id: str) -> str:
     return f"当前最新大纲是「{node.title}」"
 
 
+def _latest_outline_chapter_number(db: Session, project_id: str) -> int | None:
+    nodes = (
+        db.query(OutlineNode)
+        .filter(OutlineNode.project_id == project_id)
+        .all()
+    )
+    numbers: list[int] = []
+    for node in nodes:
+        match = re.search(r"第\s*(\d+)\s*章", node.title or "")
+        if match:
+            numbers.append(int(match.group(1)))
+    return max(numbers) if numbers else None
+
+
+def _infer_outline_chapter_number(
+    db: Session,
+    project_id: str,
+    conversation_id: str | None,
+) -> int | None:
+    if conversation_id:
+        messages = (
+            db.query(AssistantMessage)
+            .join(AssistantConversation, AssistantConversation.id == AssistantMessage.conversation_id)
+            .filter(
+                AssistantConversation.project_id == project_id,
+                AssistantMessage.conversation_id == conversation_id,
+            )
+            .order_by(AssistantMessage.created_at.desc(), AssistantMessage.id.desc())
+            .limit(8)
+            .all()
+        )
+        for message in messages:
+            text = message.content or ""
+            match = re.search(r"未找到第\s*(\d+)\s*章的大纲节点", text)
+            if match:
+                return int(match.group(1))
+            match = re.search(r"请先创建第\s*(\d+)\s*章大纲", text)
+            if match:
+                return int(match.group(1))
+    latest = _latest_outline_chapter_number(db, project_id)
+    return latest + 1 if latest else None
+
+
+def _enrich_outline_intent(
+    db: Session,
+    project_id: str,
+    intent: dict[str, Any],
+    *,
+    conversation_id: str | None,
+    outline_batch_count: int,
+) -> dict[str, Any]:
+    if intent.get("intent_type") != "outline":
+        return intent
+    enriched = dict(intent)
+    chapter_number = enriched.get("chapter_number") or _infer_outline_chapter_number(db, project_id, conversation_id)
+    if chapter_number:
+        enriched["chapter_number"] = chapter_number
+    batch_count = enriched.get("batch_count")
+    if not batch_count:
+        message = str(enriched.get("requirements") or "")
+        wants_batch = any(key in message for key in ("后续", "连续", "接下来", "往后", "一批"))
+        batch_count = outline_batch_count if wants_batch else 1
+    enriched["batch_count"] = max(1, min(8, int(batch_count or 1)))
+
+    requirements = str(enriched.get("requirements") or "").strip()
+    target = ""
+    if chapter_number and enriched["batch_count"] == 1:
+        target = f"目标：创建第 {chapter_number} 章大纲，承接当前最新大纲，不要生成正文。"
+    elif chapter_number:
+        end_number = chapter_number + enriched["batch_count"] - 1
+        target = f"目标：创建第 {chapter_number} 章至第 {end_number} 章的大纲，承接当前最新大纲，不要生成正文。"
+    if target and target not in requirements:
+        requirements = "\n".join(part for part in (requirements, target) if part)
+    enriched["requirements"] = requirements
+    return enriched
+
+
 def _model_provider(model: str | None) -> str:
     try:
         from ...ai.gateway import LLMGateway
@@ -687,6 +764,7 @@ async def detect_and_stream_plan(
     scope: str = "project",
     model: str | None = None,
     assistant_mode: str = "fast",
+    outline_batch_count: int = 1,
 ) -> AsyncGenerator[str, None] | None:
     """Detect intent and stream plan execution via SSE.
 
@@ -697,6 +775,13 @@ async def detect_and_stream_plan(
     if intent is None:
         return None
     intent = _apply_assistant_mode_to_intent(intent, assistant_mode)
+    intent = _enrich_outline_intent(
+        db,
+        project_id,
+        intent,
+        conversation_id=conversation_id,
+        outline_batch_count=outline_batch_count,
+    )
 
     # For chapter plans, we need an outline_node_id
     outline_node_id = ""

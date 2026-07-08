@@ -120,6 +120,16 @@ def _chapter_action_needs_outline_confirmation(
             title = str(args.get("title") or "").strip()
             if title:
                 pending_outline_titles.add(title)
+        elif isinstance(action, dict) and action.get("tool") == "create_outline_nodes":
+            args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+            nodes = args.get("nodes")
+            if isinstance(nodes, list):
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    title = str(node.get("title") or "").strip()
+                    if title:
+                        pending_outline_titles.add(title)
     if pending_outline_titles and _user_requests_chapter_creation(user_message) and not confirmed:
         return True
     for action in actions:

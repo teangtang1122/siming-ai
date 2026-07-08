@@ -14,6 +14,7 @@ from .plan_graph import PlanGraph, StepDef
 _INTENT_CHAPTER = "chapter"
 _INTENT_CHARACTER = "character"
 _INTENT_WORLDBUILDING = "worldbuilding"
+_INTENT_OUTLINE = "outline"
 _INTENT_PROJECT_INIT = "project_init"
 _INTENT_SCHEDULED_TASK = "scheduled_task"
 _INTENT_SKILL = "skill"
@@ -341,6 +342,39 @@ def plan_create_worldbuilding(
     return PlanGraph(name="create_worldbuilding", steps=steps)
 
 
+def plan_create_outline(
+    *,
+    requirements: str = "",
+    batch_count: int = 1,
+    parent_id: str = "",
+) -> PlanGraph:
+    """Outline creation path: generate outline nodes -> save them."""
+    writer_args: dict[str, Any] = {
+        "requirements": requirements,
+        "batch_count": max(1, min(8, int(batch_count or 1))),
+    }
+    save_args: dict[str, Any] = {"nodes": "{outline_writer.data.nodes}"}
+    if parent_id:
+        writer_args["parent_id"] = parent_id
+        save_args["parent_id"] = parent_id
+    steps: dict[str, StepDef] = {
+        "outline_writer": StepDef(
+            tool="outline_writer",
+            args=writer_args,
+            depends_on=[],
+            retry_policy="auto",
+            label="生成大纲节点",
+        ),
+        "create_outline_nodes": StepDef(
+            tool="create_outline_nodes",
+            args=save_args,
+            depends_on=["outline_writer"],
+            label="保存大纲节点",
+        ),
+    }
+    return PlanGraph(name="create_outline", steps=steps)
+
+
 def plan_create_scheduled_task(
     *,
     name: str,
@@ -547,6 +581,10 @@ _QUALITY_KEYWORDS = {"精写", "高质量", "仔细写", "认真写", "质量", 
 _CHAR_KEYWORDS = ("创建角色", "新建角色", "新角色", "添加角色", "写角色", "生成角色", "设计角色")
 # Worldbuilding keywords
 _WB_KEYWORDS = ("创建世界观", "新建世界观", "世界观设定", "创建设定", "添加设定", "写世界观", "生成世界观", "世界观条目")
+_OUTLINE_KEYWORDS = (
+    "创建大纲", "新建大纲", "补大纲", "生成大纲", "规划大纲", "写大纲", "添加大纲",
+    "创建下一章", "规划下一章", "下一章大纲", "后续章节", "后续大纲",
+)
 # Project init keywords (including cataloging/建档)
 _INIT_KEYWORDS = ("初始化项目", "项目初始化", "自动规划", "帮我规划", "全面规划", "建档", "给项目建档", "给这个项目建档", "整理资料", "提取事实")
 _SCHEDULE_KEYWORDS = ("定时", "自动任务", "计划任务", "每天", "每小时", "每周", "提醒我", "定期", "监控", "自动搜索")
@@ -583,6 +621,17 @@ def _extract_worldbuilding_topic(text: str) -> str:
             if 1 <= len(topic) <= 30:
                 return topic
     return ""
+
+
+def _extract_outline_batch_count(text: str) -> int | None:
+    for pattern in [
+        r"(?:接下来|连续|后续|往后)?\s*(\d{1,2})\s*(?:章|个)(?:大纲|章节)?",
+        r"(?:大纲|章节).{0,6}(\d{1,2})\s*(?:章|个)",
+    ]:
+        m = re.search(pattern, text)
+        if m:
+            return max(1, min(8, int(m.group(1))))
+    return None
 
 
 def _extract_project_title(text: str) -> str:
@@ -682,6 +731,14 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
 
     # 1. Project init
     if any(kw in text for kw in _INIT_KEYWORDS):
+        if "大纲" in text and not any(kw in text for kw in ("建档", "初始化", "全面规划", "整理资料", "提取事实")):
+            chapter_match = _CHAPTER_RE.search(text)
+            return {
+                "intent_type": _INTENT_OUTLINE,
+                "requirements": text,
+                "chapter_number": int(chapter_match.group(1)) if chapter_match else None,
+                "batch_count": _extract_outline_batch_count(text),
+            }
         return {"intent_type": _INTENT_PROJECT_INIT, "requirements": text}
 
     # 1.1 Create novel (new novel from scratch)
@@ -739,7 +796,17 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
             "requirements": text,
         }
 
-    # 4. Chapter writing
+    # 4. Outline planning
+    if any(kw in text for kw in _OUTLINE_KEYWORDS) or ("大纲" in text and any(kw in text for kw in ("创建", "新建", "补", "生成", "规划", "添加", "先"))):
+        chapter_match = _CHAPTER_RE.search(text)
+        return {
+            "intent_type": _INTENT_OUTLINE,
+            "requirements": text,
+            "chapter_number": int(chapter_match.group(1)) if chapter_match else None,
+            "batch_count": _extract_outline_batch_count(text),
+        }
+
+    # 5. Chapter writing
     chapter_match = _CHAPTER_RE.search(text)
     if chapter_match:
         chapter_number = int(chapter_match.group(1))
@@ -794,6 +861,13 @@ def build_plan_from_intent(intent: dict[str, Any], *, outline_node_id: str = "")
         return plan_create_worldbuilding(
             topic=intent.get("topic", ""),
             requirements=intent.get("requirements", ""),
+        )
+
+    if intent_type == _INTENT_OUTLINE:
+        return plan_create_outline(
+            requirements=intent.get("requirements", ""),
+            batch_count=int(intent.get("batch_count") or 1),
+            parent_id=intent.get("parent_id", ""),
         )
 
     if intent_type == _INTENT_SCHEDULED_TASK:
