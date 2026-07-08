@@ -41,6 +41,7 @@ import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
 const { TextArea } = Input
+const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
 
 function WorkspaceAssistantChat({
   projectId,
@@ -863,19 +864,20 @@ function WorkspaceAssistantChat({
           })
         } else if (event.type === 'complete') {
           const payload = event.data as WorkspaceAssistantResponse
+          const reply = payload.reply?.trim() || EMPTY_ASSISTANT_REPLY
           completed = true
           if (payload.run) setCurrentRun(payload.run)
           upsertConversation(payload.conversation)
           setMessages((prev) => {
             const next = [...prev]
             const index = [...next].reverse().findIndex((item) => item.role === 'assistant')
-            if (index < 0) return [...prev, { role: 'assistant', content: payload.reply || '已完成。', data: payload }]
+            if (index < 0) return [...prev, { role: 'assistant', content: reply, data: payload }]
             const realIndex = next.length - 1 - index
             next[realIndex] = {
               id: payload.message?.id || next[realIndex].id,
               conversation_id: payload.message?.conversation_id || next[realIndex].conversation_id,
               role: 'assistant',
-              content: payload.reply || '已完成。',
+              content: reply,
               status: payload.message?.status || 'completed',
               created_at: payload.message?.created_at || next[realIndex].created_at,
               updated_at: payload.message?.updated_at || next[realIndex].updated_at,

@@ -44,6 +44,7 @@ import { useModelOptions } from '../hooks/useModelOptions'
 import './GuiAssistantChat.css'
 
 const { Title, Paragraph, Text } = Typography
+const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
 
 interface ApiResponse<T> {
   code: number
@@ -547,7 +548,7 @@ function GuiAssistantChat() {
       return
     }
     if (event.type === 'complete') {
-      const reply = event.data?.reply || '已完成。'
+      const reply = event.data?.reply?.trim() || EMPTY_ASSISTANT_REPLY
       setMessages((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]

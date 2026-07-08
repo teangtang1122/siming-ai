@@ -536,6 +536,106 @@ def _assistant_history_text(history: list[dict], limit: int = 8) -> str:
     return "\n\n".join(lines) or "暂无对话历史。"
 
 
+def _compact_workspace_detail(value: object, limit: int = 180) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _workspace_result_summary(result: dict) -> str:
+    tool = str(result.get("tool") or "tool")
+    status = str(result.get("status") or "ok")
+    detail = _compact_workspace_detail(result.get("detail") or "")
+    prefix = f"{tool}（{status}）"
+    return f"{prefix}：{detail}" if detail else prefix
+
+
+def _workspace_action_summary(action: dict) -> str:
+    tool = str(action.get("tool") or "tool")
+    args = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+    label = str(
+        args.get("title")
+        or args.get("name")
+        or args.get("chapter_title")
+        or args.get("field_name")
+        or args.get("id")
+        or ""
+    ).strip()
+    return f"{tool}：{_compact_workspace_detail(label, 80)}" if label else tool
+
+
+def _build_workspace_final_reply(
+    final_reply: str,
+    *,
+    all_actions: list[dict],
+    applied_actions: list[dict],
+    tool_logs: list[dict],
+    searched_context: list[dict],
+    needs_confirmation: bool = False,
+) -> str:
+    reply = str(final_reply or "").strip()
+    if reply:
+        return reply
+
+    if needs_confirmation:
+        return "本轮需要你确认后才能继续，但模型没有给出确认说明。请重试一次，或换用支持工具调用的模型。"
+
+    if applied_actions:
+        lines = [
+            f"本轮已执行 {len(applied_actions)} 个工具操作，但模型没有给出最终文字回复。",
+            "",
+            "执行结果：",
+        ]
+        lines.extend(f"- {_workspace_result_summary(action)}" for action in applied_actions[:5])
+        if len(applied_actions) > 5:
+            lines.append(f"- 另有 {len(applied_actions) - 5} 个结果已省略")
+        return "\n".join(lines)
+
+    if all_actions:
+        lines = [
+            f"模型规划了 {len(all_actions)} 个写入操作，但没有给出最终文字回复。",
+            "",
+            "计划操作：",
+        ]
+        lines.extend(f"- {_workspace_action_summary(action)}" for action in all_actions[:5])
+        if len(all_actions) > 5:
+            lines.append(f"- 另有 {len(all_actions) - 5} 个操作已省略")
+        return "\n".join(lines)
+
+    if tool_logs:
+        lines = [
+            "本轮已调用工具，但模型没有给出最终文字回复。",
+            "",
+            "工具结果：",
+        ]
+        lines.extend(f"- {_workspace_result_summary(log)}" for log in tool_logs[:5])
+        if len(tool_logs) > 5:
+            lines.append(f"- 另有 {len(tool_logs) - 5} 条工具日志已省略")
+        return "\n".join(lines)
+
+    if searched_context:
+        lines = [
+            "本轮已读取相关资料，但模型没有给出最终文字回复。",
+            "",
+            "已读取：",
+        ]
+        for item in searched_context[:5]:
+            tool = str(item.get("tool") or "search")
+            detail = _compact_workspace_detail(item.get("detail") or "")
+            data = item.get("data")
+            count = len(data) if isinstance(data, list) else 0
+            suffix = detail or (f"{count} 条结果" if count else "有结果")
+            lines.append(f"- {tool}：{suffix}")
+        if len(searched_context) > 5:
+            lines.append(f"- 另有 {len(searched_context) - 5} 条检索上下文已省略")
+        lines.append("")
+        lines.append("请重试一次；如果连续出现，建议在系统设置里测试当前模型/CLI 的流式输出和工具调用能力。")
+        return "\n".join(lines)
+
+    return "我没有收到模型的文字回复，也没有执行任何工具。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。"
+
+
 def _assistant_conversation_to_dict(conversation: AssistantConversation, message_count: Optional[int] = None) -> dict:
     return {
         "id": conversation.id,
@@ -1894,7 +1994,14 @@ async def workspace_assistant_stream(
                 log for log in tool_logs
                 if str(log.get("status") or "").lower() == "error"
             ]
-            final_reply_for_save = final_reply or "已完成。"
+            final_reply_for_save = _build_workspace_final_reply(
+                final_reply,
+                all_actions=all_actions,
+                applied_actions=applied_actions,
+                tool_logs=tool_logs,
+                searched_context=searched_context,
+                needs_confirmation=needs_conf,
+            )
             if failed_logs:
                 failed_text = "；".join(
                     f"{log.get('tool')}: {log.get('detail') or '执行失败'}"
@@ -2010,7 +2117,13 @@ async def workspace_assistant_stream(
                     applied_actions.append(action_result)
                 db.commit()
             if assistant_msg_db:
-                reply = final_reply or parsed_fallback.get("reply", "") or "已分析完毕。"
+                reply = _build_workspace_final_reply(
+                    final_reply or str(parsed_fallback.get("reply") or ""),
+                    all_actions=all_actions,
+                    applied_actions=applied_actions,
+                    tool_logs=tool_logs,
+                    searched_context=searched_context,
+                )
                 assistant_msg_db.content = reply
                 assistant_msg_db.payload_json = json.dumps({
                     "reply": reply,
@@ -2032,7 +2145,13 @@ async def workspace_assistant_stream(
                 assistant_run,
                 status="completed",
                 phase="client_disconnected",
-                final_reply=final_reply or parsed_fallback.get("reply", "") or "已分析完毕。",
+                final_reply=_build_workspace_final_reply(
+                    final_reply or str(parsed_fallback.get("reply") or ""),
+                    all_actions=all_actions,
+                    applied_actions=applied_actions,
+                    tool_logs=tool_logs,
+                    searched_context=searched_context,
+                ),
             )
         except LLMError as exc:
             if assistant_msg_db:

@@ -42,6 +42,11 @@ async def async_chunks(text: str):
     yield text
 
 
+async def async_dict_chunks(*chunks: dict):
+    for chunk in chunks:
+        yield chunk
+
+
 class AIWriterIsolationTestCase(unittest.TestCase):
     """AI writer endpoints must not accept outline nodes from another project."""
 
@@ -263,6 +268,26 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertIn("local_cli_mode", response.text)
         self.assertNotIn("json_repair", response.text)
         self.assertNotIn("模型返回的工具格式不合法", response.text)
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    def test_workspace_stream_empty_tool_call_response_does_not_say_completed(self, mock_stream, mock_supports):
+        project_id = self.create_project("Empty Reply Project")
+        mock_stream.return_value = async_dict_chunks({"type": "done", "finish_reason": "stop", "usage": None})
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "你好？",
+                "model": "openai:gpt-test",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("没有收到模型的文字回复", response.text)
+        self.assertNotIn("已完成。", response.text)
 
     @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
