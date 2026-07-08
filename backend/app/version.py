@@ -1,4 +1,4 @@
 """Application version and update defaults."""
 
-APP_VERSION = "2.6.13"
+APP_VERSION = "2.6.14"
 DEFAULT_UPDATE_REPO = "teangtang1122/siming-ai"

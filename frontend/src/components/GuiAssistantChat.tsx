@@ -41,6 +41,12 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
+import {
+  GLOBAL_MODEL_SELECT_VALUE,
+  globalModelOptionLabel,
+  readModelOverride,
+  writeModelOverride,
+} from '../utils/assistantModelStorage'
 import './GuiAssistantChat.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -167,8 +173,7 @@ const PROJECT_STORAGE_KEY = 'siming.gui.assistant.projectId'
 const LEGACY_PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
 const SIDEBAR_STORAGE_KEY = 'siming.gui.assistant.sidebarCollapsed'
 const LEGACY_SIDEBAR_STORAGE_KEY = 'moshu.gui.assistant.sidebarCollapsed'
-const MODEL_STORAGE_KEY = 'siming.assistant.model'
-const LEGACY_MODEL_STORAGE_KEY = 'moshu.assistant.model'
+const GUI_MODEL_STORAGE_KEY = 'siming.gui.assistant.model.override'
 const CREATION_TEMPLATE_KEY = 'siming:novelCreationTemplates'
 const LEGACY_CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
 
@@ -306,9 +311,17 @@ function GuiAssistantChat() {
 
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const [model, setModel] = useState<string | undefined>(
-    () => localStorage.getItem(MODEL_STORAGE_KEY) || localStorage.getItem(LEGACY_MODEL_STORAGE_KEY) || undefined,
+    () => readModelOverride(GUI_MODEL_STORAGE_KEY),
   )
   const selectedModel = model || defaultModel || undefined
+  const modelSelectOptions = useMemo(() => [
+    { value: GLOBAL_MODEL_SELECT_VALUE, label: globalModelOptionLabel(defaultModel) },
+    ...modelOptions,
+  ], [defaultModel, modelOptions])
+  const selectedModelValue = model || GLOBAL_MODEL_SELECT_VALUE
+  const handleModelChange = (value?: string) => {
+    setModel(!value || value === GLOBAL_MODEL_SELECT_VALUE ? undefined : value)
+  }
   // Creative slots editor state
   const [slotEditorOpen, setSlotEditorOpen] = useState(false)
   const [slotBlueprintIndex, setSlotBlueprintIndex] = useState<number | null>(null)
@@ -342,17 +355,7 @@ function GuiAssistantChat() {
   const assistantContextLabel = activeProject ? `作品模式 · ${activeProject.title}` : '系统模式 · 可创建新作品'
 
   useEffect(() => {
-    if (!model && defaultModel) setModel(defaultModel)
-  }, [model, defaultModel])
-
-  useEffect(() => {
-    if (model) {
-      localStorage.setItem(MODEL_STORAGE_KEY, model)
-      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
-    } else {
-      localStorage.removeItem(MODEL_STORAGE_KEY)
-      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
-    }
+    writeModelOverride(GUI_MODEL_STORAGE_KEY, model)
   }, [model])
 
   useEffect(() => {
@@ -1857,9 +1860,9 @@ function GuiAssistantChat() {
         <Select
           allowClear
           showSearch
-          value={model}
-          onChange={setModel}
-          options={modelOptions}
+          value={selectedModelValue}
+          onChange={handleModelChange}
+          options={modelSelectOptions}
           loading={modelsLoading}
           optionFilterProp="label"
           placeholder={modelOptions.length ? '选择模型' : '请先在系统设置里配置模型'}

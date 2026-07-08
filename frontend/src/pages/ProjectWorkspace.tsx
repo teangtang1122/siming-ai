@@ -38,13 +38,13 @@ import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 import { AiPanelProvider, useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { usePanelResize } from '../hooks/usePanelResize'
+import { readModelOverride, writeModelOverride } from '../utils/assistantModelStorage'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 
 const { Sider, Content } = Layout
 
 type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'skills' | 'scheduler'
-const MODEL_STORAGE_KEY = 'siming.assistant.model'
-const LEGACY_MODEL_STORAGE_KEY = 'moshu.assistant.model'
+const PROJECT_MODEL_STORAGE_KEY = 'siming.project.assistant.model.override'
 
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
@@ -65,7 +65,7 @@ const PAGE_TITLES: Record<MenuKey, string> = {
 function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; setAiCollapsed: (v: boolean) => void }) {
   const { projectId } = useParams<{ projectId: string }>()
   const [aiModel, setAiModel] = useState<string | undefined>(
-    () => localStorage.getItem(MODEL_STORAGE_KEY) || localStorage.getItem(LEGACY_MODEL_STORAGE_KEY) || undefined,
+    () => readModelOverride(PROJECT_MODEL_STORAGE_KEY),
   )
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
   const { width: aiWidth, onDragHandleMouseDown: onAiResize, dragging: aiDragging } = usePanelResize({
@@ -80,19 +80,7 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
   }, [aiCollapsed])
 
   useEffect(() => {
-    if (!aiModel && defaultModel) {
-      setAiModel(defaultModel)
-    }
-  }, [aiModel, defaultModel])
-
-  useEffect(() => {
-    if (aiModel) {
-      localStorage.setItem(MODEL_STORAGE_KEY, aiModel)
-      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
-    } else {
-      localStorage.removeItem(MODEL_STORAGE_KEY)
-      localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY)
-    }
+    writeModelOverride(PROJECT_MODEL_STORAGE_KEY, aiModel)
   }, [aiModel])
 
   return (

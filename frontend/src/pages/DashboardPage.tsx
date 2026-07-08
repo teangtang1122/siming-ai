@@ -202,8 +202,6 @@ interface CreationTemplate {
 
 const CREATION_TEMPLATE_KEY = 'siming:novelCreationTemplates'
 const LEGACY_CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
-const MODEL_STORAGE_KEY = 'siming.assistant.model'
-const LEGACY_MODEL_STORAGE_KEY = 'moshu.assistant.model'
 
 function parseTags(value?: string) {
   return (value || '')
@@ -313,10 +311,7 @@ function DashboardPage() {
   const [assistantSessionId, setAssistantSessionId] = useState('')
   const [assistantRecommendation, setAssistantRecommendation] = useState('')
   const [assistantDraftText, setAssistantDraftText] = useState('')
-  const [assistantModel, setAssistantModel] = useState<string | undefined>(
-    () => localStorage.getItem(MODEL_STORAGE_KEY) || localStorage.getItem(LEGACY_MODEL_STORAGE_KEY) || undefined,
-  )
-  const selectedModel = assistantModel || defaultModel || undefined
+  const selectedModel = defaultModel || undefined
   // Question flow state
   const [activeQuestion, setActiveQuestion] = useState<ChatQuestion | null>(null)
   const [questionHistory, setQuestionHistory] = useState<QuestionAnswer[]>([])
@@ -349,12 +344,6 @@ function DashboardPage() {
   useEffect(() => {
     fetchProjects()
   }, [fetchProjects])
-
-  useEffect(() => {
-    if (!assistantModel && defaultModel) {
-      setAssistantModel(defaultModel)
-    }
-  }, [assistantModel, defaultModel])
 
   useEffect(() => {
     setCreationTemplates(readCreationTemplates())

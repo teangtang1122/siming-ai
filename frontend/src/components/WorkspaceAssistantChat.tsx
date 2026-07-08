@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Input, InputNumber, Modal, Popover, Select, Space, Switch, Tag, Tooltip, Typography, message } from 'antd'
 import {
   DeleteOutlined,
@@ -37,6 +37,7 @@ import {
   Composer,
   StepDetailModal,
 } from './assistant'
+import { GLOBAL_MODEL_SELECT_VALUE, globalModelOptionLabel } from '../utils/assistantModelStorage'
 import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
@@ -76,6 +77,14 @@ function WorkspaceAssistantChat({
   const [currentPlan, setCurrentPlan] = useState<AgentPlanViewState | null>(null)
   const [retryingPlanKey, setRetryingPlanKey] = useState<string | null>(null)
   const [detailStep, setDetailStep] = useState<StepDetail | null>(null)
+  const modelSelectOptions = useMemo(() => [
+    { value: GLOBAL_MODEL_SELECT_VALUE, label: globalModelOptionLabel(defaultModel) },
+    ...modelOptions,
+  ], [defaultModel, modelOptions])
+  const selectedModelValue = model || GLOBAL_MODEL_SELECT_VALUE
+  const handleModelChange = (value?: string) => {
+    onModelChange?.(!value || value === GLOBAL_MODEL_SELECT_VALUE ? undefined : value)
+  }
 
   useEffect(() => {
     setShowSelectionTag(true)
@@ -944,9 +953,9 @@ function WorkspaceAssistantChat({
                     allowClear
                     showSearch
                     size="small"
-                    value={model}
-                    onChange={onModelChange}
-                    options={modelOptions}
+                    value={selectedModelValue}
+                    onChange={handleModelChange}
+                    options={modelSelectOptions}
                     loading={modelsLoading}
                     optionFilterProp="label"
                     placeholder={modelOptions.length ? '选择AI模型' : '请先在系统设置配置模型'}
