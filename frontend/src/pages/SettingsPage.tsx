@@ -8,6 +8,7 @@ import {
   Modal,
   Form,
   Input,
+  AutoComplete,
   Select,
   Tag,
   message,
@@ -971,9 +972,25 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           <Form.Item
             name="default_model"
             label="默认模型"
+            extra={isLocalCliProvider(modalProvider) ? '本机 CLI 可直接输入 CLI 支持的模型名；占位模型表示跟随 CLI 自身默认。' : undefined}
             rules={[{ required: true, message: '请选择默认模型名' }]}
           >
-            {isCustomProviderSelection(modalProvider) && defaultModelOptions.length === 0 ? (
+            {isLocalCliProvider(modalProvider) ? (
+              <AutoComplete
+                options={defaultModelOptions.map((m) => ({
+                  value: m.id,
+                  label: m.display_name || m.id,
+                }))}
+                placeholder="输入 CLI 支持的模型名，或选择候选项"
+                filterOption={(input, option) =>
+                  String(option?.label || option?.value || '').toLowerCase().includes(input.toLowerCase())
+                }
+                onChange={(modelName) => {
+                  const provider = resolveProviderForSubmit(form.getFieldsValue())
+                  form.setFieldsValue(defaultSafetyLimits(provider, modelName))
+                }}
+              />
+            ) : isCustomProviderSelection(modalProvider) && defaultModelOptions.length === 0 ? (
               <Input
                 placeholder="例如 openai/gpt-4o-mini 或 vendor-model-name"
                 onChange={(event) => {
