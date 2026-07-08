@@ -552,7 +552,7 @@ async def _list_anthropic_models(api_key: str, base_url: str) -> list[dict]:
 @router.post("/config/models/list")
 async def list_provider_models(payload: ModelListRequest):
     if is_local_cli_provider(payload.provider):
-        models = local_cli_model_options(payload.provider, payload.cli_command)
+        models = local_cli_model_options(payload.provider, payload.cli_command, payload.cli_args)
     elif payload.provider == "local_llama_cpp":
         models = []
     else:

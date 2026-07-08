@@ -539,6 +539,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           {
             provider,
             cli_command: form.getFieldValue('cli_command') || DEFAULT_CLI_COMMANDS[provider],
+            cli_args: form.getFieldValue('cli_args') || DEFAULT_CLI_ARGS[provider],
           }
         )
         setModelOptions(normalizeProviderModelOptions(provider, res.data.data.models || []))
@@ -961,7 +962,15 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 label="CLI 参数"
                 extra="JSON 数组或普通参数字符串。可使用 {prompt} 和 {model} 占位符。"
               >
-                <Input.TextArea rows={3} placeholder={DEFAULT_CLI_ARGS[modalProvider] || '["{prompt}"]'} />
+                <Input.TextArea
+                  rows={3}
+                  placeholder={DEFAULT_CLI_ARGS[modalProvider] || '["{prompt}"]'}
+                  onBlur={() => {
+                    if (modalProvider && isLocalCliProvider(modalProvider)) {
+                      fetchModels()
+                    }
+                  }}
+                />
               </Form.Item>
               <Button
                 type="link"

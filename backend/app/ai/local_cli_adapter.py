@@ -139,6 +139,51 @@ OPENCODE_MODELS = [
     "opencode/north-mini-code-free",
     "opencode/big-pickle",
 ]
+MODEL_CONFIG_KEYS = {"model", "default_model", "model_name", "modelName", "defaultModel"}
+MODEL_CANDIDATE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{1,199}$")
+MODEL_ASSIGNMENT_PATTERN = re.compile(
+    r"""(?ix)
+    ["']?(?:model|default_model|model_name|modelName|defaultModel)["']?
+    \s*[:=]\s*
+    ["']?([A-Za-z0-9][A-Za-z0-9_.:/@+-]{1,199})
+    """
+)
+LOCAL_CLI_MODEL_ENV_VARS: dict[str, list[str]] = {
+    "claude_cli": ["CLAUDE_MODEL", "ANTHROPIC_MODEL"],
+    "codex_cli": ["CODEX_MODEL"],
+    "qwen_code_cli": ["QWEN_CODE_MODEL", "QWEN_MODEL", "DASHSCOPE_MODEL", "OPENAI_MODEL"],
+    "hermes_cli": ["HERMES_MODEL", "OPENAI_MODEL"],
+    "openclaw_cli": ["OPENCLAW_MODEL", "OPENAI_MODEL"],
+    "custom_cli": ["SIMING_LOCAL_CLI_MODEL", "LOCAL_CLI_MODEL", "CUSTOM_CLI_MODEL"],
+}
+LOCAL_CLI_CONFIG_ENV_DIRS: dict[str, list[str]] = {
+    "claude_cli": ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"],
+    "codex_cli": ["CODEX_HOME"],
+    "qwen_code_cli": ["QWEN_CODE_HOME", "QWEN_HOME"],
+    "hermes_cli": ["HERMES_HOME"],
+    "openclaw_cli": ["OPENCLAW_HOME"],
+}
+LOCAL_CLI_CONFIG_RELATIVE_PATHS: dict[str, list[str]] = {
+    "claude_cli": [".claude.json", ".claude/settings.json", ".claude/settings.local.json"],
+    "codex_cli": [".codex/config.toml"],
+    "qwen_code_cli": [".qwen/config.json", ".qwen-code/config.json"],
+    "hermes_cli": [".hermes/config.json", ".hermes/config.toml"],
+    "openclaw_cli": [".openclaw/config.json", ".openclaw/config.toml"],
+}
+LOCAL_CLI_CONFIG_RELATIVE_DIRS: dict[str, list[str]] = {
+    "codex_cli": [".codex"],
+}
+LOCAL_CLI_CONFIG_SOURCE_LABELS: dict[str, str] = {
+    "claude_cli": "Claude 配置",
+    "codex_cli": "Codex 配置",
+    "qwen_code_cli": "Qwen 配置",
+    "hermes_cli": "Hermes 配置",
+    "openclaw_cli": "OpenClaw 配置",
+    "custom_cli": "本机 CLI 配置",
+}
+MODEL_CONFIG_FILE_SUFFIXES = {".json", ".jsonc", ".toml", ".yaml", ".yml", ".ini", ".conf", ".config"}
+MODEL_CONFIG_MAX_FILES = 40
+MODEL_CONFIG_MAX_BYTES = 128 * 1024
 
 
 def _model_option(model: str, display_name: str | None = None) -> dict:
@@ -159,6 +204,170 @@ def _merge_model_options(*groups: list[dict]) -> list[dict]:
                 "display_name": str(item.get("display_name") or model),
             })
     return merged
+
+
+def _clean_model_candidate(value: object) -> str:
+    model = str(value or "").strip().strip("'\"` ,;")
+    if not model or model == "{model}" or "{" in model or "}" in model:
+        return ""
+    if "\\" in model or "://" in model or len(model) > 200:
+        return ""
+    if model.lower() in {"true", "false", "none", "null", "auto"}:
+        return ""
+    return model if MODEL_CANDIDATE_PATTERN.fullmatch(model) else ""
+
+
+def _model_options_from_values(values: list[object], source_label: str) -> list[dict]:
+    options: list[dict] = []
+    for value in values:
+        model = _clean_model_candidate(value)
+        if model:
+            options.append(_model_option(model, f"{model}（{source_label}）"))
+    return _merge_model_options(options)
+
+
+def _walk_model_values(data: object) -> list[str]:
+    values: list[str] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key in MODEL_CONFIG_KEYS and isinstance(value, str):
+                values.append(value)
+            elif isinstance(value, (dict, list)):
+                values.extend(_walk_model_values(value))
+    elif isinstance(data, list):
+        for item in data:
+            values.extend(_walk_model_values(item))
+    return values
+
+
+def _model_options_from_config_text(text: str, source_label: str) -> list[dict]:
+    values: list[object] = []
+    try:
+        values.extend(_walk_model_values(json.loads(text)))
+    except (TypeError, ValueError):
+        pass
+    values.extend(match.group(1) for match in MODEL_ASSIGNMENT_PATTERN.finditer(text))
+    return _model_options_from_values(values, source_label)
+
+
+def _model_options_from_cli_args(cli_args: str | None) -> list[dict]:
+    if not cli_args:
+        return []
+    tokens: list[str]
+    try:
+        parsed = json.loads(cli_args)
+        tokens = [str(item) for item in parsed] if isinstance(parsed, list) else shlex.split(str(cli_args))
+    except (TypeError, ValueError):
+        try:
+            tokens = shlex.split(str(cli_args), posix=os.name != "nt")
+        except ValueError:
+            tokens = str(cli_args).split()
+
+    values: list[str] = []
+    for index, token in enumerate(tokens):
+        if token in {"--model", "-m"} and index + 1 < len(tokens):
+            values.append(tokens[index + 1])
+        elif token.startswith("--model="):
+            values.append(token.split("=", 1)[1])
+        elif token.startswith("-m="):
+            values.append(token.split("=", 1)[1])
+    return _model_options_from_values(values, "CLI 参数")
+
+
+def _model_options_from_env(provider: str) -> list[dict]:
+    options: list[dict] = []
+    for env_name in LOCAL_CLI_MODEL_ENV_VARS.get(provider, []):
+        model = _clean_model_candidate(os.environ.get(env_name))
+        if model:
+            options.append(_model_option(model, f"{model}（环境变量 {env_name}）"))
+    return _merge_model_options(options)
+
+
+def _provider_accepts_configured_model(provider: str, model: str) -> bool:
+    if provider != "claude_cli":
+        return True
+    normalized = model.lower()
+    return normalized in {"sonnet", "opus", "haiku"} or normalized.startswith("claude-")
+
+
+def _filter_configured_model_options(provider: str, options: list[dict]) -> list[dict]:
+    return [
+        option
+        for option in options
+        if _provider_accepts_configured_model(provider, str(option.get("id") or ""))
+    ]
+
+
+def _config_files_from_path(path: Path) -> list[Path]:
+    try:
+        if path.is_file():
+            return [path]
+        if not path.is_dir():
+            return []
+        files: list[Path] = []
+        for child in sorted(path.iterdir()):
+            if len(files) >= MODEL_CONFIG_MAX_FILES:
+                break
+            if child.is_file() and child.suffix.lower() in MODEL_CONFIG_FILE_SUFFIXES:
+                files.append(child)
+            elif child.is_dir() and child.name.lower() in {"config", "configs", "profiles", "settings"}:
+                for nested in sorted(child.iterdir()):
+                    if len(files) >= MODEL_CONFIG_MAX_FILES:
+                        break
+                    if nested.is_file() and nested.suffix.lower() in MODEL_CONFIG_FILE_SUFFIXES:
+                        files.append(nested)
+        return files
+    except OSError:
+        return []
+
+
+def _local_cli_config_paths(provider: str) -> list[Path]:
+    paths: list[Path] = []
+    try:
+        home = Path.home()
+    except RuntimeError:
+        home = None
+    for env_name in LOCAL_CLI_CONFIG_ENV_DIRS.get(provider, []):
+        env_path = os.environ.get(env_name)
+        if env_path:
+            paths.extend(_config_files_from_path(Path(env_path).expanduser()))
+    if home:
+        for relative in LOCAL_CLI_CONFIG_RELATIVE_PATHS.get(provider, []):
+            paths.append(home / relative)
+        for relative_dir in LOCAL_CLI_CONFIG_RELATIVE_DIRS.get(provider, []):
+            paths.extend(_config_files_from_path(home / relative_dir))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique[:MODEL_CONFIG_MAX_FILES]
+
+
+def _model_options_from_config_files(provider: str) -> list[dict]:
+    source_label = LOCAL_CLI_CONFIG_SOURCE_LABELS.get(provider, "本机 CLI 配置")
+    options: list[dict] = []
+    for path in _local_cli_config_paths(provider):
+        try:
+            if path.stat().st_size > MODEL_CONFIG_MAX_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        options.extend(_model_options_from_config_text(text, source_label))
+    return _merge_model_options(options)
+
+
+def _configured_local_cli_model_options(provider: str, cli_args: str | None = None) -> list[dict]:
+    options = _merge_model_options(
+        _model_options_from_cli_args(cli_args),
+        _model_options_from_env(provider),
+        _model_options_from_config_files(provider),
+    )
+    return _filter_configured_model_options(provider, options)
 
 
 @dataclass(frozen=True)
@@ -219,8 +428,8 @@ def discover_local_cli_models(
     models: list[dict] = []
     seen: set[str] = set()
     for raw_line in completed.stdout.splitlines():
-        model = raw_line.strip()
-        if not model or "/" not in model or model in seen:
+        model = _clean_model_candidate(raw_line)
+        if not model or model in seen:
             continue
         seen.add(model)
         models.append({"id": model, "display_name": model})
@@ -236,22 +445,6 @@ def preferred_local_cli_model(provider: str, command: str | None = None) -> str:
     return models[0]["id"]
 
 
-def _codex_config_model_options() -> list[dict]:
-    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    paths = [codex_home / "config.toml", *sorted(codex_home.glob("*.config.toml"))]
-    options: list[dict] = []
-    for path in paths:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for match in re.finditer(r"(?m)^\s*model\s*=\s*['\"]?([^'\"\n#]+)['\"]?", text):
-            model = match.group(1).strip()
-            if model:
-                options.append(_model_option(model, f"{model}（Codex 配置）"))
-    return _merge_model_options(options)
-
-
 def _local_cli_fallback_model_options(provider: str) -> list[dict]:
     if provider == "opencode_cli":
         return [_model_option(model) for model in OPENCODE_MODELS]
@@ -260,9 +453,13 @@ def _local_cli_fallback_model_options(provider: str) -> list[dict]:
     return [_model_option(model, label)]
 
 
-def local_cli_model_options(provider: str, command: str | None = None) -> list[dict]:
+def local_cli_model_options(
+    provider: str,
+    command: str | None = None,
+    cli_args: str | None = None,
+) -> list[dict]:
     discovered = discover_local_cli_models(provider, command)
-    configured = _codex_config_model_options() if provider == "codex_cli" else []
+    configured = _configured_local_cli_model_options(provider, cli_args)
     return _merge_model_options(
         configured,
         discovered,

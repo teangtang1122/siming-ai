@@ -134,13 +134,44 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory)
             (codex_home / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
-            with patch.dict("app.ai.local_cli_adapter.os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+            with patch.dict("app.ai.local_cli_adapter.os.environ", {"CODEX_HOME": str(codex_home)}, clear=True):
                 models = local_cli_model_options("codex_cli", command=None)
 
         ids = [item["id"] for item in models]
         self.assertEqual(ids[0], "gpt-5.5")
         self.assertIn("codex-cli", ids)
         self.assertIn("Codex 配置", models[0]["display_name"])
+
+    def test_non_listing_cli_model_options_include_env_config_and_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "sonnet", "profiles": [{"default_model": "opus"}]}),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "app.ai.local_cli_adapter.os.environ",
+                {"CLAUDE_MODEL": "haiku"},
+                clear=True,
+            ), patch("app.ai.local_cli_adapter.Path.home", return_value=home):
+                models = local_cli_model_options("claude_cli", command=None)
+
+        ids = [item["id"] for item in models]
+        self.assertEqual(ids[:3], ["haiku", "sonnet", "opus"])
+        self.assertIn("claude-code", ids)
+        self.assertIn("环境变量 CLAUDE_MODEL", models[0]["display_name"])
+
+    def test_custom_cli_model_options_include_fixed_cli_arg_model(self):
+        models = local_cli_model_options(
+            "custom_cli",
+            command=None,
+            cli_args='["run","--model","local/qwen3-coder","{prompt}"]',
+        )
+
+        ids = [item["id"] for item in models]
+        self.assertEqual(ids[0], "local/qwen3-coder")
+        self.assertIn("custom-cli", ids)
 
     def test_mimocode_file_launch_attaches_prompt_and_selected_model(self):
         adapter = LocalCLIAdapter(
