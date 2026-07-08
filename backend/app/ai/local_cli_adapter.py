@@ -141,6 +141,26 @@ OPENCODE_MODELS = [
 ]
 
 
+def _model_option(model: str, display_name: str | None = None) -> dict:
+    return {"id": model, "display_name": display_name or model}
+
+
+def _merge_model_options(*groups: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            model = str(item.get("id") or "").strip()
+            if not model or model in seen:
+                continue
+            seen.add(model)
+            merged.append({
+                "id": model,
+                "display_name": str(item.get("display_name") or model),
+            })
+    return merged
+
+
 @dataclass(frozen=True)
 class CLILaunch:
     args: list[str]
@@ -216,15 +236,38 @@ def preferred_local_cli_model(provider: str, command: str | None = None) -> str:
     return models[0]["id"]
 
 
-def local_cli_model_options(provider: str, command: str | None = None) -> list[dict]:
-    discovered = discover_local_cli_models(provider, command)
-    if discovered:
-        return discovered
+def _codex_config_model_options() -> list[dict]:
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    paths = [codex_home / "config.toml", *sorted(codex_home.glob("*.config.toml"))]
+    options: list[dict] = []
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in re.finditer(r"(?m)^\s*model\s*=\s*['\"]?([^'\"\n#]+)['\"]?", text):
+            model = match.group(1).strip()
+            if model:
+                options.append(_model_option(model, f"{model}（Codex 配置）"))
+    return _merge_model_options(options)
+
+
+def _local_cli_fallback_model_options(provider: str) -> list[dict]:
     if provider == "opencode_cli":
-        return [{"id": model, "display_name": model} for model in OPENCODE_MODELS]
+        return [_model_option(model) for model in OPENCODE_MODELS]
     model = DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
     label = f"跟随 {provider.removesuffix('_cli')} 当前默认模型" if is_cli_model_sentinel(provider, model) else model
-    return [{"id": model, "display_name": label}]
+    return [_model_option(model, label)]
+
+
+def local_cli_model_options(provider: str, command: str | None = None) -> list[dict]:
+    discovered = discover_local_cli_models(provider, command)
+    configured = _codex_config_model_options() if provider == "codex_cli" else []
+    return _merge_model_options(
+        configured,
+        discovered,
+        _local_cli_fallback_model_options(provider),
+    )
 
 
 def hidden_subprocess_kwargs() -> dict:

@@ -528,11 +528,27 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     const provider = resolveProviderForSubmit(form.getFieldsValue())
     const apiKey = form.getFieldValue('api_key')
     if (!provider) return
-    if (isLocalCliProvider(provider)) {
+    const isCli = isLocalCliProvider(provider)
+    const baseUrl = form.getFieldValue('base_url_override') || undefined
+    if (isCli) {
+      setModelsLoading(true)
       setModelOptions(fallbackModelOptions(provider))
+      try {
+        const res = await apiClient.post<{ code: number; data: { models: ModelOption[] } }>(
+          '/config/models/list',
+          {
+            provider,
+            cli_command: form.getFieldValue('cli_command') || DEFAULT_CLI_COMMANDS[provider],
+          }
+        )
+        setModelOptions(normalizeProviderModelOptions(provider, res.data.data.models || []))
+      } catch (err: any) {
+        setModelOptions(fallbackModelOptions(provider))
+      } finally {
+        setModelsLoading(false)
+      }
       return
     }
-    const baseUrl = form.getFieldValue('base_url_override') || undefined
     if (!PROVIDER_LABEL_MAP[provider] && !baseUrl) {
       setModelOptions([])
       return
@@ -551,9 +567,6 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           provider,
           api_key: apiKey,
           base_url_override: baseUrl,
-          cli_command: isLocalCliProvider(provider)
-            ? form.getFieldValue('cli_command') || DEFAULT_CLI_COMMANDS[provider]
-            : undefined,
         }
       )
       setModelOptions(normalizeProviderModelOptions(provider, res.data.data.models || []))
@@ -934,7 +947,14 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 extra="例如 claude、codex、opencode，或完整可执行文件路径。"
                 rules={[{ required: modalProvider === 'custom_cli', message: '请填写本机 CLI 命令' }]}
               >
-                <Input placeholder={DEFAULT_CLI_COMMANDS[modalProvider] || 'my-agent-cli'} />
+                <Input
+                  placeholder={DEFAULT_CLI_COMMANDS[modalProvider] || 'my-agent-cli'}
+                  onBlur={() => {
+                    if (modalProvider && isLocalCliProvider(modalProvider)) {
+                      fetchModels()
+                    }
+                  }}
+                />
               </Form.Item>
               <Form.Item
                 name="cli_args"

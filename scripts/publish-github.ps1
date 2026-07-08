@@ -2,7 +2,7 @@ param(
   [string]$Repo = "teangtang1122/siming-ai",
   [ValidateSet("public", "private")]
   [string]$Visibility = "private",
-  [string]$Tag = "v2.6.6",
+  [string]$Tag = "v2.6.7",
   [string]$CommitMessage = "",
   [switch]$SkipBuild
 )

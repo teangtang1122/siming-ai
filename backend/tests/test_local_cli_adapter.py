@@ -19,6 +19,7 @@ from app.ai.local_cli_adapter import (
     ensure_opencode_logging_args,
     extract_cli_error,
     hidden_subprocess_kwargs,
+    local_cli_model_options,
     messages_to_prompt,
     parse_cli_args,
     parse_cli_launch,
@@ -128,6 +129,18 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertTrue(any(str(part).endswith("mimo.cmd") for part in command))
         self.assertEqual(command[-1], "models")
+
+    def test_codex_model_options_include_configured_model_and_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            (codex_home / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+            with patch.dict("app.ai.local_cli_adapter.os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                models = local_cli_model_options("codex_cli", command=None)
+
+        ids = [item["id"] for item in models]
+        self.assertEqual(ids[0], "gpt-5.5")
+        self.assertIn("codex-cli", ids)
+        self.assertIn("Codex 配置", models[0]["display_name"])
 
     def test_mimocode_file_launch_attaches_prompt_and_selected_model(self):
         adapter = LocalCLIAdapter(
