@@ -53,6 +53,13 @@ class CatalogingPromptUnificationTest(unittest.TestCase):
         self.assertIn("只输出 JSONL", shared_facts)
         self.assertIn("不要输出 Markdown", shared_facts)
 
+    def test_character_state_schema_tracks_appearance_and_age(self):
+        external = get_external_cataloging_system_prompt()
+
+        self.assertIn("character_state_update", external)
+        self.assertIn('"appearance":"..."', external)
+        self.assertIn('"age":"..."', external)
+
 
 if __name__ == "__main__":
     unittest.main()

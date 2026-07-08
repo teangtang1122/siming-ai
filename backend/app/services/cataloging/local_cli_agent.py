@@ -480,6 +480,7 @@ shared prompt. Do not call `save_external_cataloging_facts` or
 4. 直接读取 `chapter_file` 指向的章节正文，并读取 `{project_folder}` 下的 `characters/`、`worldbuilding/`、`outline/`、`summaries/` 等镜像文件。不要要求司命把正文或卡片粘贴进提示词。
 5. 关注点与第一阶段事实抽取相同：只采集会影响大纲、角色、关系、世界观或后续连续性的内容；但不要输出 fact，不要调用 `save_external_cataloging_facts` 或 `list_cataloging_facts`。
 6. 直接调用 `save_external_cataloging_candidates` 保存候选，参数必须包含 `phase="merged"`。候选必须包含 chapter_summary、chapter 级 outline_create；有独立场景时创建 section 级 outline_create；同时创建/更新角色、世界观、关系和 chapter_link。
+   每个本章出场或状态变化的角色，都必须保存 `character_state_update`；其中 `appearance` 与 `age` 是逐章状态字段，即使只是沿用上一章当前值也要填写，发生时间线变化时必须改成新状态。
 7. 调用 `get_cataloging_control_state` 获取实时 execution_mode：
    - `auto`：调用 `apply_pending_cataloging`。
    - `manual`：不要应用候选，停在等待用户确认状态。
@@ -529,6 +530,7 @@ shared prompt. Do not call `save_external_cataloging_facts` or
 6. 直接读取本作品镜像中与事实有关的角色、世界观、大纲文件，合并旧信息后生成候选；
    调用 `save_external_cataloging_candidates` 保存。必须包含 chapter_summary、章级大纲，
    有独立场景时还要创建 section 大纲，并正确关联角色、世界观和章节。
+   每个本章出场或状态变化的角色，都必须保存 `character_state_update`；其中 `appearance` 与 `age` 是逐章状态字段，即使只是沿用上一章当前值也要填写，发生时间线变化时必须改成新状态。
 7. 调用 `report_agent_progress` 说明候选已经保存，正在检查自动/手动模式。
 8. 调用 `get_cataloging_control_state` 获取实时 execution_mode：
    - `auto`：调用 `apply_pending_cataloging`。

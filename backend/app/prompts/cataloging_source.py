@@ -72,7 +72,7 @@ def get_cataloging_candidate_schema() -> str:
 - chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "outline_hint":"..."}
 - outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter|section|volume", "parent_title":"...", "status":"completed", "related_characters":["..."]}
 - character_create / character_update: {"name":"...", "aliases":["..."], "role_type":"...", "age":"...", "appearance":"...", "personality":"...", "background":"...", "abilities":["..."], "tone_style":"...", "catchphrases":["..."], "emotion_tendency":"...", "custom_system_prompt":"..."}
-- character_state_update: {"name":"...", "aliases":["..."], "age":"...", "life_status":"alive|dead|unknown", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets":"..."}
+- character_state_update: {"name":"...", "aliases":["..."], "appearance":"...", "age":"...", "life_status":"alive|dead|unknown", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets":"..."}
 - character_timeline: {"name":"...", "event_description":"...", "event_type":"appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event", "emotional_state_change":"..."}
 - character_relationship: {"source_name":"...", "target_name":"...", "relationship_type":"...", "description":"..."}
 - character_merge_candidate: {"primary_name":"...", "secondary_name":"...", "canonical_name":"...", "aliases":["..."], "confidence_reason":"...", "evidence_points":["..."], "background_append":"..."}
@@ -177,6 +177,7 @@ def get_external_cataloging_system_prompt() -> str:
         get_cataloging_candidate_rules(),
         get_time_tracking_rules(),
         get_naming_resolution_rules(),
+        get_cataloging_candidate_schema(),
         get_candidate_format_examples(),
         get_merge_rules(),
         get_completion_criteria(),
