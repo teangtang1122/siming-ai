@@ -89,6 +89,152 @@ def _resolve_outline_node_id(
     return ""
 
 
+def _latest_outline_label(db: Session, project_id: str) -> str:
+    node = (
+        db.query(OutlineNode)
+        .filter(OutlineNode.project_id == project_id)
+        .order_by(OutlineNode.sort_order.desc(), OutlineNode.created_at.desc())
+        .first()
+    )
+    if not node:
+        return "当前项目还没有大纲节点"
+    return f"当前最新大纲是「{node.title}」"
+
+
+def _model_provider(model: str | None) -> str:
+    try:
+        from ...ai.gateway import LLMGateway
+
+        return LLMGateway.provider_for_model(model)
+    except Exception:
+        return (model or "").split(":", 1)[0].strip().lower()
+
+
+def _stream_assistant_notice(
+    db: Session,
+    project_id: str,
+    *,
+    message: str,
+    reply: str,
+    conversation_id: str | None = None,
+    scope: str = "project",
+    model: str | None = None,
+    assistant_mode: str = "fast",
+    skill_info: list[dict] | None = None,
+    tool_detail: str = "计划前置检查未通过",
+) -> AsyncGenerator[str, None]:
+    async def _stream() -> AsyncGenerator[str, None]:
+        created_at = datetime.utcnow()
+        if conversation_id:
+            conversation = db.query(AssistantConversation).filter(
+                AssistantConversation.id == conversation_id,
+                AssistantConversation.project_id == project_id,
+            ).first()
+            if not conversation:
+                conversation = AssistantConversation(
+                    project_id=project_id,
+                    title=_assistant_title_from_message(message),
+                    scope=scope,
+                )
+                db.add(conversation)
+                db.flush()
+            conversation.scope = scope
+            conversation.model = model
+        else:
+            conversation = AssistantConversation(
+                project_id=project_id,
+                title=_assistant_title_from_message(message),
+                scope=scope,
+                model=model,
+            )
+            db.add(conversation)
+            db.flush()
+        conversation.updated_at = created_at
+
+        user_msg_db = AssistantMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=message,
+            status="completed",
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        assistant_msg_db = AssistantMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="正在检查执行条件...",
+            status="running",
+            payload_json=json.dumps({"tool_logs": []}, ensure_ascii=False),
+            created_at=created_at + timedelta(microseconds=1),
+            updated_at=created_at + timedelta(microseconds=1),
+        )
+        db.add(user_msg_db)
+        db.add(assistant_msg_db)
+        db.commit()
+        db.refresh(conversation)
+        db.refresh(user_msg_db)
+        db.refresh(assistant_msg_db)
+
+        assistant_run = create_assistant_run(
+            db,
+            project_id=project_id,
+            conversation_id=conversation.id,
+            user_message_id=user_msg_db.id,
+            assistant_message_id=assistant_msg_db.id,
+            scope=scope,
+            assistant_mode=assistant_mode,
+            model=model,
+        )
+
+        yield _sse_event({
+            "type": "conversation",
+            "conversation": _assistant_conversation_to_dict(conversation),
+            "user_message": _assistant_message_to_dict(user_msg_db),
+            "assistant_message": _assistant_message_to_dict(assistant_msg_db),
+        })
+        yield _sse_event({"type": "run", "run": run_payload(assistant_run)})
+        if skill_info:
+            yield _sse_event({"type": "skills_matched", "skills": skill_info})
+
+        tool_logs = [{"tool": "plan_preflight", "status": "skipped", "detail": tool_detail}]
+        yield _sse_event({"type": "tool", **tool_logs[0]})
+        response_payload = {
+            "reply": reply,
+            "actions": [],
+            "applied_actions": [],
+            "tool_logs": tool_logs,
+            "searched_context": [],
+            "scope": scope,
+            "model": model or "",
+            "usage": None,
+            "skills": skill_info,
+        }
+        assistant_msg_db.content = reply
+        assistant_msg_db.payload_json = json.dumps(response_payload, ensure_ascii=False)
+        assistant_msg_db.status = "completed"
+        assistant_msg_db.updated_at = datetime.utcnow()
+        conversation.updated_at = datetime.utcnow()
+        db.commit()
+
+        mark_assistant_run(
+            db,
+            assistant_run,
+            status="completed",
+            phase="plan_preflight",
+            final_reply=reply,
+        )
+        db.refresh(assistant_run)
+        db.refresh(assistant_msg_db)
+        db.refresh(conversation)
+        response_payload["run"] = run_payload(assistant_run)
+        response_payload["message"] = _assistant_message_to_dict(assistant_msg_db)
+        response_payload["conversation"] = _assistant_conversation_to_dict(conversation)
+        yield _sse_event({"type": "complete", "data": response_payload})
+        yield _sse_event("[DONE]")
+
+    return _stream()
+
+
 def _assistant_title_from_message(message: str) -> str:
     title = " ".join((message or "").strip().split())
     if not title:
@@ -567,6 +713,38 @@ async def detect_and_stream_plan(
     intent = _inject_skill_prompts_into_intent(intent, skill_prompt_section)
     intent = _inject_memory_into_intent(intent, memory_context)
 
+    if intent.get("intent_type") == "chapter":
+        issues: list[str] = []
+        chapter_number = intent.get("chapter_number")
+        if not outline_node_id:
+            latest = _latest_outline_label(db, project_id)
+            if chapter_number:
+                issues.append(
+                    f"未找到第 {chapter_number} 章的大纲节点。{latest}。"
+                    f"请先创建第 {chapter_number} 章大纲，或明确说明要先规划下一章再写。"
+                )
+            else:
+                issues.append("没有定位到要写的章节大纲节点，请指定已有大纲标题或章节号。")
+        if _model_provider(model) == "local_llama_cpp":
+            issues.append(
+                "当前选择的是司命本地 AI（本地文本模型），不再执行内部整章生成器 chapter_writer。"
+                "请切换到 API 或本机 CLI 模型后再写整章，或使用外部写作流程。"
+            )
+        if issues:
+            reply = "暂时不能执行写章计划：\n" + "\n".join(f"- {issue}" for issue in issues)
+            return _stream_assistant_notice(
+                db,
+                project_id,
+                message=message,
+                reply=reply,
+                conversation_id=conversation_id,
+                scope=scope,
+                model=model,
+                assistant_mode=assistant_mode,
+                skill_info=skill_info,
+                tool_detail="；".join(issues),
+            )
+
     # Handle project_init (cataloging) intent directly — don't use plan system
     if intent.get("intent_type") == "project_init":
         return _stream_cataloging_job(
@@ -782,6 +960,9 @@ async def detect_and_stream_plan(
             reply_parts.append(f"成功 {ok_count} 个步骤。")
         if err_count:
             reply_parts.append(f"失败 {err_count} 个步骤，可以点击重试。")
+            first_error = next((tl.get("detail") for tl in tool_logs if tl.get("status") == "error" and tl.get("detail")), "")
+            if first_error:
+                reply_parts.append(f"失败原因：{first_error}")
 
         final_reply = " ".join(reply_parts)
 

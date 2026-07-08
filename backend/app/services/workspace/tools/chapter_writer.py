@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....ai.gateway import LLMGateway
+from ....ai.local_cli_adapter import is_local_cli_provider
 from ....core.utils import count_words
 from ....database.models import (
     Character,
@@ -27,6 +28,21 @@ from ....services.rag.retriever import search_chunks
 from ....prompts.style_prompts import build_style_context
 from ....prompts.writing_task_prompts import build_writing_directives
 from ..generated_drafts import store_chapter_draft
+
+
+def _chapter_writer_provider(model: str | None) -> str:
+    try:
+        provider, _ = LLMGateway.model_identity(model, {"moshu_task_type": "writing"})
+        return provider
+    except Exception:
+        return (model or "").split(":", 1)[0].strip().lower()
+
+
+def _chapter_writer_limits(model: str | None) -> tuple[int, int]:
+    provider = _chapter_writer_provider(model)
+    if is_local_cli_provider(provider):
+        return 360, 7000
+    return 300, 7000
 
 
 async def chapter_writer(
@@ -160,14 +176,26 @@ async def chapter_writer(
     )
 
     model = str(args.get("model") or "") or None
+    provider = _chapter_writer_provider(model)
+    if provider == "local_llama_cpp":
+        return {
+            "tool": "chapter_writer",
+            "status": "error",
+            "detail": (
+                "当前选择的是司命本地 AI，它适合轻量对话/检索，不适合由内部 chapter_writer 生成整章正文。"
+                "请切换到 API 或本机 CLI 模型后重试，或使用外部写作流程。"
+            ),
+            "data": {},
+        }
+    timeout_seconds, max_output_tokens = _chapter_writer_limits(model)
 
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
             model=model,
             temperature=0.8,
-            max_tokens=6000,
-            timeout=180,
+            max_tokens=max_output_tokens,
+            timeout=timeout_seconds,
             retry=1,
             extra_body={
                 "moshu_task_type": "writing",

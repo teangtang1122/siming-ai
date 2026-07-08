@@ -313,6 +313,63 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertIn("你好，我在。", response.text)
         mock_tool_stream.assert_not_called()
 
+    def test_workspace_chapter_plan_missing_outline_reports_preflight(self):
+        project_id = self.create_project("Missing Outline Chapter Project")
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "帮我写第151章",
+                "model": "local_llama_cpp:qwen3-8b-q4",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("未找到第 151 章的大纲节点", response.text)
+        self.assertIn("司命本地 AI", response.text)
+        self.assertIn("plan_preflight", response.text)
+        self.assertNotIn("plan_created", response.text)
+
+    def test_workspace_chapter_plan_local_runtime_reports_preflight(self):
+        project_id = self.create_project("Local Runtime Chapter Project")
+        self.create_outline_node(project_id, "第151章 新的死线")
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "帮我写第151章",
+                "model": "local_llama_cpp:qwen3-8b-q4",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("司命本地 AI", response.text)
+        self.assertNotIn("未找到第 151 章的大纲节点", response.text)
+        self.assertNotIn("plan_created", response.text)
+
+    def test_chapter_writer_rejects_local_runtime_model(self):
+        project_id = self.create_project("Local Runtime Writer Guard Project")
+        outline_id = self.create_outline_node(project_id, "第151章 新的死线")
+        db = SessionLocal()
+        try:
+            result = asyncio.run(_execute_workspace_action(db, project_id, {
+                "tool": "chapter_writer",
+                "arguments": {
+                    "outline_node_id": outline_id,
+                    "requirements": "写第151章",
+                    "model": "local_llama_cpp:qwen3-8b-q4",
+                },
+            }))
+        finally:
+            db.close()
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("司命本地 AI", result["detail"])
+
     @patch("app.routers.ai_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
     def test_workspace_stream_plan_executes_create_chapter(self, mock_stream, mock_chat):
