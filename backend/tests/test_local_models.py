@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import json
+import os
+import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.ai.gateway import LLMGateway
+from app.core.exceptions import LLMError
 from app.database.models import (
     APIConfig,
     Base,
@@ -41,7 +45,7 @@ def test_embedded_catalog_contains_three_qwen_tiers():
     assert all(len(item["sources"]) >= 2 for item in items)
 
 
-def test_task_setting_routes_unspecified_model_to_local_runtime():
+def test_task_setting_does_not_route_to_disabled_local_runtime():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
@@ -51,8 +55,30 @@ def test_task_setting_routes_unspecified_model_to_local_runtime():
 
     with patch("app.ai.gateway.SessionLocal", Session):
         selected = LLMGateway._model_for_task(None, {"moshu_task_type": "writing"})
-    assert selected == "local_llama_cpp:qwen3-8b-q4"
+    assert selected is None
     assert LLMGateway._model_for_task("deepseek:custom", {"moshu_task_type": "writing"}) == "deepseek:custom"
+
+
+def test_task_setting_routes_to_local_runtime_when_enabled():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(LocalModelTaskSetting(task_type="writing", model_key="qwen3-8b-q4"))
+        db.commit()
+
+    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch("app.ai.gateway.SessionLocal", Session):
+        selected = LLMGateway._model_for_task(None, {"moshu_task_type": "writing"})
+    assert selected == "local_llama_cpp:qwen3-8b-q4"
+
+
+def test_gateway_rejects_explicit_local_runtime_when_disabled():
+    with pytest.raises(LLMError, match="本地 AI 模型暂时已停用"):
+        asyncio.run(LLMGateway.chat_completion(
+            messages=[{"role": "user", "content": "hello"}],
+            model="local_llama_cpp:qwen3-8b-q4",
+            retry=0,
+        ))
 
 
 def test_global_default_model_wins_over_task_local_setting_until_opt_in():
@@ -70,7 +96,7 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
         db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3-14b-q4", context_length=32768))
         db.commit()
 
-    with patch("app.ai.gateway.SessionLocal", Session):
+    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch("app.ai.gateway.SessionLocal", Session):
         selected = LLMGateway.select_model_for_task(task_type="cataloging")
         opt_in = LLMGateway.select_model_for_task(
             task_type="cataloging",

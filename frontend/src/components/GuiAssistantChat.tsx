@@ -355,6 +355,12 @@ function GuiAssistantChat() {
   const assistantContextLabel = activeProject ? `作品模式 · ${activeProject.title}` : '系统模式 · 可创建新作品'
 
   useEffect(() => {
+    if (model && modelOptions.length > 0 && !modelOptions.some((option) => option.value === model)) {
+      setModel(undefined)
+    }
+  }, [model, modelOptions])
+
+  useEffect(() => {
     writeModelOverride(GUI_MODEL_STORAGE_KEY, model)
   }, [model])
 

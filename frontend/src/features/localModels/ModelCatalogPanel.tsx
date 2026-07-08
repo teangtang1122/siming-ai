@@ -49,6 +49,8 @@ interface Props {
 
 export default function ModelCatalogPanel({ hardware, catalog, downloads, loading, onRefresh }: Props) {
   const [modelRoot, setModelRoot] = useState('')
+  const usageEnabled = catalog?.usage_enabled !== false
+  const usageDisabledReason = catalog?.usage_disabled_reason || '本地 AI 模型暂时已停用，请使用 API 或本机 CLI 模型。'
 
   const contextForModel = (modelKey?: string | null) => (
     catalog?.items.find((item) => item.model_key === modelKey)?.context_length
@@ -153,6 +155,15 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {!usageEnabled && (
+        <Alert
+          type="warning"
+          showIcon
+          message="本地 AI 暂停使用"
+          description={usageDisabledReason}
+        />
+      )}
+
       {hardware && (
         <Card size="small" title="硬件与推荐">
           <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 4 }}>
@@ -267,9 +278,9 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
                 </Button>
               ) : (
                 <Space wrap>
-                  <Button icon={<PlayCircleOutlined />} onClick={() => start(model)}>加载</Button>
-                  <Button icon={<ThunderboltOutlined />} onClick={() => benchmark(model)}>测速</Button>
-                  <Button onClick={() => makeDefault(model)}>设为默认</Button>
+                  <Button disabled={!usageEnabled} icon={<PlayCircleOutlined />} onClick={() => start(model)}>加载</Button>
+                  <Button disabled={!usageEnabled} icon={<ThunderboltOutlined />} onClick={() => benchmark(model)}>测速</Button>
+                  <Button disabled={!usageEnabled} onClick={() => makeDefault(model)}>设为默认</Button>
                   <Tooltip title="删除模型文件，不删除作品数据">
                     <Button danger icon={<DeleteOutlined />} onClick={() => remove(model)} />
                   </Tooltip>
@@ -293,6 +304,7 @@ export default function ModelCatalogPanel({ hardware, catalog, downloads, loadin
               <Text type="secondary">{label}</Text>
               <Select
                 allowClear
+                disabled={!usageEnabled}
                 style={{ width: '100%', marginTop: 4 }}
                 value={catalog?.task_settings?.[task]?.model_key}
                 placeholder="跟随全局默认/API/CLI"

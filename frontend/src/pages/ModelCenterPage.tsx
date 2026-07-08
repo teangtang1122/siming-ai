@@ -34,6 +34,7 @@ export default function ModelCenterPage({ embedded = false }: Props) {
   const [compareAdapters, setCompareAdapters] = useState<string[]>([])
   const [comparison, setComparison] = useState<{ id: string; variants: Array<{ label: string; content: string }> } | null>(null)
   const [reveal, setReveal] = useState<Record<string, string> | null>(null)
+  const usageEnabled = catalog?.usage_enabled !== false
 
   const refresh = useCallback(async () => {
     try {
@@ -141,7 +142,7 @@ export default function ModelCenterPage({ embedded = false }: Props) {
             <Card
               size="small"
               title="已安装适配器"
-              extra={<Button onClick={() => setCompareOpen(true)}>基座 / 适配器盲测</Button>}
+              extra={<Button disabled={!usageEnabled} onClick={() => setCompareOpen(true)}>基座 / 适配器盲测</Button>}
             >
               {adapters.length === 0 ? (
                 <Paragraph type="secondary">尚未安装官方或私人写作适配器。基座模型仍可正常写作。</Paragraph>
@@ -196,7 +197,7 @@ export default function ModelCenterPage({ embedded = false }: Props) {
         open={compareOpen}
         onCancel={() => setCompareOpen(false)}
         footer={[
-          <Button key="run" type="primary" onClick={runComparison}>生成对比</Button>,
+          <Button key="run" type="primary" disabled={!usageEnabled} onClick={runComparison}>生成对比</Button>,
           <Button key="reveal" disabled={!comparison || Boolean(reveal)} onClick={revealComparison}>揭晓来源</Button>,
         ]}
       >

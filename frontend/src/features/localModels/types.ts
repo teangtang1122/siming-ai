@@ -91,6 +91,8 @@ export interface TrainingJob {
 }
 
 export interface CatalogResponse {
+  usage_enabled?: boolean
+  usage_disabled_reason?: string | null
   items: LocalModel[]
   runtime: RuntimeStatus
   model_root: string

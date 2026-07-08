@@ -16,6 +16,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..ai.gateway import LLMGateway
+from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
+from ..core.exceptions import ValidationError
 from ..core.response import ApiResponse
 from ..database.models import (
     LocalModel,
@@ -55,6 +57,11 @@ from ..services.local_runtime.training import (
 
 router = APIRouter(prefix="/local-models", tags=["local-models"])
 _ADAPTER_COMPARISONS: dict[str, dict] = {}
+
+
+def _ensure_local_runtime_usage_enabled() -> None:
+    if local_runtime_disabled("local_llama_cpp"):
+        raise ValidationError(local_runtime_disabled_message())
 
 
 def _launcher_settings_path() -> Path:
@@ -115,7 +122,10 @@ def catalog(db: Session = Depends(get_db)):
         LocalRuntimeInstallation.runtime_key == "llama_cpp"
     ).first()
     settings = db.query(LocalModelTaskSetting).all()
+    usage_enabled = not local_runtime_disabled("local_llama_cpp")
     return ApiResponse.success(data={
+        "usage_enabled": usage_enabled,
+        "usage_disabled_reason": None if usage_enabled else local_runtime_disabled_message(),
         "items": [_model_payload(row) for row in rows],
         "manifest": model_catalog(),
         "runtime": {
@@ -218,6 +228,7 @@ async def download_events(task_id: str):
 
 @router.post("/runtime/start")
 async def start_runtime(payload: RuntimeStartRequest):
+    _ensure_local_runtime_usage_enabled()
     base_url = await asyncio.to_thread(
         get_runtime_manager().ensure_running,
         payload.model_key,
@@ -255,6 +266,7 @@ def delete_model(model_key: str, db: Session = Depends(get_db)):
 
 @router.post("/benchmark")
 async def benchmark(payload: BenchmarkRequest):
+    _ensure_local_runtime_usage_enabled()
     started = time.perf_counter()
     result = await LLMGateway.chat_completion(
         messages=[{"role": "user", "content": payload.prompt}],
@@ -290,6 +302,7 @@ def update_task_setting(task_type: str, payload: dict, db: Session = Depends(get
             db.delete(row)
             db.commit()
         return ApiResponse.success(message="任务模型设置已清除，将跟随全局默认模型")
+    _ensure_local_runtime_usage_enabled()
     if not row:
         row = LocalModelTaskSetting(task_type=task_type, model_key=model_key)
         db.add(row)
@@ -349,6 +362,7 @@ def update_adapter(adapter_id: str, payload: AdapterUpdateRequest, db: Session =
 
 @router.post("/adapters/compare")
 async def compare_adapters(payload: AdapterCompareRequest, db: Session = Depends(get_db)):
+    _ensure_local_runtime_usage_enabled()
     candidates: list[tuple[str, list[str]]] = [("基座模型", [])]
     adapters = (
         db.query(ModelAdapter)

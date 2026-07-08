@@ -29,6 +29,7 @@ from .local_cli_adapter import (
     is_local_cli_provider,
 )
 from .local_runtime_adapter import LocalRuntimeAdapter
+from .local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
 from .openai_adapter import OpenAIAdapter
 from .qwen_adapter import QwenAdapter
 
@@ -106,6 +107,8 @@ class LLMGateway:
             config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
             if not config:
                 raise NotFoundError("未配置全局默认模型，请先前往系统设置配置模型")
+            if local_runtime_disabled(config.provider):
+                raise NotFoundError(local_runtime_disabled_message())
             return config.provider, config.default_model
         finally:
             db.close()
@@ -116,6 +119,8 @@ class LLMGateway:
         try:
             configs = db.query(APIConfig).all()
             for cfg in configs:
+                if local_runtime_disabled(cfg.provider):
+                    continue
                 if cfg.default_model == model_name:
                     return cfg.provider, cfg.default_model
             lowered = model_name.lower()
@@ -187,6 +192,8 @@ class LLMGateway:
             config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
             if not config:
                 return None
+            if local_runtime_disabled(config.provider):
+                return None
             return f"{config.provider}:{config.default_model}"
         finally:
             db.close()
@@ -239,7 +246,7 @@ class LLMGateway:
 
         selected = ""
         source = ""
-        if prefer_task_model and setting_model:
+        if prefer_task_model and setting_model and not local_runtime_disabled("local_llama_cpp"):
             selected = setting_model
             source = "task_setting"
         if not selected:
@@ -247,7 +254,7 @@ class LLMGateway:
             source = "global_default" if selected else ""
         if not selected and task_type and setting_model is None:
             setting_model, setting = cls._task_setting_model(task_type)
-        if not selected and setting_model:
+        if not selected and setting_model and not local_runtime_disabled("local_llama_cpp"):
             selected = setting_model
             source = "task_setting_fallback"
         if not selected:
@@ -375,6 +382,8 @@ class LLMGateway:
     ) -> dict:
         model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
+        if local_runtime_disabled(provider):
+            raise LLMError(local_runtime_disabled_message())
         config = cls._load_config(provider)
         adapter_cls = cls._get_adapter(provider)
         adapter = adapter_cls(
@@ -445,6 +454,8 @@ class LLMGateway:
     ) -> AsyncGenerator[str, None]:
         model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
+        if local_runtime_disabled(provider):
+            raise LLMError(local_runtime_disabled_message())
         config = cls._load_config(provider)
         adapter_cls = cls._get_adapter(provider)
         adapter = adapter_cls(
@@ -510,6 +521,8 @@ class LLMGateway:
     ) -> AsyncGenerator[dict, None]:
         model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
+        if local_runtime_disabled(provider):
+            raise LLMError(local_runtime_disabled_message())
         config = cls._load_config(provider)
         adapter_cls = cls._get_adapter(provider)
         adapter = adapter_cls(

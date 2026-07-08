@@ -336,10 +336,8 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
                 "default_model": "qwen3-8b-q4",
             },
         )
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()["data"]
-        self.assertEqual(payload["provider"], "local_llama_cpp")
-        self.assertEqual(payload["provider_type"], "local_runtime")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("本地 AI 模型暂时已停用", response.json()["message"])
 
     # ------------------------------------------------------------------
     # TC-09: Create with missing required fields

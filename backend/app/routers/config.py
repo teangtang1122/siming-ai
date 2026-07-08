@@ -31,6 +31,7 @@ from ..ai.local_cli_adapter import (
     is_local_cli_provider,
     local_cli_model_options,
 )
+from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
 from ..core.crypto import decrypt, encrypt
 from ..core.exceptions import AppException, LLMError, NotFoundError, ValidationError
 from ..core.model_limits import limits_payload
@@ -414,7 +415,11 @@ def _validate_cli_command(command: str | None) -> str:
 @router.get("/config/models")
 def list_model_configs(db: Session = Depends(get_db)):
     configs = db.query(APIConfig).order_by(APIConfig.created_at.desc()).all()
-    items = [_config_payload(cfg) for cfg in configs]
+    items = [
+        _config_payload(cfg)
+        for cfg in configs
+        if not local_runtime_disabled(cfg.provider)
+    ]
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
 
@@ -425,6 +430,8 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
     provider_type = _normalize_provider_type(payload.provider, payload.provider_type)
     is_cli = provider_type == LOCAL_CLI_PROVIDER_TYPE or is_local_cli_provider(payload.provider)
     is_runtime = provider_type == LOCAL_RUNTIME_PROVIDER_TYPE or payload.provider == "local_llama_cpp"
+    if is_runtime and local_runtime_disabled(payload.provider):
+        raise ValidationError(local_runtime_disabled_message())
 
     if is_cli:
         api_key = LOCAL_CLI_PLACEHOLDER_KEY
@@ -495,6 +502,8 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
 
 @router.get("/config/models/{provider}")
 def get_model_config_detail(provider: str, db: Session = Depends(get_db)):
+    if local_runtime_disabled(provider):
+        raise ValidationError(local_runtime_disabled_message())
     config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
     if not config:
         raise NotFoundError(f"Provider config '{provider}' not found")
@@ -551,6 +560,8 @@ async def _list_anthropic_models(api_key: str, base_url: str) -> list[dict]:
 
 @router.post("/config/models/list")
 async def list_provider_models(payload: ModelListRequest):
+    if local_runtime_disabled(payload.provider):
+        raise ValidationError(local_runtime_disabled_message())
     if is_local_cli_provider(payload.provider):
         models = local_cli_model_options(payload.provider, payload.cli_command, payload.cli_args)
     elif payload.provider == "local_llama_cpp":
@@ -570,6 +581,8 @@ async def list_provider_models(payload: ModelListRequest):
 
 @router.post("/config/models/test")
 async def test_connection(payload: ConnectionTestRequest):
+    if local_runtime_disabled(payload.provider):
+        raise ValidationError(local_runtime_disabled_message())
     if is_local_cli_provider(payload.provider):
         command = payload.cli_command or _default_cli_command(payload.provider)
         _validate_cli_command(command)
@@ -712,7 +725,7 @@ def delete_model_config(provider: str, db: Session = Depends(get_db)):
 @router.get("/config/global-model")
 def get_global_model(db: Session = Depends(get_db)):
     config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
-    if not config:
+    if not config or local_runtime_disabled(config.provider):
         return ApiResponse.success(data={"provider": None, "model": None}, message="未设置全局默认模型")
     return ApiResponse.success(data={
         "provider": config.provider,
@@ -722,6 +735,8 @@ def get_global_model(db: Session = Depends(get_db)):
 
 @router.put("/config/global-model")
 def set_global_model(payload: GlobalModelSetting, db: Session = Depends(get_db)):
+    if local_runtime_disabled(payload.provider):
+        raise ValidationError(local_runtime_disabled_message())
     config = db.query(APIConfig).filter(APIConfig.provider == payload.provider).first()
     if not config:
         raise NotFoundError(f"未找到提供商 '{payload.provider}' 的配置，请先添加API配置")

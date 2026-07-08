@@ -80,6 +80,12 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
   }, [aiCollapsed])
 
   useEffect(() => {
+    if (aiModel && modelOptions.length > 0 && !modelOptions.some((option) => option.value === aiModel)) {
+      setAiModel(undefined)
+    }
+  }, [aiModel, modelOptions])
+
+  useEffect(() => {
     writeModelOverride(PROJECT_MODEL_STORAGE_KEY, aiModel)
   }, [aiModel])
 
