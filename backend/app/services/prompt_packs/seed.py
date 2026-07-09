@@ -113,8 +113,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "【角色对话】每个角色说话要符合性格，对话要有信息量，推动剧情或揭示性格。\n\n"
             "【输出】只输出正文，用\\n表示换行，对白可自由使用引号。\n\n"
             "写完后按 quality_rubric 中的8个维度自评，并调用以下工具验证：\n"
-            "- detect_character_changes：检测角色状态变化\n"
-            "- detect_new_worldbuilding：检测新世界观\n"
+            "- archive_chapter_after_write：写后统一归档章节摘要、大纲、角色状态和世界观变化\n"
             "- detect_forbidden_patterns：检查禁用句式（参考 forbidden_patterns）"
         ),
         "workflow_json": [
@@ -122,8 +121,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             {"step": 2, "name": "design_plot", "description": "设计剧情：场景、冲突、情绪曲线、转折点、钩子"},
             {"step": 3, "name": "write_chapter", "description": "写正文 1800-2500字"},
             {"step": 4, "name": "self_review", "description": "按 quality_rubric 8维度自评"},
-            {"step": 5, "name": "detect_changes", "description": "调用 detect_character_changes"},
-            {"step": 6, "name": "detect_worldbuilding", "description": "调用 detect_new_worldbuilding"},
+            {"step": 5, "name": "archive_changes", "description": "调用 archive_chapter_after_write 统一提交标准候选"},
             {"step": 7, "name": "detect_patterns", "description": "调用 detect_forbidden_patterns"},
             {"step": 8, "name": "save_draft", "description": "调用 save_external_chapter_draft"},
             {"step": 9, "name": "save_chapter", "description": "调用 create_chapter 保存"},

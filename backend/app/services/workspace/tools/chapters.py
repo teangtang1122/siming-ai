@@ -122,7 +122,7 @@ async def create_chapter(
         "tool": "create_chapter",
         "status": "ok",
         "detail": f"已创建章节：{chapter.title}（{count_words(content)} 字）",
-        "data": {"id": chapter.id, "title": chapter.title, "word_count": count_words(content)},
+        "data": {"id": chapter.id, "chapter_id": chapter.id, "title": chapter.title, "word_count": count_words(content)},
     }
 
 
@@ -222,7 +222,7 @@ async def update_chapter(
         "tool": "update_chapter",
         "status": "ok",
         "detail": f"已更新章节：{chapter.title}（{count_words(chapter.content or '')} 字）",
-        "data": {"id": chapter.id, "title": chapter.title, "word_count": count_words(chapter.content or "")},
+        "data": {"id": chapter.id, "chapter_id": chapter.id, "title": chapter.title, "word_count": count_words(chapter.content or "")},
     }
 
 

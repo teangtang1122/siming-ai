@@ -96,9 +96,8 @@ class TestWorkspacePacks(unittest.TestCase):
             self.assertIn(tool, WQ.available_tools)
 
     def test_fast_pack_keeps_maintenance_tools(self):
-        """Fast mode still needs post-write character/worldbuilding sync."""
-        self.assertIn("detect_character_changes", WF.available_tools)
-        self.assertIn("detect_new_worldbuilding", WF.available_tools)
+        """Fast mode still needs post-write archive sync."""
+        self.assertIn("archive_chapter_after_write", WF.available_tools)
 
     def test_both_packs_have_function_calling_protocol(self):
         for pack in [WF, WQ]:

@@ -122,7 +122,7 @@ async def get_moshu_usage_guide(
                 "外部 Agent 必须按质量版 prompt pack 自己写正文并自检；fast 请求也只影响外围流程，不降低正文写作标准。",
                 "调用 save_external_chapter_draft 保存完整草稿；聊天里不要完整输出正文。",
                 "调用 record_external_quality_review 记录外部质量检查。",
-                "用户确认后调用 create_chapter，并传 draft_id/content_ref；随后调用 apply_external_story_updates 写入角色状态、章节摘要和世界观变化。",
+                "用户确认后调用 create_chapter，并传 draft_id/content_ref；随后调用 archive_chapter_after_write 提交标准候选，统一写入章节摘要、大纲、角色状态和世界观变化。",
             ],
             "forbidden_tools": internal_llm_tools,
         },
@@ -131,7 +131,7 @@ async def get_moshu_usage_guide(
             "steps": [
                 "只有用户明确授权使用司命内部 API/内部模型时才能进入此流程。",
                 "确认 MCP 权限包为 internal_llm。",
-                "内部写作统一使用质量版总控和质量版章节提示词：检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
+                "内部写作统一使用质量版总控和质量版章节提示词：检索上下文、设计剧情、角色对戏、生成正文、评估、写后统一归档角色/世界观/大纲/摘要变化。",
                 "fast 请求只允许减少外围轮次，不能切换到低配正文提示词。",
                 "内部写作会消耗系统设置里的模型 API 额度。",
             ],
@@ -241,13 +241,13 @@ async def get_moshu_usage_guide(
                 "外部 Agent 按 prompt pack 自己写正文并自检。",
                 "调用 save_external_chapter_draft 保存完整草稿；聊天里不要完整输出正文。",
                 "调用 record_external_quality_review 记录外部质量检查。",
-                "用户确认后调用 create_chapter，并传 draft_id/content_ref，不要把整章正文塞进 content；再调用 apply_external_story_updates 写入角色状态、章节摘要、世界观变化。",
+                "用户确认后调用 create_chapter，并传 draft_id/content_ref，不要把整章正文塞进 content；再调用 archive_chapter_after_write 提交标准候选，统一写入角色状态、章节摘要、大纲和世界观变化。",
             ],
         },
         "writing_internal": {
             "title": "使用司命内部 API 写作",
             "steps": [
-                "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估、检测角色和世界观变化。",
+                "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估，并通过 archive_chapter_after_write 统一归档角色、世界观、大纲和摘要变化。",
                 "快速模式是兼容入口，正文写作提示词和质量标准仍与质量模式一致；只能减少外围非必要轮次，不能降低正文质量规则。",
                 "内部写作会消耗系统设置里的模型 API 额度。",
             ],

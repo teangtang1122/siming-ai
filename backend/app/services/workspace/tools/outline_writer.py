@@ -11,6 +11,7 @@ from ....core.json_repair import parse_json_object
 from ....database.models import Character, OutlineNode, Project
 from ....prompts.outline_writer_prompts import build_outline_writer_messages
 from ....prompts.style_prompts import build_style_context
+from ....services.story_granularity import extract_chapter_number, normalize_outline_batch
 
 OUTLINE_NODES_TOOL = {
     "type": "function",
@@ -131,88 +132,16 @@ def _outline_payload_from_result(result: dict[str, Any]) -> tuple[dict[str, Any]
     return None, raw_for_error
 
 
-def _target_chapter_number(requirements: str) -> int | None:
-    import re
-
-    for pattern in (
-        r"第\s*(\d+)\s*章",
-        r"目标：创建第\s*(\d+)\s*章",
-        r"回复第\s*(\d+)\s*章",
-    ):
-        match = re.search(pattern, requirements or "")
-        if match:
-            return int(match.group(1))
-    return None
-
-
-def _title_has_chapter_number(title: str, chapter_number: int) -> bool:
-    import re
-
-    pattern = rf"(第\s*{chapter_number}\s*章|chapter\s*{chapter_number}|{chapter_number}\s*章)"
-    return bool(re.search(pattern, title or "", re.IGNORECASE))
-
-
 def _normalize_generated_nodes(nodes: list[Any], requirements: str) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    chapter_number = _target_chapter_number(requirements)
-    chapter_title = ""
-    title_remap: dict[str, str] = {}
-
-    for item in nodes[:8]:
-        if not isinstance(item, dict):
-            continue
-        node = dict(item)
-        node_type = str(node.get("node_type") or "chapter").strip()
-        if node_type == "scene":
-            node_type = "section"
-        if node_type not in {"volume", "chapter", "section"}:
-            node_type = "chapter"
-        node["node_type"] = node_type
-
-        title = str(node.get("title") or "").strip()
-        original_title = title
-        if chapter_number and node_type == "chapter" and title and not _title_has_chapter_number(title, chapter_number):
-            title = f"第{chapter_number}章 {title}"
-            title_remap[original_title] = title
-        node["title"] = title
-
-        if node_type == "chapter" and title and not chapter_title:
-            chapter_title = title
-
+    chapter_number = extract_chapter_number(requirements)
+    normalized = normalize_outline_batch([item for item in nodes[:8] if isinstance(item, dict)], chapter_number=chapter_number)
+    for node in normalized:
         if "character_names" not in node and isinstance(node.get("related_characters"), list):
             node["character_names"] = node.get("related_characters")
         if "related_characters" not in node and isinstance(node.get("character_names"), list):
             node["related_characters"] = node.get("character_names")
         if "status" not in node:
             node["status"] = "pending"
-        normalized.append(node)
-
-    if chapter_title:
-        for node in normalized:
-            if node.get("node_type") != "section":
-                continue
-            parent_title = str(node.get("parent_title") or "").strip()
-            if not parent_title:
-                node["parent_title"] = chapter_title
-            elif parent_title in title_remap:
-                node["parent_title"] = title_remap[parent_title]
-            title = str(node.get("title") or "").strip()
-            if chapter_number and title and not _title_has_chapter_number(title, chapter_number):
-                for old_title, new_title in title_remap.items():
-                    if title == old_title:
-                        title = new_title
-                        break
-                    if title.startswith(old_title + " /"):
-                        title = new_title + title[len(old_title):]
-                        break
-                    if title.startswith(old_title + "-"):
-                        title = new_title + title[len(old_title):]
-                        break
-                else:
-                    parent_title = str(node.get("parent_title") or chapter_title).strip()
-                    if parent_title:
-                        title = f"{parent_title} / {title}"
-                node["title"] = title
     return normalized
 
 

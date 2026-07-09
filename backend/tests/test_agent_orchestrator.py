@@ -164,12 +164,12 @@ class PlannerTestCase(unittest.TestCase):
         self.assertIn("search_outline", graph.steps)
         self.assertIn("chapter_writer", graph.steps)
         self.assertIn("create_chapter", graph.steps)
-        self.assertIn("detect_character_changes", graph.steps)
-        self.assertIn("detect_new_worldbuilding", graph.steps)
-        self.assertEqual(len(graph.steps), 5)
+        self.assertIn("archive_chapter_after_write", graph.steps)
+        self.assertEqual(len(graph.steps), 4)
         # Verify dependencies
         self.assertEqual(graph.steps["chapter_writer"].depends_on, ["search_outline"])
         self.assertEqual(graph.steps["create_chapter"].depends_on, ["chapter_writer"])
+        self.assertEqual(graph.steps["archive_chapter_after_write"].depends_on, ["create_chapter"])
 
     def test_quality_chapter_plan_generation_single_char(self):
         graph = plan_quality_chapter(
@@ -193,8 +193,7 @@ class PlannerTestCase(unittest.TestCase):
     def test_quality_chapter_plan_has_all_steps(self):
         graph = plan_quality_chapter(outline_node_id="node-1")
         expected = {"preview_context", "design_plot", "roleplay", "chapter_writer",
-                    "evaluate_chapter", "create_chapter", "detect_character_changes",
-                    "detect_new_worldbuilding"}
+                    "evaluate_chapter", "create_chapter", "archive_chapter_after_write"}
         self.assertEqual(set(graph.steps.keys()), expected)
 
     def test_cataloging_init_plan_generation(self):
@@ -340,7 +339,7 @@ class OrchestratorTestCase(unittest.TestCase):
         self.assertIsNotNone(plan.graph_json)
 
         steps = self.db.query(AgentPlanStep).filter(AgentPlanStep.plan_id == plan.id).all()
-        self.assertEqual(len(steps), 5)
+        self.assertEqual(len(steps), 4)
         for s in steps:
             self.assertEqual(s.status, "pending")
 
@@ -694,7 +693,7 @@ class AgentRouterTestCase(unittest.TestCase):
         data = resp.json()["data"]
         self.assertEqual(data["name"], "fast_chapter")
         self.assertEqual(data["status"], "pending")
-        self.assertEqual(len(data["steps"]), 5)
+        self.assertEqual(len(data["steps"]), 4)
 
     def test_get_plan_endpoint(self):
         pid = self._create_project()

@@ -44,13 +44,14 @@ class BuildExternalWritingPlanTest(unittest.TestCase):
         self.assertIn("save_draft", step_names)
         self.assertIn("record_review", step_names)
         self.assertIn("create_chapter", step_names)
-        self.assertIn("apply_updates", step_names)
+        self.assertIn("archive_updates", step_names)
 
     def test_plan_steps_have_dependencies(self):
         intent = {"intent_type": "external_writing", "requirements": "写第三章"}
         plan = build_plan_from_intent(intent)
         self.assertEqual(plan.steps["save_draft"].depends_on, ["prepare_context"])
         self.assertEqual(plan.steps["create_chapter"].depends_on, ["record_review"])
+        self.assertEqual(plan.steps["archive_updates"].depends_on, ["create_chapter"])
 
 
 if __name__ == "__main__":

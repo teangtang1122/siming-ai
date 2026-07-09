@@ -5,6 +5,12 @@ import json
 from typing import Any
 
 from .constants import VALID_ITEM_TYPES
+from ..story_granularity import (
+    CHARACTER_STATE_FIELDS,
+    extract_chapter_number,
+    normalize_node_type,
+    normalize_outline_payload,
+)
 
 
 def clean_jsonl_text(text: str) -> str:
@@ -274,37 +280,18 @@ def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
         return "character_relationship"
     if "character_names" in keys or "worldbuilding_titles" in keys or "outline_title" in keys:
         return "chapter_link"
+    state_keys = set(CHARACTER_STATE_FIELDS)
     if "name" in keys or "character_name" in keys or "target_name" in keys:
         if "event_description" in keys or "event" in keys:
             return "character_timeline"
-        if keys & {
-            "current_location",
-            "current_goal",
-            "life_status",
-            "physical_state",
-            "mental_state",
-            "realm_or_level",
-            "active_conflict",
-            "abilities_state",
-            "items_or_assets",
-        }:
+        if keys & state_keys:
             return "character_state_update"
         if action in {"create", "new"}:
             return "character_create"
         return "character_update"
     if keys & {"role_type", "appearance", "personality", "background", "abilities", "tone_style", "catchphrases"}:
         return "character_create" if action in {"create", "new"} else "character_update"
-    if keys & {
-        "current_location",
-        "current_goal",
-        "life_status",
-        "physical_state",
-        "mental_state",
-        "realm_or_level",
-        "active_conflict",
-        "abilities_state",
-        "items_or_assets",
-    }:
+    if keys & state_keys:
         return "character_state_update"
     if "event_description" in keys and ("title" in keys or "entry_title" in keys or "dimension" in keys):
         return "worldbuilding_timeline"
@@ -375,13 +362,27 @@ def _normalize_payload_fields(
         if not payload.get("content"):
             payload["content"] = payload.get("description") or payload.get("event_description") or ""
         _normalize_dimension_alias(payload)
-    if item_type.startswith("outline_") and not payload.get("title"):
-        payload["title"] = raw.get("target_name") or payload.get("outline_title") or ""
+    if item_type.startswith("outline_"):
+        if not payload.get("title"):
+            payload["title"] = raw.get("target_name") or payload.get("outline_title") or ""
+        payload["node_type"] = normalize_node_type(payload.get("node_type"))
+        payload.update(normalize_outline_payload(
+            payload,
+            chapter_number=extract_chapter_number(
+                payload.get("title"),
+                payload.get("chapter_title"),
+                raw.get("target_name"),
+                raw.get("chapter_title"),
+            ),
+        ))
     if item_type == "chapter_summary":
         summary = payload.get("summary_text") or payload.get("summary") or payload.get("content") or ""
         if summary:
             payload["summary_text"] = summary
             payload["summary"] = payload.get("summary") or summary
+        scenes = payload.get("scenes")
+        if isinstance(scenes, list) and "scene_count" not in payload:
+            payload["scene_count"] = len(scenes)
     payload["item_type"] = item_type
     payload["operation"] = operation
     payload["type"] = item_type

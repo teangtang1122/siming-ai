@@ -26,9 +26,9 @@ APPLY_ORDER = {
     "chapter_link": 50,
 }
 
-VALID_ITEM_TYPES = set(APPLY_ORDER)
+from ..story_granularity import VALID_CANDIDATE_TYPES, WORLD_DIMENSIONS
 
-WORLD_DIMENSIONS = {"geography", "history", "factions", "power_system", "races", "culture"}
+VALID_ITEM_TYPES = set(VALID_CANDIDATE_TYPES)
 
 CATALOGING_MAX_TOKENS = 20000
 CATALOGING_TIMEOUT_SECONDS = 240

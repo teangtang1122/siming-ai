@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob
+from ..story_granularity import CHARACTER_STATE_FIELDS
 from .candidate_io import float_or_none
 from .constants import VALID_ITEM_TYPES
 from .jsonl import clean_jsonl_text, normalize_candidate, parse_json_line
@@ -41,19 +42,7 @@ _PLACEHOLDER_NAMES = {
     "某人",
 }
 
-_CHARACTER_STATE_KEYS = {
-    "appearance",
-    "age",
-    "life_status",
-    "current_location",
-    "realm_or_level",
-    "physical_state",
-    "mental_state",
-    "current_goal",
-    "active_conflict",
-    "abilities_state",
-    "items_or_assets",
-}
+_CHARACTER_STATE_KEYS = set(CHARACTER_STATE_FIELDS)
 
 _CHARACTER_DETAIL_KEYS = _CHARACTER_STATE_KEYS | {
     "role_type",

@@ -118,18 +118,46 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
         self.assertEqual(review_result["status"], "ok")
         self.assertIn("PASS", review_result["detail"])
 
-        # Step 4: Apply story updates (no LLM call)
-        update_result = asyncio.run(apply_external_story_updates(db, "p1", {
-            "chapter_id": "ch-e2e",
-            "updates": {
-                "characters": [
-                    {"id": "c1", "current_location": "Battlefield"},
-                ],
-            },
-            "mode": "auto",
-        }))
-        self.assertEqual(update_result["status"], "ok")
-        self.assertGreater(len(update_result["data"]["applied"]), 0)
+        # Step 4: Apply story updates through the real post-write archive path (no LLM call)
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.database.models import Base, Chapter, Character, OutlineNode, Project
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        real_db = Session()
+        real_db.add_all([
+            Project(id="p1", title="Test Novel"),
+            OutlineNode(id="o1", project_id="p1", title="第1章 战场", node_type="chapter", summary="Hero上战场。"),
+            Chapter(
+                id="ch-e2e",
+                project_id="p1",
+                outline_node_id="o1",
+                title="第1章 战场",
+                content="The rain fell on the battlefield. Hero drew his sword.",
+            ),
+            Character(id="c1", project_id="p1", name="Hero", current_location="Castle"),
+        ])
+        real_db.commit()
+        try:
+            update_result = asyncio.run(apply_external_story_updates(real_db, "p1", {
+                "chapter_id": "ch-e2e",
+                "updates": {
+                    "characters": [
+                        {"id": "c1", "current_location": "Battlefield"},
+                    ],
+                },
+                "mode": "auto",
+            }))
+            self.assertEqual(update_result["status"], "ok")
+            self.assertGreater(len(update_result["data"]["applied"]), 0)
+            saved_char = real_db.query(Character).filter(Character.id == "c1").first()
+            self.assertEqual(saved_char.current_location, "Battlefield")
+        finally:
+            real_db.close()
+            Base.metadata.drop_all(engine)
+            engine.dispose()
 
     def test_no_llm_gateway_called(self):
         """Verify LLMGateway is never imported or called."""

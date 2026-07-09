@@ -119,7 +119,7 @@ def render_quickstart(
         "get_prompt_pack(pack_id='cataloging_external_no_api') -> start_external_cataloging_job -> 循环 get_next_external_cataloging_chapter(phase='merged') / save_external_cataloging_candidates(phase='merged') / apply_pending_cataloging -> verify_external_cataloging_progress -> get_project_archive_status。",
         "",
         "## 默认外部写作流程",
-        "prepare_external_writing_context -> 外部 Agent 自己写作和自检 -> save_external_chapter_draft -> record_external_quality_review -> create_chapter(draft_id/content_ref) -> apply_external_story_updates。",
+        "prepare_external_writing_context -> 外部 Agent 自己写作和自检 -> save_external_chapter_draft -> record_external_quality_review -> create_chapter(draft_id/content_ref) -> archive_chapter_after_write。",
         "",
         "# Siming / 司命外部 Agent 快速入门",
         "",
@@ -147,7 +147,7 @@ def render_quickstart(
         "## 无 API 写章节",
         "1. prepare_external_writing_context()",
         "2. 外部 Agent 自己写正文并按质量规则自检",
-        "3. save_external_chapter_draft -> record_external_quality_review -> create_chapter -> apply_external_story_updates",
+        "3. save_external_chapter_draft -> record_external_quality_review -> create_chapter -> archive_chapter_after_write",
     ]
     from app.prompts.cataloging_source import get_language_rules, get_project_binding_rules
 
@@ -256,7 +256,7 @@ def render_writing_context(
     parts.append(
         "prepare_external_writing_context -> write and self-review with this quality prompt -> "
         "save_external_chapter_draft -> record_external_quality_review -> "
-        "create_chapter(draft_id/content_ref) -> apply_external_story_updates -> get_project_archive_status"
+        "create_chapter(draft_id/content_ref) -> archive_chapter_after_write -> get_project_archive_status"
     )
     if project.description:
         parts.append(f"\n## Project Description\n{project.description}")

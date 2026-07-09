@@ -132,12 +132,46 @@ async def prepare_external_writing_context(
             OutlineNode.id == outline_node_id,
         ).first()
         if node:
+            chapter_node = node
+            if node.node_type == "section" and node.parent_id:
+                parent = db.query(OutlineNode).filter(
+                    OutlineNode.project_id == project_id,
+                    OutlineNode.id == node.parent_id,
+                ).first()
+                if parent:
+                    chapter_node = parent
+            sections = db.query(OutlineNode).filter(
+                OutlineNode.project_id == project_id,
+                OutlineNode.parent_id == chapter_node.id,
+                OutlineNode.node_type == "section",
+            ).order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc()).limit(8).all()
             result["outline"] = {
                 "id": node.id,
                 "title": node.title,
                 "summary": node.summary,
+                "actual_summary": node.actual_summary,
+                "planned_summary": node.planned_summary,
                 "node_type": node.node_type,
                 "status": node.status,
+                "chapter_node": {
+                    "id": chapter_node.id,
+                    "title": chapter_node.title,
+                    "summary": chapter_node.summary,
+                    "actual_summary": chapter_node.actual_summary,
+                    "planned_summary": chapter_node.planned_summary,
+                    "node_type": chapter_node.node_type,
+                } if chapter_node.id != node.id else None,
+                "section_nodes": [
+                    {
+                        "id": section.id,
+                        "title": section.title,
+                        "summary": section.summary,
+                        "actual_summary": section.actual_summary,
+                        "planned_summary": section.planned_summary,
+                        "is_current": section.id == node.id,
+                    }
+                    for section in sections
+                ],
             }
         else:
             result["warnings"].append(f"Outline node not found: {outline_node_id}")
@@ -283,9 +317,7 @@ async def prepare_external_writing_context(
         {"tool": "save_external_chapter_draft", "description": "保存生成的草稿"},
         {"tool": "record_external_quality_review", "description": "记录质量自评"},
         {"tool": "create_chapter", "description": "用 draft_id 保存章节"},
-        {"tool": "detect_character_changes", "description": "检测角色状态变化"},
-        {"tool": "detect_new_worldbuilding", "description": "检测新增世界观元素"},
-        {"tool": "apply_external_story_updates", "description": "应用角色/世界观更新"},
+        {"tool": "archive_chapter_after_write", "description": "提交标准候选并统一归档章节摘要、大纲、角色状态和世界观"},
         {"tool": "evaluate_chapter", "description": "8维度80分质量评估（需要司命API）"},
     ]
 

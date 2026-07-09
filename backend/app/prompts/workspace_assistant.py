@@ -13,7 +13,7 @@ AVAILABLE_WORKSPACE_TOOLS = (
     "chapter_writer, character_writer, outline_writer, worldbuilding_writer, "
     "roleplay_character, dialogue_battle, "
     "rewrite_text, expand_text, continue_text, "
-    "suggest_conflicts, design_plot, detect_character_changes, detect_new_worldbuilding, detect_worldbuilding_conflicts, detect_forbidden_patterns, evaluate_chapter, "
+    "suggest_conflicts, design_plot, detect_character_changes, detect_new_worldbuilding, archive_chapter_after_write, inspect_story_granularity, repair_story_granularity, detect_worldbuilding_conflicts, detect_forbidden_patterns, evaluate_chapter, "
     "web_search, "
     "remember, recall, forget"
 )

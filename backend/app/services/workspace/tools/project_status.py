@@ -33,6 +33,7 @@ async def get_project_archive_status(
         OutlineNode,
         WorldbuildingEntry,
     )
+    from app.services.story_granularity import inspect_chapter_granularity
     if not str(project_id or "").strip():
         return {
             "tool": "get_project_archive_status",
@@ -108,6 +109,34 @@ async def get_project_archive_status(
     if last_job_data and last_job_data["failed_runs"] > 0:
         warnings.append(f"{last_job_data['failed_runs']}_chapter_runs_failed")
 
+    audited_chapters = db.query(Chapter).filter(
+        Chapter.project_id == project_id,
+    ).order_by(Chapter.created_at.asc()).limit(200).all()
+    granularity_items = [
+        inspect_chapter_granularity(db, project_id, chapter)
+        for chapter in audited_chapters
+    ]
+    granularity_missing: dict[str, int] = {}
+    granularity_warnings: dict[str, int] = {}
+    for item in granularity_items:
+        for key in item["missing"]:
+            granularity_missing[key] = granularity_missing.get(key, 0) + 1
+        for key in item["warnings"]:
+            granularity_warnings[key] = granularity_warnings.get(key, 0) + 1
+    granularity_health = {
+        "chapters_checked": len(granularity_items),
+        "ok_chapters": sum(1 for item in granularity_items if item["ok"]),
+        "missing_counts": granularity_missing,
+        "warning_counts": granularity_warnings,
+        "needs_repair": bool(granularity_missing or granularity_warnings),
+        "sample_issues": [
+            item for item in granularity_items
+            if item["missing"] or item["warnings"]
+        ][:10],
+    }
+    if granularity_health["needs_repair"]:
+        warnings.append("story_granularity_needs_attention")
+
     # Recommended next steps
     recommended_next_steps: list[str] = []
     if chapters_count == 0:
@@ -121,6 +150,8 @@ async def get_project_archive_status(
         recommended_next_steps.append("apply_pending_cataloging")
     elif last_job_data and last_job_data["failed_runs"] > 0:
         recommended_next_steps.append("retry_failed_chapters")
+    if granularity_health["needs_repair"]:
+        recommended_next_steps.append("inspect_story_granularity")
 
     return {
         "tool": "get_project_archive_status",
@@ -135,6 +166,7 @@ async def get_project_archive_status(
             "relationships_count": relationships_count,
             "worldbuilding_count": worldbuilding_count,
             "last_cataloging_job": last_job_data,
+            "granularity_health": granularity_health,
             "warnings": warnings,
             "recommended_next_steps": recommended_next_steps,
         },

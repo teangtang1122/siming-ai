@@ -1,14 +1,102 @@
-"""External story update tools — apply character/worldbuilding/outline updates.
+"""Compatibility wrapper for external story updates.
 
-These tools allow external agents to propose and apply updates to story data
-after writing a chapter. They respect MCP permission pack and confirmation rules.
+External agents used to submit grouped updates here. In 2.7.0 this tool
+converts those grouped updates into standard cataloging candidates and delegates
+to archive_chapter_after_write, so all writes go through the same applier.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlalchemy.orm import Session
+
+from ....database.models import Character, WorldbuildingEntry
+from ....services.story_granularity import CHARACTER_STABLE_FIELDS, CHARACTER_STATE_FIELDS
+from .story_granularity import archive_chapter_after_write
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _candidate_fields(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: source[field] for field in fields if field in source and source[field] not in (None, "")}
+
+
+def _legacy_candidates(
+    db: Session,
+    project_id: str,
+    updates: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    candidates: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for item in updates.get("characters", []) if isinstance(updates.get("characters"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        char_id = _text(item.get("id") or item.get("character_id"))
+        name = _text(item.get("name") or item.get("character_name"))
+        character = None
+        if char_id:
+            character = db.query(Character).filter(
+                Character.id == char_id,
+                Character.project_id == project_id,
+            ).first()
+        if not character and name:
+            character = db.query(Character).filter(
+                Character.name == name,
+                Character.project_id == project_id,
+            ).first()
+        if not character and char_id:
+            skipped.append({"type": "character", "id": char_id, "reason": "not found"})
+            continue
+        identity = {"id": character.id, "name": character.name} if character else {"name": name}
+        state = _candidate_fields(item, CHARACTER_STATE_FIELDS)
+        stable = _candidate_fields(item, CHARACTER_STABLE_FIELDS)
+        if state:
+            candidates.append({"type": "character_state_update", **identity, **state})
+        if stable:
+            candidates.append({"type": "character_update", **identity, **stable})
+        if not state and not stable:
+            skipped.append({"type": "character", "id": char_id or name, "reason": "no supported fields"})
+
+    for item in updates.get("relationships", []) if isinstance(updates.get("relationships"), list) else []:
+        if isinstance(item, dict):
+            candidates.append({"type": "character_relationship", **item})
+
+    for item in updates.get("worldbuilding", []) if isinstance(updates.get("worldbuilding"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        entry_id = _text(item.get("id") or item.get("entry_id"))
+        title = _text(item.get("title") or item.get("entry_title"))
+        if entry_id:
+            entry = db.query(WorldbuildingEntry).filter(
+                WorldbuildingEntry.id == entry_id,
+                WorldbuildingEntry.project_id == project_id,
+            ).first()
+            if not entry:
+                skipped.append({"type": "worldbuilding", "id": entry_id, "reason": "not found"})
+                continue
+            payload = {"type": "worldbuilding_update", "id": entry.id, "title": entry.title, **item}
+        elif title:
+            payload = {"type": "worldbuilding_create", **item}
+        else:
+            skipped.append({"type": "worldbuilding", "reason": "missing title/id"})
+            continue
+        candidates.append(payload)
+
+    for item in updates.get("outline", []) if isinstance(updates.get("outline"), list) else []:
+        if isinstance(item, dict):
+            action = _text(item.get("action") or item.get("operation"))
+            candidates.append({"type": "outline_update" if action == "update" else "outline_create", **item})
+
+    summary = updates.get("chapter_summary")
+    if isinstance(summary, dict):
+        candidates.append({"type": "chapter_summary", **summary})
+    elif _text(summary):
+        candidates.append({"type": "chapter_summary", "summary_text": _text(summary)})
+
+    return candidates, skipped
 
 
 async def apply_external_story_updates(
@@ -16,22 +104,11 @@ async def apply_external_story_updates(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    """Apply character/worldbuilding/outline updates from external agents.
-
-    Supports two modes:
-    - manual: returns write candidates without applying
-    - auto: applies safe create/update operations
-
-    Updates are grouped by: characters, relationships, worldbuilding, outline, chapter_summary.
-    """
-    from app.database.models import (
-        Character, CharacterRelationship, WorldbuildingEntry,
-        OutlineNode, Chapter,
-    )
-
-    chapter_id = str(args.get("chapter_id") or "").strip()
+    """Convert legacy grouped updates to standard post-write archive candidates."""
+    chapter_id = _text(args.get("chapter_id"))
     updates = args.get("updates", {})
-    mode = str(args.get("mode") or "manual").strip()
+    mode = _text(args.get("mode") or "manual").lower()
+    mode = mode if mode in {"manual", "auto"} else "manual"
 
     if not isinstance(updates, dict):
         return {
@@ -41,143 +118,46 @@ async def apply_external_story_updates(
             "data": None,
         }
 
-    result: dict[str, Any] = {
+    candidates, skipped = _legacy_candidates(db, project_id, updates)
+    if not candidates:
+        return {
+            "tool": "apply_external_story_updates",
+            "status": "ok",
+            "detail": f"{mode} mode: 0 applied, 0 candidates, {len(skipped)} skipped",
+            "data": {
+                "mode": mode,
+                "candidates": [],
+                "applied": [],
+                "skipped": skipped,
+                "warnings": ["no_supported_updates"] if not skipped else [],
+            },
+        }
+
+    archive = await archive_chapter_after_write(db, project_id, {
+        "chapter_id": chapter_id,
+        "outline_node_id": args.get("outline_node_id"),
+        "candidates": candidates,
         "mode": mode,
-        "candidates": [],
-        "applied": [],
-        "skipped": [],
-        "warnings": [],
-    }
-
-    # Process character updates
-    char_updates = updates.get("characters", [])
-    if isinstance(char_updates, list):
-        for cu in char_updates:
-            char_id = str(cu.get("id") or "").strip()
-            if not char_id:
-                result["skipped"].append({"type": "character", "reason": "missing id"})
-                continue
-
-            char = db.query(Character).filter(
-                Character.id == char_id,
-                Character.project_id == project_id,
-            ).first()
-            if not char:
-                result["skipped"].append({"type": "character", "id": char_id, "reason": "not found"})
-                continue
-
-            candidate = {
-                "type": "character",
-                "id": char_id,
-                "name": char.name,
-                "updates": {},
-            }
-
-            # Fields that can be updated
-            updatable = [
-                "current_location", "current_goal", "life_status",
-                "physical_state", "mental_state", "active_conflict",
-                "abilities_state", "items_or_assets",
-            ]
-            for field in updatable:
-                if field in cu:
-                    candidate["updates"][field] = cu[field]
-
-            if candidate["updates"]:
-                if mode == "auto":
-                    for field, value in candidate["updates"].items():
-                        setattr(char, field, value)
-                    result["applied"].append(candidate)
-                else:
-                    result["candidates"].append(candidate)
-
-    # Process worldbuilding updates
-    wb_updates = updates.get("worldbuilding", [])
-    if isinstance(wb_updates, list):
-        for wu in wb_updates:
-            wb_id = str(wu.get("id") or "").strip()
-            title = str(wu.get("title") or "").strip()
-
-            if wb_id:
-                # Update existing
-                entry = db.query(WorldbuildingEntry).filter(
-                    WorldbuildingEntry.id == wb_id,
-                    WorldbuildingEntry.project_id == project_id,
-                ).first()
-                if not entry:
-                    result["skipped"].append({"type": "worldbuilding", "id": wb_id, "reason": "not found"})
-                    continue
-
-                candidate = {
-                    "type": "worldbuilding",
-                    "id": wb_id,
-                    "title": entry.title,
-                    "updates": {},
-                }
-                for field in ["content", "dimension", "plot_usage"]:
-                    if field in wu:
-                        candidate["updates"][field] = wu[field]
-
-                if candidate["updates"]:
-                    if mode == "auto":
-                        for field, value in candidate["updates"].items():
-                            setattr(entry, field, value)
-                        result["applied"].append(candidate)
-                    else:
-                        result["candidates"].append(candidate)
-            elif title:
-                # Create new
-                candidate = {
-                    "type": "worldbuilding",
-                    "action": "create",
-                    "title": title,
-                    "content": wu.get("content", ""),
-                    "dimension": wu.get("dimension", "culture"),
-                }
-                if mode == "auto":
-                    new_entry = WorldbuildingEntry(
-                        project_id=project_id,
-                        title=title,
-                        content=wu.get("content", ""),
-                        dimension=wu.get("dimension", "culture"),
-                    )
-                    db.add(new_entry)
-                    result["applied"].append(candidate)
-                else:
-                    result["candidates"].append(candidate)
-
-    # Process chapter summary
-    chapter_summary = updates.get("chapter_summary")
-    if chapter_summary and chapter_id:
-        chapter = db.query(Chapter).filter(
-            Chapter.id == chapter_id,
-            Chapter.project_id == project_id,
-        ).first()
-        if chapter:
-            candidate = {
-                "type": "chapter_summary",
-                "chapter_id": chapter_id,
-                "chapter_title": chapter.title,
-                "summary": chapter_summary[:500],
-            }
-            if mode == "auto":
-                # Summary is stored via the chapter_summary relationship
-                # For now, just record it as applied
-                result["applied"].append(candidate)
-            else:
-                result["candidates"].append(candidate)
-
-    # Commit if auto mode
-    if mode == "auto" and result["applied"]:
-        try:
-            db.commit()
-        except Exception as exc:
-            result["warnings"].append(f"Commit failed: {exc}")
-
-    total = len(result["applied"]) + len(result["candidates"]) + len(result["skipped"])
+        "source": "external_agent",
+        "generate_if_missing": True,
+    })
+    data = archive.get("data") or {}
+    applied = data.get("applied_events") or []
+    manual_candidates = candidates if mode == "manual" else []
+    warnings = list(data.get("warnings") or [])
     return {
         "tool": "apply_external_story_updates",
-        "status": "ok",
-        "detail": f"{mode} mode: {len(result['applied'])} applied, {len(result['candidates'])} candidates, {len(result['skipped'])} skipped",
-        "data": result,
+        "status": archive.get("status") if archive.get("status") != "error" else "error",
+        "detail": (
+            f"{mode} mode: {len(applied)} applied, "
+            f"{len(manual_candidates)} candidates, {len(skipped)} skipped"
+        ),
+        "data": {
+            "mode": mode,
+            "candidates": manual_candidates,
+            "applied": applied,
+            "skipped": skipped,
+            "warnings": warnings,
+            "archive": data,
+        },
     }

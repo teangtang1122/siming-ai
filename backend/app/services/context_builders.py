@@ -388,9 +388,40 @@ def _build_outline_context(db: Session, project_id: str, outline_node_id: Option
     node = _get_outline_node_or_404(db, project_id, outline_node_id)
     if not node:
         return "暂无当前大纲节点。"
+    chapter_node = node
+    if node.node_type == "section" and node.parent_id:
+        parent = db.query(OutlineNode).filter(
+            OutlineNode.project_id == project_id,
+            OutlineNode.id == node.parent_id,
+        ).first()
+        if parent:
+            chapter_node = parent
+
     parts = [f"大纲节点：{node.title}（{node.node_type}）[ID: {node.id}]"]
+    if chapter_node.id != node.id:
+        parts.insert(0, f"所属章节：{chapter_node.title}（{chapter_node.node_type}）[ID: {chapter_node.id}]")
+        if chapter_node.summary:
+            parts.insert(1, f"章节概要：{chapter_node.summary}")
     if node.summary:
         parts.append(f"概要：{node.summary}")
+    section_parent_id = chapter_node.id if chapter_node.node_type == "chapter" else node.id
+    sections = (
+        db.query(OutlineNode)
+        .filter(
+            OutlineNode.project_id == project_id,
+            OutlineNode.parent_id == section_parent_id,
+            OutlineNode.node_type == "section",
+        )
+        .order_by(OutlineNode.sort_order.asc(), OutlineNode.created_at.asc())
+        .limit(8)
+        .all()
+    )
+    if sections:
+        parts.append("章内事件节点：")
+        for section in sections:
+            marker = "（当前）" if section.id == node.id else ""
+            summary = f"：{section.summary[:360]}" if section.summary else ""
+            parts.append(f"- {section.title}{marker}{summary}")
     linked = node.linked_characters
     if linked:
         char_names = [lc.character.name for lc in linked if lc.character]

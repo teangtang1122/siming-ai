@@ -69,7 +69,7 @@ def _workflow_section(task_type: str) -> str:
 3. Read relevant project files directly when useful, but write only through Siming MCP tools.
 4. Call `save_external_chapter_draft` for long chapter text instead of printing it.
 5. Call `record_external_quality_review`, then `create_chapter` with `draft_id/content_ref`.
-6. Call `apply_external_story_updates` for character/worldbuilding/outline/chapter summary changes.
+6. Call `archive_chapter_after_write` with standard candidates for character/worldbuilding/outline/chapter summary changes.
 7. Call `get_project_archive_status` before reporting completion.
 """
     return """

@@ -8,6 +8,12 @@ from sqlalchemy.orm import Session
 
 from ....database.models import OutlineNode, Project
 from ....services.content_store import sync_outline_to_file
+from ....services.story_granularity import (
+    extract_chapter_number,
+    normalize_node_type,
+    normalize_outline_batch,
+    normalize_outline_payload,
+)
 from ..utils import (
     find_outline_by_title_or_id,
     next_outline_sort_order,
@@ -16,11 +22,28 @@ from ..utils import (
 )
 
 
+def _chapter_number_arg(args: dict[str, Any]) -> int | None:
+    raw = args.get("chapter_number")
+    if raw not in (None, ""):
+        try:
+            number = int(raw)
+            return number if number > 0 else None
+        except (TypeError, ValueError):
+            pass
+    return extract_chapter_number(
+        args.get("requirements"),
+        args.get("title"),
+        args.get("chapter_title"),
+        args.get("parent_title"),
+    )
+
+
 async def create_outline_node(
     db: Session,
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
+    args = normalize_outline_payload(args, chapter_number=_chapter_number_arg(args))
     parent_id = str(args.get("parent_id") or "").strip() or None
     parent_title = str(args.get("parent_title") or "").strip()
     if not parent_id and parent_title:
@@ -35,9 +58,7 @@ async def create_outline_node(
         else:
             parent_id = None
             parent_warning = "；未找到当前作品内的父级大纲，已作为根节点创建"
-    node_type = str(args.get("node_type") or "chapter")
-    if node_type not in {"volume", "chapter", "section"}:
-        node_type = "chapter"
+    node_type = normalize_node_type(args.get("node_type"))
     title = str(args.get("title") or "").strip()
     summary = str(args.get("summary") or "").strip()
     if not title:
@@ -109,6 +130,15 @@ async def create_outline_nodes(
     if not isinstance(nodes, list) or not nodes:
         return {"tool": "create_outline_nodes", "status": "skipped", "detail": "没有可创建的大纲节点", "data": {"nodes": []}}
 
+    chapter_number = _chapter_number_arg(args) or extract_chapter_number(
+        *[
+            text
+            for item in nodes
+            if isinstance(item, dict)
+            for text in (item.get("title"), item.get("parent_title"), item.get("chapter_title"))
+        ]
+    )
+    nodes = normalize_outline_batch(nodes, chapter_number=chapter_number)
     parent_id = str(args.get("parent_id") or "").strip()
     created_title_to_id: dict[str, str] = {}
     created: list[dict] = []

@@ -2061,6 +2061,11 @@ def _register_all() -> None:
     from .tools.external_story_updates import (
         apply_external_story_updates,
     )
+    from .tools.story_granularity import (
+        archive_chapter_after_write,
+        inspect_story_granularity,
+        repair_story_granularity,
+    )
     from .tools.novel_creation import (
         start_novel_creation_session,
         draft_novel_blueprint,
@@ -2156,6 +2161,56 @@ def _register_all() -> None:
         risk_level="medium",
         estimated_cost="free",
         handler=apply_external_story_updates,
+    ))
+
+    _r(ToolDef(
+        name="archive_chapter_after_write",
+        description="Create and optionally apply standard cataloging candidates after a chapter is written. Unifies chapter summary, outline, character state, worldbuilding, and links.",
+        input_schema={
+            "chapter_id": {"type": "string", "description": "Saved chapter ID"},
+            "draft_id": {"type": "string", "description": "Optional draft ID/content_ref used to generate the chapter"},
+            "content_ref": {"type": "string", "description": "Alias for draft_id"},
+            "outline_node_id": {"type": "string", "description": "Linked outline node ID"},
+            "candidates": {"type": "array", "items": {"type": "object"}, "description": "Optional standard cataloging candidates"},
+            "mode": {"type": "string", "description": "auto|manual. Auto applies candidates; manual stores them for review."},
+            "source": {"type": "string", "description": "internal_writer|local_cli|external_agent|repair"},
+            "generate_if_missing": {"type": "boolean", "description": "Generate fallback candidates when none or required candidates are missing. Default true."},
+            "model": {"type": "string", "description": "Optional model for post-write archive candidate generation"},
+        },
+        tool_type="write",
+        writes_project_data=True,
+        risk_level="medium",
+        estimated_cost="model_or_free",
+        handler=archive_chapter_after_write,
+    ))
+
+    _r(ToolDef(
+        name="inspect_story_granularity",
+        description="Audit project or chapter story granularity: summaries, chapter outline, section events, character states, and links.",
+        input_schema={
+            "chapter_id": {"type": "string", "description": "Optional chapter ID to audit"},
+            "limit": {"type": "integer", "description": "Maximum chapters to audit, default 200"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=inspect_story_granularity,
+    ))
+
+    _r(ToolDef(
+        name="repair_story_granularity",
+        description="Create post-write archive runs to repair missing story granularity. Defaults to manual candidate review.",
+        input_schema={
+            "chapter_id": {"type": "string", "description": "Optional chapter ID to repair"},
+            "limit": {"type": "integer", "description": "Maximum chapters to inspect/repair, default 20"},
+            "mode": {"type": "string", "description": "manual|auto. Manual is default."},
+            "force": {"type": "boolean", "description": "Repair even chapters that currently pass the audit"},
+            "model": {"type": "string", "description": "Optional model for repair candidate generation"},
+        },
+        tool_type="write",
+        writes_project_data=True,
+        risk_level="medium",
+        estimated_cost="model_or_free",
+        handler=repair_story_granularity,
     ))
 
     # ── Novel Creation Tools ─────────────────────────────────────────────
@@ -2442,6 +2497,7 @@ def _classify_all() -> None:
         "update_cataloging_candidate", "apply_pending_cataloging",
         "set_cataloging_mode", "set_daily_word_goal",
         "apply_external_story_updates",
+        "archive_chapter_after_write", "repair_story_granularity",
         "apply_novel_blueprint",
         "save_external_cataloging_facts",
         "save_external_cataloging_candidates",

@@ -65,26 +65,20 @@ def plan_fast_chapter(
             depends_on=["chapter_writer"],
             label="保存章节",
         ),
-        "detect_character_changes": StepDef(
-            tool="detect_character_changes",
+        "archive_chapter_after_write": StepDef(
+            tool="archive_chapter_after_write",
             args={
-                "draft_id": "{chapter_writer.data.draft_id}",
-                "content_ref": "{chapter_writer.data.content_ref}",
                 "chapter_id": "{create_chapter.data.chapter_id}",
-                "outline_node_id": outline_node_id,
-            },
-            depends_on=["create_chapter"],
-            label="检测角色变化",
-        ),
-        "detect_new_worldbuilding": StepDef(
-            tool="detect_new_worldbuilding",
-            args={
                 "draft_id": "{chapter_writer.data.draft_id}",
                 "content_ref": "{chapter_writer.data.content_ref}",
                 "outline_node_id": outline_node_id,
+                "source": "internal_writer",
+                "mode": "auto",
+                "generate_if_missing": True,
+                "model": "{chapter_writer.data.model}",
             },
             depends_on=["create_chapter"],
-            label="检测新世界观元素",
+            label="写后统一归档",
         ),
     }
 
@@ -184,26 +178,20 @@ def plan_quality_chapter(
             depends_on=["evaluate_chapter"],
             label="保存章节",
         ),
-        "detect_character_changes": StepDef(
-            tool="detect_character_changes",
+        "archive_chapter_after_write": StepDef(
+            tool="archive_chapter_after_write",
             args={
-                "draft_id": "{chapter_writer.data.draft_id}",
-                "content_ref": "{chapter_writer.data.content_ref}",
                 "chapter_id": "{create_chapter.data.chapter_id}",
-                "outline_node_id": outline_node_id,
-            },
-            depends_on=["create_chapter"],
-            label="检测角色变化",
-        ),
-        "detect_new_worldbuilding": StepDef(
-            tool="detect_new_worldbuilding",
-            args={
                 "draft_id": "{chapter_writer.data.draft_id}",
                 "content_ref": "{chapter_writer.data.content_ref}",
                 "outline_node_id": outline_node_id,
+                "source": "internal_writer",
+                "mode": "auto",
+                "generate_if_missing": True,
+                "model": "{chapter_writer.data.model}",
             },
             depends_on=["create_chapter"],
-            label="检测新世界观元素",
+            label="写后统一归档",
         ),
     }
 
@@ -515,11 +503,11 @@ def plan_external_writing(
             depends_on=["record_review"],
             label="创建章节",
         ),
-        "apply_updates": StepDef(
-            tool="apply_external_story_updates",
-            args={"mode": "auto"},
+        "archive_updates": StepDef(
+            tool="archive_chapter_after_write",
+            args={"chapter_id": "$create_chapter.chapter_id", "mode": "auto", "source": "external_agent"},
             depends_on=["create_chapter"],
-            label="应用故事更新",
+            label="写后统一归档",
         ),
     }
     return PlanGraph(name="external_writing", steps=steps)

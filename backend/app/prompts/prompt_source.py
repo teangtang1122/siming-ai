@@ -109,8 +109,8 @@ def get_api_free_mode_rules() -> str:
 - dialogue_battle → 你自己写多角色对话
 - evaluate_chapter → 你自己按 quality_rubric 评分，或调用 record_external_quality_review
 - suggest_conflicts → 你自己分析冲突
-- detect_character_changes → 你自己分析角色变化，然后调用 update_character
-- detect_new_worldbuilding → 你自己分析新设定，然后调用 create_worldbuilding_entry
+- detect_character_changes → 你自己分析角色变化，然后通过 archive_chapter_after_write 提交 character_state_update/character_update 候选
+- detect_new_worldbuilding → 你自己分析新设定，然后通过 archive_chapter_after_write 提交 worldbuilding_create/update 候选
 - detect_worldbuilding_conflicts → 你自己检查设定矛盾
 - rewrite_text → 你自己改写
 - expand_text → 你自己扩写
@@ -123,7 +123,8 @@ API-free 工具（可以自由使用）：
 - prepare_external_writing_context → 获取写作上下文
 - save_external_chapter_draft → 保存草稿
 - record_external_quality_review → 记录质量自评
-- apply_external_story_updates → 应用故事更新
+- archive_chapter_after_write → 写章后统一归档章节摘要、大纲、角色状态和世界观候选
+- apply_external_story_updates → 旧接口兼容包装；新流程优先使用 archive_chapter_after_write
 - start_external_cataloging_job / get_next_external_cataloging_chapter(phase="merged") / save_external_cataloging_candidates(phase="merged") / apply_pending_cataloging / verify_external_cataloging_progress → 外部融合编目全套
 - save_external_cataloging_facts / list_cataloging_facts → 仅用于恢复旧两阶段编目任务
 - get_project_archive_status → 验证数据
