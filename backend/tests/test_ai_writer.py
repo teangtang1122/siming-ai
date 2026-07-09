@@ -440,9 +440,23 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.create_outline_node(project_id, "第150章 死线蔓延")
         outline_payload = {
             "nodes": [{
-                "title": "第151章 抢网",
+                "title": "抢网",
                 "node_type": "chapter",
                 "summary": "主角团承接第150章危机，按当前剧情抢占网络节点并阻断死线继续扩张。",
+                "character_names": [],
+                "status": "pending",
+            }, {
+                "title": "抢网 / 场景1：定位死线节点",
+                "node_type": "section",
+                "parent_title": "抢网",
+                "summary": "控制室内，主角团根据第150章留下的死线轨迹定位即将失守的网络节点，冲突是时间不足和坐标持续漂移，结果是锁定抢网入口。",
+                "character_names": [],
+                "status": "pending",
+            }, {
+                "title": "抢网 / 场景2：抢占中继权限",
+                "node_type": "section",
+                "parent_title": "抢网",
+                "summary": "网络中继点前，主角团与病毒残留争夺权限，行动目标是切断下一轮扩散，转折是发现死线并非单点故障，结尾钩子指向更深层源头。",
                 "character_names": [],
                 "status": "pending",
             }],
@@ -498,6 +512,13 @@ class AIWriterIsolationTestCase(unittest.TestCase):
             ).one_or_none()
             self.assertIsNotNone(node)
             self.assertIn("抢占网络节点", node.summary)
+            sections = db.query(OutlineNode).filter(
+                OutlineNode.project_id == project_id,
+                OutlineNode.parent_id == node.id,
+                OutlineNode.node_type == "section",
+            ).order_by(OutlineNode.sort_order.asc()).all()
+            self.assertEqual(len(sections), 2)
+            self.assertTrue(all(section.title.startswith("第151章 抢网 / 场景") for section in sections))
         finally:
             db.close()
 

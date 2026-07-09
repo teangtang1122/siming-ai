@@ -28,7 +28,11 @@ OUTLINE_NODES_TOOL = {
                             "title": {"type": "string", "description": "节点标题"},
                             "node_type": {"type": "string", "enum": ["chapter", "volume", "section"], "description": "节点类型"},
                             "summary": {"type": "string", "description": "剧情摘要（100-300字）"},
+                            "parent_title": {"type": "string", "description": "section节点的父级chapter标题；章级节点留空"},
+                            "actual_summary": {"type": "string", "description": "已发生/计划发生的具体事件摘要，可与summary相同"},
+                            "planned_summary": {"type": "string", "description": "后续写作目标或铺垫"},
                             "character_names": {"type": "array", "items": {"type": "string"}, "description": "涉及的角色名列表"},
+                            "related_characters": {"type": "array", "items": {"type": "string"}, "description": "character_names的兼容别名"},
                             "status": {"type": "string", "enum": ["pending"], "description": "节点状态"},
                         },
                         "required": ["title", "node_type", "summary", "character_names", "status"],
@@ -125,6 +129,91 @@ def _outline_payload_from_result(result: dict[str, Any]) -> tuple[dict[str, Any]
         if parsed:
             return parsed, raw_for_error
     return None, raw_for_error
+
+
+def _target_chapter_number(requirements: str) -> int | None:
+    import re
+
+    for pattern in (
+        r"第\s*(\d+)\s*章",
+        r"目标：创建第\s*(\d+)\s*章",
+        r"回复第\s*(\d+)\s*章",
+    ):
+        match = re.search(pattern, requirements or "")
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _title_has_chapter_number(title: str, chapter_number: int) -> bool:
+    import re
+
+    pattern = rf"(第\s*{chapter_number}\s*章|chapter\s*{chapter_number}|{chapter_number}\s*章)"
+    return bool(re.search(pattern, title or "", re.IGNORECASE))
+
+
+def _normalize_generated_nodes(nodes: list[Any], requirements: str) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    chapter_number = _target_chapter_number(requirements)
+    chapter_title = ""
+    title_remap: dict[str, str] = {}
+
+    for item in nodes[:8]:
+        if not isinstance(item, dict):
+            continue
+        node = dict(item)
+        node_type = str(node.get("node_type") or "chapter").strip()
+        if node_type == "scene":
+            node_type = "section"
+        if node_type not in {"volume", "chapter", "section"}:
+            node_type = "chapter"
+        node["node_type"] = node_type
+
+        title = str(node.get("title") or "").strip()
+        original_title = title
+        if chapter_number and node_type == "chapter" and title and not _title_has_chapter_number(title, chapter_number):
+            title = f"第{chapter_number}章 {title}"
+            title_remap[original_title] = title
+        node["title"] = title
+
+        if node_type == "chapter" and title and not chapter_title:
+            chapter_title = title
+
+        if "character_names" not in node and isinstance(node.get("related_characters"), list):
+            node["character_names"] = node.get("related_characters")
+        if "related_characters" not in node and isinstance(node.get("character_names"), list):
+            node["related_characters"] = node.get("character_names")
+        if "status" not in node:
+            node["status"] = "pending"
+        normalized.append(node)
+
+    if chapter_title:
+        for node in normalized:
+            if node.get("node_type") != "section":
+                continue
+            parent_title = str(node.get("parent_title") or "").strip()
+            if not parent_title:
+                node["parent_title"] = chapter_title
+            elif parent_title in title_remap:
+                node["parent_title"] = title_remap[parent_title]
+            title = str(node.get("title") or "").strip()
+            if chapter_number and title and not _title_has_chapter_number(title, chapter_number):
+                for old_title, new_title in title_remap.items():
+                    if title == old_title:
+                        title = new_title
+                        break
+                    if title.startswith(old_title + " /"):
+                        title = new_title + title[len(old_title):]
+                        break
+                    if title.startswith(old_title + "-"):
+                        title = new_title + title[len(old_title):]
+                        break
+                else:
+                    parent_title = str(node.get("parent_title") or chapter_title).strip()
+                    if parent_title:
+                        title = f"{parent_title} / {title}"
+                node["title"] = title
+    return normalized
 
 
 async def outline_writer(
@@ -239,7 +328,7 @@ async def outline_writer(
             "data": {"raw": str(raw_for_error)[:500]},
         }
 
-    nodes_data = parsed.get("nodes", [])
+    nodes_data = _normalize_generated_nodes(parsed.get("nodes", []), requirements)
     return {
         "tool": "outline_writer",
         "status": "ok",

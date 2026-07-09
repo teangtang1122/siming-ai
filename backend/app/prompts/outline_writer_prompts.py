@@ -1,6 +1,8 @@
 """Outline Writer prompt — assembles story structure rules for outline generation."""
 from __future__ import annotations
 
+from .cataloging_source import get_outline_granularity_rules
+
 OUTLINE_WRITER_SYSTEM = (
     "你是一位资深故事架构师，专精于设计有节奏感、结构清晰的小说大纲。\n"
     "你设计的大纲不是流水账——每个节点都必须推动主线或揭示关键信息。\n\n"
@@ -18,9 +20,16 @@ OUTLINE_WRITER_SYSTEM = (
     "- volume（卷）：故事的大段落，通常包含多个章节，标志一个大的叙事弧线完成。\n"
     "- chapter（章）：基本的叙事单元，通常对应一个大场景或一个核心事件。\n"
     "- section（节）：章内的细分，用于组织较小的场景转换。\n\n"
+    f"{get_outline_granularity_rules()}\n\n"
+    "【对话补章大纲硬规则】\n"
+    "1. 当用户要求创建某一章大纲时，必须输出 1 条 node_type=\"chapter\" 的整章节点，标题必须包含明确章号，如“第151章 抢网”。\n"
+    "2. 同一章包含多个重要行动段、冲突阶段、视角切换或转折时，必须再输出 2-6 条 node_type=\"section\" 的章内事件节点。\n"
+    "3. section 节点必须设置 parent_title，指向本轮输出的 chapter 节点标题；标题建议写成“第151章 抢网 / 场景1：节点名”。\n"
+    "4. batch_count 表示要规划几个章级节点；每个章级节点下的 section 不计入 batch_count，但总节点数最多8个。\n"
+    "5. 不要只输出一句概括性章节内容；要像作品建档一样拆出可供后续写作检索的事件节点。\n\n"
     "请调用 create_outline_nodes 函数提交大纲节点。\n"
     "如果当前模型或本机 CLI 不能调用函数，请只输出 JSON 对象：{\"nodes\":[...],\"design_notes\":\"...\"}，不要输出 Markdown 或解释。\n"
-    "默认生成1个节点。如果用户要求批量规划，可生成多个（上限8个），按剧情推进顺序排列。"
+    "默认生成1个章级节点及其必要的章内section节点。如果用户要求批量规划，可生成多个章级节点（上限8个总节点），按剧情推进顺序排列。"
 )
 
 
@@ -46,7 +55,7 @@ def build_outline_writer_messages(
     if existing_characters and existing_characters != "暂无角色。":
         user_parts.append(f"【已有角色】\n{existing_characters}")
     user_parts.append(
-        f"\n请创建{batch_count}个大纲节点。"
+        f"\n请创建{batch_count}个章级大纲节点；如为单章补大纲，还要按上方粒度规则补充章内 section 事件节点。"
     )
 
     return [

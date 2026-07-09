@@ -1,7 +1,7 @@
 {
   "name": "siming-frontend",
   "private": true,
-  "version": "2.6.20",
+  "version": "2.6.21",
   "type": "module",
   "scripts": {
     "dev": "vite",

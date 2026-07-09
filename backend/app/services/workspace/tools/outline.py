@@ -22,6 +22,11 @@ async def create_outline_node(
     args: dict[str, Any],
 ) -> dict:
     parent_id = str(args.get("parent_id") or "").strip() or None
+    parent_title = str(args.get("parent_title") or "").strip()
+    if not parent_id and parent_title:
+        parent = find_outline_by_title_or_id(db, project_id, parent_title)
+        if parent:
+            parent_id = parent.id
     parent_warning = ""
     if parent_id:
         parent = find_outline_by_title_or_id(db, project_id, parent_id)
@@ -79,7 +84,10 @@ async def create_outline_node(
     )
     db.add(node)
     db.flush()
-    replace_outline_links_by_names(db, project_id, node, args.get("character_names"))
+    character_names = args.get("character_names")
+    if character_names is None:
+        character_names = args.get("related_characters")
+    replace_outline_links_by_names(db, project_id, node, character_names)
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
         sync_outline_to_file(db, project)
@@ -102,6 +110,7 @@ async def create_outline_nodes(
         return {"tool": "create_outline_nodes", "status": "skipped", "detail": "没有可创建的大纲节点", "data": {"nodes": []}}
 
     parent_id = str(args.get("parent_id") or "").strip()
+    created_title_to_id: dict[str, str] = {}
     created: list[dict] = []
     skipped: list[str] = []
     errors: list[str] = []
@@ -112,12 +121,19 @@ async def create_outline_nodes(
         node_args = dict(item)
         if parent_id and not node_args.get("parent_id"):
             node_args["parent_id"] = parent_id
+        parent_title = str(node_args.get("parent_title") or "").strip()
+        if parent_title and not node_args.get("parent_id") and parent_title in created_title_to_id:
+            node_args["parent_id"] = created_title_to_id[parent_title]
         result = await create_outline_node(db, project_id, node_args)
         status = str(result.get("status") or "")
         if status == "ok":
             data = result.get("data")
             if isinstance(data, dict):
                 created.append(data)
+                title = str(data.get("title") or "").strip()
+                node_id = str(data.get("id") or "").strip()
+                if title and node_id:
+                    created_title_to_id[title] = node_id
         elif status == "error":
             errors.append(str(result.get("detail") or f"第 {index} 个节点创建失败"))
         else:
