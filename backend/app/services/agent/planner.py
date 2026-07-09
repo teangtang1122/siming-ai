@@ -525,6 +525,37 @@ def plan_external_writing(
     return PlanGraph(name="external_writing", steps=steps)
 
 
+def plan_local_cli_writing(
+    *,
+    requirements: str = "",
+    provider: str = "",
+    outline_node_id: str = "",
+) -> PlanGraph:
+    """Start a Siming-managed local CLI Agent for chapter writing."""
+    user_request = requirements.strip()
+    if outline_node_id:
+        user_request = (
+            f"{user_request}\n\n"
+            f"Target outline_node_id: `{outline_node_id}`. "
+            "Before writing, call `prepare_external_writing_context` with this outline_node_id."
+        ).strip()
+    args = {
+        "task_type": "writing",
+        "user_request": user_request,
+    }
+    if provider:
+        args["provider"] = provider
+    steps = {
+        "start_local_cli_agent_run": StepDef(
+            tool="start_local_cli_agent_run",
+            args=args,
+            depends_on=[],
+            label="启动本机 CLI 写作 Agent",
+        ),
+    }
+    return PlanGraph(name="local_cli_writing", steps=steps)
+
+
 def plan_external_cataloging(
     *,
     requirements: str = "",
@@ -575,6 +606,7 @@ def plan_export_project(
 # ---------------------------------------------------------------------------
 
 _CHAPTER_RE = re.compile(r"第\s*(\d+)\s*章")
+_BARE_CHAPTER_RE = re.compile(r"(?<!\d)(\d{1,5})\s*章")
 _QUALITY_KEYWORDS = {"精写", "高质量", "仔细写", "认真写", "质量", "quality"}
 
 # Character creation keywords
@@ -625,12 +657,30 @@ def _extract_worldbuilding_topic(text: str) -> str:
 
 def _extract_outline_batch_count(text: str) -> int | None:
     for pattern in [
-        r"(?:接下来|连续|后续|往后)?\s*(\d{1,2})\s*(?:章|个)(?:大纲|章节)?",
+        r"(?:接下来|连续|后续|往后|一批)\s*(\d{1,2})\s*(?:章|个)(?:大纲|章节)?",
         r"(?:大纲|章节).{0,6}(\d{1,2})\s*(?:章|个)",
     ]:
         m = re.search(pattern, text)
         if m:
             return max(1, min(8, int(m.group(1))))
+    return None
+
+
+def _extract_chapter_number(text: str) -> int | None:
+    match = _CHAPTER_RE.search(text)
+    if match:
+        return int(match.group(1))
+
+    for match in _BARE_CHAPTER_RE.finditer(text):
+        number = int(match.group(1))
+        prefix = text[max(0, match.start() - 10):match.start()]
+        suffix = text[match.end():match.end() + 8]
+        if any(key in prefix for key in ("后续", "连续", "接下来", "往后", "一批")):
+            continue
+        has_action = any(key in prefix for key in ("写", "续写", "精写", "创建", "新建", "生成", "规划", "补", "更"))
+        has_target_suffix = any(key in suffix for key in ("大纲", "正文", "内容"))
+        if number >= 10 or (has_action and has_target_suffix):
+            return number
     return None
 
 
@@ -732,11 +782,10 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
     # 1. Project init
     if any(kw in text for kw in _INIT_KEYWORDS):
         if "大纲" in text and not any(kw in text for kw in ("建档", "初始化", "全面规划", "整理资料", "提取事实")):
-            chapter_match = _CHAPTER_RE.search(text)
             return {
                 "intent_type": _INTENT_OUTLINE,
                 "requirements": text,
-                "chapter_number": int(chapter_match.group(1)) if chapter_match else None,
+                "chapter_number": _extract_chapter_number(text),
                 "batch_count": _extract_outline_batch_count(text),
             }
         return {"intent_type": _INTENT_PROJECT_INIT, "requirements": text}
@@ -798,18 +847,16 @@ def detect_intent(user_message: str) -> dict[str, Any] | None:
 
     # 4. Outline planning
     if any(kw in text for kw in _OUTLINE_KEYWORDS) or ("大纲" in text and any(kw in text for kw in ("创建", "新建", "补", "生成", "规划", "添加", "先"))):
-        chapter_match = _CHAPTER_RE.search(text)
         return {
             "intent_type": _INTENT_OUTLINE,
             "requirements": text,
-            "chapter_number": int(chapter_match.group(1)) if chapter_match else None,
+            "chapter_number": _extract_chapter_number(text),
             "batch_count": _extract_outline_batch_count(text),
         }
 
     # 5. Chapter writing
-    chapter_match = _CHAPTER_RE.search(text)
-    if chapter_match:
-        chapter_number = int(chapter_match.group(1))
+    chapter_number = _extract_chapter_number(text)
+    if chapter_number:
         mode = "quality" if any(kw in text for kw in _QUALITY_KEYWORDS) else "fast"
         return {
             "intent_type": _INTENT_CHAPTER,

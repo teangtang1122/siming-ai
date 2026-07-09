@@ -13,6 +13,7 @@ from typing import Any, AsyncGenerator
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from ...ai.local_cli_adapter import is_local_cli_provider
 from ...core.db_helpers import get_project_or_404
 from ...database.models import (
     AgentPlanStep,
@@ -31,7 +32,7 @@ from ..workspace.run_log import (
 )
 from .orchestrator import PlanOrchestrator, _serialize_step
 from .plan_graph import PlanGraph
-from .planner import build_plan_from_intent, detect_intent
+from .planner import build_plan_from_intent, detect_intent, plan_local_cli_writing
 
 
 def _apply_assistant_mode_to_intent(
@@ -841,7 +842,14 @@ async def detect_and_stream_plan(
             skill_info=skill_info,
         )
 
-    graph = build_plan_from_intent(intent, outline_node_id=outline_node_id)
+    if intent.get("intent_type") == "chapter" and is_local_cli_provider(_model_provider(model)):
+        graph = plan_local_cli_writing(
+            requirements=intent.get("requirements", ""),
+            provider=_model_provider(model),
+            outline_node_id=outline_node_id,
+        )
+    else:
+        graph = build_plan_from_intent(intent, outline_node_id=outline_node_id)
     if graph is None:
         return None
 

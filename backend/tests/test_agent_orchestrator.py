@@ -29,6 +29,7 @@ from app.services.agent.planner import (
     plan_create_outline,
     plan_cataloging_init,
     plan_fast_chapter,
+    plan_local_cli_writing,
     plan_quality_chapter,
 )
 from app.services.agent.step_args import resolve_step_args
@@ -219,6 +220,13 @@ class PlannerTestCase(unittest.TestCase):
         self.assertEqual(result["mode"], "fast")
         self.assertEqual(result["chapter_number"], 151)
 
+    def test_detect_intent_fast_chapter_without_di_prefix(self):
+        result = detect_intent("帮我写151章")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["intent_type"], "chapter")
+        self.assertEqual(result["mode"], "fast")
+        self.assertEqual(result["chapter_number"], 151)
+
     def test_detect_intent_quality_chapter(self):
         result = detect_intent("精写第42章")
         self.assertIsNotNone(result)
@@ -234,6 +242,34 @@ class PlannerTestCase(unittest.TestCase):
         result = detect_intent("那就先帮我创建大纲")
         self.assertIsNotNone(result)
         self.assertEqual(result["intent_type"], "outline")
+
+    def test_detect_intent_create_bare_chapter_outline(self):
+        result = detect_intent("帮我创建151章大纲")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["intent_type"], "outline")
+        self.assertEqual(result["chapter_number"], 151)
+        self.assertIsNone(result["batch_count"])
+
+    def test_detect_intent_outline_batch_keeps_count_separate(self):
+        result = detect_intent("帮我创建后续3章大纲")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["intent_type"], "outline")
+        self.assertIsNone(result["chapter_number"])
+        self.assertEqual(result["batch_count"], 3)
+
+    def test_local_cli_writing_plan_starts_worker(self):
+        graph = plan_local_cli_writing(
+            requirements="帮我写151章",
+            provider="opencode_cli",
+            outline_node_id="outline-151",
+        )
+        self.assertEqual(graph.name, "local_cli_writing")
+        self.assertEqual(set(graph.steps.keys()), {"start_local_cli_agent_run"})
+        step = graph.steps["start_local_cli_agent_run"]
+        self.assertEqual(step.tool, "start_local_cli_agent_run")
+        self.assertEqual(step.args["task_type"], "writing")
+        self.assertEqual(step.args["provider"], "opencode_cli")
+        self.assertIn("outline-151", step.args["user_request"])
 
     def test_assistant_mode_quality_overrides_chapter_plan_mode(self):
         intent = {

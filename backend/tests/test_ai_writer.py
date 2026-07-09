@@ -20,6 +20,8 @@ from app.database.models import (
     CharacterChangeLog,
     CharacterTimeline,
     CharacterVersion,
+    AgentRun,
+    AgentRunEvent,
     AgentPlan,
     AgentPlanStep,
     AssistantConversation,
@@ -75,6 +77,8 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         try:
             db.query(AssistantRunStep).delete()
             db.query(AssistantRun).delete()
+            db.query(AgentRunEvent).delete()
+            db.query(AgentRun).delete()
             db.query(AgentPlanStep).delete()
             db.query(AgentPlan).delete()
             db.query(AssistantMessage).delete()
@@ -494,6 +498,66 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertIn("司命本地 AI", response.text)
         self.assertNotIn("未找到第 151 章的大纲节点", response.text)
         self.assertNotIn("plan_created", response.text)
+
+    def test_workspace_chapter_plan_bare_number_starts_local_cli_agent(self):
+        project_id = self.create_project("Bare Chapter Local CLI Project")
+        self.create_outline_node(project_id, "第151章 新的死线")
+        db = SessionLocal()
+        try:
+            db.add(APIConfig(
+                provider="opencode_cli",
+                provider_type="local_cli",
+                api_key_encrypted="",
+                default_model="opencode/deepseek-v4-flash-free",
+                cli_command="opencode",
+                cli_args='["run","--pure","{prompt}"]',
+                is_global_default=True,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        created_coroutines = []
+
+        def capture_task(coroutine):
+            created_coroutines.append(coroutine)
+
+            class DummyTask:
+                pass
+
+            return DummyTask()
+
+        with patch("app.services.local_cli_agent_worker.asyncio.create_task", side_effect=capture_task):
+            response = self.client.post(
+                f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+                json={
+                    "scope": "project",
+                    "message": "帮我写151章",
+                    "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                    "auto_apply": True,
+                },
+            )
+
+        for coroutine in created_coroutines:
+            coroutine.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("local_cli_writing", response.text)
+        self.assertIn("start_local_cli_agent_run", response.text)
+        self.assertNotIn("local_cli_mode", response.text)
+        self.assertNotIn("只有 `read` 工具可用", response.text)
+
+        db = SessionLocal()
+        try:
+            run = db.query(AgentRun).filter(
+                AgentRun.project_id == project_id,
+                AgentRun.source == "internal_cli",
+                AgentRun.client_name == "opencode_cli",
+            ).one_or_none()
+            self.assertIsNotNone(run)
+            self.assertIn("writing", run.title)
+        finally:
+            db.close()
 
     def test_chapter_writer_rejects_local_runtime_model(self):
         project_id = self.create_project("Local Runtime Writer Guard Project")
