@@ -107,7 +107,7 @@ class TestChapterCRUD(ChapterTestCase):
         self.assertEqual(chapter["outline_title"], "Opening Outline")
         self.assertEqual(chapter["word_count"], 7)  # 6 CJK + 1 punctuation
         self.assertEqual(chapter["current_version"], 1)
-        self.assertEqual(chapter["snapshot_count"], 0)
+        self.assertEqual(chapter["snapshot_count"], 1)
 
         response = self.client.get(f"{API_PREFIX}/projects/{project_id}/chapters/{chapter['id']}")
         self.assertEqual(response.status_code, 200)
@@ -180,13 +180,13 @@ class TestChapterSnapshots(ChapterTestCase):
         self.assertEqual(saved["content"], "新内容\n第二行")
         self.assertEqual(saved["word_count"], 6)
         self.assertEqual(saved["current_version"], 2)
-        self.assertEqual(saved["snapshot_count"], 1)
+        self.assertEqual(saved["snapshot_count"], 2)
 
         snapshots_resp = self.client.get(
             f"{API_PREFIX}/projects/{project_id}/chapters/{chapter['id']}/snapshots"
         )
         snapshots = snapshots_resp.json()["data"]["items"]
-        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(len(snapshots), 2)
         self.assertEqual(snapshots[0]["version_number"], 2)
         self.assertEqual(snapshots[0]["trigger_type"], "manual_save")
 
@@ -238,7 +238,7 @@ class TestChapterSnapshots(ChapterTestCase):
         restored = response.json()["data"]
         self.assertEqual(restored["content"], "第一版内容")
         self.assertEqual(restored["current_version"], 4)
-        self.assertEqual(restored["snapshot_count"], 3)
+        self.assertEqual(restored["snapshot_count"], 4)
 
         new_snapshots = self.client.get(
             f"{API_PREFIX}/projects/{project_id}/chapters/{chapter['id']}/snapshots"

@@ -1,6 +1,13 @@
 """Workspace tool handlers grouped by domain."""
 from .chapter_writer import chapter_writer
-from .chapters import create_chapter, delete_chapter, update_chapter
+from .chapters import (
+    create_chapter,
+    delete_chapter,
+    diff_chapter_versions,
+    list_chapter_versions,
+    restore_chapter_version,
+    update_chapter,
+)
 from .context_preview import preview_writing_context
 from .character_writer import character_writer
 from .characters import create_character, delete_character, update_character
@@ -102,6 +109,9 @@ __all__ = [
     "create_chapter",
     "update_chapter",
     "delete_chapter",
+    "list_chapter_versions",
+    "restore_chapter_version",
+    "diff_chapter_versions",
     "create_character",
     "update_character",
     "delete_character",

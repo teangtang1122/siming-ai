@@ -9,7 +9,7 @@ AVAILABLE_WORKSPACE_TOOLS = (
     "create_character, update_character, delete_character, "
     "create_relationship, update_relationship, delete_relationship, "
     "create_outline_node, create_outline_nodes, update_outline_node, delete_outline_node, "
-    "create_chapter, update_chapter, delete_chapter, "
+    "create_chapter, update_chapter, delete_chapter, list_chapter_versions, restore_chapter_version, diff_chapter_versions, "
     "chapter_writer, character_writer, outline_writer, worldbuilding_writer, "
     "roleplay_character, dialogue_battle, "
     "rewrite_text, expand_text, continue_text, "

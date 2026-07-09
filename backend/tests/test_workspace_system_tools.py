@@ -6,7 +6,7 @@ import unittest
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_workspace_system_tools.db"
 
-from app.database.models import Chapter, Character, Project, ScheduledTask, Skill
+from app.database.models import Chapter, ChapterSnapshot, Character, Project, ScheduledTask, Skill
 from app.database.session import Base, SessionLocal, engine
 from app.services.agent.planner import build_plan_from_intent, detect_intent
 from app.services.workspace.executor import execute_workspace_action
@@ -32,6 +32,7 @@ class WorkspaceSystemToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.db = SessionLocal()
         self.db.query(ScheduledTask).delete()
         self.db.query(Skill).delete()
+        self.db.query(ChapterSnapshot).delete()
         self.db.query(Chapter).delete()
         self.db.query(Character).delete()
         self.db.query(Project).delete()
@@ -152,6 +153,108 @@ class WorkspaceSystemToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(search_result["status"], "ok")
         self.assertEqual(search_result["data"], [])
 
+    async def test_agent_can_list_and_restore_chapter_versions(self):
+        create_result = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {
+                "tool": "create_chapter",
+                "arguments": {
+                    "title": "第1章",
+                    "content": "第一版正文",
+                    "skip_style_repair": True,
+                },
+            },
+        )
+        self.assertEqual(create_result["status"], "ok")
+        chapter_id = create_result["data"]["chapter_id"]
+
+        update_result = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {
+                "tool": "update_chapter",
+                "arguments": {
+                    "chapter_id": chapter_id,
+                    "content": "第二版正文",
+                    "skip_style_repair": True,
+                },
+            },
+        )
+        self.assertEqual(update_result["status"], "ok")
+        self.assertEqual(update_result["data"]["current_version"], 2)
+
+        versions = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {"tool": "list_chapter_versions", "arguments": {"chapter_id": chapter_id}},
+        )
+        self.assertEqual(versions["status"], "ok")
+        self.assertEqual(versions["data"]["total"], 2)
+        self.assertEqual([item["version_number"] for item in versions["data"]["items"]], [2, 1])
+
+        restore_result = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {"tool": "restore_chapter_version", "arguments": {"chapter_id": chapter_id}},
+        )
+        self.assertEqual(restore_result["status"], "ok")
+        self.assertEqual(restore_result["data"]["restored_from"]["version_number"], 1)
+
+        chapter = self.db.query(Chapter).filter(Chapter.id == chapter_id).first()
+        self.assertIsNotNone(chapter)
+        self.assertEqual(chapter.content, "第一版正文")
+        self.assertEqual(chapter.current_version, 3)
+
+    async def test_update_preserves_legacy_chapter_before_first_snapshot(self):
+        chapter = Chapter(
+            project_id=self.project.id,
+            title="legacy chapter",
+            content="old content",
+            word_count=2,
+            current_version=1,
+        )
+        self.db.add(chapter)
+        self.db.commit()
+        self.db.refresh(chapter)
+
+        update_result = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {
+                "tool": "update_chapter",
+                "arguments": {
+                    "chapter_id": chapter.id,
+                    "content": "new content",
+                    "skip_style_repair": True,
+                },
+            },
+        )
+
+        self.assertEqual(update_result["status"], "ok")
+        self.assertEqual(update_result["data"]["current_version"], 2)
+
+        versions = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {"tool": "list_chapter_versions", "arguments": {"chapter_id": chapter.id}},
+        )
+        self.assertEqual(versions["status"], "ok")
+        self.assertEqual([item["version_number"] for item in versions["data"]["items"]], [2, 1])
+
+        restore_result = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {"tool": "restore_chapter_version", "arguments": {"chapter_id": chapter.id}},
+        )
+        self.assertEqual(restore_result["status"], "ok")
+        self.assertEqual(restore_result["data"]["restored_from"]["version_number"], 1)
+
+        restored = self.db.query(Chapter).filter(Chapter.id == chapter.id).first()
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.content, "old content")
+        self.assertEqual(restored.current_version, 3)
+
 
 class WorkspaceSystemIntentTestCase(unittest.TestCase):
     """Plan Agent should recognize system-management intents."""
@@ -210,6 +313,9 @@ class WorkspaceSystemIntentTestCase(unittest.TestCase):
         self.assertIn("import_file_as_project", names)
         self.assertIn("start_cataloging_job", names)
         self.assertIn("list_cataloging_candidates", names)
+        self.assertIn("list_chapter_versions", names)
+        self.assertIn("restore_chapter_version", names)
+        self.assertIn("diff_chapter_versions", names)
         self.assertIn("start_deconstruct_job", names)
         self.assertIn("get_today_writing_stats", names)
         self.assertIn("set_daily_word_goal", names)

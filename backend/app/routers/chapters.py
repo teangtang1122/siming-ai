@@ -17,6 +17,8 @@ from ..services.chapter_service import (
     chapter_to_list_item,
     create_snapshot,
     diff_snapshots,
+    ensure_current_snapshot,
+    restore_chapter_from_snapshot,
     snapshot_to_item,
 )
 from ..services.content_store import (
@@ -92,6 +94,8 @@ def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depend
         current_version=1,
     )
     db.add(chapter)
+    db.flush()
+    db.add(create_snapshot(chapter, "manual_save"))
     db.commit()
     db.refresh(chapter)
     sync_chapter_to_file(db, project, chapter)
@@ -124,6 +128,7 @@ def save_chapter(
     trigger_type = update_data.pop("trigger_type", "manual_save")
     if not update_data:
         raise ValidationError("未提供任何更新字段")
+    ensure_current_snapshot(db, chapter, "manual_save")
 
     if "outline_node_id" in update_data:
         get_outline_node_or_404(db, project_id, update_data["outline_node_id"])
@@ -214,10 +219,7 @@ def restore_chapter_snapshot(
     get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     snapshot = _get_snapshot_or_404(db, project_id, chapter_id, snapshot_id)
-    chapter.content = snapshot.content
-    chapter.word_count = snapshot.word_count or count_words(snapshot.content or "")
-    chapter.current_version = (chapter.current_version or 1) + 1
-    db.add(create_snapshot(chapter, "restore"))
+    restore_chapter_from_snapshot(db, chapter, snapshot)
     db.commit()
     db.refresh(chapter)
     project = get_project_or_404(db, project_id)

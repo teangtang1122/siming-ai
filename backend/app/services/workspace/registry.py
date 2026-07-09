@@ -261,6 +261,7 @@ def _register_all() -> None:
         detect_forbidden_patterns,
         detect_new_worldbuilding,
         detect_worldbuilding_conflicts,
+        diff_chapter_versions,
         dialogue_battle,
         evaluate_chapter,
         expand_text,
@@ -284,6 +285,7 @@ def _register_all() -> None:
         list_cataloging_facts,
         list_cataloging_jobs,
         list_characters,
+        list_chapter_versions,
         list_deconstruct_reports,
         list_duplicate_characters,
         list_memories,
@@ -308,6 +310,7 @@ def _register_all() -> None:
         rewrite_text,
         roleplay_character,
         run_scheduled_task_now,
+        restore_chapter_version,
         search_project_files,
         merge_duplicate_characters,
         pause_cataloging_job,
@@ -1564,6 +1567,59 @@ def _register_all() -> None:
     ))
 
     _r(ToolDef(
+        name="list_chapter_versions",
+        description="列出章节版本历史。用户说对新章节不满意、想看历史版本、想回退上一版时先用它确认可恢复版本。",
+        input_schema={
+            "id": {"type": "string", "description": "章节ID（优先）。也可用 chapter_id/title/chapter_title/outline_node_id 定位"},
+            "chapter_id": {"type": "string", "description": "章节ID"},
+            "title": {"type": "string", "description": "章节标题"},
+            "chapter_title": {"type": "string", "description": "章节标题"},
+            "outline_node_id": {"type": "string", "description": "关联大纲节点ID"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=list_chapter_versions,
+    ))
+
+    _r(ToolDef(
+        name="restore_chapter_version",
+        description="将章节正文恢复到指定快照，默认回退到上一版，并自动生成新的恢复快照。用户明确说'回退版本''恢复上一版''这章不满意用旧版'时使用。",
+        input_schema={
+            "id": {"type": "string", "description": "章节ID（优先）。也可用 chapter_id/title/chapter_title/outline_node_id 定位"},
+            "chapter_id": {"type": "string", "description": "章节ID"},
+            "title": {"type": "string", "description": "章节标题"},
+            "chapter_title": {"type": "string", "description": "章节标题"},
+            "outline_node_id": {"type": "string", "description": "关联大纲节点ID"},
+            "snapshot_id": {"type": "string", "description": "要恢复的快照ID"},
+            "version_id": {"type": "string", "description": "同 snapshot_id"},
+            "version_number": {"type": "integer", "description": "要恢复的版本号，例如 1"},
+            "target": {"type": "string", "description": "previous/first/latest，默认 previous"},
+        },
+        tool_type="write",
+        writes_project_data=True,
+        risk_level="medium",
+        estimated_cost="free",
+        handler=restore_chapter_version,
+    ))
+
+    _r(ToolDef(
+        name="diff_chapter_versions",
+        description="对比章节两个历史版本的正文差异。需要 from_snapshot_id/to_snapshot_id 或 from_version/to_version。",
+        input_schema={
+            "id": {"type": "string", "description": "章节ID（优先）。也可用 chapter_id/title/chapter_title/outline_node_id 定位"},
+            "chapter_id": {"type": "string", "description": "章节ID"},
+            "title": {"type": "string", "description": "章节标题"},
+            "from_snapshot_id": {"type": "string", "description": "起始快照ID"},
+            "to_snapshot_id": {"type": "string", "description": "目标快照ID"},
+            "from_version": {"type": "integer", "description": "起始版本号"},
+            "to_version": {"type": "integer", "description": "目标版本号"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=diff_chapter_versions,
+    ))
+
+    _r(ToolDef(
         name="delete_chapter",
         description="删除章节。自动回退该章节中角色的状态变更。用ID或标题定位。",
         input_schema={
@@ -2488,7 +2544,7 @@ def _classify_all() -> None:
     writes_project_data, and exposure flags based on tool_type and name patterns.
     """
     _WRITE_PROJECT_DATA = {
-        "create_chapter", "update_chapter", "delete_chapter",
+        "create_chapter", "update_chapter", "delete_chapter", "restore_chapter_version",
         "create_character", "update_character", "delete_character",
         "create_outline_node", "create_outline_nodes", "update_outline_node", "delete_outline_node",
         "create_worldbuilding_entry", "update_worldbuilding_entry", "delete_worldbuilding_entry",

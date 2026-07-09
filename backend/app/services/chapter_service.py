@@ -66,6 +66,42 @@ def create_snapshot(chapter: Chapter, trigger_type: str) -> ChapterSnapshot:
     )
 
 
+def ensure_current_snapshot(db: Session, chapter: Chapter, trigger_type: str = "manual_save") -> ChapterSnapshot:
+    """Persist the current chapter state once for its current version."""
+    version_number = chapter.current_version or 1
+    existing = (
+        db.query(ChapterSnapshot)
+        .filter(
+            ChapterSnapshot.chapter_id == chapter.id,
+            ChapterSnapshot.version_number == version_number,
+        )
+        .first()
+    )
+    if existing:
+        return existing
+    snapshot = create_snapshot(chapter, trigger_type)
+    db.add(snapshot)
+    db.flush()
+    return snapshot
+
+
+def restore_chapter_from_snapshot(
+    db: Session,
+    chapter: Chapter,
+    snapshot: ChapterSnapshot,
+) -> ChapterSnapshot:
+    """Restore chapter content from a snapshot and record the restore as a new version."""
+    ensure_current_snapshot(db, chapter, "manual_save")
+    chapter.content = snapshot.content or ""
+    chapter.word_count = snapshot.word_count or count_words(snapshot.content or "")
+    chapter.current_version = (chapter.current_version or 1) + 1
+    chapter.updated_at = datetime.utcnow()
+    restored = create_snapshot(chapter, "restore")
+    db.add(restored)
+    db.flush()
+    return restored
+
+
 def diff_snapshots(from_snapshot: ChapterSnapshot, to_snapshot: ChapterSnapshot) -> dict:
     from_lines = (from_snapshot.content or "").splitlines()
     to_lines = (to_snapshot.content or "").splitlines()
