@@ -428,6 +428,54 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
+    def test_workspace_outline_plan_accepts_plain_json_content(self, mock_chat):
+        project_id = self.create_project("Plain JSON Outline Project")
+        self.create_outline_node(project_id, "Chapter 150 Dead Line")
+        outline_payload = {
+            "nodes": [{
+                "title": "Chapter 151 Network Grab",
+                "node_type": "chapter",
+                "summary": "The team races to seize a failing network node before the infection line spreads again.",
+                "character_names": [],
+                "status": "pending",
+            }],
+            "design_notes": "Plain JSON fallback for local CLI models without tool calls.",
+        }
+        mock_chat.return_value = {
+            "content": "```json\n" + json.dumps({
+                "tool": "create_outline_nodes",
+                "arguments": outline_payload,
+            }, ensure_ascii=False) + "\n```",
+            "tool_calls": None,
+        }
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "\u5e2e\u6211\u521b\u5efa151\u7ae0\u5927\u7eb2",
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("create_outline", response.text)
+        self.assertIn("create_outline_nodes", response.text)
+        self.assertNotIn("\u5927\u7eb2\u751f\u6210\u7ed3\u679c\u89e3\u6790\u5931\u8d25", response.text)
+
+        db = SessionLocal()
+        try:
+            node = db.query(OutlineNode).filter(
+                OutlineNode.project_id == project_id,
+                OutlineNode.title == "Chapter 151 Network Grab",
+            ).one_or_none()
+            self.assertIsNotNone(node)
+            self.assertIn("network node", node.summary)
+        finally:
+            db.close()
+
     def test_workspace_chapter_plan_local_runtime_reports_preflight(self):
         project_id = self.create_project("Local Runtime Chapter Project")
         self.create_outline_node(project_id, "第151章 新的死线")

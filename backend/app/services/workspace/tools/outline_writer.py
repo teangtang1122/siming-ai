@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....ai.gateway import LLMGateway
+from ....core.json_repair import parse_json_object
 from ....database.models import Character, OutlineNode, Project
 from ....prompts.outline_writer_prompts import build_outline_writer_messages
 from ....prompts.style_prompts import build_style_context
@@ -40,6 +41,90 @@ OUTLINE_NODES_TOOL = {
         },
     },
 }
+
+
+def _parse_jsonish_object(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = _json.loads(value)
+        if isinstance(parsed, dict):
+            return parsed
+    except (_json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return parse_json_object(value)
+
+
+def _with_outer_design_notes(candidate: dict[str, Any] | None, outer: dict[str, Any]) -> dict[str, Any] | None:
+    if candidate is not None and not candidate.get("design_notes") and outer.get("design_notes"):
+        candidate = dict(candidate)
+        candidate["design_notes"] = outer.get("design_notes")
+    return candidate
+
+
+def _normalize_outline_payload(value: Any) -> dict[str, Any] | None:
+    parsed = _parse_jsonish_object(value)
+    if not isinstance(parsed, dict):
+        return None
+    if isinstance(parsed.get("nodes"), list):
+        return parsed
+    if isinstance(parsed.get("node"), dict):
+        copied = dict(parsed)
+        copied["nodes"] = [parsed["node"]]
+        return copied
+
+    for key in ("arguments", "args", "input", "parameters", "payload"):
+        candidate = _normalize_outline_payload(parsed.get(key))
+        if candidate:
+            return _with_outer_design_notes(candidate, parsed)
+
+    for key in ("function", "data", "action", "create_outline_nodes"):
+        candidate = _normalize_outline_payload(parsed.get(key))
+        if candidate:
+            return _with_outer_design_notes(candidate, parsed)
+
+    actions = parsed.get("actions")
+    if isinstance(actions, list):
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            tool = str(action.get("tool") or action.get("name") or "").strip()
+            if tool and tool != "create_outline_nodes":
+                continue
+            candidate = _normalize_outline_payload(action)
+            if candidate:
+                return _with_outer_design_notes(candidate, parsed)
+
+    tool_calls = parsed.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            candidate = _normalize_outline_payload(call)
+            if candidate:
+                return _with_outer_design_notes(candidate, parsed)
+
+    return None
+
+
+def _outline_payload_from_result(result: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    raw_candidates: list[Any] = []
+    for call in result.get("tool_calls") or []:
+        if isinstance(call, dict):
+            function = call.get("function")
+            if isinstance(function, dict):
+                raw_candidates.append(function.get("arguments", ""))
+            raw_candidates.append(call)
+    raw_candidates.append(result.get("content", ""))
+
+    raw_for_error = ""
+    for raw in raw_candidates:
+        if raw_for_error == "":
+            raw_for_error = raw if isinstance(raw, str) else _json.dumps(raw, ensure_ascii=False, default=str)
+        parsed = _normalize_outline_payload(raw)
+        if parsed:
+            return parsed, raw_for_error
+    return None, raw_for_error
 
 
 async def outline_writer(
@@ -144,31 +229,14 @@ async def outline_writer(
     except Exception as exc:
         return {"tool": "outline_writer", "status": "error", "detail": f"大纲生成失败: {exc}", "data": {}}
 
-    tool_calls = result.get("tool_calls") or []
-    if not tool_calls:
-        return {
-            "tool": "outline_writer",
-            "status": "error",
-            "detail": "大纲生成结果解析失败",
-            "data": {"raw": str(result.get("content", ""))[:500]},
-        }
+    parsed, raw_for_error = _outline_payload_from_result(result)
 
-    try:
-        parsed = _json.loads(tool_calls[0]["function"]["arguments"])
-    except (_json.JSONDecodeError, AttributeError):
+    if not isinstance(parsed, dict) or not parsed.get("nodes"):
         return {
             "tool": "outline_writer",
             "status": "error",
             "detail": "大纲生成结果解析失败",
-            "data": {"raw": tool_calls[0].get("function", {}).get("arguments", "")[:500]},
-        }
-
-    if not parsed.get("nodes"):
-        return {
-            "tool": "outline_writer",
-            "status": "error",
-            "detail": "大纲生成结果解析失败",
-            "data": {"raw": _json.dumps(parsed, ensure_ascii=False)[:500]},
+            "data": {"raw": str(raw_for_error)[:500]},
         }
 
     nodes_data = parsed.get("nodes", [])
