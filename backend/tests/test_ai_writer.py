@@ -361,6 +361,8 @@ class AIWriterIsolationTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("未找到第 151 章的大纲节点", response.text)
+        self.assertIn("你希望这一章往哪个方向推进", response.text)
+        self.assertIn("按当前剧情自动规划", response.text)
         self.assertIn("司命本地 AI", response.text)
         self.assertIn("plan_preflight", response.text)
         self.assertNotIn("plan_created", response.text)
@@ -420,6 +422,73 @@ class AIWriterIsolationTestCase(unittest.TestCase):
         self.assertIn("outline_writer", response.text)
         self.assertIn("create_outline_nodes", response.text)
         self.assertIn("第151章 抢网", response.text)
+
+        db = SessionLocal()
+        try:
+            node = db.query(OutlineNode).filter(
+                OutlineNode.project_id == project_id,
+                OutlineNode.title == "第151章 抢网",
+            ).one_or_none()
+            self.assertIsNotNone(node)
+            self.assertIn("抢占网络节点", node.summary)
+        finally:
+            db.close()
+
+    @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
+    def test_workspace_outline_direction_followup_creates_missing_chapter_outline(self, mock_chat):
+        project_id = self.create_project("Outline Direction Followup Project")
+        self.create_outline_node(project_id, "第150章 死线蔓延")
+        outline_payload = {
+            "nodes": [{
+                "title": "第151章 抢网",
+                "node_type": "chapter",
+                "summary": "主角团承接第150章危机，按当前剧情抢占网络节点并阻断死线继续扩张。",
+                "character_names": [],
+                "status": "pending",
+            }],
+            "design_notes": "用户要求按当前剧情自动规划缺失章节大纲。",
+        }
+        mock_chat.return_value = {
+            "content": "",
+            "tool_calls": [{"function": {"arguments": json.dumps(outline_payload, ensure_ascii=False)}}],
+        }
+
+        first = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "帮我写第151章",
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "auto_apply": True,
+            },
+        )
+        self.assertIn("按当前剧情自动规划", first.text)
+        conversation_id = None
+        for line in first.text.splitlines():
+            if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                continue
+            event = json.loads(line[6:])
+            if event.get("type") == "conversation":
+                conversation_id = event["conversation"]["id"]
+                break
+        self.assertIsNotNone(conversation_id)
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "按当前剧情自动规划",
+                "conversation_id": conversation_id,
+                "model": "opencode_cli:opencode/deepseek-v4-flash-free",
+                "auto_apply": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("create_outline", response.text)
+        self.assertIn("outline_writer", response.text)
+        self.assertIn("create_outline_nodes", response.text)
+        self.assertNotIn("start_cataloging_job", response.text)
 
         db = SessionLocal()
         try:

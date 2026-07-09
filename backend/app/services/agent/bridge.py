@@ -121,28 +121,73 @@ def _infer_outline_chapter_number(
     project_id: str,
     conversation_id: str | None,
 ) -> int | None:
-    if conversation_id:
-        messages = (
-            db.query(AssistantMessage)
-            .join(AssistantConversation, AssistantConversation.id == AssistantMessage.conversation_id)
-            .filter(
-                AssistantConversation.project_id == project_id,
-                AssistantMessage.conversation_id == conversation_id,
-            )
-            .order_by(AssistantMessage.created_at.desc(), AssistantMessage.id.desc())
-            .limit(8)
-            .all()
-        )
-        for message in messages:
-            text = message.content or ""
-            match = re.search(r"未找到第\s*(\d+)\s*章的大纲节点", text)
-            if match:
-                return int(match.group(1))
-            match = re.search(r"请先创建第\s*(\d+)\s*章大纲", text)
-            if match:
-                return int(match.group(1))
+    pending = _pending_missing_outline_chapter_number(db, project_id, conversation_id)
+    if pending:
+        return pending
     latest = _latest_outline_chapter_number(db, project_id)
     return latest + 1 if latest else None
+
+
+def _pending_missing_outline_chapter_number(
+    db: Session,
+    project_id: str,
+    conversation_id: str | None,
+) -> int | None:
+    if not conversation_id:
+        return None
+    messages = (
+        db.query(AssistantMessage)
+        .join(AssistantConversation, AssistantConversation.id == AssistantMessage.conversation_id)
+        .filter(
+            AssistantConversation.project_id == project_id,
+            AssistantMessage.conversation_id == conversation_id,
+        )
+        .order_by(AssistantMessage.created_at.desc(), AssistantMessage.id.desc())
+        .limit(8)
+        .all()
+    )
+    for message in messages:
+        text = message.content or ""
+        match = re.search(r"未找到第\s*(\d+)\s*章的大纲节点", text)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"请先创建第\s*(\d+)\s*章大纲", text)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _outline_direction_followup_intent(
+    db: Session,
+    project_id: str,
+    *,
+    conversation_id: str | None,
+    message: str,
+    detected_intent: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    chapter_number = _pending_missing_outline_chapter_number(db, project_id, conversation_id)
+    if not chapter_number:
+        return None
+
+    text = (message or "").strip()
+    if not text or any(key in text for key in ("算了", "取消", "不用", "不要")):
+        return None
+    if detected_intent and detected_intent.get("intent_type") not in {None, "project_init"}:
+        return None
+    if detected_intent and detected_intent.get("intent_type") == "project_init":
+        if "建档" in text or "项目" in text or "全书" in text or "全面规划" in text:
+            return None
+
+    return {
+        "intent_type": "outline",
+        "requirements": (
+            f"{text}\n"
+            f"用户正在回复第 {chapter_number} 章大纲方向追问；"
+            "请据此创建该章大纲，不要生成正文。"
+        ),
+        "chapter_number": chapter_number,
+        "batch_count": 1,
+    }
 
 
 def _enrich_outline_intent(
@@ -773,6 +818,15 @@ async def detect_and_stream_plan(
     if no plan intent was found (caller should fall back to old agentic loop).
     """
     intent = detect_intent(message)
+    outline_followup = _outline_direction_followup_intent(
+        db,
+        project_id,
+        conversation_id=conversation_id,
+        message=message,
+        detected_intent=intent,
+    )
+    if outline_followup is not None:
+        intent = outline_followup
     if intent is None:
         return None
     intent = _apply_assistant_mode_to_intent(intent, assistant_mode)
@@ -807,7 +861,9 @@ async def detect_and_stream_plan(
             if chapter_number:
                 issues.append(
                     f"未找到第 {chapter_number} 章的大纲节点。{latest}。"
-                    f"请先创建第 {chapter_number} 章大纲，或明确说明要先规划下一章再写。"
+                    f"我可以先帮你创建第 {chapter_number} 章大纲。"
+                    "你希望这一章往哪个方向推进？"
+                    "也可以直接回复“按当前剧情自动规划”，我会承接现有大纲先补这一章。"
                 )
             else:
                 issues.append("没有定位到要写的章节大纲节点，请指定已有大纲标题或章节号。")
