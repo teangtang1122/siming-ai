@@ -13,11 +13,12 @@ from sqlalchemy.orm import sessionmaker
 from pathlib import Path
 
 from app.database.models import APIConfig, AgentRun, AgentRunEvent, Base, Chapter, Project
-from app.services.external_agent.run_service import create_run
+from app.services.external_agent.run_service import create_run, update_run_status
 from app.services.cataloging.local_cli_agent import _task_text, _turn_stage
 from app.services.cataloging.orchestrator import create_cataloging_job
 from app.services.local_cli_agent_worker import _run_cli_process, start_local_cli_agent_worker, write_task_file
 from app.services.workspace.registry import registry
+from app.services.workspace.tools.local_cli_agent import wait_local_cli_agent_run
 
 
 class LocalCLIAgentWorkerTestCase(unittest.TestCase):
@@ -80,6 +81,49 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIsNotNone(tool)
         self.assertEqual(tool.tool_type, "scheduler")
         self.assertEqual(tool.estimated_cost, "local_cli")
+        wait_tool = registry.get("wait_local_cli_agent_run")
+        self.assertIsNotNone(wait_tool)
+        self.assertEqual(wait_tool.tool_type, "scheduler")
+
+    def test_wait_worker_fails_writing_run_with_only_orphan_mirror_file(self):
+        project = self._project()
+        folder = Path(self.tmp.name) / "project"
+        chapters_dir = folder / "chapters"
+        chapters_dir.mkdir(parents=True)
+        project.folder_path = str(folder)
+        self.db.commit()
+        run = create_run(
+            self.db,
+            project.id,
+            source="internal_cli",
+            client_name="custom_cli",
+            title="writing",
+        )
+        orphan = chapters_dir / "0001-orphan.md"
+        orphan.write_text(
+            "---\n"
+            '{"id":"orphan-1","title":"Orphan Chapter","word_count":2,"current_version":1}\n'
+            "---\n\n"
+            "orphan content",
+            encoding="utf-8",
+        )
+        update_run_status(self.db, run.id, "completed", summary="custom_cli completed")
+
+        result = asyncio.run(wait_local_cli_agent_run(
+            self.db,
+            project.id,
+            {
+                "run_id": run.id,
+                "task_type": "writing",
+                "timeout_seconds": 1,
+                "poll_seconds": 0.01,
+            },
+        ))
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("数据库", result["detail"])
+        orphans = result["data"]["validation"]["orphan_chapter_files"]
+        self.assertEqual(orphans[0]["path"], "chapters/0001-orphan.md")
 
     def test_start_worker_enables_opencode_warn_logs(self):
         project = self._project()

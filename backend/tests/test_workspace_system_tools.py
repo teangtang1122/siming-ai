@@ -6,7 +6,7 @@ import unittest
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_workspace_system_tools.db"
 
-from app.database.models import Chapter, ChapterSnapshot, Character, Project, ScheduledTask, Skill
+from app.database.models import Chapter, ChapterSnapshot, Character, OutlineNode, Project, ScheduledTask, Skill
 from app.database.session import Base, SessionLocal, engine
 from app.services.agent.planner import build_plan_from_intent, detect_intent
 from app.services.workspace.executor import execute_workspace_action
@@ -34,6 +34,7 @@ class WorkspaceSystemToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.db.query(Skill).delete()
         self.db.query(ChapterSnapshot).delete()
         self.db.query(Chapter).delete()
+        self.db.query(OutlineNode).delete()
         self.db.query(Character).delete()
         self.db.query(Project).delete()
         self.project = Project(title="系统工具测试作品")
@@ -254,6 +255,50 @@ class WorkspaceSystemToolsTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(restored)
         self.assertEqual(restored.content, "old content")
         self.assertEqual(restored.current_version, 3)
+
+    async def test_create_chapter_uses_external_draft_metadata(self):
+        outline = OutlineNode(
+            project_id=self.project.id,
+            title="第151章 抢网",
+            node_type="chapter",
+            summary="抢夺黄泉网络。",
+        )
+        self.db.add(outline)
+        self.db.commit()
+        self.db.refresh(outline)
+
+        draft = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {
+                "tool": "save_external_chapter_draft",
+                "arguments": {
+                    "outline_node_id": outline.id,
+                    "content": "第一段。\n第二段。",
+                    "source_agent": "local-cli",
+                },
+            },
+        )
+        self.assertEqual(draft["status"], "ok")
+
+        created = await execute_workspace_action(
+            self.db,
+            self.project.id,
+            {
+                "tool": "create_chapter",
+                "arguments": {
+                    "draft_id": draft["data"]["draft_id"],
+                    "skip_style_repair": True,
+                },
+            },
+        )
+
+        self.assertEqual(created["status"], "ok")
+        chapter = self.db.query(Chapter).filter(Chapter.id == created["data"]["chapter_id"]).first()
+        self.assertIsNotNone(chapter)
+        self.assertEqual(chapter.title, "第151章 抢网")
+        self.assertEqual(chapter.outline_node_id, outline.id)
+        self.assertEqual(chapter.content, "第一段。\n第二段。")
 
 
 class WorkspaceSystemIntentTestCase(unittest.TestCase):

@@ -93,6 +93,36 @@ def get_chapter_draft(project_id: str, draft_id: str | None, *, db: Any = None) 
     return None
 
 
+def get_chapter_draft_meta(project_id: str, draft_id: str | None, *, db: Any = None) -> dict[str, Any] | None:
+    if not draft_id:
+        return None
+    entry = _CHAPTER_DRAFTS.get(str(draft_id))
+    if entry and entry.get("project_id") == project_id:
+        return {
+            "title": str(entry.get("title") or ""),
+            "outline_node_id": str(entry.get("outline_node_id") or ""),
+            "content": str(entry.get("content") or ""),
+        }
+
+    if db is not None:
+        try:
+            from ...database.models import ChapterDraft
+            row = (
+                db.query(ChapterDraft)
+                .filter(ChapterDraft.id == str(draft_id), ChapterDraft.project_id == project_id)
+                .first()
+            )
+            if row:
+                return {
+                    "title": row.title or "",
+                    "outline_node_id": row.outline_node_id or "",
+                    "content": row.content or "",
+                }
+        except Exception:
+            pass
+    return None
+
+
 def _looks_like_prefix(prefix: str, full: str) -> bool:
     prefix = prefix.strip()
     full = full.strip()

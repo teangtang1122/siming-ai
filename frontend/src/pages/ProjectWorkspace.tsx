@@ -8,6 +8,7 @@ import {
   BranchesOutlined,
   ExportOutlined,
   FileAddOutlined,
+  FileTextOutlined,
   GlobalOutlined,
   TeamOutlined,
   ThunderboltOutlined,
@@ -31,6 +32,7 @@ import VisualizationPage from './VisualizationPage'
 import ImportPage from './ImportPage'
 import CatalogingPage from './CatalogingPage'
 import SkillsPage from './SkillsPage'
+import PromptPacksPage from './PromptPacksPage'
 import { ScheduledTasksPage } from './ScheduledTasksPage'
 import AiSidePanel from '../components/AiSidePanel'
 import TabCache from '../components/TabCache'
@@ -43,7 +45,7 @@ import ThemeSwitcher from '../themes/ThemeSwitcher'
 
 const { Sider, Content } = Layout
 
-type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'skills' | 'scheduler'
+type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'skills' | 'prompts' | 'scheduler'
 const PROJECT_MODEL_STORAGE_KEY = 'siming.project.assistant.model.override'
 
 /** Menu key → Chinese page title mapping */
@@ -57,6 +59,7 @@ const PAGE_TITLES: Record<MenuKey, string> = {
   cataloging: '作品建档',
   visualization: '可视化',
   skills: '技能管理',
+  prompts: '提示词投稿',
   scheduler: '自动任务',
   import: '内容导入',
   export: '导出',
@@ -186,6 +189,7 @@ function ProjectWorkspace() {
       label: sidebarCollapsed ? '' : '设置',
       children: [
         { key: 'skills', icon: <BulbOutlined />, label: '技能管理' },
+        { key: 'prompts', icon: <FileTextOutlined />, label: '提示词投稿' },
         { key: 'scheduler', icon: <ClockCircleOutlined />, label: '自动任务' },
         { key: 'import', icon: <FileAddOutlined />, label: '内容导入' },
         { key: 'export', icon: <ExportOutlined />, label: '导出' },
@@ -205,6 +209,7 @@ function ProjectWorkspace() {
         cataloging: () => <CatalogingPage projectId={projectId} />,
         visualization: () => <VisualizationPage projectId={projectId} />,
         skills: () => <SkillsPage projectId={projectId} />,
+        prompts: () => <PromptPacksPage projectId={projectId} />,
         scheduler: () => <ScheduledTasksPage projectId={projectId} />,
         import: () => <ImportPage projectId={projectId} />,
         export: () => <ExportPage projectId={projectId} />,

@@ -371,6 +371,7 @@ async def save_external_chapter_draft(
             "draft_id": draft_id,
             "content_ref": draft_id,
             "title": title,
+            "outline_node_id": outline_node_id,
             "word_count": count_words(content),
             "source_agent": source_agent,
         },

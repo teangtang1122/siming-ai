@@ -97,7 +97,7 @@ from .deconstruct import (
 from .stats import get_today_writing_stats, get_writing_stats_history, set_daily_word_goal
 from .project_status import get_project_archive_status
 from .prompt_packs import get_moshu_usage_guide
-from .local_cli_agent import start_local_cli_agent_run
+from .local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
 from .story_granularity import archive_chapter_after_write, inspect_story_granularity, repair_story_granularity
 
 __all__ = [
@@ -213,6 +213,7 @@ __all__ = [
     "get_project_archive_status",
     "get_moshu_usage_guide",
     "start_local_cli_agent_run",
+    "wait_local_cli_agent_run",
     "archive_chapter_after_write",
     "inspect_story_granularity",
     "repair_story_granularity",

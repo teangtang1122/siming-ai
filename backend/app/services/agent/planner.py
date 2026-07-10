@@ -540,6 +540,17 @@ def plan_local_cli_writing(
             depends_on=[],
             label="启动本机 CLI 写作 Agent",
         ),
+        "wait_local_cli_agent_run": StepDef(
+            tool="wait_local_cli_agent_run",
+            args={
+                "run_id": "{start_local_cli_agent_run.data.run_id}",
+                "task_type": "writing",
+                "outline_node_id": outline_node_id,
+                "startup_timeout_seconds": 3,
+            },
+            depends_on=["start_local_cli_agent_run"],
+            label="等待本机 CLI 写作入库",
+        ),
     }
     return PlanGraph(name="local_cli_writing", steps=steps)
 

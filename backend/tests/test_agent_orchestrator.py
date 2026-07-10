@@ -263,12 +263,18 @@ class PlannerTestCase(unittest.TestCase):
             outline_node_id="outline-151",
         )
         self.assertEqual(graph.name, "local_cli_writing")
-        self.assertEqual(set(graph.steps.keys()), {"start_local_cli_agent_run"})
+        self.assertEqual(set(graph.steps.keys()), {"start_local_cli_agent_run", "wait_local_cli_agent_run"})
         step = graph.steps["start_local_cli_agent_run"]
         self.assertEqual(step.tool, "start_local_cli_agent_run")
         self.assertEqual(step.args["task_type"], "writing")
         self.assertEqual(step.args["provider"], "opencode_cli")
         self.assertIn("outline-151", step.args["user_request"])
+        wait_step = graph.steps["wait_local_cli_agent_run"]
+        self.assertEqual(wait_step.tool, "wait_local_cli_agent_run")
+        self.assertEqual(wait_step.depends_on, ["start_local_cli_agent_run"])
+        self.assertEqual(wait_step.args["run_id"], "{start_local_cli_agent_run.data.run_id}")
+        self.assertEqual(wait_step.args["outline_node_id"], "outline-151")
+        self.assertEqual(wait_step.args["startup_timeout_seconds"], 3)
 
     def test_assistant_mode_quality_overrides_chapter_plan_mode(self):
         intent = {

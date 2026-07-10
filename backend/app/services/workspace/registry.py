@@ -1995,7 +1995,7 @@ def _register_all() -> None:
         mark_draft_ready,
         finish_agent_run,
     )
-    from .tools.local_cli_agent import start_local_cli_agent_run
+    from .tools.local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
 
     _r(ToolDef(
         name="start_agent_run",
@@ -2105,6 +2105,26 @@ def _register_all() -> None:
         tool_type="scheduler",
         estimated_cost="local_cli",
         handler=start_local_cli_agent_run,
+    ))
+
+    _r(ToolDef(
+        name="wait_local_cli_agent_run",
+        description=(
+            "Wait for a Siming-managed local CLI Agent run to finish and validate that writes landed in the database. "
+            "For writing runs, detects direct file edits/orphan chapter mirror files and fails the plan instead of reporting false success."
+        ),
+        input_schema={
+            "run_id": {"type": "string", "description": "Agent run ID returned by start_local_cli_agent_run"},
+            "task_type": {"type": "string", "description": "general|cataloging|writing"},
+            "outline_node_id": {"type": "string", "description": "Expected target outline node for writing validation"},
+            "timeout_seconds": {"type": "integer", "description": "Maximum wait time; default 1800"},
+            "startup_timeout_seconds": {"type": "integer", "description": "Maximum time to wait for cli_started; default 10"},
+            "poll_seconds": {"type": "number", "description": "Polling interval; default 2"},
+        },
+        required=["run_id"],
+        tool_type="scheduler",
+        estimated_cost="free",
+        handler=wait_local_cli_agent_run,
     ))
 
     # ── External Writing Tools ───────────────────────────────────────────

@@ -26,7 +26,7 @@ from ....services.chapter_service import (
 )
 from ....services.content_store import delete_project_file, sync_chapter_to_file
 from ....services.style_rules import _repair_forbidden_sentence_text
-from ..generated_drafts import resolve_chapter_draft_content
+from ..generated_drafts import get_chapter_draft_meta, resolve_chapter_draft_content
 from ..utils import find_outline_by_title_or_id
 
 
@@ -158,15 +158,28 @@ async def create_chapter(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    title = str(args.get("title") or "").strip()
+    draft_id = str(args.get("draft_id") or args.get("content_ref") or "").strip() or None
+    draft_meta = get_chapter_draft_meta(project_id, draft_id, db=db) if draft_id else None
+    title = str(args.get("title") or (draft_meta or {}).get("title") or "").strip()
     content = str(args.get("content") or "")
     content = resolve_chapter_draft_content(
         project_id=project_id,
         provided_content=content,
-        draft_id=str(args.get("draft_id") or args.get("content_ref") or "").strip() or None,
-        outline_node_id=str(args.get("outline_node_id") or "").strip() or None,
+        draft_id=draft_id,
+        outline_node_id=str(args.get("outline_node_id") or (draft_meta or {}).get("outline_node_id") or "").strip() or None,
         db=db,
     )
+    outline_node = None
+    for ref in (
+        args.get("outline_node_id") or (draft_meta or {}).get("outline_node_id"),
+        args.get("outline_node_title"),
+        args.get("outline_title"),
+    ):
+        outline_node = find_outline_by_title_or_id(db, project_id, ref)
+        if outline_node:
+            break
+    if not title and outline_node:
+        title = str(outline_node.title or "").strip()
     if not title or not content.strip():
         return {"tool": "create_chapter", "status": "skipped", "detail": "章节标题或正文为空"}
 
@@ -185,12 +198,6 @@ async def create_chapter(
         content, _violations, _remaining = await _repair_forbidden_sentence_text(
             content, project, str(args.get("model") or "") or None
         )
-
-    outline_node = None
-    for ref in (args.get("outline_node_id"), args.get("outline_node_title"), args.get("outline_title")):
-        outline_node = find_outline_by_title_or_id(db, project_id, ref)
-        if outline_node:
-            break
 
     chapter = Chapter(
         project_id=project_id,

@@ -39,13 +39,18 @@ function Invoke-LocalJsonGet {
         [Parameter(Mandatory=$true)][string]$Url,
         [int]$TimeoutMs = 3000
     )
-    $client = New-Object System.Net.WebClient
-    try {
-        $client.Encoding = [System.Text.Encoding]::UTF8
-        return $client.DownloadString($Url)
-    } finally {
-        $client.Dispose()
-    }
+    $timeoutSeconds = [Math]::Max(1, [Math]::Ceiling($TimeoutMs / 1000))
+    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $timeoutSeconds
+    return $response.Content
+}
+
+function Stop-ReleaseSimingProcesses {
+    param([Parameter(Mandatory=$true)][string]$ReleaseExePath)
+    $resolved = (Resolve-Path -LiteralPath $ReleaseExePath -ErrorAction SilentlyContinue).Path
+    if (-not $resolved) { return }
+    Get-Process Siming -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $resolved } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 # Step 1: Build package
@@ -132,7 +137,7 @@ while ($waited -lt $maxWait) {
 
 if (-not $serverReady) {
     Write-Host "  ERROR: Server did not start within $maxWait seconds" -ForegroundColor Red
-    Get-Process Siming -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Stop-ReleaseSimingProcesses -ReleaseExePath $exePath
     exit 1
 }
 Write-Host "  Server is ready at $serverBaseUrl (waited $waited seconds)" -ForegroundColor Green
@@ -144,8 +149,8 @@ try {
     # Test projects API
     $projectsResponse = Invoke-LocalJsonGet -Url "$serverBaseUrl/api/v1/projects" -TimeoutMs 5000
     $projectsPayload = $projectsResponse | ConvertFrom-Json
-    $projects = if ($null -ne $projectsPayload.data) { $projectsPayload.data } else { $projectsPayload }
-    Write-Host "  Projects API: OK ($($projects.Count) projects)" -ForegroundColor Green
+    $projectCount = if ($null -ne $projectsPayload.data.total) { $projectsPayload.data.total } elseif ($null -ne $projectsPayload.data.items) { @($projectsPayload.data.items).Count } else { 0 }
+    Write-Host "  Projects API: OK ($projectCount projects)" -ForegroundColor Green
 } catch {
     Write-Host "  ERROR: Projects API failed: $_" -ForegroundColor Red
 }
@@ -159,22 +164,22 @@ try {
 }
 
 try {
-    # Test prompt packs API (should return cataloging_external_no_api pack)
-    $packsResponse = Invoke-LocalJsonGet -Url "$serverBaseUrl/api/v1/prompt-packs?scope=cataloging" -TimeoutMs 5000
-    $packs = ($packsResponse | ConvertFrom-Json).data
-    $hasExternalPack = $packs | Where-Object { $_.pack_id -match "external_no_api" }
-    if ($hasExternalPack) {
-        Write-Host "  Prompt Packs API: OK (external_no_api pack found)" -ForegroundColor Green
+    # Prompt packs are exposed through workspace tools and the project prompt GUI.
+    $catalogResponse = Invoke-LocalJsonGet -Url "$serverBaseUrl/api/v1/tools/catalog" -TimeoutMs 5000
+    $catalog = ($catalogResponse | ConvertFrom-Json).data
+    $toolNames = @($catalog.items | ForEach-Object { $_.name })
+    if (($toolNames -contains "list_prompt_packs") -and ($toolNames -contains "get_prompt_pack")) {
+        Write-Host "  Prompt Pack Tools: OK" -ForegroundColor Green
     } else {
-        Write-Host "  WARNING: external_no_api pack not found in prompt packs" -ForegroundColor Yellow
+        Write-Host "  WARNING: prompt pack tools not found in tool catalog" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "  WARNING: Prompt Packs API not available" -ForegroundColor Yellow
+    Write-Host "  WARNING: Prompt pack tool catalog check failed" -ForegroundColor Yellow
 }
 
 # Step 6: Cleanup
 Write-Host "[6/6] Cleanup..." -ForegroundColor Yellow
-Get-Process Siming -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Stop-ReleaseSimingProcesses -ReleaseExePath $exePath
 Write-Host "  Siming.exe stopped" -ForegroundColor Green
 
 Write-Host ""

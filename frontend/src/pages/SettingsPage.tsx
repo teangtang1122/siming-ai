@@ -32,7 +32,7 @@ import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 import SystemNav from '../components/SystemNav'
 
-const { Title, Text } = Typography
+const { Title, Paragraph, Text } = Typography
 
 interface ModelConfig {
   id: string
@@ -224,6 +224,20 @@ const DEFAULT_CLI_ARGS: Record<string, string> = {
   openclaw_cli: '["agent","--local","--json","--session-key","agent:siming:local-cli","--message","{prompt}"]',
   custom_cli: '["{prompt}"]',
 }
+
+const API_KEY_LINKS = [
+  { label: 'OpenAI API Key', href: 'https://platform.openai.com/api-keys' },
+  { label: 'Anthropic Console', href: 'https://platform.claude.com/' },
+  { label: 'DeepSeek API Key', href: 'https://platform.deepseek.com/api_keys' },
+  { label: 'Google AI Studio', href: 'https://aistudio.google.com/app/apikey' },
+  { label: 'Qwen / Model Studio', href: 'https://bailian.console.aliyun.com/' },
+]
+
+const CLI_INSTALL_COMMANDS = [
+  { label: 'Codex CLI', command: 'npm install -g @openai/codex' },
+  { label: 'Claude Code', command: 'winget install Anthropic.ClaudeCode' },
+  { label: 'opencode', command: 'npm install -g opencode-ai' },
+]
 
 const FALLBACK_OUTPUT_LIMIT = 16000
 const MODEL_OUTPUT_LIMITS: Record<string, number> = {
@@ -717,6 +731,45 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         <Title level={3} style={{ margin: 0 }}>⚙️ 系统设置</Title>
         {!embedded && <SystemNav current="settings" />}
       </div>
+
+      <Card title="快速上手：API 与本机 CLI" style={{ marginTop: 16 }}>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Paragraph style={{ marginBottom: 0 }}>
+            司命可以走两条路：配置 API Key 后由司命直接调用模型；或安装 Codex/Claude Code/opencode 等本机 CLI，
+            由司命启动 CLI Agent。CLI 可以直接读取作品镜像文件，但写入章节、角色、大纲和世界观必须调用司命工具入库，
+            入库后系统会自动同步回文件目录。
+          </Paragraph>
+          <div>
+            <Text strong>1. 使用 API 模型：</Text>
+            <Paragraph style={{ margin: '4px 0 8px' }}>
+              到对应平台创建 API Key，然后点击下方「添加配置」，选择提供商，填入 API Key，点击「测试连接」，最后设为全局默认模型。
+            </Paragraph>
+            <Space wrap>
+              {API_KEY_LINKS.map((item) => (
+                <Button key={item.href} size="small" href={item.href} target="_blank" rel="noreferrer">
+                  {item.label}
+                </Button>
+              ))}
+            </Space>
+          </div>
+          <div>
+            <Text strong>2. 使用本机 CLI：</Text>
+            <Paragraph style={{ margin: '4px 0 8px' }}>
+              先在终端安装并登录目标 CLI，再在「添加配置」里选择对应本机 CLI，确认命令和参数，点击「测试本机 CLI」。
+            </Paragraph>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              {CLI_INSTALL_COMMANDS.map((item) => (
+                <Text key={item.label}>
+                  {item.label}：<Text code copyable>{item.command}</Text>
+                </Text>
+              ))}
+            </Space>
+          </div>
+          <Text type="secondary">
+            如果 CLI 自己创建或修改 chapters/*.md，前端不会显示；这表示它绕过了数据库。写作计划会校验这一点并提示修复。
+          </Text>
+        </Space>
+      </Card>
 
       <Card title={<span><FolderOpenOutlined /> 小说数据目录</span>} style={{ marginTop: 16 }} loading={contentRootLoading && !contentRoot}>
         <Descriptions size="small" column={1} bordered>

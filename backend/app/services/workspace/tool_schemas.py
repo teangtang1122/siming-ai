@@ -233,6 +233,7 @@ KEYWORD_TOOL_GROUPS: tuple[tuple[tuple[str, ...], set[str]], ...] = (
         "read_project_file",
         "search_project_files",
         "start_local_cli_agent_run",
+        "wait_local_cli_agent_run",
     }),
 )
 
