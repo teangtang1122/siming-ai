@@ -33,10 +33,15 @@ def get_workspace_pack(mode: str) -> PromptPack:
 def get_chapter_pack(mode: str) -> PromptPack:
     """Return the chapter writer prompt pack.
 
-    Chapter prose generation always uses the quality pack. A requested fast
-    mode may still reduce orchestration elsewhere, but it must not downgrade
-    the writing rules used to produce the chapter body.
+    Fast mode uses a compact direct-writing prompt; quality mode keeps the
+    full craft/rubric prompt. Both modes share the same persistence and archive
+    contracts.
     """
+    if str(mode or "").strip().lower() == "fast":
+        from ...prompts.packs.chapter_fast import PACK as CHAPTER_FAST_PACK
+
+        return CHAPTER_FAST_PACK
+
     from ...prompts.packs.chapter_quality import PACK as CHAPTER_QUALITY_PACK
 
     return CHAPTER_QUALITY_PACK
@@ -114,7 +119,7 @@ def inject_public_prompt_pack_section(
         # Map scope+mode to pack_id
         scope_mode_map = {
             ("chapter_writing", "quality"): "chapter_writing_quality",
-            ("chapter_writing", "fast"): "chapter_writing_quality",
+            ("chapter_writing", "fast"): "chapter_writing_fast",
             ("chapter_review", "quality"): "chapter_review_quality",
             ("new_project", ""): "new_project_setup",
             ("character_design", ""): "character_design",

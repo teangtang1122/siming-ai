@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Input, InputNumber, Modal, Popover, Select, Space, Switch, Tag, Tooltip, Typography, message } from 'antd'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Button, Modal, Space, Tag, Typography, message } from 'antd'
 import {
   DeleteOutlined,
   InfoCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
-  SettingOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import AgentPlanView, { type AgentPlanViewState, type AgentPlanStepView } from './AgentPlanView'
@@ -15,7 +14,6 @@ import {
   type WorkspaceAssistantChatProps,
   type WorkspaceAssistantConversation,
   type WorkspaceAssistantMessage,
-  type WorkspaceAssistantMode,
   type WorkspaceAssistantResponse,
   type WorkspaceAssistantRun,
   type WorkspaceAssistantRunDetail,
@@ -24,11 +22,7 @@ import {
   type WorkspaceToolLog,
   type SkillMatch,
   type StepDetail,
-  DEFAULT_FORBIDDEN_SENTENCE_PATTERNS,
-  DEFAULT_RHETORIC_GUIDELINES,
   SCOPE_LABEL,
-  mergeForbiddenPatterns,
-  stripDefaults,
   createEmptyWorkspaceResponse,
   runStepToLog,
   sortWorkspaceMessages,
@@ -37,11 +31,9 @@ import {
   Composer,
   StepDetailModal,
 } from './assistant'
-import { GLOBAL_MODEL_SELECT_VALUE, globalModelOptionLabel } from '../utils/assistantModelStorage'
 import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
-const { TextArea } = Input
 const EMPTY_ASSISTANT_REPLY = '没有收到模型的文字回复。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。'
 
 function WorkspaceAssistantChat({
@@ -51,11 +43,7 @@ function WorkspaceAssistantChat({
   selectedCharacterId,
   selectedText,
   selectedTextChapterId,
-  model,
   defaultModel,
-  modelOptions,
-  modelsLoading,
-  onModelChange,
   onApplied,
 }: WorkspaceAssistantChatProps) {
   const [conversations, setConversations] = useState<WorkspaceAssistantConversation[]>([])
@@ -67,36 +55,15 @@ function WorkspaceAssistantChat({
   const [historyLoading, setHistoryLoading] = useState(false)
   const [runLogs, setRunLogs] = useState<WorkspaceRunLog[]>([])
   const [currentRun, setCurrentRun] = useState<WorkspaceAssistantRun | null>(null)
-  const [temperature, setTemperature] = useState(0.3)
-  const [maxTokens, setMaxTokens] = useState<number | null>(null)
-  const [autoApply, setAutoApply] = useState(true)
-  const [assistantMode, setAssistantMode] = useState<WorkspaceAssistantMode>('fast')
   const [showAllRunLogs, setShowAllRunLogs] = useState(false)
   const [showSelectionTag, setShowSelectionTag] = useState(true)
   const [retryingStepId, setRetryingStepId] = useState<string | null>(null)
   const [currentPlan, setCurrentPlan] = useState<AgentPlanViewState | null>(null)
   const [retryingPlanKey, setRetryingPlanKey] = useState<string | null>(null)
   const [detailStep, setDetailStep] = useState<StepDetail | null>(null)
-  const modelSelectOptions = useMemo(() => [
-    { value: GLOBAL_MODEL_SELECT_VALUE, label: globalModelOptionLabel(defaultModel) },
-    ...modelOptions,
-  ], [defaultModel, modelOptions])
-  const selectedModelValue = model || GLOBAL_MODEL_SELECT_VALUE
-  const handleModelChange = (value?: string) => {
-    onModelChange?.(!value || value === GLOBAL_MODEL_SELECT_VALUE ? undefined : value)
-  }
-
   useEffect(() => {
     setShowSelectionTag(true)
   }, [selectedText])
-  const [outlineBatchCount, setOutlineBatchCount] = useState(3)
-  const [narrativePerspective, setNarrativePerspective] = useState('third_person')
-  const [writingStyle, setWritingStyle] = useState('natural')
-  const [forbiddenSentencePatterns, setForbiddenSentencePatterns] = useState(DEFAULT_FORBIDDEN_SENTENCE_PATTERNS)
-  const [rhetoricGuidelines, setRhetoricGuidelines] = useState(DEFAULT_RHETORIC_GUIDELINES)
-  const [shortSentences, setShortSentences] = useState(false)
-  const [customStylePrompt, setCustomStylePrompt] = useState('')
-  const [styleSaving, setStyleSaving] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
   const [matchedSkills, setMatchedSkills] = useState<SkillMatch[]>([])
@@ -116,53 +83,6 @@ function WorkspaceAssistantChat({
 
   const conversationScope = 'project'
   const scopeLabel = SCOPE_LABEL
-
-  const fetchProjectStyle = useCallback(async () => {
-    try {
-      const res = await apiClient.get<ApiResponse<{
-        narrative_perspective: string
-        writing_style: string
-        forbidden_sentence_patterns?: string | null
-        rhetoric_guidelines?: string | null
-        short_sentences?: boolean
-        custom_style_prompt?: string | null
-      }>>(`/projects/${projectId}`)
-      setNarrativePerspective(res.data.data.narrative_perspective || 'third_person')
-      setWritingStyle(res.data.data.writing_style || 'natural')
-      setForbiddenSentencePatterns(mergeForbiddenPatterns(res.data.data.forbidden_sentence_patterns || ''))
-      setRhetoricGuidelines(res.data.data.rhetoric_guidelines || DEFAULT_RHETORIC_GUIDELINES)
-      setShortSentences(res.data.data.short_sentences || false)
-      setCustomStylePrompt(res.data.data.custom_style_prompt || '')
-    } catch {
-      // Keep local defaults.
-    }
-  }, [projectId])
-
-  const saveProjectStyle = async (
-    nextPerspective = narrativePerspective,
-    nextStyle = writingStyle,
-    nextForbidden = forbiddenSentencePatterns,
-    nextRhetoric = rhetoricGuidelines,
-    nextShortSentences = shortSentences,
-    nextCustomStylePrompt = customStylePrompt,
-  ) => {
-    setStyleSaving(true)
-    try {
-      await apiClient.put(`/projects/${projectId}`, {
-        narrative_perspective: nextPerspective,
-        writing_style: nextStyle,
-        forbidden_sentence_patterns: stripDefaults(nextForbidden),
-        rhetoric_guidelines: nextRhetoric,
-        short_sentences: nextShortSentences,
-        custom_style_prompt: nextCustomStylePrompt,
-      })
-      message.success('写作风格已保存')
-    } catch (err: any) {
-      message.error(err.message || '保存写作风格失败')
-    } finally {
-      setStyleSaving(false)
-    }
-  }
 
   const addRunLog = (log: Omit<WorkspaceRunLog, 'key'>) => {
     setRunLogs((prev) => [
@@ -270,7 +190,6 @@ function WorkspaceAssistantChat({
 
   useEffect(() => {
     let mounted = true
-    fetchProjectStyle()
     fetchConversations().then((items) => {
       if (mounted && items[0]) {
         loadConversation(items[0].id)
@@ -280,7 +199,7 @@ function WorkspaceAssistantChat({
       mounted = false
       // Don't abort on unmount — backend will finish processing and commit results
     }
-  }, [fetchConversations, fetchProjectStyle, loadConversation])
+  }, [fetchConversations, loadConversation])
 
   const startNewConversation = () => {
     abortRef.current?.abort()
@@ -678,18 +597,18 @@ function WorkspaceAssistantChat({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           scope: conversationScope,
-          outline_batch_count: outlineBatchCount,
+          outline_batch_count: 3,
           message: userText,
           conversation_id: activeConversationId || undefined,
           selected_outline_node_id: selectedOutlineNodeId || undefined,
           selected_character_id: selectedCharacterId || undefined,
           selected_text: selectedText || undefined,
           selected_text_chapter_id: selectedTextChapterId || undefined,
-          model: model || defaultModel || undefined,
-          assistant_mode: assistantMode,
-          temperature,
-          max_tokens: maxTokens || undefined,
-          auto_apply: autoApply,
+          model: defaultModel || undefined,
+          assistant_mode: 'fast',
+          temperature: 0.3,
+          max_tokens: undefined,
+          auto_apply: true,
           history,
         }),
         signal: controller.signal,
@@ -939,197 +858,6 @@ function WorkspaceAssistantChat({
       <div className="workspace-assistant-head">
         <Text strong>{scopeLabel}</Text>
         <Space size={4}>
-          <Popover
-            trigger="click"
-            title="助手设置"
-            content={(
-              <div style={{ width: 260 }}>
-                {/* ── AI 运行设置 ── */}
-                <Text type="secondary" style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.05em', marginBottom: 8, textTransform: 'uppercase' }}>
-                  模型与运行
-                </Text>
-                <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 12 }}>
-                  <Select
-                    allowClear
-                    showSearch
-                    size="small"
-                    value={selectedModelValue}
-                    onChange={handleModelChange}
-                    options={modelSelectOptions}
-                    loading={modelsLoading}
-                    optionFilterProp="label"
-                    placeholder={modelOptions.length ? '选择AI模型' : '请先在系统设置配置模型'}
-                    notFoundContent={modelsLoading ? '加载模型中...' : '暂无已配置模型'}
-                  />
-                  <div>
-                    <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>助手模式</Text>
-                    <Select
-                      size="small"
-                      value={assistantMode}
-                      onChange={(value) => setAssistantMode(value)}
-                      style={{ width: '100%' }}
-                      options={[
-                        { value: 'fast', label: '快速（默认）' },
-                        { value: 'quality', label: '质量' },
-                      ]}
-                    />
-                  </div>
-                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                    <Text type="secondary">
-                      自动执行工具 <Tooltip title="开启后 AI 调用工具时无需逐次确认，关闭则每次都需要你批准"><InfoCircleOutlined style={{ fontSize: 11, opacity: 0.5 }} /></Tooltip>
-                    </Text>
-                    <Switch size="small" checked={autoApply} onChange={setAutoApply} />
-                  </Space>
-                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                    <Text type="secondary">
-                      连续规划章数 <Tooltip title="AI 一次性连续规划的章节数量，数值越大规划越连贯但耗时更长"><InfoCircleOutlined style={{ fontSize: 11, opacity: 0.5 }} /></Tooltip>
-                    </Text>
-                    <InputNumber
-                      size="small"
-                      min={1}
-                      max={12}
-                      value={outlineBatchCount}
-                      onChange={(value) => setOutlineBatchCount(Number(value || 1))}
-                      style={{ width: 92 }}
-                    />
-                  </Space>
-                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                    <Text type="secondary">
-                      温度 <Tooltip title="控制输出随机性。0 最确定，2 最随机。推荐 0.3-0.7"><InfoCircleOutlined style={{ fontSize: 11, opacity: 0.5 }} /></Tooltip>
-                    </Text>
-                    <InputNumber
-                      size="small"
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      value={temperature}
-                      onChange={(value) => setTemperature(Number(value ?? 0.3))}
-                      style={{ width: 92 }}
-                    />
-                  </Space>
-                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                    <Text type="secondary">
-                      最大输出 <Tooltip title="单次 AI 回复的最大 token 数。留空使用模型默认值"><InfoCircleOutlined style={{ fontSize: 11, opacity: 0.5 }} /></Tooltip>
-                    </Text>
-                    <InputNumber
-                      size="small"
-                      min={256}
-                      step={256}
-                      value={maxTokens ?? undefined}
-                      placeholder="默认"
-                      onChange={(value) => setMaxTokens(value ? Number(value) : null)}
-                      style={{ width: 112 }}
-                    />
-                  </Space>
-                </Space>
-
-                <div style={{ height: 1, background: 'var(--ant-color-border-secondary)', margin: '4px 0 12px' }} />
-
-                {/* ── 写作风格 ── */}
-                <Text type="secondary" style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.05em', marginBottom: 8, textTransform: 'uppercase' }}>
-                  写作风格
-                </Text>
-                <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  <div>
-                    <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>叙事视角</Text>
-                    <Select
-                      size="small"
-                      value={narrativePerspective}
-                      onChange={(value) => {
-                        setNarrativePerspective(value)
-                        saveProjectStyle(value, writingStyle)
-                      }}
-                      loading={styleSaving}
-                      style={{ width: '100%' }}
-                      options={[
-                        { value: 'third_person', label: '第三人称' },
-                        { value: 'first_person', label: '第一人称' },
-                        { value: 'omniscient', label: '上帝视角' },
-                      ]}
-                    />
-                  </div>
-                  <div>
-                    <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>文风偏好</Text>
-                    <Select
-                      size="small"
-                      value={writingStyle}
-                      onChange={(value) => {
-                        setWritingStyle(value)
-                        saveProjectStyle(narrativePerspective, value)
-                      }}
-                      loading={styleSaving}
-                      style={{ width: '100%' }}
-                      options={[
-                        { value: 'natural', label: '自然' },
-                        { value: 'vivid', label: '华丽生动' },
-                        { value: 'concise', label: '白描简洁' },
-                        { value: 'serious', label: '严肃' },
-                        { value: 'humorous', label: '幽默' },
-                        { value: 'poetic', label: '诗意' },
-                      ]}
-                    />
-                  </div>
-                  <div>
-                    <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>禁用句式</Text>
-                    <TextArea
-                      size="small"
-                      value={forbiddenSentencePatterns}
-                      onChange={(event) => setForbiddenSentencePatterns(event.target.value)}
-                      onBlur={(event) => saveProjectStyle(narrativePerspective, writingStyle, event.target.value, rhetoricGuidelines)}
-                      autoSize={{ minRows: 3, maxRows: 5 }}
-                      disabled={styleSaving}
-                    />
-                  </div>
-                  <div>
-                    <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>修辞限制</Text>
-                    <TextArea
-                      size="small"
-                      value={rhetoricGuidelines}
-                      onChange={(event) => setRhetoricGuidelines(event.target.value)}
-                      onBlur={(event) => saveProjectStyle(narrativePerspective, writingStyle, forbiddenSentencePatterns, event.target.value)}
-                      autoSize={{ minRows: 3, maxRows: 5 }}
-                      disabled={styleSaving}
-                    />
-                  </div>
-                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                    <Text type="secondary">短句模式</Text>
-                    <Switch
-                      size="small"
-                      checked={shortSentences}
-                      onChange={(checked) => {
-                        setShortSentences(checked)
-                        saveProjectStyle(narrativePerspective, writingStyle, forbiddenSentencePatterns, rhetoricGuidelines, checked)
-                      }}
-                    />
-                  </Space>
-                  <div>
-                    <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>自定义风格提示词</Text>
-                    <TextArea
-                      size="small"
-                      value={customStylePrompt}
-                      onChange={(event) => setCustomStylePrompt(event.target.value)}
-                      onBlur={(event) => saveProjectStyle(narrativePerspective, writingStyle, forbiddenSentencePatterns, rhetoricGuidelines, shortSentences, event.target.value)}
-                      autoSize={{ minRows: 2, maxRows: 6 }}
-                      disabled={styleSaving}
-                      placeholder="追加到所有AI文案生成中的自定义指令"
-                    />
-                  </div>
-                </Space>
-                <Button
-                  size="small"
-                  onClick={() => {
-                    setForbiddenSentencePatterns(DEFAULT_FORBIDDEN_SENTENCE_PATTERNS)
-                    setRhetoricGuidelines(DEFAULT_RHETORIC_GUIDELINES)
-                    saveProjectStyle(narrativePerspective, writingStyle, DEFAULT_FORBIDDEN_SENTENCE_PATTERNS, DEFAULT_RHETORIC_GUIDELINES, shortSentences, customStylePrompt)
-                  }}
-                >
-                  恢复默认表达限制
-                </Button>
-              </div>
-            )}
-          >
-            <Button size="small" icon={<SettingOutlined />} />
-          </Popover>
           <Button size="small" onClick={() => setMemoryModalOpen(true)}>记忆</Button>
           <Button size="small" icon={<ReloadOutlined />} loading={historyLoading} onClick={fetchConversations} />
           <Button size="small" type="primary" icon={<PlusOutlined />} onClick={startNewConversation}>新对话</Button>

@@ -86,17 +86,17 @@ class InjectPublicPromptPackSectionTest(unittest.TestCase):
 
 
 class PublicChapterPromptUnificationTest(unittest.TestCase):
-    """Public/external chapter prompts must use the same quality rules."""
+    """Public/external chapter prompts share contracts while modes stay distinct."""
 
-    def test_fast_public_prompt_is_quality_prompt(self):
+    def test_fast_public_prompt_is_distinct_direct_writing_prompt(self):
         quality = get_public_chapter_quality_system_prompt()
         fast = get_public_chapter_fast_system_prompt()
 
-        self.assertEqual(fast, quality)
-        self.assertIn("你是一位资深小说写手", fast)
-        self.assertIn("文学技法", fast)
+        self.assertNotEqual(fast, quality)
+        self.assertLess(len(fast), len(quality))
+        self.assertIn("快速模式定位", fast)
         self.assertIn("API-free 模式", fast)
-        self.assertIn("统一行为规则", fast)
+        self.assertIn("archive_chapter_after_write", fast)
 
 
 if __name__ == "__main__":

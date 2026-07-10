@@ -248,7 +248,7 @@ async def get_moshu_usage_guide(
             "title": "使用司命内部 API 写作",
             "steps": [
                 "质量模式会检索上下文、设计剧情、角色对戏、生成正文、评估，并通过 archive_chapter_after_write 统一归档角色、世界观、大纲和摘要变化。",
-                "快速模式是兼容入口，正文写作提示词和质量标准仍与质量模式一致；只能减少外围非必要轮次，不能降低正文质量规则。",
+                "快速模式使用更短的直写提示词和更少外围轮次，仍必须遵守角色、设定、时间线一致性和写后归档契约。",
                 "内部写作会消耗系统设置里的模型 API 额度。",
             ],
         },
@@ -337,16 +337,15 @@ async def get_prompt_pack(
     requested_pack_id = pack_id
     # Find by pack_id or by scope+mode
     if pack_id:
-        lookup_pack_id = "chapter_writing_quality" if pack_id == "chapter_writing_fast" else pack_id
         pack = db.query(PublicPromptPack).filter(
-            PublicPromptPack.pack_id == lookup_pack_id,
+            PublicPromptPack.pack_id == pack_id,
             PublicPromptPack.enabled == True,
         ).first()
     else:
         # Map scope+mode to pack_id
         scope_mode_map = {
             ("chapter_writing", "quality"): "chapter_writing_quality",
-            ("chapter_writing", "fast"): "chapter_writing_quality",
+            ("chapter_writing", "fast"): "chapter_writing_fast",
             ("chapter_review", "quality"): "chapter_review_quality",
             ("new_project", ""): "new_project_setup",
             ("character_design", ""): "character_design",
@@ -383,18 +382,25 @@ async def get_prompt_pack(
     # For chapter_writing packs, build system_prompt from shared source
     # (same modules as internal packs — edit once, both benefit)
     system_prompt = pack.system_prompt
-    effective_pack_id = "chapter_writing_quality" if pack.pack_id == "chapter_writing_fast" else pack.pack_id
+    effective_pack_id = pack.pack_id
     requested_pack_id = requested_pack_id or pack.pack_id
     if pack.pack_id in ("chapter_writing_quality", "chapter_writing_fast"):
         from app.prompts.prompt_source import (
+            get_public_chapter_fast_system_prompt,
             get_public_chapter_quality_system_prompt,
         )
         from app.prompts.style_prompts import build_style_context
         from app.database.models import Project
+
+        prompt_builder = (
+            get_public_chapter_fast_system_prompt
+            if pack.pack_id == "chapter_writing_fast"
+            else get_public_chapter_quality_system_prompt
+        )
+        system_prompt = prompt_builder()
         project = db.query(Project).filter(Project.id == project_id).first() if project_id else None
         if project:
             style_ctx = build_style_context(project, include_anti_ai=True)
-            system_prompt = get_public_chapter_quality_system_prompt()
             system_prompt = system_prompt.replace("{style_context}", style_ctx)
 
     return {

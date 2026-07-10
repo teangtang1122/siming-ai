@@ -40,7 +40,7 @@ async def prepare_external_writing_context(
 
     outline_node_id = str(args.get("outline_node_id") or "").strip()
     requested_mode = str(args.get("mode") or "quality").strip() or "quality"
-    mode = "quality"
+    mode = requested_mode if requested_mode in {"fast", "quality"} else "quality"
     include_prompt_pack = args.get("include_prompt_pack", True)
     requirements = str(args.get("requirements") or "").strip()
 
@@ -75,7 +75,7 @@ async def prepare_external_writing_context(
     if requested_mode != mode:
         result["warnings"].append(
             f"Requested mode '{requested_mode}' was normalized to quality. "
-            "Siming uses the highest-quality writing prompt for all entrypoints."
+            "Supported writing modes are fast and quality."
         )
 
     # API-free mode rules + all analysis prompts — one call gets everything
@@ -96,20 +96,26 @@ async def prepare_external_writing_context(
 
     # Prompt pack — build system_prompt from shared source (same modules as internal packs)
     if include_prompt_pack:
-        pack_id = "chapter_writing_quality"
+        pack_id = "chapter_writing_fast" if mode == "fast" else "chapter_writing_quality"
         pack = db.query(PublicPromptPack).filter(
             PublicPromptPack.pack_id == pack_id,
             PublicPromptPack.enabled == True,
         ).first()
         if pack:
             from app.prompts.prompt_source import (
+                get_public_chapter_fast_system_prompt,
                 get_public_chapter_quality_system_prompt,
             )
             from app.prompts.style_prompts import build_style_context
             # Build style context for this project
             style_ctx = build_style_context(project, include_anti_ai=True)
             # Get system prompt from shared source and inject style context
-            system_prompt = get_public_chapter_quality_system_prompt()
+            prompt_builder = (
+                get_public_chapter_fast_system_prompt
+                if mode == "fast"
+                else get_public_chapter_quality_system_prompt
+            )
+            system_prompt = prompt_builder()
             system_prompt = system_prompt.replace("{style_context}", style_ctx)
             result["prompt_pack"] = {
                 "pack_id": pack.pack_id,

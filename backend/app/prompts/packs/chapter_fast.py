@@ -49,20 +49,20 @@ def _build_compact_dialogue() -> str:
 
 
 def _build_system(*, style_context: str, writing_directives: str = "") -> str:
-    """Compatibility wrapper: fast chapter writing uses quality rules too."""
-    from .chapter_quality import PACK as CHAPTER_QUALITY_PACK
+    """Build the compact fast-mode chapter writing prompt."""
+    from ..prompt_source import get_internal_chapter_fast_system_prompt
 
-    return CHAPTER_QUALITY_PACK.build_system_prompt(
-        style_context=style_context,
-        writing_directives=writing_directives,
-    )
+    prompt = get_internal_chapter_fast_system_prompt().replace("{style_context}", style_context)
+    if writing_directives.strip():
+        prompt = f"{prompt}\n\n【本次写作额外要求】\n{writing_directives.strip()}"
+    return prompt
 
 
 PACK = PromptPack(
     name="chapter_fast",
     version="1.0",
     pack_type="chapter",
-    description="Compatibility fast chapter writer — delegates to quality writing rules",
+    description="Fast chapter writer with compact direct-writing rules",
     input_fields=[
         "style_context", "outline_context", "world_context",
         "character_profiles", "recent_summaries", "writing_directives",
@@ -76,7 +76,8 @@ PACK = PromptPack(
         "禁止添加前言、后记、解释或元评论",
         "禁止添加章节标题",
         "禁止使用 Markdown 格式",
-        "正文生成必须使用质量版写作规则",
+        "快速模式不得降低角色、设定、时间线一致性要求",
+        "写后必须通过 archive_chapter_after_write 提交归档候选",
     ],
     default_temperature=0.8,
     default_max_tokens=4000,

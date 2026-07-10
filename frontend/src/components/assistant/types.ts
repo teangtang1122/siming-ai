@@ -9,11 +9,6 @@ export interface ApiResponse<T> {
   data: T
 }
 
-export interface ModelOption {
-  label: string
-  value: string
-}
-
 export interface WorkspaceToolLog {
   tool?: string
   status?: string
@@ -115,11 +110,7 @@ export interface WorkspaceAssistantChatProps {
   selectedCharacterId?: string | null
   selectedText?: string
   selectedTextChapterId?: string | null
-  model?: string
   defaultModel?: string
-  modelOptions: ModelOption[]
-  modelsLoading?: boolean
-  onModelChange?: (value?: string) => void
   onApplied?: () => void | Promise<void>
 }
 

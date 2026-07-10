@@ -164,10 +164,10 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "chapter_writing_fast",
         "scope": "chapter_writing",
         "title": "快速模式章节写作",
-        "summary": "兼容旧配置的快速入口。正文写作规则与质量模式完全一致，仅允许外围调度减少非必要轮次。",
+        "summary": "少轮次直写的章节提示词，保留角色、设定、时间线和写后归档要求，适合快速出稿后再精修。",
         "system_prompt": (
-            "快速入口兼容旧配置。实际种子写入时会替换为 chapter_writing_quality 的完整质量提示词。\n"
-            "任何入口生成章节正文都必须遵守质量模式写作规则、禁用句式、角色一致性和设定一致性。"
+            "快速入口兼容旧配置。实际种子写入时会替换为 chapter_writing_fast 的轻量直写提示词。\n"
+            "任何入口生成章节正文都必须遵守角色一致性、设定一致性、时间线一致性和写后归档契约。"
         ),
         "workflow_json": [
             {"step": 1, "name": "prepare_context", "description": "读取写作所需上下文，使用与质量模式一致的提示词"},
@@ -572,12 +572,17 @@ def seed_builtin_packs(db: Session) -> int:
             merged.update(cataloging_content)
 
         if pack_data["pack_id"] in ("chapter_writing_quality", "chapter_writing_fast"):
-            from app.prompts.prompt_source import get_public_chapter_quality_system_prompt
-            merged["system_prompt"] = get_public_chapter_quality_system_prompt()
+            from app.prompts.prompt_source import (
+                get_public_chapter_fast_system_prompt,
+                get_public_chapter_quality_system_prompt,
+            )
             if pack_data["pack_id"] == "chapter_writing_fast":
+                merged["system_prompt"] = get_public_chapter_fast_system_prompt()
                 merged["summary"] = (
-                    "快速模式仅表示外围流程可减少检索或评估轮次；章节正文生成仍统一使用质量模式提示词。"
+                    "少轮次直写的章节提示词，保留角色、设定、时间线和写后归档要求，适合快速出稿后再精修。"
                 )
+            else:
+                merged["system_prompt"] = get_public_chapter_quality_system_prompt()
 
         # Inject analysis prompts from prompt_source (single source of truth)
         from app.prompts.prompt_source import (

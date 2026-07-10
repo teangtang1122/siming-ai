@@ -147,7 +147,8 @@ class TestChapterPacks(unittest.TestCase):
     def test_fast_prompt_shorter_than_quality(self):
         fast = CF.build_system_prompt(style_context="测试风格")
         quality = CQ.build_system_prompt(style_context="测试风格")
-        self.assertEqual(fast, quality)
+        self.assertLess(len(fast), len(quality))
+        self.assertIn("快速模式定位", fast)
 
     def test_fast_word_target_lower(self):
         prompt = CF.build_system_prompt(style_context="测试风格")
@@ -369,7 +370,7 @@ class TestPromptBuilder(unittest.TestCase):
     def test_get_chapter_pack_fast(self):
         from app.services.agent.prompt_builder import get_chapter_pack
         pack = get_chapter_pack("fast")
-        self.assertEqual(pack.name, "chapter_quality")
+        self.assertEqual(pack.name, "chapter_fast")
 
     def test_inject_assistant_mode_for_chapter_writer(self):
         from app.services.agent.prompt_builder import inject_assistant_mode

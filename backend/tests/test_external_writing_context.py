@@ -117,7 +117,7 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
         self.assertIn("next_tool_suggestions", data)
         self.assertEqual(data["effective_mode"], "quality")
 
-    def test_fast_request_uses_quality_prompt(self):
+    def test_fast_request_uses_fast_prompt(self):
         from app.services.workspace.tools.external_writing import prepare_external_writing_context
 
         project = MagicMock()
@@ -128,9 +128,9 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
         project.narrative_perspective = "third_person"
 
         pack = MagicMock()
-        pack.pack_id = "chapter_writing_quality"
+        pack.pack_id = "chapter_writing_fast"
         pack.version = "1.0.0"
-        pack.title = "Quality Writing"
+        pack.title = "Fast Writing"
         pack.workflow_json = [{"step": 1}]
         pack.quality_rubric_json = {"dimensions": []}
         pack.forbidden_patterns_json = ["仿佛"]
@@ -157,9 +157,9 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         data = result["data"]
         self.assertEqual(data["requested_mode"], "fast")
-        self.assertEqual(data["effective_mode"], "quality")
-        self.assertEqual(data["prompt_pack"]["pack_id"], "chapter_writing_quality")
-        self.assertIn("资深小说写手", data["prompt_pack"]["system_prompt"])
+        self.assertEqual(data["effective_mode"], "fast")
+        self.assertEqual(data["prompt_pack"]["pack_id"], "chapter_writing_fast")
+        self.assertIn("快速模式定位", data["prompt_pack"]["system_prompt"])
 
     def test_no_llm_call(self):
         """Verify the tool does not call LLMGateway."""

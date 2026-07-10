@@ -40,13 +40,11 @@ import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
 import { AiPanelProvider, useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { usePanelResize } from '../hooks/usePanelResize'
-import { readModelOverride, writeModelOverride } from '../utils/assistantModelStorage'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 
 const { Sider, Content } = Layout
 
 type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'skills' | 'prompts' | 'scheduler'
-const PROJECT_MODEL_STORAGE_KEY = 'siming.project.assistant.model.override'
 
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
@@ -67,10 +65,7 @@ const PAGE_TITLES: Record<MenuKey, string> = {
 
 function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; setAiCollapsed: (v: boolean) => void }) {
   const { projectId } = useParams<{ projectId: string }>()
-  const [aiModel, setAiModel] = useState<string | undefined>(
-    () => readModelOverride(PROJECT_MODEL_STORAGE_KEY),
-  )
-  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
+  const { defaultModel } = useModelOptions()
   const { width: aiWidth, onDragHandleMouseDown: onAiResize, dragging: aiDragging } = usePanelResize({
     initialWidth: Math.min(560, Math.max(280, window.innerWidth * 0.24)),
   })
@@ -81,16 +76,6 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
   useEffect(() => {
     if (!aiCollapsed) setHasBeenOpened(true)
   }, [aiCollapsed])
-
-  useEffect(() => {
-    if (aiModel && modelOptions.length > 0 && !modelOptions.some((option) => option.value === aiModel)) {
-      setAiModel(undefined)
-    }
-  }, [aiModel, modelOptions])
-
-  useEffect(() => {
-    writeModelOverride(PROJECT_MODEL_STORAGE_KEY, aiModel)
-  }, [aiModel])
 
   return (
     <AiSidePanel
@@ -108,11 +93,7 @@ function AiPanelColumn({ aiCollapsed, setAiCollapsed }: { aiCollapsed: boolean; 
           selectedCharacterId={selectedCharacterId}
           selectedText={selectedText}
           selectedTextChapterId={selectedTextChapterId}
-          model={aiModel}
           defaultModel={defaultModel}
-          modelOptions={modelOptions}
-          modelsLoading={modelsLoading}
-          onModelChange={setAiModel}
           onApplied={triggerRefresh}
         />
       )}

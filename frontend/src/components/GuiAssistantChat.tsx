@@ -14,12 +14,9 @@ import {
   Empty,
   Modal,
   Input,
-  InputNumber,
-  Popover,
   Select,
   Space,
   Spin,
-  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -36,17 +33,10 @@ import {
   ReloadOutlined,
   RobotOutlined,
   SendOutlined,
-  SettingOutlined,
   StopOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
-import {
-  GLOBAL_MODEL_SELECT_VALUE,
-  globalModelOptionLabel,
-  readModelOverride,
-  writeModelOverride,
-} from '../utils/assistantModelStorage'
 import './GuiAssistantChat.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -167,13 +157,10 @@ interface NovelApplyData {
   project_id: string
 }
 
-type AssistantMode = 'fast' | 'quality'
-
 const PROJECT_STORAGE_KEY = 'siming.gui.assistant.projectId'
 const LEGACY_PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
 const SIDEBAR_STORAGE_KEY = 'siming.gui.assistant.sidebarCollapsed'
 const LEGACY_SIDEBAR_STORAGE_KEY = 'moshu.gui.assistant.sidebarCollapsed'
-const GUI_MODEL_STORAGE_KEY = 'siming.gui.assistant.model.override'
 const CREATION_TEMPLATE_KEY = 'siming:novelCreationTemplates'
 const LEGACY_CREATION_TEMPLATE_KEY = 'moshu:novelCreationTemplates'
 
@@ -288,10 +275,6 @@ function GuiAssistantChat() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => (localStorage.getItem(SIDEBAR_STORAGE_KEY) || localStorage.getItem(LEGACY_SIDEBAR_STORAGE_KEY)) === '1',
   )
-  const [assistantMode, setAssistantMode] = useState<AssistantMode>('fast')
-  const [temperature, setTemperature] = useState(0.3)
-  const [maxTokens, setMaxTokens] = useState<number | null>(null)
-  const [autoApply, setAutoApply] = useState(true)
   const [systemSessionId, setSystemSessionId] = useState<string>()
   const [systemConversationId, setSystemConversationId] = useState<string>()
   const [systemBrief, setSystemBrief] = useState('')
@@ -309,19 +292,8 @@ function GuiAssistantChat() {
   const [editingAnswers, setEditingAnswers] = useState<Record<string, string>>({})
   const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; content: string }>>([])
 
-  const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
-  const [model, setModel] = useState<string | undefined>(
-    () => readModelOverride(GUI_MODEL_STORAGE_KEY),
-  )
-  const selectedModel = model || defaultModel || undefined
-  const modelSelectOptions = useMemo(() => [
-    { value: GLOBAL_MODEL_SELECT_VALUE, label: globalModelOptionLabel(defaultModel) },
-    ...modelOptions,
-  ], [defaultModel, modelOptions])
-  const selectedModelValue = model || GLOBAL_MODEL_SELECT_VALUE
-  const handleModelChange = (value?: string) => {
-    setModel(!value || value === GLOBAL_MODEL_SELECT_VALUE ? undefined : value)
-  }
+  const { defaultModel } = useModelOptions()
+  const selectedModel = defaultModel || undefined
   // Creative slots editor state
   const [slotEditorOpen, setSlotEditorOpen] = useState(false)
   const [slotBlueprintIndex, setSlotBlueprintIndex] = useState<number | null>(null)
@@ -353,16 +325,6 @@ function GuiAssistantChat() {
     [projects, activeProjectId],
   )
   const assistantContextLabel = activeProject ? `作品模式 · ${activeProject.title}` : '系统模式 · 可创建新作品'
-
-  useEffect(() => {
-    if (model && modelOptions.length > 0 && !modelOptions.some((option) => option.value === model)) {
-      setModel(undefined)
-    }
-  }, [model, modelOptions])
-
-  useEffect(() => {
-    writeModelOverride(GUI_MODEL_STORAGE_KEY, model)
-  }, [model])
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? '1' : '0')
@@ -853,7 +815,7 @@ function GuiAssistantChat() {
           return
         }
         const projectList = items.map((project, index) => `${index + 1}. ${project.title}`).join('\n')
-        finish(`当前共有 ${items.length} 个作品：\n${projectList}\n\n你可以在助手设置里切换作品，也可以直接让我创建新作品。`)
+        finish(`当前共有 ${items.length} 个作品：\n${projectList}\n\n你可以在顶部作品下拉框切换作品，也可以直接让我创建新作品。`)
         return
       }
 
@@ -1084,11 +1046,11 @@ function GuiAssistantChat() {
           scope: 'project',
           message: text,
           conversation_id: activeConvId || undefined,
-          model: model || defaultModel || undefined,
-          assistant_mode: assistantMode,
-          temperature,
-          max_tokens: maxTokens || undefined,
-          auto_apply: autoApply,
+          model: selectedModel,
+          assistant_mode: 'fast',
+          temperature: 0.3,
+          max_tokens: undefined,
+          auto_apply: true,
           outline_batch_count: 3,
           history,
         }),
@@ -1845,77 +1807,6 @@ function GuiAssistantChat() {
     },
   ]
 
-  const settingsContent = (
-    <Space direction="vertical" size={12} style={{ width: 300 }}>
-      <div>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>作品上下文</Text>
-        <Select
-          showSearch
-          value={activeProjectId}
-          onChange={setActiveProjectId}
-          options={projects.map((project) => ({ value: project.id, label: project.title }))}
-          loading={projectsLoading}
-          allowClear
-          placeholder="可不选作品，直接创建新书"
-          optionFilterProp="label"
-          style={{ width: '100%' }}
-        />
-      </div>
-      <div>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>模型</Text>
-        <Select
-          allowClear
-          showSearch
-          value={selectedModelValue}
-          onChange={handleModelChange}
-          options={modelSelectOptions}
-          loading={modelsLoading}
-          optionFilterProp="label"
-          placeholder={modelOptions.length ? '选择模型' : '请先在系统设置里配置模型'}
-          style={{ width: '100%' }}
-        />
-      </div>
-      <div>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>助手模式</Text>
-        <Select
-          value={assistantMode}
-          onChange={setAssistantMode}
-          options={[
-            { value: 'fast', label: '快速（默认）' },
-            { value: 'quality', label: '质量' },
-          ]}
-          style={{ width: '100%' }}
-        />
-      </div>
-      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-        <Text type="secondary">自动执行工具</Text>
-        <Switch checked={autoApply} onChange={setAutoApply} />
-      </Space>
-      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-        <Text type="secondary">温度</Text>
-        <InputNumber
-          min={0}
-          max={2}
-          step={0.1}
-          value={temperature}
-          onChange={(value) => setTemperature(Number(value ?? 0.3))}
-          style={{ width: 110 }}
-        />
-      </Space>
-      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-        <Text type="secondary">最大输出</Text>
-        <InputNumber
-          min={256}
-          step={256}
-          value={maxTokens ?? undefined}
-          placeholder="默认"
-          onChange={(value) => setMaxTokens(value ? Number(value) : null)}
-          style={{ width: 110 }}
-        />
-      </Space>
-    </Space>
-  )
-
   return (
     <div className={`gui-chat${sidebarCollapsed ? ' gui-chat-collapsed' : ''}`}>
       <aside className="gui-chat-sidebar">
@@ -2002,17 +1893,20 @@ function GuiAssistantChat() {
             </div>
           </div>
           <Space>
+            <Select
+              showSearch
+              allowClear
+              value={activeProjectId}
+              onChange={setActiveProjectId}
+              options={projects.map((project) => ({ value: project.id, label: project.title }))}
+              loading={projectsLoading}
+              optionFilterProp="label"
+              placeholder="选择作品上下文"
+              style={{ width: 220 }}
+            />
             <Button onClick={() => setInputValue('帮我创建一本新的小说，克苏鲁+规则怪谈，至少要能写1000章的创意')}>
               新书立项
             </Button>
-            <Popover
-              trigger="click"
-              title="助手设置"
-              content={settingsContent}
-              onOpenChange={(open) => { if (open) fetchProjects() }}
-            >
-              <Button icon={<SettingOutlined />}>助手设置</Button>
-            </Popover>
             <Button icon={<PlusOutlined />} onClick={startNewConversation}>
               新对话
             </Button>

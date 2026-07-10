@@ -118,7 +118,7 @@ class GetPromptPackTest(unittest.TestCase):
         result = asyncio.run(get_prompt_pack(db, "p1", {"scope": "nonexistent"}))
         self.assertEqual(result["status"], "skipped")
 
-    def test_fast_chapter_writing_request_maps_to_quality_pack(self):
+    def test_fast_chapter_writing_request_returns_fast_pack(self):
         from app.services.workspace.tools.prompt_packs import get_prompt_pack
 
         project = MagicMock()
@@ -130,11 +130,11 @@ class GetPromptPackTest(unittest.TestCase):
         project.short_sentences = False
 
         pack = MagicMock()
-        pack.pack_id = "chapter_writing_quality"
+        pack.pack_id = "chapter_writing_fast"
         pack.version = "1.0.0"
         pack.scope = "chapter_writing"
-        pack.title = "质量模式章节写作"
-        pack.summary = "完整技法"
+        pack.title = "快速模式章节写作"
+        pack.summary = "少轮次直写"
         pack.workflow_json = []
         pack.quality_rubric_json = {"dimensions": []}
         pack.tool_playbook_json = {}
@@ -158,9 +158,10 @@ class GetPromptPackTest(unittest.TestCase):
 
         result = asyncio.run(get_prompt_pack(db, "p1", {"scope": "chapter_writing", "mode": "fast"}))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["data"]["pack_id"], "chapter_writing_quality")
-        self.assertEqual(result["data"]["effective_pack_id"], "chapter_writing_quality")
-        self.assertIn("资深小说写手", result["data"]["system_prompt"])
+        self.assertEqual(result["data"]["pack_id"], "chapter_writing_fast")
+        self.assertEqual(result["data"]["effective_pack_id"], "chapter_writing_fast")
+        self.assertIn("快速模式定位", result["data"]["system_prompt"])
+        self.assertIn("archive_chapter_after_write", result["data"]["system_prompt"])
 
 
 class ToolRegistrationTest(unittest.TestCase):

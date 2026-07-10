@@ -239,8 +239,14 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="给不会 git 的作者准备的贡献通道"
-        description="作者可以直接在 exe 里修改提示词，写清楚改动内容、预期效果和测试记录。系统会生成本地投稿包，并提供预填好的 GitHub Issue 链接；不需要 fork、不需要命令行。"
+        message="提示词投稿流程"
+        description={(
+          <Space direction="vertical" size={2}>
+            <Text>左侧选择提示词包，在右侧直接修改内容。</Text>
+            <Text>填写「做了哪些修改」「预期效果」和测试记录后，点击「生成投稿包」。</Text>
+            <Text>生成后可以复制投稿 Markdown，也可以点击「打开 GitHub 提交页面」提交给项目维护者。</Text>
+          </Space>
+        )}
       />
 
       <Row gutter={16} align="stretch">
