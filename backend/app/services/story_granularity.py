@@ -493,6 +493,8 @@ def _active_fact_payloads(db: Session, project_id: str, chapter_id: str, fact_ty
 
 
 def _narrative_health(db: Session, project_id: str, chapter: Chapter, estimated_scene_count: int) -> dict[str, Any]:
+    from .narrative_ledger import list_narrative_ledger
+
     chapter_states = _active_fact_payloads(db, project_id, chapter.id, "chapter_narrative_state")
     section_states = _active_fact_payloads(db, project_id, chapter.id, "section_scene_state")
     chapter_links = _active_fact_payloads(db, project_id, chapter.id, "chapter_element_links")
@@ -505,6 +507,11 @@ def _narrative_health(db: Session, project_id: str, chapter: Chapter, estimated_
         "foreshadowing_resolved_count": 0,
         "storyline_progress_count": 0,
         "unresolved_action_count": 0,
+        "ledger_entry_count": 0,
+        "completed_beat_count": 0,
+        "revealed_clue_count": 0,
+        "narrative_promise_count": 0,
+        "storyline_state_count": 0,
     }
     for payload in chapter_states:
         counts = narrative_counts(payload)
@@ -512,6 +519,13 @@ def _narrative_health(db: Session, project_id: str, chapter: Chapter, estimated_
             totals[key] += value
     for payload in section_states:
         totals["unresolved_action_count"] += len(_as_list(payload.get("unresolved_actions")))
+    ledger_items = list_narrative_ledger(db, project_id, chapter_id=chapter.id)
+    totals["ledger_entry_count"] = len(ledger_items)
+    for item in ledger_items:
+        kind = str(item.get("ledger_type") or "")
+        key = f"{kind}_count"
+        if key in totals:
+            totals[key] += 1
 
     warnings: list[str] = []
     if not chapter_states:
@@ -520,6 +534,10 @@ def _narrative_health(db: Session, project_id: str, chapter: Chapter, estimated_
         warnings.append("section_scene_state_missing")
     if totals["event_count"] == 0 and totals["storyline_progress_count"] == 0:
         warnings.append("narrative_progress_missing")
+    if chapter_states and not ledger_items:
+        warnings.append("narrative_ledger_missing")
+    if totals["narrative_promise_count"] > 0 and totals["storyline_state_count"] == 0:
+        warnings.append("unanchored_narrative_promises")
     return {
         **totals,
         "warnings": warnings,
@@ -590,9 +608,10 @@ def granularity_contract_prompt() -> str:
         "worldbuilding_create/update, worldbuilding_timeline, and chapter_link. "
         "Every saved chapter needs chapter_summary and a chapter-level outline node; "
         "multi-scene chapters need 2-6 section outline nodes under the chapter node. "
-        "chapter_summary may include narrative_state with events, timeline_events, "
+        "chapter_summary must include narrative_state with events, timeline_events, "
         "foreshadowing_planted, foreshadowing_resolved, storyline_progress, "
-        "new_storylines, reader_known_facts, character_known_facts, unresolved_actions, "
+        "new_storylines, reader_known_facts, character_known_facts, unresolved_actions. "
+        "Use stable title/id/storyline fields whenever known so the narrative ledger can advance completed beats, revealed clues, promises, and storyline states. "
         "character_actions, and relationship_changes. "
         "section outline payloads may include scene_number, purpose, location, timeline, "
         "pov_character, characters, entry_state, exit_state, emotional_residue, and unresolved_actions. "

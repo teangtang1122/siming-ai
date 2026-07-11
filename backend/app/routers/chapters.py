@@ -21,6 +21,7 @@ from ..services.chapter_service import (
     restore_chapter_from_snapshot,
     snapshot_to_item,
 )
+from ..services.narrative_ledger import restore_ledger_checkpoint
 from ..services.content_store import (
     delete_project_file,
     sync_chapter_to_file,
@@ -220,6 +221,7 @@ def restore_chapter_snapshot(
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     snapshot = _get_snapshot_or_404(db, project_id, chapter_id, snapshot_id)
     restore_chapter_from_snapshot(db, chapter, snapshot)
+    ledger_restore = restore_ledger_checkpoint(db, project_id, chapter, snapshot.id)
     db.commit()
     db.refresh(chapter)
     project = get_project_or_404(db, project_id)
@@ -227,4 +229,8 @@ def restore_chapter_snapshot(
     db.commit()
     db.refresh(chapter)
     outline_context = outline_sort_context(load_outline_nodes(db, project_id))
-    return ApiResponse.success(data=chapter_to_detail(chapter, outline_context), message="章节已恢复")
+    data = chapter_to_detail(chapter, outline_context)
+    data["ledger_checkpoint_id"] = ledger_restore["ledger_checkpoint_id"]
+    data["ledger_restored_count"] = ledger_restore["restored_count"]
+    data["ledger_conflicts"] = ledger_restore["conflicts"]
+    return ApiResponse.success(data=data, message="章节已恢复")

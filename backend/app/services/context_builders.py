@@ -402,6 +402,32 @@ def _fact_list(payload: dict, key: str, limit: int = 3) -> list[str]:
 
 
 def _build_narrative_state_context(db: Session, project_id: str, chapter_id: str | None = None, limit: int = 6) -> str:
+    from .narrative_ledger import list_narrative_ledger
+
+    ledger = [
+        item for item in list_narrative_ledger(db, project_id, chapter_id=chapter_id or "")
+        if item.get("status") in {"active", "open", "pending_review"}
+    ]
+    priority = {"narrative_promise": 0, "storyline_state": 1, "revealed_clue": 2, "completed_beat": 3}
+    ledger.sort(key=lambda item: (priority.get(str(item.get("ledger_type")), 9), item.get("created_at") or ""), reverse=False)
+    budget = 2200
+    used = 0
+    ledger_lines: list[str] = []
+    skipped = 0
+    for item in ledger:
+        line = f"- {item.get('ledger_type')}: {item.get('title')} [{item.get('status')}]"
+        if item.get("storyline"):
+            line += f" ({item['storyline']})"
+        if used + len(line) > budget:
+            skipped += 1
+            continue
+        ledger_lines.append(line)
+        used += len(line)
+    ledger_context = ""
+    if ledger_lines:
+        ledger_context = "Narrative ledger locks:\n" + "\n".join(ledger_lines)
+        if skipped:
+            ledger_context += f"\n[ledger budget: kept {len(ledger_lines)}, omitted {skipped}]"
     query = (
         db.query(CatalogingFact)
         .filter(CatalogingFact.project_id == project_id)
@@ -448,9 +474,8 @@ def _build_narrative_state_context(db: Session, project_id: str, chapter_id: str
             text = "; ".join(bit for bit in bits if bit)
             if text:
                 lines.append(f"- narrative: {text}")
-    if not lines:
-        return ""
-    return "叙事状态锁：\n" + "\n".join(lines)
+    state_context = "叙事状态锁：\n" + "\n".join(lines) if lines else ""
+    return "\n\n".join(part for part in (ledger_context, state_context) if part)
 
 
 def _build_outline_context(db: Session, project_id: str, outline_node_id: Optional[str]) -> str:

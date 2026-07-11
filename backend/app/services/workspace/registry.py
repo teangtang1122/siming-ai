@@ -275,6 +275,8 @@ def _register_all() -> None:
         get_today_writing_stats,
         get_writing_stats_history,
         get_project_info,
+        get_narrative_ledger,
+        update_narrative_ledger_entry,
         ensure_builtin_skills_tool,
         draft_skill,
         import_deconstruct_report_tool,
@@ -2258,6 +2260,37 @@ def _register_all() -> None:
         risk_level="medium",
         estimated_cost="model_or_free",
         handler=archive_chapter_after_write,
+    ))
+
+    _r(ToolDef(
+        name="update_narrative_ledger_entry",
+        description="Manually revise or invalidate one narrative ledger entry while preserving its prior fact version.",
+        input_schema={
+            "entry_id": {"type": "string", "description": "Narrative ledger entry ID"},
+            "title": {"type": "string", "description": "Optional corrected title"},
+            "status": {"type": "string", "description": "Optional lifecycle status, such as active, open, fulfilled, invalidated"},
+            "storyline": {"type": "string", "description": "Optional corrected storyline"},
+            "note": {"type": "string", "description": "Reason or evidence for this manual revision"},
+        },
+        tool_type="write",
+        writes_project_data=True,
+        risk_level="medium",
+        estimated_cost="free",
+        handler=update_narrative_ledger_entry,
+    ))
+
+    _r(ToolDef(
+        name="get_narrative_ledger",
+        description="Read active completed beats, revealed clues, narrative promises, and storyline states.",
+        input_schema={
+            "chapter_id": {"type": "string", "description": "Optional chapter ID"},
+            "types": {"type": "array", "items": {"type": "string"}, "description": "completed_beat|revealed_clue|narrative_promise|storyline_state"},
+            "statuses": {"type": "array", "items": {"type": "string"}, "description": "Optional lifecycle statuses"},
+            "storyline": {"type": "string", "description": "Optional storyline filter"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=get_narrative_ledger,
     ))
 
     _r(ToolDef(

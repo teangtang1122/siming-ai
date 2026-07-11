@@ -25,6 +25,7 @@ from ....services.chapter_service import (
     snapshot_to_item,
 )
 from ....services.content_store import delete_project_file, sync_chapter_to_file
+from ....services.narrative_ledger import restore_ledger_checkpoint
 from ....services.style_rules import _repair_forbidden_sentence_text
 from ..generated_drafts import get_chapter_draft_meta, resolve_chapter_draft_content
 from ..utils import find_outline_by_title_or_id
@@ -376,6 +377,7 @@ async def restore_chapter_version(
             "data": {"chapter": _chapter_version_data(chapter), "items": [snapshot_to_item(s) for s in _chapter_snapshots(db, chapter)]},
         }
     restored = restore_chapter_from_snapshot(db, chapter, snapshot)
+    ledger_restore = restore_ledger_checkpoint(db, project_id, chapter, snapshot.id)
     if project:
         sync_chapter_to_file(db, project, chapter)
         db.flush()
@@ -388,6 +390,9 @@ async def restore_chapter_version(
             "restored_from": snapshot_to_item(snapshot),
             "restore_snapshot": snapshot_to_item(restored),
             "content_preview": (chapter.content or "")[:500],
+            "ledger_checkpoint_id": ledger_restore["ledger_checkpoint_id"],
+            "ledger_restored_count": ledger_restore["restored_count"],
+            "ledger_conflicts": ledger_restore["conflicts"],
         },
     }
 

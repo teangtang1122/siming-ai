@@ -34,6 +34,7 @@ async def get_project_archive_status(
         WorldbuildingEntry,
     )
     from app.services.story_granularity import inspect_chapter_granularity
+    from app.services.narrative_ledger import list_narrative_ledger
     if not str(project_id or "").strip():
         return {
             "tool": "get_project_archive_status",
@@ -127,6 +128,11 @@ async def get_project_archive_status(
         "foreshadowing_resolved_count": 0,
         "storyline_progress_count": 0,
         "unresolved_action_count": 0,
+        "ledger_entry_count": 0,
+        "completed_beat_count": 0,
+        "revealed_clue_count": 0,
+        "narrative_promise_count": 0,
+        "storyline_state_count": 0,
     }
     for item in granularity_items:
         for key in item["missing"]:
@@ -156,6 +162,17 @@ async def get_project_archive_status(
             item for item in granularity_items
             if item["missing"] or item["warnings"]
         ][:10],
+    }
+    ledger_items = list_narrative_ledger(db, project_id)
+    ledger_type_counts: dict[str, int] = {}
+    for item in ledger_items:
+        ledger_type = str(item.get("ledger_type") or "unknown")
+        ledger_type_counts[ledger_type] = ledger_type_counts.get(ledger_type, 0) + 1
+    granularity_health["narrative_ledger"] = {
+        "active_count": len(ledger_items),
+        "type_counts": ledger_type_counts,
+        "open_promise_count": sum(1 for item in ledger_items if item.get("ledger_type") == "narrative_promise" and item.get("status") == "open"),
+        "needs_attention": "narrative_ledger_missing" in granularity_warnings or "unanchored_narrative_promises" in granularity_warnings,
     }
     if granularity_health["needs_repair"]:
         warnings.append("story_granularity_needs_attention")

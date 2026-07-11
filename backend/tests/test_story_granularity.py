@@ -219,6 +219,67 @@ class ArchiveChapterAfterWriteTest(unittest.TestCase):
         self.assertIn("Siming enters the relay", context)
         db.close()
 
+    def test_narrative_ledger_is_queryable_and_restored_with_snapshot(self):
+        from app.services.chapter_service import ensure_current_snapshot
+        from app.services.workspace.tools.chapters import restore_chapter_version
+        from app.services.workspace.tools.story_granularity import archive_chapter_after_write, get_narrative_ledger, update_narrative_ledger_entry
+
+        db = self.Session()
+        db.add_all([
+            Project(id="p3", title="Ledger Novel"),
+            OutlineNode(id="o3", project_id="p3", node_type="chapter", title="Chapter 1"),
+            Chapter(id="ch3", project_id="p3", outline_node_id="o3", title="Chapter 1", content="First draft."),
+        ])
+        db.commit()
+
+        first = _run(archive_chapter_after_write(db, "p3", {
+            "chapter_id": "ch3", "mode": "auto", "generate_if_missing": False,
+            "candidates": [
+                {"type": "chapter_summary", "summary_text": "First", "narrative_state": {
+                    "events": [{"description": "The gate opens."}],
+                    "foreshadowing_planted": [{"description": "A red signal remains."}],
+                    "storyline_progress": [{"title": "Gate arc", "storyline": "Gate arc"}],
+                }},
+                {"type": "outline_update", "title": "Chapter 1", "node_type": "chapter", "summary": "First"},
+            ],
+        }))
+        self.assertTrue(first["data"]["ledger_checkpoint_id"])
+        first_snapshot_id = first["data"]["ledger_checkpoint"]["snapshot_id"]
+        ledger = _run(get_narrative_ledger(db, "p3", {"types": ["narrative_promise"]}))
+        self.assertEqual(ledger["data"]["total"], 1)
+        self.assertEqual(ledger["data"]["items"][0]["status"], "open")
+        revised = _run(update_narrative_ledger_entry(db, "p3", {
+            "entry_id": ledger["data"]["items"][0]["id"],
+            "status": "invalidated",
+            "note": "Author rejected this hook.",
+        }))
+        self.assertEqual(revised["status"], "ok")
+        invalidated = _run(get_narrative_ledger(db, "p3", {"statuses": ["invalidated"]}))
+        self.assertEqual(invalidated["data"]["total"], 1)
+
+        chapter = db.query(Chapter).filter(Chapter.id == "ch3").first()
+        chapter.content = "Second draft."
+        chapter.current_version = 2
+        ensure_current_snapshot(db, chapter, "ai_insert")
+        db.commit()
+        _run(archive_chapter_after_write(db, "p3", {
+            "chapter_id": "ch3", "mode": "auto", "generate_if_missing": False,
+            "candidates": [
+                {"type": "chapter_summary", "summary_text": "Second", "narrative_state": {
+                    "events": [{"description": "The gate closes."}],
+                    "foreshadowing_resolved": [{"description": "A red signal remains."}],
+                }},
+                {"type": "outline_update", "title": "Chapter 1", "node_type": "chapter", "summary": "Second"},
+            ],
+        }))
+
+        restored = _run(restore_chapter_version(db, "p3", {"chapter_id": "ch3", "snapshot_id": first_snapshot_id}))
+        self.assertEqual(restored["status"], "ok")
+        self.assertTrue(restored["data"]["ledger_checkpoint_id"])
+        promises = _run(get_narrative_ledger(db, "p3", {"types": ["narrative_promise"]}))
+        self.assertEqual(promises["data"]["items"][0]["status"], "open")
+        db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

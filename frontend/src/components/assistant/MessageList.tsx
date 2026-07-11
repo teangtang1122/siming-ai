@@ -2,6 +2,7 @@
 import { Empty, Space, Tag, Tooltip, Typography } from 'antd'
 import { DownOutlined } from '@ant-design/icons'
 import { ChapterVersionPanel } from '../ChapterVersionPanel'
+import { NarrativeLedgerPanel } from '../NarrativeLedgerPanel'
 import { ContextPreviewPanel } from '../ContextPreviewPanel'
 import { findStorageHealth, StorageRepairActions } from '../StorageRepairActions'
 import type { WorkspaceAssistantMessage, SkillMatch, WorkspaceToolLog } from './types'
@@ -132,6 +133,7 @@ export function MessageList({
                   onRestored={onStorageRepaired}
                 />
               ))}
+              {item.role === 'assistant' && item.data && <NarrativeLedgerPanel data={item.data} />}
             </div>
           ))
         ) : (

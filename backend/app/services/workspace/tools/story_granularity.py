@@ -21,6 +21,7 @@ from ....database.models import (
 from ....services.cataloging.applier import apply_candidates_for_run
 from ....services.cataloging.candidate_store import create_candidate_from_raw
 from ....services.cataloging.candidate_validation import inspect_candidate_coverage
+from ....services.narrative_ledger import create_ledger_checkpoint, list_narrative_ledger, revise_narrative_ledger_entry
 from ....services.story_granularity import (
     CHARACTER_STATE_FIELDS,
     chapter_outline_node,
@@ -418,6 +419,7 @@ async def archive_chapter_after_write(
     if errors:
         warnings.append("candidate_parse_errors")
     applied_events: list[dict[str, Any]] = []
+    ledger_checkpoint: dict[str, Any] | None = None
     if not coverage.is_complete:
         run.status = "failed"
         run.error = "归档候选缺少：" + ", ".join(coverage.missing)
@@ -441,8 +443,20 @@ async def archive_chapter_after_write(
         job.failed_chapters = 1 if has_failed else 0
         job.last_completed_chapter_id = chapter.id if not has_failed else None
         job.completed_at = datetime.utcnow()
+        if not has_failed:
+            ledger_checkpoint = create_ledger_checkpoint(db, run, chapter)
     job.updated_at = datetime.utcnow()
     db.commit()
+    ledger_items = list_narrative_ledger(db, project_id, chapter_id=chapter.id)
+    ledger_counts = {"new": 0, "advanced": 0, "fulfilled": 0, "invalidated": 0, "pending_review": 0}
+    for event in applied_events:
+        result = event.get("data") if isinstance(event, dict) else None
+        new_value = result.get("new_value") if isinstance(result, dict) else None
+        summary = new_value.get("narrative_ledger") if isinstance(new_value, dict) else None
+        counts = summary.get("counts") if isinstance(summary, dict) else None
+        if isinstance(counts, dict):
+            for key in ledger_counts:
+                ledger_counts[key] += int(counts.get(key) or 0)
 
     return {
         "tool": "archive_chapter_after_write",
@@ -462,8 +476,52 @@ async def archive_chapter_after_write(
             "coverage": coverage.to_dict(),
             "warnings": warnings,
             "applied_events": applied_events,
+            "narrative_ledger": {"items": ledger_items, "counts": ledger_counts},
+            "ledger_checkpoint_id": ledger_checkpoint.get("id") if ledger_checkpoint else None,
+            "ledger_checkpoint": ledger_checkpoint,
         },
     }
+
+
+async def get_narrative_ledger(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    def items(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+    ledger = list_narrative_ledger(
+        db,
+        project_id,
+        chapter_id=str(args.get("chapter_id") or "").strip(),
+        types=items(args.get("types") or args.get("type")),
+        statuses=items(args.get("statuses") or args.get("status")),
+        storyline=str(args.get("storyline") or "").strip(),
+    )
+    return {
+        "tool": "get_narrative_ledger",
+        "status": "ok",
+        "detail": f"Found {len(ledger)} active narrative ledger entries",
+        "data": {"items": ledger, "total": len(ledger)},
+    }
+
+
+async def update_narrative_ledger_entry(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict:
+    entry_id = str(args.get("entry_id") or args.get("id") or "").strip()
+    if not entry_id:
+        return {"tool": "update_narrative_ledger_entry", "status": "skipped", "detail": "entry_id is required", "data": None}
+    entry = revise_narrative_ledger_entry(db, project_id, entry_id, args)
+    if not entry:
+        return {"tool": "update_narrative_ledger_entry", "status": "skipped", "detail": "Narrative ledger entry was not found", "data": None}
+    db.commit()
+    return {"tool": "update_narrative_ledger_entry", "status": "ok", "detail": "Narrative ledger entry updated", "data": entry}
 
 
 async def inspect_story_granularity(

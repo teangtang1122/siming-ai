@@ -53,6 +53,7 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
                 "type": "candidate_applied",
                 "candidate": candidate_to_dict(candidate),
                 "detail": result.get("detail"),
+                "data": result,
             })
         except Exception as exc:
             candidate.status = "apply_failed"

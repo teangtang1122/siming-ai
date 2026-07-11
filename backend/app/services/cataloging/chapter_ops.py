@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, Chapter, ChapterSummary
 from ..story_granularity import has_chapter_narrative_state, normalize_chapter_narrative_state
+from ..narrative_ledger import record_narrative_ledger
 from .facts import record_cataloging_fact
 
 
@@ -32,11 +33,12 @@ def apply_chapter_summary(
             fact_type="chapter_narrative_state",
             payload=narrative_state,
         )
+        ledger = record_narrative_ledger(db, candidate, chapter, narrative_state)
         return {
             "target_type": "cataloging_fact",
             "target_id": fact.id if fact else None,
             "old_value": None,
-            "new_value": narrative_state,
+            "new_value": {**narrative_state, "narrative_ledger": ledger},
             "detail": "章节叙事状态已归档",
         }
     key_events = payload.get("key_events") if isinstance(payload.get("key_events"), list) else []
@@ -52,6 +54,7 @@ def apply_chapter_summary(
     summary.ai_model = "cataloging"
     summary.updated_at = datetime.utcnow()
     fact = None
+    ledger: dict[str, Any] = {"items": [], "counts": {"new": 0, "advanced": 0, "fulfilled": 0, "invalidated": 0, "pending_review": 0}}
     if narrative_state:
         narrative_state.setdefault("chapter_id", chapter.id)
         narrative_state.setdefault("chapter_title", chapter.title)
@@ -62,10 +65,11 @@ def apply_chapter_summary(
             fact_type="chapter_narrative_state",
             payload=narrative_state,
         )
+        ledger = record_narrative_ledger(db, candidate, chapter, narrative_state)
     return {
         "target_type": "chapter_summary",
         "target_id": summary.id,
         "old_value": old,
-        "new_value": {**payload, "narrative_fact_id": fact.id if fact else None},
+        "new_value": {**payload, "narrative_fact_id": fact.id if fact else None, "narrative_ledger": ledger},
         "detail": "章节摘要已更新",
     }
