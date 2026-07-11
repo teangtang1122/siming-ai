@@ -1,0 +1,42 @@
+name: Backend CI
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      MOSHU_DISABLE_AUTO_MCP_SETUP: "1"
+      SIMING_ENABLE_LOCAL_RUNTIME: "0"
+      OPENAI_API_KEY: "test-placeholder"
+      ANTHROPIC_API_KEY: "test-placeholder"
+      ARK_API_KEY: "test-placeholder"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Run backend tests
+        run: python -m pytest tests -q --tb=short
+

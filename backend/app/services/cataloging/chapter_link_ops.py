@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, Chapter
+from .facts import record_cataloging_fact
 from .links import link_chapter_character, link_chapter_worldbuilding
 from .lookups import find_character_by_name_or_id, find_outline_by_title_or_id, find_worldbuilding_by_title_or_id
 
@@ -35,11 +36,31 @@ def apply_chapter_link(
         if node:
             chapter.outline_node_id = node.id
             linked["outline"] = node.title
+    element_payload = {
+        key: payload.get(key)
+        for key in ("locations", "items", "events", "importance", "appearance_order", "description")
+        if payload.get(key) not in (None, "", [], {})
+    }
+    fact = None
+    if element_payload:
+        element_payload.update({
+            "chapter_id": chapter.id,
+            "chapter_title": chapter.title,
+            "linked": linked,
+        })
+        fact = record_cataloging_fact(
+            db,
+            candidate,
+            chapter,
+            fact_type="chapter_element_links",
+            payload=element_payload,
+            identity_keys=("chapter_id", "appearance_order", "description"),
+        )
 
     return {
         "target_type": "chapter",
         "target_id": chapter.id,
         "old_value": None,
-        "new_value": linked,
+        "new_value": {**linked, "element_fact_id": fact.id if fact else None},
         "detail": "章节关联已更新",
     }

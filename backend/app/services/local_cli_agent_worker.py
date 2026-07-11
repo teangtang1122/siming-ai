@@ -69,7 +69,7 @@ def _workflow_section(task_type: str) -> str:
 3. Read relevant project files directly when useful, but write only through Siming MCP tools.
 4. Call `save_external_chapter_draft` for long chapter text instead of printing it.
 5. Call `record_external_quality_review`, then `create_chapter` with `draft_id/content_ref`.
-6. Call `archive_chapter_after_write` with standard candidates for character/worldbuilding/outline/chapter summary changes.
+6. Call `archive_chapter_after_write` with standard candidates for chapter summary, chapter outline, section scene state, character state, worldbuilding, and narrative_state (events, foreshadowing, storyline progress, unresolved actions).
 7. Call `get_project_archive_status` before reporting completion.
 """
     return """
@@ -131,6 +131,7 @@ def write_task_file(
 - Use Siming prompt packs and workflow guides instead of guessing tool contracts.
 - For chapter writing, use the unified quality prompt returned by Siming.
 - For cataloging, section-level outline nodes are required when the chapter contains distinct scenes/beats.
+- Post-write archive candidates should include chapter_summary.narrative_state and section outline scene fields when the text contains events, foreshadowing, storyline progress, location/time changes, or unresolved actions.
 """
     task_file.write_text(text, encoding="utf-8", newline="\n")
     return task_file
@@ -154,6 +155,9 @@ async def _run_cli_process(
             "cli_started",
             message=f"Started {provider}",
             payload_json=None,
+            model_source=f"{provider}:local_cli",
+            tool_mode="siming_mcp_task_file",
+            storage_target="database_authoritative",
         )
         env = os.environ.copy()
         env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")
@@ -191,6 +195,11 @@ async def _run_cli_process(
                 status="error",
                 message=quota_error,
                 payload_json=__import__("json").dumps(payload, ensure_ascii=False),
+                model_source=f"{provider}:local_cli",
+                tool_mode="siming_mcp_task_file",
+                failure_class="quota_or_rate_limit",
+                storage_target="database_authoritative",
+                next_action="test_local_cli_or_switch_provider",
             )
             run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
             if run:
@@ -204,6 +213,10 @@ async def _run_cli_process(
                 "cli_finished",
                 message=f"{provider} exited successfully",
                 payload_json=__import__("json").dumps(payload, ensure_ascii=False),
+                model_source=f"{provider}:local_cli",
+                tool_mode="siming_mcp_task_file",
+                storage_target="database_authoritative",
+                next_action="wait_local_cli_agent_run",
             )
             update_run_status(db, run_id, "completed", summary=f"{provider} completed")
         else:
@@ -214,9 +227,23 @@ async def _run_cli_process(
                 status="error",
                 message=f"{provider} exited with code {proc.returncode}",
                 payload_json=__import__("json").dumps(payload, ensure_ascii=False),
+                model_source=f"{provider}:local_cli",
+                tool_mode="siming_mcp_task_file",
+                storage_target="database_authoritative",
+                next_action="open_run_events_and_check_cli_output",
             )
     except Exception as exc:
-        add_event(db, run_id, "error", status="error", message=f"CLI worker failed: {exc}")
+        add_event(
+            db,
+            run_id,
+            "error",
+            status="error",
+            message=f"CLI worker failed: {exc}",
+            model_source=f"{provider}:local_cli",
+            tool_mode="siming_mcp_task_file",
+            storage_target="database_authoritative",
+            next_action="test_local_cli_or_switch_provider",
+        )
     finally:
         db.close()
 

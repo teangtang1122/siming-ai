@@ -11,8 +11,8 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.database.models import Base, Chapter, ChapterSummary, Character, OutlineNode, Project  # noqa: E402
-from app.services.story_granularity import inspect_candidate_coverage_items, normalize_outline_batch  # noqa: E402
+from app.database.models import Base, CatalogingFact, Chapter, ChapterSummary, Character, OutlineNode, Project  # noqa: E402
+from app.services.story_granularity import inspect_candidate_coverage_items, inspect_chapter_granularity, normalize_outline_batch  # noqa: E402
 
 
 def _run(coro):
@@ -45,6 +45,49 @@ class StoryGranularityContractTest(unittest.TestCase):
         self.assertTrue(coverage.is_complete)
         self.assertIn("multi_scene_chapter_without_section_outline", coverage.warnings)
         self.assertIn("no_character_state_candidates", coverage.warnings)
+
+    def test_candidate_coverage_counts_narrative_and_scene_state(self):
+        coverage = inspect_candidate_coverage_items([
+            {
+                "type": "chapter_summary",
+                "summary_text": "Scene one changes the network.",
+                "scene_count": 2,
+                "narrative_state": {
+                    "events": [{"description": "The relay opens."}],
+                    "timeline_events": [{"description": "Night shift begins."}],
+                    "foreshadowing_planted": [{"description": "A dead node blinks."}],
+                    "foreshadowing_resolved": [{"description": "The old password works."}],
+                    "storyline_progress": [{"description": "Network arc advances."}],
+                    "unresolved_actions": [{"description": "Find the source."}],
+                },
+            },
+            {
+                "type": "outline_create",
+                "node_type": "chapter",
+                "title": "Chapter 151",
+                "summary": "The relay opens.",
+            },
+            {
+                "type": "outline_create",
+                "node_type": "section",
+                "title": "Chapter 151 / Relay",
+                "parent_title": "Chapter 151",
+                "summary": "The relay scene.",
+                "scene_number": 1,
+                "purpose": "open the relay",
+                "unresolved_actions": [{"description": "Trace the signal."}],
+            },
+            {"type": "character_state_update", "name": "Siming", "current_location": "Relay"},
+        ])
+
+        self.assertTrue(coverage.is_complete)
+        self.assertEqual(coverage.section_count, 1)
+        self.assertEqual(coverage.scene_state_count, 1)
+        self.assertEqual(coverage.event_count, 2)
+        self.assertEqual(coverage.foreshadowing_planted_count, 1)
+        self.assertEqual(coverage.foreshadowing_resolved_count, 1)
+        self.assertEqual(coverage.storyline_progress_count, 1)
+        self.assertEqual(coverage.unresolved_action_count, 2)
 
 
 class ArchiveChapterAfterWriteTest(unittest.TestCase):
@@ -96,6 +139,84 @@ class ArchiveChapterAfterWriteTest(unittest.TestCase):
         section = db.query(OutlineNode).filter(OutlineNode.node_type == "section").first()
         self.assertIsNotNone(section)
         self.assertEqual(section.parent_id, "o1")
+        db.close()
+
+    def test_archive_records_narrative_and_section_scene_facts(self):
+        from app.services.workspace.tools.story_granularity import archive_chapter_after_write
+
+        db = self.Session()
+        db.add_all([
+            Project(id="p2", title="Narrative Novel"),
+            OutlineNode(id="o2", project_id="p2", node_type="chapter", title="Chapter 151", summary="Plan relay."),
+            Chapter(
+                id="ch2",
+                project_id="p2",
+                outline_node_id="o2",
+                title="Chapter 151",
+                content="Siming enters the relay.\n\nThe dead node blinks again.",
+            ),
+            Character(id="c2", project_id="p2", name="Siming", current_location="Old city"),
+        ])
+        db.commit()
+
+        result = _run(archive_chapter_after_write(db, "p2", {
+            "chapter_id": "ch2",
+            "mode": "auto",
+            "source": "external_agent",
+            "candidates": [
+                {
+                    "type": "chapter_state",
+                    "events": [{"description": "Siming enters the relay."}],
+                    "timeline_events": [{"description": "Night shift begins."}],
+                    "foreshadowing_planted": [{"description": "A dead node blinks again."}],
+                    "advanced_storylines": [{"description": "Network arc advances."}],
+                    "unresolved_actions": [{"description": "Trace the source."}],
+                },
+                {"type": "chapter_summary", "summary_text": "Siming enters the relay.", "scene_count": 2},
+                {"type": "outline_update", "title": "Chapter 151", "node_type": "chapter", "summary": "Siming enters the relay."},
+                {
+                    "type": "outline_create",
+                    "title": "Chapter 151 / Relay",
+                    "node_type": "section",
+                    "parent_title": "Chapter 151",
+                    "summary": "Relay scene.",
+                    "scene_number": 1,
+                    "purpose": "enter relay station",
+                    "location": "relay station",
+                    "unresolved_actions": [{"description": "Trace the source."}],
+                },
+                {"type": "character_state_update", "id": "c2", "name": "Siming", "current_location": "relay station"},
+            ],
+        }))
+
+        self.assertEqual(result["status"], "ok")
+        coverage = result["data"]["coverage"]
+        self.assertEqual(coverage["event_count"], 2)
+        self.assertEqual(coverage["foreshadowing_planted_count"], 1)
+        self.assertEqual(coverage["storyline_progress_count"], 1)
+        self.assertEqual(coverage["scene_state_count"], 1)
+
+        narrative_fact = db.query(CatalogingFact).filter(
+            CatalogingFact.chapter_id == "ch2",
+            CatalogingFact.fact_type == "chapter_narrative_state",
+            CatalogingFact.status == "active",
+        ).first()
+        self.assertIsNotNone(narrative_fact)
+        scene_fact = db.query(CatalogingFact).filter(
+            CatalogingFact.chapter_id == "ch2",
+            CatalogingFact.fact_type == "section_scene_state",
+            CatalogingFact.status == "active",
+        ).first()
+        self.assertIsNotNone(scene_fact)
+        audit = inspect_chapter_granularity(db, "p2", db.query(Chapter).filter(Chapter.id == "ch2").first())
+        self.assertEqual(audit["narrative_health"]["chapter_narrative_state_count"], 1)
+        self.assertEqual(audit["narrative_health"]["section_scene_state_count"], 1)
+        from app.services.context_builders import _build_outline_context
+        section = db.query(OutlineNode).filter(OutlineNode.project_id == "p2", OutlineNode.node_type == "section").first()
+        context = _build_outline_context(db, "p2", section.id)
+        self.assertIn("Chapter 151", context)
+        self.assertIn("叙事状态锁", context)
+        self.assertIn("Siming enters the relay", context)
         db.close()
 
 

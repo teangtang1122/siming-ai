@@ -280,6 +280,34 @@ class CatalogingServiceTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_try_create_candidate_accepts_plotpilot_style_chapter_state(self):
+        db = self.Session()
+        try:
+            project = Project(title="Narrative State Candidate Project")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, title="Chapter", content="A relay opens.")
+            db.add(chapter)
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [])
+            run = job.chapter_runs[0]
+            created = try_create_candidate(db, job, run, json.dumps({
+                "type": "chapter_state",
+                "events": [{"description": "The relay opens."}],
+                "advanced_storylines": [{"description": "Network arc advances."}],
+                "unresolved_actions": [{"description": "Trace the source."}],
+            }, ensure_ascii=False), 0)
+
+            self.assertIn("candidate", created)
+            candidate = created["candidate"]
+            self.assertEqual(candidate.item_type, "chapter_summary")
+            payload = json.loads(candidate.raw_payload)
+            self.assertIn("narrative_state", payload)
+            self.assertEqual(len(payload["narrative_state"]["events"]), 1)
+        finally:
+            db.close()
+
     def test_try_create_candidate_infers_relationship_and_worldbuilding_without_type(self):
         db = self.Session()
         try:

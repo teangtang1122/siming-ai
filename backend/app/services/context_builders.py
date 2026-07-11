@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..core.exceptions import ValidationError
 from ..core.utils import count_words as _count_words
 from ..database.models import (
+    CatalogingFact,
     Chapter,
     ChapterSummary,
     ChapterWorldbuilding,
@@ -384,6 +385,74 @@ def _build_recent_summaries(db: Session, project_id: str, limit: int = 5) -> str
     return "\n".join(lines)
 
 
+def _short_fact_value(value: object, limit: int = 180) -> str:
+    if isinstance(value, dict):
+        text = value.get("description") or value.get("summary") or value.get("name") or json.dumps(value, ensure_ascii=False)
+    else:
+        text = str(value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def _fact_list(payload: dict, key: str, limit: int = 3) -> list[str]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return []
+    return [_short_fact_value(item) for item in value[:limit] if _short_fact_value(item)]
+
+
+def _build_narrative_state_context(db: Session, project_id: str, chapter_id: str | None = None, limit: int = 6) -> str:
+    query = (
+        db.query(CatalogingFact)
+        .filter(CatalogingFact.project_id == project_id)
+        .filter(CatalogingFact.status == "active")
+        .filter(CatalogingFact.fact_type.in_(["chapter_narrative_state", "section_scene_state", "chapter_element_links"]))
+    )
+    if chapter_id:
+        query = query.filter(CatalogingFact.chapter_id == chapter_id)
+    facts = query.order_by(CatalogingFact.created_at.desc()).limit(limit).all()
+    lines: list[str] = []
+    for fact in facts:
+        try:
+            payload = json.loads(fact.raw_payload or "{}")
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            continue
+        if fact.fact_type == "section_scene_state":
+            title = payload.get("title") or payload.get("parent_title") or "section"
+            bits = [
+                f"purpose={_short_fact_value(payload.get('purpose'))}" if payload.get("purpose") else "",
+                f"location={_short_fact_value(payload.get('location'))}" if payload.get("location") else "",
+                f"exit={_short_fact_value(payload.get('exit_state'))}" if payload.get("exit_state") else "",
+            ]
+            text = "; ".join(bit for bit in bits if bit)
+            if text:
+                lines.append(f"- section {title}: {text}")
+        elif fact.fact_type == "chapter_element_links":
+            events = ", ".join(_fact_list(payload, "events", 3))
+            locations = ", ".join(_fact_list(payload, "locations", 3))
+            if events or locations:
+                lines.append(f"- elements: events={events or '-'}; locations={locations or '-'}")
+        else:
+            events = ", ".join(_fact_list(payload, "events", 3))
+            unresolved = ", ".join(_fact_list(payload, "unresolved_actions", 3))
+            storylines = ", ".join(_fact_list(payload, "storyline_progress", 3))
+            foreshadowing = ", ".join(_fact_list(payload, "foreshadowing_planted", 2))
+            bits = [
+                f"events={events}" if events else "",
+                f"storylines={storylines}" if storylines else "",
+                f"foreshadowing={foreshadowing}" if foreshadowing else "",
+                f"unresolved={unresolved}" if unresolved else "",
+            ]
+            text = "; ".join(bit for bit in bits if bit)
+            if text:
+                lines.append(f"- narrative: {text}")
+    if not lines:
+        return ""
+    return "叙事状态锁：\n" + "\n".join(lines)
+
+
 def _build_outline_context(db: Session, project_id: str, outline_node_id: Optional[str]) -> str:
     node = _get_outline_node_or_404(db, project_id, outline_node_id)
     if not node:
@@ -418,14 +487,22 @@ def _build_outline_context(db: Session, project_id: str, outline_node_id: Option
     )
     if sections:
         parts.append("章内事件节点：")
-        for section in sections:
+        current_index = next((idx for idx, section in enumerate(sections) if section.id == node.id), -1)
+        for idx, section in enumerate(sections):
             marker = "（当前）" if section.id == node.id else ""
+            if current_index >= 0 and idx == current_index - 1:
+                marker = "（上一节）"
+            elif current_index >= 0 and idx == current_index + 1:
+                marker = "（下一节）"
             summary = f"：{section.summary[:360]}" if section.summary else ""
             parts.append(f"- {section.title}{marker}{summary}")
     linked = node.linked_characters
     if linked:
         char_names = [lc.character.name for lc in linked if lc.character]
         parts.append(f"涉及角色：{', '.join(char_names)}")
+    narrative_context = _build_narrative_state_context(db, project_id, chapter_node.source_chapter_id)
+    if narrative_context:
+        parts.append(narrative_context)
     return "\n".join(parts)
 
 

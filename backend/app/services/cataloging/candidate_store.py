@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob
-from ..story_granularity import CHARACTER_STATE_FIELDS
+from ..story_granularity import CHARACTER_STATE_FIELDS, has_chapter_narrative_state
 from .candidate_io import float_or_none
 from .constants import VALID_ITEM_TYPES
 from .jsonl import clean_jsonl_text, normalize_candidate, parse_json_line
@@ -171,7 +171,7 @@ def _skip_reason_for_candidate(normalized: dict[str, Any]) -> str | None:
             return f"世界观候选 {title} 没有内容，已跳过"
 
     if item_type == "chapter_summary":
-        if not _clean_value(payload.get("summary_text") or payload.get("summary") or payload.get("content")):
+        if not _clean_value(payload.get("summary_text") or payload.get("summary") or payload.get("content")) and not has_chapter_narrative_state(payload):
             return "章节摘要候选为空，已跳过"
 
     if item_type in {"outline_create", "outline_update"}:

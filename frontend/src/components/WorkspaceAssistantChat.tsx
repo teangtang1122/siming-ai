@@ -23,6 +23,7 @@ import {
   type SkillMatch,
   type StepDetail,
   SCOPE_LABEL,
+  assistantOutcomeToRunLog,
   createEmptyWorkspaceResponse,
   runStepToLog,
   sortWorkspaceMessages,
@@ -813,7 +814,7 @@ function WorkspaceAssistantChat({
             }
             return next
           })
-          addRunLog({ tool: scope, status: 'ok', message: 'AI助手已完成' })
+          addRunLog(assistantOutcomeToRunLog(payload, scope))
           fetchConversations()
           Promise.resolve(onApplied?.()).catch(() => undefined)
         } else if (event.type === 'error') {
@@ -839,7 +840,7 @@ function WorkspaceAssistantChat({
           ...item,
           status: 'done',
         }))
-        addRunLog({ tool: scope, status: 'success', message: 'AI响应已结束（部分内容）' })
+        addRunLog({ tool: scope, status: 'skipped', message: '流式输出中断，已保留已收到内容' })
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -939,6 +940,7 @@ function WorkspaceAssistantChat({
                 log.status === 'ok' ? 'green' :
                 log.status === 'error' && log.resolvedStepId ? 'green' :
                 log.status === 'error' ? 'red' :
+                log.status === 'blocked' ? 'orange' :
                 log.status === 'skipped' ? 'orange' : 'blue'
               }>
                 {log.status === 'error' && log.resolvedStepId ? '已解决' :
@@ -988,6 +990,10 @@ function WorkspaceAssistantChat({
         onScrollToBottom={scrollToBottom}
         messagesRef={messagesRef}
         onScroll={handleMessagesScroll}
+        projectId={projectId}
+        onStorageRepaired={() => {
+          onApplied?.()
+        }}
       />
 
       <Composer

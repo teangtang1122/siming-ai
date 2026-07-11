@@ -18,6 +18,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
+import { Modal } from 'antd'
 
 // ---------------------------------------------------------------------------
 // Mock axios globally for jsdom compatibility
@@ -320,6 +321,13 @@ describe('DashboardPage', () => {
   it('should trigger delete when confirmed in popconfirm', async () => {
     const user = userEvent.setup()
     mockProjects = [makeProject({ id: 'del-1', title: '待删除作品' })]
+    const modalConfirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation((config) => {
+      config.onOk?.()
+      return {
+        destroy: vi.fn(),
+        update: vi.fn(),
+      } as unknown as ReturnType<typeof Modal.confirm>
+    })
 
     renderDashboard()
 
@@ -327,21 +335,17 @@ describe('DashboardPage', () => {
       expect(screen.getByText('待删除作品')).toBeInTheDocument()
     })
 
-    const deleteBtn = document.querySelector('.anticon-delete')?.closest('button')
-    if (deleteBtn) {
-      await user.click(deleteBtn)
-    }
+    const deleteBtn = screen.getByRole('button', { name: '删除 待删除作品' })
+    await user.click(deleteBtn)
 
     await waitFor(() => {
-      expect(screen.getByText('确认删除')).toBeInTheDocument()
-    })
-
-    const confirmBtn = screen.getByRole('button', { name: /^删除$/ })
-    await user.click(confirmBtn)
-
-    await waitFor(() => {
+      expect(modalConfirmSpy).toHaveBeenCalledWith(expect.objectContaining({
+        title: '确认删除作品',
+        okText: '删除',
+      }))
       expect(mockDeleteProject).toHaveBeenCalledWith('del-1')
     })
+    modalConfirmSpy.mockRestore()
   })
 
   // ------------------------------------------------------------------

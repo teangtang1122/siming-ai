@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.database.models import AgentRun, AgentRunEvent
+from app.services.observability.run_events import merge_event_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,12 @@ def add_event(
     status: str = "ok",
     message: str | None = None,
     payload_json: str | None = None,
+    model_source: str | None = None,
+    tool_mode: str | None = None,
+    failure_class: str | None = None,
+    checkpoint_id: str | None = None,
+    storage_target: str | None = None,
+    next_action: str | None = None,
 ) -> AgentRunEvent | None:
     """Add an event to a run.
 
@@ -150,6 +157,18 @@ def add_event(
 
     # Truncate and redact
     message = _truncate(message, _MAX_MESSAGE)
+    payload_json = merge_event_metadata(
+        payload_json,
+        event_type=event_type,
+        status=status,
+        message=message,
+        model_source=model_source,
+        tool_mode=tool_mode,
+        failure_class=failure_class,
+        checkpoint_id=checkpoint_id,
+        storage_target=storage_target,
+        next_action=next_action,
+    )
     payload_json = _truncate(payload_json, _MAX_PAYLOAD)
     payload_json = _redact_secrets(payload_json)
 

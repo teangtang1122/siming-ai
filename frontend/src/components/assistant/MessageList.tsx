@@ -1,11 +1,20 @@
 /* Message list rendering for the assistant chat. */
 import { Empty, Space, Tag, Tooltip, Typography } from 'antd'
 import { DownOutlined } from '@ant-design/icons'
+import { ChapterVersionPanel } from '../ChapterVersionPanel'
 import { ContextPreviewPanel } from '../ContextPreviewPanel'
-import type { WorkspaceAssistantMessage, SkillMatch } from './types'
+import { findStorageHealth, StorageRepairActions } from '../StorageRepairActions'
+import type { WorkspaceAssistantMessage, SkillMatch, WorkspaceToolLog } from './types'
 import { SCOPE_LABEL } from './constants'
 
 const { Paragraph, Text } = Typography
+
+function chapterVersionActions(item: WorkspaceAssistantMessage): WorkspaceToolLog[] {
+  return [
+    ...(item.data?.applied_actions || []),
+    ...(item.data?.tool_logs || []),
+  ].filter((action) => action.tool === 'list_chapter_versions' && action.data)
+}
 
 interface MessageListProps {
   messages: WorkspaceAssistantMessage[]
@@ -15,6 +24,8 @@ interface MessageListProps {
   onScrollToBottom: () => void
   messagesRef: React.RefObject<HTMLDivElement>
   onScroll: () => void
+  projectId: string
+  onStorageRepaired?: () => void
 }
 
 export function MessageList({
@@ -25,6 +36,8 @@ export function MessageList({
   onScrollToBottom,
   messagesRef,
   onScroll,
+  projectId,
+  onStorageRepaired,
 }: MessageListProps) {
   return (
     <>
@@ -104,6 +117,21 @@ export function MessageList({
                   ))}
                 </Space>
               )}
+              {item.role === 'assistant' && (
+                <StorageRepairActions
+                  projectId={projectId}
+                  health={findStorageHealth(item.data)}
+                  onRepaired={onStorageRepaired}
+                />
+              )}
+              {item.role === 'assistant' && chapterVersionActions(item).map((action, actionIndex) => (
+                <ChapterVersionPanel
+                  key={`chapter-version-${actionIndex}`}
+                  projectId={projectId}
+                  data={action.data}
+                  onRestored={onStorageRepaired}
+                />
+              ))}
             </div>
           ))
         ) : (

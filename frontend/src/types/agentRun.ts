@@ -52,4 +52,26 @@ export interface EventPayload {
   result_detail?: string
   prompt_pack_version?: string
   prompt_pack_id?: string
+  model_source?: string
+  tool_mode?: string
+  failure_class?: string
+  checkpoint_id?: string
+  storage_target?: string
+  next_action?: string
+  storage_health?: {
+    storage_target?: string
+    orphan_chapter_files?: Array<{
+      path: string
+      id?: string | null
+      title?: string | null
+      word_count?: number | null
+      modified_at?: string | null
+    }>
+    orphan_chapter_file_count?: number
+    next_action?: string | null
+    warning?: string | null
+  }
+  orphan_chapter_files?: Array<{ path: string; title?: string | null; word_count?: number | null }>
+  validation?: Record<string, unknown>
+  data?: Record<string, unknown>
 }

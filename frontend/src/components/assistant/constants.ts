@@ -68,6 +68,28 @@ export const runStepToLog = (step: WorkspaceAssistantRunStep): WorkspaceRunLog =
   stepId: step.id,
 })
 
+export function assistantOutcomeToRunLog(
+  payload: WorkspaceAssistantResponse,
+  tool: string,
+): Omit<WorkspaceRunLog, 'key'> {
+  switch (payload.outcome) {
+    case 'completed_with_reply':
+      return { tool, status: 'ok', message: 'AI助手已回复' }
+    case 'completed_with_tools':
+      return { tool, status: 'ok', message: 'AI助手已完成工具操作' }
+    case 'empty_response':
+      return { tool, status: 'skipped', message: '模型没有返回文字或工具结果' }
+    case 'skipped_preflight':
+      return { tool, status: 'skipped', message: '预检已跳过执行，等待补充信息' }
+    case 'blocked':
+      return { tool, status: 'blocked', message: '任务已阻塞，等待确认或修复' }
+    case 'failed':
+      return { tool, status: 'error', message: '任务执行失败，部分数据可能未保存' }
+    default:
+      return { tool, status: 'ok', message: payload.reply?.trim() ? 'AI助手已回复' : 'AI助手已完成' }
+  }
+}
+
 const messageTime = (message: WorkspaceAssistantMessage) => {
   const value = message.created_at || message.updated_at || ''
   const parsed = value ? new Date(value).getTime() : Number.NaN

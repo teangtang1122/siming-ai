@@ -9,9 +9,10 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import Base, Chapter, Character, Project, WorldbuildingEntry
+from app.database.models import Base, Chapter, ChapterSnapshot, Character, Project, WorldbuildingEntry
 from app.services.content_store import migrate_projects_to_content_root, refresh_project_from_files, sync_project_to_files
 from app.services.workspace.tools.project_files import (
+    get_project_files_info,
     list_project_files,
     read_project_file,
     search_project_files,
@@ -110,6 +111,22 @@ class ContentStoreFileSourceTestCase(unittest.TestCase):
         ))
         self.assertEqual(allowed["status"], "ok")
 
+    def test_project_files_info_reports_orphan_chapter_mirror_files(self):
+        project = self._project()
+        sync_project_to_files(self.db, project.id)
+        chapters_dir = Path(project.folder_path) / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        orphan_path = chapters_dir / "0999-direct-write.md"
+        orphan_path.write_text("# Direct chapter\n\nThis file bypassed the database.", encoding="utf-8")
+
+        info = asyncio.run(get_project_files_info(self.db, project.id, {}))
+        health = info["data"]["storage_health"]
+
+        self.assertEqual(health["storage_target"], "database_authoritative")
+        self.assertEqual(health["orphan_chapter_file_count"], 1)
+        self.assertEqual(health["orphan_chapter_files"][0]["path"], "chapters/0999-direct-write.md")
+        self.assertIn("sync_project_files", health["next_action"])
+
     def test_normal_reads_do_not_import_file_mirror_edits(self):
         project = self._project()
         chapter = Chapter(project_id=project.id, title="第一章", content="数据库正文", word_count=5)
@@ -167,6 +184,36 @@ class ContentStoreFileSourceTestCase(unittest.TestCase):
         ))
         self.assertEqual(imported["status"], "ok")
         self.assertEqual(chapter.content.strip(), "显式导入正文")
+
+    def test_explicit_import_orphan_chapter_creates_db_chapter_and_snapshot(self):
+        project = self._project()
+        sync_project_to_files(self.db, project.id)
+        chapters_dir = Path(project.folder_path) / "chapters"
+        orphan_path = chapters_dir / "0151-direct-cli.md"
+        orphan_path.write_text(
+            "---\n"
+            '{"title":"第151章 抢网","word_count":4,"current_version":1}\n'
+            "---\n\n"
+            "抢网正文",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        imported = asyncio.run(sync_project_files(
+            self.db,
+            project.id,
+            {"direction": "import", "confirm_import_from_files": True},
+        ))
+
+        self.assertEqual(imported["status"], "ok")
+        chapters = self.db.query(Chapter).filter(Chapter.project_id == project.id).all()
+        self.assertEqual(len(chapters), 1)
+        self.assertEqual(chapters[0].title, "第151章 抢网")
+        self.assertEqual(chapters[0].content.strip(), "抢网正文")
+        snapshots = self.db.query(ChapterSnapshot).filter(ChapterSnapshot.chapter_id == chapters[0].id).all()
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].trigger_type, "ai_insert")
+        self.assertEqual(imported["data"]["storage_health"]["orphan_chapter_file_count"], 0)
 
     def test_migrate_projects_to_new_content_root_refreshes_and_cleans_old_folder(self):
         project = self._project()

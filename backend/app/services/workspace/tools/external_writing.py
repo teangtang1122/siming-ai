@@ -323,7 +323,7 @@ async def prepare_external_writing_context(
         {"tool": "save_external_chapter_draft", "description": "保存生成的草稿"},
         {"tool": "record_external_quality_review", "description": "记录质量自评"},
         {"tool": "create_chapter", "description": "用 draft_id 保存章节"},
-        {"tool": "archive_chapter_after_write", "description": "提交标准候选并统一归档章节摘要、大纲、角色状态和世界观"},
+        {"tool": "archive_chapter_after_write", "description": "提交标准候选并统一归档章节摘要、章级大纲、section 场景状态、角色状态、世界观和 narrative_state"},
         {"tool": "evaluate_chapter", "description": "8维度80分质量评估（需要司命API）"},
     ]
 

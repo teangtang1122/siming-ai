@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AgentRunCreate(BaseModel):
@@ -34,10 +34,18 @@ class AgentRunRead(BaseModel):
 
 class AgentRunEventCreate(BaseModel):
     """Schema for creating an Agent run event."""
+    model_config = ConfigDict(protected_namespaces=())
+
     event_type: str = Field(..., description="Event type")
     status: str = Field(default="ok", description="Event status")
     message: Optional[str] = Field(default=None, description="Event message")
     payload_json: Optional[str] = Field(default=None, description="JSON payload")
+    model_source: Optional[str] = Field(default=None, description="Selected model/config source")
+    tool_mode: Optional[str] = Field(default=None, description="Tool execution mode, such as function_calling or text_plan")
+    failure_class: Optional[str] = Field(default=None, description="Stable failure class for user guidance")
+    checkpoint_id: Optional[str] = Field(default=None, description="Related checkpoint/snapshot identifier")
+    storage_target: Optional[str] = Field(default=None, description="Authoritative storage target")
+    next_action: Optional[str] = Field(default=None, description="Recommended next user/system action")
 
 
 class AgentRunEventRead(BaseModel):

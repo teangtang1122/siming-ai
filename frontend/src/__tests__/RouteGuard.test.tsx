@@ -84,6 +84,10 @@ vi.mock('../stores', () => ({
   },
 }))
 
+vi.mock('../pages/DashboardPage', () => ({
+  default: () => <div data-testid="dashboard-page">Dashboard loaded</div>,
+}))
+
 // ---------------------------------------------------------------------------
 // Helper: create a project object
 // ---------------------------------------------------------------------------
@@ -144,7 +148,7 @@ describe('RouteGuard', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('暂无作品，点击上方按钮创建')).toBeInTheDocument()
+      expect(screen.getByTestId('dashboard-page')).toBeInTheDocument()
     })
 
     expect(mockNavigate).not.toHaveBeenCalled()
@@ -163,7 +167,7 @@ describe('RouteGuard', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('测试作品')).toBeInTheDocument()
+      expect(screen.getByTestId('dashboard-page')).toBeInTheDocument()
     })
     expect(mockNavigate).not.toHaveBeenCalledWith('/project/dash-1', { replace: true })
   })
@@ -282,7 +286,7 @@ describe('RouteGuard', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('暂无作品，点击上方按钮创建')).toBeInTheDocument()
+      expect(screen.getByTestId('dashboard-page')).toBeInTheDocument()
     })
 
     mockProjects = [makeProject({ id: 'after-create' })]

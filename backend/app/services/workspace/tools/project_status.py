@@ -118,16 +118,39 @@ async def get_project_archive_status(
     ]
     granularity_missing: dict[str, int] = {}
     granularity_warnings: dict[str, int] = {}
+    narrative_totals: dict[str, int] = {
+        "chapter_narrative_state_count": 0,
+        "section_scene_state_count": 0,
+        "chapter_element_link_count": 0,
+        "event_count": 0,
+        "foreshadowing_planted_count": 0,
+        "foreshadowing_resolved_count": 0,
+        "storyline_progress_count": 0,
+        "unresolved_action_count": 0,
+    }
     for item in granularity_items:
         for key in item["missing"]:
             granularity_missing[key] = granularity_missing.get(key, 0) + 1
         for key in item["warnings"]:
             granularity_warnings[key] = granularity_warnings.get(key, 0) + 1
+        narrative = item.get("narrative_health") if isinstance(item, dict) else None
+        if isinstance(narrative, dict):
+            for key in narrative_totals:
+                value = narrative.get(key)
+                if isinstance(value, int):
+                    narrative_totals[key] += value
     granularity_health = {
         "chapters_checked": len(granularity_items),
         "ok_chapters": sum(1 for item in granularity_items if item["ok"]),
         "missing_counts": granularity_missing,
         "warning_counts": granularity_warnings,
+        "narrative_health": {
+            **narrative_totals,
+            "needs_attention": any(
+                key in granularity_warnings
+                for key in ("chapter_narrative_state_missing", "section_scene_state_missing", "narrative_progress_missing")
+            ),
+        },
         "needs_repair": bool(granularity_missing or granularity_warnings),
         "sample_issues": [
             item for item in granularity_items

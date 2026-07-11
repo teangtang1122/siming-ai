@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
 
-from ..database.models import Chapter, ChapterCharacter, Character, ChapterWorldbuilding, OutlineNode
+from ..database.models import CatalogingFact, Chapter, ChapterCharacter, Character, ChapterWorldbuilding, OutlineNode
 
 
 CHARACTER_STATE_FIELDS: tuple[str, ...] = (
@@ -57,6 +57,47 @@ VALID_CANDIDATE_TYPES: set[str] = {
     "chapter_link",
 }
 
+NARRATIVE_STATE_FIELDS: tuple[str, ...] = (
+    "events",
+    "timeline_events",
+    "foreshadowing_planted",
+    "foreshadowing_resolved",
+    "storyline_progress",
+    "new_storylines",
+    "reader_known_facts",
+    "character_known_facts",
+    "unresolved_actions",
+    "character_actions",
+    "relationship_changes",
+)
+
+SECTION_SCENE_STATE_FIELDS: tuple[str, ...] = (
+    "scene_number",
+    "purpose",
+    "location",
+    "timeline",
+    "pov_character",
+    "characters",
+    "entry_state",
+    "exit_state",
+    "emotional_residue",
+    "unresolved_actions",
+)
+
+PLOTPILOT_NARRATIVE_ALIASES: dict[str, tuple[str, ...]] = {
+    "events": ("events", "chapter_events", "key_events"),
+    "timeline_events": ("timeline_events", "timeline"),
+    "foreshadowing_planted": ("foreshadowing_planted", "planted_foreshadowing", "new_foreshadowing"),
+    "foreshadowing_resolved": ("foreshadowing_resolved", "resolved_foreshadowing"),
+    "storyline_progress": ("storyline_progress", "advanced_storylines", "progressed_storylines"),
+    "new_storylines": ("new_storylines",),
+    "reader_known_facts": ("reader_known_facts", "revealed_facts", "facts_reader_known"),
+    "character_known_facts": ("character_known_facts", "facts_character_known"),
+    "unresolved_actions": ("unresolved_actions", "open_actions", "pending_actions"),
+    "character_actions": ("character_actions",),
+    "relationship_changes": ("relationship_changes",),
+}
+
 _CHAPTER_NUMBER_RE = re.compile(r"(?:第\s*)?(\d{1,5})\s*章")
 
 
@@ -68,6 +109,12 @@ class CandidateCoverage:
     section_count: int = 0
     scene_count: int = 1
     character_state_count: int = 0
+    scene_state_count: int = 0
+    event_count: int = 0
+    foreshadowing_planted_count: int = 0
+    foreshadowing_resolved_count: int = 0
+    storyline_progress_count: int = 0
+    unresolved_action_count: int = 0
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -95,6 +142,12 @@ class CandidateCoverage:
             "section_count": self.section_count,
             "scene_count": self.scene_count,
             "character_state_count": self.character_state_count,
+            "scene_state_count": self.scene_state_count,
+            "event_count": self.event_count,
+            "foreshadowing_planted_count": self.foreshadowing_planted_count,
+            "foreshadowing_resolved_count": self.foreshadowing_resolved_count,
+            "storyline_progress_count": self.storyline_progress_count,
+            "unresolved_action_count": self.unresolved_action_count,
             "is_complete": self.is_complete,
             "missing": self.missing,
             "warnings": list(self.warnings),
@@ -220,6 +273,81 @@ def _payload(candidate: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, dict):
+        return [value]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _first_present(payload: dict[str, Any], aliases: tuple[str, ...]) -> Any:
+    nested = payload.get("narrative_state")
+    if isinstance(nested, dict):
+        for alias in aliases:
+            if alias in nested:
+                return nested.get(alias)
+    for alias in aliases:
+        if alias in payload:
+            return payload.get(alias)
+    return None
+
+
+def normalize_chapter_narrative_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the canonical PlotPilot-inspired chapter narrative state payload."""
+    result: dict[str, Any] = {}
+    for canonical, aliases in PLOTPILOT_NARRATIVE_ALIASES.items():
+        items = _as_list(_first_present(payload, aliases))
+        if items:
+            result[canonical] = items
+    if payload.get("chapter_id"):
+        result["chapter_id"] = str(payload.get("chapter_id"))
+    if payload.get("chapter_title"):
+        result["chapter_title"] = str(payload.get("chapter_title"))
+    if payload.get("summary_text") or payload.get("summary"):
+        result["summary"] = str(payload.get("summary_text") or payload.get("summary"))
+    return result
+
+
+def has_chapter_narrative_state(payload: dict[str, Any]) -> bool:
+    state = normalize_chapter_narrative_state(payload)
+    return any(bool(state.get(key)) for key in NARRATIVE_STATE_FIELDS)
+
+
+def normalize_section_scene_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the canonical scene-state payload for a section outline candidate."""
+    if normalize_node_type(payload.get("node_type")) != "section":
+        return {}
+    result: dict[str, Any] = {}
+    for key in SECTION_SCENE_STATE_FIELDS:
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            result[key] = value
+    if not result:
+        return {}
+    for key in ("id", "target_id", "title", "parent_title", "summary", "actual_summary", "planned_summary"):
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            result[key] = value
+    return result
+
+
+def narrative_counts(payload: dict[str, Any]) -> dict[str, int]:
+    state = normalize_chapter_narrative_state(payload)
+    return {
+        "event_count": len(_as_list(state.get("events"))) + len(_as_list(state.get("timeline_events"))),
+        "foreshadowing_planted_count": len(_as_list(state.get("foreshadowing_planted"))),
+        "foreshadowing_resolved_count": len(_as_list(state.get("foreshadowing_resolved"))),
+        "storyline_progress_count": len(_as_list(state.get("storyline_progress"))) + len(_as_list(state.get("new_storylines"))),
+        "unresolved_action_count": len(_as_list(state.get("unresolved_actions"))),
+    }
+
+
 def _item_type(candidate: Any) -> str:
     if isinstance(candidate, dict):
         return str(candidate.get("item_type") or candidate.get("type") or "")
@@ -239,6 +367,12 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
     section_count = 0
     scene_count = 1
     character_state_count = 0
+    scene_state_count = 0
+    event_count = 0
+    foreshadowing_planted_count = 0
+    foreshadowing_resolved_count = 0
+    storyline_progress_count = 0
+    unresolved_action_count = 0
     warnings: list[str] = []
     for candidate in items:
         if _candidate_status(candidate) == "rejected":
@@ -246,25 +380,41 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
         item_type = _item_type(candidate)
         payload = _payload(candidate)
         if item_type == "chapter_summary":
-            has_summary = True
+            if str(payload.get("summary_text") or payload.get("summary") or payload.get("content") or "").strip():
+                has_summary = True
             raw_scene_count = payload.get("scene_count")
             scenes = payload.get("scenes")
             if isinstance(raw_scene_count, int):
                 scene_count = max(scene_count, raw_scene_count)
             if isinstance(scenes, list):
                 scene_count = max(scene_count, len(scenes))
+                scene_state_count += sum(1 for scene in scenes if isinstance(scene, dict) and normalize_section_scene_state({**scene, "node_type": "section"}))
+            counts = narrative_counts(payload)
+            event_count += counts["event_count"]
+            foreshadowing_planted_count += counts["foreshadowing_planted_count"]
+            foreshadowing_resolved_count += counts["foreshadowing_resolved_count"]
+            storyline_progress_count += counts["storyline_progress_count"]
+            unresolved_action_count += counts["unresolved_action_count"]
         elif item_type in {"outline_create", "outline_update"}:
             node_type = normalize_node_type(payload.get("node_type"))
             if node_type == "chapter":
                 has_chapter_outline = True
             elif node_type == "section":
                 section_count += 1
+                scene_state = normalize_section_scene_state(payload)
+                if scene_state:
+                    scene_state_count += 1
+                    unresolved_action_count += len(_as_list(scene_state.get("unresolved_actions")))
         elif item_type == "character_state_update":
             character_state_count += 1
     if scene_count > 1 and section_count == 0:
         warnings.append("multi_scene_chapter_without_section_outline")
+    if scene_count > 1 and scene_state_count == 0:
+        warnings.append("multi_scene_chapter_without_scene_state")
     if character_state_count == 0:
         warnings.append("no_character_state_candidates")
+    if event_count == 0 and storyline_progress_count == 0:
+        warnings.append("no_narrative_state_candidates")
     return CandidateCoverage(
         total=len(items),
         has_chapter_summary=has_summary,
@@ -272,6 +422,12 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
         section_count=section_count,
         scene_count=scene_count,
         character_state_count=character_state_count,
+        scene_state_count=scene_state_count,
+        event_count=event_count,
+        foreshadowing_planted_count=foreshadowing_planted_count,
+        foreshadowing_resolved_count=foreshadowing_resolved_count,
+        storyline_progress_count=storyline_progress_count,
+        unresolved_action_count=unresolved_action_count,
         warnings=warnings,
     )
 
@@ -315,7 +471,63 @@ def chapter_outline_node(db: Session, project_id: str, chapter: Chapter) -> Outl
     return None
 
 
-def inspect_chapter_granularity(db: Session, project_id: str, chapter: Chapter) -> dict[str, Any]:
+def _active_fact_payloads(db: Session, project_id: str, chapter_id: str, fact_type: str) -> list[dict[str, Any]]:
+    rows = (
+        db.query(CatalogingFact)
+        .filter(CatalogingFact.project_id == project_id)
+        .filter(CatalogingFact.chapter_id == chapter_id)
+        .filter(CatalogingFact.fact_type == fact_type)
+        .filter(CatalogingFact.status == "active")
+        .order_by(CatalogingFact.created_at.desc())
+        .all()
+    )
+    payloads: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            parsed = json.loads(row.raw_payload or "{}")
+        except Exception:
+            parsed = {}
+        if isinstance(parsed, dict):
+            payloads.append(parsed)
+    return payloads
+
+
+def _narrative_health(db: Session, project_id: str, chapter: Chapter, estimated_scene_count: int) -> dict[str, Any]:
+    chapter_states = _active_fact_payloads(db, project_id, chapter.id, "chapter_narrative_state")
+    section_states = _active_fact_payloads(db, project_id, chapter.id, "section_scene_state")
+    chapter_links = _active_fact_payloads(db, project_id, chapter.id, "chapter_element_links")
+    totals = {
+        "chapter_narrative_state_count": len(chapter_states),
+        "section_scene_state_count": len(section_states),
+        "chapter_element_link_count": len(chapter_links),
+        "event_count": 0,
+        "foreshadowing_planted_count": 0,
+        "foreshadowing_resolved_count": 0,
+        "storyline_progress_count": 0,
+        "unresolved_action_count": 0,
+    }
+    for payload in chapter_states:
+        counts = narrative_counts(payload)
+        for key, value in counts.items():
+            totals[key] += value
+    for payload in section_states:
+        totals["unresolved_action_count"] += len(_as_list(payload.get("unresolved_actions")))
+
+    warnings: list[str] = []
+    if not chapter_states:
+        warnings.append("chapter_narrative_state_missing")
+    if estimated_scene_count > 1 and not section_states:
+        warnings.append("section_scene_state_missing")
+    if totals["event_count"] == 0 and totals["storyline_progress_count"] == 0:
+        warnings.append("narrative_progress_missing")
+    return {
+        **totals,
+        "warnings": warnings,
+        "ok": not warnings,
+    }
+
+
+def inspect_chapter_granularity(db: Session, project_id: str, chapter: Chapter, *, level: str = "narrative") -> dict[str, Any]:
     outline = chapter_outline_node(db, project_id, chapter)
     section_count = 0
     if outline:
@@ -349,6 +561,9 @@ def inspect_chapter_granularity(db: Session, project_id: str, chapter: Chapter) 
         warnings.append("chapter_character_links_missing")
     if wb_links == 0:
         warnings.append("worldbuilding_links_missing")
+    narrative_health = _narrative_health(db, project_id, chapter, scene_count) if level == "narrative" else None
+    if narrative_health:
+        warnings.extend(narrative_health.get("warnings") or [])
     return {
         "chapter_id": chapter.id,
         "title": chapter.title,
@@ -360,6 +575,7 @@ def inspect_chapter_granularity(db: Session, project_id: str, chapter: Chapter) 
         "linked_characters": len(linked_character_ids),
         "characters_missing_state_update": state_missing,
         "worldbuilding_links": wb_links,
+        "narrative_health": narrative_health,
         "missing": missing,
         "warnings": warnings,
         "ok": not missing and not warnings,
@@ -374,6 +590,12 @@ def granularity_contract_prompt() -> str:
         "worldbuilding_create/update, worldbuilding_timeline, and chapter_link. "
         "Every saved chapter needs chapter_summary and a chapter-level outline node; "
         "multi-scene chapters need 2-6 section outline nodes under the chapter node. "
+        "chapter_summary may include narrative_state with events, timeline_events, "
+        "foreshadowing_planted, foreshadowing_resolved, storyline_progress, "
+        "new_storylines, reader_known_facts, character_known_facts, unresolved_actions, "
+        "character_actions, and relationship_changes. "
+        "section outline payloads may include scene_number, purpose, location, timeline, "
+        "pov_character, characters, entry_state, exit_state, emotional_residue, and unresolved_actions. "
         "Every appearing character should receive character_state_update with "
         + ", ".join(CHARACTER_STATE_FIELDS)
         + "."

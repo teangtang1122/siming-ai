@@ -7,7 +7,11 @@ from typing import Any
 from .constants import VALID_ITEM_TYPES
 from ..story_granularity import (
     CHARACTER_STATE_FIELDS,
+    NARRATIVE_STATE_FIELDS,
+    SECTION_SCENE_STATE_FIELDS,
     extract_chapter_number,
+    has_chapter_narrative_state,
+    normalize_chapter_narrative_state,
     normalize_node_type,
     normalize_outline_payload,
 )
@@ -143,6 +147,33 @@ def _payload_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "canonical_name",
         "confidence_reason",
         "evidence_points",
+        "narrative_state",
+        "events",
+        "timeline_events",
+        "chapter_events",
+        "foreshadowing_planted",
+        "foreshadowing_resolved",
+        "advanced_storylines",
+        "storyline_progress",
+        "new_storylines",
+        "reader_known_facts",
+        "character_known_facts",
+        "unresolved_actions",
+        "character_actions",
+        "relationship_changes",
+        "scene_number",
+        "purpose",
+        "location",
+        "timeline",
+        "pov_character",
+        "characters",
+        "entry_state",
+        "exit_state",
+        "emotional_residue",
+        "locations",
+        "items",
+        "importance",
+        "appearance_order",
     ):
         if key in raw and key not in normalized:
             normalized[key] = raw[key]
@@ -208,6 +239,9 @@ def _canonical_candidate_type(raw_type: str, action: str, payload: dict[str, Any
         "summary": "chapter_summary",
         "chapter": "chapter_summary",
         "chapter_overview": "chapter_summary",
+        "chapter_state": "chapter_summary",
+        "chapter_narrative_state": "chapter_summary",
+        "narrative_state": "chapter_summary",
         "章节摘要": "chapter_summary",
         "章节概览": "chapter_summary",
         "outline": "outline_create",
@@ -293,11 +327,23 @@ def _infer_candidate_type(payload: dict[str, Any], action: str) -> str:
         return "character_create" if action in {"create", "new"} else "character_update"
     if keys & state_keys:
         return "character_state_update"
+    narrative_keys = set(NARRATIVE_STATE_FIELDS) | {
+        "narrative_state",
+        "chapter_events",
+        "advanced_storylines",
+        "revealed_facts",
+        "facts_reader_known",
+        "facts_character_known",
+    }
+    if keys & narrative_keys:
+        return "chapter_summary"
     if "event_description" in keys and ("title" in keys or "entry_title" in keys or "dimension" in keys):
         return "worldbuilding_timeline"
     if keys & {"dimension", "category", "entry_title", "worldbuilding_title", "world_title", "setting_title"}:
         return "worldbuilding_update" if action == "update" else "worldbuilding_create"
     if "node_type" in keys or "parent_title" in keys or "related_characters" in keys:
+        return "outline_update" if action == "update" else "outline_create"
+    if keys & set(SECTION_SCENE_STATE_FIELDS):
         return "outline_update" if action == "update" else "outline_create"
     if "summary_text" in keys or "key_events" in keys:
         return "chapter_summary"
@@ -365,6 +411,8 @@ def _normalize_payload_fields(
     if item_type.startswith("outline_"):
         if not payload.get("title"):
             payload["title"] = raw.get("target_name") or payload.get("outline_title") or ""
+        if not payload.get("node_type") and set(payload.keys()) & set(SECTION_SCENE_STATE_FIELDS):
+            payload["node_type"] = "section"
         payload["node_type"] = normalize_node_type(payload.get("node_type"))
         payload.update(normalize_outline_payload(
             payload,
@@ -380,6 +428,8 @@ def _normalize_payload_fields(
         if summary:
             payload["summary_text"] = summary
             payload["summary"] = payload.get("summary") or summary
+        if has_chapter_narrative_state(payload):
+            payload["narrative_state"] = normalize_chapter_narrative_state(payload)
         scenes = payload.get("scenes")
         if isinstance(scenes, list) and "scene_count" not in payload:
             payload["scene_count"] = len(scenes)

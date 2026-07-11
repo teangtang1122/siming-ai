@@ -8,6 +8,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, Chapter, ChapterSummary
+from ..story_granularity import has_chapter_narrative_state, normalize_chapter_narrative_state
+from .facts import record_cataloging_fact
 
 
 def apply_chapter_summary(
@@ -17,8 +19,26 @@ def apply_chapter_summary(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     summary_text = str(payload.get("summary_text") or payload.get("summary") or "").strip()
-    if not summary_text:
+    narrative_state = normalize_chapter_narrative_state(payload) if has_chapter_narrative_state(payload) else {}
+    if not summary_text and not narrative_state:
         raise ValueError("章节摘要为空")
+    if not summary_text and narrative_state:
+        narrative_state.setdefault("chapter_id", chapter.id)
+        narrative_state.setdefault("chapter_title", chapter.title)
+        fact = record_cataloging_fact(
+            db,
+            candidate,
+            chapter,
+            fact_type="chapter_narrative_state",
+            payload=narrative_state,
+        )
+        return {
+            "target_type": "cataloging_fact",
+            "target_id": fact.id if fact else None,
+            "old_value": None,
+            "new_value": narrative_state,
+            "detail": "章节叙事状态已归档",
+        }
     key_events = payload.get("key_events") if isinstance(payload.get("key_events"), list) else []
     old = None
     summary = db.query(ChapterSummary).filter(ChapterSummary.chapter_id == chapter.id).first()
@@ -31,10 +51,21 @@ def apply_chapter_summary(
     summary.key_events = json.dumps([str(item) for item in key_events], ensure_ascii=False)
     summary.ai_model = "cataloging"
     summary.updated_at = datetime.utcnow()
+    fact = None
+    if narrative_state:
+        narrative_state.setdefault("chapter_id", chapter.id)
+        narrative_state.setdefault("chapter_title", chapter.title)
+        fact = record_cataloging_fact(
+            db,
+            candidate,
+            chapter,
+            fact_type="chapter_narrative_state",
+            payload=narrative_state,
+        )
     return {
         "target_type": "chapter_summary",
         "target_id": summary.id,
         "old_value": old,
-        "new_value": payload,
+        "new_value": {**payload, "narrative_fact_id": fact.id if fact else None},
         "detail": "章节摘要已更新",
     }

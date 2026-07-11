@@ -22,6 +22,15 @@ export interface WorkspaceAction {
   arguments?: Record<string, unknown>
 }
 
+export type WorkspaceAssistantOutcome =
+  | 'completed_with_reply'
+  | 'completed_with_tools'
+  | 'empty_response'
+  | 'skipped_preflight'
+  | 'blocked'
+  | 'failed'
+  | string
+
 export interface WorkspaceAssistantConversation {
   id: string
   project_id: string
@@ -35,6 +44,7 @@ export interface WorkspaceAssistantConversation {
 
 export interface WorkspaceAssistantResponse {
   reply: string
+  outcome?: WorkspaceAssistantOutcome
   actions?: WorkspaceAction[]
   applied_actions?: WorkspaceToolLog[]
   tool_logs: WorkspaceToolLog[]

@@ -56,6 +56,37 @@ function Invoke-Native {
   }
 }
 
+function Stop-ReleaseSimingProcesses {
+  $ReleaseExePath = Join-Path $DistDir "$AppName.exe"
+  $resolved = (Resolve-Path -LiteralPath $ReleaseExePath -ErrorAction SilentlyContinue).Path
+  if (-not $resolved) { return }
+  Get-Process $AppName -ErrorAction SilentlyContinue |
+    Where-Object {
+      try { $_.Path -eq $resolved } catch { $false }
+    } |
+    ForEach-Object {
+      Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+      try { $_.WaitForExit(5000) } catch {}
+    }
+}
+
+function Remove-ReleaseExecutable {
+  $ReleaseExePath = Join-Path $DistDir "$AppName.exe"
+  if (-not (Test-Path -LiteralPath $ReleaseExePath)) { return }
+  for ($Attempt = 1; $Attempt -le 20; $Attempt++) {
+    try {
+      Remove-Item -LiteralPath $ReleaseExePath -Force
+      return
+    } catch {
+      Stop-ReleaseSimingProcesses
+      Start-Sleep -Seconds 1
+      if ($Attempt -eq 20) {
+        throw "Cannot replace $ReleaseExePath because it is still locked. Close Siming.exe or any scanner holding the file, then rerun packaging. Last error: $($_.Exception.Message)"
+      }
+    }
+  }
+}
+
 Write-Step "Checking build tools..."
 $PythonExe = Resolve-BuildPython
 Write-Step "Using build Python: $PythonExe"
@@ -86,7 +117,9 @@ Invoke-Native $VenvPython @("-m", "pip", "install", "-i", $PipIndexUrl, "--trust
 Invoke-Native $VenvPython @("-m", "pip", "install", "-i", $PipIndexUrl, "--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "-r", (Join-Path $BackendDir "requirements.txt"), "pyinstaller")
 
 Write-Step "Cleaning previous package output..."
+Stop-ReleaseSimingProcesses
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+Remove-ReleaseExecutable
 foreach ($StaleAsset in @("Moshu.exe", "NovelWritingAgent.exe")) {
   Remove-Item -LiteralPath (Join-Path $DistDir $StaleAsset) -Force -ErrorAction SilentlyContinue
 }

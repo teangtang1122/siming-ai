@@ -12,6 +12,7 @@ from ....services.content_store import (
     sync_project_to_files,
     refresh_project_from_files,
 )
+from ....services.storage_contract import storage_health
 
 
 TEXT_SUFFIXES = {".md", ".json", ".txt", ".yml", ".yaml", ".csv"}
@@ -74,6 +75,7 @@ async def get_project_files_info(db: Session, project_id: str, args: dict[str, A
             "folder_path": str(folder),
             "manifest": "moshu-project.json",
             "standard_dirs": ["chapters", "characters", "worldbuilding", "outline", "relationships", "outbox"],
+            "storage_health": storage_health(db, project),
         },
     }
 
@@ -245,5 +247,10 @@ async def sync_project_files(db: Session, project_id: str, args: dict[str, Any])
         "tool": "sync_project_files",
         "status": "ok",
         "detail": f"项目文件已同步：{direction}",
-        "data": {"project_id": project.id, "direction": direction, "folder_path": project.folder_path},
+        "data": {
+            "project_id": project.id,
+            "direction": direction,
+            "folder_path": project.folder_path,
+            "storage_health": storage_health(db, project),
+        },
     }

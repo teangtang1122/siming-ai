@@ -97,6 +97,10 @@ function RouteGuard() {
     return <LoadingScreen />
   }
 
+  if (location.pathname === '/' && projects.length > 0) {
+    return <LoadingScreen />
+  }
+
   return <DashboardPage />
 }
 

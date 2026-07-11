@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import Character, WorldbuildingEntry
-from ....services.story_granularity import CHARACTER_STABLE_FIELDS, CHARACTER_STATE_FIELDS
+from ....services.story_granularity import CHARACTER_STABLE_FIELDS, CHARACTER_STATE_FIELDS, NARRATIVE_STATE_FIELDS
 from .story_granularity import archive_chapter_after_write
 
 
@@ -95,6 +95,22 @@ def _legacy_candidates(
         candidates.append({"type": "chapter_summary", **summary})
     elif _text(summary):
         candidates.append({"type": "chapter_summary", "summary_text": _text(summary)})
+
+    narrative = updates.get("narrative_state")
+    if isinstance(narrative, dict):
+        candidates.append({"type": "chapter_state", **narrative})
+    else:
+        narrative_payload = {
+            field: updates[field]
+            for field in NARRATIVE_STATE_FIELDS
+            if field in updates and updates[field] not in (None, "", [], {})
+        }
+        if narrative_payload:
+            candidates.append({"type": "chapter_state", **narrative_payload})
+
+    for item in updates.get("chapter_links", []) if isinstance(updates.get("chapter_links"), list) else []:
+        if isinstance(item, dict):
+            candidates.append({"type": "chapter_link", **item})
 
     return candidates, skipped
 

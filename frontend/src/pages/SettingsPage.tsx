@@ -225,6 +225,8 @@ const DEFAULT_CLI_ARGS: Record<string, string> = {
   custom_cli: '["{prompt}"]',
 }
 
+const SIMING_RELEASE_URL = 'https://github.com/teangtang1122/siming-ai/releases/latest'
+
 const API_KEY_LINKS: Array<{ label: string; href: string; note: string }> = [
   { label: 'OpenAI API Key', href: 'https://platform.openai.com/api-keys', note: 'OpenAI / GPT 系列模型' },
   { label: 'Anthropic Console', href: 'https://platform.claude.com/', note: 'Claude 系列模型' },
@@ -747,6 +749,19 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
             由司命启动 CLI Agent。CLI 可以直接读取作品镜像文件，但写入章节、角色、大纲和世界观必须调用司命工具入库，
             入库后系统会自动同步回文件目录。
           </Paragraph>
+          <div>
+            <Text strong>第一次使用：从下载到能对话</Text>
+            <ol style={{ margin: '6px 0 8px', paddingLeft: 20 }}>
+              <li>点击下面的按钮打开 GitHub Release 页面，下载最新的 Siming.exe。</li>
+              <li>双击 Siming.exe 启动；如果 Windows 提示未知发布者，确认这是你从项目 Release 下载的文件后再继续。</li>
+              <li>进入「系统设置」，先选 API Key 路线；没有命令行经验时，这条路最稳。</li>
+              <li>在模型平台创建 API Key，复制到「添加配置」，点「测试连接」。成功后设为全局默认模型。</li>
+              <li>回到作品页，先让助手做一次小任务；确认能回复后再进行建档、写章或本机 CLI 配置。</li>
+            </ol>
+            <Button size="small" type="primary" href={SIMING_RELEASE_URL} target="_blank" rel="noreferrer">
+              点击打开：司命最新版下载页
+            </Button>
+          </div>
           <div>
             <Text strong>0. 电脑里什么都还没有时：</Text>
             <Paragraph style={{ margin: '4px 0 8px' }}>

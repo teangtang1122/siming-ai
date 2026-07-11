@@ -525,7 +525,7 @@ def _assistant_history_text(history: list[dict], limit: int = 8) -> str:
     for item in (history or [])[-limit:]:
         if not isinstance(item, dict):
             continue
-        role = "用户" if item.get("role") == "user" else "助手（已完成）"
+        role = "用户" if item.get("role") == "user" else "助手"
         content = str(item.get("content") or "").strip()
         if not content:
             continue
@@ -634,6 +634,30 @@ def _build_workspace_final_reply(
         return "\n".join(lines)
 
     return "我没有收到模型的文字回复，也没有执行任何工具。请重试一次，或在系统设置里测试当前模型/CLI 是否支持项目助手的流式输出和工具调用。"
+
+
+def _workspace_outcome(
+    raw_reply: str,
+    *,
+    all_actions: list[dict],
+    applied_actions: list[dict],
+    tool_logs: list[dict],
+    searched_context: list[dict],
+    needs_confirmation: bool = False,
+    failed_logs: list[dict] | None = None,
+) -> str:
+    """Return a stable user-facing outcome for an assistant turn."""
+    if failed_logs:
+        return "failed"
+    if needs_confirmation:
+        return "blocked"
+    if str(raw_reply or "").strip():
+        return "completed_with_reply"
+    if applied_actions or tool_logs or searched_context:
+        return "completed_with_tools"
+    if all_actions:
+        return "skipped_preflight"
+    return "empty_response"
 
 
 def _assistant_conversation_to_dict(conversation: AssistantConversation, message_count: Optional[int] = None) -> dict:
@@ -2061,8 +2085,18 @@ async def workspace_assistant_stream(
                 final_reply_for_save = (
                     f"{final_reply_for_save}\n\n注意：本轮有工具执行失败，相关数据可能未保存：{failed_text}"
                 ).strip()
+            outcome = _workspace_outcome(
+                final_reply,
+                all_actions=all_actions,
+                applied_actions=applied_actions,
+                tool_logs=tool_logs,
+                searched_context=searched_context,
+                needs_confirmation=needs_conf,
+                failed_logs=failed_logs,
+            )
             response_payload = {
                 "reply": final_reply_for_save,
+                "outcome": outcome,
                 "actions": all_actions,
                 "applied_actions": applied_actions,
                 "tool_logs": tool_logs,
@@ -2184,6 +2218,13 @@ async def workspace_assistant_stream(
                 assistant_msg_db.content = reply
                 assistant_msg_db.payload_json = json.dumps({
                     "reply": reply,
+                    "outcome": _workspace_outcome(
+                        final_reply or str(parsed_fallback.get("reply") or ""),
+                        all_actions=all_actions,
+                        applied_actions=applied_actions,
+                        tool_logs=tool_logs,
+                        searched_context=searched_context,
+                    ),
                     "actions": all_actions,
                     "applied_actions": applied_actions,
                     "tool_logs": tool_logs,

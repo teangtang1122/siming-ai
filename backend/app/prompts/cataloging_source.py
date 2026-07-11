@@ -34,7 +34,8 @@ def get_outline_granularity_rules() -> str:
 3. section 节点必须使用 parent_title 指向本章 chapter 节点；不要把 section 当成独立章节。
 4. chapter 节点 summary 写整章目标、冲突、转折、结果和结尾钩子；section 节点 summary 写该场景的地点、参与角色、行动目标、冲突推进、信息揭示和场景结果。
 5. 如果章节非常短且只有单一场景，可以只输出 chapter 节点，但必须在 summary 中说明这是单场景章节。
-6. 内部建档、外部 MCP 建档、本机 CLI 建档都必须遵守同一套大纲粒度规则；不要因为调用方式不同降低粒度。"""
+6. section 节点尽量补充 scene_number、purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions，供写后归档和上下文打包使用。
+7. 内部建档、外部 MCP 建档、本机 CLI 建档都必须遵守同一套大纲粒度规则；不要因为调用方式不同降低粒度。"""
 
 
 def get_fact_extraction_rules() -> str:
@@ -69,8 +70,8 @@ def get_fact_extraction_rules() -> str:
 
 def get_cataloging_candidate_schema() -> str:
     return """【允许的候选 type 与 payload】
-- chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "outline_hint":"..."}
-- outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter|section|volume", "parent_title":"...", "status":"completed", "related_characters":["..."]}
+- chapter_summary: {"summary_text":"...", "key_events":["..."], "characters":["..."], "worldbuilding":["..."], "outline_hint":"...", "narrative_state":{"events":[...], "timeline_events":[...], "foreshadowing_planted":[...], "foreshadowing_resolved":[...], "storyline_progress":[...], "new_storylines":[...], "reader_known_facts":[...], "character_known_facts":[...], "unresolved_actions":[...]}}
+- outline_create / outline_update: {"title":"...", "summary":"...", "actual_summary":"...", "planned_summary":"...", "node_type":"chapter|section|volume", "parent_title":"...", "status":"completed", "related_characters":["..."], "scene_number":1, "purpose":"...", "location":"...", "timeline":"...", "pov_character":"...", "characters":["..."], "entry_state":"...", "exit_state":"...", "emotional_residue":"...", "unresolved_actions":[...]}
 - character_create / character_update: {"name":"...", "aliases":["..."], "role_type":"...", "age":"...", "appearance":"...", "personality":"...", "background":"...", "abilities":["..."], "tone_style":"...", "catchphrases":["..."], "emotion_tendency":"...", "custom_system_prompt":"..."}
 - character_state_update: {"name":"...", "aliases":["..."], "appearance":"...", "age":"...", "life_status":"alive|dead|unknown", "current_location":"...", "realm_or_level":"...", "physical_state":"...", "mental_state":"...", "current_goal":"...", "active_conflict":"...", "abilities_state":"...", "items_or_assets":"..."}
 - character_timeline: {"name":"...", "event_description":"...", "event_type":"appearance|decision|injury|breakthrough|relationship_change|conflict|death|status_change|key_event", "emotional_state_change":"..."}
@@ -78,7 +79,7 @@ def get_cataloging_candidate_schema() -> str:
 - character_merge_candidate: {"primary_name":"...", "secondary_name":"...", "canonical_name":"...", "aliases":["..."], "confidence_reason":"...", "evidence_points":["..."], "background_append":"..."}
 - worldbuilding_create / worldbuilding_update: {"dimension":"geography|history|factions|power_system|races|culture", "title":"...", "content":"...", "status":"active"}
 - worldbuilding_timeline: {"title":"...", "dimension":"...", "event_description":"...", "event_type":"introduced|confirmed|changed|damaged|used|limited", "evidence":"..."}
-- chapter_link: {"character_names":["..."], "worldbuilding_titles":["..."], "outline_title":"...", "description":"..."}"""
+- chapter_link: {"character_names":["..."], "worldbuilding_titles":["..."], "outline_title":"...", "description":"...", "locations":["..."], "items":["..."], "events":["..."], "importance":"major|normal|minor", "appearance_order":1}"""
 
 
 def get_cataloging_candidate_rules() -> str:

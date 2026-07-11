@@ -1,0 +1,33 @@
+name: Release Preflight
+
+on:
+  pull_request:
+    paths:
+      - "scripts/build-exe.ps1"
+      - "scripts/publish-github.ps1"
+      - "scripts/smoke-test-release.ps1"
+      - ".github/workflows/release-preflight.yml"
+  workflow_dispatch:
+
+jobs:
+  dry-run:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Test-PowerShellSyntax([string]$Path) {
+            $parseErrors = $null
+            $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $Path -Raw), [ref]$parseErrors)
+            if ($parseErrors) { throw "Syntax error in ${Path}: $parseErrors" }
+          }
+          Test-PowerShellSyntax scripts\build-exe.ps1
+          Test-PowerShellSyntax scripts\publish-github.ps1
+          Test-PowerShellSyntax scripts\smoke-test-release.ps1
+
+      - name: Publish dry run
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-github.ps1 -DryRun -SkipBuild

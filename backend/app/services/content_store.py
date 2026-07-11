@@ -36,6 +36,7 @@ from .character_service import (
     snapshot_character,
     sync_character_aliases,
 )
+from .chapter_service import create_snapshot, ensure_current_snapshot
 from .hot_cache import invalidate_project
 
 
@@ -398,6 +399,7 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
         if not chapter:
             chapter_data = dict(
                 project_id=project.id,
+                outline_node_id=meta.get("outline_node_id") or None,
                 title=str(meta.get("title") or path.stem)[:200],
                 content=content or "",
                 word_count=count_words(content or ""),
@@ -408,13 +410,33 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
             chapter = Chapter(**chapter_data)
             db.add(chapter)
             db.flush()
+            chapter.content_file_path = rel_path
+            chapter.content_hash = _hash_text(text)
+            db.add(create_snapshot(chapter, "ai_insert"))
+            db.flush()
+            chapters_by_id[chapter.id] = chapter
+            chapters_by_path[rel_path] = chapter
+            continue
+        changed = (
+            chapter.title != str(meta.get("title") or chapter.title)[:200]
+            or chapter.outline_node_id != (meta.get("outline_node_id") or chapter.outline_node_id)
+            or (chapter.content or "") != (content or "")
+        )
+        if changed:
+            ensure_current_snapshot(db, chapter, "manual_save")
         chapter.title = str(meta.get("title") or chapter.title)[:200]
         chapter.outline_node_id = meta.get("outline_node_id") or chapter.outline_node_id
         chapter.content = content
         chapter.word_count = count_words(content)
-        chapter.current_version = int(meta.get("current_version") or chapter.current_version or 1)
+        if changed:
+            file_version = int(meta.get("current_version") or 0)
+            chapter.current_version = max(chapter.current_version or 1, file_version) + 1
+        else:
+            chapter.current_version = int(meta.get("current_version") or chapter.current_version or 1)
         chapter.content_file_path = rel_path
         chapter.content_hash = _hash_text(text)
+        if changed:
+            db.add(create_snapshot(chapter, "ai_insert"))
 
     for path in (folder / "characters").glob("*.json"):
         try:

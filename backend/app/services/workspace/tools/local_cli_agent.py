@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from ....core.utils import count_words
 from ....database.models import AgentRun, AgentRunEvent, Chapter, ChapterDraft, Project
-from ....services.content_store import parse_chapter_markdown
+from ....services.storage_contract import storage_health
 from ....services.local_cli_agent_worker import start_local_cli_agent_worker
 
 
@@ -47,62 +46,6 @@ def _recent_events(db: Session, run_id: str, limit: int = 5) -> list[dict[str, A
         }
         for event in reversed(events)
     ]
-
-
-def _rel(path: Path, base: Path) -> str:
-    return path.resolve().relative_to(base.resolve()).as_posix()
-
-
-def _orphan_chapter_files(
-    db: Session,
-    project: Project,
-    *,
-    since: datetime | None = None,
-    limit: int = 10,
-) -> list[dict[str, Any]]:
-    if not project.folder_path:
-        return []
-    folder = Path(project.folder_path)
-    chapters_dir = folder / "chapters"
-    if not chapters_dir.exists():
-        return []
-
-    db_chapters = db.query(Chapter).filter(Chapter.project_id == project.id).all()
-    known_ids = {str(chapter.id) for chapter in db_chapters}
-    known_paths = {str(chapter.content_file_path or "") for chapter in db_chapters if chapter.content_file_path}
-    cutoff = since - timedelta(minutes=5) if since else None
-    items: list[dict[str, Any]] = []
-
-    for path in sorted(chapters_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            stat = path.stat()
-            modified_at = datetime.fromtimestamp(stat.st_mtime)
-        except OSError:
-            continue
-        if cutoff and modified_at < cutoff:
-            continue
-        rel_path = _rel(path, folder)
-        if rel_path in known_paths:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-            meta, content = parse_chapter_markdown(text)
-        except Exception:
-            meta, content = {}, ""
-        chapter_id = str(meta.get("id") or "").strip()
-        if chapter_id and chapter_id in known_ids:
-            continue
-        title = str(meta.get("title") or "").strip() or path.stem
-        items.append({
-            "path": rel_path,
-            "id": chapter_id or None,
-            "title": title,
-            "word_count": int(meta.get("word_count") or count_words(content or "")),
-            "modified_at": modified_at.isoformat(),
-        })
-        if len(items) >= limit:
-            break
-    return items
 
 
 def _validate_writing_result(
@@ -156,7 +99,9 @@ def _validate_writing_result(
         }
         for draft in drafts
     ]
-    data["orphan_chapter_files"] = _orphan_chapter_files(db, project, since=since) if project else []
+    storage = storage_health(db, project, since=since) if project else {}
+    data["storage_health"] = storage
+    data["orphan_chapter_files"] = storage.get("orphan_chapter_files", [])
     if data["orphan_chapter_files"]:
         detail = "本机 CLI 已结束，但没有发现章节写入数据库；检测到未入库的章节镜像文件，请显式修复导入或重试。"
     elif data["drafts"]:

@@ -2241,13 +2241,13 @@ def _register_all() -> None:
 
     _r(ToolDef(
         name="archive_chapter_after_write",
-        description="Create and optionally apply standard cataloging candidates after a chapter is written. Unifies chapter summary, outline, character state, worldbuilding, and links.",
+        description="Create and optionally apply standard cataloging candidates after a chapter is written. Unifies chapter summary, chapter/section outline, section scene state, narrative_state, character state, worldbuilding, and links.",
         input_schema={
             "chapter_id": {"type": "string", "description": "Saved chapter ID"},
             "draft_id": {"type": "string", "description": "Optional draft ID/content_ref used to generate the chapter"},
             "content_ref": {"type": "string", "description": "Alias for draft_id"},
             "outline_node_id": {"type": "string", "description": "Linked outline node ID"},
-            "candidates": {"type": "array", "items": {"type": "object"}, "description": "Optional standard cataloging candidates"},
+            "candidates": {"type": "array", "items": {"type": "object"}, "description": "Optional standard cataloging candidates. chapter_summary may include narrative_state; section outlines may include scene state fields."},
             "mode": {"type": "string", "description": "auto|manual. Auto applies candidates; manual stores them for review."},
             "source": {"type": "string", "description": "internal_writer|local_cli|external_agent|repair"},
             "generate_if_missing": {"type": "boolean", "description": "Generate fallback candidates when none or required candidates are missing. Default true."},
@@ -2262,9 +2262,10 @@ def _register_all() -> None:
 
     _r(ToolDef(
         name="inspect_story_granularity",
-        description="Audit project or chapter story granularity: summaries, chapter outline, section events, character states, and links.",
+        description="Audit project or chapter story granularity: summaries, chapter outline, section events, narrative facts, character states, and links.",
         input_schema={
             "chapter_id": {"type": "string", "description": "Optional chapter ID to audit"},
+            "level": {"type": "string", "description": "basic|narrative. Default narrative."},
             "limit": {"type": "integer", "description": "Maximum chapters to audit, default 200"},
         },
         tool_type="read",
@@ -2279,6 +2280,7 @@ def _register_all() -> None:
             "chapter_id": {"type": "string", "description": "Optional chapter ID to repair"},
             "limit": {"type": "integer", "description": "Maximum chapters to inspect/repair, default 20"},
             "mode": {"type": "string", "description": "manual|auto. Manual is default."},
+            "repair_level": {"type": "string", "description": "basic|narrative. Basic is default; narrative only when explicitly requested."},
             "force": {"type": "boolean", "description": "Repair even chapters that currently pass the audit"},
             "model": {"type": "string", "description": "Optional model for repair candidate generation"},
         },

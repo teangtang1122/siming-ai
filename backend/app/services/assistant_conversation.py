@@ -16,7 +16,7 @@ def _assistant_history_text(history: list[dict], limit: int = 8) -> str:
     for item in (history or [])[-limit:]:
         if not isinstance(item, dict):
             continue
-        role = "用户" if item.get("role") == "user" else "助手（已完成）"
+        role = "用户" if item.get("role") == "user" else "助手"
         content = str(item.get("content") or "").strip()
         if not content:
             continue

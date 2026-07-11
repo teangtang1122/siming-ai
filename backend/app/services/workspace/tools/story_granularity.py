@@ -57,6 +57,8 @@ def _summary_from_content(chapter: Chapter, content: str) -> tuple[str, list[str
         scenes.append({
             "title": f"场景{index + 1}",
             "summary": scene_summary,
+            "scene_number": index + 1,
+            "purpose": "capture_chapter_event",
         })
     return summary[:2000], key_events, scenes[:6]
 
@@ -94,6 +96,17 @@ def _fallback_candidates(db: Session, project_id: str, chapter: Chapter, content
             "key_events": key_events,
             "scene_count": max(1, len(scenes) or estimate_scene_count(content)),
             "scenes": scenes,
+            "narrative_state": {
+                "events": [{"description": item} for item in key_events[:8]],
+                "timeline_events": [],
+                "foreshadowing_planted": [],
+                "foreshadowing_resolved": [],
+                "storyline_progress": [],
+                "new_storylines": [],
+                "reader_known_facts": [],
+                "character_known_facts": [],
+                "unresolved_actions": [],
+            },
             "confidence": 0.55,
             "evidence": "写章后自动归档兜底摘要",
         },
@@ -117,6 +130,8 @@ def _fallback_candidates(db: Session, project_id: str, chapter: Chapter, content
                 "parent_title": chapter_title,
                 "summary": scene["summary"],
                 "actual_summary": scene["summary"],
+                "scene_number": index,
+                "purpose": scene.get("purpose") or "capture_chapter_event",
                 "status": "completed",
                 "confidence": 0.5,
                 "evidence": "写章后自动归档兜底场景",
@@ -457,12 +472,14 @@ async def inspect_story_granularity(
     args: dict[str, Any],
 ) -> dict:
     chapter_id = str(args.get("chapter_id") or "").strip()
+    level = str(args.get("level") or "narrative").strip().lower()
+    level = level if level in {"basic", "narrative"} else "narrative"
     limit = max(1, min(500, int(args.get("limit") or 200)))
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
     if chapter_id:
         query = query.filter(Chapter.id == chapter_id)
     chapters = query.order_by(Chapter.created_at.asc()).limit(limit).all()
-    items = [inspect_chapter_granularity(db, project_id, chapter) for chapter in chapters]
+    items = [inspect_chapter_granularity(db, project_id, chapter, level=level) for chapter in chapters]
     missing_counts: dict[str, int] = {}
     warning_counts: dict[str, int] = {}
     for item in items:
@@ -476,6 +493,7 @@ async def inspect_story_granularity(
         "detail": f"已审计 {len(items)} 个章节，发现 {sum(missing_counts.values())} 个硬缺口、{sum(warning_counts.values())} 个警告",
         "data": {
             "chapters_checked": len(items),
+            "level": level,
             "missing_counts": missing_counts,
             "warning_counts": warning_counts,
             "chapters": items,
@@ -490,6 +508,8 @@ async def repair_story_granularity(
 ) -> dict:
     mode = str(args.get("mode") or "manual").strip().lower()
     mode = mode if mode in {"auto", "manual"} else "manual"
+    repair_level = str(args.get("repair_level") or "basic").strip().lower()
+    repair_level = repair_level if repair_level in {"basic", "narrative"} else "basic"
     chapter_id = str(args.get("chapter_id") or "").strip()
     limit = max(1, min(100, int(args.get("limit") or 20)))
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
@@ -498,13 +518,14 @@ async def repair_story_granularity(
     chapters = query.order_by(Chapter.created_at.asc()).limit(limit).all()
     repaired: list[dict[str, Any]] = []
     for chapter in chapters:
-        audit = inspect_chapter_granularity(db, project_id, chapter)
+        audit = inspect_chapter_granularity(db, project_id, chapter, level=repair_level)
         if audit["ok"] and not bool(args.get("force")):
             continue
         result = await archive_chapter_after_write(db, project_id, {
             "chapter_id": chapter.id,
             "outline_node_id": chapter.outline_node_id,
             "mode": mode,
+            "repair_level": repair_level,
             "source": "repair",
             "generate_if_missing": True,
             "model": args.get("model"),
@@ -521,6 +542,7 @@ async def repair_story_granularity(
         "detail": f"已创建 {len(repaired)} 个颗粒度修复归档运行",
         "data": {
             "mode": mode,
+            "repair_level": repair_level,
             "repaired": repaired,
         },
     }

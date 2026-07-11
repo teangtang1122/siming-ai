@@ -2,9 +2,11 @@ param(
   [string]$Repo = "teangtang1122/siming-ai",
   [ValidateSet("public", "private")]
   [string]$Visibility = "private",
-    [string]$Tag = "v2.7.0",
+  [string]$Tag = "",
   [string]$CommitMessage = "",
-  [switch]$SkipBuild
+  [switch]$SkipBuild,
+  [switch]$CommitDirtyChanges,
+  [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,43 +25,99 @@ function Require-Command {
 }
 
 Require-Command "git" "Git is required."
-Require-Command "gh" "GitHub CLI is required. Install it, then run: gh auth login"
+if (-not $DryRun) {
+  Require-Command "gh" "GitHub CLI is required. Install it, then run: gh auth login"
+}
 
 Push-Location $Root
 try {
+  if (-not $Tag) {
+    $PackageJsonPath = Join-Path $Root "frontend\package.json"
+    if (-not (Test-Path -LiteralPath $PackageJsonPath)) {
+      throw "Cannot derive release tag: frontend\package.json not found. Pass -Tag explicitly."
+    }
+    $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json
+    if (-not $PackageJson.version) {
+      throw "Cannot derive release tag: frontend\package.json has no version. Pass -Tag explicitly."
+    }
+    $Tag = "v$($PackageJson.version)"
+  }
+
   if (-not (Test-Path ".git")) {
+    if ($DryRun) { throw "Dry run requires an existing git repository." }
     git init -b main
   }
 
   $remote = git remote get-url origin 2>$null
   if (-not $remote) {
+    if ($DryRun) { throw "Dry run requires an origin remote." }
     git remote add origin "https://github.com/$Repo.git"
   }
 
-  gh repo view $Repo 1>$null 2>$null
-  if ($LASTEXITCODE -ne 0) {
-    gh repo create $Repo "--$Visibility" --source . --remote origin
+  if (-not $DryRun) {
+    gh repo view $Repo 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0) {
+      gh repo create $Repo "--$Visibility" --source . --remote origin
+    }
   }
 
-  if (-not $SkipBuild) {
+  if (-not $SkipBuild -and -not $DryRun) {
     & (Join-Path $Root "scripts\build-exe.ps1")
   }
 
   if (-not (Test-Path $ExePath)) {
+    if ($DryRun) {
+      Write-Host "[dry-run] Release executable missing: $ExePath" -ForegroundColor Yellow
+    } else {
     throw "Release executable not found. Run build-exe.bat or publish without -SkipBuild."
+    }
   }
 
-  $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
-  $shaLines = @("$sha  $AppName.exe")
-  Set-Content -LiteralPath $ShaPath -Encoding UTF8 -Value $shaLines
+  if (Test-Path $ExePath) {
+    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
+    $version = $Tag.TrimStart("v")
+    $manifest = [ordered]@{
+      version = $version
+      download_url = "https://github.com/$Repo/releases/latest/download/$AppName.exe"
+      sha256 = $sha
+      repo = $Repo
+    } | ConvertTo-Json -Depth 3
+    $shaLines = @("$sha  $AppName.exe")
+    if ($DryRun) {
+      Write-Host "[dry-run] SHA256 would be written: $sha" -ForegroundColor Cyan
+      Write-Host "[dry-run] Manifest version would be written: $version" -ForegroundColor Cyan
+    } else {
+      [System.IO.File]::WriteAllText($ManifestPath, $manifest + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+      [System.IO.File]::WriteAllText($ShaPath, ($shaLines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+    }
+  }
 
   $status = git status --porcelain
   if ($status) {
-    if (-not $CommitMessage) {
-      $CommitMessage = "release: Siming $Tag"
+    if (-not $CommitDirtyChanges) {
+      throw "Working tree has uncommitted changes. Commit intentionally first, or pass -CommitDirtyChanges with -CommitMessage."
     }
-    git add .
-    git commit -m $CommitMessage
+    if (-not $CommitMessage) {
+      throw "-CommitDirtyChanges requires an explicit -CommitMessage."
+    }
+    if ($DryRun) {
+      Write-Host "[dry-run] Would commit dirty changes with message: $CommitMessage" -ForegroundColor Cyan
+      git status --short
+    } else {
+      git add -u
+      git add .github scripts backend frontend docs README.md
+      git commit -m $CommitMessage
+    }
+  }
+
+  if ($DryRun) {
+    Write-Host "[dry-run] Tag: $Tag" -ForegroundColor Cyan
+    Write-Host "[dry-run] Repo: $Repo" -ForegroundColor Cyan
+    Write-Host "[dry-run] Assets:" -ForegroundColor Cyan
+    foreach ($Asset in @($ExePath, $ShaPath, $ManifestPath)) {
+      Write-Host "  $Asset exists=$(Test-Path -LiteralPath $Asset)"
+    }
+    return
   }
 
   if (-not (git tag --list $Tag)) {

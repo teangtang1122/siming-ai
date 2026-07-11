@@ -104,6 +104,25 @@ const SCOPE_LABELS: Record<string, string> = {
   conflict_suggestion: '冲突建议',
 }
 
+const PACK_MODE_NOTES: Record<string, { message: string; items: string[] }> = {
+  chapter_writing_fast: {
+    message: '快速模式：少轮次直写，适合先出稿再精修。',
+    items: [
+      '更强调直接输出正文，不展开长篇分析、计划和评分说明。',
+      '仍然必须遵守角色一致、设定一致、时间线一致和写后归档。',
+      '适合修改“怎样更快写出可用初稿”的规则。',
+    ],
+  },
+  chapter_writing_quality: {
+    message: '质量模式：完整写作流程，适合稳定产出和自动写章。',
+    items: [
+      '包含上下文预检、角色扮演/剧情设计、正文生成、质量评估和归档要求。',
+      '更适合修改“怎样减少跑偏、怎样提高章节完成度”的规则。',
+      '当你希望系统更稳、更细、更少出错，优先改这个包。',
+    ],
+  },
+}
+
 function scopeLabel(scope: string) {
   return SCOPE_LABELS[scope] || scope
 }
@@ -123,6 +142,7 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
     () => packs.find((pack) => pack.pack_id === selectedPackId) || null,
     [packs, selectedPackId],
   )
+  const selectedModeNote = selectedPack ? PACK_MODE_NOTES[selectedPack.pack_id] : null
 
   const fetchPacks = useCallback(async () => {
     setLoading(true)
@@ -303,6 +323,18 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 {selectedPack.summary && (
                   <Paragraph style={{ marginBottom: 0 }}>{selectedPack.summary}</Paragraph>
+                )}
+                {selectedModeNote && (
+                  <Alert
+                    type={selectedPack.pack_id === 'chapter_writing_fast' ? 'warning' : 'info'}
+                    showIcon
+                    message={selectedModeNote.message}
+                    description={(
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {selectedModeNote.items.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    )}
+                  />
                 )}
 
                 <div>

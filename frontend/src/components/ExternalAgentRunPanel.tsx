@@ -20,6 +20,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { findStorageHealth, StorageRepairActions } from './StorageRepairActions'
 import type { AgentRun, AgentRunEvent, EventPayload } from '../types/agentRun'
 
 const { Text, Paragraph } = Typography
@@ -67,8 +68,17 @@ function parsePayload(event: AgentRunEvent): EventPayload | null {
   }
 }
 
-function EventItem({ event }: { event: AgentRunEvent }) {
+function EventItem({
+  event,
+  projectId,
+  onStorageRepaired,
+}: {
+  event: AgentRunEvent
+  projectId: string
+  onStorageRepaired?: () => void
+}) {
   const payload = parsePayload(event)
+  const storageHealth = findStorageHealth(payload)
   const typeLabel = EVENT_TYPE_LABELS[event.event_type] || event.event_type
   const isError = event.event_type === 'error' || event.status === 'error'
   const isWarning = event.event_type === 'warning'
@@ -95,6 +105,16 @@ function EventItem({ event }: { event: AgentRunEvent }) {
             提示词包 v{payload.prompt_pack_version}
           </Tag>
         )}
+        {(payload?.model_source || payload?.tool_mode || payload?.failure_class || payload?.checkpoint_id || payload?.storage_target || payload?.next_action) && (
+          <Space size={[4, 4]} wrap>
+            {payload.model_source && <Tag color="geekblue">模型来源: {payload.model_source}</Tag>}
+            {payload.tool_mode && <Tag color="cyan">工具模式: {payload.tool_mode}</Tag>}
+            {payload.failure_class && <Tag color={isError ? 'error' : 'orange'}>失败分类: {payload.failure_class}</Tag>}
+            {payload.checkpoint_id && <Tag color="purple">检查点: {payload.checkpoint_id}</Tag>}
+            {payload.storage_target && <Tag color="green">存储: {payload.storage_target}</Tag>}
+            {payload.next_action && <Tag color="gold">下一步: {payload.next_action}</Tag>}
+          </Space>
+        )}
         {payload?.plan && (
           <ol style={{ margin: 0, paddingLeft: 20 }}>
             {payload.plan.map((step, i) => (
@@ -117,6 +137,11 @@ function EventItem({ event }: { event: AgentRunEvent }) {
             {payload.content}
           </Paragraph>
         )}
+        <StorageRepairActions
+          projectId={projectId}
+          health={storageHealth}
+          onRepaired={onStorageRepaired}
+        />
       </Space>
     </List.Item>
   )
@@ -288,7 +313,16 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
                       <List
                         size="small"
                         dataSource={events}
-                        renderItem={event => <EventItem event={event} />}
+                        renderItem={event => (
+                          <EventItem
+                            event={event}
+                            projectId={projectId}
+                            onStorageRepaired={() => {
+                              fetchRuns()
+                              fetchEvents(run.id)
+                            }}
+                          />
+                        )}
                         style={{ maxHeight: 400, overflow: 'auto' }}
                       />
                     )}

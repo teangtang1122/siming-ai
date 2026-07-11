@@ -234,6 +234,12 @@ def add_agent_run_event(
         status=body.status,
         message=body.message,
         payload_json=body.payload_json,
+        model_source=body.model_source,
+        tool_mode=body.tool_mode,
+        failure_class=body.failure_class,
+        checkpoint_id=body.checkpoint_id,
+        storage_target=body.storage_target,
+        next_action=body.next_action,
     )
     if not event:
         raise HTTPException(status_code=400, detail="Cannot add event to terminal run")
