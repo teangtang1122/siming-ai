@@ -48,6 +48,16 @@ interface ProjectFormValues {
   tags?: string
 }
 
+interface NovelCreationDraftSummary {
+  id: string
+  current_stage?: string
+  updated_at?: string
+  draft?: {
+    form?: { brief?: string; genre?: string }
+    concepts?: Array<{ title?: string }>
+  }
+}
+
 interface NovelBriefValues {
   genre?: string
   target_audience?: string
@@ -328,6 +338,7 @@ function DashboardPage() {
   const [showQAEditor, setShowQAEditor] = useState(false)
   const [editingAnswers, setEditingAnswers] = useState<Record<string, string>>({})
   const [creationTemplates, setCreationTemplates] = useState<CreationTemplate[]>([])
+  const [creationDrafts, setCreationDrafts] = useState<NovelCreationDraftSummary[]>([])
   const [slotEditorOpen, setSlotEditorOpen] = useState(false)
   const [slotBlueprintIndex, setSlotBlueprintIndex] = useState<number | null>(null)
   const [slotDraft, setSlotDraft] = useState<Record<string, string | string[]>>({})
@@ -348,6 +359,28 @@ function DashboardPage() {
   useEffect(() => {
     setCreationTemplates(readCreationTemplates())
   }, [])
+
+  useEffect(() => {
+    const loadCreationDrafts = async () => {
+      try {
+        const response = await apiClient.get<ApiResponse<{ sessions: NovelCreationDraftSummary[] }>>('/novel-creation/sessions')
+        setCreationDrafts(response?.data?.data?.sessions || [])
+      } catch {
+        setCreationDrafts([])
+      }
+    }
+    void loadCreationDrafts()
+  }, [])
+
+  const deleteCreationDraft = async (sessionId: string) => {
+    try {
+      await apiClient.delete(`/novel-creation/sessions/${sessionId}`)
+      setCreationDrafts((items) => items.filter((item) => item.id !== sessionId))
+      message.success('立项草稿已删除')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '删除立项草稿失败')
+    }
+  }
 
   // Elapsed timer for question flow
   useEffect(() => {
@@ -391,13 +424,7 @@ function DashboardPage() {
   }
 
   const openAssistant = () => {
-    setAssistantOpen(true)
-    if (!assistantMessages.length) {
-      setAssistantMessages([{
-        role: 'assistant',
-        content: '先告诉我题材、主角、核心卖点或你想避开的写法。我会先给出三套可比较的新书方案；不满意可以继续说，我可以在当前基础上调整，也可以全部重新生成。',
-      }])
-    }
+    navigate('/novel-creation')
   }
 
   const handleTemplateChange = (templateId?: string) => {
@@ -1325,6 +1352,47 @@ function DashboardPage() {
           </Button>
         </Space>
       </div>
+
+      {creationDrafts.length > 0 && (
+        <section className="dashboard-creation-drafts siming-animate-in siming-stagger-1">
+          <div className="dashboard-creation-drafts-head">
+            <div>
+              <Title level={4}>继续未完成立项</Title>
+              <Text type="secondary">立项草稿不会创建空作品，可继续生成或直接删除。</Text>
+            </div>
+            <Button type="link" onClick={openAssistant}>新建立项</Button>
+          </div>
+          <div className="dashboard-creation-drafts-grid">
+            {creationDrafts.slice(0, 4).map((draft) => (
+              <Card
+                key={draft.id}
+                size="small"
+                hoverable
+                onClick={() => navigate(`/novel-creation?session=${draft.id}`)}
+                title={draft.draft?.concepts?.[0]?.title || draft.draft?.form?.brief?.slice(0, 28) || '未命名立项'}
+                extra={(
+                  <Button
+                    type="text"
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    aria-label="删除立项草稿"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void deleteCreationDraft(draft.id)
+                    }}
+                  />
+                )}
+              >
+                <Space direction="vertical" size={2}>
+                  <Text>{draft.draft?.form?.genre || '自由创作'}</Text>
+                  <Text type="secondary">{draft.current_stage || '创作约束'} · {draft.updated_at ? new Date(draft.updated_at).toLocaleString('zh-CN') : '刚刚保存'}</Text>
+                </Space>
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 80 }}>

@@ -63,6 +63,11 @@ class CharacterTestCase(unittest.TestCase):
                 "abilities": ["御风", "符阵入门"],
                 "role_type": "protagonist",
                 "is_evolution_tracked": True,
+                "profile": {
+                    "core_motivation": "查清养父失踪真相",
+                    "inner_lack": "不愿承认自己需要同伴",
+                    "voice": "短句，先问证据",
+                },
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -90,12 +95,14 @@ class TestCharacterCRUD(CharacterTestCase):
             "is_evolution_tracked",
             "created_at",
             "updated_at",
+            "profile",
         }
         self.assertTrue(expected_fields.issubset(set(data.keys())))
         self.assertEqual(data["name"], "林澈")
         self.assertEqual(data["abilities"], ["御风", "符阵入门"])
         self.assertEqual(data["current_version"], 1)
         self.assertTrue(data["is_evolution_tracked"])
+        self.assertEqual(data["profile"]["core_motivation"], "查清养父失踪真相")
 
     def test_list_characters_isolated_by_project(self):
         project_a = self.create_project("作品A")

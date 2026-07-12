@@ -1,6 +1,6 @@
 """Pydantic schemas for character management."""
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,7 @@ class CharacterBase(BaseModel):
     active_conflict: Optional[str] = Field(None, description="当前冲突")
     abilities_state: Optional[str] = Field(None, description="能力当前状态")
     items_or_assets: Optional[str] = Field(None, description="持有物/资源")
+    profile: Optional[dict[str, Any]] = Field(None, description="稳定写作锁")
 
 
 class CharacterCreate(CharacterBase):
@@ -54,6 +55,7 @@ class CharacterUpdate(BaseModel):
     active_conflict: Optional[str] = None
     abilities_state: Optional[str] = None
     items_or_assets: Optional[str] = None
+    profile: Optional[dict[str, Any]] = None
     is_evolution_tracked: Optional[bool] = None
     change_summary: Optional[str] = Field(None, description="本次变更摘要")
 
@@ -80,6 +82,7 @@ class CharacterResponse(BaseModel):
     active_conflict: Optional[str]
     abilities_state: Optional[str]
     items_or_assets: Optional[str]
+    profile: Optional[dict[str, Any]]
     last_seen_chapter_id: Optional[str]
     last_updated_chapter_id: Optional[str]
     current_version: int

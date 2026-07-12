@@ -153,6 +153,20 @@ try {
     Write-Host "  Projects API: OK ($projectCount projects)" -ForegroundColor Green
 } catch {
     Write-Host "  ERROR: Projects API failed: $_" -ForegroundColor Red
+    throw
+}
+
+try {
+    # Test the V2 new-book workbench contract bundled in the executable.
+    $presetsResponse = Invoke-LocalJsonGet -Url "$serverBaseUrl/api/v1/novel-creation/presets" -TimeoutMs 5000
+    $presets = ($presetsResponse | ConvertFrom-Json).data
+    if (($presets.schema_version -ne 2) -or (@($presets.categories).Count -lt 10) -or (@($presets.stage_order).Count -lt 8)) {
+        throw "Unexpected novel creation preset contract"
+    }
+    Write-Host "  Novel Creation V2 API: OK ($(@($presets.categories).Count) genre presets)" -ForegroundColor Green
+} catch {
+    Write-Host "  ERROR: Novel Creation V2 API failed: $_" -ForegroundColor Red
+    throw
 }
 
 try {
@@ -190,5 +204,6 @@ Write-Host "  - Siming.exe: OK" -ForegroundColor Green
 Write-Host "  - MCP Setup Script: OK" -ForegroundColor Green
 Write-Host "  - Server Startup: OK" -ForegroundColor Green
 Write-Host "  - API Endpoints: OK" -ForegroundColor Green
+Write-Host "  - Novel Creation V2: OK" -ForegroundColor Green
 Write-Host ""
 Write-Host "All smoke tests passed!" -ForegroundColor Green

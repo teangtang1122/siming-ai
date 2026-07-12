@@ -158,6 +158,7 @@ def node_to_dict(node: OutlineNode) -> dict:
         "status": node.status,
         "status_label": STATUS_LABELS.get(node.status, node.status),
         "sort_order": node.sort_order,
+        "metadata": node.metadata_json,
         "linked_characters": [
             {
                 "id": link.character.id,

@@ -42,6 +42,9 @@ _PROJECT_OPTIONAL_TOOLS = {
     "draft_novel_blueprint",
     "review_novel_blueprint",
     "apply_novel_blueprint",
+    "get_novel_creation_session",
+    "generate_novel_creation_stage",
+    "submit_novel_creation_stage",
 }
 
 

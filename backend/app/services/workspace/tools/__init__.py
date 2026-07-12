@@ -99,6 +99,7 @@ from .project_status import get_project_archive_status
 from .prompt_packs import get_moshu_usage_guide
 from .local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
 from .story_granularity import archive_chapter_after_write, get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
+from .novel_creation_v2 import get_novel_creation_session, generate_novel_creation_stage, submit_novel_creation_stage
 
 __all__ = [
     "chapter_writer",
@@ -219,4 +220,7 @@ __all__ = [
     "update_narrative_ledger_entry",
     "inspect_story_granularity",
     "repair_story_granularity",
+    "get_novel_creation_session",
+    "generate_novel_creation_stage",
+    "submit_novel_creation_stage",
 ]

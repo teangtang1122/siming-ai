@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Text, Integer, DateTime, Boolean, ForeignKey, Float,
-    Index, JSON,
+    Index, JSON, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from .session import Base
@@ -52,6 +52,7 @@ class Project(Base):
 
     # Relationships
     worldbuilding_entries = relationship("WorldbuildingEntry", back_populates="project", cascade="all, delete-orphan")
+    worldbuilding_relations = relationship("WorldbuildingRelation", back_populates="project", cascade="all, delete-orphan")
     characters = relationship("Character", back_populates="project", cascade="all, delete-orphan")
     character_relationships = relationship("CharacterRelationship", cascade="all, delete-orphan")
     outline_nodes = relationship("OutlineNode", back_populates="project", cascade="all, delete-orphan")
@@ -95,6 +96,44 @@ class WorldbuildingEntry(Base):
     versions = relationship("WorldbuildingVersion", back_populates="entry", cascade="all, delete-orphan")
     timeline_events = relationship("WorldbuildingTimeline", back_populates="entry", cascade="all, delete-orphan")
     chapter_links = relationship("ChapterWorldbuilding", back_populates="worldbuilding_entry", cascade="all, delete-orphan")
+    outgoing_relations = relationship(
+        "WorldbuildingRelation",
+        foreign_keys="WorldbuildingRelation.source_entry_id",
+        back_populates="source_entry",
+        cascade="all, delete-orphan",
+    )
+    incoming_relations = relationship(
+        "WorldbuildingRelation",
+        foreign_keys="WorldbuildingRelation.target_entry_id",
+        back_populates="target_entry",
+        cascade="all, delete-orphan",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2b. worldbuilding_relations - stable links between places and factions
+# ---------------------------------------------------------------------------
+class WorldbuildingRelation(Base):
+    __tablename__ = "worldbuilding_relations"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    source_entry_id = Column(String(36), ForeignKey("worldbuilding_entries.id", ondelete="CASCADE"), nullable=False)
+    target_entry_id = Column(String(36), ForeignKey("worldbuilding_entries.id", ondelete="CASCADE"), nullable=False)
+    relation_type = Column(String(100), nullable=False, default="related")
+    description = Column(Text, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="worldbuilding_relations")
+    source_entry = relationship("WorldbuildingEntry", foreign_keys=[source_entry_id], back_populates="outgoing_relations")
+    target_entry = relationship("WorldbuildingEntry", foreign_keys=[target_entry_id], back_populates="incoming_relations")
+
+    __table_args__ = (
+        Index("ix_worldbuilding_relations_project", "project_id"),
+        Index("ix_worldbuilding_relations_pair", "source_entry_id", "target_entry_id"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +162,7 @@ class Character(Base):
     active_conflict = Column(Text, nullable=True)
     abilities_state = Column(Text, nullable=True)
     items_or_assets = Column(Text, nullable=True)
+    profile_json = Column(JSON, nullable=True)
     content_file_path = Column(Text, nullable=True)
     content_hash = Column(String(64), nullable=True)
     last_seen_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
@@ -231,6 +271,7 @@ class OutlineNode(Base):
     source_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
     actual_summary = Column(Text, nullable=True)
     planned_summary = Column(Text, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
     cataloging_status = Column(String(30), nullable=True)
     content_file_path = Column(Text, nullable=True)
     content_hash = Column(String(64), nullable=True)
@@ -1282,14 +1323,84 @@ class NovelCreationSession(Base):
     target_audience = Column(String(100), nullable=True)
     genre = Column(String(100), nullable=True)
     platform = Column(String(100), nullable=True)
+    schema_version = Column(Integer, nullable=False, default=1)
+    current_stage = Column(String(50), nullable=True)
+    revision = Column(Integer, nullable=False, default=0)
     blueprint_json = Column(JSON, nullable=True)
     review_json = Column(JSON, nullable=True)
+    draft_json = Column(JSON, nullable=True)
+    checkpoints_json = Column(JSON, nullable=True)
+    last_error_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
 
+    stage_runs = relationship(
+        "NovelCreationStageRun",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationStageRun.created_at",
+    )
+
     __table_args__ = (
         Index("ix_novel_creation_sessions_status", "status"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 26b. novel_creation_stage_runs - resumable generation attempts
+# ---------------------------------------------------------------------------
+class NovelCreationStageRun(Base):
+    __tablename__ = "novel_creation_stage_runs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(String(36), ForeignKey("novel_creation_sessions.id", ondelete="CASCADE"), nullable=False)
+    stage = Column(String(50), nullable=False)
+    operation = Column(String(30), nullable=False, default="generate")
+    status = Column(String(30), nullable=False, default="queued")
+    model_source = Column(String(100), nullable=True)
+    tool_mode = Column(String(50), nullable=True)
+    failure_class = Column(String(50), nullable=True)
+    storage_target = Column(String(50), nullable=False, default="session_draft")
+    next_action = Column(Text, nullable=True)
+    request_json = Column(JSON, nullable=True)
+    result_json = Column(JSON, nullable=True)
+    current_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    session = relationship("NovelCreationSession", back_populates="stage_runs")
+    events = relationship(
+        "NovelCreationStageEvent",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="NovelCreationStageEvent.sequence",
+    )
+
+    __table_args__ = (
+        Index("ix_novel_creation_stage_runs_session", "session_id"),
+        Index("ix_novel_creation_stage_runs_status", "status"),
+    )
+
+
+class NovelCreationStageEvent(Base):
+    __tablename__ = "novel_creation_stage_events"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    run_id = Column(String(36), ForeignKey("novel_creation_stage_runs.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String(50), nullable=False)
+    status = Column(String(30), nullable=False, default="running")
+    message = Column(Text, nullable=True)
+    payload_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    run = relationship("NovelCreationStageRun", back_populates="events")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_novel_creation_stage_event_sequence"),
+        Index("ix_novel_creation_stage_events_run", "run_id"),
     )
 
 

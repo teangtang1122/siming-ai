@@ -63,6 +63,13 @@ async def create_outline_node(
     summary = str(args.get("summary") or "").strip()
     if not title:
         return {"tool": "create_outline_node", "status": "skipped", "detail": "标题为空"}
+    metadata = dict(args.get("metadata")) if isinstance(args.get("metadata"), dict) else {}
+    for field in (
+        "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
+        "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
+    ):
+        if field in args and field not in metadata:
+            metadata[field] = args[field]
     existing = (
         db.query(OutlineNode)
         .filter(
@@ -102,6 +109,7 @@ async def create_outline_node(
         actual_summary=str(args.get("actual_summary") or "") or None,
         planned_summary=str(args.get("planned_summary") or "") or None,
         cataloging_status=str(args.get("cataloging_status") or "")[:30] or None,
+        metadata_json=metadata or None,
     )
     db.add(node)
     db.flush()
@@ -231,6 +239,20 @@ async def update_outline_node(
         node.planned_summary = str(args.get("planned_summary") or "") or None
     if "cataloging_status" in args:
         node.cataloging_status = str(args.get("cataloging_status") or "")[:30] or None
+    if "metadata" in args and isinstance(args.get("metadata"), dict):
+        node.metadata_json = dict(args.get("metadata"))
+    elif any(field in args for field in (
+        "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
+        "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
+    )):
+        metadata = dict(node.metadata_json or {})
+        for field in (
+            "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
+            "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
+        ):
+            if field in args:
+                metadata[field] = args[field]
+        node.metadata_json = metadata
     node.updated_at = datetime.utcnow()
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:

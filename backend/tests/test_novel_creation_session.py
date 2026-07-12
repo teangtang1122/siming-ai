@@ -24,6 +24,8 @@ class NovelCreationSessionModelTest(unittest.TestCase):
             "id", "source_project_id", "created_project_id", "status",
             "mode", "user_brief", "target_audience", "genre", "platform",
             "blueprint_json", "review_json", "created_at", "updated_at", "completed_at",
+            "schema_version", "current_stage", "revision", "draft_json",
+            "checkpoints_json", "last_error_json",
         }
         missing = required - columns
         self.assertEqual(missing, set(), f"Missing columns: {missing}")

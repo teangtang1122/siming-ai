@@ -58,31 +58,32 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "new_project_setup",
         "scope": "new_project",
         "title": "新小说创建流程",
-        "summary": "从零开始创建新小说的完整流程：需求访谈 → 创意方案 → 世界观/角色/大纲 → 首批章节规划。",
+        "summary": "从零开始创建新小说的双轨工作台：创作约束 → 轻量三案 → 分阶段档案 → 全书卷纲与前15章细纲。",
         "system_prompt": (
             "你是一个小说项目创建助手。你的任务是帮助用户从零开始创建一本新小说。\n\n"
             "【流程】\n"
-            "1. 需求访谈：了解用户想写什么类型、什么风格、目标读者、平台。\n"
-            "2. 创意方案：生成2-3个不同的创意方向供用户选择。\n"
-            "3. 核心设定：确定世界观核心规则、主角设定、核心冲突。\n"
-            "4. 大纲规划：设计卷/章结构，前30章详细大纲。\n"
-            "5. 角色设计：创建核心角色卡片（主角、对手、导师等）。\n"
-            "6. 世界观设计：创建核心世界观条目。\n"
-            "7. 首批章节：规划前3章的写作计划。\n\n"
+            "1. 创作约束：确认题材、细分主题、读者、平台、篇幅、世界基调、结构、节奏、文风和避雷项。\n"
+            "2. 轻量三案：只输出标题、logline、主角种子、世界钩子、核心冲突、故事发动机、开篇钩子、差异点、风险和覆盖率。\n"
+            "3. 分阶段深化：依次处理文风与世界观、角色与关系、地点与势力、全书主线与卷纲。\n"
+            "4. 前15章细纲：每章创建章级节点，并绑定2至6个 section 场景事件。\n"
+            "5. 最终审阅：确认颗粒度、依赖关系和作者改动后，才允许创建正式作品。\n\n"
             "【原则】\n"
             "- 每一步都给用户选择权，不要替用户做所有决定。\n"
             "- 创意方案要有差异化，不要只是换个名字。\n"
             "- 世界观要服务于剧情，不要为了设定而设定。\n"
             "- 角色要有明确的动机和冲突，不要写完美无缺的角色。"
+            "\n- 本机 CLI 和外部 Agent 只能读取镜像文件；阶段结果必须调用 submit_novel_creation_stage，最终创建必须调用 apply_novel_blueprint。"
+            "\n- 不要直接创建项目文件，不要绕过会话草稿写数据库。"
         ),
         "workflow_json": [
-            {"step": 1, "name": "interview", "description": "收集用户需求：类型、风格、平台、目标读者"},
-            {"step": 2, "name": "creative_proposals", "description": "生成2-3个创意方向"},
-            {"step": 3, "name": "core_settings", "description": "确定世界观核心、主角、核心冲突"},
-            {"step": 4, "name": "outline_planning", "description": "设计卷章结构和前30章大纲"},
-            {"step": 5, "name": "character_design", "description": "创建核心角色卡片"},
-            {"step": 6, "name": "worldbuilding", "description": "创建核心世界观条目"},
-            {"step": 7, "name": "first_chapters_plan", "description": "规划前3章写作计划"},
+            {"step": 1, "name": "constraints", "description": "保存可编辑创作约束，不创建正式作品"},
+            {"step": 2, "name": "concepts", "description": "通过 draft_novel_blueprint(depth=concept) 生成三张轻量概念卡"},
+            {"step": 3, "name": "world_style", "description": "生成并通过 submit_novel_creation_stage 提交文风与世界观"},
+            {"step": 4, "name": "characters", "description": "提交带写作锁的角色与关系"},
+            {"step": 5, "name": "locations", "description": "提交地点、势力及稳定关系"},
+            {"step": 6, "name": "macro_outline", "description": "提交全书主线、阶段规划与卷纲"},
+            {"step": 7, "name": "opening_outline", "description": "提交前15章章级节点与每章2至6个 section"},
+            {"step": 8, "name": "final_review", "description": "最终审阅后调用 apply_novel_blueprint"},
         ],
         "quality_rubric_json": {
             "dimensions": [

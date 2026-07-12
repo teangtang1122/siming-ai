@@ -385,3 +385,41 @@
     radial-gradient(circle at 20% 30%, var(--siming-accent, var(--ant-color-primary)) 0%, transparent 50%),
     radial-gradient(circle at 80% 70%, var(--siming-accent, var(--ant-color-primary)) 0%, transparent 50%);
 }
+.dashboard-creation-drafts {
+  width: min(1200px, calc(100% - 32px));
+  margin: 0 auto 22px;
+  padding: 18px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  background: var(--ant-color-bg-container);
+}
+
+.dashboard-creation-drafts-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.dashboard-creation-drafts-head h4 {
+  margin: 0 0 2px;
+}
+
+.dashboard-creation-drafts-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .dashboard-creation-drafts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .dashboard-creation-drafts-grid {
+    grid-template-columns: 1fr;
+  }
+}

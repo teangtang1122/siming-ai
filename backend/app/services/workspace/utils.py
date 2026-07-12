@@ -46,6 +46,7 @@ def character_payload(character: Character) -> dict:
         "active_conflict": character.active_conflict,
         "abilities_state": character.abilities_state,
         "items_or_assets": character.items_or_assets,
+        "profile": character.profile_json,
     }
 
 
@@ -62,6 +63,7 @@ def outline_node_payload(node: OutlineNode) -> dict:
         "actual_summary": node.actual_summary,
         "planned_summary": node.planned_summary,
         "cataloging_status": node.cataloging_status,
+        "metadata": node.metadata_json,
         "linked_characters": [
             {"id": link.character.id, "name": link.character.name, "role_in_scene": link.role_in_scene}
             for link in node.linked_characters

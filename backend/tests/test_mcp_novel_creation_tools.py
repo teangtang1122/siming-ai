@@ -19,11 +19,21 @@ class MCPNovelCreationToolsTest(unittest.TestCase):
         self.assertIn("start_novel_creation_session", names)
         self.assertIn("draft_novel_blueprint", names)
         self.assertIn("review_novel_blueprint", names)
+        self.assertIn("get_novel_creation_session", names)
 
     def test_apply_in_project_management(self):
         tools = list_mcp_tools(permission_pack="project_management")
         names = {t.name for t in tools}
         self.assertIn("apply_novel_blueprint", names)
+        self.assertIn("generate_novel_creation_stage", names)
+        self.assertIn("submit_novel_creation_stage", names)
+
+    def test_creation_session_tools_do_not_require_project_id(self):
+        tools = list_mcp_tools(permission_pack="project_management")
+        by_name = {tool.name: tool for tool in tools}
+        for name in ("generate_novel_creation_stage", "submit_novel_creation_stage"):
+            required = by_name[name].input_schema.get("required", [])
+            self.assertNotIn("project_id", required)
 
     def test_apply_not_in_readonly(self):
         tools = list_mcp_tools(permission_pack="readonly_collaboration")

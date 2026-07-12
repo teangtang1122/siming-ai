@@ -230,20 +230,16 @@ describe('DashboardPage', () => {
   })
 
   // ------------------------------------------------------------------
-  // TC-F08: Create button opens the creation assistant first
+  // TC-F08: Create button opens the dedicated creation workbench
   // ------------------------------------------------------------------
-  it('should open creation assistant when "创建新作品" button is clicked', async () => {
+  it('should navigate to the creation workbench when "创建新作品" button is clicked', async () => {
     const user = userEvent.setup()
     renderDashboard()
 
     const createButton = screen.getByText('创建新作品')
     await user.click(createButton)
 
-    await waitFor(() => {
-      expect(screen.getByText('从一个想法创建完整小说项目')).toBeInTheDocument()
-      expect(screen.getByText('告诉司命你想写什么')).toBeInTheDocument()
-      expect(screen.getByText('直接创建空作品')).toBeInTheDocument()
-    })
+    expect(mockNavigate).toHaveBeenCalledWith('/novel-creation')
   })
 
   // ------------------------------------------------------------------
@@ -256,8 +252,7 @@ describe('DashboardPage', () => {
     )
     renderDashboard()
 
-    await user.click(screen.getByText('创建新作品'))
-    await user.click(screen.getByText('直接创建空作品'))
+    await user.click(screen.getByText('直接创建'))
 
     const titleInput = screen.getByLabelText('作品标题')
     await user.type(titleInput, '我的新作品')
@@ -280,8 +275,7 @@ describe('DashboardPage', () => {
     const user = userEvent.setup()
     renderDashboard()
 
-    await user.click(screen.getByText('创建新作品'))
-    await user.click(screen.getByText('直接创建空作品'))
+    await user.click(screen.getByText('直接创建'))
 
     const footer = document.querySelector('.ant-modal-footer') as HTMLElement
     const cancelButton = within(footer).getByRole('button', { name: '取消' })

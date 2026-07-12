@@ -1,21 +1,35 @@
 """REST API for API-free novel creation workflow."""
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..database.models import NovelCreationSession, NovelCreationStageRun
+from ..database.session import SessionLocal
+from ..services.novel_creation_workspace import (
+    STAGE_ORDER,
+    create_run,
+    get_presets,
+    patch_session,
+    serialize_run,
+    serialize_session,
+)
 from ..services.workspace.tools.novel_creation import (
     apply_novel_blueprint,
     draft_novel_blueprint,
     review_novel_blueprint,
     start_novel_creation_session,
 )
+from ..services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage, submit_novel_creation_stage
 
 router = APIRouter(tags=["novel-creation"])
 
@@ -26,6 +40,17 @@ class NovelCreationStartRequest(BaseModel):
     target_audience: str = ""
     genre: str = ""
     platform: str = ""
+    preset_id: str = "free"
+    theme_id: str = ""
+    target_words: int = Field(600000, ge=10000, le=10000000)
+    target_chapters: int = Field(240, ge=1, le=5000)
+    world_tone: str = ""
+    story_structure: str = ""
+    pacing: str = ""
+    writing_style: str = ""
+    special_requirements: list[str] = Field(default_factory=list)
+    avoid: list[str] = Field(default_factory=list)
+    author_overrides: dict[str, Any] = Field(default_factory=dict)
 
 
 class NovelCreationDraftRequest(BaseModel):
@@ -39,6 +64,7 @@ class NovelCreationDraftRequest(BaseModel):
     skip_questions: bool = False
     answers: dict[str, str] | None = None
     qa_history: list[dict[str, str]] | None = None
+    depth: Literal["concept", "full"] = "full"
 
 
 class NovelCreationReviewRequest(BaseModel):
@@ -83,6 +109,151 @@ async def review_blueprint(payload: NovelCreationReviewRequest, db: Session = De
 @router.post("/novel-creation/apply")
 async def apply_blueprint(payload: NovelCreationApplyRequest, db: Session = Depends(get_db)):
     result = await apply_novel_blueprint(db, "", payload.model_dump())
+    return _tool_response(result)
+
+
+class NovelCreationSessionPatchRequest(BaseModel):
+    form: dict[str, Any] | None = None
+    selected_concept_id: str | None = None
+    quick_mode: bool | None = None
+
+
+class NovelCreationStageRunRequest(BaseModel):
+    stage: str
+    model: str | None = None
+    use_model: bool = True
+    auto_confirm: bool = False
+    operation: str = "generate"
+    session_patch: dict[str, Any] | None = None
+
+
+class NovelCreationStageConfirmRequest(BaseModel):
+    data: dict[str, Any] | None = None
+    confirm: bool = True
+    source: str = "author"
+
+
+@router.get("/novel-creation/presets")
+async def novel_creation_presets():
+    return ApiResponse.success(data=get_presets())
+
+
+@router.get("/novel-creation/sessions")
+async def list_creation_sessions(include_completed: bool = False, db: Session = Depends(get_db)):
+    query = db.query(NovelCreationSession)
+    if not include_completed:
+        query = query.filter(NovelCreationSession.status.in_(["drafting", "reviewing", "failed"]))
+    sessions = query.order_by(NovelCreationSession.updated_at.desc(), NovelCreationSession.created_at.desc()).limit(30).all()
+    return ApiResponse.success(data={"sessions": [serialize_session(item, include_runs=False) for item in sessions]})
+
+
+@router.get("/novel-creation/sessions/{session_id}")
+async def get_creation_session(session_id: str, db: Session = Depends(get_db)):
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    return ApiResponse.success(data=serialize_session(session))
+
+
+@router.patch("/novel-creation/sessions/{session_id}")
+async def update_creation_session(session_id: str, payload: NovelCreationSessionPatchRequest, db: Session = Depends(get_db)):
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    try:
+        patch_session(session, payload.model_dump(exclude_none=True))
+        db.commit()
+        return ApiResponse.success(data=serialize_session(session), message="立项草稿已保存")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/novel-creation/sessions/{session_id}")
+async def delete_creation_session(session_id: str, db: Session = Depends(get_db)):
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    if not session:
+        return ApiResponse.success(data={"deleted": False})
+    if session.created_project_id:
+        raise HTTPException(status_code=409, detail="该立项已创建正式作品，不能删除会话记录")
+    db.delete(session)
+    db.commit()
+    return ApiResponse.success(data={"deleted": True})
+
+
+async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, Any]) -> None:
+    db = SessionLocal()
+    try:
+        await generate_novel_creation_stage(db, "", {**request, "session_id": session_id, "_run_id": run_id})
+    finally:
+        db.close()
+
+
+@router.post("/novel-creation/sessions/{session_id}/runs")
+async def start_creation_stage_run(session_id: str, payload: NovelCreationStageRunRequest, db: Session = Depends(get_db)):
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    if payload.stage not in {*STAGE_ORDER, "all"}:
+        raise HTTPException(status_code=400, detail="未知立项阶段")
+    request = payload.model_dump()
+    run = create_run(db, session, payload.stage, request)
+    db.commit()
+    run_id = run.id
+    asyncio.create_task(_run_creation_stage(run_id, session_id, request))
+    return ApiResponse.success(data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run_id}/stream"}, message="阶段任务已创建")
+
+
+@router.get("/novel-creation/runs/{run_id}")
+async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
+    run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="阶段任务不存在")
+    return ApiResponse.success(data=serialize_run(run))
+
+
+@router.get("/novel-creation/runs/{run_id}/stream")
+async def stream_creation_stage_run(run_id: str):
+    async def events():
+        sent = 0
+        idle = 0
+        while idle < 900:
+            db = SessionLocal()
+            try:
+                run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+                if not run:
+                    yield "event: error\ndata: " + json.dumps({"message": "阶段任务不存在"}, ensure_ascii=False) + "\n\n"
+                    return
+                rows = list(run.events or [])
+                for event in rows[sent:]:
+                    payload = {
+                        "sequence": event.sequence,
+                        "event_type": event.event_type,
+                        "status": event.status,
+                        "message": event.message,
+                        "payload": event.payload_json,
+                    }
+                    yield f"event: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                sent = len(rows)
+                if run.status in {"completed", "failed", "cancelled"}:
+                    yield "event: done\ndata: " + json.dumps(serialize_run(run), ensure_ascii=False) + "\n\n"
+                    return
+            finally:
+                db.close()
+            idle += 1
+            await asyncio.sleep(0.5)
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/novel-creation/sessions/{session_id}/stages/{stage}/confirm")
+async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCreationStageConfirmRequest, db: Session = Depends(get_db)):
+    result = await submit_novel_creation_stage(db, "", {
+        "session_id": session_id,
+        "stage": stage,
+        "data": payload.data,
+        "confirm": payload.confirm,
+        "source": payload.source,
+    })
     return _tool_response(result)
 
 

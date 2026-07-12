@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
+  Collapse,
   Empty,
   Form,
   Input,
@@ -57,6 +58,7 @@ interface OutlineNode {
   summary?: string
   status: NodeStatus
   sort_order: number
+  metadata?: SceneMetadata
   linked_characters: LinkedCharacter[]
   children: OutlineNode[]
   created_at: string
@@ -83,6 +85,20 @@ interface OutlineFormValues {
   status: NodeStatus
   sort_order: number
   character_ids: string[]
+  metadata?: SceneMetadata
+}
+
+interface SceneMetadata {
+  scene_number?: number
+  purpose?: string
+  location?: string
+  timeline?: string
+  pov_character?: string
+  characters?: string[]
+  entry_state?: string
+  exit_state?: string
+  emotional_residue?: string
+  unresolved_actions?: string[]
 }
 
 interface OutlinePageProps {
@@ -166,6 +182,7 @@ function nextChildType(parent?: OutlineNode | null): NodeType {
 
 function OutlinePage({ projectId }: OutlinePageProps) {
   const [form] = Form.useForm<OutlineFormValues>()
+  const watchedNodeType = Form.useWatch('node_type', form)
   const [tree, setTree] = useState<OutlineNode[]>([])
   const [flat, setFlat] = useState<OutlineNode[]>([])
   const [characters, setCharacters] = useState<CharacterItem[]>([])
@@ -243,6 +260,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         status: selectedNode.status,
         sort_order: selectedNode.sort_order,
         character_ids: selectedNode.linked_characters.map((item) => item.id),
+        metadata: selectedNode.metadata || {},
       })
     }
     if (!creating && !selectedNode) {
@@ -304,6 +322,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         status: 'pending',
         sort_order: siblingCount,
         character_ids: [],
+        metadata: {},
       })
     })
   }
@@ -319,6 +338,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         status: values.status,
         sort_order: Number(values.sort_order || 0),
         character_ids: values.character_ids || [],
+        metadata: values.metadata || {},
       }
 
       if (!payload.title) {
@@ -558,6 +578,34 @@ function OutlinePage({ projectId }: OutlinePageProps) {
                   optionFilterProp="label"
                 />
               </Form.Item>
+
+              {watchedNodeType === 'section' && (
+                <Collapse
+                  ghost
+                  items={[{
+                    key: 'scene-metadata',
+                    label: '场景事件信息',
+                    children: (
+                      <>
+                        <div className="outline-grid">
+                          <Form.Item name={['metadata', 'scene_number']} label="场景序号"><InputNumber min={1} max={6} style={{ width: '100%' }} /></Form.Item>
+                          <Form.Item name={['metadata', 'location']} label="地点"><Input placeholder="本场景发生地点" /></Form.Item>
+                          <Form.Item name={['metadata', 'timeline']} label="时间"><Input placeholder="相对上一场景的时间位置" /></Form.Item>
+                          <Form.Item name={['metadata', 'pov_character']} label="视角角色"><Input placeholder="本场景的主要视角" /></Form.Item>
+                        </div>
+                        <Form.Item name={['metadata', 'purpose']} label="场景目的"><Input.TextArea rows={3} placeholder="这一场必须改变什么" /></Form.Item>
+                        <Form.Item name={['metadata', 'characters']} label="出场角色"><Select mode="tags" tokenSeparators={[',', '，', '、']} placeholder="输入角色名后回车" /></Form.Item>
+                        <div className="outline-grid">
+                          <Form.Item name={['metadata', 'entry_state']} label="入场状态"><Input.TextArea rows={3} /></Form.Item>
+                          <Form.Item name={['metadata', 'exit_state']} label="离场状态"><Input.TextArea rows={3} /></Form.Item>
+                        </div>
+                        <Form.Item name={['metadata', 'emotional_residue']} label="情绪余波"><Input.TextArea rows={3} /></Form.Item>
+                        <Form.Item name={['metadata', 'unresolved_actions']} label="未解决动作"><Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入一项后回车" /></Form.Item>
+                      </>
+                    ),
+                  }]}
+                />
+              )}
             </Form>
           )}
 

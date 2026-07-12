@@ -14,6 +14,10 @@ class NovelCreationSessionCreate(BaseModel):
     target_audience: Optional[str] = None
     genre: Optional[str] = None
     platform: Optional[str] = None
+    preset_id: Optional[str] = None
+    theme_id: Optional[str] = None
+    target_words: Optional[int] = None
+    target_chapters: Optional[int] = None
 
 
 class NovelCreationSessionRead(BaseModel):
@@ -27,8 +31,14 @@ class NovelCreationSessionRead(BaseModel):
     target_audience: Optional[str] = None
     genre: Optional[str] = None
     platform: Optional[str] = None
+    schema_version: int = 1
+    current_stage: Optional[str] = None
+    revision: int = 0
     blueprint_json: Optional[Any] = None
     review_json: Optional[Any] = None
+    draft_json: Optional[Any] = None
+    checkpoints_json: Optional[Any] = None
+    last_error_json: Optional[Any] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

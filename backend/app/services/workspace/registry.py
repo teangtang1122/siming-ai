@@ -1343,6 +1343,7 @@ def _register_all() -> None:
             "actual_summary": {"type": "string", "description": "实际完成后的摘要"},
             "planned_summary": {"type": "string", "description": "计划中的摘要"},
             "cataloging_status": {"type": "string", "description": "编目状态"},
+            "metadata": {"type": "object", "description": "section 场景元数据：scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions"},
         },
         required=["title"],
         tool_type="write",
@@ -1383,6 +1384,7 @@ def _register_all() -> None:
             "actual_summary": {"type": "string", "description": "更新实际完成后的摘要"},
             "planned_summary": {"type": "string", "description": "更新计划中的摘要"},
             "cataloging_status": {"type": "string", "description": "更新编目状态"},
+            "metadata": {"type": "object", "description": "更新 section 场景元数据"},
         },
         tool_type="write",
         estimated_cost="free",
@@ -1429,6 +1431,7 @@ def _register_all() -> None:
             "active_conflict": {"type": "string", "description": "当前冲突/困境"},
             "abilities_state": {"type": "string", "description": "能力当前状态（如封印中、受伤无法使用等）"},
             "items_or_assets": {"type": "string", "description": "持有物/资源"},
+            "profile": {"type": "object", "description": "稳定写作锁：core_motivation/inner_lack/core_belief/public_persona/hidden_persona/reveal_chapter/moral_taboo/voice/action_habit/trauma_trigger"},
         },
         required=["name"],
         tool_type="write",
@@ -1461,6 +1464,7 @@ def _register_all() -> None:
             "active_conflict": {"type": "string", "description": "当前冲突/困境"},
             "abilities_state": {"type": "string", "description": "能力当前状态（如封印中、受伤无法使用等）"},
             "items_or_assets": {"type": "string", "description": "持有物/资源"},
+            "profile": {"type": "object", "description": "更新稳定写作锁；提交完整 profile 对象"},
         },
         tool_type="write",
         estimated_cost="free",
@@ -2152,6 +2156,11 @@ def _register_all() -> None:
         list_imported_files,
         read_imported_file,
     )
+    from .tools.novel_creation_v2 import (
+        get_novel_creation_session,
+        generate_novel_creation_stage,
+        submit_novel_creation_stage,
+    )
     from .tools.mcp_status import (
         get_mcp_permission_status,
     )
@@ -2351,6 +2360,7 @@ def _register_all() -> None:
             "revision_mode": {"type": "string", "description": "initial|refine|regenerate. Use refine to adjust current direction, regenerate to restart options from feedback."},
             "enhance_with_llm": {"type": "boolean", "description": "Optional slow LLM enhancement. Default false keeps template drafting instant."},
             "skip_questions": {"type": "boolean", "description": "Skip clarifying questions and generate blueprints directly. Default false."},
+            "depth": {"type": "string", "description": "concept|full. Concept returns three lightweight cards and keeps full source inside the session."},
         },
         required=["session_id"],
         tool_type="read",
@@ -2387,6 +2397,55 @@ def _register_all() -> None:
         risk_level="medium",
         estimated_cost="free",
         handler=apply_novel_blueprint,
+    ))
+
+    _r(ToolDef(
+        name="get_novel_creation_session",
+        description="Read a resumable V2 novel creation session, its stage states, checkpoints, and recent runs.",
+        input_schema={
+            "session_id": {"type": "string", "description": "Creation session ID"},
+        },
+        required=["session_id"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=get_novel_creation_session,
+    ))
+
+    _r(ToolDef(
+        name="generate_novel_creation_stage",
+        description="Generate one V2 creation stage or the complete quick pipeline. Saves only to the session draft; it never writes project files.",
+        input_schema={
+            "session_id": {"type": "string", "description": "Creation session ID"},
+            "stage": {"type": "string", "description": "constraints|concepts|world_style|characters|locations|macro_outline|opening_outline|final_review|all"},
+            "model": {"type": "string", "description": "Optional model override for this stage"},
+            "use_model": {"type": "boolean", "description": "Use the selected model to deepen the contract baseline"},
+            "auto_confirm": {"type": "boolean", "description": "Confirm generated stages automatically; intended for quick mode"},
+            "session_patch": {"type": "object", "description": "Optional editable form or selected concept update before generation"},
+        },
+        required=["session_id", "stage"],
+        tool_type="write",
+        writes_project_data=False,
+        risk_level="low",
+        estimated_cost="model_or_free",
+        handler=generate_novel_creation_stage,
+    ))
+
+    _r(ToolDef(
+        name="submit_novel_creation_stage",
+        description="Submit and optionally confirm an edited V2 creation stage. Changes remain in the session until apply_novel_blueprint.",
+        input_schema={
+            "session_id": {"type": "string", "description": "Creation session ID"},
+            "stage": {"type": "string", "description": "Stage identifier"},
+            "data": {"type": "object", "description": "Author or external-agent stage result"},
+            "confirm": {"type": "boolean", "description": "Confirm this stage and continue"},
+            "source": {"type": "string", "description": "author|local_cli|external_agent|model"},
+        },
+        required=["session_id", "stage", "data"],
+        tool_type="write",
+        writes_project_data=False,
+        risk_level="low",
+        estimated_cost="free",
+        handler=submit_novel_creation_stage,
     ))
 
     _r(ToolDef(
@@ -2610,6 +2669,7 @@ def _classify_all() -> None:
         "apply_external_story_updates",
         "archive_chapter_after_write", "repair_story_granularity",
         "apply_novel_blueprint",
+        "submit_novel_creation_stage",
         "save_external_cataloging_facts",
         "save_external_cataloging_candidates",
         "write_project_file", "sync_project_files",

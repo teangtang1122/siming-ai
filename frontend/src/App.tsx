@@ -9,6 +9,7 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const ExternalAgentPage = lazy(() => import('./pages/ExternalAgentPage'))
 const GuiPage = lazy(() => import('./pages/GuiPage'))
 const ModelCenterPage = lazy(() => import('./pages/ModelCenterPage'))
+const NovelCreationWizardPage = lazy(() => import('./pages/NovelCreationWizardPage'))
 
 const { Content } = Layout
 
@@ -143,6 +144,7 @@ function App() {
           <Routes>
             <Route path="/" element={<RouteGuard />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/novel-creation" element={<NovelCreationWizardPage />} />
             <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/external-agent" element={<ExternalAgentPage />} />

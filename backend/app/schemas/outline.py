@@ -1,6 +1,6 @@
 """Pydantic schemas for outline planning."""
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,7 @@ class OutlineNodeCreate(BaseModel):
     sort_order: int = Field(0, ge=0)
     character_ids: list[str] = Field(default_factory=list)
     characters: Optional[list[OutlineCharacterLinkInput]] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 class OutlineNodeUpdate(BaseModel):
@@ -40,6 +41,7 @@ class OutlineNodeUpdate(BaseModel):
     sort_order: Optional[int] = Field(None, ge=0)
     character_ids: Optional[list[str]] = None
     characters: Optional[list[OutlineCharacterLinkInput]] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 class OutlineReorderItem(BaseModel):

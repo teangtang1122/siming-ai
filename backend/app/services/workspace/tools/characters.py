@@ -56,6 +56,7 @@ async def create_character(
         active_conflict=str(args.get("active_conflict") or "")[:4000] or None,
         abilities_state=str(args.get("abilities_state") or "")[:4000] or None,
         items_or_assets=str(args.get("items_or_assets") or "")[:4000] or None,
+        profile_json=args.get("profile") if isinstance(args.get("profile"), dict) else None,
     )
     db.add(character)
     db.flush()
@@ -121,6 +122,9 @@ async def update_character(
         changed = True
     if "abilities" in args and isinstance(args.get("abilities"), list):
         character.abilities = json.dumps(args.get("abilities"), ensure_ascii=False)
+        changed = True
+    if "profile" in args and isinstance(args.get("profile"), dict):
+        character.profile_json = args.get("profile")
         changed = True
     ai_config_data = args.get("ai_config") if isinstance(args.get("ai_config"), dict) else {}
     if ai_config_data or "custom_system_prompt" in args:

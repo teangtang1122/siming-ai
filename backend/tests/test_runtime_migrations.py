@@ -60,6 +60,9 @@ class RuntimeMigrationTestCase(unittest.TestCase):
             "local_model_task_settings",
             "training_datasets",
             "training_jobs",
+            "novel_creation_stage_runs",
+            "novel_creation_stage_events",
+            "worldbuilding_relations",
         }:
             self.assertIn(table_name, table_names)
 
@@ -67,6 +70,7 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         self.assertIn("current_location", character_columns)
         self.assertIn("physical_state", character_columns)
         self.assertIn("last_seen_chapter_id", character_columns)
+        self.assertIn("profile_json", character_columns)
 
         world_columns = {column["name"] for column in inspector.get_columns("worldbuilding_entries")}
         self.assertIn("first_seen_chapter_id", world_columns)
@@ -75,6 +79,11 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         outline_columns = {column["name"] for column in inspector.get_columns("outline_nodes")}
         self.assertIn("source_chapter_id", outline_columns)
         self.assertIn("actual_summary", outline_columns)
+        self.assertIn("metadata_json", outline_columns)
+
+        creation_columns = {column["name"] for column in inspector.get_columns("novel_creation_sessions")}
+        for column_name in ("schema_version", "current_stage", "revision", "draft_json", "checkpoints_json", "last_error_json"):
+            self.assertIn(column_name, creation_columns)
 
         with engine.connect() as conn:
             self.assertEqual(conn.execute(text("SELECT COUNT(*) FROM projects")).scalar_one(), 1)

@@ -28,6 +28,7 @@ from ..database.models import (
     OutlineNode,
     Project,
     WorldbuildingEntry,
+    WorldbuildingRelation,
 )
 from .character_service import (
     character_aliases,
@@ -282,6 +283,7 @@ def outline_payload(nodes: list[OutlineNode]) -> dict[str, Any]:
                 "source_chapter_id": node.source_chapter_id,
                 "actual_summary": node.actual_summary,
                 "planned_summary": node.planned_summary,
+                "metadata": node.metadata_json,
                 "cataloging_status": node.cataloging_status,
                 "sort_order": node.sort_order,
                 "linked_characters": [
@@ -336,6 +338,31 @@ def sync_relationships_to_file(db: Session, project: Project) -> None:
     invalidate_project(project.id)
 
 
+def sync_worldbuilding_relations_to_file(db: Session, project: Project) -> None:
+    folder = ensure_project_folder(db, project)
+    rows = (
+        db.query(WorldbuildingRelation)
+        .filter(WorldbuildingRelation.project_id == project.id)
+        .order_by(WorldbuildingRelation.created_at.asc())
+        .all()
+    )
+    _write_json(folder / "relationships" / "worldbuilding-relations.json", {
+        "items": [
+            {
+                "id": row.id,
+                "project_id": row.project_id,
+                "source_entry_id": row.source_entry_id,
+                "target_entry_id": row.target_entry_id,
+                "relation_type": row.relation_type,
+                "description": row.description,
+                "metadata": row.metadata_json,
+            }
+            for row in rows
+        ]
+    })
+    invalidate_project(project.id)
+
+
 def sync_project_to_files(db: Session, project_id: str) -> None:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -356,6 +383,7 @@ def sync_project_to_files(db: Session, project_id: str) -> None:
         sync_worldbuilding_to_file(db, project, entry)
     sync_outline_to_file(db, project)
     sync_relationships_to_file(db, project)
+    sync_worldbuilding_relations_to_file(db, project)
     project.storage_mode = "db_mirror"
     project.folder_path = str(folder)
     project.content_migrated_at = project.content_migrated_at or datetime.utcnow()
@@ -461,6 +489,8 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
                 setattr(character, field, data.get(field))
         if "abilities" in data:
             character.abilities = dumps_list(data.get("abilities") or [])
+        if isinstance(data.get("profile"), dict):
+            character.profile_json = data.get("profile")
         sync_character_aliases(db, character, data.get("aliases"))
         if isinstance(data.get("ai_config"), dict):
             cfg = character.ai_config or CharacterAIConfig(character_id=character.id)
@@ -536,6 +566,8 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
                 ):
                     if field in item:
                         setattr(node, field, item.get(field))
+                if isinstance(item.get("metadata"), dict):
+                    node.metadata_json = item.get("metadata")
                 node.content_file_path = "outline/outline.json"
                 node.content_hash = digest
                 touched_nodes.append((node, item))
@@ -599,6 +631,40 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
                 rel.character_b_id = character_b_id
                 rel.relationship_type = str(item.get("relationship_type") or rel.relationship_type or "关联")[:100]
                 rel.description = str(item.get("description") or "")[:4000] or None
+
+    world_relations_path = folder / "relationships" / "worldbuilding-relations.json"
+    if world_relations_path.exists():
+        try:
+            payload = _read_json(world_relations_path)
+            items = payload.get("items") if isinstance(payload, dict) else None
+        except Exception:
+            items = None
+        if isinstance(items, list):
+            valid_entry_ids = {
+                row.id for row in db.query(WorldbuildingEntry).filter(WorldbuildingEntry.project_id == project.id).all()
+            }
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                relation_id = str(item.get("id") or "").strip()
+                source_entry_id = str(item.get("source_entry_id") or "").strip()
+                target_entry_id = str(item.get("target_entry_id") or "").strip()
+                if not relation_id or source_entry_id == target_entry_id:
+                    continue
+                if source_entry_id not in valid_entry_ids or target_entry_id not in valid_entry_ids:
+                    continue
+                relation = db.query(WorldbuildingRelation).filter(
+                    WorldbuildingRelation.id == relation_id,
+                    WorldbuildingRelation.project_id == project.id,
+                ).first()
+                if not relation:
+                    relation = WorldbuildingRelation(id=relation_id, project_id=project.id)
+                    db.add(relation)
+                relation.source_entry_id = source_entry_id
+                relation.target_entry_id = target_entry_id
+                relation.relation_type = str(item.get("relation_type") or "related")[:100]
+                relation.description = str(item.get("description") or "")[:4000] or None
+                relation.metadata_json = item.get("metadata") if isinstance(item.get("metadata"), dict) else None
 
 
 def migrate_legacy_projects_to_files(db: Session) -> None:

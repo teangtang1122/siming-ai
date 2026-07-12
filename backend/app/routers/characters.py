@@ -104,6 +104,7 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
         active_conflict=payload.active_conflict,
         abilities_state=payload.abilities_state,
         items_or_assets=payload.items_or_assets,
+        profile_json=payload.profile,
         is_evolution_tracked=payload.is_evolution_tracked,
     )
     db.add(character)
@@ -238,6 +239,8 @@ def update_character(
             character.abilities = dumps_list(value)
         elif field == "aliases":
             sync_character_aliases(db, character, value)
+        elif field == "profile":
+            character.profile_json = value
         else:
             setattr(character, field, value)
 

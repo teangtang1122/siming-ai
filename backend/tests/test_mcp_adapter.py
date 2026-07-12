@@ -81,7 +81,11 @@ class McpToolListTest(unittest.TestCase):
         """Readonly tools should be a reasonable subset (not zero, not all)."""
         tools = list_mcp_tools(allowed_tiers={"readonly"})
         self.assertGreater(len(tools), 10, "Too few readonly tools")
-        self.assertLess(len(tools), 80, "Too many readonly tools — filter may be broken")
+        self.assertLess(
+            len(tools),
+            len(registry.all_names()),
+            "Readonly filtering exposed the entire workspace registry",
+        )
 
 
 class McpToolSchemaTest(unittest.TestCase):

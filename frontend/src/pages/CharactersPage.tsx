@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Collapse, Descriptions, Divider, Empty, Form, Input, List, Modal,
+  Alert, Button, Collapse, Descriptions, Divider, Empty, Form, Input, InputNumber, List, Modal,
   Popconfirm, Select, Space, Tag, Timeline, Typography, message,
 } from 'antd'
 import {
@@ -24,6 +24,7 @@ interface Character {
   life_status?: string; current_location?: string; realm_or_level?: string
   physical_state?: string; mental_state?: string; current_goal?: string
   active_conflict?: string; abilities_state?: string; items_or_assets?: string
+  profile?: CharacterWritingProfile
   created_at: string; updated_at: string
   appearances?: {
     outline_nodes: Array<{ id: string; title: string; node_type: string; role_in_scene?: string }>
@@ -64,6 +65,13 @@ interface CharacterFormValues {
   life_status?: string; current_location?: string; realm_or_level?: string
   physical_state?: string; mental_state?: string; current_goal?: string
   active_conflict?: string; abilities_state?: string; items_or_assets?: string
+  profile?: CharacterWritingProfile
+}
+
+interface CharacterWritingProfile {
+  core_motivation?: string; inner_lack?: string; core_belief?: string
+  public_persona?: string; hidden_persona?: string; reveal_chapter?: number
+  moral_taboo?: string; voice?: string; action_habit?: string; trauma_trigger?: string
 }
 
 interface CharacterMergeFormValues {
@@ -169,6 +177,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         active_conflict: res.data.data.active_conflict,
         abilities_state: res.data.data.abilities_state,
         items_or_assets: res.data.data.items_or_assets,
+        profile: res.data.data.profile,
         is_evolution_tracked: res.data.data.is_evolution_tracked,
       })
     } catch (err: any) { message.error(err.message || '获取角色详情失败') }
@@ -485,6 +494,35 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             <Form.Item name="abilities" label="能力">
               <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入能力后回车" />
             </Form.Item>
+            <Collapse
+              ghost
+              items={[{
+                key: 'writing-locks',
+                label: <span style={{ fontWeight: 500 }}>写作锁 <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)', fontWeight: 400 }}>（确保跨章节的人设和声线稳定）</span></span>,
+                children: (
+                  <>
+                    <div className="characters-two-col">
+                      <Form.Item name={['profile', 'core_motivation']} label="核心动机"><Input.TextArea rows={3} placeholder="最根本的行动驱动力" /></Form.Item>
+                      <Form.Item name={['profile', 'inner_lack']} label="内在缺口"><Input.TextArea rows={3} placeholder="角色尚未承认或无法满足的需要" /></Form.Item>
+                    </div>
+                    <div className="characters-two-col">
+                      <Form.Item name={['profile', 'core_belief']} label="核心信念"><Input.TextArea rows={3} placeholder="角色相信世界如何运转" /></Form.Item>
+                      <Form.Item name={['profile', 'moral_taboo']} label="道德禁忌"><Input.TextArea rows={3} placeholder="无论如何都不愿跨过的边界" /></Form.Item>
+                    </div>
+                    <div className="characters-two-col">
+                      <Form.Item name={['profile', 'public_persona']} label="公开人设"><Input.TextArea rows={3} placeholder="他人通常看到的一面" /></Form.Item>
+                      <Form.Item name={['profile', 'hidden_persona']} label="隐藏人设"><Input.TextArea rows={3} placeholder="在压力或亲密关系中才显露的一面" /></Form.Item>
+                    </div>
+                    <div className="characters-three-col">
+                      <Form.Item name={['profile', 'reveal_chapter']} label="建议揭示章节"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
+                      <Form.Item name={['profile', 'voice']} label="声线"><Input placeholder="用词、句长、语气特点" /></Form.Item>
+                      <Form.Item name={['profile', 'action_habit']} label="动作习惯"><Input placeholder="高压下反复出现的行为" /></Form.Item>
+                    </div>
+                    <Form.Item name={['profile', 'trauma_trigger']} label="创伤触发器"><Input.TextArea rows={3} placeholder="会改变判断或行为的具体情境" /></Form.Item>
+                  </>
+                ),
+              }]}
+            />
             <Collapse
               ghost
               items={[{

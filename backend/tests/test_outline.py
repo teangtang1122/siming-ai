@@ -82,6 +82,7 @@ class OutlineTestCase(unittest.TestCase):
         parent_id: str | None = None,
         sort_order: int = 0,
         character_ids: list[str] | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         response = self.client.post(
             f"{API_PREFIX}/projects/{project_id}/outline",
@@ -91,6 +92,7 @@ class OutlineTestCase(unittest.TestCase):
                 "parent_id": parent_id,
                 "sort_order": sort_order,
                 "character_ids": character_ids or [],
+                "metadata": metadata,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -112,7 +114,13 @@ class TestOutlineCRUD(OutlineTestCase):
             parent_id=volume["id"],
             character_ids=[character["id"]],
         )
-        self.create_node(project_id, "Opening Scene", "section", parent_id=chapter["id"])
+        self.create_node(
+            project_id,
+            "Opening Scene",
+            "section",
+            parent_id=chapter["id"],
+            metadata={"scene_number": 1, "purpose": "逼迫主角作出选择", "location": "边城门"},
+        )
 
         response = self.client.get(f"{API_PREFIX}/projects/{project_id}/outline")
         self.assertEqual(response.status_code, 200)
@@ -123,6 +131,7 @@ class TestOutlineCRUD(OutlineTestCase):
         self.assertEqual(data["items"][0]["title"], "Volume One")
         self.assertEqual(data["items"][0]["children"][0]["title"], "Chapter One")
         self.assertEqual(data["items"][0]["children"][0]["children"][0]["title"], "Opening Scene")
+        self.assertEqual(data["items"][0]["children"][0]["children"][0]["metadata"]["scene_number"], 1)
         self.assertEqual(data["items"][0]["children"][0]["linked_characters"][0]["name"], "Lin Che")
 
     def test_update_node_fields_and_linked_characters(self):

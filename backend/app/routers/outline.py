@@ -76,6 +76,7 @@ def create_outline_node(
         summary=payload.summary,
         status=payload.status,
         sort_order=payload.sort_order,
+        metadata_json=payload.metadata,
     )
     db.add(node)
     db.flush()
@@ -138,6 +139,8 @@ def update_outline_node(
         raise ValidationError("未提供任何更新字段")
 
     links = extract_character_links(update_data.pop("character_ids", None), update_data.pop("characters", None))
+    if "metadata" in update_data:
+        update_data["metadata_json"] = update_data.pop("metadata")
     if "parent_id" in update_data:
         _get_parent_or_404(db, project_id, update_data["parent_id"])
         ensure_no_cycle(db, project_id, node.id, update_data["parent_id"])

@@ -5344,6 +5344,27 @@ def _blueprint_set_is_structurally_usable(blueprints: list[dict[str, Any]]) -> b
     return any(_blueprint_is_structurally_usable(bp) for bp in blueprints)
 
 
+def _session_v2_constraint_text(session: Any) -> str:
+    draft = session.draft_json if isinstance(getattr(session, "draft_json", None), dict) else {}
+    form = draft.get("form") if isinstance(draft.get("form"), dict) else {}
+    if not form:
+        return ""
+    lines = [
+        f"市场题材：{_clean_text(form.get('genre'))}",
+        f"细分主题：{_clean_text(form.get('theme_id'))}",
+        f"目标读者：{_clean_text(form.get('target_audience'))}",
+        f"发布平台：{_clean_text(form.get('platform'))}",
+        f"目标篇幅：约{int(form.get('target_words') or 0)}字、{int(form.get('target_chapters') or 0)}章",
+        f"世界基调：{_clean_text(form.get('world_tone'))}",
+        f"剧情结构：{_clean_text(form.get('story_structure'))}",
+        f"节奏要求：{_clean_text(form.get('pacing'))}",
+        f"正文风格：{_clean_text(form.get('writing_style'))}",
+        "特殊要求：" + "；".join(str(item) for item in form.get("special_requirements", []) if str(item).strip()),
+        "避雷项：" + "；".join(str(item) for item in form.get("avoid", []) if str(item).strip()),
+    ]
+    return "\n".join(line for line in lines if line.split("：", 1)[-1].strip())
+
+
 async def start_novel_creation_session(
     db: Session,
     project_id: str,
@@ -5351,6 +5372,7 @@ async def start_novel_creation_session(
 ) -> dict:
     """Start a new novel creation session and return the shared prompt pack."""
     from app.database.models import NovelCreationSession, PublicPromptPack
+    from app.services.novel_creation_workspace import initialize_session_draft, serialize_session
     from app.services.prompt_packs.seed import ensure_builtin_packs
 
     ensure_builtin_packs(db)
@@ -5371,6 +5393,7 @@ async def start_novel_creation_session(
         status="drafting",
     )
     db.add(session)
+    initialize_session_draft(session, args)
     db.commit()
     db.refresh(session)
 
@@ -5402,6 +5425,7 @@ async def start_novel_creation_session(
             "checklist": checklist,
             "prompt_pack": prompt_pack_data,
             "missing_fields": checklist["missing"],
+            "session": serialize_session(session, include_runs=False),
         },
     }
 
@@ -5413,6 +5437,7 @@ async def draft_novel_blueprint(
 ) -> dict:
     """Draft novel blueprints or return the canonical prompt for external agents."""
     from app.database.models import NovelCreationSession, PublicPromptPack
+    from app.services.novel_creation_workspace import attach_concepts
     from app.services.prompt_packs.seed import ensure_builtin_packs
 
     ensure_builtin_packs(db)
@@ -5427,6 +5452,9 @@ async def draft_novel_blueprint(
     revision_mode = _clean_text(args.get("revision_mode"), "initial")
     enhance_with_llm = _as_bool(args.get("enhance_with_llm"), False)
     model = _clean_text(args.get("model")) or None
+    depth = _clean_text(args.get("depth"), "full")
+    if depth not in {"concept", "full"}:
+        return {"tool": "draft_novel_blueprint", "status": "skipped", "detail": "depth must be 'concept' or 'full'", "data": None}
 
     if not session_id:
         return {"tool": "draft_novel_blueprint", "status": "skipped", "detail": "session_id is required", "data": None}
@@ -5501,6 +5529,9 @@ async def draft_novel_blueprint(
 
     if execution_mode in {"template", "local_template", "auto", "hybrid"}:
         base_brief_for_compile = _clean_text(user_brief or session.user_brief, "用户希望创建一部新小说。")
+        v2_constraints = _session_v2_constraint_text(session)
+        if v2_constraints:
+            base_brief_for_compile = f"{base_brief_for_compile}\n\n## 已确认的立项约束\n{v2_constraints}"
         feedback_for_content = _revision_feedback_content(feedback, revision_mode)
         if feedback_for_content:
             if revision_mode == "refine":
@@ -5523,7 +5554,7 @@ async def draft_novel_blueprint(
         # mode these are context for the model, not user-facing fallback content.
         template_blueprints = _build_template_blueprints(
             session,
-            user_brief=user_brief,
+            user_brief=effective_brief,
             feedback=feedback,
             revision_mode=revision_mode,
         )
@@ -5554,7 +5585,7 @@ async def draft_novel_blueprint(
                     template_blueprints=template_blueprints,
                     feedback=feedback,
                     revision_mode=revision_mode,
-                    user_brief=_clean_text(user_brief or session.user_brief),
+                    user_brief=effective_brief,
                     model=model,
                     diagnostics=llm_diagnostics,
                 )
@@ -5563,7 +5594,7 @@ async def draft_novel_blueprint(
                 llm_result = await _try_llm_initial_draft(
                     session=session,
                     template_blueprints=template_blueprints,
-                    user_brief=_clean_text(user_brief or session.user_brief),
+                    user_brief=effective_brief,
                     model=model,
                     diagnostics=llm_diagnostics,
                 )
@@ -5620,6 +5651,7 @@ async def draft_novel_blueprint(
         blueprints = [_annotate_blueprint(bp, compiled) for bp in blueprints if isinstance(bp, dict)]
 
         session.blueprint_json = blueprints
+        concept_draft = attach_concepts(session, blueprints) if depth == "concept" else None
         if user_brief or feedback:
             base_brief = _clean_text(user_brief or session.user_brief)
             session.user_brief = (
@@ -5672,6 +5704,7 @@ async def draft_novel_blueprint(
                 ),
                 "feedback": feedback,
                 "compiled_brief": compiled,
+                "depth": depth,
                 "coverage_summary": [
                     {
                         "title": bp.get("title"),
@@ -5681,9 +5714,10 @@ async def draft_novel_blueprint(
                     for bp in blueprints
                     if isinstance(bp, dict)
                 ],
-                "blueprints": blueprints,
+                "concepts": concept_draft.get("concepts", []) if concept_draft else None,
+                "blueprints": concept_draft.get("concepts", []) if concept_draft else blueprints,
                 "recommendation": recommendation,
-                "next_tool": "review_novel_blueprint",
+                "next_tool": "generate_novel_creation_stage" if depth == "concept" else "review_novel_blueprint",
             },
         }
 
@@ -5910,9 +5944,11 @@ async def apply_novel_blueprint(
         OutlineNode,
         Project,
         WorldbuildingEntry,
+        WorldbuildingRelation,
         NovelCreationSession,
     )
-    from app.services.content_store import ensure_project_folder, sync_project_to_files, write_project_manifest
+    from app.services.content_store import sync_project_to_files
+    from app.services.novel_creation_workspace import build_apply_blueprint
 
     session_id = _clean_text(args.get("session_id"))
     blueprint_index = int(args.get("blueprint_index", 0) or 0)
@@ -5925,6 +5961,17 @@ async def apply_novel_blueprint(
     session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
     if not session:
         return {"tool": "apply_novel_blueprint", "status": "skipped", "detail": "Session not found", "data": None}
+
+    created_project_id = session.created_project_id if isinstance(session.created_project_id, str) else ""
+    if created_project_id:
+        existing_project = db.query(Project).filter(Project.id == created_project_id).first()
+        if existing_project:
+            return {
+                "tool": "apply_novel_blueprint",
+                "status": "ok",
+                "detail": f"Project already created: {existing_project.title}",
+                "data": {"project_id": existing_project.id, "idempotent": True, "warnings": []},
+            }
 
     if override_blueprint and isinstance(override_blueprint, (dict, list)):
         session.blueprint_json = override_blueprint
@@ -5939,7 +5986,13 @@ async def apply_novel_blueprint(
             "data": None,
         }
 
-    if isinstance(blueprints, list):
+    schema_version = session.schema_version if isinstance(session.schema_version, int) else 1
+    if schema_version >= 2 and isinstance(session.draft_json, dict) and session.draft_json.get("selected_concept_id") and not override_blueprint:
+        try:
+            blueprint = build_apply_blueprint(session)
+        except ValueError as exc:
+            return {"tool": "apply_novel_blueprint", "status": "skipped", "detail": str(exc), "data": None}
+    elif isinstance(blueprints, list):
         if blueprint_index >= len(blueprints):
             return {
                 "tool": "apply_novel_blueprint",
@@ -5990,9 +6043,6 @@ async def apply_novel_blueprint(
         )
         db.add(project)
         db.flush()
-        if _is_real_session(db):
-            ensure_project_folder(db, project)
-            write_project_manifest(db, project)
 
         created_items: dict[str, Any] = {
             "project_id": project.id,
@@ -6001,6 +6051,8 @@ async def apply_novel_blueprint(
             "volumes": [],
             "outline": [],
             "relationships": [],
+            "worldbuilding_relations": [],
+            "warnings": [],
         }
         characters_by_name: dict[str, Character] = {}
 
@@ -6024,6 +6076,7 @@ async def apply_novel_blueprint(
                 abilities_state=_clean_text(protagonist.get("abilities_state")) or None,
                 items_or_assets=_clean_text(protagonist.get("items_or_assets")) or None,
                 abilities=json.dumps(protagonist.get("abilities"), ensure_ascii=False) if isinstance(protagonist.get("abilities"), list) else None,
+                profile_json=protagonist.get("profile") if isinstance(protagonist.get("profile"), dict) else None,
             )
             db.add(char)
             db.flush()
@@ -6053,23 +6106,48 @@ async def apply_novel_blueprint(
                     abilities_state=_clean_text(char_data.get("abilities_state")) or None,
                     items_or_assets=_clean_text(char_data.get("items_or_assets")) or None,
                     abilities=json.dumps(char_data.get("abilities"), ensure_ascii=False) if isinstance(char_data.get("abilities"), list) else None,
+                    profile_json=char_data.get("profile") if isinstance(char_data.get("profile"), dict) else None,
                 )
                 db.add(char)
                 db.flush()
                 characters_by_name[name] = char
                 created_items["characters"].append(name)
 
+        worldbuilding_by_title: dict[str, WorldbuildingEntry] = {}
         for wb_data in blueprint.get("worldbuilding", []):
             if isinstance(wb_data, dict) and _clean_text(wb_data.get("title")):
                 entry = WorldbuildingEntry(
                     project_id=project.id,
                     title=_clean_text(wb_data["title"])[:200],
-                    content=_clean_text(wb_data.get("content"), "待补充"),
+                    content=_clean_text(wb_data.get("content") or wb_data.get("description"), "待补充"),
                     dimension=_clean_text(wb_data.get("dimension"), "culture")[:50],
                 )
                 db.add(entry)
                 db.flush()
+                worldbuilding_by_title[entry.title] = entry
                 created_items["worldbuilding"].append(entry.title)
+
+        for relation_data in blueprint.get("worldbuilding_relations", []):
+            if not isinstance(relation_data, dict):
+                continue
+            source = worldbuilding_by_title.get(_clean_text(relation_data.get("source_title") or relation_data.get("source")))
+            target = worldbuilding_by_title.get(_clean_text(relation_data.get("target_title") or relation_data.get("target")))
+            if not source or not target or source.id == target.id:
+                continue
+            relation = WorldbuildingRelation(
+                project_id=project.id,
+                source_entry_id=source.id,
+                target_entry_id=target.id,
+                relation_type=_clean_text(relation_data.get("relation_type"), "related")[:100],
+                description=_clean_text(relation_data.get("description")) or None,
+                metadata_json=relation_data.get("metadata") if isinstance(relation_data.get("metadata"), dict) else None,
+            )
+            db.add(relation)
+            created_items["worldbuilding_relations"].append({
+                "source": source.title,
+                "target": target.title,
+                "type": relation.relation_type,
+            })
 
         volume_nodes: list[OutlineNode] = []
         volume_data = blueprint.get("volume_outline", [])
@@ -6083,6 +6161,10 @@ async def apply_novel_blueprint(
                         planned_summary=_clean_text(volume.get("planned_summary") or volume.get("summary")) or None,
                         node_type="volume",
                         sort_order=i,
+                        metadata_json={
+                            "start_chapter": volume.get("start_chapter"),
+                            "end_chapter": volume.get("end_chapter"),
+                        },
                     )
                     db.add(node)
                     db.flush()
@@ -6090,24 +6172,48 @@ async def apply_novel_blueprint(
                     created_items["volumes"].append(node.title)
                     created_items["outline"].append(node.title)
 
-        outline_data = blueprint.get("outline", [])
-        for i, node_data in enumerate(outline_data):
+        outline_data = [item for item in blueprint.get("outline", []) if isinstance(item, dict)]
+        outline_nodes_by_client_id: dict[str, OutlineNode] = {}
+        outline_nodes_by_title: dict[str, OutlineNode] = {}
+        ordered_outline = [item for item in outline_data if _clean_text(item.get("node_type"), "chapter") != "section"]
+        ordered_outline.extend(item for item in outline_data if _clean_text(item.get("node_type"), "chapter") == "section")
+        for i, node_data in enumerate(ordered_outline):
             if isinstance(node_data, dict) and _clean_text(node_data.get("title")):
                 parent_id = None
-                parent_index = node_data.get("parent_index")
-                if isinstance(parent_index, int) and 0 <= parent_index < len(volume_nodes):
-                    parent_id = volume_nodes[parent_index].id
+                node_type = _clean_text(node_data.get("node_type"), "chapter")[:20]
+                if node_type == "section":
+                    parent = (
+                        outline_nodes_by_client_id.get(_clean_text(node_data.get("parent_client_id")))
+                        or outline_nodes_by_title.get(_clean_text(node_data.get("parent_title")))
+                    )
+                    parent_id = parent.id if parent else None
+                else:
+                    parent_index = node_data.get("parent_index")
+                    if isinstance(parent_index, int) and 0 <= parent_index < len(volume_nodes):
+                        parent_id = volume_nodes[parent_index].id
+                metadata = dict(node_data.get("metadata")) if isinstance(node_data.get("metadata"), dict) else {}
+                for field in (
+                    "scene_number", "purpose", "location", "timeline", "pov_character", "characters",
+                    "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
+                ):
+                    if field in node_data and field not in metadata:
+                        metadata[field] = node_data[field]
                 node = OutlineNode(
                     project_id=project.id,
                     parent_id=parent_id,
                     title=_clean_text(node_data["title"])[:200],
                     summary=_clean_text(node_data.get("summary")) or None,
-                    planned_summary=_clean_text(node_data.get("planned_summary")) or None,
-                    node_type=_clean_text(node_data.get("node_type"), "chapter")[:20],
-                    sort_order=i,
+                    planned_summary=_clean_text(node_data.get("planned_summary") or node_data.get("summary")) or None,
+                    node_type=node_type,
+                    sort_order=int(node_data.get("sort_order") if node_data.get("sort_order") is not None else i),
+                    metadata_json=metadata or None,
                 )
                 db.add(node)
                 db.flush()
+                client_id = _clean_text(node_data.get("client_id"))
+                if client_id:
+                    outline_nodes_by_client_id[client_id] = node
+                outline_nodes_by_title[node.title] = node
                 created_items["outline"].append(node.title)
 
         for rel_data in blueprint.get("relationships", []):
@@ -6130,10 +6236,17 @@ async def apply_novel_blueprint(
         session.status = "completed"
         session.completed_at = datetime.utcnow()
 
-        db.flush()
-        if _is_real_session(db):
-            sync_project_to_files(db, project.id)
         db.commit()
+
+        if _is_real_session(db):
+            try:
+                sync_project_to_files(db, project.id)
+                db.commit()
+            except Exception as sync_exc:
+                db.rollback()
+                created_items["warnings"].append(
+                    f"作品已成功入库，但文件镜像同步失败：{sync_exc}。请在作品设置中执行“同步项目文件”。"
+                )
 
         return {
             "tool": "apply_novel_blueprint",
