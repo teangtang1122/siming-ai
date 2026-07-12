@@ -227,6 +227,7 @@ def initialize_session_draft(session: NovelCreationSession, values: dict[str, An
         "schema_version": SCHEMA_VERSION,
         "form": form,
         "concepts": _list(existing.get("concepts")),
+        "concept_seeds": _dict(existing.get("concept_seeds")),
         "selected_concept_id": existing.get("selected_concept_id"),
         "stages": stages,
         "quick_mode": bool(existing.get("quick_mode", False)),
@@ -280,6 +281,9 @@ def concept_cards(blueprints: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def attach_concepts(session: NovelCreationSession, blueprints: list[dict[str, Any]]) -> dict[str, Any]:
     draft = initialize_session_draft(session)
     draft["concepts"] = concept_cards(blueprints)
+    # Legacy full-blueprint flows retain their source in blueprint_json. Clear
+    # compact seeds so a stale compact selection can never win over it.
+    draft["concept_seeds"] = {}
     draft["selected_concept_id"] = None
     draft["stages"]["concepts"] = {"status": "generated", "data": {"options": draft["concepts"]}, "updated_at": _now()}
     draft["updated_at"] = _now()
@@ -288,6 +292,78 @@ def attach_concepts(session: NovelCreationSession, blueprints: list[dict[str, An
     session.status = "reviewing"
     session.revision = int(session.revision or 0) + 1
     return draft
+
+
+def _compact_concept_coverage(card: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "一句话梗概": _text(card.get("logline")),
+        "主角种子": _dict(card.get("protagonist_seed")),
+        "世界钩子": _text(card.get("world_hook")),
+        "核心冲突": _text(card.get("core_conflict")),
+        "开篇钩子": _text(card.get("opening_hook")),
+    }
+    covered = [label for label, value in required.items() if value]
+    missing = [label for label, value in required.items() if not value]
+    total = max(1, len(covered) + len(missing))
+    return {"score": round(len(covered) / total * 100), "covered": covered, "missing": missing}
+
+
+def save_compact_concepts(session: NovelCreationSession, concepts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist compact concept cards without changing legacy blueprint_json."""
+    draft = initialize_session_draft(session)
+    cards: list[dict[str, Any]] = []
+    seeds: dict[str, dict[str, Any]] = {}
+    for index, raw in enumerate(concepts):
+        if not isinstance(raw, dict):
+            continue
+        concept_id = _text(raw.get("id"), f"concept-{index + 1}")
+        protagonist = _dict(raw.get("protagonist_seed"))
+        card = {
+            "id": concept_id,
+            "source_index": index,
+            "title": _text(raw.get("title"), f"创意方向 {index + 1}"),
+            "subtitle": _text(raw.get("subtitle")),
+            "logline": _text(raw.get("logline")),
+            "protagonist_seed": {
+                "name": _text(protagonist.get("name"), "待命名主角"),
+                "identity": _text(protagonist.get("identity")),
+                "goal": _text(protagonist.get("goal")),
+                "lack": _text(protagonist.get("lack")),
+            },
+            "world_hook": _text(raw.get("world_hook")),
+            "core_conflict": _text(raw.get("core_conflict")),
+            "story_engine": _text(raw.get("story_engine") or raw.get("core_conflict")),
+            "opening_hook": _text(raw.get("opening_hook")),
+            "differentiators": _list(raw.get("differentiators"))[:3],
+            "risks": _list(raw.get("risks"))[:2],
+        }
+        coverage = raw.get("coverage") if isinstance(raw.get("coverage"), dict) else _compact_concept_coverage(card)
+        card["coverage"] = {
+            "score": int(coverage.get("score") or 0),
+            "covered": _list(coverage.get("covered")),
+            "missing": _list(coverage.get("missing")),
+        }
+        cards.append(card)
+        seeds[concept_id] = deepcopy(card)
+
+    if len(cards) != 3:
+        raise ValueError("轻量创意必须恰好包含三张有效创意卡")
+
+    draft["concepts"] = cards
+    draft["concept_seeds"] = seeds
+    draft["selected_concept_id"] = None
+    draft["stages"]["concepts"] = {
+        "status": "generated",
+        "data": {"options": deepcopy(cards), "selected_concept_id": None},
+        "source": "model",
+        "updated_at": _now(),
+    }
+    _invalidate_after(draft, "concepts")
+    session.current_stage = "concepts"
+    session.draft_json = deepcopy(draft)
+    session.revision = int(session.revision or 0) + 1
+    session.status = "reviewing"
+    return draft["stages"]["concepts"]
 
 
 def serialize_session(session: NovelCreationSession, include_runs: bool = True) -> dict[str, Any]:
@@ -341,12 +417,60 @@ def patch_session(session: NovelCreationSession, patch: dict[str, Any]) -> dict[
     return draft
 
 
+def _compact_seed_blueprint(seed: dict[str, Any], form: dict[str, Any]) -> dict[str, Any]:
+    protagonist = _dict(seed.get("protagonist_seed"))
+    title = _text(seed.get("title"), "未命名小说")
+    logline = _text(seed.get("logline"))
+    world_hook = _text(seed.get("world_hook"))
+    core_conflict = _text(seed.get("core_conflict"))
+    opening_hook = _text(seed.get("opening_hook"))
+    protagonist_name = _text(protagonist.get("name"), "待命名主角")
+    return {
+        "title": title,
+        "subtitle": _text(seed.get("subtitle")),
+        "genre": _text(form.get("genre")),
+        "genre_positioning": _text(seed.get("subtitle")),
+        "logline": logline,
+        "premise": logline,
+        "core_conflict": core_conflict,
+        "protagonist": {
+            "name": protagonist_name,
+            "goal": _text(protagonist.get("goal")),
+            "weakness": _text(protagonist.get("lack")),
+            "conflict": core_conflict,
+            "background": _text(protagonist.get("identity")),
+            "current_location": "故事起点",
+        },
+        "characters": [],
+        "relationships": [],
+        "worldbuilding": [{
+            "title": "核心世界钩子",
+            "dimension": "power_system",
+            "content": world_hook,
+        }] if world_hook else [],
+        "volume_outline": [],
+        "outline": [{
+            "title": opening_hook or "开篇钩子",
+            "summary": opening_hook or core_conflict,
+            "node_type": "chapter",
+            "purpose": "建立主角的即时压力与持续追读钩子",
+        }] if opening_hook or core_conflict else [],
+        "golden_three": {"opening_scene": opening_hook, "chapter_1": opening_hook},
+        "style_rules": [],
+        "forbidden_patterns": _list(form.get("avoid")),
+        "risks": _list(seed.get("risks")),
+    }
+
+
 def _selected_blueprint(session: NovelCreationSession) -> dict[str, Any]:
     draft = initialize_session_draft(session)
     selected_id = draft.get("selected_concept_id")
     selected = next((item for item in draft.get("concepts", []) if item.get("id") == selected_id), None)
     if not selected:
         raise ValueError("请先选择一个创意方向")
+    compact_seed = _dict(draft.get("concept_seeds")).get(selected_id)
+    if isinstance(compact_seed, dict):
+        return _compact_seed_blueprint(compact_seed, _dict(draft.get("form")))
     blueprints = session.blueprint_json if isinstance(session.blueprint_json, list) else [session.blueprint_json]
     index = int(selected.get("source_index") or 0)
     if index >= len(blueprints) or not isinstance(blueprints[index], dict):

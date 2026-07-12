@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
@@ -128,6 +128,7 @@ interface CreationSession {
   revision: number
   updated_at?: string
   last_error?: { failure_class?: string; message?: string; next_action?: string }
+  runs?: StageRun[]
   draft?: {
     form: CreationFormValues
     concepts: ConceptCard[]
@@ -290,6 +291,10 @@ function NovelCreationWizardPage() {
   const [editorText, setEditorText] = useState('')
   const [presetSearch, setPresetSearch] = useState('')
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const watchingRunRef = useRef<string | null>(null)
+
+  const requestedRunId = searchParams.get('run')
+  const requestedModel = searchParams.get('model') || undefined
 
   const watchedPresetId = Form.useWatch('preset_id', form)
   const activePreset = useMemo(() => catalog?.categories.find((item) => item.id === watchedPresetId), [catalog, watchedPresetId])
@@ -347,6 +352,10 @@ function NovelCreationWizardPage() {
     if (defaultModel && !selectedModel) setSelectedModel(defaultModel)
   }, [defaultModel, selectedModel])
 
+  useEffect(() => {
+    if (requestedModel) setSelectedModel(requestedModel)
+  }, [requestedModel])
+
   const applyPreset = (preset: GenrePreset) => {
     form.setFieldsValue({
       preset_id: preset.id,
@@ -400,30 +409,25 @@ function NovelCreationWizardPage() {
     setRunMessage('正在理解创作约束并生成三套轻量创意...')
     try {
       const saved = await persistIntake()
-      const values = form.getFieldsValue(true)
-      const response = await apiClient.post<ApiResponse<{ concepts?: ConceptCard[]; blueprints?: ConceptCard[]; recommendation?: string }>>('/novel-creation/draft', {
-        session_id: saved.id,
-        execution_mode: 'hybrid',
+      const response = await apiClient.post<ApiResponse<{ run: StageRun }>>(`/novel-creation/sessions/${saved.id}/runs`, {
+        stage: 'concepts',
         model: selectedModel,
-        user_brief: values.brief,
-        revision_mode: 'initial',
-        enhance_with_llm: true,
-        skip_questions: true,
-        depth: 'concept',
+        use_model: true,
+        operation: 'generate_concepts',
       })
-      const cards = response.data.data.concepts || response.data.data.blueprints || []
-      if (!cards.length) throw new Error(response.data.data.recommendation || '模型没有生成可用创意，请切换模型后重试')
-      await loadSession(saved.id)
-      message.success('三套创意已生成，正式档案仍只保存在草稿中')
+      setSearchParams({ session: saved.id, run: response.data.data.run.id, ...(selectedModel ? { model: selectedModel } : {}) }, { replace: true })
+      watchRun(response.data.data.run.id)
     } catch (error) {
-      message.error(errorText(error))
-    } finally {
       setBusy(false)
       setRunMessage('')
+      message.error(errorText(error))
     }
   }
 
   const watchRun = (runId: string) => {
+    if (watchingRunRef.current === runId) return
+    watchingRunRef.current = runId
+    setBusy(true)
     const source = new EventSource(`/api/v1/novel-creation/runs/${runId}/stream`)
     const handleEvent = (event: MessageEvent) => {
       try {
@@ -443,6 +447,7 @@ function NovelCreationWizardPage() {
     source.addEventListener('failed', handleEvent as EventListener)
     source.addEventListener('done', (event) => {
       source.close()
+      watchingRunRef.current = null
       try {
         const finished = JSON.parse((event as MessageEvent).data) as StageRun
         if (finished.status === 'failed') {
@@ -458,12 +463,22 @@ function NovelCreationWizardPage() {
     })
     source.onerror = () => {
       source.close()
+      watchingRunRef.current = null
       if (session) void loadSession(session.id)
       setBusy(false)
       setRunMessage('')
       setRunProgress(0)
     }
   }
+
+  useEffect(() => {
+    const activeRun = requestedRunId
+      ? session?.runs?.find((run) => run.id === requestedRunId && run.status === 'running')
+      : session?.runs?.find((run) => run.status === 'running')
+    if (!activeRun) return
+    setRunMessage(activeRun.current_message || '正在恢复立项任务...')
+    watchRun(activeRun.id)
+  }, [requestedRunId, session?.id, session?.runs])
 
   const startStageRun = async (stage: string, autoConfirm = false) => {
     if (!session || !selectedModel) return

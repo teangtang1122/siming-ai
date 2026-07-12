@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -62,6 +62,7 @@ function renderPage(path = '/novel-creation') {
 describe('NovelCreationWizardPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
     modelState.hasModels = true
     mockGet.mockImplementation((url: string) => {
       if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
@@ -107,5 +108,69 @@ describe('NovelCreationWizardPage', () => {
     expect(await screen.findByText('灰港遗忘症')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '进入完整向导' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /快速生成到最终审阅/ })).toBeInTheDocument()
+  })
+
+  it('reconnects to the active lightweight-concept run after a handoff', async () => {
+    const session = {
+      id: 'session-1', status: 'drafting', revision: 1, current_stage: 'concepts',
+      runs: [{ id: 'run-1', stage: 'concepts', status: 'running', current_message: '正在生成三套轻量创意' }],
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [], stages: {},
+      },
+    }
+    const eventSource = vi.fn().mockImplementation(function EventSourceStub() {
+      return { addEventListener: vi.fn(), close: vi.fn(), onerror: null }
+    })
+    vi.stubGlobal('EventSource', eventSource)
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    renderPage('/novel-creation?session=session-1&run=run-1&model=openai%3Atest')
+
+    await waitFor(() => {
+      expect(eventSource).toHaveBeenCalledWith('/api/v1/novel-creation/runs/run-1/stream')
+    })
+    expect(screen.getByText('正在生成三套轻量创意')).toBeInTheDocument()
+  })
+
+  it('starts only the first stage when the author chooses the guided track', async () => {
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 2, current_stage: 'world_style',
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [{ id: 'concept-1', source_index: 0, title: '灰港遗忘症', logline: '女孩用遗忘换取感染者的记忆。', protagonist_seed: { name: '林七', identity: '医生', goal: '找母亲', lack: '害怕遗忘' }, world_hook: '记忆传播', core_conflict: '救人就会遗忘', story_engine: '读忆换线索', opening_hook: '陌生人说出她的童年', differentiators: ['记忆感染'], risks: ['规则需稳定'], coverage: { score: 92, covered: [], missing: [] } }],
+        stages: {},
+      },
+    }
+    vi.stubGlobal('EventSource', vi.fn().mockImplementation(function EventSourceStub() {
+      return { addEventListener: vi.fn(), close: vi.fn(), onerror: null }
+    }))
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    mockPatch.mockResolvedValue({ data: { data: session } })
+    mockPost.mockImplementation((url: string) => {
+      if (url.endsWith('/runs')) return Promise.resolve({ data: { data: { run: { id: 'run-world', stage: 'world_style', status: 'running' } } } })
+      return Promise.resolve({ data: { data: session } })
+    })
+
+    const user = userEvent.setup()
+    renderPage('/novel-creation?session=session-1')
+    await user.click(await screen.findByRole('button', { name: '进入完整向导' }))
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
+        stage: 'world_style',
+        auto_confirm: false,
+      }))
+    })
   })
 })

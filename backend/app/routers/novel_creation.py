@@ -24,6 +24,7 @@ from ..services.novel_creation_workspace import (
     serialize_session,
 )
 from ..services.workspace.tools.novel_creation import (
+    advance_novel_creation_interview,
     apply_novel_blueprint,
     draft_novel_blueprint,
     review_novel_blueprint,
@@ -67,6 +68,13 @@ class NovelCreationDraftRequest(BaseModel):
     depth: Literal["concept", "full"] = "full"
 
 
+class NovelCreationInterviewNextRequest(BaseModel):
+    user_brief: str = ""
+    model: str | None = None
+    qa_history: list[dict[str, str]] = Field(default_factory=list)
+    skip_questions: bool = False
+
+
 class NovelCreationReviewRequest(BaseModel):
     session_id: str
     execution_mode: Literal["template", "hybrid", "external_agent", "internal_llm"] = "hybrid"
@@ -98,6 +106,22 @@ async def start_creation(payload: NovelCreationStartRequest, db: Session = Depen
 async def draft_blueprints(payload: NovelCreationDraftRequest, db: Session = Depends(get_db)):
     result = await draft_novel_blueprint(db, "", payload.model_dump())
     return _tool_response(result)
+
+
+@router.post("/novel-creation/sessions/{session_id}/interview/next")
+async def advance_creation_interview(
+    session_id: str,
+    payload: NovelCreationInterviewNextRequest,
+    db: Session = Depends(get_db),
+):
+    result = await advance_novel_creation_interview(
+        db,
+        "",
+        {**payload.model_dump(), "session_id": session_id},
+    )
+    if result.get("status") != "ok":
+        raise HTTPException(status_code=422, detail=result.get("detail") or "动态采访失败")
+    return ApiResponse.success(data=result.get("data"), message=result.get("detail") or "采访状态已更新")
 
 
 @router.post("/novel-creation/review")
@@ -196,6 +220,21 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if payload.stage not in {*STAGE_ORDER, "all"}:
         raise HTTPException(status_code=400, detail="未知立项阶段")
+    existing = (
+        db.query(NovelCreationStageRun)
+        .filter(
+            NovelCreationStageRun.session_id == session_id,
+            NovelCreationStageRun.stage == payload.stage,
+            NovelCreationStageRun.status == "running",
+        )
+        .order_by(NovelCreationStageRun.created_at.desc())
+        .first()
+    )
+    if existing:
+        return ApiResponse.success(
+            data={"run": serialize_run(existing), "stream_url": f"/api/novel-creation/runs/{existing.id}/stream"},
+            message="该阶段任务仍在运行，已恢复订阅",
+        )
     request = payload.model_dump()
     run = create_run(db, session, payload.stage, request)
     db.commit()

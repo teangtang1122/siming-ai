@@ -6,6 +6,7 @@
  * system-level assistant that can help users create the first novel project.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -158,6 +159,18 @@ interface NovelDraftData {
   hint?: string
 }
 
+interface InterviewAdvanceData {
+  session_id: string
+  state: 'question' | 'ready'
+  question?: ChatQuestion | null
+  history?: QuestionAnswer[]
+  reason?: string
+}
+
+interface CreationRunData {
+  run: { id: string; status: string; current_message?: string }
+}
+
 interface NovelApplyData {
   project_id: string
 }
@@ -267,6 +280,7 @@ function formatDraftBlueprintMessage(draftData: NovelDraftData, successPrefix: s
 }
 
 function GuiAssistantChat() {
+  const navigate = useNavigate()
   const [projects, setProjects] = useState<Project[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string>()
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -599,6 +613,36 @@ function GuiAssistantChat() {
     }
   }
 
+  const advanceSystemInterview = async (
+    sessionId: string,
+    history: QuestionAnswer[],
+    skipQuestions = false,
+    brief = systemBrief,
+  ) => {
+    const response = await apiClient.post<ApiResponse<InterviewAdvanceData>>(
+      `/novel-creation/sessions/${sessionId}/interview/next`,
+      {
+        user_brief: brief,
+        model: selectedModel,
+        qa_history: history,
+        skip_questions: skipQuestions,
+      },
+    )
+    return response.data.data
+  }
+
+  const handoffToCreationWorkbench = async (sessionId: string) => {
+    const response = await apiClient.post<ApiResponse<CreationRunData>>(`/novel-creation/sessions/${sessionId}/runs`, {
+      stage: 'concepts',
+      model: selectedModel,
+      use_model: true,
+      operation: 'generate_concepts',
+    })
+    const params = new URLSearchParams({ session: sessionId, run: response.data.data.run.id })
+    if (selectedModel) params.set('model', selectedModel)
+    navigate(`/novel-creation?${params.toString()}`)
+  }
+
   const handleSystemAssistantMessage = async (text: string, originalText?: string) => {
     let finalReply = ''
     let finalStatus: ChatMessage['status'] = 'completed'
@@ -667,14 +711,11 @@ function GuiAssistantChat() {
         setSystemBrief(text)
         persistedSessionId = sessionId
         persistedBrief = text
-        const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
-          session_id: sessionId,
-          execution_mode: 'hybrid',
-          model: selectedModel,
-          user_brief: text,
-          enhance_with_llm: false,
-        })
-        const draftData = draftRes.data.data
+        const interview = await advanceSystemInterview(sessionId, [], false, text)
+        const draftData: NovelDraftData = {
+          blueprints: [],
+          questions: interview.state === 'question' && interview.question ? [interview.question] : [],
+        }
 
         // Handle clarifying questions — show first question only
         if (draftData.questions && draftData.questions.length > 0) {
@@ -699,15 +740,8 @@ function GuiAssistantChat() {
           return
         }
 
-        const blueprints = draftData.blueprints || []
-        setSystemBlueprints(blueprints)
-        persistedBlueprints = blueprints
-        finish(
-          formatDraftBlueprintMessage(
-            draftData,
-            `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复”使用第1个创建”。`,
-          ),
-        )
+        finish('采访已完成，正在进入立项工作台生成三套轻量创意。')
+        await handoffToCreationWorkbench(sessionId)
         return
       }
 
@@ -716,28 +750,15 @@ function GuiAssistantChat() {
         const isSkip = /跳过|不用了|直接生成|skip/i.test(text)
         if (isSkip) {
           // Skip questions — generate directly
-          setLastAssistantMessage('收到，正在生成方案，预计需要30-60秒...', 'running')
+          setLastAssistantMessage('收到，正在准备创意方向并进入立项工作台...', 'running')
           setActiveQuestion(null)
           setSelectedOption(null)
           setShowOtherInput(false)
           setOtherText('')
-          const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
-            session_id: systemSessionId,
-            execution_mode: 'hybrid',
-            model: selectedModel,
-            user_brief: systemBrief || text,
-            skip_questions: true,
-            revision_mode: 'initial',
-          })
-          const draftData = draftRes.data.data
-          const blueprints = draftData.blueprints || []
-          setSystemBlueprints(blueprints)
-          finish(
-            formatDraftBlueprintMessage(
-              draftData,
-              `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-            ),
-          )
+          await advanceSystemInterview(systemSessionId, questionHistory, true, systemBrief || text)
+          finish('采访已结束，正在进入立项工作台生成三套轻量创意。')
+          await handoffToCreationWorkbench(systemSessionId)
+          return
         } else if (activeQuestion) {
           // User typed an answer while a question is active — use submitQuestionAnswer
           await submitQuestionAnswer(text)
@@ -748,16 +769,11 @@ function GuiAssistantChat() {
           const newHistory = isNovelInterviewRetryIntent(text)
             ? questionHistory
             : [...questionHistory, { question: '用户补充', answer: text }]
-          const qaPayload = buildQuestionAnswerPayload(newHistory)
-          const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
-            session_id: systemSessionId,
-            execution_mode: 'hybrid',
-            model: selectedModel,
-            user_brief: systemBrief || text,
-            ...qaPayload,
-            revision_mode: 'initial',
-          })
-          const draftData = draftRes.data.data
+          const interview = await advanceSystemInterview(systemSessionId, newHistory, false, systemBrief || text)
+          const draftData: NovelDraftData = {
+            blueprints: [],
+            questions: interview.state === 'question' && interview.question ? [interview.question] : [],
+          }
           if (draftData.questions && draftData.questions.length > 0) {
             const nextQ = draftData.questions[0]
             setActiveQuestion(nextQ)
@@ -769,14 +785,9 @@ function GuiAssistantChat() {
             ])
           } else {
             setActiveQuestion(null)
-            const blueprints = draftData.blueprints || []
-            setSystemBlueprints(blueprints)
-            finish(
-              formatDraftBlueprintMessage(
-                draftData,
-                `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-              ),
-            )
+            finish('采访已完成，正在进入立项工作台生成三套轻量创意。')
+            await handoffToCreationWorkbench(systemSessionId)
+            return
           }
         }
         return
@@ -1173,17 +1184,11 @@ function GuiAssistantChat() {
     ])
 
     try {
-      const qaPayload = buildQuestionAnswerPayload(newHistory)
-
-      const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
-        session_id: systemSessionId,
-        execution_mode: 'hybrid',
-        model: selectedModel,
-        user_brief: systemBrief,
-        ...qaPayload,
-        revision_mode: 'initial',
-      })
-      const draftData = draftRes.data.data
+      const interview = await advanceSystemInterview(systemSessionId, newHistory, false, systemBrief)
+      const draftData: NovelDraftData = {
+        blueprints: [],
+        questions: interview.state === 'question' && interview.question ? [interview.question] : [],
+      }
 
       if (draftData.questions && draftData.questions.length > 0) {
         // More questions — replace thinking message with question card
@@ -1206,24 +1211,19 @@ function GuiAssistantChat() {
           return [...next]
         })
       } else {
-        // Info sufficient — replace thinking message with blueprints
         setActiveQuestion(null)
-        const blueprints = draftData.blueprints || []
-        setSystemBlueprints(blueprints)
         setRunningStartTime(null)
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === 'assistant' && last?.status === 'running') {
-            last.content = formatDraftBlueprintMessage(
-              draftData,
-              `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-            )
+            last.content = '采访已完成，正在进入立项工作台生成三套轻量创意。'
             last.questions = undefined
             last.status = 'completed'
           }
           return [...next]
         })
+        await handoffToCreationWorkbench(systemSessionId)
       }
     } catch (err: unknown) {
       setActiveQuestion(null)
@@ -1243,32 +1243,17 @@ function GuiAssistantChat() {
   const handleQuestionSkip = async () => {
     if (!systemSessionId) return
     setRunningStartTime(Date.now())
-    setLastAssistantMessage('收到，正在生成方案，预计需要30-60秒...', 'running')
+    setLastAssistantMessage('收到，正在准备创意方向并进入立项工作台...', 'running')
     setActiveQuestion(null)
     setSelectedOption(null)
     setShowOtherInput(false)
     setOtherText('')
 
     try {
-      const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
-        session_id: systemSessionId,
-        execution_mode: 'hybrid',
-        model: selectedModel,
-        user_brief: systemBrief,
-        skip_questions: true,
-        revision_mode: 'initial',
-      })
-      const draftData = draftRes.data.data
-      const blueprints = draftData.blueprints || []
-      setSystemBlueprints(blueprints)
+      await advanceSystemInterview(systemSessionId, questionHistory, true, systemBrief)
       setRunningStartTime(null)
-      setLastAssistantMessage(
-        formatDraftBlueprintMessage(
-          draftData,
-          `已生成 ${blueprints.length} 个新书方案。你可以继续提修改意见，也可以回复"使用第1个创建"。`,
-        ),
-        'completed',
-      )
+      setLastAssistantMessage('采访已结束，正在进入立项工作台生成三套轻量创意。', 'completed')
+      await handoffToCreationWorkbench(systemSessionId)
     } catch {
       setRunningStartTime(null)
       setLastAssistantMessage('生成失败，请重试。', 'completed')
@@ -1427,7 +1412,7 @@ function GuiAssistantChat() {
           )}
         </div>
         <Button type="link" onClick={handleQuestionSkip} style={{ alignSelf: 'flex-start' }}>
-          跳过，直接生成
+          跳过并生成创意方向
         </Button>
       </div>
     )

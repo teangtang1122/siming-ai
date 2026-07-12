@@ -2645,6 +2645,77 @@ async def _run_dynamic_interview(
 
 
 
+async def advance_novel_creation_interview(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Advance the interview only; never generate a novel blueprint here."""
+    from app.database.models import NovelCreationSession
+
+    session_id = _clean_text(args.get("session_id"))
+    if not session_id:
+        return {"tool": "advance_novel_creation_interview", "status": "skipped", "detail": "session_id is required", "data": None}
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    if not session:
+        return {"tool": "advance_novel_creation_interview", "status": "skipped", "detail": "Session not found", "data": None}
+
+    user_brief = _clean_text(args.get("user_brief") or session.user_brief)
+    if user_brief and user_brief != _clean_text(session.user_brief):
+        session.user_brief = user_brief
+    incoming_history = _normalize_qa_history(args.get("qa_history"), args.get("answers"))
+    history = _merge_interview_history(_stored_interview_history(session), incoming_history)
+    result, _, _ = await _run_dynamic_interview(
+        db,
+        session,
+        session_id=session_id,
+        user_brief=user_brief,
+        feedback="",
+        qa_history=history,
+        skip_questions=_as_bool(args.get("skip_questions"), False),
+        model=_clean_text(args.get("model")) or None,
+    )
+    if result is not None:
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if result.get("status") == "need_clarification":
+            questions = data.get("questions") if isinstance(data.get("questions"), list) else []
+            draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+            interview = draft.get("interview") if isinstance(draft.get("interview"), dict) else {}
+            return {
+                "tool": "advance_novel_creation_interview",
+                "status": "ok",
+                "detail": result.get("detail") or "Interview question ready",
+                "data": {
+                    "session_id": session_id,
+                    "state": "question",
+                    "question": questions[0] if questions else None,
+                    "history": data.get("history") or history,
+                    "reason": _clean_text(interview.get("reason")),
+                },
+            }
+        return {
+            "tool": "advance_novel_creation_interview",
+            "status": "error",
+            "detail": result.get("detail") or "Interview failed",
+            "data": data,
+        }
+
+    draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    interview = draft.get("interview") if isinstance(draft.get("interview"), dict) else {}
+    return {
+        "tool": "advance_novel_creation_interview",
+        "status": "ok",
+        "detail": "Interview completed",
+        "data": {
+            "session_id": session_id,
+            "state": "ready",
+            "history": history,
+            "reason": _clean_text(interview.get("reason")),
+            "skipped": _as_bool(args.get("skip_questions"), False),
+        },
+    }
+
+
 def _answers_brief_from_history(qa_history: list[dict[str, str]]) -> str:
     """Preserve the model-led interview verbatim for downstream generation."""
     lines = ["用户与立项助手已经确认的完整对话："]
@@ -4914,7 +4985,14 @@ async def apply_novel_blueprint(
         db.flush()
 
     blueprints = session.blueprint_json
-    if not blueprints:
+    schema_version = session.schema_version if isinstance(session.schema_version, int) else 1
+    has_v2_selection = (
+        schema_version >= 2
+        and isinstance(session.draft_json, dict)
+        and bool(session.draft_json.get("selected_concept_id"))
+        and not override_blueprint
+    )
+    if not blueprints and not has_v2_selection:
         return {
             "tool": "apply_novel_blueprint",
             "status": "skipped",
@@ -4922,8 +5000,7 @@ async def apply_novel_blueprint(
             "data": None,
         }
 
-    schema_version = session.schema_version if isinstance(session.schema_version, int) else 1
-    if schema_version >= 2 and isinstance(session.draft_json, dict) and session.draft_json.get("selected_concept_id") and not override_blueprint:
+    if has_v2_selection:
         try:
             blueprint = build_apply_blueprint(session)
         except ValueError as exc:

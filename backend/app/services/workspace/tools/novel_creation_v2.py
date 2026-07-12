@@ -19,6 +19,7 @@ from ...novel_creation_workspace import (
     derive_stage,
     fail_run,
     patch_session,
+    save_compact_concepts,
     save_stage,
     serialize_run,
     serialize_session,
@@ -61,6 +62,94 @@ def _validate_stage(stage: str, data: dict[str, Any]) -> None:
         invalid = [chapter.get("client_id") for chapter in chapters if counts.get(_text(chapter.get("client_id")), 0) not in range(2, 7)]
         if invalid:
             raise ValueError("以下章节的 section 数量不在2至6之间：" + "、".join(_text(item) for item in invalid[:5]))
+
+
+def _validate_compact_concepts(concepts: Any) -> list[dict[str, Any]]:
+    if not isinstance(concepts, list) or len(concepts) != 3:
+        raise ValueError("模型必须一次返回恰好三张轻量创意卡")
+    required = ("title", "logline", "world_hook", "core_conflict", "opening_hook")
+    cards: list[dict[str, Any]] = []
+    titles: set[str] = set()
+    for index, raw in enumerate(concepts):
+        if not isinstance(raw, dict):
+            raise ValueError(f"第{index + 1}张创意卡不是对象")
+        missing = [field for field in required if not _text(raw.get(field))]
+        protagonist = raw.get("protagonist_seed")
+        if not isinstance(protagonist, dict):
+            missing.append("protagonist_seed")
+        else:
+            for field in ("identity", "goal", "lack"):
+                if not _text(protagonist.get(field)):
+                    missing.append(f"protagonist_seed.{field}")
+        if missing:
+            raise ValueError(f"第{index + 1}张创意卡缺少：{'、'.join(missing)}")
+        title = _text(raw.get("title"))
+        if title in titles:
+            raise ValueError("三张轻量创意卡必须具有不同标题")
+        titles.add(title)
+        cards.append(raw)
+    return cards
+
+
+async def _generate_compact_concepts(session: NovelCreationSession, model: str) -> list[dict[str, Any]]:
+    """Generate decision-ready concepts, never a complete project blueprint."""
+    draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    interview = draft.get("interview") if isinstance(draft.get("interview"), dict) else {}
+    context = {
+        "brief": _text(session.user_brief),
+        "form": draft.get("form") or {},
+        "interview_history": interview.get("history") or [],
+        "interview_reason": _text(interview.get("reason")),
+    }
+    system = (
+        "你是司命的新书立项编辑。只生成供作者选择方向的轻量创意卡，"
+        "不要生成完整世界观、配角表、卷纲、章节细纲或正式项目。"
+        "三张卡必须有实质差异，且都要遵守作者给出的约束。"
+        "只输出 JSON，不要 Markdown。"
+    )
+    shape = {
+        "concepts": [{
+            "title": "不超过20字的标题",
+            "subtitle": "一句定位",
+            "logline": "不超过120字的一句话梗概",
+            "protagonist_seed": {"name": "主角名", "identity": "身份", "goal": "即时目标", "lack": "内在缺口"},
+            "world_hook": "不超过100字的世界钩子",
+            "core_conflict": "不超过100字的核心冲突",
+            "story_engine": "持续推进故事的机制",
+            "opening_hook": "不超过100字的开篇钩子",
+            "differentiators": ["差异点一", "差异点二"],
+            "risks": ["一个创作风险"]
+        }]
+    }
+    user = (
+        "请严格返回恰好三张创意卡，字段必须与下列 JSON 结构一致。"
+        "每张卡应在数百字内可读完，三张卡不得只是改标题。\n"
+        f"输出结构：{json.dumps(shape, ensure_ascii=False)}\n"
+        f"作者上下文：{json.dumps(context, ensure_ascii=False)}"
+    )
+    from ....services.content_store import content_root
+
+    result = await LLMGateway.chat_completion(
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        model=model,
+        temperature=0.8,
+        max_tokens=3200,
+        timeout=180,
+        retry=0,
+        extra_body=LLMGateway.local_cli_extra_body(
+            model,
+            cwd=str(content_root()),
+            base={"moshu_task_type": "planning", "storage_target": "session_draft"},
+        ),
+    )
+    raw = _text(result.get("content")) if isinstance(result, dict) else ""
+    if not raw:
+        raise RuntimeError("模型没有返回轻量创意卡")
+    parsed = parse_json_object(raw)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("模型返回的轻量创意卡不是有效 JSON")
+    payload = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+    return _validate_compact_concepts(payload.get("concepts"))
 
 
 async def _enhance_with_model(
@@ -151,33 +240,59 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
         db.commit()
 
     try:
-        stages = [name for name in STAGE_ORDER if name not in {"constraints", "concepts", "final_review"}] if stage == "all" else [stage]
         generated: dict[str, Any] = {}
-        for name in stages:
+        if stage == "concepts":
             add_run_event(
                 db,
                 run,
                 "stage_progress",
                 "running",
-                f"正在生成{STAGE_LABELS.get(name, name)}",
-                {"stage": name, "model_source": model or "contract", "storage_target": "session_draft"},
+                "正在生成三套轻量创意",
+                {"stage": "concepts", "model_source": model or "none", "storage_target": "session_draft"},
             )
-            run.current_message = f"正在生成{STAGE_LABELS.get(name, name)}"
+            run.current_message = "正在生成三套轻量创意"
             db.commit()
-            baseline = derive_stage(session, name)
-            data = await _enhance_with_model(session, name, baseline, model) if use_model and model and name != "final_review" else baseline
-            _validate_stage(name, data)
-            save_stage(session, name, data, confirm=auto_confirm, source="model" if use_model and model else "contract")
-            generated[name] = deepcopy(data)
+            if not use_model or not model:
+                raise ValueError("轻量创意需要选择可用模型后才能生成")
+            concepts = await _generate_compact_concepts(session, model)
+            concept_stage = save_compact_concepts(session, concepts)
+            generated["concepts"] = deepcopy(concept_stage.get("data") or {})
             add_run_event(
                 db,
                 run,
                 "stage_completed",
                 "ok",
-                f"{STAGE_LABELS.get(name, name)}已保存",
-                {"stage": name, "storage_target": "session_draft"},
+                "三套轻量创意已保存",
+                {"stage": "concepts", "storage_target": "session_draft"},
             )
             db.commit()
+        else:
+            stages = [name for name in STAGE_ORDER if name not in {"constraints", "concepts", "final_review"}] if stage == "all" else [stage]
+            for name in stages:
+                add_run_event(
+                    db,
+                    run,
+                    "stage_progress",
+                    "running",
+                    f"正在生成{STAGE_LABELS.get(name, name)}",
+                    {"stage": name, "model_source": model or "contract", "storage_target": "session_draft"},
+                )
+                run.current_message = f"正在生成{STAGE_LABELS.get(name, name)}"
+                db.commit()
+                baseline = derive_stage(session, name)
+                data = await _enhance_with_model(session, name, baseline, model) if use_model and model and name != "final_review" else baseline
+                _validate_stage(name, data)
+                save_stage(session, name, data, confirm=auto_confirm, source="model" if use_model and model else "contract")
+                generated[name] = deepcopy(data)
+                add_run_event(
+                    db,
+                    run,
+                    "stage_completed",
+                    "ok",
+                    f"{STAGE_LABELS.get(name, name)}已保存",
+                    {"stage": name, "storage_target": "session_draft"},
+                )
+                db.commit()
         if stage == "all":
             final = derive_stage(session, "final_review")
             save_stage(session, "final_review", final, confirm=False, source="contract")
