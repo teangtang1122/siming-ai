@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "scripts/run-backend-tests-isolated.py"
       - ".github/workflows/backend-ci.yml"
   push:
     branches: [main]
     paths:
       - "backend/**"
+      - "scripts/run-backend-tests-isolated.py"
       - ".github/workflows/backend-ci.yml"
 
 jobs:
@@ -38,5 +40,4 @@ jobs:
           python -m pip install -r requirements.txt pytest
 
       - name: Run backend tests
-        run: python -m pytest tests -q --tb=short
-
+        run: python ../scripts/run-backend-tests-isolated.py tests

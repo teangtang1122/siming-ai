@@ -381,6 +381,7 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")
         self.assertEqual(adapter._normalize_output("plain answer\n"), "plain answer")
 
+    @patch("app.ai.local_cli_adapter.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True)
     @patch("app.ai.local_cli_adapter.os.name", "nt")
     def test_hidden_subprocess_kwargs_hides_windows_console(self):
         kwargs = hidden_subprocess_kwargs()

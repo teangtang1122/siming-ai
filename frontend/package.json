@@ -1,7 +1,7 @@
 {
   "name": "siming-frontend",
   "private": true,
-  "version": "2.7.6",
+  "version": "2.7.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -38,6 +38,6 @@
     "jsdom": "^29.1.1",
     "typescript": "^5.3.3",
     "vite": "^5.1.0",
-    "vitest": "^4.1.6"
+    "vitest": "^3.2.7"
   }
 }
