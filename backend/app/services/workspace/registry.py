@@ -277,6 +277,11 @@ def _register_all() -> None:
         get_project_info,
         get_narrative_ledger,
         update_narrative_ledger_entry,
+        get_narrative_governance,
+        apply_narrative_governance_candidates,
+        list_narrative_checkpoints,
+        diff_narrative_checkpoint,
+        restore_narrative_governance_checkpoint,
         ensure_builtin_skills_tool,
         draft_skill,
         import_deconstruct_report_tool,
@@ -2301,6 +2306,38 @@ def _register_all() -> None:
         estimated_cost="free",
         handler=get_narrative_ledger,
     ))
+
+    _r(ToolDef(
+        name="get_narrative_governance",
+        description="Read structured foreshadowings, causal edges, narrative debts, character dynamic state, quality metrics, and narrative checkpoints.",
+        input_schema={
+            "chapter_id": {"type": "string", "description": "Optional current chapter ID"},
+            "view": {"type": "string", "enum": ["all", "chapter", "due", "risk"], "description": "Dashboard filter"},
+        },
+        tool_type="read",
+        estimated_cost="free",
+        handler=get_narrative_governance,
+    ))
+
+    _r(ToolDef(
+        name="apply_narrative_governance_candidates",
+        description="Preview or apply structured narrative governance candidates after cataloging or chapter writing.",
+        input_schema={
+            "chapter_id": {"type": "string", "description": "Source chapter ID"},
+            "mode": {"type": "string", "enum": ["preview", "apply"], "description": "Preview is non-mutating; apply writes project state"},
+            "candidates": {"type": "array", "items": {"type": "object"}, "description": "foreshadowing, causal_edge, narrative_debt, character_state, or quality_metric candidates"},
+        },
+        required=["candidates"],
+        tool_type="write",
+        writes_project_data=True,
+        risk_level="medium",
+        estimated_cost="free",
+        handler=apply_narrative_governance_candidates,
+    ))
+
+    _r(ToolDef(name="list_narrative_checkpoints", description="List linear project-level narrative checkpoints.", input_schema={"limit": {"type": "integer"}}, tool_type="read", estimated_cost="free", handler=list_narrative_checkpoints))
+    _r(ToolDef(name="diff_narrative_checkpoint", description="Compare current structured narrative state with a saved checkpoint.", input_schema={"checkpoint_id": {"type": "string"}}, required=["checkpoint_id"], tool_type="read", estimated_cost="free", handler=diff_narrative_checkpoint))
+    _r(ToolDef(name="restore_narrative_governance_checkpoint", description="Restore structured narrative state from a project checkpoint. Requires write confirmation under the active MCP permission policy.", input_schema={"checkpoint_id": {"type": "string"}}, required=["checkpoint_id"], tool_type="write", writes_project_data=True, risk_level="high", estimated_cost="free", handler=restore_narrative_governance_checkpoint))
 
     _r(ToolDef(
         name="inspect_story_granularity",

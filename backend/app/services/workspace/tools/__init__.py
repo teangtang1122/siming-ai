@@ -100,6 +100,13 @@ from .prompt_packs import get_moshu_usage_guide
 from .local_cli_agent import start_local_cli_agent_run, wait_local_cli_agent_run
 from .story_granularity import archive_chapter_after_write, get_narrative_ledger, inspect_story_granularity, repair_story_granularity, update_narrative_ledger_entry
 from .novel_creation_v2 import get_novel_creation_session, generate_novel_creation_stage, submit_novel_creation_stage
+from .narrative_governance import (
+    apply_narrative_governance_candidates,
+    diff_narrative_checkpoint,
+    get_narrative_governance,
+    list_narrative_checkpoints,
+    restore_narrative_governance_checkpoint,
+)
 
 __all__ = [
     "chapter_writer",
@@ -223,4 +230,9 @@ __all__ = [
     "get_novel_creation_session",
     "generate_novel_creation_stage",
     "submit_novel_creation_stage",
+    "get_narrative_governance",
+    "apply_narrative_governance_candidates",
+    "list_narrative_checkpoints",
+    "diff_narrative_checkpoint",
+    "restore_narrative_governance_checkpoint",
 ]

@@ -39,6 +39,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   characters: 'green',
   worldbuilding: 'purple',
   pinned: 'gold',
+  narrative_governance: 'red',
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -47,6 +48,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   characters: '角色',
   worldbuilding: '世界观',
   pinned: '固定',
+  narrative_governance: '叙事治理',
 }
 
 export function ContextPreviewPanel({

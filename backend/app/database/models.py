@@ -1419,3 +1419,151 @@ class ExternalAgentGlobalSettings(Base):
     mcp_permission_source = Column(String(30), default="global_settings")  # global_settings | cli_override
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# 28. narrative governance - structured long-form story state
+# ---------------------------------------------------------------------------
+class Foreshadowing(Base):
+    __tablename__ = "foreshadowings"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(500), nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String(30), nullable=False, default="open")  # open|fulfilled|deferred|abandoned
+    importance = Column(String(20), nullable=False, default="medium")
+    source_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    target_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    target_chapter_number = Column(Integer, nullable=True)
+    resolved_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    evidence = Column(Text, nullable=True)
+    storyline = Column(String(200), nullable=True)
+    dedupe_key = Column(String(200), nullable=False)
+    source = Column(String(50), nullable=False, default="manual")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "dedupe_key", name="uq_foreshadowing_project_key"),
+        Index("ix_foreshadowings_project_status", "project_id", "status"),
+    )
+
+
+class CausalEdge(Base):
+    __tablename__ = "causal_edges"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    cause = Column(Text, nullable=False)
+    effect = Column(Text, nullable=False)
+    causal_type = Column(String(30), nullable=False, default="causes")
+    strength = Column(Float, nullable=False, default=0.5)
+    status = Column(String(30), nullable=False, default="open")  # open|resolved|invalidated
+    character_ids = Column(JSON, nullable=False, default=list)
+    source_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    resolved_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    evidence = Column(Text, nullable=True)
+    dedupe_key = Column(String(200), nullable=False)
+    source = Column(String(50), nullable=False, default="manual")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "dedupe_key", name="uq_causal_edge_project_key"),
+        Index("ix_causal_edges_project_status_strength", "project_id", "status", "strength"),
+    )
+
+
+class NarrativeDebt(Base):
+    __tablename__ = "narrative_debts"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    debt_type = Column(String(30), nullable=False, default="promise")
+    title = Column(String(500), nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String(30), nullable=False, default="open")  # open|fulfilled|deferred|abandoned
+    priority = Column(String(20), nullable=False, default="medium")
+    source_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    target_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    target_chapter_number = Column(Integer, nullable=True)
+    resolved_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    linked_foreshadowing_id = Column(String(36), ForeignKey("foreshadowings.id", ondelete="SET NULL"), nullable=True)
+    linked_causal_edge_id = Column(String(36), ForeignKey("causal_edges.id", ondelete="SET NULL"), nullable=True)
+    evidence = Column(Text, nullable=True)
+    dedupe_key = Column(String(200), nullable=False)
+    source = Column(String(50), nullable=False, default="manual")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "dedupe_key", name="uq_narrative_debt_project_key"),
+        Index("ix_narrative_debts_project_status", "project_id", "status"),
+    )
+
+
+class CharacterNarrativeState(Base):
+    __tablename__ = "character_narrative_states"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    character_id = Column(String(36), ForeignKey("characters.id", ondelete="CASCADE"), nullable=False)
+    chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    current_goal = Column(Text, nullable=True)
+    public_stance = Column(Text, nullable=True)
+    hidden_intent = Column(Text, nullable=True)
+    emotional_residue = Column(Text, nullable=True)
+    relationship_tension = Column(Text, nullable=True)
+    behavior_boundaries = Column(Text, nullable=True)
+    evidence = Column(Text, nullable=True)
+    source = Column(String(50), nullable=False, default="manual")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_character_narrative_state_character", "project_id", "character_id", "created_at"),
+    )
+
+
+class ChapterQualityMetric(Base):
+    __tablename__ = "chapter_quality_metrics"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)
+    plot_tension = Column(Float, nullable=True)
+    emotional_tension = Column(Float, nullable=True)
+    pacing_density = Column(Float, nullable=True)
+    character_consistency = Column(Float, nullable=True)
+    viewpoint_consistency = Column(Float, nullable=True)
+    world_consistency = Column(Float, nullable=True)
+    target_tension = Column(Float, nullable=True)
+    strict_mode = Column(Boolean, nullable=False, default=False)
+    passed = Column(Boolean, nullable=True)
+    warnings = Column(JSON, nullable=False, default=list)
+    evidence = Column(Text, nullable=True)
+    source = Column(String(50), nullable=False, default="manual")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_chapter_quality_metrics_chapter", "project_id", "chapter_id", "created_at"),
+    )
+
+
+class NarrativeCheckpoint(Base):
+    __tablename__ = "narrative_checkpoints"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    chapter_snapshot_id = Column(String(36), ForeignKey("chapter_snapshots.id", ondelete="SET NULL"), nullable=True)
+    sequence = Column(Integer, nullable=False)
+    label = Column(String(300), nullable=False)
+    trigger_type = Column(String(50), nullable=False, default="post_write")
+    state_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "sequence", name="uq_narrative_checkpoint_sequence"),
+        Index("ix_narrative_checkpoints_project", "project_id", "sequence"),
+    )

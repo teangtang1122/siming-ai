@@ -20,6 +20,7 @@ from ....services.context_builders import (
     _recent_summary_texts,
     _resolve_characters_with_aliases,
 )
+from ....services.narrative_governance import governance_context
 from ....services.rag.context_packer import ContextBudget, PackedContext, pack_context
 from ....services.rag.indexer import project_has_chunks, reindex_project_types
 
@@ -208,6 +209,7 @@ async def preview_writing_context(
     ]
     relationships = _relationship_payload(db, project_id, [character.id for character in characters])
     recent_chapters = _recent_chapter_refs(db, project_id, recent_limit)
+    governance_text = governance_context(db, project_id, chapter_id=str(args.get("chapter_id") or "") or None)
 
     # --- Warnings (merge pack_context warnings + local checks) ---
     warnings: list[str] = list(packed.warnings)
@@ -240,6 +242,7 @@ async def preview_writing_context(
             "characters": character_payloads,
             "relationships": relationships,
             "world_context": world_context,
+            "narrative_governance_context": governance_text,
             "warnings": warnings,
             "requirements_preview": _text_preview(requirements, 1000),
             "resolved_aliases": resolved_aliases,
@@ -256,7 +259,16 @@ async def preview_writing_context(
                     "chunk_count": len(s.chunk_ids),
                 }
                 for s in packed.sections
-            ],
+            ] + ([{
+                "category": "narrative_governance",
+                "title": "叙事治理锁",
+                "source_type": "structured_governance",
+                "selection_reason": "到期伏笔、未闭环因果、叙事债务和角色动态状态",
+                "used_chars": len(governance_text),
+                "estimated_tokens": max(1, len(governance_text) // 4),
+                "score": 100,
+                "chunk_count": 0,
+            }] if governance_text else []),
             "total_used_chars": packed.total_used_chars,
             "total_estimated_tokens": packed.total_estimated_tokens,
             "budget": packed.budget,

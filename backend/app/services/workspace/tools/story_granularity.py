@@ -22,6 +22,7 @@ from ....services.cataloging.applier import apply_candidates_for_run
 from ....services.cataloging.candidate_store import create_candidate_from_raw
 from ....services.cataloging.candidate_validation import inspect_candidate_coverage
 from ....services.narrative_ledger import create_ledger_checkpoint, list_narrative_ledger, revise_narrative_ledger_entry
+from ....services.narrative_governance import apply_governance_candidates, create_narrative_checkpoint
 from ....services.story_granularity import (
     CHARACTER_STATE_FIELDS,
     chapter_outline_node,
@@ -420,6 +421,7 @@ async def archive_chapter_after_write(
         warnings.append("candidate_parse_errors")
     applied_events: list[dict[str, Any]] = []
     ledger_checkpoint: dict[str, Any] | None = None
+    governance_checkpoint = None
     if not coverage.is_complete:
         run.status = "failed"
         run.error = "归档候选缺少：" + ", ".join(coverage.missing)
@@ -445,6 +447,22 @@ async def archive_chapter_after_write(
         job.completed_at = datetime.utcnow()
         if not has_failed:
             ledger_checkpoint = create_ledger_checkpoint(db, run, chapter)
+            governance_candidates = []
+            for candidate in candidates:
+                raw = candidate if isinstance(candidate, dict) else {}
+                narrative_state = raw.get("narrative_state") if isinstance(raw.get("narrative_state"), dict) else {}
+                for item in narrative_state.get("foreshadowing_planted") or []:
+                    payload = dict(item) if isinstance(item, dict) else {"title": str(item)}
+                    payload["type"] = "foreshadowing"
+                    governance_candidates.append(payload)
+                for item in narrative_state.get("foreshadowing_resolved") or []:
+                    payload = dict(item) if isinstance(item, dict) else {"title": str(item)}
+                    payload.update({"type": "foreshadowing", "status": "fulfilled", "resolved_chapter_id": chapter.id})
+                    governance_candidates.append(payload)
+                governance_candidates.extend(raw.get("governance_candidates") or [])
+            if governance_candidates:
+                apply_governance_candidates(db, project_id, governance_candidates, chapter_id=chapter.id)
+            governance_checkpoint = create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} 写后归档", trigger_type="post_write_archive")
     job.updated_at = datetime.utcnow()
     db.commit()
     ledger_items = list_narrative_ledger(db, project_id, chapter_id=chapter.id)
@@ -479,6 +497,7 @@ async def archive_chapter_after_write(
             "narrative_ledger": {"items": ledger_items, "counts": ledger_counts},
             "ledger_checkpoint_id": ledger_checkpoint.get("id") if ledger_checkpoint else None,
             "ledger_checkpoint": ledger_checkpoint,
+            "narrative_checkpoint_id": governance_checkpoint.id if governance_checkpoint else None,
         },
     }
 

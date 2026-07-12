@@ -485,6 +485,24 @@ async def record_external_quality_review(
         if chapter:
             review["chapter_id"] = chapter_id
             review["chapter_title"] = chapter.title
+            if isinstance(scores, dict) and scores:
+                from app.services.narrative_governance import record_quality_metric
+
+                aliases = {
+                    "plot_tension": ("plot_tension", "plot", "情节张力", "情节推进"),
+                    "emotional_tension": ("emotional_tension", "emotion", "情绪张力"),
+                    "pacing_density": ("pacing_density", "pacing", "节奏", "节奏控制"),
+                    "character_consistency": ("character_consistency", "character", "角色一致性", "角色塑造"),
+                    "viewpoint_consistency": ("viewpoint_consistency", "viewpoint", "视角一致性"),
+                    "world_consistency": ("world_consistency", "world", "设定一致性", "世界观一致性"),
+                }
+                metric = {"chapter_id": chapter_id, "passed": bool(passed), "warnings": list(issues or []), "evidence": "；".join(str(item) for item in suggestions[:10]), "source": "external_agent"}
+                for target, names in aliases.items():
+                    value = next((scores[name] for name in names if isinstance(scores.get(name), (int, float))), None)
+                    if value is not None:
+                        metric[target] = float(value) * 10 if float(value) <= 10 else float(value)
+                quality_row = record_quality_metric(db, project_id, metric)
+                review["quality_metric_id"] = quality_row.id
 
     # Try to get draft info
     if draft_id:

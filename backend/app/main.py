@@ -16,7 +16,7 @@ from .core.exceptions import (
 from .database.backup import backup_sqlite_database
 from .database.session import Base, SessionLocal, engine
 from .database.migrations import ensure_runtime_schema
-from .routers import projects, config, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging, agent, skill, scheduler, mcp, external_agent, external_agent_global, tools, novel_creation, system_assistant, local_models, prompt_packs
+from .routers import projects, config, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging, agent, skill, scheduler, mcp, external_agent, external_agent_global, tools, novel_creation, system_assistant, local_models, prompt_packs, narrative_governance
 from .services.content_store import migrate_legacy_projects_to_files
 from .services.workspace.run_log import mark_interrupted_assistant_runs
 from .version import APP_VERSION
@@ -95,6 +95,7 @@ app.include_router(prompt_packs.router, prefix="/api/v1")
 app.include_router(novel_creation.router, prefix="/api/v1")
 app.include_router(system_assistant.router, prefix="/api/v1")
 app.include_router(local_models.router, prefix="/api/v1")
+app.include_router(narrative_governance.router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -22,6 +22,7 @@ from ..services.chapter_service import (
     snapshot_to_item,
 )
 from ..services.narrative_ledger import restore_ledger_checkpoint
+from ..services.narrative_governance import create_narrative_checkpoint
 from ..services.content_store import (
     delete_project_file,
     sync_chapter_to_file,
@@ -97,6 +98,7 @@ def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depend
     db.add(chapter)
     db.flush()
     db.add(create_snapshot(chapter, "manual_save"))
+    create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} 创建", trigger_type="chapter_create")
     db.commit()
     db.refresh(chapter)
     sync_chapter_to_file(db, project, chapter)
@@ -142,6 +144,7 @@ def save_chapter(
     chapter.word_count = count_words(chapter.content or "")
     chapter.current_version = (chapter.current_version or 1) + 1
     db.add(create_snapshot(chapter, trigger_type))
+    create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} v{chapter.current_version}", trigger_type=trigger_type)
     db.commit()
     db.refresh(chapter)
     sync_chapter_to_file(db, project, chapter)

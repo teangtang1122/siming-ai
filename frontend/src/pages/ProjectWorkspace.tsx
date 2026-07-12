@@ -20,6 +20,7 @@ import {
   RobotOutlined,
   BulbOutlined,
   ClockCircleOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import WorldbuildingPage from './WorldbuildingPage'
 import CharactersPage from './CharactersPage'
@@ -34,6 +35,7 @@ import CatalogingPage from './CatalogingPage'
 import SkillsPage from './SkillsPage'
 import PromptPacksPage from './PromptPacksPage'
 import { ScheduledTasksPage } from './ScheduledTasksPage'
+import NarrativeGovernancePage from './NarrativeGovernancePage'
 import AiSidePanel from '../components/AiSidePanel'
 import TabCache from '../components/TabCache'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
@@ -44,7 +46,7 @@ import ThemeSwitcher from '../themes/ThemeSwitcher'
 
 const { Sider, Content } = Layout
 
-type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'import' | 'skills' | 'prompts' | 'scheduler'
+type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'governance' | 'import' | 'skills' | 'prompts' | 'scheduler'
 
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
@@ -56,6 +58,7 @@ const PAGE_TITLES: Record<MenuKey, string> = {
   deconstruct: '拆书分析',
   cataloging: '作品建档',
   visualization: '可视化',
+  governance: '叙事治理',
   skills: '技能管理',
   prompts: '提示词投稿',
   scheduler: '自动任务',
@@ -162,6 +165,7 @@ function ProjectWorkspace() {
         { key: 'deconstruct', icon: <ThunderboltOutlined />, label: '拆书分析' },
         { key: 'cataloging', icon: <DatabaseOutlined />, label: '作品建档' },
         { key: 'visualization', icon: <ApartmentOutlined />, label: '可视化' },
+        { key: 'governance', icon: <SafetyCertificateOutlined />, label: '叙事治理' },
       ],
     },
     ...(sidebarCollapsed ? [{ type: 'divider' as const }] : []),
@@ -189,6 +193,7 @@ function ProjectWorkspace() {
         deconstruct: () => <DeconstructPage projectId={projectId} />,
         cataloging: () => <CatalogingPage projectId={projectId} />,
         visualization: () => <VisualizationPage projectId={projectId} />,
+        governance: () => <NarrativeGovernancePage projectId={projectId} />,
         skills: () => <SkillsPage projectId={projectId} />,
         prompts: () => <PromptPacksPage projectId={projectId} />,
         scheduler: () => <ScheduledTasksPage projectId={projectId} />,

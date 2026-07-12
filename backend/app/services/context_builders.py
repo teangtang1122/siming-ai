@@ -403,6 +403,7 @@ def _fact_list(payload: dict, key: str, limit: int = 3) -> list[str]:
 
 def _build_narrative_state_context(db: Session, project_id: str, chapter_id: str | None = None, limit: int = 6) -> str:
     from .narrative_ledger import list_narrative_ledger
+    from .narrative_governance import governance_context
 
     ledger = [
         item for item in list_narrative_ledger(db, project_id, chapter_id=chapter_id or "")
@@ -475,7 +476,8 @@ def _build_narrative_state_context(db: Session, project_id: str, chapter_id: str
             if text:
                 lines.append(f"- narrative: {text}")
     state_context = "叙事状态锁：\n" + "\n".join(lines) if lines else ""
-    return "\n\n".join(part for part in (ledger_context, state_context) if part)
+    structured_context = governance_context(db, project_id, chapter_id=chapter_id, limit=12)
+    return "\n\n".join(part for part in (structured_context, ledger_context, state_context) if part)
 
 
 def _build_outline_context(db: Session, project_id: str, outline_node_id: Optional[str]) -> str:

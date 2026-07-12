@@ -26,6 +26,7 @@ from ....services.chapter_service import (
 )
 from ....services.content_store import delete_project_file, sync_chapter_to_file
 from ....services.narrative_ledger import restore_ledger_checkpoint
+from ....services.narrative_governance import create_narrative_checkpoint
 from ....services.style_rules import _repair_forbidden_sentence_text
 from ..generated_drafts import get_chapter_draft_meta, resolve_chapter_draft_content
 from ..utils import find_outline_by_title_or_id
@@ -212,6 +213,7 @@ async def create_chapter(
     db.flush()
     db.add(create_snapshot(chapter, "ai_insert"))
     db.flush()
+    governance_checkpoint = create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} 创建", trigger_type="ai_insert")
 
     summary_text = str(args.get("summary") or "").strip()
     if summary_text:
@@ -241,6 +243,7 @@ async def create_chapter(
             "word_count": count_words(content),
             "current_version": chapter.current_version or 1,
             "snapshot_count": 1,
+            "narrative_checkpoint_id": governance_checkpoint.id,
         },
     }
 
@@ -287,6 +290,7 @@ async def update_chapter(
     chapter.updated_at = datetime.utcnow()
     trigger_type = (str(args.get("trigger_type") or "ai_insert").strip() or "ai_insert")[:50]
     db.add(create_snapshot(chapter, trigger_type))
+    governance_checkpoint = create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} v{chapter.current_version}", trigger_type=trigger_type)
 
     summary_text = str(args.get("summary") or "").strip()
     if summary_text:
@@ -324,6 +328,7 @@ async def update_chapter(
             "title": chapter.title,
             "word_count": count_words(chapter.content or ""),
             "current_version": chapter.current_version or 1,
+            "narrative_checkpoint_id": governance_checkpoint.id,
         },
     }
 
