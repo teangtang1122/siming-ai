@@ -37,6 +37,11 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
+import {
+  formatNovelInterviewError,
+  isNovelInterviewRetryIntent,
+  NOVEL_INTERVIEW_THINKING,
+} from '../utils/novelInterview'
 import './GuiAssistantChat.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -649,7 +654,7 @@ function GuiAssistantChat() {
       }
 
       if (shouldUseNovelCreation(originalText || text, Boolean(activeProjectId))) {
-        setLastAssistantMessage('收到，正在分析你的需求...', 'running')
+        setLastAssistantMessage('正在让当前模型根据你的想法决定第一个问题...', 'running')
         const startRes = await apiClient.post<ApiResponse<NovelStartData>>('/novel-creation/start', {
           mode: 'template',
           user_brief: text, // This includes file content if imported
@@ -681,10 +686,16 @@ function GuiAssistantChat() {
           setShowOtherInput(false)
           setOtherText('')
           setRunningStartTime(null)
-          setMessages((prev) => [
-            ...prev,
-            { role: 'assistant', content: '', questions: [firstQ], status: 'completed' },
-          ])
+          setMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last?.role === 'assistant' && last.status === 'running') {
+              last.content = ''
+              last.questions = [firstQ]
+              last.status = 'completed'
+            }
+            return [...next]
+          })
           return
         }
 
@@ -729,12 +740,14 @@ function GuiAssistantChat() {
           )
         } else if (activeQuestion) {
           // User typed an answer while a question is active — use submitQuestionAnswer
-          submitQuestionAnswer(text)
+          await submitQuestionAnswer(text)
         } else {
           // No active question but session exists — treat as brief supplement
           setRunningStartTime(Date.now())
-          setLastAssistantMessage('思考中...', 'running')
-          const newHistory = [...questionHistory, { question: '用户补充', answer: text }]
+          setLastAssistantMessage(NOVEL_INTERVIEW_THINKING, 'running')
+          const newHistory = isNovelInterviewRetryIntent(text)
+            ? questionHistory
+            : [...questionHistory, { question: '用户补充', answer: text }]
           const qaPayload = buildQuestionAnswerPayload(newHistory)
           const draftRes = await apiClient.post<ApiResponse<NovelDraftData>>('/novel-creation/draft', {
             session_id: systemSessionId,
@@ -1156,7 +1169,7 @@ function GuiAssistantChat() {
     setRunningStartTime(Date.now())
     setMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '思考中...', status: 'running' },
+      { role: 'assistant', content: NOVEL_INTERVIEW_THINKING, status: 'running' },
     ])
 
     try {
@@ -1212,14 +1225,14 @@ function GuiAssistantChat() {
           return [...next]
         })
       }
-    } catch {
+    } catch (err: unknown) {
       setActiveQuestion(null)
       setRunningStartTime(null)
       setMessages((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
         if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = '网络连接出现问题，请重试。'
+          last.content = formatNovelInterviewError(err)
           last.status = 'error'
         }
         return [...next]
@@ -1435,7 +1448,7 @@ function GuiAssistantChat() {
     setShowQAEditor(false)
     setMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '思考中...', status: 'running' },
+      { role: 'assistant', content: NOVEL_INTERVIEW_THINKING, status: 'running' },
     ])
 
     try {
@@ -1484,13 +1497,13 @@ function GuiAssistantChat() {
           return [...next]
         })
       }
-    } catch {
+    } catch (err: unknown) {
       setRunningStartTime(null)
       setMessages((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
         if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = '网络连接出现问题，请重试。'
+          last.content = formatNovelInterviewError(err)
           last.status = 'error'
         }
         return [...next]

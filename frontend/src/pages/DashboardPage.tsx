@@ -37,6 +37,7 @@ import PageWrapper from '../components/PageWrapper'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { useAppStore } from '../stores'
+import { formatNovelInterviewError, NOVEL_INTERVIEW_THINKING } from '../utils/novelInterview'
 import './DashboardPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -641,7 +642,7 @@ function DashboardPage() {
     setAssistantBusy(true)
     setAssistantMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '思考中...', status: 'running' },
+      { role: 'assistant', content: NOVEL_INTERVIEW_THINKING, status: 'running' },
     ])
 
     try {
@@ -714,7 +715,7 @@ function DashboardPage() {
         })
         message.success('已生成新书方案')
       }
-    } catch {
+    } catch (err: unknown) {
       setActiveQuestion(null)
       setQuestionStartTime(null)
       setAssistantBusy(false)
@@ -722,7 +723,7 @@ function DashboardPage() {
         const next = [...prev]
         const last = next[next.length - 1]
         if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = '网络连接出现问题，请重试。'
+          last.content = formatNovelInterviewError(err)
           last.status = 'error'
         }
         return [...next]
@@ -815,14 +816,14 @@ function DashboardPage() {
         return [...next]
       })
       message.success('已生成新书方案')
-    } catch {
+    } catch (err: unknown) {
       setQuestionStartTime(null)
       setAssistantBusy(false)
       setAssistantMessages((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
         if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = '网络连接出现问题，请重试。'
+          last.content = err instanceof Error ? err.message : '方案生成失败，请重试。'
           last.status = 'error'
         }
         return [...next]
@@ -841,7 +842,7 @@ function DashboardPage() {
     setShowQAEditor(false)
     setAssistantMessages((prev) => [
       ...prev,
-      { role: 'assistant', content: '思考中...', status: 'running' },
+      { role: 'assistant', content: NOVEL_INTERVIEW_THINKING, status: 'running' },
     ])
 
     try {
@@ -909,14 +910,14 @@ function DashboardPage() {
         })
         message.success('已重新生成方案')
       }
-    } catch {
+    } catch (err: unknown) {
       setQuestionStartTime(null)
       setAssistantBusy(false)
       setAssistantMessages((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
         if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = '网络连接出现问题，请重试。'
+          last.content = formatNovelInterviewError(err)
           last.status = 'error'
         }
         return [...next]
@@ -1050,7 +1051,7 @@ function DashboardPage() {
     setQuestionHistory([])
     setAssistantMessages([
       { role: 'user', content: userBrief },
-      { role: 'assistant', content: '收到，正在分析你的需求...', status: 'running' },
+      { role: 'assistant', content: '正在让当前模型根据你的想法决定第一个问题...', status: 'running' },
     ])
     try {
       const startRes = await apiClient.post<ApiResponse<NovelStartData>>('/novel-creation/start', {
@@ -1119,6 +1120,16 @@ function DashboardPage() {
       ])
       message.success('已生成新书方案')
     } catch (err: any) {
+      const content = formatNovelInterviewError(err)
+      setAssistantMessages((items) => {
+        const next = [...items]
+        const last = next[next.length - 1]
+        if (last?.role === 'assistant' && last.status === 'running') {
+          last.content = content
+          last.status = 'error'
+        }
+        return [...next]
+      })
       message.error(err.message || '生成新书方案失败')
     } finally {
       setAssistantBusy(false)

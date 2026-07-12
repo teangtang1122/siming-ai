@@ -164,11 +164,11 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         db.query.side_effect = query_side_effect
 
         with patch(
-            "app.services.workspace.tools.novel_creation._generate_clarifying_questions",
-            return_value=[],
+            "app.services.workspace.tools.novel_creation._evaluate_answers",
+            new=AsyncMock(return_value={"action": "generate", "reason": "enough"}),
         ), patch(
             "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
-            return_value=None,
+            new=AsyncMock(return_value=None),
         ):
             result = asyncio.run(draft_novel_blueprint(db, "p1", {
                 "session_id": "s1",
@@ -198,9 +198,9 @@ class DraftNovelBlueprintTest(unittest.TestCase):
 
         selected_model = "claude_cli:claude-code"
         with patch(
-            "app.services.workspace.tools.novel_creation._generate_clarifying_questions",
-            new=AsyncMock(return_value=[]),
-        ) as questions_mock, patch(
+            "app.services.workspace.tools.novel_creation._evaluate_answers",
+            new=AsyncMock(return_value={"action": "generate", "reason": "enough"}),
+        ) as interview_mock, patch(
             "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
             new=AsyncMock(return_value=None),
         ) as draft_mock:
@@ -211,7 +211,8 @@ class DraftNovelBlueprintTest(unittest.TestCase):
             }))
 
         self.assertEqual(result["status"], "need_model")
-        self.assertEqual(questions_mock.await_args.kwargs["model"], selected_model)
+        self.assertEqual(interview_mock.await_args.kwargs["model"], selected_model)
+        self.assertEqual(interview_mock.await_args.kwargs["qa_history"], [])
         self.assertEqual(draft_mock.await_args.kwargs["model"], selected_model)
 
     def test_initial_draft_accepts_partial_llm_success(self):
@@ -283,19 +284,19 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertEqual(result[0]["protagonist"]["name"], "Lin Yuan")
         self.assertNotEqual(result[0]["protagonist"]["name"], "Template Hero")
 
-    def test_clarifying_questions_are_llm_first_for_known_genre(self):
+    def test_clarifying_question_is_owned_by_selected_model(self):
         from app.services.workspace.tools.novel_creation import _generate_clarifying_questions
 
-        llm_questions = [{
-            "question": "修炼体系的代价是什么？",
-            "purpose": "决定升级压力和爽点兑现方式",
-            "options": ["损耗寿元", "欠下宗门债", "污染心神"],
-            "type": "single_select",
-        }]
+        model_question = {
+            "question": "既然他是实验体，他第一次主动违抗组织会付出什么代价？",
+            "purpose": "这个选择会改变开篇冲突和主角底色",
+            "options": [],
+            "type": "text",
+        }
         with patch(
-            "app.services.workspace.tools.novel_creation._llm_generate_genre_questions",
-            new=AsyncMock(return_value=llm_questions),
-        ) as llm_mock:
+            "app.services.workspace.tools.novel_creation.decide_next_interview_step",
+            new=AsyncMock(return_value={"action": "ask_more", "questions": [model_question]}),
+        ) as decision_mock:
             result = asyncio.run(_generate_clarifying_questions(
                 user_brief="我要写玄幻修仙",
                 genre_label="玄幻/修仙",
@@ -304,8 +305,9 @@ class DraftNovelBlueprintTest(unittest.TestCase):
                 model="claude_cli:claude-code",
             ))
 
-        self.assertEqual(result[0]["question"], "修炼体系的代价是什么？")
-        self.assertTrue(llm_mock.await_args.kwargs["ref_questions"])
+        self.assertEqual(result, [model_question])
+        self.assertEqual(decision_mock.await_args.kwargs["user_brief"], "我要写玄幻修仙")
+        self.assertEqual(decision_mock.await_args.kwargs["model"], "claude_cli:claude-code")
 
     def test_draft_returns_one_structurally_usable_llm_blueprint(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
@@ -325,8 +327,8 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         db.query.return_value = query_mock
 
         with patch(
-            "app.services.workspace.tools.novel_creation._generate_clarifying_questions",
-            new=AsyncMock(return_value=[]),
+            "app.services.workspace.tools.novel_creation._evaluate_answers",
+            new=AsyncMock(return_value={"action": "generate", "reason": "enough"}),
         ), patch(
             "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
             new=AsyncMock(return_value=[_usable_blueprint("Single Original")]),
@@ -773,6 +775,9 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
         ]
 
         with patch(
+            "app.services.workspace.tools.novel_creation._evaluate_answers",
+            new=AsyncMock(return_value={"action": "generate", "reason": "enough"}),
+        ), patch(
             "app.services.workspace.tools.novel_creation._try_llm_initial_draft",
             new=AsyncMock(return_value=None),
         ) as draft_mock:
@@ -791,11 +796,8 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
         self.assertEqual(result["data"]["blueprints"], [])
         self.assertIn("未生成模板兜底方案", result["data"]["recommendation"])
 
-    def test_local_qa_identity_answer_fills_protagonist_and_generates(self):
-        from app.services.workspace.tools.novel_creation import (
-            _deterministic_answer_evaluation,
-            _qa_slot_summary,
-        )
+    def test_dynamic_qa_history_is_preserved_for_generation(self):
+        from app.services.workspace.tools.novel_creation import _answers_brief_from_history
 
         qa_history = [
             {"question": "故事的核心冲突是什么？", "answer": "理想与现实的矛盾"},
@@ -803,12 +805,10 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
             {"question": "主角最核心的身份、能力或处境是什么？", "answer": "现代人穿越到异世界"},
         ]
 
-        slots = _qa_slot_summary(qa_history)
-        self.assertIn("玄幻/修仙", slots["genre"])
-        self.assertEqual(slots["protagonist"], "现代人穿越到异世界")
-        self.assertNotIn("power_system", slots)
-        result = _deterministic_answer_evaluation(genre_label="玄幻/修仙", qa_history=qa_history)
-        self.assertEqual(result["action"], "generate")
+        result = _answers_brief_from_history(qa_history)
+        self.assertIn("玄幻/修仙", result)
+        self.assertIn("现代人穿越到异世界", result)
+        self.assertIn("理想与现实的矛盾", result)
 
     def test_extract_protagonist_name_rejects_question_placeholder(self):
         from app.services.workspace.tools.novel_creation import _extract_protagonist_name
