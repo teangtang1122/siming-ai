@@ -203,11 +203,39 @@ def _default_primary(left: Character, right: Character) -> tuple[Character, Char
         return right, left
     if right.role_type == "merged_alias":
         return left, right
-    if len(split_character_name(left.name)) > len(split_character_name(right.name)):
-        return right, left
-    if len(split_character_name(right.name)) > len(split_character_name(left.name)):
-        return left, right
-    return (left, right) if (left.current_version or 1) >= (right.current_version or 1) else (right, left)
+
+    left_rank = _primary_rank(left)
+    right_rank = _primary_rank(right)
+    if left_rank != right_rank:
+        return (left, right) if left_rank > right_rank else (right, left)
+    return (left, right) if str(left.id) <= str(right.id) else (right, left)
+
+
+def _primary_rank(character: Character) -> tuple[int, int, int, int, int]:
+    profile_values = (
+        character.background,
+        character.appearance,
+        character.personality,
+        character.abilities,
+        character.age,
+        character.current_location,
+        character.realm_or_level,
+        character.physical_state,
+        character.mental_state,
+        character.current_goal,
+        character.active_conflict,
+        character.abilities_state,
+        character.items_or_assets,
+    )
+    populated_count = sum(bool(str(value or "").strip()) for value in profile_values)
+    profile_size = sum(len(str(value or "").strip()) for value in profile_values)
+    return (
+        len(character.aliases or []),
+        int(character.current_version or 1),
+        populated_count,
+        profile_size,
+        len(normalize_name_key(character.name)),
+    )
 
 
 def _merged_aliases(primary: Character, secondary: Character, aliases: list[Any]) -> list[str]:
