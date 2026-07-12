@@ -16,6 +16,7 @@ from app.database.models import (
     Project,
     WorldbuildingEntry,
 )
+from app.database.migrations import ensure_runtime_schema
 from app.database.session import Base, SessionLocal, engine
 from app.services.workspace.executor import execute_workspace_action
 
@@ -24,6 +25,7 @@ class WorkspaceContextPreviewTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         Base.metadata.create_all(bind=engine)
+        ensure_runtime_schema(engine)
 
     @classmethod
     def tearDownClass(cls):
