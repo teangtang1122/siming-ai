@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
@@ -293,6 +293,7 @@ function NovelCreationWizardPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const watchingRunRef = useRef<string | null>(null)
 
+  const requestedSessionId = searchParams.get('session') || undefined
   const requestedRunId = searchParams.get('run')
   const requestedModel = searchParams.get('model') || undefined
 
@@ -310,19 +311,24 @@ function NovelCreationWizardPage() {
   }, [catalog, presetSearch])
   const otherSessions = useMemo(() => sessions.filter((item) => item.id !== session?.id), [sessions, session?.id])
 
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async () => {
     const response = await apiClient.get<ApiResponse<{ sessions: CreationSession[] }>>('/novel-creation/sessions')
     setSessions(response.data.data.sessions || [])
-  }
+  }, [])
 
-  const loadSession = async (sessionId: string) => {
+  const loadSession = useCallback(async (sessionId: string) => {
     const response = await apiClient.get<ApiResponse<CreationSession>>(`/novel-creation/sessions/${sessionId}`)
     const loaded = response.data.data
     setSession(loaded)
     if (loaded.draft?.form) form.setFieldsValue(loaded.draft.form)
-    setSearchParams({ session: loaded.id }, { replace: true })
+    setSearchParams((current) => {
+      if (current.get('session') === loaded.id) return current
+      const next = new URLSearchParams(current)
+      next.set('session', loaded.id)
+      return next
+    }, { replace: true })
     return loaded
-  }
+  }, [form, setSearchParams])
 
   useEffect(() => {
     const initialize = async () => {
@@ -339,14 +345,13 @@ function NovelCreationWizardPage() {
           special_requirements: first?.defaults.special_requirements || [], avoid: first?.defaults.avoid || [],
         })
         await loadSessions()
-        const sessionId = searchParams.get('session')
-        if (sessionId) await loadSession(sessionId)
+        if (requestedSessionId) await loadSession(requestedSessionId)
       } catch (error) {
         message.error(errorText(error))
       }
     }
     void initialize()
-  }, [])
+  }, [form, loadSession, loadSessions, requestedSessionId])
 
   useEffect(() => {
     if (defaultModel && !selectedModel) setSelectedModel(defaultModel)
@@ -424,7 +429,7 @@ function NovelCreationWizardPage() {
     }
   }
 
-  const watchRun = (runId: string) => {
+  const watchRun = useCallback((runId: string) => {
     if (watchingRunRef.current === runId) return
     watchingRunRef.current = runId
     setBusy(true)
@@ -469,7 +474,7 @@ function NovelCreationWizardPage() {
       setRunMessage('')
       setRunProgress(0)
     }
-  }
+  }, [loadSession, session])
 
   useEffect(() => {
     const activeRun = requestedRunId
@@ -478,7 +483,7 @@ function NovelCreationWizardPage() {
     if (!activeRun) return
     setRunMessage(activeRun.current_message || '正在恢复立项任务...')
     watchRun(activeRun.id)
-  }, [requestedRunId, session?.id, session?.runs])
+  }, [requestedRunId, session?.id, session?.runs, watchRun])
 
   const startStageRun = async (stage: string, autoConfirm = false) => {
     if (!session || !selectedModel) return
@@ -602,7 +607,7 @@ function NovelCreationWizardPage() {
           </div>
           <Space wrap>
             {session && <Tag color="processing">草稿修订 {session.revision}</Tag>}
-            <Select loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="选择本阶段模型" style={{ minWidth: 260 }} />
+            <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="选择本阶段模型" style={{ minWidth: 260 }} />
             <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>配置模型</Button>
             {session && <Button onClick={resetWorkspace}>新建立项</Button>}
           </Space>
@@ -616,6 +621,10 @@ function NovelCreationWizardPage() {
           <div className="creation-intake-layout">
             <aside className="creation-taxonomy">
               <Input.Search value={presetSearch} onChange={(event) => setPresetSearch(event.target.value)} placeholder="搜索题材或主题" allowClear />
+              <div className="creation-taxonomy-heading">
+                <Text strong>选择题材</Text>
+                <Text type="secondary" className="creation-preset-scroll-hint">左右滑动选择</Text>
+              </div>
               <div className="creation-preset-list">
                 {filteredPresets.map((preset) => (
                   <button key={preset.id} type="button" className={`creation-preset-item ${form.getFieldValue('preset_id') === preset.id ? 'active' : ''}`} onClick={() => applyPreset(preset)}>
@@ -731,7 +740,7 @@ function NovelCreationWizardPage() {
               <div className="creation-section-heading">
                 <div><Title level={3}>{stageLabels[currentStage] || currentStage}</Title><Space><Tag color={stageTone(currentStageState?.status)}>{currentStageState?.status || 'pending'}</Tag>{currentStageState?.stale_reason && <Text type="warning">{currentStageState.stale_reason}</Text>}</Space></div>
                 <Space wrap>
-                  <Select value={selectedModel} onChange={setSelectedModel} options={modelOptions} style={{ minWidth: 250 }} />
+                  <Select aria-label="选择当前阶段模型" value={selectedModel} onChange={setSelectedModel} options={modelOptions} style={{ minWidth: 250 }} />
                   <Button icon={<ReloadOutlined />} onClick={() => void startStageRun(currentStage)} disabled={busy}>重新生成</Button>
                   <Button icon={<EditOutlined />} onClick={openEditor} disabled={!currentStageState?.data || busy}>编辑阶段内容</Button>
                 </Space>

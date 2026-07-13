@@ -69,6 +69,19 @@
   margin-top: 12px;
 }
 
+.creation-taxonomy-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.creation-preset-scroll-hint {
+  display: none;
+  font-size: 12px;
+}
+
 .creation-preset-item {
   width: 100%;
   padding: 10px 11px;
@@ -386,6 +399,10 @@
     overflow-x: auto;
     padding-bottom: 6px;
     scroll-snap-type: x proximity;
+  }
+
+  .creation-preset-scroll-hint {
+    display: inline;
   }
 
   .creation-preset-item {

@@ -119,6 +119,14 @@
   white-space: nowrap;
 }
 
+.gui-chat-header-actions {
+  align-items: center;
+}
+
+.gui-chat-model-select {
+  width: 240px;
+}
+
 /* ── Messages ── */
 .gui-chat-messages {
   flex: 1;
@@ -184,6 +192,10 @@
   font-size: 14px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.gui-chat-msg-status {
+  margin: 0 8px 6px 0;
 }
 
 .gui-chat-msg-user .gui-chat-msg-content {
@@ -331,6 +343,14 @@
   .gui-chat-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .gui-chat-header-actions {
+    width: 100%;
+  }
+
+  .gui-chat-model-select {
+    width: min(100%, 320px);
   }
 
   .gui-chat-blueprints-head {

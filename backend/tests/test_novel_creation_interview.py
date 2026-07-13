@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services.novel_creation_interview import (
     INTERVIEW_API_TIMEOUT_SECONDS,
+    INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS,
     INTERVIEW_CLI_TIMEOUT_SECONDS,
     INTERVIEW_MAX_TURNS,
     NovelInterviewError,
@@ -79,6 +80,36 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
 
         self.assertEqual(result["action"], "generate")
         self.assertEqual(chat_mock.await_args.kwargs["timeout"], INTERVIEW_CLI_TIMEOUT_SECONDS)
+        self.assertEqual(
+            chat_mock.await_args.kwargs["extra_body"],
+            {"local_cli_timeout_grace_seconds": INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS},
+        )
+
+    def test_dynamic_interview_drops_model_supplied_choices(self):
+        content = json.dumps({
+            "action": "ask_more",
+            "reason": "需要确认代价",
+            "question": {
+                "question": "她逃离组织时最不愿失去什么？",
+                "purpose": "确认开局的情感代价",
+                "options": ["自由", "同伴", "记忆"],
+                "type": "single_select",
+            },
+        }, ensure_ascii=False)
+        with patch(
+            "app.services.novel_creation_interview.LLMGateway.model_identity",
+            return_value=("openai", "test-model"),
+        ), patch(
+            "app.services.novel_creation_interview.LLMGateway.chat_completion",
+            new=AsyncMock(return_value={"content": content}),
+        ):
+            result = asyncio.run(decide_next_interview_step(
+                user_brief="一个实验体逃离组织的故事",
+                model="openai:test-model",
+            ))
+
+        self.assertEqual(result["questions"][0]["options"], [])
+        self.assertEqual(result["questions"][0]["type"], "text")
 
     def test_quota_failure_is_not_replaced_by_a_preset_question(self):
         with patch(

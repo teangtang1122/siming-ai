@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatSystemAssistantError,
   formatNovelInterviewError,
   isNovelInterviewRetryIntent,
   NOVEL_INTERVIEW_THINKING,
@@ -17,6 +18,13 @@ describe('novel interview helpers', () => {
     expect(text).toContain('额度已耗尽')
     expect(text).toContain('本轮回答已保留')
     expect(text).toContain('直接生成')
+  })
+
+  it('keeps ordinary assistant recovery separate from the novel interview', () => {
+    const text = formatSystemAssistantError(new Error('模型没有返回文字'))
+    expect(text).toContain('模型没有返回文字')
+    expect(text).toContain('系统设置')
+    expect(text).not.toContain('直接生成')
   })
 
   it('describes a model-owned next-step decision', () => {

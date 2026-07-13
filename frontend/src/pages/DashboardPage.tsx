@@ -1813,7 +1813,7 @@ function DashboardPage() {
         okButtonProps={{ autoInsertSpace: false, loading: assistantBusy }}
         cancelButtonProps={{ autoInsertSpace: false }}
         width={680}
-        destroyOnClose
+        destroyOnHidden
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Alert
@@ -1859,7 +1859,7 @@ function DashboardPage() {
         closable={!creating}
         width={720}
         maskClosable={!creating}
-        destroyOnClose
+        destroyOnHidden
         transitionName=""
         maskTransitionName=""
       >

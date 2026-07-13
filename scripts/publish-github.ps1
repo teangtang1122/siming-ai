@@ -89,6 +89,7 @@ try {
     } else {
       [System.IO.File]::WriteAllText($ManifestPath, $manifest + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
       [System.IO.File]::WriteAllText($ShaPath, ($shaLines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+      & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version
     }
   }
 

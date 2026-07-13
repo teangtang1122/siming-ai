@@ -125,7 +125,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     if (refreshKey > 0) {
       fetchEntries()
     }
-  }, [refreshKey])
+  }, [fetchEntries, refreshKey])
 
   const currentEntries = entriesByDimension[activeDimension] || []
 

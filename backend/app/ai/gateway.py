@@ -401,7 +401,13 @@ class LLMGateway:
             return extra_body, timeout_seconds
         body = dict(extra_body or {})
         body.setdefault("local_cli_timeout_seconds", timeout_seconds)
-        return body, timeout_seconds + LOCAL_CLI_TIMEOUT_GRACE_SECONDS
+        raw_grace_seconds = body.pop("local_cli_timeout_grace_seconds", None)
+        try:
+            grace_seconds = int(raw_grace_seconds)
+        except (TypeError, ValueError):
+            grace_seconds = LOCAL_CLI_TIMEOUT_GRACE_SECONDS
+        grace_seconds = max(0, min(grace_seconds, LOCAL_CLI_TIMEOUT_GRACE_SECONDS))
+        return body, timeout_seconds + grace_seconds
 
     @classmethod
     async def chat_completion(

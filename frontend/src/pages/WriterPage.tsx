@@ -158,6 +158,7 @@ function WriterPage({ projectId }: WriterPageProps) {
   const editorSelectionRef = useRef<{ start: number; end: number } | null>(null)
   const [selectedText, setSelectedText] = useState('')
   const [selectedTextChapterId, setSelectedTextChapterId] = useState<string | null>(null)
+  const watchedOutlineNodeId = Form.useWatch('outline_node_id', form)
 
 
   const getSelectedText = (): string => {
@@ -261,11 +262,11 @@ function WriterPage({ projectId }: WriterPageProps) {
   // Sync selections to AI context
   useEffect(() => {
     setAiContext({
-      selectedOutlineNodeId: form.getFieldValue('outline_node_id') || null,
+      selectedOutlineNodeId: watchedOutlineNodeId || null,
       selectedText,
       selectedTextChapterId,
     })
-  }, [form.getFieldValue('outline_node_id'), selectedText, selectedTextChapterId, setAiContext])
+  }, [selectedText, selectedTextChapterId, setAiContext, watchedOutlineNodeId])
 
   // Refresh data when AI applies changes
   useEffect(() => {
@@ -274,7 +275,7 @@ function WriterPage({ projectId }: WriterPageProps) {
       fetchOutline()
       if (selectedId) fetchDetail(selectedId)
     }
-  }, [refreshKey])
+  }, [fetchChapters, fetchDetail, fetchOutline, refreshKey, selectedId])
 
   const startCreate = () => {
     confirmLeave(() => {

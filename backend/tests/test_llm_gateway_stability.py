@@ -125,6 +125,17 @@ class GatewayStabilityTestCase(unittest.TestCase):
         self.assertEqual(body["local_cli_timeout_seconds"], 180)
         self.assertEqual(wait_timeout, 180 + LOCAL_CLI_TIMEOUT_GRACE_SECONDS)
 
+    def test_local_cli_can_request_a_short_cleanup_grace_for_interactive_work(self):
+        body, wait_timeout = LLMGateway._local_cli_timeout_body(
+            LocalCLIAdapter,
+            {"local_cli_timeout_grace_seconds": 4},
+            45,
+        )
+
+        self.assertEqual(body["local_cli_timeout_seconds"], 45)
+        self.assertNotIn("local_cli_timeout_grace_seconds", body)
+        self.assertEqual(wait_timeout, 49)
+
     def test_non_local_cli_timeout_body_is_unchanged(self):
         body = {"x": 1}
         updated_body, wait_timeout = LLMGateway._local_cli_timeout_body(FakeAdapter, body, 30)

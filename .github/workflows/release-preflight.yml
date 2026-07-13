@@ -6,7 +6,13 @@ on:
       - "scripts/build-exe.ps1"
       - "scripts/publish-github.ps1"
       - "scripts/smoke-test-release.ps1"
+      - "scripts/verify-release-assets.ps1"
+      - "backend/app/version.py"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
       - ".github/workflows/release-preflight.yml"
+  push:
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -27,6 +33,7 @@ jobs:
           Test-PowerShellSyntax scripts\build-exe.ps1
           Test-PowerShellSyntax scripts\publish-github.ps1
           Test-PowerShellSyntax scripts\smoke-test-release.ps1
+          Test-PowerShellSyntax scripts\verify-release-assets.ps1
 
       - name: Publish dry run
         shell: pwsh

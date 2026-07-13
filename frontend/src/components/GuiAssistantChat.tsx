@@ -39,6 +39,7 @@ import {
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
 import {
+  formatSystemAssistantError,
   formatNovelInterviewError,
   isNovelInterviewRetryIntent,
   NOVEL_INTERVIEW_THINKING,
@@ -311,8 +312,13 @@ function GuiAssistantChat() {
   const [editingAnswers, setEditingAnswers] = useState<Record<string, string>>({})
   const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; content: string }>>([])
 
-  const { defaultModel } = useModelOptions()
-  const selectedModel = defaultModel || undefined
+  const {
+    defaultModel,
+    modelOptions = [],
+    loading: modelsLoading = false,
+  } = useModelOptions()
+  const [selectedModelOverride, setSelectedModelOverride] = useState<string>()
+  const selectedModel = selectedModelOverride || defaultModel || undefined
   // Creative slots editor state
   const [slotEditorOpen, setSlotEditorOpen] = useState(false)
   const [slotBlueprintIndex, setSlotBlueprintIndex] = useState<number | null>(null)
@@ -568,6 +574,9 @@ function GuiAssistantChat() {
       if (last?.role === 'assistant') {
         last.content = content
         last.status = status
+        if (status === 'error' || status === 'aborted') {
+          last.questions = undefined
+        }
       }
       return [...next]
     })
@@ -856,9 +865,13 @@ function GuiAssistantChat() {
             history: messages.slice(-6).map(m => ({ role: m.role, content: m.content })),
           },
         })
-        finish(chatRes.data.data.reply)
-      } catch {
-        finish('抱歉，出了点问题。你可以直接说”我想写一本新书”来开始创作。')
+        const reply = String(chatRes.data?.data?.reply || '').trim()
+        if (!reply) {
+          throw new Error('当前模型没有返回文字回复。请重试，或在系统设置中测试当前模型/CLI。')
+        }
+        finish(reply)
+      } catch (err: unknown) {
+        finish(formatSystemAssistantError(err), 'error')
       }
     } catch (err: any) {
       finish(err.message || '处理失败', 'error')
@@ -1254,9 +1267,9 @@ function GuiAssistantChat() {
       setRunningStartTime(null)
       setLastAssistantMessage('采访已结束，正在进入立项工作台生成三套轻量创意。', 'completed')
       await handoffToCreationWorkbench(systemSessionId)
-    } catch {
+    } catch (err: unknown) {
       setRunningStartTime(null)
-      setLastAssistantMessage('生成失败，请重试。', 'completed')
+      setLastAssistantMessage(formatNovelInterviewError(err), 'error')
     }
   }
 
@@ -1792,7 +1805,7 @@ function GuiAssistantChat() {
 
   const quickActions = [
     {
-      label: '新书立项',
+      label: '和助手开书',
       prompt: '帮我创建一本新的小说，克苏鲁+规则怪谈，至少要能写1000章的创意',
     },
     {
@@ -1890,7 +1903,7 @@ function GuiAssistantChat() {
               </Text>
             </div>
           </div>
-          <Space>
+          <Space wrap className="gui-chat-header-actions">
             <Select
               showSearch
               allowClear
@@ -1902,8 +1915,21 @@ function GuiAssistantChat() {
               placeholder="选择作品上下文"
               style={{ width: 220 }}
             />
-            <Button onClick={() => setInputValue('帮我创建一本新的小说，克苏鲁+规则怪谈，至少要能写1000章的创意')}>
-              新书立项
+            <Select
+              className="gui-chat-model-select"
+              showSearch
+              allowClear
+              value={selectedModel}
+              onChange={(value) => setSelectedModelOverride(value || undefined)}
+              options={modelOptions}
+              loading={modelsLoading}
+              optionFilterProp="label"
+              placeholder="选择本次对话模型"
+              aria-label="选择本次对话模型"
+              title={selectedModel || '未配置模型'}
+            />
+            <Button onClick={() => navigate('/novel-creation')}>
+              打开立项工作台
             </Button>
             <Button icon={<PlusOutlined />} onClick={startNewConversation}>
               新对话
@@ -1959,9 +1985,17 @@ function GuiAssistantChat() {
           ) : (
             <>
               {messages.map((msg, index) => (
-                <div key={msg.id || `${msg.role}-${index}`} className={`gui-chat-msg gui-chat-msg-${msg.role}`}>
+                <div
+                  key={msg.id || `${msg.role}-${index}`}
+                  className={`gui-chat-msg gui-chat-msg-${msg.role}`}
+                  data-message-status={msg.status || 'completed'}
+                  role={msg.status === 'error' ? 'alert' : undefined}
+                  aria-live={msg.status === 'error' ? 'assertive' : undefined}
+                >
                   <div className="gui-chat-msg-role">{msg.role === 'user' ? '你' : '司命'}</div>
                   <div className="gui-chat-msg-content">
+                    {msg.status === 'error' && <Tag color="error" className="gui-chat-msg-status">执行失败</Tag>}
+                    {msg.status === 'aborted' && <Tag color="default" className="gui-chat-msg-status">已停止</Tag>}
                     {msg.content || (streaming && msg.role === 'assistant' ? '思考中...' : '')}
                     {msg.status === 'running' && elapsedSeconds > 0 && (
                       <span style={{ color: '#999', fontSize: 12, marginLeft: 8 }}>

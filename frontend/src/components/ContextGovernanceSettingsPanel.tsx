@@ -102,7 +102,7 @@ export default function ContextGovernanceSettingsPanel() {
           { title: '操作', width: 70, render: (_: unknown, item: ModelProfile) => <Button type="text" icon={<EditOutlined />} title="编辑档案" onClick={() => showEdit(item)} /> },
         ]}
       />
-      <Modal title={editing ? '编辑上下文档案' : '添加上下文档案'} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnClose>
+      <Modal title={editing ? '编辑上下文档案' : '添加上下文档案'} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
         <Form form={form} layout="vertical" onFinish={save}>
           <Form.Item name="provider" label="提供商" rules={[{ required: true, message: '请填写提供商' }]}><Input disabled={Boolean(editing)} placeholder="例如 openai 或 codex_cli" /></Form.Item>
           <Form.Item name="model_name" label="模型" rules={[{ required: true, message: '请填写模型名' }]}><Input disabled={Boolean(editing)} placeholder="例如 gpt-4.1" /></Form.Item>

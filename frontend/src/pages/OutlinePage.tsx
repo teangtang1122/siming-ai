@@ -248,7 +248,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       fetchOutline()
       fetchCharacters()
     }
-  }, [refreshKey])
+  }, [fetchCharacters, fetchOutline, refreshKey])
 
   useEffect(() => {
     if (!creating && selectedNode) {

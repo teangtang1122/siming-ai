@@ -954,7 +954,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={() => form.submit()}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form
           form={form}

@@ -14,6 +14,7 @@ from app.services.observability.run_events import classify_failure
 INTERVIEW_MAX_TURNS = 8
 INTERVIEW_API_TIMEOUT_SECONDS = 30
 INTERVIEW_CLI_TIMEOUT_SECONDS = 45
+INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS = 10
 
 
 class NovelInterviewError(RuntimeError):
@@ -111,23 +112,14 @@ def _normalize_question(payload: dict[str, Any], history: list[dict[str, str]]) 
     if _question_key(question) in asked:
         _raise_interview_error("模型重复了已经回答过的问题。", "invalid_response")
 
-    options: list[str] = []
-    for option in question_payload.get("options") or []:
-        text = _text(option)
-        if text and text not in options:
-            options.append(text)
-    options = options[:4]
-    question_type = _text(question_payload.get("type"))
-    if question_type not in {"single_select", "text"}:
-        question_type = "single_select" if len(options) >= 2 else "text"
-    if question_type == "single_select" and len(options) < 2:
-        question_type = "text"
-
     return {
         "question": question,
         "purpose": _text(question_payload.get("purpose")),
-        "options": options,
-        "type": question_type,
+        # The conversational entry deliberately stays free-form. The model can
+        # decide what to ask, but cannot turn the author interview into a
+        # preset questionnaire by returning choices.
+        "options": [],
+        "type": "text",
     }
 
 
@@ -162,7 +154,7 @@ async def decide_next_interview_step(
         "1. 只有当一个额外答案会实质改变三套概念方案时，才继续提问。\n"
         "2. 每次最多提出一个问题，措辞要像编辑与作者交谈，并明确承接最新回答。\n"
         "3. 不要为了填满类型、主角、世界观、篇幅等表格而提问；作者没提到的内容可以由后续方案合理创造。\n"
-        "4. 适合自由发挥时使用 text 且 options=[]；只有互斥选择能帮助作者时才给 2-4 个即时生成的选项。\n"
+        "4. 这个对话入口只接受自由文本回答：question.type 必须为 text，question.options 必须为 []。不要输出选择题、题材预设或预先写好的答案。\n"
         "5. 信息已经足以产生有明显差异的三案时，立即选择 generate。\n\n"
         "只返回以下两种 JSON 之一：\n"
         '{"action":"ask_more","reason":"为什么此刻要问",'
@@ -183,7 +175,14 @@ async def decide_next_interview_step(
         },
     ]
     provider = _planning_provider(model)
-    timeout = INTERVIEW_CLI_TIMEOUT_SECONDS if is_local_cli_provider(provider) else INTERVIEW_API_TIMEOUT_SECONDS
+    is_local_cli = is_local_cli_provider(provider)
+    timeout = INTERVIEW_CLI_TIMEOUT_SECONDS if is_local_cli else INTERVIEW_API_TIMEOUT_SECONDS
+    call_extra_body = dict(extra_body or {})
+    if is_local_cli:
+        # An interview asks for one small JSON decision. Keep the adapter's
+        # cleanup allowance short so a stalled CLI cannot hold the author for
+        # the long writing-task timeout.
+        call_extra_body["local_cli_timeout_grace_seconds"] = INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS
     try:
         result = await LLMGateway.chat_completion(
             messages=messages,
@@ -192,7 +191,7 @@ async def decide_next_interview_step(
             max_tokens=900,
             timeout=timeout,
             retry=0,
-            extra_body=extra_body,
+            extra_body=call_extra_body or None,
         )
     except Exception as exc:
         _raise_interview_error(str(exc))
@@ -216,6 +215,7 @@ async def decide_next_interview_step(
 
 __all__ = [
     "INTERVIEW_API_TIMEOUT_SECONDS",
+    "INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS",
     "INTERVIEW_CLI_TIMEOUT_SECONDS",
     "INTERVIEW_MAX_TURNS",
     "NovelInterviewError",

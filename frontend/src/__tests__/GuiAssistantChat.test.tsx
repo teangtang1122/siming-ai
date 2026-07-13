@@ -15,7 +15,14 @@ vi.mock('../api/client', () => ({
 }))
 
 vi.mock('../hooks/useModelOptions', () => ({
-  useModelOptions: () => ({ defaultModel: 'openai:test' }),
+  useModelOptions: () => ({
+    defaultModel: 'openai:test',
+    loading: false,
+    modelOptions: [
+      { value: 'openai:test', label: 'OpenAI · test', provider: 'openai', model: 'test' },
+      { value: 'anthropic:sonnet', label: 'Anthropic Claude · sonnet', provider: 'anthropic', model: 'sonnet' },
+    ],
+  }),
 }))
 
 vi.mock('react-router-dom', async () => {
@@ -71,5 +78,76 @@ describe('GuiAssistantChat new-book handoff', () => {
       operation: 'generate_concepts',
     }))
     expect(mockPost).not.toHaveBeenCalledWith('/novel-creation/draft', expect.anything())
+  })
+
+  it('makes the current conversation model visible', async () => {
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    expect(await screen.findByRole('combobox', { name: '选择本次对话模型' })).toBeInTheDocument()
+    expect(screen.getByText('OpenAI · test')).toBeInTheDocument()
+  })
+
+  it('marks a failed system chat as an error instead of a completion', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(await screen.findByPlaceholderText(/输入消息/), '你好')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    const errorMessage = await screen.findByRole('alert')
+    expect(errorMessage).toHaveAttribute('data-message-status', 'error')
+    expect(errorMessage).toHaveTextContent('unexpected POST /novel-creation/system-chat')
+  })
+
+  it('marks an empty system chat reply as an error instead of a completion', async () => {
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/novel-creation/system-chat') return Promise.resolve({ data: { data: { reply: '' } } })
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(await screen.findByPlaceholderText(/输入消息/), '你好')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    const errorMessage = await screen.findByRole('alert')
+    expect(errorMessage).toHaveAttribute('data-message-status', 'error')
+    expect(errorMessage).toHaveTextContent('当前模型没有返回文字回复')
+  })
+
+  it('marks a failed interview skip as an error instead of a completion', async () => {
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
+      if (url === '/novel-creation/sessions/session-1/interview/next') {
+        const priorCalls = mockPost.mock.calls.filter(([calledUrl]) => calledUrl === url).length
+        if (priorCalls === 1) {
+          return Promise.resolve({
+            data: {
+              data: {
+                session_id: 'session-1',
+                state: 'question',
+                question: { question: '主角最想得到什么？', type: 'choice', options: ['自由'] },
+                history: [],
+              },
+            },
+          })
+        }
+        return Promise.reject(new Error('模型额度已耗尽'))
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(await screen.findByPlaceholderText(/输入消息/), '我想创建一本新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    await user.click(await screen.findByRole('button', { name: '跳过并生成创意方向' }))
+
+    const errorMessage = await screen.findByRole('alert')
+    expect(errorMessage).toHaveAttribute('data-message-status', 'error')
+    expect(errorMessage).toHaveTextContent('模型额度已耗尽')
+    expect(errorMessage).toHaveTextContent('执行失败')
+    expect(screen.queryByText('主角最想得到什么？')).not.toBeInTheDocument()
   })
 })

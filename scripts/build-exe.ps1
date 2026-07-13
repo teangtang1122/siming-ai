@@ -201,6 +201,8 @@ $ShaLinesArray = @(
 )
 $ShaLines = $ShaLinesArray -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($ShaPath, $ShaLines + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+$VerifierScript = Join-Path $ScriptDir "verify-release-assets.ps1"
+& $VerifierScript -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $Version
 Write-Host "Update manifest: $ManifestPath"
 Write-Host "SHA256 manifest: $ShaPath"
 if ($OneDir) {

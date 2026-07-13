@@ -15,7 +15,7 @@ export function AssistantMemoryModal({ projectId, open, onClose }: AssistantMemo
       onCancel={onClose}
       footer={null}
       width={700}
-      destroyOnClose
+      destroyOnHidden
     >
       <AssistantMemoryList projectId={projectId} />
     </Modal>

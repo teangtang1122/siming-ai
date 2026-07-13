@@ -217,7 +217,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         fetchAIConfig(selectedId)
       }
     }
-  }, [refreshKey])
+  }, [fetchAIConfig, fetchCharacters, fetchDetail, fetchNetwork, fetchVersions, keyword, refreshKey, selectedId])
 
   useEffect(() => {
     if (selectedId) { fetchDetail(selectedId); fetchVersions(selectedId); fetchAIConfig(selectedId) }

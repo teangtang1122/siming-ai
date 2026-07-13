@@ -81,6 +81,14 @@ describe('NovelCreationWizardPage', () => {
     expect(screen.getByDisplayValue('空降凶手')).toBeInTheDocument()
   })
 
+  it('labels the model picker and exposes the mobile genre-scroll hint', async () => {
+    renderPage()
+
+    expect(await screen.findByRole('combobox', { name: '选择本阶段模型' })).toBeInTheDocument()
+    expect(screen.getByText('选择题材')).toBeInTheDocument()
+    expect(screen.getByText('左右滑动选择')).toBeInTheDocument()
+  })
+
   it('allows saving the intake but explains model setup when none is configured', async () => {
     modelState.hasModels = false
     renderPage()
