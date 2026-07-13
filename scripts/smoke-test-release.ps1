@@ -207,3 +207,4 @@ Write-Host "  - API Endpoints: OK" -ForegroundColor Green
 Write-Host "  - Novel Creation V2: OK" -ForegroundColor Green
 Write-Host ""
 Write-Host "All smoke tests passed!" -ForegroundColor Green
+exit 0

@@ -124,6 +124,27 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = "${{ github.event.release.tag_name }}"
           $version = $tag.TrimStart("v")
+          $expectedAssets = @("Siming.exe", "update.json", "sha256.txt")
+          $verified = $false
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          gh release download $tag -R "${{ github.repository }}" -p "Siming.exe" -p "update.json" -p "sha256.txt" -D release
-          ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
+          for ($attempt = 1; $attempt -le 18; $attempt++) {
+            $release = gh release view $tag -R "${{ github.repository }}" --json assets | ConvertFrom-Json
+            $availableAssets = @($release.assets | ForEach-Object { $_.name })
+            $missingAssets = @($expectedAssets | Where-Object { $_ -notin $availableAssets })
+            if ($missingAssets.Count -gt 0) {
+              Write-Host "Waiting for published assets ($attempt/18): $($missingAssets -join ', ')"
+              Start-Sleep -Seconds 10
+              continue
+            }
+            try {
+              gh release download $tag -R "${{ github.repository }}" -p "Siming.exe" -p "update.json" -p "sha256.txt" -D release --clobber
+              if ($LASTEXITCODE -ne 0) { throw "gh release download failed with exit code $LASTEXITCODE" }
+              ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
+              $verified = $true
+              break
+            } catch {
+              Write-Host "Published asset verification attempt $attempt/18 failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds 10
+            }
+          }
+          if (-not $verified) { throw "Published release assets were not available or did not verify after 18 attempts." }
