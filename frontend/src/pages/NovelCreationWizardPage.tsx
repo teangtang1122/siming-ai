@@ -42,6 +42,11 @@ import {
 import SystemNav from '../components/SystemNav'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
+import {
+  startNovelCreationConceptRun,
+  startNovelCreationSession,
+  workbenchUrl,
+} from '../hooks/useNovelCreationInterviewController'
 import './NovelCreationWizardPage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -382,15 +387,17 @@ function NovelCreationWizardPage() {
       setSession(response.data.data)
       return response.data.data
     }
-    const response = await apiClient.post<ApiResponse<{ session_id: string; session: CreationSession }>>('/novel-creation/start', {
+    const created = await startNovelCreationSession({
       mode: 'internal_llm',
-      user_brief: values.brief,
-      ...values,
+      userBrief: values.brief,
+      form: values,
     })
-    setSession(response.data.data.session)
-    setSearchParams({ session: response.data.data.session_id }, { replace: true })
+    const payload = created.raw as { session?: CreationSession }
+    const createdSession = payload.session || (await apiClient.get<ApiResponse<CreationSession>>(`/novel-creation/sessions/${created.id}`)).data.data
+    setSession(createdSession)
+    setSearchParams({ session: created.id }, { replace: true })
     await loadSessions()
-    return response.data.data.session
+    return createdSession
   }
 
   const saveIntake = async () => {
@@ -414,14 +421,10 @@ function NovelCreationWizardPage() {
     setRunMessage('正在理解创作约束并生成三套轻量创意...')
     try {
       const saved = await persistIntake()
-      const response = await apiClient.post<ApiResponse<{ run: StageRun }>>(`/novel-creation/sessions/${saved.id}/runs`, {
-        stage: 'concepts',
-        model: selectedModel,
-        use_model: true,
-        operation: 'generate_concepts',
-      })
-      setSearchParams({ session: saved.id, run: response.data.data.run.id, ...(selectedModel ? { model: selectedModel } : {}) }, { replace: true })
-      watchRun(response.data.data.run.id)
+      const run = await startNovelCreationConceptRun(saved.id, selectedModel)
+      const query = workbenchUrl(saved.id, run.id, selectedModel).split('?')[1] || ''
+      setSearchParams(new URLSearchParams(query), { replace: true })
+      watchRun(run.id)
     } catch (error) {
       setBusy(false)
       setRunMessage('')

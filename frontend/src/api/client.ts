@@ -19,8 +19,19 @@ class ApiClient {
       (response) => response,
       (error: AxiosError) => {
         if (error.response) {
-          const data = error.response.data as { code?: number; message?: string; detail?: string }
-          return Promise.reject(new Error(data.message || data.detail || `请求失败: ${error.response.status}`))
+          const data = error.response.data as {
+            code?: number
+            message?: string
+            detail?: string | { message?: string }
+          }
+          const detailMessage = typeof data.detail === 'string' ? data.detail : data.detail?.message
+          const normalized = new Error(data.message || detailMessage || `请求失败: ${error.response.status}`) as Error & {
+            response?: typeof error.response
+          }
+          // Consumers that understand structured API errors can retain failure
+          // classes, runtime diagnostics, and recovery actions.
+          normalized.response = error.response
+          return Promise.reject(normalized)
         }
         if (error.code === 'ECONNABORTED') {
           return Promise.reject(new Error('请求超时，AI任务可能仍在处理中，请稍后重试或减少文本量'))

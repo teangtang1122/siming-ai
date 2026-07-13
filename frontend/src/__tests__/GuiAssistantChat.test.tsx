@@ -44,7 +44,23 @@ describe('GuiAssistantChat new-book handoff', () => {
     mockPost.mockImplementation((url: string) => {
       if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
       if (url === '/novel-creation/sessions/session-1/interview/next') {
-        return Promise.resolve({ data: { data: { session_id: 'session-1', state: 'ready', history: [] } } })
+        return Promise.resolve({
+          data: {
+            data: {
+              session_id: 'session-1',
+              state: 'ready',
+              history: [],
+              runtime: {
+                effective_model: 'openai:test',
+                provider: 'openai',
+                model_source: 'global_default',
+                tool_mode: 'api_text_json',
+                timeout_seconds: 30,
+                quota_status: 'unknown',
+              },
+            },
+          },
+        })
       }
       if (url === '/novel-creation/sessions/session-1/runs') {
         return Promise.resolve({ data: { data: { run: { id: 'run-1', status: 'running' } } } })
@@ -67,11 +83,10 @@ describe('GuiAssistantChat new-book handoff', () => {
     await user.click(screen.getByRole('button', { name: /发送/ }))
 
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/novel-creation?session=session-1&run=run-1&model=openai%3Atest')
+      expect(mockNavigate).toHaveBeenCalledWith('/novel-creation?session=session-1&run=run-1')
     })
     expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/interview/next', expect.objectContaining({
       qa_history: [],
-      model: 'openai:test',
     }))
     expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
       stage: 'concepts',
@@ -85,6 +100,23 @@ describe('GuiAssistantChat new-book handoff', () => {
 
     expect(await screen.findByRole('combobox', { name: '选择本次对话模型' })).toBeInTheDocument()
     expect(screen.getByText('OpenAI · test')).toBeInTheDocument()
+  })
+
+  it('shows actual runtime diagnostics after an interview response', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(await screen.findByPlaceholderText(/\u8f93\u5165\u6d88\u606f/), '\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+    await user.click(screen.getByRole('button', { name: /\u53d1\u9001/ }))
+
+    await waitFor(() => {
+      const runtime = screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')
+      expect(runtime).toHaveTextContent('\u63d0\u4f9b\u5546\uff1aopenai')
+      expect(runtime).toHaveTextContent('\u6a21\u578b\uff1aopenai:test')
+      expect(runtime).toHaveTextContent('\u6765\u6e90\uff1a\u5168\u5c40\u9ed8\u8ba4')
+      expect(runtime).toHaveTextContent('\u5de5\u5177\u6a21\u5f0f\uff1a\u52a8\u6001\u91c7\u8bbf JSON')
+      expect(runtime).toHaveTextContent('\u8d85\u65f6\uff1a30 \u79d2')
+    })
   })
 
   it('marks a failed system chat as an error instead of a completion', async () => {
@@ -149,5 +181,63 @@ describe('GuiAssistantChat new-book handoff', () => {
     expect(errorMessage).toHaveTextContent('模型额度已耗尽')
     expect(errorMessage).toHaveTextContent('执行失败')
     expect(screen.queryByText('主角最想得到什么？')).not.toBeInTheDocument()
+  })
+
+  it('renders quota exhaustion as an error with the actual CLI diagnostics', async () => {
+    let interviewCalls = 0
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
+      if (url === '/novel-creation/sessions/session-1/interview/next') {
+        interviewCalls += 1
+        if (interviewCalls === 1) {
+          return Promise.resolve({
+            data: {
+              data: {
+                session_id: 'session-1',
+                state: 'question',
+                question: { question: '\u5f00\u5c40\u7684\u4ee3\u4ef7\u662f\u4ec0\u4e48\uff1f', type: 'text' },
+                history: [],
+              },
+            },
+          })
+        }
+        return Promise.reject({
+          response: {
+            data: {
+              detail: {
+                message: 'Free usage exceeded, retrying in 9h',
+                failure_class: 'quota_or_rate_limit',
+                next_action: '\u5207\u6362\u6709\u989d\u5ea6\u7684\u6a21\u578b\u540e\u91cd\u8bd5\u3002',
+                runtime: {
+                  effective_model: 'opencode_cli:free-model',
+                  provider: 'opencode_cli',
+                  model_source: 'conversation_override',
+                  tool_mode: 'local_cli_text_json',
+                  timeout_seconds: 45,
+                  quota_status: 'exhausted_or_limited',
+                },
+              },
+            },
+          },
+        })
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    await user.type(await screen.findByPlaceholderText(/\u8f93\u5165\u6d88\u606f/), '\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+    await user.click(screen.getByRole('button', { name: /\u53d1\u9001/ }))
+    await user.click(await screen.findByRole('button', { name: '\u8df3\u8fc7\u5e76\u751f\u6210\u521b\u610f\u65b9\u5411' }))
+
+    await waitFor(() => {
+      const errorMessage = screen.getByRole('alert')
+      expect(errorMessage).toHaveAttribute('data-message-status', 'error')
+      expect(errorMessage).toHaveTextContent('Free usage exceeded')
+      expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('\u989d\u5ea6\uff1a\u5df2\u8017\u5c3d\u6216\u9650\u6d41')
+      expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('opencode_cli:free-model')
+      expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('\u8d85\u65f6\uff1a45 \u79d2')
+    })
   })
 })

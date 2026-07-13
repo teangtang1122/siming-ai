@@ -18,6 +18,8 @@ release/
 artifacts/
 frontend/dist/
 frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
 siming-projects/
 moshu-projects/
 

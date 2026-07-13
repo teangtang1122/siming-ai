@@ -22,6 +22,8 @@ from ....ai.gateway import LLMGateway
 from ....ai.local_cli_adapter import DEFAULT_LOCAL_CLI_TIMEOUT, is_local_cli_provider
 from ....core.json_repair import parse_json_object
 from ...novel_creation_interview import (
+    INTERVIEW_API_TIMEOUT_SECONDS,
+    INTERVIEW_CLI_TIMEOUT_SECONDS,
     NovelInterviewError,
     decide_next_interview_step,
     make_novel_interview_error,
@@ -2653,6 +2655,38 @@ async def advance_novel_creation_interview(
     """Advance the interview only; never generate a novel blueprint here."""
     from app.database.models import NovelCreationSession
 
+    requested_model = _clean_text(args.get("model")) or None
+
+    def runtime_payload(*, failure_class: str | None = None, next_action: str | None = None) -> dict[str, Any]:
+        try:
+            selection = LLMGateway.select_model_for_task(
+                task_type="novel_creation",
+                model_override=requested_model,
+            )
+            effective_model = selection.model or requested_model
+            provider = selection.provider or (LLMGateway.provider_for_model(effective_model) if effective_model else "")
+            source = "conversation_override" if selection.source == "explicit" else (selection.source or "unconfigured")
+        except Exception:
+            # Runtime labels are diagnostic metadata; an unavailable settings DB
+            # must never turn an otherwise valid interview result into a failure.
+            effective_model = requested_model
+            provider = LLMGateway.provider_for_model(effective_model) if effective_model else ""
+            source = "conversation_override" if requested_model else "unconfigured"
+        is_local_cli = is_local_cli_provider(provider)
+        payload: dict[str, Any] = {
+            "effective_model": effective_model,
+            "provider": provider or None,
+            "model_source": source,
+            "tool_mode": "local_cli_text_json" if is_local_cli else "api_text_json",
+            "timeout_seconds": INTERVIEW_CLI_TIMEOUT_SECONDS if is_local_cli else INTERVIEW_API_TIMEOUT_SECONDS,
+            "quota_status": "exhausted_or_limited" if failure_class == "quota_or_rate_limit" else "unknown",
+        }
+        if failure_class:
+            payload["failure_class"] = failure_class
+        if next_action:
+            payload["next_action"] = next_action
+        return payload
+
     session_id = _clean_text(args.get("session_id"))
     if not session_id:
         return {"tool": "advance_novel_creation_interview", "status": "skipped", "detail": "session_id is required", "data": None}
@@ -2673,7 +2707,7 @@ async def advance_novel_creation_interview(
         feedback="",
         qa_history=history,
         skip_questions=_as_bool(args.get("skip_questions"), False),
-        model=_clean_text(args.get("model")) or None,
+        model=requested_model,
     )
     if result is not None:
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
@@ -2691,13 +2725,21 @@ async def advance_novel_creation_interview(
                     "question": questions[0] if questions else None,
                     "history": data.get("history") or history,
                     "reason": _clean_text(interview.get("reason")),
+                    "runtime": runtime_payload(),
                 },
             }
+        failure_class = _clean_text(data.get("failure_class")) if isinstance(data, dict) else ""
+        next_action = _clean_text(data.get("next_action")) if isinstance(data, dict) else ""
+        error_data = dict(data) if isinstance(data, dict) else {}
+        error_data["runtime"] = runtime_payload(
+            failure_class=failure_class or None,
+            next_action=next_action or None,
+        )
         return {
             "tool": "advance_novel_creation_interview",
             "status": "error",
             "detail": result.get("detail") or "Interview failed",
-            "data": data,
+            "data": error_data,
         }
 
     draft = session.draft_json if isinstance(session.draft_json, dict) else {}
@@ -2712,6 +2754,7 @@ async def advance_novel_creation_interview(
             "history": history,
             "reason": _clean_text(interview.get("reason")),
             "skipped": _as_bool(args.get("skip_questions"), False),
+            "runtime": runtime_payload(),
         },
     }
 

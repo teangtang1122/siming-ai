@@ -120,7 +120,17 @@ async def advance_creation_interview(
         {**payload.model_dump(), "session_id": session_id},
     )
     if result.get("status") != "ok":
-        raise HTTPException(status_code=422, detail=result.get("detail") or "动态采访失败")
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": result.get("detail") or "动态采访失败",
+                "failure_class": runtime.get("failure_class") or data.get("failure_class"),
+                "next_action": runtime.get("next_action") or data.get("next_action"),
+                "runtime": runtime,
+            },
+        )
     return ApiResponse.success(data=result.get("data"), message=result.get("detail") or "采访状态已更新")
 
 

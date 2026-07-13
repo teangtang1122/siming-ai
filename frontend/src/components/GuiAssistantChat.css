@@ -119,6 +119,17 @@
   white-space: nowrap;
 }
 
+.gui-chat-runtime-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.gui-chat-runtime-status .ant-tag {
+  margin-inline-end: 0;
+}
+
 .gui-chat-header-actions {
   align-items: center;
 }
@@ -351,6 +362,10 @@
 
   .gui-chat-model-select {
     width: min(100%, 320px);
+  }
+
+  .gui-chat-runtime-status {
+    max-width: 100%;
   }
 
   .gui-chat-blueprints-head {

@@ -37,3 +37,19 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      - name: Install Chromium for critical-path tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser critical paths
+        run: npm run test:e2e
+
+      - name: Upload browser test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-browser-artifacts
+          path: |
+            frontend/test-results
+            frontend/playwright-report
+          if-no-files-found: ignore
