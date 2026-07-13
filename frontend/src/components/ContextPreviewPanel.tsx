@@ -7,21 +7,32 @@ interface ContextSection {
   category: string
   title: string
   source_type: string
+  source_id?: string | null
   selection_reason: string
   used_chars: number
   score: number
+  estimated_tokens?: number
+  required?: boolean
+  pinned?: boolean
   chunk_count?: number
 }
 
 interface ContextSnapshot {
   rag_used?: boolean
   total_used_chars?: number
+  total_estimated_tokens?: number
   sections?: ContextSection[]
   explanations?: string[]
   warnings?: string[]
   fts_available?: boolean
   resolved_character_count?: number
   resolved_aliases?: Record<string, string>
+  manifest_id?: string
+  status?: string
+  input_budget_tokens?: number
+  output_reserve_tokens?: number
+  context_window_tokens?: number
+  coverage?: Record<string, { status?: string; required?: boolean; item_count?: number }>
 }
 
 interface ContextPreviewPanelProps {
@@ -102,6 +113,16 @@ export function ContextPreviewPanel({
         <Text type="secondary" style={{ fontSize: 11 }}>
           {sections.length} 分区 / {totalChars} 字符
         </Text>
+        {snapshot?.input_budget_tokens && (
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            {snapshot.total_estimated_tokens || 0} / {snapshot.input_budget_tokens} tokens
+          </Text>
+        )}
+        {snapshot?.status && (
+          <Tag color={snapshot.status === 'ready' ? 'green' : snapshot.status === 'overridden' ? 'gold' : 'orange'} style={{ fontSize: 10 }}>
+            {snapshot.status}
+          </Tag>
+        )}
         {allWarnings.length > 0 && (
           <Tag color="orange" style={{ fontSize: 11 }}>
             {allWarnings.length} 条警告
@@ -139,9 +160,24 @@ export function ContextPreviewPanel({
                 {(s.chunk_count ?? 0) > 0 && (
                   <Tag style={{ fontSize: 10 }}>{s.chunk_count} chunks</Tag>
                 )}
+                {s.required && <Tag color="red" style={{ fontSize: 10 }}>required</Tag>}
+                {s.pinned && <Tag color="gold" style={{ fontSize: 10 }}>pinned</Tag>}
+                {s.estimated_tokens !== undefined && (
+                  <Text type="secondary" style={{ fontSize: 10 }}>{s.estimated_tokens} tokens</Text>
+                )}
               </div>
             ))}
           </Space>
+
+          {snapshot?.coverage && Object.keys(snapshot.coverage).length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {Object.entries(snapshot.coverage).map(([name, value]) => (
+                <Tag key={name} color={value.status === 'covered' || value.status === 'not_applicable' ? 'green' : 'orange'} style={{ fontSize: 10 }}>
+                  {name}: {value.status}
+                </Tag>
+              ))}
+            </div>
+          )}
 
           {snapshot?.resolved_aliases && Object.keys(snapshot.resolved_aliases).length > 0 && (
             <div style={{ marginTop: 6 }}>

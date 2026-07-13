@@ -477,6 +477,13 @@ async def execute_tool(
     else:
         arguments.pop("run_id", None)  # Strip if passed explicitly
 
+    # Workspace handlers use this marker to distinguish an author/manual API
+    # save from a formal write initiated by an MCP client.  The latter must
+    # carry a governed manifest and verified evidence before it can become
+    # project state.  It is deliberately internal-only and never part of the
+    # public tool schema.
+    arguments.setdefault("_context_execution_route", "external_mcp")
+
     # Check confirmation token for legacy write tiers and explicitly sensitive tools.
     # Trusted local mode is intentionally frictionless: it can execute Siming MCP
     # project tools without an extra frontend confirmation prompt. Secret/internal

@@ -31,7 +31,7 @@ from ....services.story_granularity import (
     inspect_candidate_coverage_items,
     inspect_chapter_granularity,
 )
-from ..generated_drafts import resolve_chapter_draft_content
+from ..generated_drafts import get_chapter_draft_meta, resolve_chapter_draft_content
 
 
 def _clean_text(value: Any, limit: int = 1200) -> str:
@@ -336,6 +336,52 @@ async def archive_chapter_after_write(
     chapter, error = _resolve_chapter(db, project_id, args)
     if not chapter:
         return {"tool": "archive_chapter_after_write", "status": "skipped", "detail": error, "data": None}
+
+    draft_id = str(args.get("draft_id") or args.get("content_ref") or "").strip() or None
+    draft_meta = get_chapter_draft_meta(project_id, draft_id, db=db) if draft_id else None
+    context_manifest_id = str(
+        args.get("context_manifest_id")
+        or (draft_meta or {}).get("context_manifest_id")
+        or getattr(chapter, "context_manifest_id", "")
+        or ""
+    ).strip()
+    external_execution = str(args.get("_context_execution_route") or "").strip() in {"external_mcp", "local_cli_agent"}
+    if external_execution and not context_manifest_id:
+        return {
+            "tool": "archive_chapter_after_write",
+            "status": "needs_confirmation",
+            "detail": "External Agent formal writes require a prepared context manifest and verified evidence.",
+            "data": {"context_manifest_id": None},
+        }
+    if context_manifest_id:
+        from ....services.context_orchestrator import manifest_is_usable
+
+        valid, detail, manifest = manifest_is_usable(
+            db,
+            context_manifest_id,
+            project_id=project_id,
+            require_external_evidence=False,
+        )
+        if valid and manifest is not None and (
+            external_execution or manifest.execution_route in {"external_mcp", "local_cli_agent"}
+        ):
+            valid, detail, manifest = manifest_is_usable(
+                db,
+                context_manifest_id,
+                project_id=project_id,
+                require_external_evidence=True,
+            )
+        if not valid:
+            return {
+                "tool": "archive_chapter_after_write",
+                "status": (
+                    getattr(manifest, "status", "needs_confirmation")
+                    if getattr(manifest, "status", "") in {"needs_confirmation", "blocked_rebuild", "stale"}
+                    else "needs_confirmation"
+                ),
+                "detail": detail,
+                "data": {"context_manifest_id": context_manifest_id},
+            }
 
     content = resolve_chapter_draft_content(
         project_id=project_id,

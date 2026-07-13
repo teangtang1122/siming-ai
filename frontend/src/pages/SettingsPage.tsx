@@ -31,6 +31,7 @@ import {
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 import SystemNav from '../components/SystemNav'
+import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -945,6 +946,8 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           </Form.Item>
         </Form>
       </Card>
+
+      <ContextGovernanceSettingsPanel />
 
       <Modal
         title={editingProvider ? `编辑 ${providerLabel(editingProvider)} 配置` : '添加模型配置'}

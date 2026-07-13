@@ -767,6 +767,7 @@ def create_run(db: Session, session: NovelCreationSession, stage: str, request: 
         model_source=model,
         tool_mode="session_stage",
         storage_target="session_draft",
+        context_manifest_id=_text(request.get("context_manifest_id")) or None,
         request_json=deepcopy(request),
         current_message=f"正在生成{STAGE_LABELS.get(stage, stage)}",
     )
@@ -830,6 +831,7 @@ def serialize_run(run: NovelCreationStageRun, include_events: bool = True) -> di
         "tool_mode": run.tool_mode,
         "failure_class": run.failure_class,
         "storage_target": run.storage_target,
+        "context_manifest_id": run.context_manifest_id,
         "next_action": run.next_action,
         "result": deepcopy(run.result_json),
         "current_message": run.current_message,

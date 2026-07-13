@@ -177,6 +177,10 @@ def _handle_prompts_get(msg_id: Any, params: dict, db: Any) -> str:
     messages = render_prompt(db, name, {str(k): str(v) for k, v in arguments.items()})
     if messages is None:
         return _jsonrpc_error(msg_id, METHOD_NOT_FOUND, f"Prompt not found: {name}")
+    # Governed prompt rendering can prepare a persisted baseline manifest.
+    # Commit it before handing the ID to an MCP client so a later evidence or
+    # formal-write call can validate the exact same sources.
+    db.commit()
     return _jsonrpc_result(msg_id, {
         "description": f"Siming prompt: {name}",
         "messages": [

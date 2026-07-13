@@ -57,7 +57,7 @@ def _workflow_section(task_type: str) -> str:
 3. Call `get_prompt_pack` with `pack_id="cataloging_external_no_api"`.
 4. Call `start_external_cataloging_job`.
 5. Process chapters strictly in `chapter_order` with the experimental single-stage flow.
-6. For each chapter: `get_next_external_cataloging_chapter(phase="merged", include_content=false)` -> read the chapter file and project mirror directly -> `save_external_cataloging_candidates` with `phase="merged"` -> `apply_pending_cataloging` -> `verify_external_cataloging_progress`.
+6. For each chapter: `get_next_external_cataloging_chapter(phase="merged", include_content=false)` -> `prepare_task_context(task_type="cataloging", arguments={"chapter_id": ...})` -> read the chapter file and project mirror directly -> `search_task_context` when needed -> `submit_context_evidence` for selected required sources -> `save_external_cataloging_candidates` with `phase="merged"` -> `apply_pending_cataloging` -> `verify_external_cataloging_progress`.
 7. Do not call `save_external_cataloging_facts` or `list_cataloging_facts` in this experimental flow.
 8. Never call `start_cataloging_job` unless the user explicitly allows Siming internal API usage.
 """
@@ -65,12 +65,15 @@ def _workflow_section(task_type: str) -> str:
         return """
 ## Required Workflow: Writing
 1. Call `get_mcp_permission_status` and `report_agent_plan`.
-2. Call `prepare_external_writing_context` to get the unified quality prompt and target context.
-3. Read relevant project files directly when useful, but write only through Siming MCP tools.
-4. Call `save_external_chapter_draft` for long chapter text instead of printing it.
-5. Call `record_external_quality_review`, then `create_chapter` with `draft_id/content_ref`.
-6. Call `archive_chapter_after_write` with standard candidates for chapter summary, chapter outline, section scene state, character state, worldbuilding, and narrative_state (events, foreshadowing, storyline progress, unresolved actions).
-7. Call `get_project_archive_status` before reporting completion.
+2. Call `prepare_task_context` with this run_id and use its returned baseline manifest.
+3. Use `search_task_context` only for a task-specific gap; direct mirror reads are not evidence.
+4. Call `submit_context_evidence` with every selected required source before a formal write.
+5. Call `prepare_external_writing_context` with `context_manifest_id` to get the compatible quality prompt wrapper.
+6. Read relevant project files directly when useful, but write only through Siming MCP tools.
+7. Call `save_external_chapter_draft` with `context_manifest_id` for long chapter text instead of printing it.
+8. Call `record_external_quality_review`, then `create_chapter` with `draft_id/content_ref` and `context_manifest_id`.
+9. Call `archive_chapter_after_write` with the same manifest and standard candidates for chapter summary, chapter outline, section scene state, character state, worldbuilding, and narrative_state (events, foreshadowing, storyline progress, unresolved actions).
+10. Call `get_project_archive_status` before reporting completion.
 """
     return """
 ## Required Workflow: General Project Work
@@ -89,6 +92,7 @@ def write_task_file(
     user_request: str,
     task_type: str,
     provider: str,
+    context_manifest_id: str | None = None,
 ) -> Path:
     folder = ensure_project_folder(db, project)
     run_dir = folder / ".siming" / "runs" / run_id
@@ -103,6 +107,7 @@ def write_task_file(
 - provider: `{provider}`
 - task_type: `{task_type}`
 - project_folder: `{folder}`
+- context_manifest_id: `{context_manifest_id or "prepare-per-task"}`
 
 ## User Request
 {user_request.strip() or "No user request provided."}
@@ -111,6 +116,7 @@ def write_task_file(
 - The database is the only authoritative source.
 - The project folder is a read-only mirror for context.
 - You may read files under `project_folder` directly.
+- Direct mirror reads are not auditable evidence for a formal write.
 - Do not edit, delete, rename, or create files in canonical folders: `chapters`, `characters`, `worldbuilding`, `outline`, `relationships`.
 - Every write/delete/update must use Siming MCP tools with `project_id="{project.id}"`.
 - Long text must be stored through Siming tools such as `save_external_chapter_draft`, not printed to stdout.
@@ -255,6 +261,8 @@ def start_local_cli_agent_worker(
     user_request: str,
     task_type: str = "general",
     provider: str | None = None,
+    context_manifest_id: str | None = None,
+    context_arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -279,6 +287,57 @@ def start_local_cli_agent_worker(
         client_name=provider,
         title=f"{task_type}: {(user_request or '')[:80]}",
     )
+    model = cfg.default_model or DEFAULT_CLI_MODELS.get(provider, provider)
+    manifest = None
+    requested_arguments = dict(context_arguments or {})
+    requested_arguments.setdefault("requirements", user_request)
+    context_task_type = {"writing": "writing", "cataloging": "cataloging"}.get(task_type, "planning")
+    # A cataloging worker without a concrete chapter prepares one governed
+    # manifest per chapter after it claims that chapter.  Writing/general
+    # workers can establish a baseline before the local CLI is launched.
+    needs_baseline_now = task_type != "cataloging" or bool(requested_arguments.get("chapter_id"))
+    if needs_baseline_now:
+        from app.services.context_orchestrator import ContextOrchestrator
+
+        orchestrator = ContextOrchestrator(db)
+        manifest = orchestrator.get_manifest(str(context_manifest_id), project_id) if context_manifest_id else None
+        if manifest is None:
+            manifest = orchestrator.prepare(
+                project_id=project_id,
+                task_type=context_task_type,
+                model=f"{provider}:{model}",
+                execution_route="local_cli_agent",
+                arguments=requested_arguments,
+                pinned_chunk_ids=requested_arguments.get("pinned_chunk_ids") if isinstance(requested_arguments.get("pinned_chunk_ids"), list) else (),
+                pinned_source_ids=requested_arguments.get("pinned_source_ids") if isinstance(requested_arguments.get("pinned_source_ids"), list) else (),
+            )
+        run.context_manifest_id = manifest.id
+        usable, detail = orchestrator.validate(manifest)
+        if not usable:
+            update_run_status(db, run.id, "waiting_confirmation", summary=detail)
+            add_event(
+                db,
+                run.id,
+                "context_blocked",
+                status="error",
+                message=detail,
+                payload_json=__import__("json").dumps({"manifest_id": manifest.id, "status": manifest.status}),
+                model_source=f"{provider}:local_cli",
+                tool_mode="siming_mcp_task_file",
+                storage_target="database_authoritative",
+                next_action="review_context_manifest",
+            )
+            return {
+                "status": manifest.status,
+                "detail": detail,
+                "data": {
+                    "run_id": run.id,
+                    "provider": provider,
+                    "task_type": task_type,
+                    "context_manifest_id": manifest.id,
+                    "context_manifest": orchestrator.manifest_payload(manifest, include_content=False),
+                },
+            }
     task_file = write_task_file(
         db,
         project,
@@ -286,10 +345,10 @@ def start_local_cli_agent_worker(
         user_request=user_request,
         task_type=task_type,
         provider=provider,
+        context_manifest_id=manifest.id if manifest else None,
     )
     db.commit()
 
-    model = cfg.default_model or DEFAULT_CLI_MODELS.get(provider, provider)
     launch = parse_cli_launch(cfg.cli_args, provider, _task_prompt(task_file), model)
     args = list(launch.args)
     ensure_opencode_logging_args(provider, args)
@@ -313,5 +372,6 @@ def start_local_cli_agent_worker(
             "task_type": task_type,
             "task_file": str(task_file),
             "project_folder": project.folder_path,
+            "context_manifest_id": manifest.id if manifest else None,
         },
     }

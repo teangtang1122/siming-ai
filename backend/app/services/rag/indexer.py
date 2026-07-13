@@ -128,19 +128,30 @@ def _fts_insert(
 ) -> None:
     if not detect_fts5_available(db):
         return
-    db.execute(
-        text(
-            "INSERT INTO rag_chunks_fts(chunk_id, project_id, source_type, title, content, metadata_json) "
-            "VALUES(:cid, :pid, :st, :title, :content, :meta)"
-        ),
-        {"cid": chunk_id, "pid": project_id, "st": source_type, "title": title, "content": content, "meta": metadata_json or ""},
-    )
+    try:
+        db.execute(
+            text(
+                "INSERT INTO rag_chunks_fts(chunk_id, project_id, source_type, title, content, metadata_json) "
+                "VALUES(:cid, :pid, :st, :title, :content, :meta)"
+            ),
+            {"cid": chunk_id, "pid": project_id, "st": source_type, "title": title, "content": content, "meta": metadata_json or ""},
+        )
+    except Exception as exc:
+        # A database can support FTS5 while its virtual table has not yet been
+        # created (for example a partial upgrade or an isolated test DB). Keep
+        # lexical LIKE indexing alive instead of failing the whole rebuild.
+        if "rag_chunks_fts" not in str(exc):
+            raise
 
 
 def _fts_delete(db: Session, chunk_id: str) -> None:
     if not detect_fts5_available(db):
         return
-    db.execute(text("DELETE FROM rag_chunks_fts WHERE chunk_id = :cid"), {"cid": chunk_id})
+    try:
+        db.execute(text("DELETE FROM rag_chunks_fts WHERE chunk_id = :cid"), {"cid": chunk_id})
+    except Exception as exc:
+        if "rag_chunks_fts" not in str(exc):
+            raise
 
 
 def _fts_delete_by_source(db: Session, project_id: str, source_type: str, source_id: str) -> None:

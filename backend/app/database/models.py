@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Text, Integer, DateTime, Boolean, ForeignKey, Float,
-    Index, JSON, UniqueConstraint,
+    LargeBinary, Index, JSON, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from .session import Base
@@ -69,6 +69,7 @@ class Project(Base):
     mcp_server_configs = relationship("McpServerConfig", back_populates="project", cascade="all, delete-orphan")
     agent_runs = relationship("AgentRun", back_populates="project", cascade="all, delete-orphan")
     external_agent_settings = relationship("ExternalAgentSettings", back_populates="project", uselist=False, cascade="all, delete-orphan")
+    context_manifests = relationship("ContextManifest", cascade="all, delete-orphan")
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +323,10 @@ class Chapter(Base):
     quality_score = Column(Integer, nullable=True)
     quality_detail = Column(Text, nullable=True)
     quality_evaluated_at = Column(DateTime, nullable=True)
+    # The immutable task context that produced this chapter, when it came from
+    # an AI or external Agent flow. Manual editing may deliberately leave it
+    # empty for backwards compatibility.
+    context_manifest_id = Column(String(36), ForeignKey("context_manifests.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -951,6 +956,7 @@ class ChapterDraft(Base):
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(200), nullable=False, default="")
     outline_node_id = Column(String(36), nullable=True)
+    context_manifest_id = Column(String(36), ForeignKey("context_manifests.id", ondelete="SET NULL"), nullable=True)
     content = Column(Text, nullable=False, default="")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1010,6 +1016,174 @@ class RagLink(Base):
     link_type = Column(String(30), nullable=False, default="references")  # references/contradicts/depends_on
     confidence = Column(Float, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# 25a. context governance — versioned, auditable task context
+# ---------------------------------------------------------------------------
+class ModelContextProfile(Base):
+    __tablename__ = "model_context_profiles"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    provider = Column(String(80), nullable=False)
+    model_name = Column(String(200), nullable=False)
+    context_window_tokens = Column(Integer, nullable=False, default=16384)
+    max_output_tokens = Column(Integer, nullable=True)
+    safety_margin_tokens = Column(Integer, nullable=False, default=512)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "model_name", name="uq_model_context_profiles_provider_model"),
+        Index("ix_model_context_profiles_provider_model", "provider", "model_name"),
+    )
+
+
+class ContextManifest(Base):
+    __tablename__ = "context_manifests"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    session_id = Column(String(36), nullable=True)
+    task_type = Column(String(50), nullable=False)
+    model = Column(String(200), nullable=True)
+    provider = Column(String(80), nullable=True)
+    execution_route = Column(String(50), nullable=False, default="internal_api")
+    policy_version = Column(Integer, nullable=False, default=1)
+    status = Column(String(30), nullable=False, default="ready")
+    context_window_tokens = Column(Integer, nullable=False, default=16384)
+    input_budget_tokens = Column(Integer, nullable=False, default=0)
+    output_reserve_tokens = Column(Integer, nullable=False, default=0)
+    safety_margin_tokens = Column(Integer, nullable=False, default=512)
+    estimated_input_tokens = Column(Integer, nullable=False, default=0)
+    estimated_input_chars = Column(Integer, nullable=False, default=0)
+    coverage_json = Column(JSON, nullable=False, default=dict)
+    warnings_json = Column(JSON, nullable=False, default=list)
+    query_json = Column(JSON, nullable=False, default=dict)
+    contract_json = Column(JSON, nullable=False, default=dict)
+    rendered_context = Column(Text, nullable=False, default="")
+    stale_reason = Column(Text, nullable=True)
+    override_reason = Column(Text, nullable=True)
+    override_actor = Column(String(100), nullable=True)
+    overridden_at = Column(DateTime, nullable=True)
+    consumed_at = Column(DateTime, nullable=True)
+    last_validated_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="context_manifests")
+    items = relationship("ContextManifestItem", back_populates="manifest", cascade="all, delete-orphan", order_by="ContextManifestItem.sort_order")
+
+    __table_args__ = (
+        Index("ix_context_manifests_project_task_created", "project_id", "task_type", "created_at"),
+        Index("ix_context_manifests_status", "status"),
+    )
+
+
+class ContextManifestItem(Base):
+    __tablename__ = "context_manifest_items"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    manifest_id = Column(String(36), ForeignKey("context_manifests.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    category = Column(String(50), nullable=False)
+    source_type = Column(String(50), nullable=False)
+    source_id = Column(String(36), nullable=True)
+    chunk_id = Column(String(36), nullable=True)
+    source_hash = Column(String(64), nullable=True)
+    title = Column(String(300), nullable=False, default="")
+    content_excerpt = Column(Text, nullable=False, default="")
+    required = Column(Boolean, nullable=False, default=False)
+    pinned = Column(Boolean, nullable=False, default=False)
+    tier = Column(Integer, nullable=False, default=4)
+    lexical_score = Column(Float, nullable=True)
+    semantic_score = Column(Float, nullable=True)
+    recency_score = Column(Float, nullable=True)
+    structural_score = Column(Float, nullable=True)
+    final_score = Column(Float, nullable=False, default=0.0)
+    selection_reason = Column(Text, nullable=False, default="")
+    estimated_tokens = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=0)
+    evidence_submitted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    manifest = relationship("ContextManifest", back_populates="items")
+
+    __table_args__ = (
+        Index("ix_context_manifest_items_manifest", "manifest_id", "sort_order"),
+        Index("ix_context_manifest_items_source", "project_id", "source_type", "source_id"),
+    )
+
+
+class RagChunkEmbedding(Base):
+    __tablename__ = "rag_chunk_embeddings"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    chunk_id = Column(String(36), ForeignKey("rag_chunks.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    embedding_model = Column(String(200), nullable=False)
+    index_version = Column(Integer, nullable=False, default=1)
+    vector_dim = Column(Integer, nullable=False)
+    vector_blob = Column(LargeBinary, nullable=False)
+    source_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("chunk_id", "embedding_model", "index_version", name="uq_rag_chunk_embeddings_version"),
+        Index("ix_rag_chunk_embeddings_project_model", "project_id", "embedding_model"),
+    )
+
+
+class ContextRebuildJob(Base):
+    __tablename__ = "context_rebuild_jobs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    policy_version = Column(Integer, nullable=False, default=1)
+    status = Column(String(30), nullable=False, default="queued")
+    requested_by = Column(String(100), nullable=True)
+    total_projects = Column(Integer, nullable=False, default=0)
+    completed_projects = Column(Integer, nullable=False, default=0)
+    failed_projects = Column(Integer, nullable=False, default=0)
+    semantic_available = Column(Boolean, nullable=False, default=False)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    projects = relationship("ContextRebuildProject", back_populates="job", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_context_rebuild_jobs_status", "status"),
+    )
+
+
+class ContextRebuildProject(Base):
+    __tablename__ = "context_rebuild_projects"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    job_id = Column(String(36), ForeignKey("context_rebuild_jobs.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String(30), nullable=False, default="queued")
+    index_version = Column(Integer, nullable=False, default=1)
+    current_source_type = Column(String(50), nullable=True)
+    indexed_chunks = Column(Integer, nullable=False, default=0)
+    semantic_chunks = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    job = relationship("ContextRebuildJob", back_populates="projects")
+    project = relationship("Project")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "project_id", name="uq_context_rebuild_project"),
+        Index("ix_context_rebuild_projects_project_status", "project_id", "status"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1191,6 +1365,7 @@ class AgentRun(Base):
     status = Column(String(30), nullable=False, default="created")  # created|running|waiting_confirmation|completed|failed|cancelled
     current_step = Column(String(200), nullable=True)
     summary = Column(Text, nullable=True)
+    context_manifest_id = Column(String(36), ForeignKey("context_manifests.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
@@ -1362,6 +1537,7 @@ class NovelCreationStageRun(Base):
     tool_mode = Column(String(50), nullable=True)
     failure_class = Column(String(50), nullable=True)
     storage_target = Column(String(50), nullable=False, default="session_draft")
+    context_manifest_id = Column(String(36), ForeignKey("context_manifests.id", ondelete="SET NULL"), nullable=True)
     next_action = Column(Text, nullable=True)
     request_json = Column(JSON, nullable=True)
     result_json = Column(JSON, nullable=True)

@@ -26,6 +26,7 @@ def store_chapter_draft(
     content: str,
     title: str = "",
     outline_node_id: str | None = None,
+    context_manifest_id: str | None = None,
     db: Any = None,
 ) -> str:
     draft_id = str(uuid4())
@@ -33,6 +34,7 @@ def store_chapter_draft(
         "project_id": project_id,
         "title": title,
         "outline_node_id": outline_node_id or "",
+        "context_manifest_id": context_manifest_id or "",
         "content": content,
         "created_at": datetime.utcnow(),
     }
@@ -48,6 +50,7 @@ def store_chapter_draft(
                 project_id=project_id,
                 title=title or "",
                 outline_node_id=outline_node_id or None,
+                context_manifest_id=context_manifest_id or None,
                 content=content,
             )
             db.add(row)
@@ -80,6 +83,7 @@ def get_chapter_draft(project_id: str, draft_id: str | None, *, db: Any = None) 
                     "project_id": project_id,
                     "title": row.title or "",
                     "outline_node_id": row.outline_node_id or "",
+                    "context_manifest_id": row.context_manifest_id or "",
                     "content": content,
                     "created_at": row.created_at,
                 }
@@ -101,6 +105,7 @@ def get_chapter_draft_meta(project_id: str, draft_id: str | None, *, db: Any = N
         return {
             "title": str(entry.get("title") or ""),
             "outline_node_id": str(entry.get("outline_node_id") or ""),
+            "context_manifest_id": str(entry.get("context_manifest_id") or ""),
             "content": str(entry.get("content") or ""),
         }
 
@@ -116,6 +121,7 @@ def get_chapter_draft_meta(project_id: str, draft_id: str | None, *, db: Any = N
                 return {
                     "title": row.title or "",
                     "outline_node_id": row.outline_node_id or "",
+                    "context_manifest_id": row.context_manifest_id or "",
                     "content": row.content or "",
                 }
         except Exception:
@@ -172,6 +178,7 @@ def resolve_chapter_draft_content(
                         "project_id": project_id,
                         "title": row.title or "",
                         "outline_node_id": row.outline_node_id or "",
+                        "context_manifest_id": row.context_manifest_id or "",
                         "content": content,
                         "created_at": row.created_at,
                     }

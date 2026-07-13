@@ -885,6 +885,10 @@ class LocalCLIAdapter(BaseAdapter):
 
     @staticmethod
     def _runtime_cwd(extra_body: Optional[dict]) -> str:
+        if bool((extra_body or {}).get("local_cli_isolated")):
+            # CLI-as-model execution never needs a project checkout. An empty
+            # per-call directory prevents accidental repository/project scans.
+            return tempfile.mkdtemp(prefix="siming-cli-isolated-")
         requested = str((extra_body or {}).get("local_cli_cwd") or "").strip()
         candidates = [
             requested,
@@ -906,6 +910,8 @@ class LocalCLIAdapter(BaseAdapter):
 
     @staticmethod
     def _runtime_attachments(extra_body: Optional[dict]) -> list[str]:
+        if bool((extra_body or {}).get("local_cli_isolated")):
+            return []
         raw = (extra_body or {}).get("local_cli_attachments") or []
         if isinstance(raw, str):
             raw = [raw]
@@ -915,6 +921,33 @@ class LocalCLIAdapter(BaseAdapter):
             if path.exists() and path.is_file():
                 attachments.append(str(path.resolve()))
         return attachments
+
+    @staticmethod
+    def _isolated_environment(base: dict[str, str], isolated: bool) -> dict[str, str]:
+        """Disable ambient Agent integrations for CLI-as-model execution."""
+        if not isolated:
+            return base
+        env = dict(base)
+        env["SIMING_LOCAL_CLI_ISOLATED"] = "1"
+        # Providers that recognize one of these flags disable their MCP loader;
+        # unrecognized variables are harmless. The empty cwd and prompt rules
+        # remain the provider-independent safety boundary.
+        env["SIMING_DISABLE_MCP"] = "1"
+        env["MCP_DISABLE"] = "1"
+        env["NO_MCP"] = "1"
+        env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+        env["CLAUDE_CODE_DISABLE_MCP"] = "1"
+        env["CODEX_DISABLE_MCP"] = "1"
+        return env
+
+    @staticmethod
+    def _cleanup_isolated_workspace(cwd: str, isolated: bool) -> None:
+        if not isolated:
+            return
+        try:
+            shutil.rmtree(cwd, ignore_errors=True)
+        except OSError:
+            pass
 
     @staticmethod
     def _write_prompt_file(prompt: str, cwd: str, provider: str) -> str:
@@ -1105,8 +1138,9 @@ class LocalCLIAdapter(BaseAdapter):
         cleanup_codex_output_file = False
         launch_prompt = prompt
         cwd = self._runtime_cwd(extra_body)
+        isolated = bool((extra_body or {}).get("local_cli_isolated"))
         attachments = self._runtime_attachments(extra_body)
-        env = os.environ.copy()
+        env = self._isolated_environment(os.environ.copy(), isolated)
         if self._provider in OPENCODE_FAMILY_PROVIDERS:
             launch, prompt_file = self._opencode_family_launch(
                 prompt=prompt,
@@ -1115,7 +1149,7 @@ class LocalCLIAdapter(BaseAdapter):
                 attachments=attachments,
             )
             if self._provider == "opencode_cli":
-                env = self._opencode_env()
+                env = self._isolated_environment(self._opencode_env(), isolated)
         elif self._provider == "codex_cli":
             launch = self._launch(launch_prompt, model)
             args = list(launch.args)
@@ -1220,6 +1254,7 @@ class LocalCLIAdapter(BaseAdapter):
                     except OSError:
                         pass
             if file_text:
+                self._cleanup_isolated_workspace(cwd, isolated)
                 return file_text
         out_text = stdout.decode("utf-8", errors="replace").strip()
         err_text = stderr.decode("utf-8", errors="replace").strip()
@@ -1242,7 +1277,9 @@ class LocalCLIAdapter(BaseAdapter):
             raise LLMError(f"本机 CLI 调用失败: {detail}")
         if event_error:
             raise LLMError(f"本机 CLI 调用失败: {event_error}")
-        return self._normalize_output(out_text)
+        result = self._normalize_output(out_text)
+        self._cleanup_isolated_workspace(cwd, isolated)
+        return result
 
     def _normalize_output(self, text: str) -> str:
         if not text:

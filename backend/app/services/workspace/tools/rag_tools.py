@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ....services.rag.indexer import ensure_indexed, reindex_project, reindex_project_types, detect_fts5_available, project_has_chunks
 from ....services.rag.retriever import search_chunks, get_chunks_for_source
 from ....services.rag.context_packer import pack_context, ContextBudget
+from ....services.context_orchestrator import ContextOrchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -43,15 +44,30 @@ async def search_context(
         stats = reindex_project_types(db, project_id, source_types=source_types)
         indexed_info = f"（首次检索，已建立索引 {stats['total_chunks']} chunks）"
 
+    orchestrator = ContextOrchestrator(db)
+    manifest = orchestrator.prepare(
+        project_id=project_id,
+        task_type=str(args.get("task_type") or "planning"),
+        model=str(args.get("model") or "") or None,
+        execution_route="workspace_search",
+        arguments={**args, "query": query},
+    )
     results = search_chunks(db, project_id, query, source_types=source_types, limit=limit)
+    evidence_items = orchestrator.search_task_context(manifest, query=query, limit=limit)
+    evidence_by_chunk = {item.get("chunk_id"): item for item in evidence_items if item.get("chunk_id")}
 
     detail = f"检索到 {len(results)} 条相关结果{indexed_info}"
+    if manifest.status == "blocked_rebuild":
+        detail += "（索引重建中，返回当前可用的词法检索结果）"
 
     return {
         "tool": "search_context",
         "status": "ok",
         "detail": detail,
         "data": {
+            "manifest_id": manifest.id,
+            "manifest_status": manifest.status,
+            "rebuild_in_progress": manifest.status == "blocked_rebuild",
             "query": query,
             "fts_available": detect_fts5_available(db),
             "auto_indexed": bool(indexed_info),
@@ -65,6 +81,8 @@ async def search_context(
                     "metadata": r.metadata,
                     "score": round(r.score, 2),
                     "reason": r.reason,
+                    "source_hash": (evidence_by_chunk.get(r.chunk_id) or {}).get("source_hash"),
+                    "evidence": evidence_by_chunk.get(r.chunk_id),
                 }
                 for r in results
             ],
@@ -84,6 +102,16 @@ async def preview_rag_context(
     """Preview budget-aware context assembly with explanations."""
     outline_node_id = str(args.get("outline_node_id") or "").strip() or None
     requirements = str(args.get("requirements") or "").strip()
+
+    orchestrator = ContextOrchestrator(db)
+    manifest = orchestrator.prepare(
+        project_id=project_id,
+        task_type=str(args.get("task_type") or "writing"),
+        model=str(args.get("model") or "") or None,
+        execution_route="workspace_preview",
+        arguments=args,
+        pinned_chunk_ids=args.get("pinned_chunk_ids") if isinstance(args.get("pinned_chunk_ids"), list) else (),
+    )
 
     budget_override = args.get("budget_override")
     budget = ContextBudget()
@@ -130,6 +158,8 @@ async def preview_rag_context(
         "status": "ok",
         "detail": detail,
         "data": {
+            "manifest_id": manifest.id,
+            "context_manifest": orchestrator.manifest_payload(manifest, include_content=True),
             "sections": [
                 {
                     "category": s.category,

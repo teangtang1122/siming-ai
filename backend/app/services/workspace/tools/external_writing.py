@@ -54,6 +54,43 @@ async def prepare_external_writing_context(
             "data": None,
         }
 
+    # The compatibility response below is now backed by one auditable baseline
+    # manifest. External agents may inspect the read-only mirror, but formal
+    # writes must later prove selected evidence against this baseline.
+    from app.services.context_orchestrator import ContextOrchestrator
+
+    context_orchestrator = ContextOrchestrator(db)
+    requested_manifest_id = str(args.get("context_manifest_id") or "").strip()
+    if requested_manifest_id:
+        context_manifest = context_orchestrator.get_manifest(requested_manifest_id, project_id)
+        if not context_manifest:
+            return {
+                "tool": "prepare_external_writing_context",
+                "status": "needs_confirmation",
+                "detail": "The requested context manifest was not found.",
+                "data": {"context_manifest_id": requested_manifest_id},
+            }
+    else:
+        context_manifest = context_orchestrator.prepare(
+            project_id=project_id,
+            task_type="writing",
+            model=str(args.get("model") or "") or None,
+            execution_route="external_mcp",
+            arguments=args,
+            pinned_chunk_ids=args.get("pinned_chunk_ids") if isinstance(args.get("pinned_chunk_ids"), list) else (),
+            pinned_source_ids=args.get("pinned_source_ids") if isinstance(args.get("pinned_source_ids"), list) else (),
+        )
+    if context_manifest.status == "blocked_rebuild":
+        return {
+            "tool": "prepare_external_writing_context",
+            "status": "blocked_rebuild",
+            "detail": "Context indexes are rebuilding. Browsing remains available, but external writes are paused.",
+            "data": {
+                "context_manifest_id": context_manifest.id,
+                "context_manifest": context_orchestrator.manifest_payload(context_manifest, include_content=False),
+            },
+        }
+
     result: dict[str, Any] = {
         "project": {
             "id": project.id,
@@ -327,10 +364,64 @@ async def prepare_external_writing_context(
         {"tool": "evaluate_chapter", "description": "8维度80分质量评估（需要司命API）"},
     ]
 
+    # Replace the old fixed "16 characters + 20 worldbuilding" mirror with
+    # the same bounded selection used by internal API and CLI execution.
+    selected_items = context_orchestrator.manifest_payload(context_manifest, include_content=True)["items"]
+    result["context_manifest_id"] = context_manifest.id
+    result["manifest_id"] = context_manifest.id
+    result["context_manifest_status"] = context_manifest.status
+    result["requires_author_confirmation"] = context_manifest.status == "needs_confirmation"
+    result["context_manifest"] = context_orchestrator.manifest_payload(context_manifest, include_content=True)
+    result["selected_context"] = selected_items
+    result["characters"] = [
+        {
+            "id": item["source_id"],
+            "name": item["title"],
+            "context": item["content"],
+            "source_hash": item["source_hash"],
+        }
+        for item in selected_items
+        if item["source_type"] == "character"
+    ]
+    result["worldbuilding"] = [
+        {
+            "id": item["source_id"],
+            "title": item["title"],
+            "content": item["content"],
+            "source_hash": item["source_hash"],
+        }
+        for item in selected_items
+        if item["source_type"] == "worldbuilding"
+    ]
+    result["recent_summaries"] = [
+        {
+            "id": item["source_id"],
+            "title": item["title"],
+            "summary": item["content"],
+            "source_hash": item["source_hash"],
+        }
+        for item in selected_items
+        if item["source_type"] == "chapter_summary"
+    ]
+    result["warnings"] = list(dict.fromkeys([*(result.get("warnings") or []), *(context_manifest.warnings_json or [])]))
+    result["next_tool_suggestions"] = [
+        {"tool": "submit_context_evidence", "description": "Submit selected baseline or task-search sources before formal write."},
+        *result["next_tool_suggestions"],
+    ]
+    # This endpoint is an API-free context mirror, so it remains successful for
+    # old clients even when the baseline needs author confirmation. The later
+    # generated draft/create/archive write gate enforces that confirmation.
+    status = "ok"
+    detail = (
+        f"Governed context prepared: {len(selected_items)} selected sources, "
+        f"{context_manifest.estimated_input_tokens}/{context_manifest.input_budget_tokens} input tokens"
+    )
+    if context_manifest.status == "needs_confirmation":
+        detail += ". Required anchors are missing; author confirmation or override is required before generation."
     return {
         "tool": "prepare_external_writing_context",
-        "status": "ok",
-        "detail": f"Context prepared: {len(result['characters'])} characters, {len(result['worldbuilding'])} worldbuilding, {len(result['recent_summaries'])} recent chapters",
+        "status": status,
+        "detail": detail,
         "data": result,
     }
 
@@ -358,14 +449,34 @@ async def save_external_chapter_draft(
 
     title = str(args.get("title") or "").strip()
     outline_node_id = str(args.get("outline_node_id") or "").strip() or None
+    context_manifest_id = str(args.get("context_manifest_id") or "").strip() or None
     source_agent = str(args.get("source_agent") or "external").strip()
     quality_review_json = args.get("quality_review_json")
+
+    if str(args.get("_context_execution_route") or "").strip() in {"external_mcp", "local_cli_agent"}:
+        if not context_manifest_id:
+            return {
+                "tool": "save_external_chapter_draft",
+                "status": "needs_confirmation",
+                "detail": "Prepare task context first and attach its context_manifest_id to the draft.",
+                "data": None,
+            }
+        from ....services.context_orchestrator import ContextOrchestrator
+
+        if not ContextOrchestrator(db).get_manifest(context_manifest_id, project_id):
+            return {
+                "tool": "save_external_chapter_draft",
+                "status": "needs_confirmation",
+                "detail": "The supplied context manifest is unavailable for this project.",
+                "data": {"context_manifest_id": context_manifest_id},
+            }
 
     draft_id = store_chapter_draft(
         project_id=project_id,
         content=content,
         title=title,
         outline_node_id=outline_node_id,
+        context_manifest_id=context_manifest_id,
         db=db,
     )
 
@@ -378,6 +489,7 @@ async def save_external_chapter_draft(
             "content_ref": draft_id,
             "title": title,
             "outline_node_id": outline_node_id,
+            "context_manifest_id": context_manifest_id,
             "word_count": count_words(content),
             "source_agent": source_agent,
         },

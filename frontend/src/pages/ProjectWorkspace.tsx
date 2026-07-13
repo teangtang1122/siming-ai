@@ -3,6 +3,7 @@ import { Button, Layout, Menu, Tooltip } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../stores'
 import {
+  AuditOutlined,
   BarChartOutlined,
   BookOutlined,
   BranchesOutlined,
@@ -36,6 +37,7 @@ import SkillsPage from './SkillsPage'
 import PromptPacksPage from './PromptPacksPage'
 import { ScheduledTasksPage } from './ScheduledTasksPage'
 import NarrativeGovernancePage from './NarrativeGovernancePage'
+import ContextGovernancePage from './ContextGovernancePage'
 import AiSidePanel from '../components/AiSidePanel'
 import TabCache from '../components/TabCache'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
@@ -46,10 +48,11 @@ import ThemeSwitcher from '../themes/ThemeSwitcher'
 
 const { Sider, Content } = Layout
 
-type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'governance' | 'import' | 'skills' | 'prompts' | 'scheduler'
+type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'governance' | 'context' | 'import' | 'skills' | 'prompts' | 'scheduler'
 
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
+  context: 'Context governance',
   writer: '写作工作台',
   outline: '大纲规划',
   characters: '角色管理',
@@ -148,6 +151,13 @@ function ProjectWorkspace() {
   const menuItems = [
     {
       type: 'group' as const,
+      label: sidebarCollapsed ? '' : 'Governance',
+      children: [
+        { key: 'context', icon: <AuditOutlined />, label: 'Context governance' },
+      ],
+    },
+    {
+      type: 'group' as const,
       label: sidebarCollapsed ? '' : '创作',
       children: [
         { key: 'writer', icon: <BookOutlined />, label: '写作工作台' },
@@ -185,6 +195,7 @@ function ProjectWorkspace() {
   /** Tab renderers — wrapped in closures for TabCache lazy evaluation */
   const tabRenderers = projectId
     ? {
+        context: () => <ContextGovernancePage projectId={projectId} />,
         writer: () => <WriterPage projectId={projectId} />,
         outline: () => <OutlinePage projectId={projectId} />,
         characters: () => <CharactersPage projectId={projectId} />,

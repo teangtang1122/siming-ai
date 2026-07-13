@@ -38,6 +38,56 @@ def _character_names(value: object) -> list[str]:
     return [str(name) for name in value if name]
 
 
+def _context_write_gate(
+    db: Session,
+    project_id: str,
+    context_manifest_id: str | None,
+    *,
+    require_manifest: bool = False,
+) -> tuple[bool, str, object | None]:
+    """Validate a governed generation before it becomes project state."""
+    if not context_manifest_id:
+        if require_manifest:
+            return False, "External Agent formal writes require a prepared context manifest and verified evidence.", None
+        # Old drafts and manual writes predate manifests. Keep them readable and
+        # writable; new external flows always attach a manifest at draft time.
+        return True, "", None
+    from ....services.context_orchestrator import manifest_is_usable
+
+    ok, detail, manifest = manifest_is_usable(
+        db,
+        context_manifest_id,
+        project_id=project_id,
+        require_external_evidence=False,
+    )
+    # Resolve the external-evidence requirement after we have the manifest.
+    if manifest is not None:
+        ok, detail, manifest = manifest_is_usable(
+            db,
+            context_manifest_id,
+            project_id=project_id,
+            # The caller route is authoritative here. An MCP Agent must not
+            # be able to bypass evidence submission by supplying a manifest
+            # initially prepared by an internal API or workspace path.
+            require_external_evidence=(
+                require_manifest
+                or getattr(manifest, "execution_route", "") in {"external_mcp", "local_cli_agent"}
+            ),
+        )
+    return ok, detail, manifest
+
+
+def _context_gate_status(manifest: object | None) -> str:
+    """Map an unusable manifest to an actionable workspace result status."""
+    status = str(getattr(manifest, "status", "") or "")
+    if status in {"needs_confirmation", "blocked_rebuild", "stale"}:
+        return status
+    # A ready Manifest can still be rejected because an external Agent has not
+    # supplied evidence for every required anchor. That is a confirmation
+    # action, not a successful `ready` tool result.
+    return "needs_confirmation"
+
+
 def _link_chapter_characters(
     db: Session,
     project_id: str,
@@ -162,6 +212,21 @@ async def create_chapter(
 ) -> dict:
     draft_id = str(args.get("draft_id") or args.get("content_ref") or "").strip() or None
     draft_meta = get_chapter_draft_meta(project_id, draft_id, db=db) if draft_id else None
+    context_manifest_id = str(args.get("context_manifest_id") or (draft_meta or {}).get("context_manifest_id") or "").strip() or None
+    external_execution = str(args.get("_context_execution_route") or "").strip() in {"external_mcp", "local_cli_agent"}
+    context_ok, context_detail, context_manifest = _context_write_gate(
+        db,
+        project_id,
+        context_manifest_id,
+        require_manifest=external_execution,
+    )
+    if not context_ok:
+        return {
+            "tool": "create_chapter",
+            "status": _context_gate_status(context_manifest),
+            "detail": context_detail,
+            "data": {"context_manifest_id": context_manifest_id},
+        }
     title = str(args.get("title") or (draft_meta or {}).get("title") or "").strip()
     content = str(args.get("content") or "")
     content = resolve_chapter_draft_content(
@@ -208,6 +273,7 @@ async def create_chapter(
         content=content,
         word_count=count_words(content),
         current_version=1,
+        context_manifest_id=context_manifest_id,
     )
     db.add(chapter)
     db.flush()
@@ -244,6 +310,7 @@ async def create_chapter(
             "current_version": chapter.current_version or 1,
             "snapshot_count": 1,
             "narrative_checkpoint_id": governance_checkpoint.id,
+            "context_manifest_id": context_manifest_id,
         },
     }
 
@@ -257,6 +324,29 @@ async def update_chapter(
     chapter = _find_chapter(db, project_id, args)
     if not chapter:
         return {"tool": "update_chapter", "status": "skipped", "detail": "未找到章节"}
+
+    draft_id = str(args.get("draft_id") or args.get("content_ref") or "").strip() or None
+    draft_meta = get_chapter_draft_meta(project_id, draft_id, db=db) if draft_id else None
+    context_manifest_id = str(
+        args.get("context_manifest_id")
+        or (draft_meta or {}).get("context_manifest_id")
+        or getattr(chapter, "context_manifest_id", "")
+        or ""
+    ).strip() or None
+    external_execution = str(args.get("_context_execution_route") or "").strip() in {"external_mcp", "local_cli_agent"}
+    context_ok, context_detail, context_manifest = _context_write_gate(
+        db,
+        project_id,
+        context_manifest_id,
+        require_manifest=external_execution,
+    )
+    if not context_ok:
+        return {
+            "tool": "update_chapter",
+            "status": _context_gate_status(context_manifest),
+            "detail": context_detail,
+            "data": {"context_manifest_id": context_manifest_id},
+        }
 
     ensure_current_snapshot(db, chapter, "manual_save")
 
@@ -278,6 +368,8 @@ async def update_chapter(
             )
         chapter.content = new_content
         chapter.word_count = count_words(chapter.content)
+    if context_manifest_id:
+        chapter.context_manifest_id = context_manifest_id
 
     outline_node = None
     for ref in (args.get("outline_node_id"), args.get("outline_node_title"), args.get("outline_title")):

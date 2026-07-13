@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.types import Boolean, Date, DateTime, Float, Integer, String, Text
+from sqlalchemy.types import Boolean, Date, DateTime, Float, Integer, LargeBinary, String, Text
 
 
 def _sqlite_type(col_type) -> str:
@@ -22,6 +22,8 @@ def _sqlite_type(col_type) -> str:
         return "DATE"
     if isinstance(col_type, Float):
         return "REAL"
+    if isinstance(col_type, LargeBinary):
+        return "BLOB"
     return "TEXT"
 
 

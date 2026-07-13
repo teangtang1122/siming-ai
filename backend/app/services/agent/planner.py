@@ -530,6 +530,7 @@ def plan_local_cli_writing(
     args = {
         "task_type": "writing",
         "user_request": user_request,
+        "outline_node_id": outline_node_id,
     }
     if provider:
         args["provider"] = provider

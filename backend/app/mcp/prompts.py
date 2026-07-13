@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,18 @@ def render_quickstart(
     ]
     from app.prompts.cataloging_source import get_language_rules, get_project_binding_rules
 
-    parts.extend(["", get_project_binding_rules(), "", get_language_rules()])
+    parts.extend([
+        "",
+        "## Context Governance (Required for Agent Tasks)",
+        "- Before writing, review, rewriting, or cataloging a concrete chapter, call prepare_task_context to obtain the baseline manifest.",
+        "- Use search_task_context for focused follow-up retrieval. Reading a project mirror directly remains allowed but is not auditable evidence.",
+        "- Before a formal chapter write or archive, call submit_context_evidence for every required manifest item using its source hash.",
+        "- Pass context_manifest_id through prepare_external_writing_context, save_external_chapter_draft, create_chapter, and archive_chapter_after_write.",
+        "",
+        get_project_binding_rules(),
+        "",
+        get_language_rules(),
+    ])
     if task:
         parts.append(f"\n## 当前任务\n{task}")
     if project_id:
@@ -221,7 +232,7 @@ def _quality_writing_prompt_for_project(project: Any) -> str:
     return get_public_chapter_quality_system_prompt().replace("{style_context}", style_context)
 
 
-def render_writing_context(
+def _legacy_render_writing_context(
     db: Any,
     project_id: str,
     *,
@@ -322,7 +333,7 @@ def render_writing_context(
     return messages
 
 
-def render_continuity_check(
+def _legacy_render_continuity_check(
     db: Any,
     project_id: str,
     *,
@@ -372,7 +383,7 @@ def render_continuity_check(
     return messages
 
 
-def render_fanfic_draft(
+def _legacy_render_fanfic_draft(
     db: Any,
     project_id: str,
     *,
@@ -424,6 +435,139 @@ def render_fanfic_draft(
 
     messages.append(McpPromptMessage(role="user", content="\n".join(parts)))
     return messages
+
+
+def _render_governed_task_prompt(
+    db: Any,
+    *,
+    project_id: str,
+    task_type: str,
+    title: str,
+    arguments: dict[str, Any],
+    legacy_renderer: Callable[[], list[McpPromptMessage]] | None = None,
+) -> list[McpPromptMessage]:
+    """Render only the shared manifest for MCP prompt consumers.
+
+    The legacy prompt builders selected project rows independently.  Keeping
+    them below for historical reference is harmless, but newly rendered MCP
+    prompts must use the same persisted manifest as API and CLI execution.
+    """
+    from app.database.models import Project
+    from app.services.context_orchestrator import ContextOrchestrator
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return [McpPromptMessage(role="user", content=f"Error: Project {project_id} not found.")]
+
+    orchestrator = ContextOrchestrator(db)
+    try:
+        manifest = orchestrator.prepare(
+            project_id=project_id,
+            task_type=task_type,
+            execution_route="external_mcp",
+            arguments=arguments,
+        )
+    except TypeError:
+        # A few third-party integrations use a read-only/mock session solely
+        # to render a display prompt. They cannot persist a manifest or source
+        # hash, so retain the historical display-only response for that case.
+        if legacy_renderer:
+            return legacy_renderer()
+        raise
+    if not isinstance(manifest.id, str) or not manifest.id:
+        if legacy_renderer:
+            return legacy_renderer()
+        return [McpPromptMessage(role="user", content="Error: a persisted context manifest could not be prepared.")]
+    payload = orchestrator.manifest_payload(manifest, include_content=True)
+    state = payload["status"]
+    workflow = (
+        "1. Call prepare_task_context with this manifest_id or your run_id.\n"
+        "2. Use search_task_context only for a focused gap.\n"
+        "3. Before create_chapter, update_chapter, or archive_chapter_after_write, "
+        "call submit_context_evidence for every required source.\n"
+        "4. Direct project-mirror reads may inform exploration, but are not verified evidence."
+    )
+    parts = [
+        f"# Siming Governed Context: {title}",
+        f"Project: {project.title}",
+        f"context_manifest_id: {manifest.id}",
+        f"manifest_status: {state}",
+        f"input_budget: {payload['budget']['estimated_input_tokens']}/{payload['budget']['input_budget_tokens']} tokens",
+        "\n## Required MCP Workflow\n" + workflow,
+    ]
+    if state != "ready":
+        parts.append("\n## Author Confirmation Required\n" + "\n".join(payload.get("warnings") or ["Required context is unavailable."]))
+    parts.append("\n## Governed Task Context\n" + (payload.get("rendered_context") or "No context could be rendered."))
+    return [McpPromptMessage(role="user", content="\n".join(parts))]
+
+
+def render_writing_context(
+    db: Any,
+    project_id: str,
+    *,
+    chapter_number: str | None = None,
+    outline_node_id: str | None = None,
+    requirements: str | None = None,
+) -> list[McpPromptMessage]:
+    return _render_governed_task_prompt(
+        db,
+        project_id=project_id,
+        task_type="writing",
+        title="Writing",
+        arguments={
+            "chapter_number": chapter_number or "",
+            "outline_node_id": outline_node_id or "",
+            "requirements": requirements or "",
+        },
+        legacy_renderer=lambda: _legacy_render_writing_context(
+            db,
+            project_id,
+            chapter_number=chapter_number,
+            outline_node_id=outline_node_id,
+            requirements=requirements,
+        ),
+    )
+
+
+def render_continuity_check(
+    db: Any,
+    project_id: str,
+    *,
+    chapter_id: str | None = None,
+) -> list[McpPromptMessage]:
+    return _render_governed_task_prompt(
+        db,
+        project_id=project_id,
+        task_type="review",
+        title="Continuity Review",
+        arguments={"chapter_id": chapter_id or ""},
+        legacy_renderer=lambda: _legacy_render_continuity_check(db, project_id, chapter_id=chapter_id),
+    )
+
+
+def render_fanfic_draft(
+    db: Any,
+    project_id: str,
+    *,
+    outline_node_id: str | None = None,
+    requirements: str | None = None,
+) -> list[McpPromptMessage]:
+    return _render_governed_task_prompt(
+        db,
+        project_id=project_id,
+        task_type="writing",
+        title="Fanfic Draft",
+        arguments={
+            "outline_node_id": outline_node_id or "",
+            "requirements": requirements or "",
+        },
+        legacy_renderer=lambda: _legacy_render_fanfic_draft(
+            db,
+            project_id,
+            outline_node_id=outline_node_id,
+            requirements=requirements,
+        ),
+    )
 
 
 def render_prompt(

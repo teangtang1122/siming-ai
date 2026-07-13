@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from copy import deepcopy
 from typing import Any
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from ....ai.gateway import LLMGateway
 from ....core.json_repair import parse_json_object
 from ....database.models import NovelCreationSession, NovelCreationStageRun
+from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
 from ...novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,
@@ -91,7 +93,12 @@ def _validate_compact_concepts(concepts: Any) -> list[dict[str, Any]]:
     return cards
 
 
-async def _generate_compact_concepts(session: NovelCreationSession, model: str) -> list[dict[str, Any]]:
+async def _generate_compact_concepts(
+    session: NovelCreationSession,
+    model: str,
+    *,
+    context_manifest: Any | None = None,
+) -> list[dict[str, Any]]:
     """Generate decision-ready concepts, never a complete project blueprint."""
     draft = session.draft_json if isinstance(session.draft_json, dict) else {}
     interview = draft.get("interview") if isinstance(draft.get("interview"), dict) else {}
@@ -129,19 +136,20 @@ async def _generate_compact_concepts(session: NovelCreationSession, model: str) 
     )
     from ....services.content_store import content_root
 
-    result = await LLMGateway.chat_completion(
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        model=model,
-        temperature=0.8,
-        max_tokens=3200,
-        timeout=180,
-        retry=0,
-        extra_body=LLMGateway.local_cli_extra_body(
-            model,
-            cwd=str(content_root()),
-            base={"moshu_task_type": "planning", "storage_target": "session_draft"},
-        ),
-    )
+    with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
+        result = await LLMGateway.chat_completion(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            model=model,
+            temperature=0.8,
+            max_tokens=3200,
+            timeout=180,
+            retry=0,
+            extra_body=LLMGateway.local_cli_extra_body(
+                model,
+                cwd=str(content_root()),
+                base={"moshu_task_type": "planning", "storage_target": "session_draft"},
+            ),
+        )
     raw = _text(result.get("content")) if isinstance(result, dict) else ""
     if not raw:
         raise RuntimeError("模型没有返回轻量创意卡")
@@ -157,6 +165,8 @@ async def _enhance_with_model(
     stage: str,
     baseline: dict[str, Any],
     model: str,
+    *,
+    context_manifest: Any | None = None,
 ) -> dict[str, Any]:
     draft = session.draft_json if isinstance(session.draft_json, dict) else {}
     context = {
@@ -182,19 +192,20 @@ async def _enhance_with_model(
     )
     from ....services.content_store import content_root
 
-    result = await LLMGateway.chat_completion(
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        model=model,
-        temperature=0.65,
-        max_tokens=12000 if stage == "opening_outline" else 6000,
-        timeout=180,
-        retry=0,
-        extra_body=LLMGateway.local_cli_extra_body(
-            model,
-            cwd=str(content_root()),
-            base={"moshu_task_type": "planning", "storage_target": "session_draft"},
-        ),
-    )
+    with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
+        result = await LLMGateway.chat_completion(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            model=model,
+            temperature=0.65,
+            max_tokens=12000 if stage == "opening_outline" else 6000,
+            timeout=180,
+            retry=0,
+            extra_body=LLMGateway.local_cli_extra_body(
+                model,
+                cwd=str(content_root()),
+                base={"moshu_task_type": "planning", "storage_target": "session_draft"},
+            ),
+        )
     raw = _text(result.get("content")) if isinstance(result, dict) else ""
     if not raw:
         raise RuntimeError("没有收到模型的文字回复")
@@ -235,9 +246,45 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
     auto_confirm = bool(args.get("auto_confirm", stage == "all"))
     existing_run_id = _text(args.get("_run_id"))
     run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == existing_run_id).first() if existing_run_id else None
+    orchestrator = ContextOrchestrator(db)
+    manifest_id = _text(args.get("context_manifest_id")) or _text(getattr(run, "context_manifest_id", ""))
+    manifest = orchestrator.get_manifest(manifest_id) if manifest_id else None
+    if manifest is None:
+        draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+        manifest = orchestrator.prepare(
+            project_id=None,
+            task_type="new_project",
+            model=model or None,
+            execution_route="novel_creation",
+            session_id=session.id,
+            arguments={
+                "session_id": session.id,
+                "session": {"brief": session.user_brief, "draft": draft},
+                "answers": ((draft.get("interview") or {}).get("history") if isinstance(draft.get("interview"), dict) else []),
+                "confirmed_stages": draft.get("stages") or {},
+                "author_constraints": session.user_brief or "",
+                "stage": stage,
+            },
+        )
+    usable, context_detail = orchestrator.validate(manifest)
+    governed_args = {**args, "context_manifest_id": manifest.id}
     if run is None:
-        run = create_run(db, session, stage, args)
+        run = create_run(db, session, stage, governed_args)
         db.commit()
+    elif not run.context_manifest_id:
+        run.context_manifest_id = manifest.id
+        db.commit()
+    if not usable:
+        run.status = manifest.status
+        run.current_message = context_detail
+        run.next_action = "Review or override the context manifest, then retry this stage."
+        db.commit()
+        return {
+            "tool": "generate_novel_creation_stage",
+            "status": manifest.status,
+            "detail": context_detail,
+            "data": {"run": serialize_run(run), "session": serialize_session(session)},
+        }
 
     try:
         generated: dict[str, Any] = {}
@@ -254,7 +301,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
             db.commit()
             if not use_model or not model:
                 raise ValueError("轻量创意需要选择可用模型后才能生成")
-            concepts = await _generate_compact_concepts(session, model)
+            concepts = await _generate_compact_concepts(session, model, context_manifest=manifest)
             concept_stage = save_compact_concepts(session, concepts)
             generated["concepts"] = deepcopy(concept_stage.get("data") or {})
             add_run_event(
@@ -280,7 +327,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 run.current_message = f"正在生成{STAGE_LABELS.get(name, name)}"
                 db.commit()
                 baseline = derive_stage(session, name)
-                data = await _enhance_with_model(session, name, baseline, model) if use_model and model and name != "final_review" else baseline
+                data = await _enhance_with_model(session, name, baseline, model, context_manifest=manifest) if use_model and model and name != "final_review" else baseline
                 _validate_stage(name, data)
                 save_stage(session, name, data, confirm=auto_confirm, source="model" if use_model and model else "contract")
                 generated[name] = deepcopy(data)
@@ -307,6 +354,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
             )
             db.commit()
         complete_run(db, run, {"stages": generated})
+        orchestrator.mark_consumed(manifest)
         db.commit()
         db.refresh(run)
         return {

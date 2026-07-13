@@ -87,6 +87,24 @@ def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depend
     """Create a chapter linked to an optional outline node."""
     project = get_project_or_404(db, project_id)
     get_outline_node_or_404(db, project_id, payload.outline_node_id)
+    if payload.context_manifest_id:
+        from ..services.context_orchestrator import manifest_is_usable
+
+        valid, detail, manifest = manifest_is_usable(
+            db,
+            payload.context_manifest_id,
+            project_id=project_id,
+            require_external_evidence=False,
+        )
+        if valid and manifest is not None and manifest.execution_route == "external_mcp":
+            valid, detail, _ = manifest_is_usable(
+                db,
+                payload.context_manifest_id,
+                project_id=project_id,
+                require_external_evidence=True,
+            )
+        if not valid:
+            raise ValidationError(detail)
     chapter = Chapter(
         project_id=project_id,
         outline_node_id=payload.outline_node_id,
@@ -94,6 +112,7 @@ def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depend
         content=payload.content or "",
         word_count=count_words(payload.content or ""),
         current_version=1,
+        context_manifest_id=payload.context_manifest_id,
     )
     db.add(chapter)
     db.flush()
@@ -140,6 +159,27 @@ def save_chapter(
         chapter.title = update_data["title"]
     if "content" in update_data:
         chapter.content = update_data["content"] or ""
+    if "context_manifest_id" in update_data:
+        context_manifest_id = update_data["context_manifest_id"]
+        if context_manifest_id:
+            from ..services.context_orchestrator import manifest_is_usable
+
+            valid, detail, manifest = manifest_is_usable(
+                db,
+                context_manifest_id,
+                project_id=project_id,
+                require_external_evidence=False,
+            )
+            if valid and manifest is not None and manifest.execution_route == "external_mcp":
+                valid, detail, _ = manifest_is_usable(
+                    db,
+                    context_manifest_id,
+                    project_id=project_id,
+                    require_external_evidence=True,
+                )
+            if not valid:
+                raise ValidationError(detail)
+        chapter.context_manifest_id = context_manifest_id
 
     chapter.word_count = count_words(chapter.content or "")
     chapter.current_version = (chapter.current_version or 1) + 1

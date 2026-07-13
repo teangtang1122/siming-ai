@@ -24,13 +24,20 @@ async def start_agent_run(
 
     client_name = str(args.get("client_name") or "unknown").strip()
     title = str(args.get("title") or "").strip() or None
+    context_manifest_id = str(args.get("context_manifest_id") or "").strip()
 
     run = create_run(db, project_id, source="mcp", client_name=client_name, title=title)
+    if context_manifest_id:
+        from app.services.context_orchestrator import ContextOrchestrator
+
+        manifest = ContextOrchestrator(db).get_manifest(context_manifest_id, project_id)
+        if manifest:
+            run.context_manifest_id = manifest.id
     return {
         "tool": "start_agent_run",
         "status": "ok",
         "detail": f"Agent run started: {run.id}",
-        "data": {"run_id": run.id, "status": run.status},
+        "data": {"run_id": run.id, "status": run.status, "context_manifest_id": run.context_manifest_id},
     }
 
 
@@ -131,11 +138,27 @@ async def report_context_selected(
     if isinstance(sources, list):
         sources = sources[:20]  # Max 20 sources
 
+    evidence_result = None
+    if run.context_manifest_id:
+        from app.services.context_orchestrator import ContextOrchestrator
+
+        manifest = ContextOrchestrator(db).get_manifest(run.context_manifest_id, project_id)
+        if not manifest:
+            return {"tool": "report_context_selected", "status": "needs_confirmation", "detail": "Baseline context manifest is unavailable"}
+        evidence_result = ContextOrchestrator(db).submit_evidence(manifest, sources)
+        if not evidence_result["accepted_count"]:
+            return {
+                "tool": "report_context_selected",
+                "status": "needs_confirmation",
+                "detail": "No submitted context source could be verified against the baseline manifest.",
+                "data": {"run_id": run_id, "manifest_id": manifest.id, **evidence_result},
+            }
+
     event = add_event(
         db, run_id, "context_selected",
         status="ok",
         message=f"{len(sources)} sources selected",
-        payload_json=json.dumps({"sources": sources}, ensure_ascii=False),
+        payload_json=json.dumps({"sources": sources, "verified": evidence_result}, ensure_ascii=False),
     )
     if not event:
         return {"tool": "report_context_selected", "status": "skipped", "detail": "Run is terminal"}
@@ -144,7 +167,7 @@ async def report_context_selected(
         "tool": "report_context_selected",
         "status": "ok",
         "detail": f"Context: {len(sources)} sources",
-        "data": {"run_id": run_id, "sequence": event.sequence},
+        "data": {"run_id": run_id, "sequence": event.sequence, "verified": evidence_result},
     }
 
 

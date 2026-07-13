@@ -33,6 +33,7 @@ from .search import (
 from .memory import forget, list_memories, recall, remember
 from .web_search import web_search
 from .rag_tools import search_context, preview_rag_context, explain_context_selection
+from .context_governance import prepare_task_context, search_task_context, submit_context_evidence
 from .worldbuilding import (
     create_worldbuilding_entry,
     delete_worldbuilding_entry,
@@ -235,4 +236,7 @@ __all__ = [
     "list_narrative_checkpoints",
     "diff_narrative_checkpoint",
     "restore_narrative_governance_checkpoint",
+    "prepare_task_context",
+    "search_task_context",
+    "submit_context_evidence",
 ]

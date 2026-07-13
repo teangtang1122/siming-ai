@@ -44,7 +44,13 @@ from .retriever import SearchResult, search_chunks
 
 @dataclass
 class ContextBudget:
-    """Char budget for context packing with token estimate tracking."""
+    """Global context budget with legacy category limits.
+
+    The original fields remain character-oriented so existing callers keep
+    their behaviour.  Manifest orchestration uses the token-window fields as
+    the hard source of truth; category limits are now only field-compression
+    hints rather than an independent model budget.
+    """
     max_system_chars: int = 0       # fixed, not adjustable
     max_input_chars: int = 0        # current user message
     max_chapter_chars: int = 5000
@@ -55,6 +61,39 @@ class ContextBudget:
     max_outline_chars: int = 2000
     reserve_chars: int = 4000
     token_budget: int = 6000        # soft target for estimated tokens
+    context_window_tokens: int = 0
+    output_reserve_tokens: int = 0
+    safety_margin_tokens: int = 512
+    hard_input_budget_tokens: int = 0
+    task_type: str = ""
+
+    @classmethod
+    def from_token_window(
+        cls,
+        *,
+        context_window_tokens: int,
+        output_reserve_tokens: int,
+        safety_margin_tokens: int = 512,
+        task_type: str = "",
+    ) -> "ContextBudget":
+        """Build a hard global budget from a model context profile.
+
+        ``window - output reserve - safety margin`` is intentionally computed
+        once here so callers cannot accidentally allocate each category a full
+        independent budget.
+        """
+        window = max(1, int(context_window_tokens))
+        output = max(0, int(output_reserve_tokens))
+        margin = max(0, int(safety_margin_tokens))
+        input_budget = max(0, window - output - margin)
+        return cls(
+            token_budget=input_budget,
+            context_window_tokens=window,
+            output_reserve_tokens=output,
+            safety_margin_tokens=margin,
+            hard_input_budget_tokens=input_budget,
+            task_type=task_type,
+        )
 
     @property
     def total_chars(self) -> int:
@@ -71,8 +110,18 @@ class ContextBudget:
         )
         return used_chars + addition_chars <= total_budget
 
+    def can_fit_tokens(self, used_tokens: int, addition_tokens: int) -> bool:
+        """Return whether an item fits the manifest-wide token ceiling."""
+        limit = self.hard_input_budget_tokens or self.token_budget
+        return max(0, used_tokens) + max(0, addition_tokens) <= max(0, limit)
+
+    def remaining_tokens(self, used_tokens: int) -> int:
+        """Return the remaining hard input budget for a manifest."""
+        limit = self.hard_input_budget_tokens or self.token_budget
+        return max(0, limit - max(0, used_tokens))
+
     def to_dict(self) -> dict[str, int]:
-        return {
+        data = {
             "max_chapter_chars": self.max_chapter_chars,
             "max_summary_chars": self.max_summary_chars,
             "max_character_chars": self.max_character_chars,
@@ -82,6 +131,14 @@ class ContextBudget:
             "reserve_chars": self.reserve_chars,
             "token_budget": self.token_budget,
         }
+        if self.context_window_tokens:
+            data.update({
+                "context_window_tokens": self.context_window_tokens,
+                "output_reserve_tokens": self.output_reserve_tokens,
+                "safety_margin_tokens": self.safety_margin_tokens,
+                "hard_input_budget_tokens": self.hard_input_budget_tokens,
+            })
+        return data
 
 
 @dataclass

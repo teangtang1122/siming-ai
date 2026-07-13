@@ -83,6 +83,42 @@ def _is_non_retryable(error: BaseException) -> bool:
     )
 
 
+def _apply_active_context_manifest(
+    messages: list[dict],
+    extra_body: Optional[dict],
+    max_tokens: Optional[int],
+) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    """Inject the executor-selected manifest for every governed gateway call."""
+    try:
+        from ..services.context_orchestrator import active_context_manifest
+
+        active = active_context_manifest()
+    except Exception:
+        active = None
+    if active is None:
+        return messages, extra_body, max_tokens
+
+    body = dict(extra_body or {})
+    body.setdefault("moshu_context_manifest_id", active.manifest_id)
+    output_limit = active.output_reserve_tokens
+    if output_limit > 0:
+        max_tokens = min(max_tokens, output_limit) if max_tokens else output_limit
+    # A handler that already deliberately renders its selected categories (the
+    # chapter writer) marks the body to prevent duplicate prompt material.
+    if body.get("moshu_context_manifest_rendered") or not active.rendered_context:
+        return messages, body, max_tokens
+    context_message = {
+        "role": "system",
+        "content": "Use only this governed task context as project evidence.\n\n" + active.rendered_context,
+    }
+    if messages and messages[0].get("role") == "system":
+        rendered_messages = [messages[0], context_message, *messages[1:]]
+    else:
+        rendered_messages = [context_message, *messages]
+    body["moshu_context_manifest_rendered"] = True
+    return rendered_messages, body, max_tokens
+
+
 class LLMGateway:
     """Single entry point for all LLM calls.
 
@@ -380,6 +416,11 @@ class LLMGateway:
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[str | dict] = None,
     ) -> dict:
+        messages, extra_body, max_tokens = _apply_active_context_manifest(
+            messages,
+            extra_body,
+            max_tokens,
+        )
         model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
         if local_runtime_disabled(provider):
@@ -452,6 +493,11 @@ class LLMGateway:
         retry: int = MAX_RETRIES,
         extra_body: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
+        messages, extra_body, max_tokens = _apply_active_context_manifest(
+            messages,
+            extra_body,
+            max_tokens,
+        )
         model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
         if local_runtime_disabled(provider):
@@ -519,6 +565,11 @@ class LLMGateway:
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[str | dict] = None,
     ) -> AsyncGenerator[dict, None]:
+        messages, extra_body, max_tokens = _apply_active_context_manifest(
+            messages,
+            extra_body,
+            max_tokens,
+        )
         model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
         if local_runtime_disabled(provider):

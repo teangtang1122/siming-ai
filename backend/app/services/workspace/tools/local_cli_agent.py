@@ -123,12 +123,21 @@ async def start_local_cli_agent_run(
         task_type = "general"
     user_request = str(args.get("user_request") or args.get("request") or "").strip()
     provider = str(args.get("provider") or "").strip() or None
+    context_arguments = {
+        "outline_node_id": str(args.get("outline_node_id") or "").strip(),
+        "chapter_id": str(args.get("chapter_id") or "").strip(),
+        "requirements": user_request,
+        "pinned_chunk_ids": args.get("pinned_chunk_ids") if isinstance(args.get("pinned_chunk_ids"), list) else [],
+        "pinned_source_ids": args.get("pinned_source_ids") if isinstance(args.get("pinned_source_ids"), list) else [],
+    }
     result = start_local_cli_agent_worker(
         db,
         project_id,
         user_request=user_request,
         task_type=task_type,
         provider=provider,
+        context_manifest_id=str(args.get("context_manifest_id") or "").strip() or None,
+        context_arguments=context_arguments,
     )
     return {
         "tool": "start_local_cli_agent_run",

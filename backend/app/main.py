@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+import asyncio
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from .core.exceptions import (
 from .database.backup import backup_sqlite_database
 from .database.session import Base, SessionLocal, engine
 from .database.migrations import ensure_runtime_schema
-from .routers import projects, config, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging, agent, skill, scheduler, mcp, external_agent, external_agent_global, tools, novel_creation, system_assistant, local_models, prompt_packs, narrative_governance
+from .routers import projects, config, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging, agent, skill, scheduler, mcp, external_agent, external_agent_global, tools, novel_creation, system_assistant, local_models, prompt_packs, narrative_governance, context_governance
 from .services.content_store import migrate_legacy_projects_to_files
 from .services.workspace.run_log import mark_interrupted_assistant_runs
 from .version import APP_VERSION
@@ -96,6 +97,7 @@ app.include_router(novel_creation.router, prefix="/api/v1")
 app.include_router(system_assistant.router, prefix="/api/v1")
 app.include_router(local_models.router, prefix="/api/v1")
 app.include_router(narrative_governance.router, prefix="/api/v1")
+app.include_router(context_governance.router, prefix="/api/v1")
 
 
 @app.get("/")
@@ -131,6 +133,19 @@ async def startup_scheduler():
         import logging
         logging.getLogger(__name__).warning("Failed to resume local AI jobs: %s", exc)
     if "pytest" not in sys.modules:
+        try:
+            from .services.context_orchestrator import ContextOrchestrator, run_context_rebuild_job
+
+            with SessionLocal() as db:
+                job = ContextOrchestrator(db).create_rebuild_job(requested_by="startup")
+                job_id = job.id if job.status == "queued" else ""
+                db.commit()
+            if job_id:
+                asyncio.create_task(asyncio.to_thread(run_context_rebuild_job, job_id))
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to schedule context rebuild: %s", exc)
+    if "pytest" not in sys.modules:
         async def _configure_external_agents() -> None:
             try:
                 import asyncio
@@ -161,7 +176,6 @@ async def startup_scheduler():
                     exc,
                 )
 
-        import asyncio
         asyncio.create_task(_configure_external_agents())
 
 

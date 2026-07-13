@@ -239,6 +239,9 @@ def _register_all() -> None:
         cancel_cataloging_job,
         character_writer,
         continue_text,
+        prepare_task_context,
+        search_task_context,
+        submit_context_evidence,
         create_chapter,
         create_character,
         create_outline_node,
@@ -486,6 +489,7 @@ def _register_all() -> None:
             "short_sentences": {"type": "boolean", "description": "是否启用短句模式"},
             "custom_style_prompt": {"type": "string", "description": "自定义风格提示词"},
             "daily_word_goal": {"type": "integer", "description": "每日字数目标"},
+            "context_manifest_id": {"type": "string", "description": "Governed task manifest required for MCP formal writes"},
         },
         required=["title"],
         tool_type="write",
@@ -1571,6 +1575,7 @@ def _register_all() -> None:
             "summary": {"type": "string", "description": "更新章节摘要"},
             "outline_node_id": {"type": "string", "description": "更新关联大纲节点"},
             "involved_characters": {"type": "array", "items": {"type": "string"}, "description": "更新出场角色名列表（替换全部关联）"},
+            "context_manifest_id": {"type": "string", "description": "Governed task manifest required for MCP formal writes"},
         },
         tool_type="write",
         estimated_cost="free",
@@ -1798,6 +1803,55 @@ def _register_all() -> None:
     ))
 
     # ── Generator: LLM content generation ────────────────────────────────
+
+    _r(ToolDef(
+        name="prepare_task_context",
+        description="Prepare an auditable, budgeted baseline context manifest for an Agent task.",
+        input_schema={
+            "task_type": {"type": "string", "description": "writing|cataloging|review|rewrite|new_project|planning"},
+            "context_manifest_id": {"type": "string", "description": "Existing manifest ID from a Siming MCP prompt or prior task preparation"},
+            "manifest_id": {"type": "string", "description": "Compatibility alias for context_manifest_id"},
+            "model": {"type": "string", "description": "Provider:model used for context-window budgeting"},
+            "execution_route": {"type": "string", "description": "external_mcp|local_cli_agent|internal_api"},
+            "arguments": {"type": "object", "description": "Task arguments used to resolve contract anchors"},
+            "run_id": {"type": "string", "description": "Optional Agent run to bind to this manifest"},
+            "pinned_chunk_ids": {"type": "array", "items": {"type": "string"}},
+            "pinned_source_ids": {"type": "array", "items": {"type": "string"}},
+        },
+        required=["task_type"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=prepare_task_context,
+    ))
+
+    _r(ToolDef(
+        name="search_task_context",
+        description="Search a baseline task manifest and return source-hash verified evidence candidates.",
+        input_schema={
+            "context_manifest_id": {"type": "string", "description": "Baseline manifest ID"},
+            "run_id": {"type": "string", "description": "Agent run bound to a baseline manifest"},
+            "query": {"type": "string", "description": "Task-specific retrieval query"},
+            "limit": {"type": "integer", "description": "Maximum verified sources; default 12"},
+        },
+        required=["query"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=search_task_context,
+    ))
+
+    _r(ToolDef(
+        name="submit_context_evidence",
+        description="Submit Agent-selected baseline/search sources for server-side hash verification before a formal write.",
+        input_schema={
+            "context_manifest_id": {"type": "string", "description": "Baseline manifest ID"},
+            "run_id": {"type": "string", "description": "Agent run bound to a baseline manifest"},
+            "sources": {"type": "array", "items": {"type": "object"}, "description": "chunk_id/source_type/source_id/source_hash evidence"},
+        },
+        required=["sources"],
+        tool_type="read",
+        estimated_cost="free",
+        handler=submit_context_evidence,
+    ))
 
     _r(ToolDef(
         name="chapter_writer",
@@ -2112,6 +2166,11 @@ def _register_all() -> None:
             "task_type": {"type": "string", "description": "general|cataloging|writing"},
             "user_request": {"type": "string", "description": "User request for the local CLI agent"},
             "provider": {"type": "string", "description": "Optional local CLI provider id, e.g. claude_cli/codex_cli/opencode_cli/mimocode_cli/cursor_cli/kilocode_cli/qwen_code_cli/hermes_cli/openclaw_cli"},
+            "outline_node_id": {"type": "string", "description": "Writing target outline node for the governed baseline"},
+            "chapter_id": {"type": "string", "description": "Cataloging/review target chapter for the governed baseline"},
+            "context_manifest_id": {"type": "string", "description": "Optional previously prepared baseline manifest"},
+            "pinned_chunk_ids": {"type": "array", "items": {"type": "string"}, "description": "Author-pinned context chunks"},
+            "pinned_source_ids": {"type": "array", "items": {"type": "string"}, "description": "Author-pinned context source ids"},
         },
         tool_type="scheduler",
         estimated_cost="local_cli",
@@ -2186,6 +2245,10 @@ def _register_all() -> None:
             "mode": {"type": "string", "description": "Writing mode: quality|fast"},
             "include_prompt_pack": {"type": "boolean", "description": "Include public prompt pack (default true)"},
             "requirements": {"type": "string", "description": "Additional writing requirements"},
+            "context_manifest_id": {"type": "string", "description": "Prepared governed baseline manifest ID"},
+            "model": {"type": "string", "description": "Model identity used to resolve the context budget"},
+            "pinned_chunk_ids": {"type": "array", "items": {"type": "string"}},
+            "pinned_source_ids": {"type": "array", "items": {"type": "string"}},
         },
         tool_type="read",
         estimated_cost="free",
@@ -2199,6 +2262,7 @@ def _register_all() -> None:
             "content": {"type": "string", "description": "Chapter content to save"},
             "title": {"type": "string", "description": "Chapter title"},
             "outline_node_id": {"type": "string", "description": "Linked outline node ID"},
+            "context_manifest_id": {"type": "string", "description": "Prepared governed baseline manifest ID"},
             "source_agent": {"type": "string", "description": "Source agent name (e.g. claude-code)"},
             "quality_review_json": {"type": "string", "description": "Optional quality review JSON"},
         },
@@ -2247,6 +2311,7 @@ def _register_all() -> None:
             "chapter_id": {"type": "string", "description": "Chapter ID for context"},
             "updates": {"type": "object", "description": "Updates grouped by characters, worldbuilding, outline, chapter_summary"},
             "mode": {"type": "string", "description": "manual|auto. Manual returns candidates, auto applies them."},
+            "context_manifest_id": {"type": "string", "description": "Governed task manifest for external writing updates"},
         },
         tool_type="write",
         writes_project_data=True,
@@ -2268,6 +2333,7 @@ def _register_all() -> None:
             "source": {"type": "string", "description": "internal_writer|local_cli|external_agent|repair"},
             "generate_if_missing": {"type": "boolean", "description": "Generate fallback candidates when none or required candidates are missing. Default true."},
             "model": {"type": "string", "description": "Optional model for post-write archive candidate generation"},
+            "context_manifest_id": {"type": "string", "description": "Governed task manifest required for MCP formal writes"},
         },
         tool_type="write",
         writes_project_data=True,

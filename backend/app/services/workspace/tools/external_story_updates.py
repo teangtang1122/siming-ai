@@ -152,6 +152,8 @@ async def apply_external_story_updates(
     archive = await archive_chapter_after_write(db, project_id, {
         "chapter_id": chapter_id,
         "outline_node_id": args.get("outline_node_id"),
+        "context_manifest_id": args.get("context_manifest_id"),
+        "_context_execution_route": args.get("_context_execution_route"),
         "candidates": candidates,
         "mode": mode,
         "source": "external_agent",

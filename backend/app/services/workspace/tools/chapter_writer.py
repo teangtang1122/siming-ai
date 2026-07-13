@@ -15,6 +15,7 @@ from ....database.models import (
     Project,
 )
 from ....services.agent.prompt_builder import compose_chapter_writer_messages, get_chapter_pack
+from ....services.context_orchestrator import ContextOrchestrator
 from ....services.context_builders import (
     _build_outline_context,
     _build_recent_summaries,
@@ -78,7 +79,43 @@ async def chapter_writer(
     if not project:
         return {"tool": "chapter_writer", "status": "skipped", "detail": "项目不存在", "data": {}}
 
-    # --- Build rich RAG query context ---
+    # Every model path starts with the same persisted manifest. Existing tool
+    # callers do not need to provide an id; missing anchors become a
+    # recoverable confirmation state instead of a blind model call.
+    model = str(args.get("model") or "") or None
+    context_orchestrator = ContextOrchestrator(db)
+    requested_manifest_id = str(args.get("context_manifest_id") or "").strip()
+    if requested_manifest_id:
+        context_manifest = context_orchestrator.get_manifest(requested_manifest_id, project_id)
+        if not context_manifest:
+            return {
+                "tool": "chapter_writer",
+                "status": "needs_confirmation",
+                "detail": "The requested context manifest was not found.",
+                "data": {"context_manifest_id": requested_manifest_id},
+            }
+    else:
+        context_manifest = context_orchestrator.prepare(
+            project_id=project_id,
+            task_type="writing",
+            model=model,
+            execution_route="internal_cli" if is_local_cli_provider(_chapter_writer_provider(model)) else "internal_api",
+            arguments={**args, "involved_characters": involved_names},
+            pinned_chunk_ids=args.get("pinned_chunk_ids") if isinstance(args.get("pinned_chunk_ids"), list) else (),
+        )
+    manifest_ok, manifest_detail = context_orchestrator.validate(context_manifest)
+    if not manifest_ok:
+        return {
+            "tool": "chapter_writer",
+            "status": context_manifest.status if context_manifest.status in {"needs_confirmation", "blocked_rebuild", "stale"} else "needs_confirmation",
+            "detail": manifest_detail,
+            "data": {
+                "context_manifest_id": context_manifest.id,
+                "context_manifest": context_orchestrator.manifest_payload(context_manifest, include_content=False),
+            },
+        }
+
+    # --- Build legacy query context for compatibility-only helper paths ---
     outline_node = None
     if outline_node_id:
         outline_node = (
@@ -161,6 +198,32 @@ async def chapter_writer(
         char_detail_text, char_rag_used
     )
 
+    # The LLM receives only manifest-rendered sections. The preceding legacy
+    # builders remain available to old helper imports, but their assembled text
+    # is deliberately overwritten here.
+    outline_ctx = _manifest_section_text(context_manifest, "target_outline") or "No target outline was selected."
+    summaries = _manifest_section_text(context_manifest, "previous_summary") or "No previous chapter summary is available."
+    char_detail_text = _manifest_section_text(context_manifest, "scene_character") or "No scene character was selected."
+    world_ctx = _manifest_section_text(
+        context_manifest,
+        "worldbuilding",
+        "hybrid_retrieval",
+        "narrative_governance",
+        "pinned",
+    ) or "No additional worldbuilding source was selected."
+    style_ctx = _manifest_section_text(context_manifest, "style") or "Use the project's established style."
+    writing_directives = build_writing_directives(
+        project_title=project.title or "",
+        project_description=project.description or "",
+        project_tags=project.tags,
+        outline_context=outline_ctx,
+        world_context=world_ctx,
+        requirements=requirements,
+        plot_design=plot_design,
+        roleplay_results=roleplay_results,
+    )
+    context_snapshot = _manifest_snapshot(context_orchestrator, context_manifest, outline_node_id, involved_names)
+
     pack = get_chapter_pack(mode)
     messages = compose_chapter_writer_messages(
         pack=pack,
@@ -175,7 +238,6 @@ async def chapter_writer(
         writing_directives=writing_directives,
     )
 
-    model = str(args.get("model") or "") or None
     provider = _chapter_writer_provider(model)
     if provider == "local_llama_cpp":
         return {
@@ -188,6 +250,17 @@ async def chapter_writer(
             "data": {},
         }
     timeout_seconds, max_output_tokens = _chapter_writer_limits(model)
+    max_output_tokens = min(max_output_tokens, max(1, context_manifest.output_reserve_tokens))
+    gateway_extra = LLMGateway.local_cli_extra_body(
+        model,
+        base={
+            "moshu_task_type": "writing",
+            "moshu_project_id": project_id,
+            "moshu_context_manifest_id": context_manifest.id,
+            "moshu_context_manifest_rendered": True,
+            "local_cli_isolated": True,
+        },
+    )
 
     try:
         result = await LLMGateway.chat_completion(
@@ -197,10 +270,7 @@ async def chapter_writer(
             max_tokens=max_output_tokens,
             timeout=timeout_seconds,
             retry=1,
-            extra_body={
-                "moshu_task_type": "writing",
-                "moshu_project_id": project_id,
-            },
+            extra_body=gateway_extra,
         )
     except Exception as exc:
         return {
@@ -232,8 +302,10 @@ async def chapter_writer(
         content=content,
         title=outline_title,
         outline_node_id=outline_node_id,
+        context_manifest_id=context_manifest.id,
         db=db,
     )
+    context_orchestrator.mark_consumed(context_manifest)
 
     return {
         "tool": "chapter_writer",
@@ -245,6 +317,7 @@ async def chapter_writer(
             "content": content,
             "word_count": count_words(content),
             "model": result.get("model", ""),
+            "context_manifest_id": context_manifest.id,
             "context_snapshot": context_snapshot,
         },
     }
@@ -253,6 +326,56 @@ async def chapter_writer(
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _manifest_section_text(context_manifest, *categories: str) -> str:
+    """Return exact selected manifest content for one or more categories."""
+    wanted = set(categories)
+    return "\n\n".join(
+        item.content_excerpt
+        for item in context_manifest.items
+        if item.category in wanted and item.content_excerpt
+    ).strip()
+
+
+def _manifest_snapshot(
+    orchestrator: ContextOrchestrator,
+    context_manifest,
+    outline_node_id: str | None,
+    involved_names: list[str],
+) -> dict:
+    """Compact, content-free UI snapshot generated from the manifest."""
+    payload = orchestrator.manifest_payload(context_manifest, include_content=False)
+    return {
+        "manifest_id": context_manifest.id,
+        "status": context_manifest.status,
+        "outline_node_id": outline_node_id,
+        "involved_characters": involved_names,
+        "rag_used": any(item.chunk_id for item in context_manifest.items),
+        "total_used_chars": context_manifest.estimated_input_chars,
+        "total_estimated_tokens": context_manifest.estimated_input_tokens,
+        "input_budget_tokens": context_manifest.input_budget_tokens,
+        "output_reserve_tokens": context_manifest.output_reserve_tokens,
+        "context_window_tokens": context_manifest.context_window_tokens,
+        "coverage": context_manifest.coverage_json or {},
+        "sections": [
+            {
+                "category": item["category"],
+                "title": item["title"],
+                "source_type": item["source_type"],
+                "source_id": item["source_id"],
+                "selection_reason": item["selection_reason"],
+                "used_chars": 0,
+                "estimated_tokens": item["estimated_tokens"],
+                "score": item["scores"]["final"] or 0,
+                "chunk_count": 1 if item["chunk_id"] else 0,
+                "required": item["required"],
+                "pinned": item["pinned"],
+            }
+            for item in payload["items"]
+        ],
+        "warnings": payload["warnings"],
+        "explanations": [item["selection_reason"] for item in payload["items"]],
+    }
 
 def _section_text(packed: PackedContext, category: str) -> str | None:
     """Extract content string from a packed section by category."""

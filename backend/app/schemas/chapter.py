@@ -14,6 +14,7 @@ class ChapterCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     outline_node_id: Optional[str] = Field(None, description="Linked outline node ID")
     content: str = Field("", description="Chapter body")
+    context_manifest_id: Optional[str] = Field(None, description="Auditable AI task context used for generated content")
 
 
 class ChapterUpdate(BaseModel):
@@ -23,6 +24,7 @@ class ChapterUpdate(BaseModel):
     outline_node_id: Optional[str] = None
     content: Optional[str] = None
     trigger_type: SnapshotTrigger = "manual_save"
+    context_manifest_id: Optional[str] = None
 
 
 class ChapterListItem(BaseModel):
