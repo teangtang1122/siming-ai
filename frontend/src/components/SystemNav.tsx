@@ -1,13 +1,13 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Button, Space, Tooltip, Typography } from 'antd'
-import { BookOutlined, HomeOutlined, PlusOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons'
+import { BookOutlined, HomeOutlined, PlusOutlined, RocketOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
 
 const { Text } = Typography
 
 interface SystemNavProps {
   /** Highlight the current page */
-  current?: 'dashboard' | 'creation' | 'assistant' | 'settings' | 'external-agent'
+  current?: 'dashboard' | 'creation' | 'assistant' | 'getting-started' | 'settings' | 'external-agent'
 }
 
 /**
@@ -23,6 +23,7 @@ function SystemNav({ current }: SystemNavProps) {
     if (location.pathname === '/dashboard' || location.pathname === '/') return 'dashboard'
     if (location.pathname === '/novel-creation') return 'creation'
     if (location.pathname === '/gui') return 'assistant'
+    if (location.pathname === '/getting-started') return 'getting-started'
     if (location.pathname === '/settings') return 'settings'
     if (location.pathname === '/external-agent') return 'external-agent'
     return ''
@@ -32,6 +33,7 @@ function SystemNav({ current }: SystemNavProps) {
     { key: 'dashboard', label: '作品库', icon: <HomeOutlined />, path: '/dashboard' },
     { key: 'creation', label: '新书立项', icon: <PlusOutlined />, path: '/novel-creation' },
     { key: 'assistant', label: 'AI 助手', icon: <RobotOutlined />, path: '/gui' },
+    { key: 'getting-started', label: '快速开始', icon: <RocketOutlined />, path: '/getting-started' },
   ] as const
 
   return (

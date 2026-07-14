@@ -22,6 +22,7 @@ import {
   EditOutlined,
   FolderOpenOutlined,
   PlusOutlined,
+  RocketOutlined,
   SearchOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
@@ -54,6 +55,10 @@ interface ApiResponse<T> {
   code: number
   message: string
   data: T
+}
+
+interface GettingStartedSummary {
+  needs_setup: boolean
 }
 
 interface UploadResult {
@@ -131,6 +136,7 @@ function DashboardPage() {
   const [importStatus, setImportStatus] = useState('')
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null)
   const [creationDrafts, setCreationDrafts] = useState<NovelCreationDraftSummary[]>([])
+  const [needsModelSetup, setNeedsModelSetup] = useState(false)
   const [editingProject, setEditingProject] = useState<{
     id: string
     title: string
@@ -154,6 +160,18 @@ function DashboardPage() {
       }
     }
     void loadCreationDrafts()
+  }, [])
+
+  useEffect(() => {
+    const checkModelSetup = async () => {
+      try {
+        const response = await apiClient.get<ApiResponse<GettingStartedSummary>>('/config/getting-started', { summary: true })
+        setNeedsModelSetup(Boolean(response.data.data.needs_setup))
+      } catch {
+        setNeedsModelSetup(false)
+      }
+    }
+    void checkModelSetup()
   }, [])
 
   const pendingUploadList = useMemo<UploadFile[]>(() => {
@@ -351,6 +369,19 @@ function DashboardPage() {
           </Button>
         </Space>
       </header>
+
+      {needsModelSetup && (
+        <section className="dashboard-setup-banner" aria-label="首次使用设置">
+          <div className="dashboard-setup-icon" aria-hidden="true"><RocketOutlined /></div>
+          <div className="dashboard-setup-copy">
+            <Text strong>第一次使用？先免费把 AI 接上</Text>
+            <Text type="secondary">不用 API Key，不用打开命令行。司命可以自动安装 OpenCode，并帮你选择当前可用的免费模型。</Text>
+          </div>
+          <Button type="primary" size="large" onClick={() => navigate('/getting-started')}>
+            免费开始 <ArrowRightOutlined />
+          </Button>
+        </section>
+      )}
 
       <div className="dashboard-toolbar">
         <Input.Search

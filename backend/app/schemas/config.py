@@ -107,6 +107,7 @@ class ConnectionTestRequest(BaseModel):
     cli_command: Optional[str] = Field(None, max_length=500, description="Local CLI command")
     cli_args: Optional[str] = Field(None, max_length=2000, description="Local CLI args")
     model: Optional[str] = Field(None, max_length=200, description="Model used by the local CLI smoke test")
+    timeout_seconds: Optional[int] = Field(None, ge=15, le=180, description="Optional shorter CLI smoke-test timeout")
 
     @field_validator("provider")
     @classmethod

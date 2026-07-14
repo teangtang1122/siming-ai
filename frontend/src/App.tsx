@@ -6,6 +6,7 @@ import { useAppStore } from './stores'
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const ProjectWorkspace = lazy(() => import('./pages/ProjectWorkspace'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const GettingStartedPage = lazy(() => import('./pages/GettingStartedPage'))
 const ExternalAgentPage = lazy(() => import('./pages/ExternalAgentPage'))
 const GuiPage = lazy(() => import('./pages/GuiPage'))
 const ModelCenterPage = lazy(() => import('./pages/ModelCenterPage'))
@@ -112,6 +113,7 @@ function App() {
             <Route path="/novel-creation" element={<NovelCreationWizardPage />} />
             <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/getting-started" element={<GettingStartedPage />} />
             <Route path="/external-agent" element={<ExternalAgentPage />} />
             <Route path="/gui" element={<GuiPage />} />
             <Route path="/models" element={<ModelCenterPage />} />

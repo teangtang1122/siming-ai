@@ -11,6 +11,8 @@ const zh = {
   runtime: '\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001',
   runtimeToggle: '\u67e5\u770b\u5f53\u524d\u6a21\u578b\u4e0e\u8fd0\u884c\u72b6\u6001',
   create: '\u786e\u8ba4\u5e76\u521b\u5efa\u6b63\u5f0f\u4f5c\u54c1',
+  freeStart: '\u514d\u8d39\u5f00\u59cb',
+  installOpenCode: '\u4e00\u952e\u5b89\u88c5 OpenCode',
 }
 
 const catalog = {
@@ -106,6 +108,7 @@ async function mockApi(page: Page, options: {
   models?: unknown[]
   sessions?: unknown[]
   session?: Record<string, unknown>
+  gettingStarted?: Record<string, unknown>
   onInterview?: (route: Route, call: number) => Promise<void>
   onApply?: (route: Route) => Promise<void>
 } = {}) {
@@ -117,6 +120,16 @@ async function mockApi(page: Page, options: {
 
     if (path === '/api/v1/config/models') {
       return fulfill(route, { code: 0, data: { items: options.models ?? [model], total: (options.models ?? [model]).length } })
+    }
+    if (path === '/api/v1/config/getting-started') {
+      return fulfill(route, {
+        code: 0,
+        data: options.gettingStarted ?? {
+          needs_setup: false,
+          has_any_model: true,
+          global_model: { provider: 'opencode_cli', model: 'free-model' },
+        },
+      })
     }
     if (path === '/api/v1/projects') {
       return fulfill(route, { code: 0, data: { items: [], total: 0 } })
@@ -262,6 +275,42 @@ test('enters the one shared creation workbench from the dashboard', async ({ pag
   await page.getByRole('button', { name: zh.createWork }).click()
   await expect(page).toHaveURL(/\/novel-creation$/)
   await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
+})
+
+test('guides a first-time user from the dashboard to one-click OpenCode setup', async ({ page }) => {
+  await mockApi(page, {
+    models: [],
+    gettingStarted: {
+      installed: false,
+      command: null,
+      version: null,
+      managed_by_siming: false,
+      model_source: 'none',
+      free_models: [],
+      recommended_model: null,
+      platform_supported: true,
+      install_location: 'C:/Users/author/AppData/Local/Siming/managed-cli/opencode/bin/opencode.exe',
+      configured: false,
+      configured_model: null,
+      is_global_default: false,
+      has_any_model: false,
+      needs_setup: true,
+      global_model: null,
+      official_links: {
+        releases: 'https://github.com/anomalyco/opencode/releases/latest',
+        install_docs: 'https://opencode.ai/docs/#install',
+        model_docs: 'https://opencode.ai/docs/providers/#opencode-zen',
+      },
+    },
+  })
+  await page.goto('/dashboard')
+
+  await expect(page.getByText('\u7b2c\u4e00\u6b21\u4f7f\u7528\uff1f\u5148\u514d\u8d39\u628a AI \u63a5\u4e0a')).toBeVisible()
+  await page.getByRole('button', { name: new RegExp(zh.freeStart) }).click()
+
+  await expect(page).toHaveURL(/\/getting-started$/)
+  await expect(page.getByRole('button', { name: new RegExp(zh.installOpenCode) })).toBeVisible()
+  await expect(page.getByText('\u4e0d\u7528\u586b\u5199 API Key')).toBeVisible()
 })
 
 test('restores a draft and creates the final project only after final review', async ({ page }) => {

@@ -39,6 +39,7 @@ import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 import SystemNav from '../components/SystemNav'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
+import { GettingStartedPanel } from './GettingStartedPage'
 import './SettingsPage.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -272,30 +273,6 @@ interface UpdateStatus {
   automatic_updates: boolean
   downloaded?: boolean
 }
-
-const SIMING_RELEASE_URL = 'https://github.com/teangtang1122/siming-ai/releases/latest'
-
-const API_KEY_LINKS: Array<{ label: string; href: string; note: string }> = [
-  { label: 'OpenAI API Key', href: 'https://platform.openai.com/api-keys', note: 'OpenAI / GPT 系列模型' },
-  { label: 'Anthropic Console', href: 'https://platform.claude.com/', note: 'Claude 系列模型' },
-  { label: 'DeepSeek API Key', href: 'https://platform.deepseek.com/api_keys', note: 'DeepSeek 官方 API' },
-  { label: 'Google AI Studio', href: 'https://aistudio.google.com/app/apikey', note: 'Gemini 系列模型' },
-  { label: 'Qwen / Model Studio', href: 'https://bailian.console.aliyun.com/', note: '通义千问 / 阿里百炼' },
-]
-
-const CLI_INSTALL_COMMANDS: Array<{ label: string; command: string; note: string; href?: string }> = [
-  { label: 'Node.js LTS（Codex/opencode 前置）', command: '打开 Node.js 下载页', href: 'https://nodejs.org/zh-cn/download', note: '如果提示 npm 不是内部或外部命令，先安装这个。' },
-  { label: 'Codex CLI', command: 'npm install -g @openai/codex', note: '安装后通常还需要在终端里运行 codex 登录。' },
-  { label: 'Claude Code', command: 'winget install Anthropic.ClaudeCode', note: '如果 winget 不可用，可以先走 API Key 路线。' },
-  { label: 'opencode', command: 'npm install -g opencode-ai', note: '安装后按该 CLI 的提示登录或配置提供方。' },
-]
-
-const TERMINAL_OPEN_STEPS = [
-  '按键盘左下角的 Win 键，输入 PowerShell。',
-  '点开「Windows PowerShell」或「终端」。如果弹出安全确认，选择允许。',
-  '把安装命令复制进去，按 Enter 回车；安装完成后关闭再重新打开终端。',
-  '回到司命「添加配置」，选择对应本机 CLI，点击「测试本机 CLI」。',
-]
 
 const FALLBACK_OUTPUT_LIMIT = 16000
 const MODEL_OUTPUT_LIMITS: Record<string, number> = {
@@ -896,90 +873,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         items={[
           { key: 'ai', label: '模型与 AI' },
           { key: 'app', label: '应用与数据' },
-          { key: 'guide', label: '使用帮助' },
+          { key: 'guide', label: '快速开始' },
         ]}
       />
 
-      {settingsSection === 'guide' && <Card className="settings-card" title="从零开始：API 与本机 CLI">
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Paragraph style={{ marginBottom: 0 }}>
-            司命可以走两条路：配置 API Key 后由司命直接调用模型；或安装 Codex/Claude Code/opencode 等本机 CLI，
-            由司命启动 CLI Agent。CLI 可以直接读取作品镜像文件，但写入章节、角色、大纲和世界观必须调用司命工具入库，
-            入库后系统会自动同步回文件目录。
-          </Paragraph>
-          <div>
-            <Text strong>第一次使用：从下载到能对话</Text>
-            <ol style={{ margin: '6px 0 8px', paddingLeft: 20 }}>
-              <li>点击下面的按钮打开 GitHub Release 页面，下载最新的 Siming.exe。</li>
-              <li>双击 Siming.exe 启动；如果 Windows 提示未知发布者，确认这是你从项目 Release 下载的文件后再继续。</li>
-              <li>进入「系统设置」，先选 API Key 路线；没有命令行经验时，这条路最稳。</li>
-              <li>在模型平台创建 API Key，复制到「添加配置」，点「测试连接」。成功后设为全局默认模型。</li>
-              <li>回到作品页，先让助手做一次小任务；确认能回复后再进行建档、写章或本机 CLI 配置。</li>
-            </ol>
-            <Button size="small" type="primary" href={SIMING_RELEASE_URL} target="_blank" rel="noreferrer">
-              点击打开：司命最新版下载页
-            </Button>
-          </div>
-          <div>
-            <Text strong>0. 电脑里什么都还没有时：</Text>
-            <Paragraph style={{ margin: '4px 0 8px' }}>
-              建议先走 API Key 路线，只需要浏览器和一个模型平台账号。想使用本机 CLI 时，再安装 Node.js 或对应 CLI。
-              下面所有蓝色按钮都可以点击打开网页，命令右侧的复制图标可以一键复制。
-            </Paragraph>
-          </div>
-          <div>
-            <Text strong>1. 使用 API 模型：</Text>
-            <Paragraph style={{ margin: '4px 0 8px' }}>
-              到对应平台创建 API Key，然后点击下方「添加配置」，选择提供商，填入 API Key，点击「测试连接」，最后设为全局默认模型。
-            </Paragraph>
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {API_KEY_LINKS.map((item) => (
-                <Space key={item.href} wrap>
-                  <Button size="small" type="link" href={item.href} target="_blank" rel="noreferrer">
-                    点击打开：{item.label}
-                  </Button>
-                  <Text type="secondary">{item.note}</Text>
-                  <Text code copyable>{item.href}</Text>
-                </Space>
-              ))}
-            </Space>
-          </div>
-          <div>
-            <Text strong>2. 使用本机 CLI：</Text>
-            <Paragraph style={{ margin: '4px 0 8px' }}>
-              先在终端安装并登录目标 CLI，再在「添加配置」里选择对应本机 CLI，确认命令和参数，点击「测试本机 CLI」。
-            </Paragraph>
-            <Text type="secondary">不知道怎么打开终端时，按这个顺序来：</Text>
-            <ol style={{ margin: '6px 0 10px', paddingLeft: 20 }}>
-              {TERMINAL_OPEN_STEPS.map((step) => <li key={step}>{step}</li>)}
-            </ol>
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {CLI_INSTALL_COMMANDS.map((item) => (
-                <Text key={item.label}>
-                  {item.label}：{item.href ? (
-                    <Button size="small" type="link" href={item.href} target="_blank" rel="noreferrer">
-                      点击打开：{item.command}
-                    </Button>
-                  ) : (
-                    <Text code copyable>{item.command}</Text>
-                  )}
-                  <Text type="secondary"> {item.note}</Text>
-                </Text>
-              ))}
-            </Space>
-          </div>
-          <div>
-            <Text strong>3. 填到司命里：</Text>
-            <Paragraph style={{ margin: '4px 0 0' }}>
-              API 路线填「提供商、模型、API Key」后测试连接；CLI 路线填「本机 CLI 命令、CLI 参数」后测试本机 CLI。
-              测试成功后点「设为全局默认」，AI 助手和写章计划就会优先使用它。
-            </Paragraph>
-          </div>
-          <Text type="secondary">
-            如果 CLI 自己创建或修改 chapters/*.md，前端不会显示；这表示它绕过了数据库。写作计划会校验这一点并提示修复。
-          </Text>
-        </Space>
-      </Card>}
+      {settingsSection === 'guide' && <GettingStartedPanel />}
 
       {settingsSection === 'app' && <>
       <Card className="settings-card" title={<span><DesktopOutlined /> 启动方式</span>} loading={launcherLoading && !launcherSettings}>

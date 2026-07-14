@@ -179,6 +179,11 @@
   padding-inline: max(24px, calc((100% - 920px) / 2));
 }
 
+.gui-chat-setup-alert {
+  margin: 16px 20px 0;
+  border-radius: 6px;
+}
+
 .gui-chat-welcome {
   display: flex;
   flex-direction: column;

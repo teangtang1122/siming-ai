@@ -35,6 +35,7 @@ import {
   MenuUnfoldOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RocketOutlined,
   RobotOutlined,
   SendOutlined,
   StopOutlined,
@@ -1855,6 +1856,17 @@ function GuiAssistantChat() {
         </div>
 
         <div className="gui-chat-messages" aria-live="polite" aria-busy={streaming || loading}>
+          {!selectedModel && (
+            <Alert
+              className="gui-chat-setup-alert"
+              type="warning"
+              showIcon
+              icon={<RocketOutlined />}
+              message="还差一步：先连接一个模型"
+              description="可以免费开始，不需要 API Key，也不用打开命令行。"
+              action={<Button type="primary" onClick={() => navigate('/getting-started')}>免费设置</Button>}
+            />
+          )}
           {!activeProjectId && !projectsLoading && messages.length === 0 ? (
             <div className="gui-chat-welcome">
               <div className="gui-chat-welcome-icon" aria-hidden="true">

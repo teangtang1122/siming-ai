@@ -23,9 +23,13 @@ import { Modal } from 'antd'
 // ---------------------------------------------------------------------------
 // Mock axios globally for jsdom compatibility
 // ---------------------------------------------------------------------------
+const { mockApiGet } = vi.hoisted(() => ({
+  mockApiGet: vi.fn(),
+}))
+
 vi.mock('axios', () => {
   const mockInstance = {
-    get: vi.fn(),
+    get: mockApiGet,
     post: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
@@ -131,6 +135,15 @@ describe('DashboardPage', () => {
     mockCreateProject.mockResolvedValue(makeProject({ id: 'new-1', title: '新作品' }))
     mockUpdateProject.mockResolvedValue(makeProject({ id: 'edit-1', title: '已编辑' }))
     mockDeleteProject.mockResolvedValue(true)
+    mockApiGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/sessions') {
+        return Promise.resolve({ data: { data: { sessions: [] } } })
+      }
+      if (url === '/config/getting-started') {
+        return Promise.resolve({ data: { data: { needs_setup: false } } })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
   })
 
   // ------------------------------------------------------------------
@@ -340,6 +353,24 @@ describe('DashboardPage', () => {
       expect(mockDeleteProject).toHaveBeenCalledWith('del-1')
     })
     modalConfirmSpy.mockRestore()
+  })
+
+  it('should guide an unconfigured first-time user to the free setup flow', async () => {
+    mockApiGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/sessions') {
+        return Promise.resolve({ data: { data: { sessions: [] } } })
+      }
+      if (url === '/config/getting-started') {
+        return Promise.resolve({ data: { data: { needs_setup: true } } })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    renderDashboard()
+
+    expect(await screen.findByText('第一次使用？先免费把 AI 接上')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /免费开始/ }))
+    expect(mockNavigate).toHaveBeenCalledWith('/getting-started')
   })
 
   // ------------------------------------------------------------------

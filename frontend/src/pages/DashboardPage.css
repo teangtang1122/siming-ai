@@ -14,6 +14,48 @@
   margin: 18px 0 20px;
 }
 
+.dashboard-setup-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--ant-color-primary) 34%, var(--ant-color-border-secondary));
+  border-left: 4px solid var(--ant-color-primary);
+  border-radius: 6px;
+  background: var(--ant-color-bg-container);
+}
+
+.dashboard-setup-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--ant-color-primary);
+  background: var(--ant-color-primary-bg);
+  font-size: 19px;
+}
+
+.dashboard-setup-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+@media (max-width: 680px) {
+  .dashboard-setup-banner {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .dashboard-setup-banner > .ant-btn {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
+
 .dashboard-toolbar .ant-input-search {
   max-width: 440px;
 }

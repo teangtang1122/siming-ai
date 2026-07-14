@@ -663,6 +663,7 @@ async def test_connection(payload: ConnectionTestRequest):
     if is_local_cli_provider(payload.provider):
         command = payload.cli_command or _default_cli_command(payload.provider)
         _validate_cli_command(command)
+        test_timeout = payload.timeout_seconds or DEFAULT_LOCAL_CLI_TIMEOUT
         adapter = LocalCLIAdapter(
             api_key="",
             base_url=payload.provider,
@@ -683,14 +684,14 @@ async def test_connection(payload: ConnectionTestRequest):
                     max_tokens=32,
                     extra_body={
                         "local_cli_cwd": str(resolve_content_root()),
-                        "local_cli_timeout_seconds": DEFAULT_LOCAL_CLI_TIMEOUT,
+                        "local_cli_timeout_seconds": test_timeout,
                     },
                 ),
-                timeout=DEFAULT_LOCAL_CLI_TIMEOUT + LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
+                timeout=test_timeout + LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
             )
         except asyncio.TimeoutError as exc:
             raise LLMError(
-                f"{_provider_label(payload.provider)} 在 {DEFAULT_LOCAL_CLI_TIMEOUT} 秒内未响应"
+                f"{_provider_label(payload.provider)} 在 {test_timeout} 秒内未响应"
             ) from exc
         reply = (result.get("content") or "").strip()
         if not reply:

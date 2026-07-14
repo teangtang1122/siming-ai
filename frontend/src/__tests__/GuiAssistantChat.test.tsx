@@ -3,11 +3,12 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 
-const { mockGet, mockPost, mockDelete, mockNavigate } = vi.hoisted(() => ({
+const { mockGet, mockPost, mockDelete, mockNavigate, modelState } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
   mockDelete: vi.fn(),
   mockNavigate: vi.fn(),
+  modelState: { defaultModel: 'openai:test' },
 }))
 
 vi.mock('../api/client', () => ({
@@ -16,7 +17,7 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../hooks/useModelOptions', () => ({
   useModelOptions: () => ({
-    defaultModel: 'openai:test',
+    defaultModel: modelState.defaultModel,
     loading: false,
     modelOptions: [
       { value: 'openai:test', label: 'OpenAI · test', provider: 'openai', model: 'test' },
@@ -35,6 +36,7 @@ import GuiAssistantChat from '../components/GuiAssistantChat'
 describe('GuiAssistantChat new-book handoff', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    modelState.defaultModel = 'openai:test'
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
     mockGet.mockImplementation((url: string) => {
       if (url === '/projects') return Promise.resolve({ data: { data: { items: [], total: 0 } } })
@@ -73,6 +75,16 @@ describe('GuiAssistantChat new-book handoff', () => {
       }
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
+  })
+
+  it('offers the free setup flow when no model is configured', async () => {
+    modelState.defaultModel = ''
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+
+    expect(await screen.findByText('还差一步：先连接一个模型')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '免费设置' }))
+    expect(mockNavigate).toHaveBeenCalledWith('/getting-started')
   })
 
   it('hands a completed interview to a compact concept run instead of drafting full blueprints', async () => {
