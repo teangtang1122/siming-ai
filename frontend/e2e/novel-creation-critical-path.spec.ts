@@ -4,11 +4,12 @@ const zh = {
   workbench: '\u65b0\u4e66\u7acb\u9879\u5de5\u4f5c\u53f0',
   noModel: '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u6a21\u578b',
   saveDraft: '\u53ea\u4fdd\u5b58\u8349\u7a3f',
-  assistant: '\u65b0\u4e66\u7acb\u9879\u52a9\u624b',
-  message: '\u8f93\u5165\u6d88\u606f',
+  createWork: '\u521b\u5efa\u65b0\u4f5c\u54c1',
+  message: '\u7ed9\u53f8\u547d\u7684\u6d88\u606f',
   send: '\u53d1\u9001',
   skip: '\u8df3\u8fc7\u5e76\u751f\u6210\u521b\u610f\u65b9\u5411',
   runtime: '\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001',
+  runtimeToggle: '\u67e5\u770b\u5f53\u524d\u6a21\u578b\u4e0e\u8fd0\u884c\u72b6\u6001',
   create: '\u786e\u8ba4\u5e76\u521b\u5efa\u6b63\u5f0f\u4f5c\u54c1',
 }
 
@@ -183,12 +184,13 @@ test('shows quota exhaustion as an error with the CLI runtime diagnostics', asyn
     }, 422),
   })
   await page.goto('/gui')
-  await page.getByPlaceholder(new RegExp(zh.message)).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+  await page.getByLabel(zh.message).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
 
   const failure = page.locator('[data-message-status="error"]')
   await expect(failure).toContainText('Free usage exceeded')
-  await expect(page.getByLabel(zh.runtime)).toContainText('\u989d\u5ea6\uff1a\u5df2\u8017\u5c3d\u6216\u9650\u6d41')
+  await page.getByLabel(zh.runtimeToggle).click()
+  await expect(page.getByLabel(zh.runtime)).toContainText('\u989d\u5ea6\u5df2\u8017\u5c3d\u6216\u9650\u6d41')
   await expect(page.getByLabel(zh.runtime)).toContainText('opencode_cli:free-model')
   await expect(failure).not.toContainText('\u5df2\u5b8c\u6210')
 })
@@ -208,13 +210,14 @@ test('shows a timeout as an error rather than a completed assistant turn', async
     }, 422),
   })
   await page.goto('/gui')
-  await page.getByPlaceholder(new RegExp(zh.message)).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+  await page.getByLabel(zh.message).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
 
   const failure = page.locator('[data-message-status="error"]')
   await expect(failure).toContainText('\u8bf7\u6c42\u8d85\u65f6')
   await expect(failure).toContainText('\u6267\u884c\u5931\u8d25')
-  await expect(page.getByLabel(zh.runtime)).toContainText('\u8d85\u65f6\uff1a45 \u79d2')
+  await page.getByLabel(zh.runtimeToggle).click()
+  await expect(page.getByLabel(zh.runtime)).toContainText('\u8d85\u65f645 \u79d2')
 })
 
 test('keeps a failed interview skip in the error state', async ({ page }) => {
@@ -243,7 +246,7 @@ test('keeps a failed interview skip in the error state', async ({ page }) => {
     },
   })
   await page.goto('/gui')
-  await page.getByPlaceholder(new RegExp(zh.message)).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+  await page.getByLabel(zh.message).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
   await page.getByRole('button', { name: zh.skip }).click()
 
@@ -256,7 +259,7 @@ test('keeps a failed interview skip in the error state', async ({ page }) => {
 test('enters the one shared creation workbench from the dashboard', async ({ page }) => {
   await mockApi(page)
   await page.goto('/dashboard')
-  await page.getByRole('button', { name: zh.assistant }).click()
+  await page.getByRole('button', { name: zh.createWork }).click()
   await expect(page).toHaveURL(/\/novel-creation$/)
   await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
 })
