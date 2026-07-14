@@ -6,6 +6,7 @@ import threading
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
 import pytest
@@ -192,6 +193,8 @@ def test_concurrent_activation_requests_share_one_persistent_job():
 
         workers = [threading.Thread(target=activate) for _ in range(2)]
         with patch("app.database.session.SessionLocal", Session), patch.object(
+            opencode_onboarding, "os", SimpleNamespace(name="nt")
+        ), patch.object(
             opencode_onboarding.threading, "Thread", DeferredWorker
         ):
             for worker in workers:

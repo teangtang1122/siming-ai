@@ -113,6 +113,7 @@ async function mockApi(page: Page, options: {
   onApply?: (route: Route) => Promise<void>
 } = {}) {
   let interviewCalls = 0
+  let startedSession: Record<string, unknown> | undefined
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -143,6 +144,7 @@ async function mockApi(page: Page, options: {
     }
     if (path === '/api/v1/novel-creation/start' && method === 'POST') {
       const session = options.session ?? { id: 'draft-1', status: 'drafting', revision: 1, current_stage: 'constraints', draft: { form: baseForm, concepts: [], stages: {} } }
+      startedSession = session
       return fulfill(route, { code: 0, data: { session_id: session.id, session } })
     }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && path.endsWith('/interview/next')) {
@@ -151,7 +153,8 @@ async function mockApi(page: Page, options: {
       return fulfill(route, { code: 0, data: { session_id: 'session-1', state: 'ready', history: [] } })
     }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && method === 'GET') {
-      return fulfill(route, { code: 0, data: options.session ?? conceptSession() })
+      const sessionId = path.split('/').pop() || 'session-1'
+      return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession(sessionId) })
     }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && path.endsWith('/runs') && method === 'POST') {
       return fulfill(route, { code: 0, data: { run: { id: 'run-1', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u4e09\u5957\u8f7b\u91cf\u521b\u610f' } } })
@@ -280,7 +283,7 @@ test('enters the one shared creation workbench from the dashboard', async ({ pag
   await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
 })
 
-test('guides a first-time user from the dashboard to one-click OpenCode setup', async ({ page }) => {
+test('automatically guides a first-time user to one-click OpenCode setup', async ({ page }) => {
   await mockApi(page, {
     models: [],
     gettingStarted: {
@@ -307,9 +310,6 @@ test('guides a first-time user from the dashboard to one-click OpenCode setup', 
     },
   })
   await page.goto('/dashboard', { waitUntil: 'domcontentloaded' })
-
-  await expect(page.getByText('\u7b2c\u4e00\u6b21\u4f7f\u7528\uff1f\u5148\u514d\u8d39\u628a AI \u63a5\u4e0a')).toBeVisible()
-  await page.getByRole('button', { name: new RegExp(zh.freeStart) }).click()
 
   await expect(page).toHaveURL(/\/getting-started$/)
   await expect(page.getByRole('button', { name: new RegExp(zh.installOpenCode) })).toBeVisible()
