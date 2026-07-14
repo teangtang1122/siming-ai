@@ -1,6 +1,7 @@
 """Managed OpenCode installation and discovery for first-time Siming users."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -19,8 +20,11 @@ from typing import Any, Callable
 from urllib.request import Request, urlopen
 
 from app.ai.local_cli_adapter import (
+    DEFAULT_CLI_ARGS,
+    LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     OPENCODE_DEFAULT_MODEL,
     OPENCODE_MODELS,
+    LocalCLIAdapter,
     discover_local_cli_models,
     hidden_subprocess_kwargs,
 )
@@ -30,11 +34,14 @@ OPENCODE_RELEASE_API = "https://api.github.com/repos/anomalyco/opencode/releases
 OPENCODE_RELEASES_URL = "https://github.com/anomalyco/opencode/releases/latest"
 OPENCODE_INSTALL_DOCS_URL = "https://opencode.ai/docs/#install"
 OPENCODE_MODELS_DOCS_URL = "https://opencode.ai/docs/providers/#opencode-zen"
+OPENCODE_AUTH_URL = "https://opencode.ai/auth"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 INSPECTION_CACHE_SECONDS = 30
+ACTIVATION_TEST_TIMEOUT = 60
 
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
+_activation_start_lock = threading.Lock()
 _inspection_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _inspection_cache_lock = threading.Lock()
 
@@ -262,6 +269,66 @@ def _download_asset(
         raise RuntimeError("OpenCode 安装包 SHA256 校验失败，文件已删除")
 
 
+def _mirror_urls(official_url: str, asset_name: str) -> list[str]:
+    """Return operator-approved mirrors without trusting them for integrity."""
+    configured = os.environ.get("SIMING_OPENCODE_MIRROR_URLS", "")
+    urls = [official_url]
+    for template in configured.split(";"):
+        template = template.strip()
+        if not template:
+            continue
+        candidate = template.replace("{url}", official_url).replace("{asset}", asset_name)
+        if "{" not in candidate and candidate.startswith("https://") and candidate not in urls:
+            urls.append(candidate)
+    return urls
+
+
+def _download_asset_resumable(
+    url: str,
+    destination: Path,
+    *,
+    expected_sha256: str,
+    progress: Callable[[int, int], None],
+) -> None:
+    """Download with Range resume and verify the complete file afterwards."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    existing = destination.stat().st_size if destination.exists() else 0
+    if existing:
+        digest = hashlib.sha256()
+        with destination.open("rb") as source:
+            for chunk in iter(lambda: source.read(DOWNLOAD_CHUNK_SIZE), b""):
+                digest.update(chunk)
+        if digest.hexdigest().lower() == expected_sha256.lower():
+            progress(existing, existing)
+            return
+    headers = {"User-Agent": "Siming-OpenCode-Onboarding"}
+    if existing:
+        headers["Range"] = f"bytes={existing}-"
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=60) as response:
+        partial = existing > 0 and getattr(response, "status", None) == 206
+        mode = "ab" if partial else "wb"
+        downloaded = existing if partial else 0
+        remaining = int(response.headers.get("Content-Length") or 0)
+        total = downloaded + remaining if remaining else 0
+        with destination.open(mode) as output:
+            while True:
+                chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                output.write(chunk)
+                downloaded += len(chunk)
+                progress(downloaded, total)
+
+    digest = hashlib.sha256()
+    with destination.open("rb") as source:
+        for chunk in iter(lambda: source.read(DOWNLOAD_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    if digest.hexdigest().lower() != expected_sha256.lower():
+        destination.unlink(missing_ok=True)
+        raise RuntimeError("下载文件与 OpenCode 官方 SHA256 不一致，已删除并停止安装")
+
+
 def _extract_opencode(zip_path: Path, destination: Path) -> None:
     with zipfile.ZipFile(zip_path) as archive:
         member = next(
@@ -375,3 +442,432 @@ def get_opencode_install_job(job_id: str) -> dict[str, Any] | None:
     with _jobs_lock:
         job = _jobs.get(job_id)
         return dict(job) if job else None
+
+
+def _activation_payload(job: Any) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "status": job.status,
+        "phase": job.phase,
+        "percent": job.percent,
+        "message": job.message or "",
+        "error": job.error,
+        "failure_kind": job.failure_kind,
+        "next_action": job.next_action,
+        "command": job.command,
+        "version": job.version,
+        "selected_model": job.selected_model,
+        "preferred_model": job.preferred_model,
+        "free_models": list(job.free_models_json or []),
+        "download_url": job.download_url,
+        "sha256": job.sha256,
+        "bytes_downloaded": job.bytes_downloaded or 0,
+        "bytes_total": job.bytes_total or 0,
+        "estimated_seconds_remaining": job.estimated_seconds_remaining,
+        "attempt_count": job.attempt_count or 0,
+        "auth_url": OPENCODE_AUTH_URL,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+def _update_activation(job_id: str, **changes: Any) -> dict[str, Any]:
+    from app.database.models import OpenCodeActivationJob
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as db:
+        job = db.query(OpenCodeActivationJob).filter(OpenCodeActivationJob.id == job_id).first()
+        if not job:
+            raise RuntimeError("OpenCode 激活任务不存在")
+        for key, value in changes.items():
+            setattr(job, key, value)
+        job.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+        db.refresh(job)
+        return _activation_payload(job)
+
+
+def get_opencode_activation_job(job_id: str) -> dict[str, Any] | None:
+    from app.database.models import OpenCodeActivationJob
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as db:
+        job = db.query(OpenCodeActivationJob).filter(OpenCodeActivationJob.id == job_id).first()
+        return _activation_payload(job) if job else None
+
+
+def get_latest_opencode_activation_job(db: Any | None = None) -> dict[str, Any] | None:
+    from app.database.models import OpenCodeActivationJob
+
+    if db is not None:
+        job = db.query(OpenCodeActivationJob).order_by(OpenCodeActivationJob.created_at.desc()).first()
+        return _activation_payload(job) if job else None
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as session:
+        job = session.query(OpenCodeActivationJob).order_by(OpenCodeActivationJob.created_at.desc()).first()
+        return _activation_payload(job) if job else None
+
+
+def _activation_failure_kind(message: str) -> str:
+    value = message.lower()
+    if any(token in value for token in ("auth", "login", "unauthorized", "登录", "凭据")):
+        return "authentication_required"
+    if any(token in value for token in ("quota", "rate limit", "free usage", "额度", "限流")):
+        return "quota_or_rate_limit"
+    if any(token in value for token in ("disk", "space", "磁盘", "空间不足")):
+        return "disk_space"
+    if any(token in value for token in ("permission", "access is denied", "权限", "拒绝访问")):
+        return "permission_or_antivirus"
+    if any(token in value for token in ("timed out", "timeout", "network", "urlopen", "http error", "网络")):
+        return "network"
+    return "runtime"
+
+
+async def _test_opencode_model(command: str, model: str) -> None:
+    from app.services.content_store import content_root
+
+    adapter = LocalCLIAdapter(
+        api_key="",
+        base_url="opencode_cli",
+        cli_command=command,
+        cli_args=json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False),
+    )
+    result = await asyncio.wait_for(
+        adapter.chat_completion(
+            messages=[
+                {"role": "system", "content": "你是连接测试执行器。"},
+                {"role": "user", "content": "只回复：连接成功"},
+            ],
+            model=model,
+            temperature=0,
+            max_tokens=32,
+            extra_body={
+                "local_cli_cwd": str(content_root()),
+                "local_cli_timeout_seconds": ACTIVATION_TEST_TIMEOUT,
+            },
+        ),
+        timeout=ACTIVATION_TEST_TIMEOUT + LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
+    )
+    reply = str(result.get("content") or "").strip()
+    if "连接成功" not in reply:
+        raise RuntimeError(f"模型返回了无法识别的测试结果：{reply[:160] or '空响应'}")
+
+
+def _save_activated_config(command: str, model: str) -> None:
+    from app.core.crypto import encrypt
+    from app.database.models import APIConfig
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as db:
+        config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
+        if not config:
+            config = APIConfig(
+                provider="opencode_cli",
+                api_key_encrypted=encrypt("__local_cli__"),
+                default_model=model,
+                provider_type="local_cli",
+            )
+            db.add(config)
+        config.api_key_encrypted = encrypt("__local_cli__")
+        config.default_model = model
+        config.provider_type = "local_cli"
+        config.cli_command = command
+        config.cli_args = json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False)
+        db.query(APIConfig).update({"is_global_default": False})
+        config.is_global_default = True
+        db.commit()
+
+
+def _install_for_activation(job_id: str) -> tuple[str, str, str]:
+    root = managed_opencode_root()
+    version, asset = _latest_release_asset()
+    expected_sha256 = str(asset["digest"]).removeprefix("sha256:")
+    official_url = str(asset.get("browser_download_url") or "")
+    if not official_url:
+        raise RuntimeError("OpenCode 官方安装包没有下载地址")
+    archive_path = root / "downloads" / f"{asset['name']}.part"
+    errors: list[str] = []
+    download_started = time.monotonic()
+
+    for source_url in _mirror_urls(official_url, str(asset["name"])):
+        for attempt in range(2):
+            try:
+                _update_activation(
+                    job_id,
+                    status="running",
+                    phase="downloading",
+                    percent=5,
+                    message="正在下载写作引擎，请保持网络连接",
+                    download_url=source_url,
+                    sha256=expected_sha256,
+                )
+
+                def on_progress(downloaded: int, total: int) -> None:
+                    fraction = downloaded / total if total else 0
+                    elapsed = max(0.1, time.monotonic() - download_started)
+                    rate = downloaded / elapsed
+                    remaining = int((total - downloaded) / rate) if total and rate > 0 else None
+                    _update_activation(
+                        job_id,
+                        percent=max(5, min(78, int(5 + fraction * 73))),
+                        bytes_downloaded=downloaded,
+                        bytes_total=total,
+                        estimated_seconds_remaining=remaining,
+                    )
+
+                _download_asset_resumable(
+                    source_url,
+                    archive_path,
+                    expected_sha256=expected_sha256,
+                    progress=on_progress,
+                )
+                command = managed_opencode_command()
+                _update_activation(job_id, phase="verifying", percent=82, message="下载完成，正在校验并安装")
+                _extract_opencode(archive_path, command)
+                archive_path.unlink(missing_ok=True)
+                metadata = {
+                    "version": version,
+                    "asset": asset["name"],
+                    "sha256": expected_sha256,
+                    "source": source_url,
+                    "command": str(command),
+                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                (root / "install.json").write_text(
+                    json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                return str(command), version, expected_sha256
+            except Exception as exc:
+                errors.append(f"{source_url} 第 {attempt + 1} 次：{exc}")
+    raise RuntimeError("所有下载线路均未完成。" + "；".join(errors[-3:]))
+
+
+def _activation_worker(job_id: str) -> None:
+    try:
+        current = get_opencode_activation_job(job_id)
+        if not current:
+            return
+        _update_activation(
+            job_id,
+            status="running",
+            phase="checking",
+            percent=1,
+            message="正在检查这台电脑",
+            error=None,
+            failure_kind=None,
+            next_action=None,
+        )
+        command = resolve_opencode_command(current.get("command"))
+        version = None
+        sha256 = None
+        inspected = inspect_opencode(command, refresh=True) if command else {"installed": False}
+        if not inspected.get("installed"):
+            command, version, sha256 = _install_for_activation(job_id)
+
+        _update_activation(job_id, phase="verifying", percent=84, message="正在确认写作引擎可以运行")
+        inspected = inspect_opencode(command, timeout=15, refresh=True)
+        if not inspected.get("installed"):
+            raise RuntimeError("写作引擎已经下载，但被系统或安全软件阻止运行")
+        command = str(inspected["command"])
+        version = str(inspected.get("version") or version or "")
+        free_models = list(inspected.get("free_models") or [])
+        if not free_models:
+            raise RuntimeError("当前没有发现可免费使用的模型，请稍后重新检测")
+
+        preferred = str(current.get("preferred_model") or "")
+        ordered = sorted(
+            free_models,
+            key=lambda item: (
+                str(item.get("id")) != preferred if preferred else not bool(item.get("recommended")),
+                not bool(item.get("recommended")),
+            ),
+        )
+        _update_activation(
+            job_id,
+            phase="discovering_models",
+            percent=88,
+            message="已找到当前可免费使用的模型",
+            command=command,
+            version=version,
+            sha256=sha256 or current.get("sha256"),
+            free_models_json=ordered,
+        )
+
+        failures: list[tuple[str, str, str]] = []
+        for index, option in enumerate(ordered):
+            model = str(option.get("id") or "")
+            _update_activation(
+                job_id,
+                phase="testing",
+                percent=min(98, 90 + index * 2),
+                message="正在完成最后一次可用性测试",
+                selected_model=model,
+            )
+            try:
+                asyncio.run(_test_opencode_model(command, model))
+                _save_activated_config(command, model)
+                try:
+                    from app.services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
+                    auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
+                except Exception:
+                    pass
+                _update_activation(
+                    job_id,
+                    status="ready",
+                    phase="ready",
+                    percent=100,
+                    message="免费写作能力已经准备好",
+                    selected_model=model,
+                    completed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+                return
+            except Exception as exc:
+                message = str(getattr(exc, "message", None) or exc)
+                kind = _activation_failure_kind(message)
+                failures.append((model, kind, message))
+                if kind == "authentication_required":
+                    _update_activation(
+                        job_id,
+                        status="auth_required",
+                        phase="auth_required",
+                        percent=90,
+                        message="需要完成一次免费的官方登录",
+                        error=message,
+                        failure_kind=kind,
+                        next_action="点击登录按钮，在官方页面完成登录后返回重试。",
+                    )
+                    return
+
+        kinds = {item[1] for item in failures}
+        if kinds == {"quota_or_rate_limit"}:
+            _update_activation(
+                job_id,
+                status="failed",
+                phase="failed",
+                percent=98,
+                message="当前免费额度暂时不可用",
+                error=failures[-1][2],
+                failure_kind="quota_or_rate_limit",
+                next_action="免费模型可能稍后恢复，也可以展开高级选项后重新尝试。",
+            )
+            return
+        raise RuntimeError(
+            "当前免费模型暂时都不可用，请稍后重试。"
+            + (f" 技术详情：{failures[-1][2]}" if failures else "")
+        )
+    except Exception as exc:
+        message = str(exc)
+        kind = _activation_failure_kind(message)
+        _update_activation(
+            job_id,
+            status="failed",
+            phase="failed",
+            message="免费写作能力暂时没有准备完成",
+            error=message,
+            failure_kind=kind,
+            next_action=(
+                "请检查网络后点击重试，司命会从上次下载进度继续。"
+                if kind == "network"
+                else "点击重试；如果仍然失败，可导出诊断信息反馈给项目维护者。"
+            ),
+        )
+
+
+def start_opencode_activation(*, preferred_model: str | None = None) -> dict[str, Any]:
+    from app.database.models import OpenCodeActivationJob
+    from app.database.session import SessionLocal
+
+    if os.name != "nt":
+        raise RuntimeError("当前自动安装仅支持 Windows")
+    with _activation_start_lock:
+        with SessionLocal() as db:
+            active = (
+                db.query(OpenCodeActivationJob)
+                .filter(OpenCodeActivationJob.status.in_(["pending", "running", "auth_required"]))
+                .order_by(OpenCodeActivationJob.created_at.desc())
+                .first()
+            )
+            if active:
+                return _activation_payload(active)
+            job = OpenCodeActivationJob(
+                status="pending",
+                phase="checking",
+                percent=0,
+                message="免费体验任务已创建",
+                preferred_model=preferred_model,
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            payload = _activation_payload(job)
+            job_id = job.id
+    threading.Thread(
+        target=_activation_worker,
+        args=(job_id,),
+        daemon=True,
+        name=f"opencode-activate-{job_id[:8]}",
+    ).start()
+    return payload
+
+
+def retry_opencode_activation(job_id: str) -> dict[str, Any]:
+    from app.database.models import OpenCodeActivationJob
+    from app.database.session import SessionLocal
+
+    with _activation_start_lock:
+        with SessionLocal() as db:
+            job = db.query(OpenCodeActivationJob).filter(OpenCodeActivationJob.id == job_id).first()
+            if not job:
+                raise RuntimeError("OpenCode 激活任务不存在")
+            if job.status in {"pending", "running"}:
+                return _activation_payload(job)
+            job.status = "pending"
+            job.phase = "checking"
+            job.percent = 0
+            job.error = None
+            job.failure_kind = None
+            job.next_action = None
+            job.attempt_count = (job.attempt_count or 0) + 1
+            db.commit()
+            payload = _activation_payload(job)
+    threading.Thread(
+        target=_activation_worker,
+        args=(job_id,),
+        daemon=True,
+        name=f"opencode-retry-{job_id[:8]}",
+    ).start()
+    return payload
+
+
+def open_opencode_authentication(job_id: str) -> dict[str, Any]:
+    job = get_opencode_activation_job(job_id)
+    if not job:
+        raise RuntimeError("OpenCode 激活任务不存在")
+    import webbrowser
+
+    opened = webbrowser.open(OPENCODE_AUTH_URL)
+    return {"opened": bool(opened), "auth_url": OPENCODE_AUTH_URL}
+
+
+def resume_incomplete_opencode_activations() -> int:
+    from app.database.models import OpenCodeActivationJob
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as db:
+        jobs = db.query(OpenCodeActivationJob).filter(
+            OpenCodeActivationJob.status.in_(["pending", "running"])
+        ).all()
+        job_ids = [job.id for job in jobs]
+        for job in jobs:
+            job.status = "pending"
+            job.message = "应用重新启动，正在恢复免费体验任务"
+        db.commit()
+    for job_id in job_ids:
+        threading.Thread(
+            target=_activation_worker,
+            args=(job_id,),
+            daemon=True,
+            name=f"opencode-resume-{job_id[:8]}",
+        ).start()
+    return len(job_ids)

@@ -711,7 +711,7 @@ function NovelCreationWizardPage() {
         </header>
 
         {!hasModels && (
-          <Alert className="creation-model-alert" type="warning" showIcon message="当前没有可用模型" description="你仍可填写并保存立项草稿。需要生成创意时，请先进入系统设置，选择 API 或本机 CLI，按页面指引完成安装、凭据填写和连接测试。" action={<Button type="primary" onClick={() => navigate('/settings')}>打开系统设置</Button>} />
+          <Alert className="creation-model-alert" type="warning" showIcon message="当前没有可用模型" description="你仍可填写并保存立项草稿。也可以先免费体验，不需要命令行或 API Key。" action={<Button type="primary" onClick={() => navigate('/getting-started')}>免费开始</Button>} />
         )}
 
         {!session || concepts.length === 0 ? (

@@ -19,10 +19,15 @@ from ..services.opencode_onboarding import (
     OPENCODE_MODELS_DOCS_URL,
     OPENCODE_RELEASES_URL,
     get_opencode_install_job,
+    get_latest_opencode_activation_job,
+    get_opencode_activation_job,
     inspect_opencode,
     is_free_opencode_model,
     managed_opencode_command,
+    open_opencode_authentication,
     resolve_opencode_command,
+    retry_opencode_activation,
+    start_opencode_activation,
     start_opencode_install,
 )
 
@@ -33,6 +38,10 @@ router = APIRouter(tags=["getting-started"])
 class OpenCodeConfigureRequest(BaseModel):
     model: str = Field(..., min_length=2, max_length=200)
     command: str | None = Field(None, max_length=500)
+
+
+class OpenCodeActivateRequest(BaseModel):
+    preferred_model: str | None = Field(None, max_length=200)
 
 
 def _getting_started_summary(db: Session) -> dict:
@@ -58,6 +67,7 @@ def _getting_started_summary(db: Session) -> dict:
             "provider": global_config.provider,
             "model": global_config.default_model,
         } if global_config else None,
+        "activation_job": get_latest_opencode_activation_job(db),
         "official_links": {
             "releases": OPENCODE_RELEASES_URL,
             "install_docs": OPENCODE_INSTALL_DOCS_URL,
@@ -101,6 +111,43 @@ def install_opencode():
     except RuntimeError as exc:
         raise ValidationError(str(exc)) from exc
     return ApiResponse.success(data=job, message="OpenCode 安装任务已开始")
+
+
+@router.post("/config/getting-started/opencode/activate")
+def activate_opencode(payload: OpenCodeActivateRequest | None = None):
+    try:
+        job = start_opencode_activation(
+            preferred_model=payload.preferred_model if payload else None,
+        )
+    except RuntimeError as exc:
+        raise ValidationError(str(exc)) from exc
+    return ApiResponse.success(data=job, message="免费写作能力正在准备")
+
+
+@router.get("/config/getting-started/opencode/jobs/{job_id}")
+def get_activation_status(job_id: str):
+    job = get_opencode_activation_job(job_id)
+    if not job:
+        raise NotFoundError("没有找到这次免费体验任务")
+    return ApiResponse.success(data=job, message="免费体验状态已更新")
+
+
+@router.post("/config/getting-started/opencode/jobs/{job_id}/retry")
+def retry_activation(job_id: str):
+    try:
+        job = retry_opencode_activation(job_id)
+    except RuntimeError as exc:
+        raise NotFoundError(str(exc)) from exc
+    return ApiResponse.success(data=job, message="正在重新尝试")
+
+
+@router.post("/config/getting-started/opencode/jobs/{job_id}/authenticate")
+def authenticate_activation(job_id: str):
+    try:
+        result = open_opencode_authentication(job_id)
+    except RuntimeError as exc:
+        raise NotFoundError(str(exc)) from exc
+    return ApiResponse.success(data=result, message="已打开 OpenCode 官方登录页面")
 
 
 @router.get("/config/getting-started/opencode/install/{job_id}")

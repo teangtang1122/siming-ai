@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
-const { mockNavigate, mockFetchProjects } = vi.hoisted(() => ({
+const { mockNavigate, mockFetchProjects, mockApiGet } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockFetchProjects: vi.fn(),
+  mockApiGet: vi.fn(),
 }))
+
+vi.mock('../api/client', () => ({ apiClient: { get: mockApiGet } }))
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -29,6 +32,7 @@ describe('App route behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockFetchProjects.mockResolvedValue(undefined)
+    mockApiGet.mockResolvedValue({ data: { data: { needs_setup: false } } })
   })
 
   it('keeps the root path on the project library instead of silently opening a project', async () => {
@@ -40,6 +44,12 @@ describe('App route behavior', () => {
   it('keeps the explicit dashboard route on the project library', async () => {
     render(<MemoryRouter initialEntries={['/dashboard']}><App /></MemoryRouter>)
     expect(await screen.findByTestId('dashboard-page')).toBeInTheDocument()
+  })
+
+  it('sends an unconfigured first-time author to free setup', async () => {
+    mockApiGet.mockResolvedValue({ data: { data: { needs_setup: true } } })
+    render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/getting-started', { replace: true }))
   })
 
   it('preloads project metadata on system routes outside the library', async () => {

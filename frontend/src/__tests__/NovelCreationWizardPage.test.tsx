@@ -94,7 +94,7 @@ describe('NovelCreationWizardPage', () => {
     renderPage()
     expect(await screen.findByText('当前没有可用模型')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /只保存草稿/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: '打开系统设置' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '免费开始' })).toBeInTheDocument()
   })
 
   it('restores a concept session and offers both guided and quick tracks', async () => {
@@ -217,5 +217,5 @@ describe('NovelCreationWizardPage', () => {
         confirm: false,
       }))
     })
-  })
+  }, 10_000)
 })

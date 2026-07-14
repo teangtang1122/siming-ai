@@ -132,6 +132,24 @@
   padding: 0 12px 12px;
 }
 
+.getting-started-first-idea {
+  max-width: 760px;
+  margin: 24px auto 0;
+  display: grid;
+  gap: 16px;
+  text-align: left;
+}
+
+.getting-started-first-idea h3,
+.getting-started-first-idea p {
+  margin: 0;
+}
+
+.getting-started-ready-icon {
+  color: var(--ant-color-success);
+  font-size: 40px;
+}
+
 @media (max-width: 820px) {
   .getting-started-layout {
     grid-template-columns: 1fr;

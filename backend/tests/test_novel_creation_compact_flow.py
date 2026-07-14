@@ -202,6 +202,33 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
     assert result["data"]["run"]["status"] == "completed"
 
 
+def test_compact_concepts_switch_to_another_free_model_on_quota_failure():
+    db = _db()
+    session = _session(db)
+    content = json.dumps({"concepts": _concepts()})
+    completion = AsyncMock(side_effect=[RuntimeError("free usage quota exceeded"), {"content": content}])
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2._free_opencode_candidates",
+        return_value=["opencode_cli:opencode/first-free", "opencode_cli:opencode/second-free"],
+    ), patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.chat_completion",
+        new=completion,
+    ):
+        result = asyncio.run(generate_novel_creation_stage(db, "", {
+            "session_id": session.id,
+            "stage": "concepts",
+            "model": "opencode_cli:opencode/first-free",
+            "use_model": True,
+        }))
+
+    assert result["status"] == "ok"
+    assert [item.kwargs["model"] for item in completion.await_args_list] == [
+        "opencode_cli:opencode/first-free",
+        "opencode_cli:opencode/second-free",
+    ]
+    assert any(event["event_type"] == "model_fallback" for event in result["data"]["run"]["events"])
+
+
 def test_invalid_concepts_fail_then_a_retry_can_succeed():
     db = _db()
     session = _session(db)

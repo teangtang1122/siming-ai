@@ -12,7 +12,7 @@ const zh = {
   runtimeToggle: '\u67e5\u770b\u5f53\u524d\u6a21\u578b\u4e0e\u8fd0\u884c\u72b6\u6001',
   create: '\u786e\u8ba4\u5e76\u521b\u5efa\u6b63\u5f0f\u4f5c\u54c1',
   freeStart: '\u514d\u8d39\u5f00\u59cb',
-  installOpenCode: '\u4e00\u952e\u5b89\u88c5 OpenCode',
+  installOpenCode: '\u514d\u8d39\u5f00\u59cb\u5199\u5c0f\u8bf4',
 }
 
 const catalog = {
@@ -153,6 +153,9 @@ async function mockApi(page: Page, options: {
     if (path.startsWith('/api/v1/novel-creation/sessions/') && method === 'GET') {
       return fulfill(route, { code: 0, data: options.session ?? conceptSession() })
     }
+    if (path.startsWith('/api/v1/novel-creation/sessions/') && path.endsWith('/runs') && method === 'POST') {
+      return fulfill(route, { code: 0, data: { run: { id: 'run-1', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u4e09\u5957\u8f7b\u91cf\u521b\u610f' } } })
+    }
     if (path === '/api/v1/novel-creation/apply' && method === 'POST') {
       if (options.onApply) return options.onApply(route)
       return fulfill(route, { code: 0, data: { project_id: 'project-1', warnings: [] } })
@@ -172,7 +175,7 @@ async function mockApi(page: Page, options: {
 
 test('allows a no-model author to save and restore a creation draft', async ({ page }) => {
   await mockApi(page, { models: [] })
-  await page.goto('/novel-creation')
+  await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
   await expect(page.getByText(zh.noModel)).toBeVisible()
@@ -196,7 +199,7 @@ test('shows quota exhaustion as an error with the CLI runtime diagnostics', asyn
       },
     }, 422),
   })
-  await page.goto('/gui')
+  await page.goto('/gui', { waitUntil: 'domcontentloaded' })
   await page.getByLabel(zh.message).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
 
@@ -222,7 +225,7 @@ test('shows a timeout as an error rather than a completed assistant turn', async
       },
     }, 422),
   })
-  await page.goto('/gui')
+  await page.goto('/gui', { waitUntil: 'domcontentloaded' })
   await page.getByLabel(zh.message).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
 
@@ -258,7 +261,7 @@ test('keeps a failed interview skip in the error state', async ({ page }) => {
       }, 422)
     },
   })
-  await page.goto('/gui')
+  await page.goto('/gui', { waitUntil: 'domcontentloaded' })
   await page.getByLabel(zh.message).fill('\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
   await page.getByRole('button', { name: zh.skip }).click()
@@ -271,7 +274,7 @@ test('keeps a failed interview skip in the error state', async ({ page }) => {
 
 test('enters the one shared creation workbench from the dashboard', async ({ page }) => {
   await mockApi(page)
-  await page.goto('/dashboard')
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: zh.createWork }).click()
   await expect(page).toHaveURL(/\/novel-creation$/)
   await expect(page.getByRole('heading', { name: zh.workbench })).toBeVisible()
@@ -303,7 +306,7 @@ test('guides a first-time user from the dashboard to one-click OpenCode setup', 
       },
     },
   })
-  await page.goto('/dashboard')
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByText('\u7b2c\u4e00\u6b21\u4f7f\u7528\uff1f\u5148\u514d\u8d39\u628a AI \u63a5\u4e0a')).toBeVisible()
   await page.getByRole('button', { name: new RegExp(zh.freeStart) }).click()
@@ -311,6 +314,23 @@ test('guides a first-time user from the dashboard to one-click OpenCode setup', 
   await expect(page).toHaveURL(/\/getting-started$/)
   await expect(page.getByRole('button', { name: new RegExp(zh.installOpenCode) })).toBeVisible()
   await expect(page.getByText('\u4e0d\u7528\u586b\u5199 API Key')).toBeVisible()
+})
+
+test('turns one story sentence into the first three-concept run after setup', async ({ page }) => {
+  await mockApi(page, {
+    gettingStarted: {
+      needs_setup: false,
+      configured: true,
+      is_global_default: true,
+      platform_supported: true,
+      free_models: [],
+      global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
+    },
+  })
+  await page.goto('/getting-started', { waitUntil: 'domcontentloaded' })
+  await page.getByLabel('\u4f60\u60f3\u5199\u4ec0\u4e48\u6545\u4e8b\uff1f').fill('\u4e00\u5bb6\u53ea\u5728\u5348\u591c\u8425\u4e1a\u7684\u4fee\u4ed9\u5ba2\u6808')
+  await page.getByRole('button', { name: /\u751f\u6210\u4e09\u5957\u5c0f\u8bf4\u521b\u610f/ }).click()
+  await expect(page).toHaveURL(/\/novel-creation\?session=draft-1&run=run-1/)
 })
 
 test('restores a draft and creates the final project only after final review', async ({ page }) => {
@@ -333,7 +353,7 @@ test('restores a draft and creates the final project only after final review', a
     sessions: [session],
     onApply: async (route) => fulfill(route, { code: 0, data: { project_id: 'project-1', warnings: [] } }),
   })
-  await page.goto('/novel-creation?session=session-1')
+  await page.goto('/novel-creation?session=session-1', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByRole('heading', { name: '\u6700\u7ec8\u5ba1\u9605' })).toBeVisible()
   await expect(page.getByRole('button', { name: zh.create })).toBeEnabled()

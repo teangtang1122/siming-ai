@@ -2,6 +2,7 @@ import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { Alert, Layout, Spin } from 'antd'
 import { Suspense, lazy, useEffect } from 'react'
 import { useAppStore } from './stores'
+import { apiClient } from './api/client'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const ProjectWorkspace = lazy(() => import('./pages/ProjectWorkspace'))
@@ -69,6 +70,28 @@ function ProjectPreloader() {
   return null
 }
 
+/** Send a brand-new, unconfigured author to the zero-command setup once. */
+function FirstRunSetupGate() {
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!['/', '/dashboard'].includes(location.pathname)) return
+    if (localStorage.getItem('siming_getting_started_deferred') === 'true') return
+    let cancelled = false
+    const request = apiClient.get<{ data: { needs_setup: boolean } }>('/config/getting-started', { summary: true })
+    if (!request || typeof request.then !== 'function') return
+    request
+      .then((response) => {
+        if (!cancelled && response.data.data.needs_setup) navigate('/getting-started', { replace: true })
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [location.pathname, navigate])
+
+  return null
+}
+
 function WildcardRedirect() {
   const navigate = useNavigate()
 
@@ -106,6 +129,7 @@ function App() {
       <GlobalErrorBanner />
       <Content id="main-content" tabIndex={-1} style={{ padding: 0 }}>
         <ProjectPreloader />
+        <FirstRunSetupGate />
         <Suspense fallback={<LoadingScreen />}>
           <Routes>
             <Route path="/" element={<DashboardPage />} />

@@ -12,6 +12,7 @@ from ....ai.gateway import LLMGateway
 from ....core.json_repair import parse_json_object
 from ....database.models import NovelCreationSession, NovelCreationStageRun
 from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
+from ....services.observability.run_events import classify_failure
 from ...novel_creation_workspace import (
     STAGE_LABELS,
     STAGE_ORDER,
@@ -34,6 +35,49 @@ def _text(value: Any) -> str:
 
 def _session(db: Session, session_id: str) -> NovelCreationSession | None:
     return db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+
+
+def _free_opencode_candidates(model: str) -> list[str]:
+    if not model.startswith("opencode_cli:"):
+        return [model]
+    try:
+        from ....services.opencode_onboarding import inspect_opencode
+
+        inspected = inspect_opencode()
+        discovered = [
+            f"opencode_cli:{item['id']}"
+            for item in inspected.get("free_models", [])
+            if item.get("id")
+        ]
+    except Exception:
+        discovered = []
+    return [model, *[candidate for candidate in discovered if candidate != model]]
+
+
+async def _generate_compact_concepts_with_fallback(
+    session: NovelCreationSession,
+    model: str,
+    *,
+    context_manifest: Any,
+    on_fallback: Any,
+) -> list[dict[str, Any]]:
+    last_error: Exception | None = None
+    candidates = _free_opencode_candidates(model)
+    for index, candidate in enumerate(candidates):
+        try:
+            return await _generate_compact_concepts(session, candidate, context_manifest=context_manifest)
+        except Exception as exc:
+            last_error = exc
+            failure = classify_failure(str(exc))
+            retryable = failure == "quota_or_rate_limit" or any(
+                token in str(exc).lower() for token in ("model not found", "unavailable", "overloaded")
+            )
+            if not retryable or index == len(candidates) - 1:
+                raise
+            on_fallback(candidate, candidates[index + 1], str(exc))
+    if last_error:
+        raise last_error
+    raise ValueError("当前没有可用的免费模型")
 
 
 def _stage_contract(stage: str) -> str:
@@ -301,7 +345,27 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
             db.commit()
             if not use_model or not model:
                 raise ValueError("轻量创意需要选择可用模型后才能生成")
-            concepts = await _generate_compact_concepts(session, model, context_manifest=manifest)
+            def record_fallback(previous: str, following: str, reason: str) -> None:
+                add_run_event(
+                    db,
+                    run,
+                    "model_fallback",
+                    "running",
+                    "当前免费模型暂时不可用，正在自动尝试另一个",
+                    {
+                        "previous_model": previous,
+                        "model_source": following,
+                        "failure_class": classify_failure(reason),
+                    },
+                )
+                db.commit()
+
+            concepts = await _generate_compact_concepts_with_fallback(
+                session,
+                model,
+                context_manifest=manifest,
+                on_fallback=record_fallback,
+            )
             concept_stage = save_compact_concepts(session, concepts)
             generated["concepts"] = deepcopy(concept_stage.get("data") or {})
             add_run_event(
