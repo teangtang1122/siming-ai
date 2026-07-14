@@ -26,7 +26,6 @@ import {
   message,
 } from 'antd'
 import {
-  ArrowLeftOutlined,
   BookOutlined,
   CheckCircleOutlined,
   CloudSyncOutlined,
@@ -169,6 +168,94 @@ function stageTone(status?: StageState['status']) {
   return 'default'
 }
 
+function stageStatusLabel(status?: StageState['status']) {
+  const labels: Record<string, string> = {
+    pending: '待生成',
+    generated: '待确认',
+    confirmed: '已确认',
+    stale: '需重新校验',
+  }
+  return labels[status || 'pending'] || '待生成'
+}
+
+const stageFieldLabels: Record<string, string> = {
+  writing_style: '正文风格', world_tone: '世界基调', story_structure: '剧情结构', pacing: '叙事节奏',
+  style_rules: '文风规则', forbidden_patterns: '避雷项', worldbuilding: '世界设定', display_groups: '展示分组',
+  characters: '角色', relationships: '角色关系', entries: '地点与势力', relations: '稳定关系',
+  story_overview: '故事总览', core_conflict: '核心冲突', ending_direction: '结局方向', target_chapters: '目标章节数',
+  volumes: '分卷规划', stage_plan: '阶段规划', chapters: '章节细纲', sections: '场景事件',
+  title: '标题', name: '名称', summary: '摘要', content: '内容', description: '说明', dimension: '维度',
+  role_type: '角色类型', background: '背景', personality: '性格', goal: '目标', current_goal: '当前目标', profile: '写作锁',
+  source_title: '起点', target_title: '终点', relation_type: '关系类型', start_chapter: '起始章节', end_chapter: '结束章节',
+  client_id: '内部标识', parent_client_id: '所属章节', metadata: '场景信息', ready: '可以创建', blocking: '阻塞项', warnings: '提醒', counts: '数量检查',
+}
+
+function fieldLabel(key: string) {
+  return stageFieldLabels[key] || key.replace(/_/g, ' ')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function collectionItemLabel(value: unknown, index: number) {
+  if (!isRecord(value)) return `第 ${index + 1} 项`
+  return String(value.title || value.name || value.client_id || value.source_title || `第 ${index + 1} 项`)
+}
+
+function StructuredValueEditor({ fieldKey, value, onChange }: { fieldKey: string; value: unknown; onChange: (value: unknown) => void }) {
+  const label = fieldLabel(fieldKey)
+
+  if (typeof value === 'boolean') {
+    return <Radio.Group aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}><Radio.Button value>是</Radio.Button><Radio.Button value={false}>否</Radio.Button></Radio.Group>
+  }
+  if (typeof value === 'number') {
+    return <InputNumber aria-label={label} value={value} onChange={(next) => onChange(next ?? 0)} style={{ width: '100%' }} />
+  }
+  if (typeof value === 'string' || value == null) {
+    const text = value == null ? '' : value
+    const multiline = text.length > 80 || ['summary', 'content', 'description', 'background', 'story_overview', 'core_conflict', 'ending_direction'].includes(fieldKey)
+    return multiline
+      ? <TextArea aria-label={label} value={text} rows={3} onChange={(event) => onChange(event.target.value)} />
+      : <Input aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} />
+  }
+  if (Array.isArray(value)) {
+    const onlySimpleValues = value.every((item) => ['string', 'number', 'boolean'].includes(typeof item))
+    if (onlySimpleValues) {
+      return <TextArea aria-label={label} value={value.map(String).join('\n')} rows={Math.min(6, Math.max(2, value.length + 1))} placeholder="每行一项" onChange={(event) => onChange(splitLines(event.target.value))} />
+    }
+    if (value.length === 0) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本组暂无内容，可在高级编辑中补充" />
+    return (
+      <Collapse
+        size="small"
+        className="creation-structured-collection"
+        items={value.map((item, index) => ({
+          key: `${fieldKey}-${index}`,
+          label: collectionItemLabel(item, index),
+          children: <StructuredValueEditor fieldKey={`${fieldKey}_${index + 1}`} value={item} onChange={(next) => { const updated = [...value]; updated[index] = next; onChange(updated) }} />,
+        }))}
+      />
+    )
+  }
+  if (isRecord(value)) {
+    return (
+      <div className="creation-structured-fields">
+        {Object.entries(value).map(([key, child]) => (
+          <div className="creation-structured-field" key={key}>
+            <Text strong>{fieldLabel(key)}</Text>
+            <StructuredValueEditor fieldKey={key} value={child} onChange={(next) => onChange({ ...value, [key]: next })} />
+          </div>
+        ))}
+      </div>
+    )
+  }
+  return <Text type="secondary">暂不支持直接编辑此字段</Text>
+}
+
+function StructuredStageEditor({ data, onChange }: { data: Record<string, unknown>; onChange: (data: Record<string, unknown>) => void }) {
+  return <StructuredValueEditor fieldKey="stage" value={data} onChange={(next) => onChange(isRecord(next) ? next : data)} />
+}
+
 function StagePreview({ stage, data }: { stage: string; data?: Record<string, unknown> | null }) {
   if (!data) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本阶段尚未生成" />
 
@@ -254,7 +341,7 @@ function StagePreview({ stage, data }: { stage: string; data?: Record<string, un
             label: <Space><Text strong>{String(chapter.title)}</Text><Tag>{childSections.length} 个场景</Tag></Space>,
             children: <><Paragraph>{String(chapter.summary || '')}</Paragraph>{childSections.map((section, index) => {
               const metadata = (section.metadata || {}) as Record<string, unknown>
-              return <div className="creation-section-row" key={`${String(section.client_id)}-${index}`}><Badge count={index + 1} color="#3f6f67" /><div><Text strong>{String(section.title)}</Text><Paragraph type="secondary">{String(metadata.purpose || section.summary || '')}</Paragraph><Space wrap size={4}><Tag>{String(metadata.location || '地点待定')}</Tag><Tag>{String(metadata.pov_character || '视角待定')}</Tag><Tag>{String(metadata.exit_state || '状态待定')}</Tag></Space></div></div>
+              return <div className="creation-section-row" key={`${String(section.client_id)}-${index}`}><Badge count={index + 1} color="var(--ant-color-primary)" /><div><Text strong>{String(section.title)}</Text><Paragraph type="secondary">{String(metadata.purpose || section.summary || '')}</Paragraph><Space wrap size={4}><Tag>{String(metadata.location || '地点待定')}</Tag><Tag>{String(metadata.pov_character || '视角待定')}</Tag><Tag>{String(metadata.exit_state || '状态待定')}</Tag></Space></div></div>
             })}</>,
           }
         })}
@@ -294,6 +381,7 @@ function NovelCreationWizardPage() {
   const [runProgress, setRunProgress] = useState(0)
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorText, setEditorText] = useState('')
+  const [editorData, setEditorData] = useState<Record<string, unknown>>({})
   const [presetSearch, setPresetSearch] = useState('')
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const watchingRunRef = useRef<string | null>(null)
@@ -542,8 +630,15 @@ function NovelCreationWizardPage() {
   }
 
   const openEditor = () => {
-    setEditorText(JSON.stringify(currentStageState?.data || {}, null, 2))
+    const data = currentStageState?.data || {}
+    setEditorData(data)
+    setEditorText(JSON.stringify(data, null, 2))
     setEditorOpen(true)
+  }
+
+  const updateStructuredEditor = (data: Record<string, unknown>) => {
+    setEditorData(data)
+    setEditorText(JSON.stringify(data, null, 2))
   }
 
   const saveEditor = async () => {
@@ -601,16 +696,15 @@ function NovelCreationWizardPage() {
   return (
     <div className="creation-page">
       <div className="creation-page-inner">
-        <SystemNav />
+        <SystemNav current="creation" />
         <header className="creation-header">
           <div>
-            <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/dashboard')}>返回作品管理</Button>
             <Title level={2}><BookOutlined /> 新书立项工作台</Title>
             <Paragraph>先比较创意，再逐步确认世界、角色与全书结构。正式作品只在最终确认时创建。</Paragraph>
           </div>
           <Space wrap>
             {session && <Tag color="processing">草稿修订 {session.revision}</Tag>}
-            <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="选择本阶段模型" style={{ minWidth: 260 }} />
+            {!inWorkbench && <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="选择生成模型" style={{ minWidth: 260 }} />}
             <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>配置模型</Button>
             {session && <Button onClick={resetWorkspace}>新建立项</Button>}
           </Space>
@@ -666,7 +760,7 @@ function NovelCreationWizardPage() {
                 </div>
                 <Collapse ghost activeKey={advancedOpen ? ['advanced'] : []} onChange={(keys) => setAdvancedOpen(keys.includes('advanced'))} items={[{
                   key: 'advanced',
-                  label: <Space><ExperimentOutlined />创作约束与高级设置<Badge count="均可编辑" color="#3f6f67" /></Space>,
+                  label: <Space><ExperimentOutlined />创作约束与高级设置<Badge count="均可编辑" color="var(--ant-color-primary)" /></Space>,
                   children: <>
                     <div className="creation-form-grid">
                       <Form.Item name="world_tone" label="世界观基调"><TextArea rows={3} /></Form.Item>
@@ -708,7 +802,7 @@ function NovelCreationWizardPage() {
             <div className="creation-section-heading"><div><Title level={3}>先选故事发动机</Title><Paragraph>这里只展示足够做方向判断的内容。选中后再生成完整角色、世界和全书规划。</Paragraph></div><Button icon={<ReloadOutlined />} onClick={generateConcepts} loading={busy}>重新生成三案</Button></div>
             <div className="creation-concept-grid">
               {concepts.map((concept, index) => (
-                <Card key={concept.id} className="creation-concept-card" title={<Space><Badge count={index + 1} color="#3f6f67" /><span>{concept.title}</span></Space>} extra={<Tag>{concept.coverage?.score || 0}% 覆盖</Tag>}>
+                <Card key={concept.id} className="creation-concept-card" title={<Space><Badge count={index + 1} color="var(--ant-color-primary)" /><span>{concept.title}</span></Space>} extra={<Tag>{concept.coverage?.score || 0}% 覆盖</Tag>}>
                   <Text type="secondary">{concept.subtitle}</Text>
                   <Paragraph className="creation-logline">{concept.logline}</Paragraph>
                   <Descriptions column={1} size="small">
@@ -735,13 +829,13 @@ function NovelCreationWizardPage() {
               <Steps direction="vertical" current={Math.max(0, CORE_STAGES.indexOf(currentStage))} items={CORE_STAGES.map((stage) => ({
                 title: stageLabels[stage] || stage,
                 status: session?.draft?.stages[stage]?.status === 'confirmed' ? 'finish' : session?.draft?.stages[stage]?.status === 'stale' ? 'error' : stage === currentStage ? 'process' : 'wait',
-                description: <Tag color={stageTone(session?.draft?.stages[stage]?.status)}>{session?.draft?.stages[stage]?.status || 'pending'}</Tag>,
+                description: <Tag color={stageTone(session?.draft?.stages[stage]?.status)}>{stageStatusLabel(session?.draft?.stages[stage]?.status)}</Tag>,
               }))} />
               <Alert type="info" showIcon message={session?.draft?.quick_mode ? '快速模式' : '完整向导'} description="所有内容仍在立项草稿中，最终确认前不会创建正式作品。" />
             </aside>
             <section className="creation-stage-main">
               <div className="creation-section-heading">
-                <div><Title level={3}>{stageLabels[currentStage] || currentStage}</Title><Space><Tag color={stageTone(currentStageState?.status)}>{currentStageState?.status || 'pending'}</Tag>{currentStageState?.stale_reason && <Text type="warning">{currentStageState.stale_reason}</Text>}</Space></div>
+                <div><Title level={3}>{stageLabels[currentStage] || currentStage}</Title><Space><Tag color={stageTone(currentStageState?.status)}>{stageStatusLabel(currentStageState?.status)}</Tag>{currentStageState?.stale_reason && <Text type="warning">{currentStageState.stale_reason}</Text>}</Space></div>
                 <Space wrap>
                   <Select aria-label="选择当前阶段模型" value={selectedModel} onChange={setSelectedModel} options={modelOptions} style={{ minWidth: 250 }} />
                   <Button icon={<ReloadOutlined />} onClick={() => void startStageRun(currentStage)} disabled={busy}>重新生成</Button>
@@ -776,9 +870,19 @@ function NovelCreationWizardPage() {
         )}
       </div>
 
-      <Modal title={`编辑：${stageLabels[currentStage] || currentStage}`} open={editorOpen} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okText="保存修改" width={900}>
-        <Alert type="info" showIcon message="这里显示完整结构" description="普通作者可以只改文字值，不要删除字段名。保存后，依赖这个阶段的后续内容会自动标记为需要重新生成。" />
-        <TextArea className="creation-json-editor" value={editorText} onChange={(event) => setEditorText(event.target.value)} rows={24} spellCheck={false} />
+      <Modal title={`编辑：${stageLabels[currentStage] || currentStage}`} open={editorOpen} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okText="保存修改" width={960}>
+        <Alert type="info" showIcon message="直接修改需要调整的字段" description="保存后，下游已经确认的阶段会标记为需要重新校验。列表和复杂关系可以展开逐项编辑。" />
+        <div className="creation-structured-editor">
+          <StructuredStageEditor data={editorData} onChange={updateStructuredEditor} />
+        </div>
+        <Collapse
+          className="creation-advanced-editor"
+          items={[{
+            key: 'json',
+            label: '高级编辑：JSON 原文',
+            children: <><Paragraph type="secondary">仅在需要批量修改结构时使用；保存时会校验格式。</Paragraph><TextArea aria-label="阶段 JSON 原文" className="creation-json-editor" value={editorText} onChange={(event) => setEditorText(event.target.value)} rows={24} spellCheck={false} /></>,
+          }]}
+        />
       </Modal>
 
     </div>

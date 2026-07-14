@@ -18,6 +18,7 @@ import {
   InputNumber,
   Radio,
   Alert,
+  Tabs,
 } from 'antd'
 import {
   PlusOutlined,
@@ -32,11 +33,13 @@ import {
   DesktopOutlined,
   DownloadOutlined,
   SafetyCertificateOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 import SystemNav from '../components/SystemNav'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
+import './SettingsPage.css'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -401,6 +404,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
   const [installingUpdate, setInstallingUpdate] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<'ai' | 'app' | 'guide'>('ai')
 
   const fetchConfigs = useCallback(async () => {
     setLoading(true)
@@ -876,13 +880,27 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const defaultModelOptions = modelOptions.length > 0 ? modelOptions : fallbackModelOptions(modalProvider)
 
   return (
-    <div style={{ padding: 24, maxWidth: 960, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <Title level={3} style={{ margin: 0 }}>⚙️ 系统设置</Title>
-        {!embedded && <SystemNav current="settings" />}
-      </div>
+    <div className="settings-page">
+      {!embedded && <SystemNav current="settings" />}
+      <header className="siming-section-header settings-heading">
+        <div>
+          <span className="siming-section-kicker">系统控制</span>
+          <Title level={3}><SettingOutlined /> 系统设置</Title>
+          <p className="siming-section-description">先连接一个可用模型；启动、更新和数据目录只在需要时调整。</p>
+        </div>
+      </header>
+      <Tabs
+        className="settings-tabs"
+        activeKey={settingsSection}
+        onChange={(key) => setSettingsSection(key as 'ai' | 'app' | 'guide')}
+        items={[
+          { key: 'ai', label: '模型与 AI' },
+          { key: 'app', label: '应用与数据' },
+          { key: 'guide', label: '使用帮助' },
+        ]}
+      />
 
-      <Card title="快速上手：API 与本机 CLI" style={{ marginTop: 16 }}>
+      {settingsSection === 'guide' && <Card className="settings-card" title="从零开始：API 与本机 CLI">
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Paragraph style={{ marginBottom: 0 }}>
             司命可以走两条路：配置 API Key 后由司命直接调用模型；或安装 Codex/Claude Code/opencode 等本机 CLI，
@@ -961,9 +979,10 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
             如果 CLI 自己创建或修改 chapters/*.md，前端不会显示；这表示它绕过了数据库。写作计划会校验这一点并提示修复。
           </Text>
         </Space>
-      </Card>
+      </Card>}
 
-      <Card title={<span><DesktopOutlined /> 启动方式</span>} style={{ marginTop: 16 }} loading={launcherLoading && !launcherSettings}>
+      {settingsSection === 'app' && <>
+      <Card className="settings-card" title={<span><DesktopOutlined /> 启动方式</span>} loading={launcherLoading && !launcherSettings}>
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Paragraph style={{ margin: 0 }}>
             选择司命下次启动时打开界面的方式。切换不会重启当前程序，也不会影响作品和模型配置。
@@ -1002,7 +1021,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         </Space>
       </Card>
 
-      <Card title={<span><SafetyCertificateOutlined /> 安全更新</span>} style={{ marginTop: 16 }}>
+      <Card className="settings-card" title={<span><SafetyCertificateOutlined /> 安全更新</span>}>
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Paragraph style={{ margin: 0 }}>
             司命不会在启动时自动检查、下载或替换程序。只有你点击下方按钮后，才会检查版本；下载后必须通过 SHA256 和 Windows 代码签名校验，才能安装。
@@ -1063,7 +1082,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         </Space>
       </Card>
 
-      <Card title={<span><FolderOpenOutlined /> 小说数据目录</span>} style={{ marginTop: 16 }} loading={contentRootLoading && !contentRoot}>
+      <Card className="settings-card" title={<span><FolderOpenOutlined /> 小说数据目录</span>} loading={contentRootLoading && !contentRoot}>
         <Descriptions size="small" column={1} bordered>
           <Descriptions.Item label="当前目录">
             <Text code copyable>{contentRoot?.current_path || '未加载'}</Text>
@@ -1102,14 +1121,16 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           </Button>
         </Space.Compact>
 
-        <p style={{ marginTop: 12, color: '#888' }}>
+        <p style={{ marginTop: 12, color: 'var(--ant-color-text-secondary)' }}>
           未指定时自动使用默认目录。切换目录会迁移现有作品资料；为了避免混入无关文件，新目录必须为空，或是已经由司命创建过的小说数据目录。
         </p>
       </Card>
+      </>}
 
+      {settingsSection === 'ai' && <>
       <Card
+        className="settings-card"
         title="模型提供商配置"
-        style={{ marginTop: 16 }}
         extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={() => handleAddOrEdit()}>
             添加配置
@@ -1126,7 +1147,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         />
       </Card>
 
-      <Card title={<span><GlobalOutlined /> 全局默认模型</span>} style={{ marginTop: 16 }}>
+      <Card className="settings-card" title={<span><GlobalOutlined /> 全局默认模型</span>}>
         {globalModel.provider ? (
           <Descriptions size="small" column={2} bordered>
             <Descriptions.Item label="当前全局默认提供商">
@@ -1139,7 +1160,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
             </Descriptions.Item>
           </Descriptions>
         ) : (
-          <p style={{ color: '#999' }}>尚未设置全局默认模型</p>
+          <p style={{ color: 'var(--ant-color-text-tertiary)' }}>尚未设置全局默认模型</p>
         )}
 
         <Divider style={{ margin: '16px 0' }} />
@@ -1187,6 +1208,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       </Card>
 
       <ContextGovernanceSettingsPanel />
+      </>}
 
       <Modal
         title={editingProvider ? `编辑 ${providerLabel(editingProvider)} 配置` : '添加模型配置'}

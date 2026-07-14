@@ -1,6 +1,6 @@
-import { useParams, useNavigate } from 'react-router-dom'
-import { Button, Layout, Menu, Tooltip } from 'antd'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { Button, Layout, Menu, Spin, Tooltip } from 'antd'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../stores'
 import {
   AuditOutlined,
@@ -23,21 +23,6 @@ import {
   ClockCircleOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
-import WorldbuildingPage from './WorldbuildingPage'
-import CharactersPage from './CharactersPage'
-import OutlinePage from './OutlinePage'
-import WriterPage from './WriterPage'
-import StatsPage from './StatsPage'
-import ExportPage from './ExportPage'
-import DeconstructPage from './DeconstructPage'
-import VisualizationPage from './VisualizationPage'
-import ImportPage from './ImportPage'
-import CatalogingPage from './CatalogingPage'
-import SkillsPage from './SkillsPage'
-import PromptPacksPage from './PromptPacksPage'
-import { ScheduledTasksPage } from './ScheduledTasksPage'
-import NarrativeGovernancePage from './NarrativeGovernancePage'
-import ContextGovernancePage from './ContextGovernancePage'
 import AiSidePanel from '../components/AiSidePanel'
 import TabCache from '../components/TabCache'
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
@@ -45,14 +30,31 @@ import { AiPanelProvider, useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { usePanelResize } from '../hooks/usePanelResize'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
+import './ProjectWorkspace.css'
 
 const { Sider, Content } = Layout
+
+const WorldbuildingPage = lazy(() => import('./WorldbuildingPage'))
+const CharactersPage = lazy(() => import('./CharactersPage'))
+const OutlinePage = lazy(() => import('./OutlinePage'))
+const WriterPage = lazy(() => import('./WriterPage'))
+const StatsPage = lazy(() => import('./StatsPage'))
+const ExportPage = lazy(() => import('./ExportPage'))
+const DeconstructPage = lazy(() => import('./DeconstructPage'))
+const VisualizationPage = lazy(() => import('./VisualizationPage'))
+const ImportPage = lazy(() => import('./ImportPage'))
+const CatalogingPage = lazy(() => import('./CatalogingPage'))
+const SkillsPage = lazy(() => import('./SkillsPage'))
+const PromptPacksPage = lazy(() => import('./PromptPacksPage'))
+const ScheduledTasksPage = lazy(() => import('./ScheduledTasksPage').then((module) => ({ default: module.ScheduledTasksPage })))
+const NarrativeGovernancePage = lazy(() => import('./NarrativeGovernancePage'))
+const ContextGovernancePage = lazy(() => import('./ContextGovernancePage'))
 
 type MenuKey = 'world' | 'characters' | 'outline' | 'writer' | 'export' | 'stats' | 'deconstruct' | 'cataloging' | 'visualization' | 'governance' | 'context' | 'import' | 'skills' | 'prompts' | 'scheduler'
 
 /** Menu key → Chinese page title mapping */
 const PAGE_TITLES: Record<MenuKey, string> = {
-  context: 'Context governance',
+  context: '上下文治理',
   writer: '写作工作台',
   outline: '大纲规划',
   characters: '角色管理',
@@ -129,11 +131,24 @@ function usePersistedState(key: string, defaultValue: boolean): [boolean, (v: bo
 
 function ProjectWorkspace() {
   const { projectId } = useParams<{ projectId: string }>()
-  const [activeKey, setActiveKey] = useState<MenuKey>('writer')
+  const [searchParams, setSearchParams] = useSearchParams()
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState('sidebar_collapsed', false)
   const [aiCollapsed, setAiCollapsed] = usePersistedState('ai_panel_collapsed', true)
   const navigate = useNavigate()
   const { projects, getProject } = useAppStore()
+  const requestedView = searchParams.get('view') as MenuKey | null
+  const activeKey: MenuKey = requestedView && requestedView in PAGE_TITLES ? requestedView : 'writer'
+
+  const selectView = useCallback((view: MenuKey) => {
+    const next = new URLSearchParams(searchParams)
+    if (view === 'writer') next.delete('view')
+    else next.set('view', view)
+    setSearchParams(next, { replace: false })
+  }, [searchParams, setSearchParams])
+
+  useEffect(() => {
+    if (window.innerWidth < 900) setSidebarCollapsed(true)
+  }, [setSidebarCollapsed])
 
   const projectTitle = useMemo(() => {
     if (!projectId) return ''
@@ -149,48 +164,59 @@ function ProjectWorkspace() {
   }, [projectId, projectTitle, getProject])
 
   const menuItems = [
+    { key: 'writer', icon: <BookOutlined />, label: '写作' },
+    { key: 'outline', icon: <BranchesOutlined />, label: '大纲' },
     {
-      type: 'group' as const,
-      label: sidebarCollapsed ? '' : 'Governance',
+      key: 'story-library',
+      icon: <TeamOutlined />,
+      label: '故事资料',
       children: [
-        { key: 'context', icon: <AuditOutlined />, label: 'Context governance' },
-      ],
-    },
-    {
-      type: 'group' as const,
-      label: sidebarCollapsed ? '' : '创作',
-      children: [
-        { key: 'writer', icon: <BookOutlined />, label: '写作工作台' },
-        { key: 'outline', icon: <BranchesOutlined />, label: '大纲规划' },
-        { key: 'characters', icon: <TeamOutlined />, label: '角色管理' },
+        { key: 'characters', icon: <TeamOutlined />, label: '角色' },
         { key: 'world', icon: <GlobalOutlined />, label: '世界观' },
+        { key: 'visualization', icon: <ApartmentOutlined />, label: '关系图' },
       ],
     },
-    ...(sidebarCollapsed ? [{ type: 'divider' as const }] : []),
     {
-      type: 'group' as const,
-      label: sidebarCollapsed ? '' : '工具',
+      key: 'continuity',
+      icon: <SafetyCertificateOutlined />,
+      label: '连续性与档案',
       children: [
-        { key: 'stats', icon: <BarChartOutlined />, label: '统计追踪' },
-        { key: 'deconstruct', icon: <ThunderboltOutlined />, label: '拆书分析' },
-        { key: 'cataloging', icon: <DatabaseOutlined />, label: '作品建档' },
-        { key: 'visualization', icon: <ApartmentOutlined />, label: '可视化' },
         { key: 'governance', icon: <SafetyCertificateOutlined />, label: '叙事治理' },
+        { key: 'context', icon: <AuditOutlined />, label: '上下文治理' },
+        { key: 'cataloging', icon: <DatabaseOutlined />, label: '作品建档' },
+        { key: 'stats', icon: <BarChartOutlined />, label: '统计追踪' },
       ],
     },
-    ...(sidebarCollapsed ? [{ type: 'divider' as const }] : []),
     {
-      type: 'group' as const,
-      label: sidebarCollapsed ? '' : '设置',
+      key: 'toolbox',
+      icon: <ThunderboltOutlined />,
+      label: '工具与发布',
       children: [
+        { key: 'deconstruct', icon: <ThunderboltOutlined />, label: '拆书分析' },
+        { key: 'import', icon: <FileAddOutlined />, label: '内容导入' },
+        { key: 'export', icon: <ExportOutlined />, label: '导出作品' },
+        { key: 'scheduler', icon: <ClockCircleOutlined />, label: '自动任务' },
         { key: 'skills', icon: <BulbOutlined />, label: '技能管理' },
         { key: 'prompts', icon: <FileTextOutlined />, label: '提示词投稿' },
-        { key: 'scheduler', icon: <ClockCircleOutlined />, label: '自动任务' },
-        { key: 'import', icon: <FileAddOutlined />, label: '内容导入' },
-        { key: 'export', icon: <ExportOutlined />, label: '导出' },
       ],
     },
   ]
+
+  const menuParentByView: Partial<Record<MenuKey, string>> = {
+    characters: 'story-library',
+    world: 'story-library',
+    visualization: 'story-library',
+    governance: 'continuity',
+    context: 'continuity',
+    cataloging: 'continuity',
+    stats: 'continuity',
+    deconstruct: 'toolbox',
+    import: 'toolbox',
+    export: 'toolbox',
+    scheduler: 'toolbox',
+    skills: 'toolbox',
+    prompts: 'toolbox',
+  }
 
   /** Tab renderers — wrapped in closures for TabCache lazy evaluation */
   const tabRenderers = projectId
@@ -215,45 +241,20 @@ function ProjectWorkspace() {
 
   return (
     <AiPanelProvider>
-      <Layout style={{ minHeight: '100vh' }}>
+      <Layout className="project-workspace">
         <Sider
-          width={188}
-          collapsedWidth={52}
+          width={208}
+          collapsedWidth={58}
           collapsible
           collapsed={sidebarCollapsed}
           onCollapse={setSidebarCollapsed}
           trigger={null}
           theme="light"
-          style={{
-            borderRight: '1px solid var(--ant-color-border-secondary)',
-            transition: 'width 0.25s cubic-bezier(0.22, 1, 0.36, 1)',
-          }}
+          className="project-workspace-sider"
         >
-          {/* Sidebar header — project title area */}
-          <div
-            style={{
-              alignItems: 'center',
-              borderBottom: '1px solid var(--ant-color-border-secondary)',
-              display: 'flex',
-              fontWeight: 'bold',
-              gap: 8,
-              justifyContent: sidebarCollapsed ? 'center' : 'space-between',
-              minHeight: 56,
-              padding: sidebarCollapsed ? '8px 0' : '12px 16px',
-              background: 'linear-gradient(180deg, rgba(0,0,0,0.015) 0%, transparent 100%)',
-            }}
-          >
+          <div className="project-workspace-brand">
             {!sidebarCollapsed && (
-              <span
-                style={{
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  fontSize: 14,
-                  fontFamily: "'Noto Serif SC', 'LXGW WenKai', serif",
-                  letterSpacing: '0.02em',
-                }}
-              >
+              <span title={projectTitle}>
                 {projectTitle || (projectId ? projectId.slice(0, 8) + '...' : '')}
               </span>
             )}
@@ -261,64 +262,43 @@ function ProjectWorkspace() {
               type="text"
               icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               onClick={() => setSidebarCollapsed((value) => !value)}
-              style={{ opacity: 0.75 }}
+              aria-label={sidebarCollapsed ? '展开项目导航' : '收起项目导航'}
             />
           </div>
           <Menu
             mode="inline"
             inlineCollapsed={sidebarCollapsed}
             selectedKeys={[activeKey]}
-            onClick={({ key }) => setActiveKey(key as MenuKey)}
+            defaultOpenKeys={menuParentByView[activeKey] ? [menuParentByView[activeKey]!] : []}
+            onClick={({ key }) => {
+              if (key in PAGE_TITLES) selectView(key as MenuKey)
+            }}
             items={menuItems}
-            style={{ borderRight: 0, paddingTop: 8 }}
+            className="project-workspace-menu"
           />
         </Sider>
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-          {/* Header bar */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              height: 48,
-              padding: '0 24px',
-              borderBottom: '1px solid var(--ant-color-border-secondary)',
-              background: 'var(--ant-color-bg-container)',
-              flexShrink: 0,
-              backdropFilter: 'blur(8px)',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+        <div className="project-workspace-column">
+          <header className="project-workspace-header">
+            <div className="project-workspace-breadcrumb">
               <Button
                 type="link"
                 icon={<HomeOutlined />}
                 onClick={() => navigate('/dashboard')}
-                style={{ padding: '0 4px', fontSize: 13, opacity: 0.7 }}
               >
-                作品管理
+                作品库
               </Button>
-              <span style={{ fontSize: 10, color: 'var(--ant-color-text-quaternary)', margin: '0 2px' }}>›</span>
+              <span aria-hidden="true">/</span>
               <Button
                 type="link"
-                onClick={() => setActiveKey('writer')}
-                style={{
-                  padding: '0 4px',
-                  fontWeight: 600,
-                  fontSize: 13,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  fontFamily: "'Noto Serif SC', 'LXGW WenKai', serif",
-                  letterSpacing: '0.01em',
-                  maxWidth: 200,
-                }}
+                onClick={() => selectView('writer')}
+                className="project-workspace-title"
               >
                 {projectTitle || '未命名作品'}
               </Button>
-              <span style={{ fontSize: 10, color: 'var(--ant-color-text-quaternary)', margin: '0 2px' }}>›</span>
-              <span style={{ color: 'var(--ant-color-text-secondary)', fontSize: 13 }}>{PAGE_TITLES[activeKey]}</span>
+              <span aria-hidden="true">/</span>
+              <span>{PAGE_TITLES[activeKey]}</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="project-workspace-actions">
               <ThemeSwitcher />
               <Tooltip title={aiCollapsed ? '展开 AI 助手' : '收起 AI 助手'}>
                 <Button
@@ -326,21 +306,19 @@ function ProjectWorkspace() {
                   size="small"
                   icon={<RobotOutlined />}
                   onClick={() => setAiCollapsed(!aiCollapsed)}
-                  style={{
-                    borderRadius: 6,
-                    transition: 'all 0.2s ease',
-                  }}
+                  aria-expanded={!aiCollapsed}
                 >
-                  AI 助手
+                  项目助手
                 </Button>
               </Tooltip>
             </div>
-          </div>
-          {/* Main content */}
-          <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-            <Content style={{ padding: 24, background: 'var(--ant-color-bg-container)', flex: 1, minWidth: 0 }}>
+          </header>
+          <div className="project-workspace-main">
+            <Content className="project-workspace-content">
               {tabRenderers && (
-                <TabCache activeKey={activeKey} tabs={tabRenderers} />
+                <Suspense fallback={<div className="project-workspace-loading" role="status"><Spin /><span>正在打开{PAGE_TITLES[activeKey]}...</span></div>}>
+                  <TabCache activeKey={activeKey} tabs={tabRenderers} />
+                </Suspense>
               )}
             </Content>
             <AiPanelColumn aiCollapsed={aiCollapsed} setAiCollapsed={setAiCollapsed} />

@@ -102,7 +102,7 @@
 .writer-content-input {
   font-size: 15.5px;
   line-height: 2;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   padding: 16px 18px !important;
   border-radius: 8px !important;
   transition: box-shadow 0.25s ease, border-color 0.2s ease;
@@ -114,13 +114,17 @@
 
 /* ── Version History ── */
 .writer-history-section {
-  border-top: 1px solid var(--ant-color-border-secondary);
   margin-top: 20px;
-  padding-top: 18px;
 }
 
 .writer-history-head {
   margin-bottom: 16px;
+}
+
+.writer-history-section .ant-collapse {
+  background: var(--ant-color-bg-container);
+  border-color: var(--ant-color-border-secondary);
+  border-radius: 8px;
 }
 
 .writer-snapshot-timeline {

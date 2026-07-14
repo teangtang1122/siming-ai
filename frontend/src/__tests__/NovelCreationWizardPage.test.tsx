@@ -181,4 +181,41 @@ describe('NovelCreationWizardPage', () => {
       }))
     })
   })
+
+  it('edits stage fields without exposing raw JSON by default', async () => {
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 3, current_stage: 'world_style',
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [{ id: 'concept-1', source_index: 0, title: '灰港遗忘症', logline: '女孩用遗忘换取感染者的记忆。', protagonist_seed: { name: '林七', identity: '医生', goal: '找母亲', lack: '害怕遗忘' }, world_hook: '记忆传播', core_conflict: '救人就会遗忘', story_engine: '读忆换线索', opening_hook: '陌生人说出她的童年', differentiators: [], risks: [], coverage: { score: 92, covered: [], missing: [] } }],
+        selected_concept_id: 'concept-1',
+        stages: { world_style: { status: 'generated', data: { world_tone: '信息公平', writing_style: '精确克制', story_structure: '三层谜团', pacing: '证据推进', style_rules: ['证据可回看'], worldbuilding: [{ title: '记忆传播', content: '记忆会通过接触传播' }] } } },
+      },
+    }
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    mockPost.mockResolvedValue({ data: { data: session } })
+
+    const user = userEvent.setup()
+    renderPage('/novel-creation?session=session-1')
+    await user.click(await screen.findByRole('button', { name: /编辑阶段内容/ }, { timeout: 3000 }))
+
+    const toneInput = screen.getByRole('textbox', { name: '世界基调' })
+    expect(toneInput).toHaveValue('信息公平')
+    expect(screen.queryByRole('textbox', { name: '阶段 JSON 原文' })).not.toBeInTheDocument()
+    await user.clear(toneInput)
+    await user.type(toneInput, '记忆有明确代价')
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/world_style/confirm', expect.objectContaining({
+        data: expect.objectContaining({ world_tone: '记忆有明确代价' }),
+        confirm: false,
+      }))
+    })
+  })
 })

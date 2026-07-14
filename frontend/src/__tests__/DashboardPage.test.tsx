@@ -140,7 +140,7 @@ describe('DashboardPage', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('暂无作品。可以创建空项目、上传已有小说，也可以让新书立项助手先生成角色、世界观和大纲。')).toBeInTheDocument()
+      expect(screen.getByText('作品库还是空的。建议先立项，让司命一起建立角色、世界和前 15 章细纲。')).toBeInTheDocument()
     })
   })
 
@@ -151,8 +151,8 @@ describe('DashboardPage', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('让助手帮我开书')).toBeInTheDocument()
-      expect(screen.getByText('直接创建')).toBeInTheDocument()
+      expect(screen.getByText('开始新书立项')).toBeInTheDocument()
+      expect(screen.getAllByText('直接创建或导入').length).toBeGreaterThan(0)
     })
   })
 
@@ -181,7 +181,7 @@ describe('DashboardPage', () => {
 
     renderDashboard()
 
-    expect(screen.getByText('加载中...')).toBeInTheDocument()
+    expect(screen.getByText('正在载入作品...')).toBeInTheDocument()
   })
 
   // ------------------------------------------------------------------
@@ -225,7 +225,7 @@ describe('DashboardPage', () => {
     fireEvent.click(searchButton)
 
     await waitFor(() => {
-      expect(screen.getByText('未找到匹配的作品')).toBeInTheDocument()
+      expect(screen.getByText('没有找到匹配的作品')).toBeInTheDocument()
     })
   })
 
@@ -252,7 +252,7 @@ describe('DashboardPage', () => {
     )
     renderDashboard()
 
-    await user.click(screen.getByText('直接创建'))
+    await user.click(screen.getAllByText('直接创建或导入')[0])
 
     const titleInput = screen.getByLabelText('作品标题')
     await user.type(titleInput, '我的新作品')
@@ -275,7 +275,7 @@ describe('DashboardPage', () => {
     const user = userEvent.setup()
     renderDashboard()
 
-    await user.click(screen.getByText('直接创建'))
+    await user.click(screen.getAllByText('直接创建或导入')[0])
 
     const footer = document.querySelector('.ant-modal-footer') as HTMLElement
     const cancelButton = within(footer).getByRole('button', { name: '取消' })

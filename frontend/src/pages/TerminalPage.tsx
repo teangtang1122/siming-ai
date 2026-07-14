@@ -155,8 +155,8 @@ function TerminalPage() {
           flex: 1,
           margin: 0,
           padding: '12px 16px',
-          background: '#1a1714',
-          color: '#e5dcc8',
+          background: '#16181d',
+          color: '#d7dbe2',
           borderRadius: 8,
           fontSize: 12.5,
           lineHeight: 1.7,
@@ -168,12 +168,12 @@ function TerminalPage() {
         }}
       >
         {logContent || (
-          <span style={{ color: '#706450', fontStyle: 'italic' }}>
+          <span style={{ color: '#7e8794', fontStyle: 'italic' }}>
             {loading ? '正在加载日志...' : '暂无日志输出'}
           </span>
         )}
         {autoRefresh && (
-          <span style={{ display: 'inline-block', width: 8, height: 15, background: '#c9a04e', marginLeft: 2, animation: 'blink 1s step-end infinite', verticalAlign: 'text-bottom' }} />
+          <span style={{ display: 'inline-block', width: 8, height: 15, background: '#79c0ff', marginLeft: 2, animation: 'blink 1s step-end infinite', verticalAlign: 'text-bottom' }} />
         )}
       </pre>
 

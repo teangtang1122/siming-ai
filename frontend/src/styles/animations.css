@@ -94,7 +94,7 @@
 }
 
 .siming-card-hover:hover {
-  transform: translateY(-3px);
+  transform: none;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
@@ -107,7 +107,7 @@
 }
 
 .ant-menu-item:hover {
-  transform: translateX(3px);
+  transform: none;
 }
 
 /* Active menu item — left accent border */
@@ -150,7 +150,7 @@
 }
 
 .siming-active-glow {
-  animation: siming-glow 3s ease-in-out infinite;
+  animation: none;
 }
 
 /* ─── Grain overlay for atmosphere ─── */

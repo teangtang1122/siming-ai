@@ -1,11 +1,13 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Button, Space } from 'antd'
-import { HomeOutlined } from '@ant-design/icons'
+import { Button, Space, Tooltip, Typography } from 'antd'
+import { BookOutlined, HomeOutlined, PlusOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
+
+const { Text } = Typography
 
 interface SystemNavProps {
   /** Highlight the current page */
-  current?: 'dashboard' | 'settings' | 'external-agent'
+  current?: 'dashboard' | 'creation' | 'assistant' | 'settings' | 'external-agent'
 }
 
 /**
@@ -19,42 +21,52 @@ function SystemNav({ current }: SystemNavProps) {
   // Auto-detect current page if not specified
   const active = current || (() => {
     if (location.pathname === '/dashboard' || location.pathname === '/') return 'dashboard'
+    if (location.pathname === '/novel-creation') return 'creation'
+    if (location.pathname === '/gui') return 'assistant'
+    if (location.pathname === '/settings') return 'settings'
+    if (location.pathname === '/external-agent') return 'external-agent'
     return ''
   })()
 
+  const navItems = [
+    { key: 'dashboard', label: '作品库', icon: <HomeOutlined />, path: '/dashboard' },
+    { key: 'creation', label: '新书立项', icon: <PlusOutlined />, path: '/novel-creation' },
+    { key: 'assistant', label: 'AI 助手', icon: <RobotOutlined />, path: '/gui' },
+  ] as const
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 20,
-        paddingBottom: 14,
-        borderBottom: '1px solid var(--ant-color-border-secondary)',
-      }}
-    >
-      <Space size={8}>
-        <Button
-          type={active === 'dashboard' ? 'primary' : 'default'}
-          icon={<HomeOutlined />}
-          onClick={() => navigate('/dashboard')}
-          style={{ borderRadius: 6 }}
-        >
-          作品管理
-        </Button>
+    <nav className="system-nav" aria-label="系统导航">
+      <button className="system-nav-brand" type="button" onClick={() => navigate('/dashboard')}>
+        <BookOutlined aria-hidden="true" />
+        <Text strong>司命</Text>
+      </button>
+      <Space size={4} className="system-nav-links">
+        {navItems.map((item) => (
+          <Button
+            key={item.key}
+            type="text"
+            icon={item.icon}
+            className={active === item.key ? 'system-nav-link-active' : undefined}
+            aria-current={active === item.key ? 'page' : undefined}
+            onClick={() => navigate(item.path)}
+          >
+            {item.label}
+          </Button>
+        ))}
       </Space>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span
-          style={{
-            width: 1,
-            height: 20,
-            background: 'var(--ant-color-border-secondary)',
-            display: 'inline-block',
-          }}
-        />
+      <div className="system-nav-tools">
+        <Tooltip title="系统设置">
+          <Button
+            type="text"
+            icon={<SettingOutlined />}
+            aria-label="系统设置"
+            aria-current={active === 'settings' ? 'page' : undefined}
+            onClick={() => navigate('/settings')}
+          />
+        </Tooltip>
         <ThemeSwitcher />
       </div>
-    </div>
+    </nav>
   )
 }
 

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { ThemeProvider } from './themes/ThemeContext'
 import './styles/animations.css'
+import './styles/siming-ui.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

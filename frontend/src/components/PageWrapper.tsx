@@ -19,7 +19,7 @@ interface PageWrapperProps {
 function PageWrapper({ children, maxWidth = 1200, padding = 28, className, style }: PageWrapperProps) {
   return (
     <div
-      className={className}
+      className={`siming-page-wrapper${className ? ` ${className}` : ''}`}
       style={{
         padding,
         maxWidth,

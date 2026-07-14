@@ -15,6 +15,7 @@ import {
   Empty,
   Modal,
   Input,
+  Popover,
   Select,
   Space,
   Spin,
@@ -28,6 +29,8 @@ import {
   DeleteOutlined,
   FileAddOutlined,
   FolderOpenOutlined,
+  HistoryOutlined,
+  InfoCircleOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   PlusOutlined,
@@ -235,7 +238,10 @@ function GuiAssistantChat() {
   const [projectsLoading, setProjectsLoading] = useState(false)
   const [conversationsLoading, setConversationsLoading] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => (localStorage.getItem(SIDEBAR_STORAGE_KEY) || localStorage.getItem(LEGACY_SIDEBAR_STORAGE_KEY)) === '1',
+    () => {
+      const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY) || localStorage.getItem(LEGACY_SIDEBAR_STORAGE_KEY)
+      return stored === null ? true : stored === '1'
+    },
   )
   const [systemConversationId, setSystemConversationId] = useState<string>()
   const [systemBlueprints, setSystemBlueprints] = useState<NovelBlueprint[]>([])
@@ -1226,11 +1232,11 @@ function GuiAssistantChat() {
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '8px 0' }}>
-        <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12 }}>
+        <div style={{ background: 'var(--ant-color-fill-quaternary)', borderRadius: 8, padding: 12 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
-            <span style={{ fontWeight: 600, color: '#1890ff' }}>Q</span>
+            <span style={{ fontWeight: 600, color: 'var(--ant-color-primary)' }}>Q</span>
             <span>{q.question}</span>
-            {q.purpose && <span style={{ fontSize: 12, color: '#999' }}>{q.purpose}</span>}
+            {q.purpose && <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)' }}>{q.purpose}</span>}
           </div>
           {q.type === 'text' ? (
             <div>
@@ -1407,11 +1413,11 @@ function GuiAssistantChat() {
   const renderQAEditor = () => {
     if (!showQAEditor || questionHistory.length === 0) return null
     return (
-      <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12, marginBottom: 8 }}>
+      <div style={{ background: 'var(--ant-color-fill-quaternary)', borderRadius: 8, padding: 12, marginBottom: 8 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>修改你的回答：</div>
         {questionHistory.map((qa, i) => (
           <div key={i} style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>{qa.question}</div>
+            <div style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)', marginBottom: 4 }}>{qa.question}</div>
             <Input
               size="small"
               value={editingAnswers[String(i)] ?? qa.answer}
@@ -1502,7 +1508,7 @@ function GuiAssistantChat() {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         <div style={{
-          background: '#fff', borderRadius: 8, padding: 24, width: 600,
+          background: 'var(--ant-color-bg-elevated)', borderRadius: 8, padding: 24, width: 600,
           maxHeight: '80vh', overflow: 'auto',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -1698,20 +1704,37 @@ function GuiAssistantChat() {
     )
   }
 
-  const quickActions = [
-    {
-      label: '和助手开书',
-      prompt: '帮我创建一本新的小说，克苏鲁+规则怪谈，至少要能写1000章的创意',
-    },
-    {
-      label: '查看作品',
-      prompt: '查看我的作品列表',
-    },
-    {
-      label: activeProject ? '规划后续' : '设计主角',
-      prompt: activeProject ? '根据当前作品，帮我规划后续三章' : '分别设计一下主角，给出名字、目标、弱点和开局压力',
-    },
-  ]
+  const runtimeHasProblem = interviewRuntime.quota_status === 'exhausted_or_limited'
+  const runtimePanel = (
+    <div className="gui-chat-runtime-panel" aria-label="当前模型运行状态">
+      <div className="gui-chat-runtime-panel-head">
+        <Text strong>本次对话模型</Text>
+        <Tag color={runtimeHasProblem ? 'error' : 'success'}>{runtimeHasProblem ? '需要处理' : '可用'}</Tag>
+      </div>
+      <Select
+        className="gui-chat-model-select"
+        showSearch
+        allowClear
+        value={selectedModel}
+        onChange={(value) => setSelectedModelOverride(value || undefined)}
+        options={modelOptions}
+        loading={modelsLoading}
+        optionFilterProp="label"
+        placeholder="选择本次对话模型"
+        aria-label="选择本次对话模型"
+        title={selectedModel || '未配置模型'}
+      />
+      <dl className="gui-chat-runtime-list">
+        <div><dt>提供商</dt><dd>{interviewRuntime.provider || '未配置'}</dd></div>
+        <div><dt>模型</dt><dd>{interviewRuntime.effective_model || '未配置'}</dd></div>
+        <div><dt>来源</dt><dd>{runtimeSourceLabel[interviewRuntime.model_source || 'unknown'] || '待确认'}</dd></div>
+        <div><dt>工具模式</dt><dd>{runtimeToolModeLabel.replace('工具模式：', '')}</dd></div>
+        <div><dt>超时</dt><dd>{interviewRuntime.timeout_seconds || 30} 秒</dd></div>
+        <div><dt>额度</dt><dd>{runtimeQuotaLabel.replace('额度：', '')}</dd></div>
+      </dl>
+      {runtimeHasProblem && <Text type="danger">请切换有额度的模型后重试当前操作。</Text>}
+    </div>
+  )
 
   return (
     <div className={`gui-chat${sidebarCollapsed ? ' gui-chat-collapsed' : ''}`}>
@@ -1787,26 +1810,22 @@ function GuiAssistantChat() {
 
       <main className="gui-chat-main">
         <div className="gui-chat-header">
-          <div style={{ minWidth: 0 }}>
+          <div className="gui-chat-heading">
             <Title level={5} style={{ margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {activeConvId ? conversations.find((c) => c.id === activeConvId)?.title || 'AI 助手' : 'AI 助手'}
             </Title>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-              <Tag color={activeProject ? 'blue' : 'purple'} style={{ margin: 0 }}>{assistantContextLabel}</Tag>
-              <Text type="secondary" className="gui-chat-project-line" style={{ marginTop: 0 }}>
-                <FolderOpenOutlined /> {activeProject ? '作品问题会写回当前作品；新书/创建意图会自动进入系统立项流程' : '未选择作品时仍可创建新小说'}
-              </Text>
-            </div>
-            <div className="gui-chat-runtime-status" aria-label="当前模型运行状态">
-              <Tag color="geekblue">提供商：{interviewRuntime.provider || '未配置'}</Tag>
-              <Tag color="blue">模型：{interviewRuntime.effective_model || '未配置'}</Tag>
-              <Tag>来源：{runtimeSourceLabel[interviewRuntime.model_source || 'unknown'] || '待确认'}</Tag>
-              <Tag>{runtimeToolModeLabel}</Tag>
-              <Tag>超时：{interviewRuntime.timeout_seconds || 30} 秒</Tag>
-              <Tag color={interviewRuntime.quota_status === 'exhausted_or_limited' ? 'error' : 'default'}>{runtimeQuotaLabel}</Tag>
-            </div>
+            <Text type="secondary" className="gui-chat-project-line">
+              <FolderOpenOutlined /> {assistantContextLabel}
+            </Text>
           </div>
-          <Space wrap className="gui-chat-header-actions">
+          <Space className="gui-chat-header-actions">
+            <Button
+              icon={<HistoryOutlined />}
+              onClick={() => setSidebarCollapsed((value) => !value)}
+              aria-expanded={!sidebarCollapsed}
+            >
+              对话记录
+            </Button>
             <Select
               showSearch
               allowClear
@@ -1816,31 +1835,26 @@ function GuiAssistantChat() {
               loading={projectsLoading}
               optionFilterProp="label"
               placeholder="选择作品上下文"
-              style={{ width: 220 }}
+              className="gui-chat-project-select"
+              aria-label="选择作品上下文"
             />
-            <Select
-              className="gui-chat-model-select"
-              showSearch
-              allowClear
-              value={selectedModel}
-              onChange={(value) => setSelectedModelOverride(value || undefined)}
-              options={modelOptions}
-              loading={modelsLoading}
-              optionFilterProp="label"
-              placeholder="选择本次对话模型"
-              aria-label="选择本次对话模型"
-              title={selectedModel || '未配置模型'}
-            />
-            <Button onClick={() => navigate('/novel-creation')}>
-              打开立项工作台
-            </Button>
-            <Button icon={<PlusOutlined />} onClick={startNewConversation}>
-              新对话
-            </Button>
+            <Popover content={runtimePanel} trigger="click" placement="bottomRight">
+              <Button
+                icon={<InfoCircleOutlined />}
+                aria-label="查看当前模型与运行状态"
+                danger={runtimeHasProblem}
+              >
+                <span className={`siming-status-dot${runtimeHasProblem ? ' siming-status-dot-error' : ''}`} />
+                {interviewRuntime.provider || '配置模型'}
+              </Button>
+            </Popover>
+            <Tooltip title="新对话">
+              <Button type="primary" icon={<PlusOutlined />} aria-label="新对话" onClick={startNewConversation} />
+            </Tooltip>
           </Space>
         </div>
 
-        <div className="gui-chat-messages">
+        <div className="gui-chat-messages" aria-live="polite" aria-busy={streaming || loading}>
           {!activeProjectId && !projectsLoading && messages.length === 0 ? (
             <div className="gui-chat-welcome">
               <div className="gui-chat-welcome-icon" aria-hidden="true">
@@ -1853,11 +1867,11 @@ function GuiAssistantChat() {
                 不需要先创建作品。你可以直接说"我想写1000章，克苏鲁+修仙+规则怪谈"，我会生成新书方案，并在你确认后创建作品。
               </Paragraph>
               <Space wrap className="gui-chat-welcome-actions">
-                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={() => setInputValue('我想写1000章，克苏鲁+修仙+规则怪谈')}>
-                  试着创建新小说
+                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={() => navigate('/novel-creation')}>
+                  开始新书立项
                 </Button>
-                <Button size="large" onClick={() => setInputValue('查看我的作品列表')}>
-                  查看作品列表
+                <Button size="large" onClick={() => setInputValue('我想写一本新的小说，先和我聊聊想法')}>
+                  先聊聊想法
                 </Button>
               </Space>
             </div>
@@ -1901,11 +1915,24 @@ function GuiAssistantChat() {
                     {msg.status === 'aborted' && <Tag color="default" className="gui-chat-msg-status">已停止</Tag>}
                     {msg.content || (streaming && msg.role === 'assistant' ? '思考中...' : '')}
                     {msg.status === 'running' && elapsedSeconds > 0 && (
-                      <span style={{ color: '#999', fontSize: 12, marginLeft: 8 }}>
+                      <span style={{ color: 'var(--ant-color-text-tertiary)', fontSize: 12, marginLeft: 8 }}>
                         ⏱ {elapsedSeconds}s
                       </span>
                     )}
                     {msg.questions && msg.questions.length > 0 && renderQuestions(msg.questions)}
+                    {msg.status === 'error' && (
+                      <div className="gui-chat-error-actions">
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            const previousPrompt = messages.slice(0, index).reverse().find((item) => item.role === 'user')?.content
+                            if (previousPrompt) setInputValue(previousPrompt)
+                          }}
+                        >
+                          放回输入框重试
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1916,28 +1943,18 @@ function GuiAssistantChat() {
         </div>
 
         <div className="gui-chat-composer">
-          <div className="gui-chat-quick-actions">
-            {quickActions.map((action) => (
-              <Button
-                key={action.label}
-                size="small"
-                onClick={() => setInputValue(action.prompt)}
-                disabled={streaming}
-              >
-                {action.label}
-              </Button>
-            ))}
-          </div>
           {renderPendingFiles()}
           <Input.TextArea
+            aria-label="给司命的消息"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={pendingFiles.length > 0 ? '描述你想怎么处理这些文件...' : '输入消息...（Enter 发送，Shift+Enter 换行）'}
+            placeholder={pendingFiles.length > 0 ? '描述你想怎么处理这些文件...' : '告诉司命你想创作或处理什么...'}
             autoSize={{ minRows: 2, maxRows: 6 }}
             disabled={streaming}
           />
           <div className="gui-chat-composer-actions">
+            <Text type="secondary" className="gui-chat-composer-hint">Enter 发送 · Shift + Enter 换行</Text>
             {streaming ? (
               <Button icon={<StopOutlined />} onClick={stopGeneration} danger>
                 停止生成

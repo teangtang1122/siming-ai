@@ -79,7 +79,7 @@ describe('GuiAssistantChat new-book handoff', () => {
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
-    await user.type(await screen.findByPlaceholderText(/输入消息/), '我要创建新的小说')
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
     await user.click(screen.getByRole('button', { name: /发送/ }))
 
     await waitFor(() => {
@@ -96,8 +96,10 @@ describe('GuiAssistantChat new-book handoff', () => {
   })
 
   it('makes the current conversation model visible', async () => {
+    const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
+    await user.click(await screen.findByRole('button', { name: '查看当前模型与运行状态' }))
     expect(await screen.findByRole('combobox', { name: '选择本次对话模型' })).toBeInTheDocument()
     expect(screen.getByText('OpenAI · test')).toBeInTheDocument()
   })
@@ -106,16 +108,18 @@ describe('GuiAssistantChat new-book handoff', () => {
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
-    await user.type(await screen.findByPlaceholderText(/\u8f93\u5165\u6d88\u606f/), '\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
     await user.click(screen.getByRole('button', { name: /\u53d1\u9001/ }))
 
+    await user.click(screen.getByRole('button', { name: '\u67e5\u770b\u5f53\u524d\u6a21\u578b\u4e0e\u8fd0\u884c\u72b6\u6001' }))
     await waitFor(() => {
       const runtime = screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')
-      expect(runtime).toHaveTextContent('\u63d0\u4f9b\u5546\uff1aopenai')
-      expect(runtime).toHaveTextContent('\u6a21\u578b\uff1aopenai:test')
-      expect(runtime).toHaveTextContent('\u6765\u6e90\uff1a\u5168\u5c40\u9ed8\u8ba4')
-      expect(runtime).toHaveTextContent('\u5de5\u5177\u6a21\u5f0f\uff1a\u52a8\u6001\u91c7\u8bbf JSON')
-      expect(runtime).toHaveTextContent('\u8d85\u65f6\uff1a30 \u79d2')
+      expect(runtime).toHaveTextContent('\u63d0\u4f9b\u5546')
+      expect(runtime).toHaveTextContent('openai')
+      expect(runtime).toHaveTextContent('openai:test')
+      expect(runtime).toHaveTextContent('\u5168\u5c40\u9ed8\u8ba4')
+      expect(runtime).toHaveTextContent('\u52a8\u6001\u91c7\u8bbf JSON')
+      expect(runtime).toHaveTextContent('30 \u79d2')
     })
   })
 
@@ -123,7 +127,7 @@ describe('GuiAssistantChat new-book handoff', () => {
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
-    await user.type(await screen.findByPlaceholderText(/输入消息/), '你好')
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '你好')
     await user.click(screen.getByRole('button', { name: /发送/ }))
 
     const errorMessage = await screen.findByRole('alert')
@@ -139,7 +143,7 @@ describe('GuiAssistantChat new-book handoff', () => {
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
-    await user.type(await screen.findByPlaceholderText(/输入消息/), '你好')
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '你好')
     await user.click(screen.getByRole('button', { name: /发送/ }))
 
     const errorMessage = await screen.findByRole('alert')
@@ -172,7 +176,7 @@ describe('GuiAssistantChat new-book handoff', () => {
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
-    await user.type(await screen.findByPlaceholderText(/输入消息/), '我想创建一本新的小说')
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我想创建一本新的小说')
     await user.click(screen.getByRole('button', { name: /发送/ }))
     await user.click(await screen.findByRole('button', { name: '跳过并生成创意方向' }))
 
@@ -227,17 +231,18 @@ describe('GuiAssistantChat new-book handoff', () => {
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
-    await user.type(await screen.findByPlaceholderText(/\u8f93\u5165\u6d88\u606f/), '\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '\u6211\u60f3\u521b\u5efa\u4e00\u672c\u65b0\u7684\u5c0f\u8bf4')
     await user.click(screen.getByRole('button', { name: /\u53d1\u9001/ }))
     await user.click(await screen.findByRole('button', { name: '\u8df3\u8fc7\u5e76\u751f\u6210\u521b\u610f\u65b9\u5411' }))
 
+    await user.click(screen.getByRole('button', { name: '\u67e5\u770b\u5f53\u524d\u6a21\u578b\u4e0e\u8fd0\u884c\u72b6\u6001' }))
     await waitFor(() => {
       const errorMessage = screen.getByRole('alert')
       expect(errorMessage).toHaveAttribute('data-message-status', 'error')
       expect(errorMessage).toHaveTextContent('Free usage exceeded')
-      expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('\u989d\u5ea6\uff1a\u5df2\u8017\u5c3d\u6216\u9650\u6d41')
+      expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('\u5df2\u8017\u5c3d\u6216\u9650\u6d41')
       expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('opencode_cli:free-model')
-      expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('\u8d85\u65f6\uff1a45 \u79d2')
+      expect(screen.getByLabelText('\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001')).toHaveTextContent('45 \u79d2')
     })
   })
 })

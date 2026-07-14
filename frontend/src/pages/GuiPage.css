@@ -1,0 +1,82 @@
+.gui-page-shell {
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.gui-page-sider {
+  border-right: 1px solid var(--ant-color-border-secondary);
+  overflow: hidden;
+  position: relative;
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.gui-page-brand {
+  align-items: center;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+  display: flex;
+  gap: 10px;
+  min-height: 64px;
+  padding: 10px 10px 10px 16px;
+}
+
+.gui-page-brand > .anticon {
+  color: var(--ant-color-primary);
+  flex: 0 0 auto;
+  font-size: 21px;
+}
+
+.gui-page-brand > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.gui-page-brand h5 {
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif;
+  margin: 0;
+}
+
+.gui-page-brand span {
+  color: var(--ant-color-text-tertiary);
+  display: block;
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+.gui-page-menu {
+  border-inline-end: 0 !important;
+  padding-top: 8px;
+}
+
+.gui-page-menu .ant-menu-item-group-title {
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  padding-block: 11px 5px;
+}
+
+.gui-page-footer {
+  border-top: 1px solid var(--ant-color-border-secondary);
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  left: 0;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+}
+
+.gui-page-content {
+  background: var(--ant-color-bg-layout);
+  height: 100vh;
+  overflow: auto;
+}
+
+@media (max-width: 760px) {
+  .gui-page-sider {
+    max-width: 56px !important;
+    min-width: 56px !important;
+    width: 56px !important;
+  }
+}

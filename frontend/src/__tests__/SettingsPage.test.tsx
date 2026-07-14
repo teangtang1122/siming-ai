@@ -43,7 +43,7 @@ describe('SettingsPage startup and update controls', () => {
     mockInitialLoads()
     api.put.mockResolvedValue({ data: { data: { ...launcherSettings, launch_mode: 'browser' } } })
     api.post.mockResolvedValue({ data: { data: {
-      current_version: '2.7.15',
+      current_version: '2.8.0',
       automatic_updates: false,
       update_available: true,
       update: { version: '2.8.0', source: 'https://example.test/release', download_url: 'https://example.test/Siming.exe', sha256_available: true },
@@ -54,6 +54,8 @@ describe('SettingsPage startup and update controls', () => {
   it('does not check or download updates during initial load', async () => {
     render(<SettingsPage embedded />)
 
+    expect(await screen.findByText('模型提供商配置')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '应用与数据' }))
     expect(await screen.findByText('启动方式')).toBeInTheDocument()
     expect(screen.getByText('尚未检查更新。不会有后台下载或静默安装。')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()
@@ -62,6 +64,7 @@ describe('SettingsPage startup and update controls', () => {
   it('saves browser mode for the next launch', async () => {
     render(<SettingsPage embedded />)
 
+    fireEvent.click(await screen.findByRole('tab', { name: '应用与数据' }))
     const browserRadio = await screen.findByLabelText(/浏览器模式/)
     fireEvent.click(browserRadio)
     fireEvent.click(screen.getByRole('button', { name: '保存启动方式' }))
@@ -72,6 +75,7 @@ describe('SettingsPage startup and update controls', () => {
   it('checks for an update only after the user clicks the button', async () => {
     render(<SettingsPage embedded />)
 
+    fireEvent.click(await screen.findByRole('tab', { name: '应用与数据' }))
     await screen.findByText('安全更新')
     fireEvent.click(screen.getByRole('button', { name: '检查更新' }))
 

@@ -102,19 +102,31 @@
 /* ── Responsive ── */
 @media (max-width: 1280px) {
   .ai-side-panel {
-    width: auto !important;
+    bottom: 0;
+    box-shadow: -16px 0 42px rgba(24, 24, 22, 0.14);
+    max-width: 92vw;
+    position: fixed;
+    right: 0;
+    top: 58px;
+    width: min(440px, 92vw) !important;
+    z-index: 1000;
   }
 
   .ai-side-panel-inner {
-    height: auto;
-    max-height: none;
+    border-radius: 0;
+    height: 100%;
+    max-height: 100%;
     position: static;
-    width: auto !important;
+    width: 100% !important;
     border-left-width: 1px;
-    border-radius: 8px;
   }
 
   .ai-side-resize-handle {
     display: none;
+  }
+
+  .ai-side-panel-collapsed {
+    box-shadow: none;
+    width: 0 !important;
   }
 }

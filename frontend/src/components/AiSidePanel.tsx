@@ -18,6 +18,8 @@ function AiSidePanel({ collapsed, onToggle, width, onResizeHandle, dragging, chi
     <aside
       className={`ai-side-panel${collapsed ? ' ai-side-panel-collapsed' : ''}${dragging ? ' ai-side-panel-dragging' : ''}`}
       style={{ width: collapsed ? 0 : width }}
+      aria-hidden={collapsed}
+      aria-label="项目助手"
     >
       <div className="ai-side-panel-inner" style={{ width }}>
         <div className="ai-side-resize-handle" onMouseDown={onResizeHandle} />
@@ -25,7 +27,7 @@ function AiSidePanel({ collapsed, onToggle, width, onResizeHandle, dragging, chi
           <Title level={5} style={{ margin: 0 }}>
             <RobotOutlined /> 项目助手
           </Title>
-          <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={onToggle} />
+          <Button type="text" size="small" icon={<MenuFoldOutlined />} aria-label="收起项目助手" onClick={onToggle} />
         </div>
         <div className="ai-side-body">
           {children}

@@ -1,0 +1,184 @@
+:root {
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--ant-color-bg-layout);
+}
+
+.siming-skip-link {
+  background: var(--ant-color-bg-elevated);
+  border: 2px solid var(--ant-color-primary);
+  border-radius: 6px;
+  color: var(--ant-color-primary);
+  left: 12px;
+  padding: 8px 12px;
+  position: fixed;
+  top: -64px;
+  z-index: 2000;
+}
+
+.siming-skip-link:focus {
+  top: 12px;
+}
+
+button,
+input,
+textarea,
+select {
+  letter-spacing: 0;
+}
+
+.siming-page-wrapper {
+  box-sizing: border-box;
+}
+
+.system-nav {
+  align-items: center;
+  background: color-mix(in srgb, var(--ant-color-bg-container) 94%, transparent);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(112px, auto) minmax(0, 1fr) auto;
+  margin-bottom: 24px;
+  min-height: 52px;
+  padding: 6px 8px;
+  position: relative;
+  z-index: 5;
+}
+
+.system-nav-brand {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 10px;
+}
+
+.system-nav-brand .anticon {
+  color: var(--ant-color-primary);
+  font-size: 18px;
+}
+
+.system-nav-links {
+  justify-self: center;
+}
+
+.system-nav-links .ant-btn {
+  color: var(--ant-color-text-secondary);
+  min-height: 38px;
+  padding-inline: 14px;
+}
+
+.system-nav-links .system-nav-link-active {
+  background: var(--ant-color-primary-bg);
+  color: var(--ant-color-primary);
+  font-weight: 600;
+}
+
+.system-nav-tools {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.siming-section-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.siming-section-header h1,
+.siming-section-header h2,
+.siming-section-header h3 {
+  margin: 0;
+}
+
+.siming-section-kicker {
+  color: var(--ant-color-text-tertiary);
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.siming-section-description {
+  color: var(--ant-color-text-secondary);
+  margin: 6px 0 0;
+  max-width: 720px;
+}
+
+.siming-surface {
+  background: var(--ant-color-bg-container);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+}
+
+.siming-muted-surface {
+  background: var(--ant-color-fill-quaternary);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+}
+
+.siming-status-dot {
+  background: var(--ant-color-success);
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.siming-status-dot-warning {
+  background: var(--ant-color-warning);
+}
+
+.siming-status-dot-error {
+  background: var(--ant-color-error);
+}
+
+@media (max-width: 760px) {
+  .siming-page-wrapper {
+    padding: 16px !important;
+  }
+
+  .system-nav {
+    grid-template-columns: auto 1fr auto;
+    margin-bottom: 16px;
+  }
+
+  .system-nav-brand .ant-typography,
+  .system-nav-links .ant-btn > span:not(.anticon) {
+    display: none;
+  }
+
+  .system-nav-links {
+    justify-self: start;
+  }
+
+  .system-nav-links .ant-btn {
+    padding-inline: 10px;
+  }
+
+  .siming-section-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+}

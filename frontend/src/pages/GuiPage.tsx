@@ -4,17 +4,19 @@
  * Uses its own layout (no workspace sidebar).
  */
 import { useState } from 'react'
-import { Button, Layout, Menu, Tooltip, Typography, message } from 'antd'
+import { useNavigate } from 'react-router-dom'
+import { Button, Layout, Menu, Tooltip, Typography } from 'antd'
 import {
   ApiOutlined,
   BookOutlined,
   CodeOutlined,
-  ExportOutlined,
   HddOutlined,
+  HomeOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   RobotOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
-import { apiClient } from '../api/client'
 import SettingsPage from './SettingsPage'
 import ExternalAgentPage from './ExternalAgentPage'
 import GuiAssistantChat from '../components/GuiAssistantChat'
@@ -22,6 +24,7 @@ import TerminalPage from './TerminalPage'
 import ModelCenterPage from './ModelCenterPage'
 import TabCache from '../components/TabCache'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
+import './GuiPage.css'
 
 const { Sider, Content } = Layout
 const { Title } = Typography
@@ -29,11 +32,27 @@ const { Title } = Typography
 type GuiTab = 'settings' | 'external-agent' | 'ai-chat' | 'models' | 'terminal'
 
 const MENU_ITEMS = [
-  { key: 'models', icon: <HddOutlined />, label: '本地 AI' },
-  { key: 'ai-chat', icon: <RobotOutlined />, label: 'AI 助手' },
-  { key: 'settings', icon: <SettingOutlined />, label: '系统设置' },
-  { key: 'external-agent', icon: <ApiOutlined />, label: '外部 Agent' },
-  { key: 'terminal', icon: <CodeOutlined />, label: '终端日志' },
+  {
+    type: 'group' as const,
+    label: '创作入口',
+    children: [{ key: 'ai-chat', icon: <RobotOutlined />, label: 'AI 助手' }],
+  },
+  {
+    type: 'group' as const,
+    label: '连接与能力',
+    children: [
+      { key: 'models', icon: <HddOutlined />, label: '模型与训练' },
+      { key: 'external-agent', icon: <ApiOutlined />, label: '外部 Agent' },
+    ],
+  },
+  {
+    type: 'group' as const,
+    label: '系统',
+    children: [
+      { key: 'settings', icon: <SettingOutlined />, label: '系统设置' },
+      { key: 'terminal', icon: <CodeOutlined />, label: '运行日志' },
+    ],
+  },
 ]
 
 const TAB_RENDERERS = {
@@ -45,65 +64,39 @@ const TAB_RENDERERS = {
 }
 
 function GuiPage() {
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<GuiTab>('ai-chat')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
-  const openHomeInBrowser = async () => {
-    try {
-      const res = await apiClient.post<{ data: { url: string } }>('/system/open-home')
-      message.success(`已在浏览器打开写作台：${res.data.data.url}`)
-    } catch (err: any) {
-      message.error(err.message || '打开浏览器失败')
-    }
-  }
-
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout className="gui-page-shell">
       <Sider
-        width={200}
+        width={188}
         collapsedWidth={56}
         collapsible
         collapsed={sidebarCollapsed}
         onCollapse={setSidebarCollapsed}
         trigger={null}
         theme="light"
-        style={{
-          borderRight: '1px solid var(--ant-color-border-secondary)',
-          transition: 'width 0.25s cubic-bezier(0.22, 1, 0.36, 1)',
-          position: 'relative',
-          overflow: 'hidden',
-        }}
+        className="gui-page-sider"
       >
-        {/* Logo area */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
-            padding: sidebarCollapsed ? '16px 0' : '16px 16px',
-            borderBottom: '1px solid var(--ant-color-border-secondary)',
-            gap: 10,
-            minHeight: 56,
-            background: 'linear-gradient(180deg, rgba(0,0,0,0.015) 0%, transparent 100%)',
-            cursor: 'pointer',
-            transition: 'padding 0.25s ease',
-          }}
-          onClick={() => setSidebarCollapsed((v) => !v)}
-        >
-          <BookOutlined style={{ fontSize: 22, lineHeight: 1, color: 'var(--ant-color-primary)' }} />
+        <div className="gui-page-brand">
+          <BookOutlined />
           {!sidebarCollapsed && (
-            <Title
-              level={5}
-              style={{
-                margin: 0,
-                fontFamily: "'Noto Serif SC', serif",
-                letterSpacing: '0.05em',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              司命
-            </Title>
+            <div>
+              <Title level={5}>司命</Title>
+              <span>创作控制台</span>
+            </div>
           )}
+          <Tooltip title={sidebarCollapsed ? '展开导航' : '收起导航'} placement="right">
+            <Button
+              type="text"
+              size="small"
+              icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              aria-label={sidebarCollapsed ? '展开导航' : '收起导航'}
+              onClick={() => setSidebarCollapsed((value) => !value)}
+            />
+          </Tooltip>
         </div>
 
         {/* Navigation menu */}
@@ -113,35 +106,19 @@ function GuiPage() {
           onClick={({ key }) => setActiveTab(key as GuiTab)}
           items={MENU_ITEMS}
           inlineCollapsed={sidebarCollapsed}
-          style={{
-            borderRight: 0,
-            paddingTop: 8,
-          }}
+          className="gui-page-menu"
         />
 
-        {/* Bottom actions — open home + theme switcher */}
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            borderTop: '1px solid var(--ant-color-border-secondary)',
-            padding: sidebarCollapsed ? '10px 6px' : '10px 12px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-          }}
-        >
+        <div className="gui-page-footer">
           {sidebarCollapsed ? (
             <>
-              <Tooltip title="打开写作台" placement="right">
+              <Tooltip title="进入作品库" placement="right">
                 <Button
                   type="text"
-                  icon={<ExportOutlined />}
+                  icon={<HomeOutlined />}
                   size="small"
-                  aria-label="打开写作台"
-                  onClick={openHomeInBrowser}
+                  aria-label="进入作品库"
+                  onClick={() => navigate('/dashboard')}
                   style={{ width: '100%' }}
                 />
               </Tooltip>
@@ -152,12 +129,13 @@ function GuiPage() {
           ) : (
             <>
               <Button
-                icon={<ExportOutlined />}
+                type="primary"
+                icon={<HomeOutlined />}
                 size="small"
-                onClick={openHomeInBrowser}
+                onClick={() => navigate('/dashboard')}
                 style={{ width: '100%' }}
               >
-                打开写作台
+                进入作品库
               </Button>
               <ThemeSwitcher />
             </>
@@ -166,11 +144,7 @@ function GuiPage() {
       </Sider>
 
       <Content
-        style={{
-          background: 'var(--ant-color-bg-layout)',
-          overflow: 'auto',
-          height: '100vh',
-        }}
+        className="gui-page-content"
       >
         <TabCache activeKey={activeTab} tabs={TAB_RENDERERS} />
       </Content>

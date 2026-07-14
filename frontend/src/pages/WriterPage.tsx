@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
+  Collapse,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -20,6 +22,7 @@ import {
   DiffOutlined,
   FileTextOutlined,
   HistoryOutlined,
+  MoreOutlined,
   PlusOutlined,
   ReloadOutlined,
   RollbackOutlined,
@@ -142,7 +145,7 @@ function WriterPage({ projectId }: WriterPageProps) {
   const [chapters, setChapters] = useState<ChapterItem[]>([])
   const [outlineOptions, setOutlineOptions] = useState<Array<{ value: string; label: string }>>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
+  const { isDirty, markDirty, markSaved, confirmLeave } = useUnsavedGuard()
   const [detail, setDetail] = useState<ChapterDetail | null>(null)
   const [snapshots, setSnapshots] = useState<SnapshotItem[]>([])
   const [creating, setCreating] = useState(false)
@@ -236,11 +239,12 @@ function WriterPage({ projectId }: WriterPageProps) {
         outline_node_id: res.data.data.outline_node_id || undefined,
         content: res.data.data.content,
       })
+      markSaved()
       fetchSnapshots(chapterId)
     } catch (err: any) {
       message.error(err.message || '获取章节详情失败')
     }
-  }, [fetchSnapshots, form, projectId])
+  }, [fetchSnapshots, form, markSaved, projectId])
 
   useEffect(() => {
     fetchOutline()
@@ -285,6 +289,18 @@ function WriterPage({ projectId }: WriterPageProps) {
       setSnapshots([])
       setDiff(null)
       form.setFieldsValue({ title: '', outline_node_id: undefined, content: '' })
+      markSaved()
+    })
+  }
+
+  const confirmDeleteChapter = () => {
+    Modal.confirm({
+      title: '确认删除章节',
+      content: '版本历史和出场记录也会一并删除，此操作不可恢复。',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: deleteChapter,
     })
   }
 
@@ -406,25 +422,27 @@ function WriterPage({ projectId }: WriterPageProps) {
             <div>
               <Title level={4} style={{ margin: 0 }}>{editorTitle}</Title>
               {detail && !creating && (
-                <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
+                <Space size={8} wrap>
+                  <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
+                  <Tag color={isDirty ? 'warning' : 'success'}>{isDirty ? '有未保存修改' : '已保存'}</Tag>
+                </Space>
               )}
             </div>
             <Space>
               {selectedId && !creating && (
-                <>
-                  <Button danger icon={<DeleteOutlined />} onClick={() => {
-                    Modal.confirm({
-                      title: '确认删除章节',
-                      content: '版本历史和出场记录也会一并删除，此操作不可恢复。',
-                      okText: '删除',
-                      cancelText: '取消',
-                      okButtonProps: { danger: true },
-                      onOk: deleteChapter,
-                    })
-                  }}>删除</Button>
-                </>
+                <Dropdown
+                  trigger={['click']}
+                  menu={{
+                    items: [{ key: 'delete', danger: true, icon: <DeleteOutlined />, label: '删除章节' }],
+                    onClick: ({ key }) => { if (key === 'delete') confirmDeleteChapter() },
+                  }}
+                >
+                  <Button icon={<MoreOutlined />} aria-label="章节更多操作" />
+                </Dropdown>
               )}
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => form.submit()}>保存</Button>
+              <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!creating && !isDirty} onClick={() => form.submit()}>
+                {creating ? '创建章节' : '保存改动'}
+              </Button>
             </Space>
           </div>
 
@@ -478,49 +496,58 @@ function WriterPage({ projectId }: WriterPageProps) {
           )}
 
           {/* ── Version History ── */}
-          <section className="writer-history-section">
-            <div className="writer-history-head">
-              <Title level={5} style={{ margin: 0 }}><HistoryOutlined /> 版本历史</Title>
-              <Space wrap>
-                <Select value={fromSnapshotId} options={snapshotOptions} onChange={setFromSnapshotId} placeholder="起始版本" style={{ width: 180 }} />
-                <Select value={toSnapshotId} options={snapshotOptions} onChange={setToSnapshotId} placeholder="目标版本" style={{ width: 180 }} />
-                <Button icon={<DiffOutlined />} loading={diffLoading} disabled={snapshots.length < 2} onClick={compareSnapshots}>对比</Button>
-              </Space>
-            </div>
-            {snapshots.length === 0 ? (
-              <Text type="secondary">保存一次正文后，这里会出现版本快照。</Text>
-            ) : (
-              <Timeline className="writer-snapshot-timeline" items={snapshots.map((snapshot) => ({
+          <section className="writer-history-section" aria-label="版本历史">
+            <Collapse
+              items={[{
+                key: 'versions',
+                label: <Space><HistoryOutlined /><Text strong>版本历史</Text><Tag>{snapshots.length}</Tag></Space>,
                 children: (
-                  <div className="writer-snapshot-row">
-                    <div><Text strong>v{snapshot.version_number}</Text>
-                      <Text type="secondary"> · {TRIGGER_LABEL[snapshot.trigger_type] || snapshot.trigger_type} · {snapshot.word_count} 字 · {new Date(snapshot.created_at).toLocaleString('zh-CN')}</Text></div>
-                    <Popconfirm title="恢复此版本" description="当前正文会被替换，并生成一条新的恢复快照。" okText="恢复" cancelText="取消" onConfirm={() => restoreSnapshot(snapshot.id)}>
-                      <Button size="small" icon={<RollbackOutlined />}>恢复</Button>
-                    </Popconfirm>
-                  </div>
-                ),
-              }))} />
-            )}
-            {diff && (
-              <div className="writer-diff-panel">
-                <div className="writer-diff-summary">
-                  <Text strong>v{diff.from_snapshot.version_number} → v{diff.to_snapshot.version_number}</Text>
-                  <Tag color={diff.total_changes > 0 ? 'orange' : 'green'}>{diff.total_changes} 处变更</Tag>
-                </div>
-                {diff.changes.filter((change) => change.type !== 'equal').map((change, index) => (
-                  <div className="writer-diff-change" key={`${change.type}-${index}`}>
-                    <Tag color={change.type === 'insert' ? 'green' : change.type === 'delete' ? 'red' : 'orange'}>{change.type}</Tag>
-                    <div className="writer-diff-columns">
-                      <pre className="writer-diff-block writer-diff-old">{change.from_lines.length > 0 ? change.from_lines.join('\n') : ' '}</pre>
-                      <pre className="writer-diff-block writer-diff-new">{change.to_lines.length > 0 ? change.to_lines.join('\n') : ' '}</pre>
+                  <>
+                    <div className="writer-history-head">
+                      <Text type="secondary">对比历史快照，或在不满意时恢复到旧版本。</Text>
+                      <Space wrap>
+                        <Select value={fromSnapshotId} options={snapshotOptions} onChange={setFromSnapshotId} placeholder="起始版本" style={{ width: 180 }} />
+                        <Select value={toSnapshotId} options={snapshotOptions} onChange={setToSnapshotId} placeholder="目标版本" style={{ width: 180 }} />
+                        <Button icon={<DiffOutlined />} loading={diffLoading} disabled={snapshots.length < 2} onClick={compareSnapshots}>对比</Button>
+                      </Space>
                     </div>
-                  </div>
-                ))}
-                {diff.total_changes === 0 && <Paragraph>两个版本没有正文差异。</Paragraph>}
-              </div>
-            )}
-
+                    {snapshots.length === 0 ? (
+                      <Text type="secondary">保存一次正文后，这里会出现版本快照。</Text>
+                    ) : (
+                      <Timeline className="writer-snapshot-timeline" items={snapshots.map((snapshot) => ({
+                        children: (
+                          <div className="writer-snapshot-row">
+                            <div><Text strong>v{snapshot.version_number}</Text>
+                              <Text type="secondary"> · {TRIGGER_LABEL[snapshot.trigger_type] || snapshot.trigger_type} · {snapshot.word_count} 字 · {new Date(snapshot.created_at).toLocaleString('zh-CN')}</Text></div>
+                            <Popconfirm title="恢复此版本" description="当前正文会被替换，并生成一条新的恢复快照。" okText="恢复" cancelText="取消" onConfirm={() => restoreSnapshot(snapshot.id)}>
+                              <Button size="small" icon={<RollbackOutlined />}>恢复</Button>
+                            </Popconfirm>
+                          </div>
+                        ),
+                      }))} />
+                    )}
+                    {diff && (
+                      <div className="writer-diff-panel">
+                        <div className="writer-diff-summary">
+                          <Text strong>v{diff.from_snapshot.version_number} → v{diff.to_snapshot.version_number}</Text>
+                          <Tag color={diff.total_changes > 0 ? 'orange' : 'green'}>{diff.total_changes} 处变更</Tag>
+                        </div>
+                        {diff.changes.filter((change) => change.type !== 'equal').map((change, index) => (
+                          <div className="writer-diff-change" key={`${change.type}-${index}`}>
+                            <Tag color={change.type === 'insert' ? 'green' : change.type === 'delete' ? 'red' : 'orange'}>{change.type}</Tag>
+                            <div className="writer-diff-columns">
+                              <pre className="writer-diff-block writer-diff-old">{change.from_lines.length > 0 ? change.from_lines.join('\n') : ' '}</pre>
+                              <pre className="writer-diff-block writer-diff-new">{change.to_lines.length > 0 ? change.to_lines.join('\n') : ' '}</pre>
+                            </div>
+                          </div>
+                        ))}
+                        {diff.total_changes === 0 && <Paragraph>两个版本没有正文差异。</Paragraph>}
+                      </div>
+                    )}
+                  </>
+                ),
+              }]}
+            />
           </section>
         </main>
 

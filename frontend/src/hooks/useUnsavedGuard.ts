@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { Modal } from 'antd'
 
 /**
@@ -12,6 +12,7 @@ import { Modal } from 'antd'
  */
 export function useUnsavedGuard() {
   const dirtyRef = useRef(false)
+  const [isDirty, setIsDirty] = useState(false)
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -26,10 +27,12 @@ export function useUnsavedGuard() {
 
   const markDirty = useCallback(() => {
     dirtyRef.current = true
+    setIsDirty(true)
   }, [])
 
   const markSaved = useCallback(() => {
     dirtyRef.current = false
+    setIsDirty(false)
   }, [])
 
   /** 如果有未保存更改，弹窗确认；确认后执行 callback */
@@ -46,10 +49,11 @@ export function useUnsavedGuard() {
       okButtonProps: { danger: true },
       onOk: () => {
         dirtyRef.current = false
+        setIsDirty(false)
         callback()
       },
     })
   }, [])
 
-  return { markDirty, markSaved, confirmLeave }
+  return { isDirty, markDirty, markSaved, confirmLeave }
 }

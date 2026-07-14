@@ -1,0 +1,48 @@
+.settings-page {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 1080px;
+  padding: 24px;
+}
+
+.settings-heading {
+  margin-bottom: 8px;
+  padding-top: 4px;
+}
+
+.settings-heading h3 {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+}
+
+.settings-tabs {
+  margin-bottom: 4px;
+}
+
+.settings-tabs .ant-tabs-nav {
+  margin-bottom: 16px;
+}
+
+.settings-tabs .ant-tabs-tab {
+  min-height: 42px;
+  padding-inline: 8px;
+}
+
+.settings-card {
+  margin-top: 14px;
+}
+
+.settings-card:first-of-type {
+  margin-top: 0;
+}
+
+@media (max-width: 760px) {
+  .settings-page {
+    padding: 16px;
+  }
+
+  .settings-card .ant-card-body {
+    padding: 16px;
+  }
+}

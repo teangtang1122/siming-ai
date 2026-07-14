@@ -1,6 +1,6 @@
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { Alert, Layout, Spin } from 'antd'
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 import { useAppStore } from './stores'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
@@ -24,7 +24,7 @@ function LoadingScreen() {
         alignItems: 'center',
         height: '100vh',
         gap: 16,
-        background: 'var(--ant-color-bg-layout, #f6f2ea)',
+        background: 'var(--ant-color-bg-layout, #f4f4f1)',
       }}
     >
       <div
@@ -32,8 +32,8 @@ function LoadingScreen() {
           fontFamily: "'Noto Serif SC', 'LXGW WenKai', serif",
           fontSize: 28,
           fontWeight: 700,
-          letterSpacing: '0.1em',
-          color: 'var(--ant-color-text, #2c2417)',
+          letterSpacing: 0,
+          color: 'var(--ant-color-text, #20201f)',
           opacity: 0.8,
           marginBottom: 4,
         }}
@@ -44,8 +44,8 @@ function LoadingScreen() {
       <div
         style={{
           fontSize: 13,
-          color: 'var(--ant-color-text-tertiary, #a89c88)',
-          letterSpacing: '0.05em',
+          color: 'var(--ant-color-text-tertiary, #8a8883)',
+          letterSpacing: 0,
         }}
       >
         正在加载...
@@ -68,43 +68,6 @@ function ProjectPreloader() {
   return null
 }
 
-/** Route guard: redirect to most recent project if exists, otherwise stay on dashboard. */
-function RouteGuard() {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const { projects, fetchProjects } = useAppStore()
-  const [checked, setChecked] = useState(false)
-
-  useEffect(() => {
-    const init = async () => {
-      await fetchProjects()
-      setChecked(true)
-    }
-    init()
-  }, [fetchProjects])
-
-  useEffect(() => {
-    if (!checked) return
-    // Only redirect on the root path; /dashboard must remain available for creating more projects.
-    if (location.pathname === '/') {
-      if (projects.length > 0) {
-        const mostRecent = projects[0]
-        navigate(`/project/${mostRecent.id}`, { replace: true })
-      }
-    }
-  }, [checked, projects, location.pathname, navigate])
-
-  if (!checked) {
-    return <LoadingScreen />
-  }
-
-  if (location.pathname === '/' && projects.length > 0) {
-    return <LoadingScreen />
-  }
-
-  return <DashboardPage />
-}
-
 function WildcardRedirect() {
   const navigate = useNavigate()
 
@@ -125,7 +88,8 @@ function GlobalErrorBanner() {
   return (
     <Alert
       type="error"
-      message={error}
+      message="操作未完成"
+      description={error}
       closable
       onClose={() => setError(null)}
       banner
@@ -137,12 +101,13 @@ function GlobalErrorBanner() {
 function App() {
   return (
     <Layout style={{ minHeight: '100vh' }} className="siming-grain">
+      <a className="siming-skip-link" href="#main-content">跳到主要内容</a>
       <GlobalErrorBanner />
-      <Content style={{ padding: 0 }}>
+      <Content id="main-content" tabIndex={-1} style={{ padding: 0 }}>
         <ProjectPreloader />
         <Suspense fallback={<LoadingScreen />}>
           <Routes>
-            <Route path="/" element={<RouteGuard />} />
+            <Route path="/" element={<DashboardPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/novel-creation" element={<NovelCreationWizardPage />} />
             <Route path="/project/:projectId/*" element={<ProjectWorkspace />} />

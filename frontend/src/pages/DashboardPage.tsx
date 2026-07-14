@@ -17,11 +17,11 @@ import {
 } from 'antd'
 import type { UploadFile } from 'antd'
 import {
-  BookOutlined,
+  ArrowRightOutlined,
   DeleteOutlined,
   EditOutlined,
+  FolderOpenOutlined,
   PlusOutlined,
-  RobotOutlined,
   SearchOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
@@ -331,16 +331,28 @@ function DashboardPage() {
   }
 
   return (
-    <PageWrapper>
-      <div className="dashboard-bg-pattern" />
+    <PageWrapper maxWidth={1280} className="dashboard-page">
       <SystemNav current="dashboard" />
 
-      <div className="dashboard-hero">
-        <h1 className="dashboard-hero-title"><BookOutlined />司命</h1>
-        <p className="dashboard-hero-sub">长篇小说的命运织机</p>
-      </div>
+      <header className="siming-section-header dashboard-heading">
+        <div>
+          <span className="siming-section-kicker">创作工作区</span>
+          <Title level={2}>作品库</Title>
+          <p className="siming-section-description">
+            从上次停下的位置继续，或开始一本新书。立项草稿在正式创建前不会污染作品库。
+          </p>
+        </div>
+        <Space wrap>
+          <Button icon={<UploadOutlined />} size="large" onClick={() => openCreateModal()}>
+            直接创建或导入
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>
+            创建新作品
+          </Button>
+        </Space>
+      </header>
 
-      <div className="dashboard-actions siming-animate-in siming-stagger-1">
+      <div className="dashboard-toolbar">
         <Input.Search
           placeholder="搜索作品标题或简介"
           allowClear
@@ -350,20 +362,17 @@ function DashboardPage() {
           onChange={(event) => setSearchKeyword(event.target.value)}
           onSearch={handleSearch}
         />
-        <Space wrap>
-          <Button icon={<RobotOutlined />} size="large" onClick={openNovelCreation}>新书立项助手</Button>
-          <Button type="primary" icon={<PlusOutlined />} size="large" className="siming-btn-press" onClick={openNovelCreation}>创建新作品</Button>
-        </Space>
+        <Text type="secondary">{projects.length} 部作品{creationDrafts.length > 0 ? ` · ${creationDrafts.length} 个待续立项` : ''}</Text>
       </div>
 
       {creationDrafts.length > 0 && (
-        <section className="dashboard-creation-drafts siming-animate-in siming-stagger-1">
+        <section className="dashboard-creation-drafts" aria-labelledby="creation-drafts-title">
           <div className="dashboard-creation-drafts-head">
             <div>
-              <Title level={4}>继续未完成立项</Title>
-              <Text type="secondary">立项草稿不会创建空作品，可继续生成或直接删除。</Text>
+              <Title level={4} id="creation-drafts-title">继续立项</Title>
+              <Text type="secondary">你的回答和生成进度已经保存。</Text>
             </div>
-            <Button type="link" onClick={openNovelCreation}>新建立项</Button>
+            <Button type="link" icon={<PlusOutlined />} onClick={openNovelCreation}>新建立项</Button>
           </div>
           <div className="dashboard-creation-drafts-grid">
             {creationDrafts.slice(0, 4).map((draft) => (
@@ -390,6 +399,7 @@ function DashboardPage() {
                 <Space direction="vertical" size={2}>
                   <Text>{draft.draft?.form?.genre || '自由创作'}</Text>
                   <Text type="secondary">{draft.current_stage || '创作约束'} · {draft.updated_at ? new Date(draft.updated_at).toLocaleString('zh-CN') : '刚刚保存'}</Text>
+                  <Text className="dashboard-draft-continue">继续完善 <ArrowRightOutlined /></Text>
                 </Space>
               </Card>
             ))}
@@ -398,19 +408,20 @@ function DashboardPage() {
       )}
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 80 }}>
-          <Spin size="large" />
-          <div style={{ marginTop: 16, color: 'var(--ant-color-text-secondary)', fontSize: 15 }}>加载中...</div>
-        </div>
-      ) : projects.length === 0 ? (
-        <div className="dashboard-empty siming-animate-fade">
+          <div className="dashboard-loading" role="status" aria-live="polite">
+            <Spin size="large" />
+            <div>正在载入作品...</div>
+          </div>
+        ) : projects.length === 0 ? (
+        <div className="dashboard-empty siming-surface">
           <Empty
-            description={searchKeyword ? '未找到匹配的作品' : '暂无作品。可以创建空项目、上传已有小说，也可以让新书立项助手先生成角色、世界观和大纲。'}
+            image={<FolderOpenOutlined className="dashboard-empty-icon" />}
+            description={searchKeyword ? '没有找到匹配的作品' : '作品库还是空的。建议先立项，让司命一起建立角色、世界和前 15 章细纲。'}
           >
             {!searchKeyword && (
-              <Space>
-                <Button type="primary" icon={<RobotOutlined />} size="large" onClick={openNovelCreation}>让助手帮我开书</Button>
-                <Button icon={<PlusOutlined />} size="large" onClick={() => openCreateModal()}>直接创建</Button>
+              <Space wrap>
+                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>开始新书立项</Button>
+                <Button icon={<UploadOutlined />} size="large" onClick={() => openCreateModal()}>直接创建或导入</Button>
               </Space>
             )}
           </Empty>
@@ -421,7 +432,6 @@ function DashboardPage() {
             <div key={project.id} className="dashboard-card-wrap">
               <Card
                 className="dashboard-card"
-                hoverable
                 onClick={() => navigate(`/project/${project.id}`)}
                 title={(
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
@@ -452,9 +462,12 @@ function DashboardPage() {
               >
                 <p className="dashboard-card-desc">{project.description || '暂无简介'}</p>
                 {renderTags(project.tags)}
-                <div className="dashboard-card-meta">
-                  <Text type="secondary">更新于 {new Date(project.updated_at).toLocaleDateString('zh-CN')}</Text>
-                  <Text type="secondary">{new Date(project.created_at).toLocaleDateString('zh-CN')} 创建</Text>
+                <div className="dashboard-card-footer">
+                  <div className="dashboard-card-meta">
+                    <Text type="secondary">{new Date(project.updated_at).toLocaleDateString('zh-CN')} 更新</Text>
+                    <Text type="secondary">{new Date(project.created_at).toLocaleDateString('zh-CN')} 创建</Text>
+                  </div>
+                  <Button type="link" size="small" tabIndex={-1}>继续创作 <ArrowRightOutlined /></Button>
                 </div>
               </Card>
             </div>
