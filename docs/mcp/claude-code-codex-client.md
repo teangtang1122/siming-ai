@@ -32,19 +32,19 @@ From a GitHub Release, place `setup-external-agent-mcp.ps1` next to `Siming.exe`
 and run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\setup-external-agent-mcp.ps1
+powershell -NoProfile -File .\setup-external-agent-mcp.ps1
 ```
 
 From source:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -PreferSource
+powershell -NoProfile -File .\scripts\setup-external-agent-mcp.ps1 -PreferSource
 ```
 
 Preview without changing files:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -DryRun
+powershell -NoProfile -File .\scripts\setup-external-agent-mcp.ps1 -DryRun
 ```
 
 ### Option 1: From Source

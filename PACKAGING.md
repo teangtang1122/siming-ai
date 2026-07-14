@@ -95,7 +95,7 @@ set SIMING_DISABLE_UPDATE=1
 打包后的 exe 包含 MCP Server 入口。推荐让程序自动检测和配置本机 Agent；手动排障时可以运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1
+powershell -NoProfile -File .\scripts\setup-external-agent-mcp.ps1
 ```
 
 配置示例：

@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import socket
 import sys
 import tempfile
 import threading
 import traceback
+import ctypes
+import shutil
+import subprocess
+import time
 from pathlib import Path
 
 import uvicorn
@@ -127,6 +132,94 @@ def _save_launcher_settings(home: Path, settings: dict) -> None:
     path = _launcher_settings_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _normalize_launch_mode(value: object) -> str:
+    return "browser" if str(value or "").strip().lower() == "browser" else "desktop"
+
+
+def _saved_launch_mode(home: Path) -> str:
+    return _normalize_launch_mode(_load_launcher_settings(home).get("launch_mode"))
+
+
+def _use_browser_mode(home: Path, *, force_browser: bool = False, force_desktop: bool = False) -> bool:
+    """Resolve one explicit launch mode before importing the WebView runtime."""
+    return force_browser or (not force_desktop and _saved_launch_mode(home) == "browser")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest().lower()
+
+
+def _wait_for_process_exit(pid: int, timeout: float = 60.0) -> bool:
+    """Wait for the old executable before replacing it from the new one."""
+    if pid <= 0 or pid == os.getpid():
+        return True
+    if os.name == "nt":
+        synchronize = 0x00100000
+        handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, pid)
+        if handle:
+            try:
+                result = ctypes.windll.kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+                return result == 0
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _apply_staged_update() -> None:
+    """Replace the old binary from a previously verified staged executable."""
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--apply-staged-update", action="store_true")
+    parser.add_argument("--update-target", required=True)
+    parser.add_argument("--wait-pid", required=True, type=int)
+    parser.add_argument("--expected-sha256", required=True)
+    parser.add_argument("--update-metadata")
+    args, _ = parser.parse_known_args()
+    update_exe = Path(sys.executable).resolve()
+    target_exe = Path(args.update_target).expanduser().resolve()
+    if update_exe == target_exe:
+        raise RuntimeError("The staged update cannot replace itself.")
+    if not update_exe.is_file():
+        raise RuntimeError("The staged update executable no longer exists.")
+    expected_sha256 = str(args.expected_sha256 or "").strip().lower()
+    if len(expected_sha256) != 64 or any(char not in "0123456789abcdef" for char in expected_sha256):
+        raise RuntimeError("The staged update does not include a valid SHA-256 checksum.")
+    if _sha256_file(update_exe) != expected_sha256:
+        raise RuntimeError("The staged update no longer matches its verified SHA-256 checksum.")
+    if not _wait_for_process_exit(args.wait_pid):
+        raise RuntimeError("Timed out waiting for the previous Siming process to close.")
+
+    replacement = target_exe.with_name(f"{target_exe.name}.updating")
+    replacement.unlink(missing_ok=True)
+    try:
+        shutil.copy2(update_exe, replacement)
+        os.replace(replacement, target_exe)
+        if args.update_metadata:
+            Path(args.update_metadata).expanduser().unlink(missing_ok=True)
+        subprocess.Popen(
+            [str(target_exe)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(target_exe.parent),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    finally:
+        replacement.unlink(missing_ok=True)
 
 
 def _pick_content_root(home: Path) -> Path | None:
@@ -368,16 +461,28 @@ def main() -> None:
 
     _redirect_missing_stdio_to_log()
 
-    use_browser = "--browser" in sys.argv
-    if use_browser:
+    if "--apply-staged-update" in sys.argv:
+        try:
+            _apply_staged_update()
+        except Exception as exc:
+            _show_error(f"{APP_NAME} 更新失败", str(exc))
+            _log("Staged update failed:\n" + traceback.format_exc())
+        return
+
+    force_browser = "--browser" in sys.argv
+    force_desktop = "--desktop" in sys.argv
+    if force_browser:
         sys.argv.remove("--browser")
+    if force_desktop:
+        sys.argv.remove("--desktop")
 
     # ── Absolute minimum before window: just find a port and set env vars ──
     port = _find_free_port()
-    _prepare_environment(port)
+    home = _prepare_environment(port)
+    use_browser = _use_browser_mode(home, force_browser=force_browser, force_desktop=force_desktop)
 
     gui_url = f"http://127.0.0.1:{port}/gui"
-    _log(f"Port: {port}; Data: {_app_home()}")
+    _log(f"Port: {port}; Data: {home}; Launch mode: {'browser' if use_browser else 'desktop'}")
 
     if use_browser:
         # Browser mode: need server first
@@ -387,7 +492,7 @@ def main() -> None:
             _show_error(f"{APP_NAME} 启动失败", f"后端超时。\n日志：{_launcher_log_path()}")
             return
         import webbrowser
-        webbrowser.open(f"http://127.0.0.1:{port}")
+        webbrowser.open(gui_url)
         threading.Event().wait()  # block forever
         return
 
@@ -410,32 +515,24 @@ def main() -> None:
     )
 
     def _boot():
-        """Run in background: update check → import app → start server → navigate."""
+        """Run application startup in the background after the window is visible."""
         try:
-            # 1. Check for updates (non-blocking for the user)
-            try:
-                from app.updater import apply_update_if_available
-                if apply_update_if_available(_app_home()):
-                    _log("Update scheduled; exiting")
-                    os._exit(0)
-            except Exception as exc:
-                _log(f"Update check failed (non-fatal): {exc}")
-
-            # 2. Import FastAPI app (DB init, migrations — the heavy part)
+            # Automatic updates are intentionally disabled; Settings owns the flow.
+            # Import FastAPI app (DB init and migrations are the heavy part).
             _log("Importing app.main...")
             from app.main import app
             _log("app.main imported")
 
-            # 3. Start uvicorn
+            # Start uvicorn.
             threading.Thread(
                 target=lambda: uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", access_log=False),
                 daemon=True,
             ).start()
 
-            # 4. Wait for TCP ready
+            # Wait for TCP readiness.
             if _wait_for_server("127.0.0.1", port, timeout=30):
                 _log(f"Server ready → {gui_url}")
-                import time; time.sleep(0.3)
+                time.sleep(0.3)
                 window.load_url(gui_url)
             else:
                 _log("Server timeout (30s)")

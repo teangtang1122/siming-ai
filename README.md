@@ -204,7 +204,7 @@ npm run build
 发布：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\publish-github.ps1
+powershell -NoProfile -File scripts\publish-github.ps1
 ```
 
 项目管理和路线图见：

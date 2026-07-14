@@ -2,7 +2,7 @@
 setlocal
 
 set "ROOT=%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\build-exe.ps1" %*
+powershell.exe -NoProfile -File "%ROOT%scripts\build-exe.ps1" %*
 
 if errorlevel 1 (
   set "BUILD_EXIT_CODE=%ERRORLEVEL%"

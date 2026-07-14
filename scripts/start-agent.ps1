@@ -182,8 +182,6 @@ Write-Host 'Process exited. Press any key to close this window.'
 
   Start-Process powershell.exe -ArgumentList @(
     "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
     "-NoExit",
     "-Command",
     $Inline

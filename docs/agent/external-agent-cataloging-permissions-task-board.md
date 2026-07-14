@@ -208,7 +208,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
   - Print a warning when user selects a fixed pack: "This bypasses UI global permission changes."
   - Update docs to explain global settings vs CLI override.
 - Verification:
-  - `powershell -ExecutionPolicy Bypass -File .\scripts\setup-external-agent-mcp.ps1 -DryRun`
+  - `powershell -NoProfile -File .\scripts\setup-external-agent-mcp.ps1 -DryRun`
   - Dry run output contains `--permission-pack auto`.
 
 ## Phase 2 - Frontend Information Architecture
@@ -526,7 +526,7 @@ Result: the frontend setting and the actual MCP permission source are not the sa
   - Run external no-API cataloging sample.
   - Verify data appears in UI/API.
 - Verification:
-  - `powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test-release.ps1`
+  - `powershell -NoProfile -File .\scripts\smoke-test-release.ps1`
 
 ## Suggested Parallel Assignment
 

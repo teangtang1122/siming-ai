@@ -5,8 +5,12 @@ import asyncio
 import json
 import os
 import shutil
+import sys
+import threading
+import time
 import webbrowser
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -57,6 +61,10 @@ class ChatCompletionRequest(BaseModel):
 
 class ContentRootUpdateRequest(BaseModel):
     path: str = Field(..., min_length=1)
+
+
+class LauncherSettingsUpdateRequest(BaseModel):
+    launch_mode: Literal["desktop", "browser"]
 
 
 PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {
@@ -122,6 +130,27 @@ def _save_launcher_settings(settings: dict) -> None:
     path = _launcher_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _launch_mode(value: object) -> str:
+    return "browser" if str(value or "").strip().lower() == "browser" else "desktop"
+
+
+def _launcher_settings_payload() -> dict:
+    launch_mode = _launch_mode(_load_launcher_settings().get("launch_mode"))
+    return {
+        "launch_mode": launch_mode,
+        "restart_required": True,
+        "browser_mode_description": "Use the default browser on the next launch instead of the embedded WebView2 window.",
+    }
+
+
+def _exit_after_update_install() -> None:
+    """Let the HTTP response flush before the verified replacement helper waits."""
+    if "pytest" in sys.modules or not getattr(sys, "frozen", False):
+        return
+    time.sleep(1.0)
+    os._exit(0)
 
 
 def _default_content_root() -> Path:
@@ -235,6 +264,54 @@ def pick_content_root_settings(db: Session = Depends(get_db)):
     if not selected:
         return ApiResponse.success(data=_content_root_payload({"cancelled": True}), message="已取消选择")
     return ApiResponse.success(data=_apply_content_root(db, str(selected)), message="小说数据目录已更新")
+
+
+@router.get("/config/launcher")
+def get_launcher_settings():
+    """Return startup preferences read by the packaged launcher on next launch."""
+    return ApiResponse.success(data=_launcher_settings_payload())
+
+
+@router.put("/config/launcher")
+def update_launcher_settings(payload: LauncherSettingsUpdateRequest):
+    """Persist the selected startup shell without applying it mid-session."""
+    settings = _load_launcher_settings()
+    settings["launch_mode"] = payload.launch_mode
+    _save_launcher_settings(settings)
+    return ApiResponse.success(data=_launcher_settings_payload(), message="启动方式已保存，下次启动生效")
+
+
+@router.post("/config/update/check")
+def check_for_application_update():
+    """Check release metadata only. No executable is downloaded here."""
+    from ..updater import get_update_status
+
+    return ApiResponse.success(data=get_update_status(_app_home()))
+
+
+@router.post("/config/update/download")
+def download_application_update():
+    """Download a user-confirmed release and require hash plus Authenticode checks."""
+    from ..updater import download_and_stage_update
+
+    try:
+        data = download_and_stage_update(_app_home())
+    except RuntimeError as exc:
+        raise ValidationError(str(exc)) from exc
+    return ApiResponse.success(data=data, message="更新已下载并完成 SHA256 与签名校验")
+
+
+@router.post("/config/update/install")
+def install_application_update():
+    """Launch the verified new executable as the update helper, then restart."""
+    from ..updater import schedule_staged_update_install
+
+    try:
+        data = schedule_staged_update_install(_app_home())
+    except RuntimeError as exc:
+        raise ValidationError(str(exc)) from exc
+    threading.Thread(target=_exit_after_update_install, daemon=True).start()
+    return ApiResponse.success(data=data, message="已验证更新，司命即将重启安装")
 
 
 @router.get("/system/logs")

@@ -18,8 +18,8 @@
     Path to Siming.exe. Default: release\Siming.exe
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test-release.ps1
-    powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test-release.ps1 -SkipBuild
+    powershell -NoProfile -File .\scripts\smoke-test-release.ps1
+    powershell -NoProfile -File .\scripts\smoke-test-release.ps1 -SkipBuild
 #>
 
 param(
@@ -62,7 +62,7 @@ if (-not $SkipBuild) {
         exit 1
     }
     Push-Location $projectRoot
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $buildScript
+    & powershell -NoProfile -File $buildScript
     $buildExitCode = $LASTEXITCODE
     Pop-Location
     if ($buildExitCode -ne 0) {
@@ -92,7 +92,7 @@ if (Test-Path $setupScript) {
     
     # Run dry-run to verify it works
     Write-Host "  Running dry-run..." -ForegroundColor Yellow
-    $dryRunOutput = & powershell -ExecutionPolicy Bypass -File $setupScript -DryRun 2>&1
+    $dryRunOutput = & powershell -NoProfile -File $setupScript -DryRun 2>&1
     if ($dryRunOutput -match "permission-pack auto") {
         Write-Host "  Dry-run contains '--permission-pack auto'" -ForegroundColor Green
     } else {

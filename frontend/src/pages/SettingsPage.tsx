@@ -16,6 +16,8 @@ import {
   Divider,
   Descriptions,
   InputNumber,
+  Radio,
+  Alert,
 } from 'antd'
 import {
   PlusOutlined,
@@ -27,6 +29,9 @@ import {
   ReloadOutlined,
   FolderOpenOutlined,
   SaveOutlined,
+  DesktopOutlined,
+  DownloadOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
@@ -226,6 +231,45 @@ const DEFAULT_CLI_ARGS: Record<string, string> = {
   custom_cli: '["{prompt}"]',
 }
 
+type LaunchMode = 'desktop' | 'browser'
+
+interface LauncherSettings {
+  launch_mode: LaunchMode
+  restart_required: boolean
+  browser_mode_description: string
+}
+
+interface UpdateSignature {
+  valid: boolean
+  status: string
+  subject?: string
+  thumbprint?: string
+}
+
+interface UpdateMetadata {
+  version: string
+  source: string
+  download_url: string
+  sha256_available: boolean
+}
+
+interface StagedUpdate {
+  version: string
+  sha256: string
+  signature?: UpdateSignature | null
+  ready_to_install: boolean
+  error?: string
+}
+
+interface UpdateStatus {
+  current_version: string
+  update_available: boolean
+  update?: UpdateMetadata | null
+  staged_update?: StagedUpdate | null
+  automatic_updates: boolean
+  downloaded?: boolean
+}
+
 const SIMING_RELEASE_URL = 'https://github.com/teangtang1122/siming-ai/releases/latest'
 
 const API_KEY_LINKS: Array<{ label: string; href: string; note: string }> = [
@@ -350,6 +394,13 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [contentRoot, setContentRoot] = useState<ContentRootSettings | null>(null)
   const [contentRootPath, setContentRootPath] = useState('')
   const [contentRootLoading, setContentRootLoading] = useState(false)
+  const [launcherSettings, setLauncherSettings] = useState<LauncherSettings | null>(null)
+  const [launchMode, setLaunchMode] = useState<LaunchMode>('desktop')
+  const [launcherLoading, setLauncherLoading] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
 
   const fetchConfigs = useCallback(async () => {
     setLoading(true)
@@ -391,12 +442,100 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     }
   }, [])
 
+  const fetchLauncherSettings = useCallback(async () => {
+    setLauncherLoading(true)
+    try {
+      const res = await apiClient.get<{ code: number; data: LauncherSettings }>('/config/launcher')
+      setLauncherSettings(res.data.data)
+      setLaunchMode(res.data.data.launch_mode)
+    } catch (err: any) {
+      message.error(err.message || '获取启动方式失败')
+    } finally {
+      setLauncherLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     fetchConfigs()
     fetchGlobalModel()
     fetchContentRoot()
+    fetchLauncherSettings()
     fetchProjects()
-  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchProjects])
+  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchLauncherSettings, fetchProjects])
+
+  const saveLaunchMode = async () => {
+    setLauncherLoading(true)
+    try {
+      const res = await apiClient.put<{ code: number; data: LauncherSettings }>('/config/launcher', {
+        launch_mode: launchMode,
+      })
+      setLauncherSettings(res.data.data)
+      message.success('启动方式已保存，下次启动生效')
+    } catch (err: any) {
+      message.error(err.message || '保存启动方式失败')
+    } finally {
+      setLauncherLoading(false)
+    }
+  }
+
+  const checkForUpdates = async () => {
+    setCheckingUpdate(true)
+    try {
+      const res = await apiClient.post<{ code: number; data: UpdateStatus }>('/config/update/check')
+      setUpdateStatus(res.data.data)
+      if (res.data.data.update_available) {
+        message.success(`发现司命 ${res.data.data.update?.version || '新'}版本`)
+      } else {
+        message.info('当前已是最新版本，或暂时无法获取更新信息')
+      }
+    } catch (err: any) {
+      message.error(err.message || '检查更新失败')
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  const downloadUpdate = () => {
+    if (!updateStatus?.update) return
+    Modal.confirm({
+      title: `下载司命 ${updateStatus.update.version}？`,
+      content: '将下载更新包，并在本机校验 SHA256 和代码签名。校验失败的文件会被删除，不会安装。',
+      okText: '下载并校验',
+      cancelText: '取消',
+      onOk: async () => {
+        setDownloadingUpdate(true)
+        try {
+          const res = await apiClient.post<{ code: number; data: UpdateStatus }>('/config/update/download')
+          setUpdateStatus(res.data.data)
+          message.success('更新已下载并通过 SHA256 与签名校验，可以安装')
+        } catch (err: any) {
+          message.error(err.message || '更新未通过安全校验，已停止安装')
+        } finally {
+          setDownloadingUpdate(false)
+        }
+      },
+    })
+  }
+
+  const installUpdate = () => {
+    if (!updateStatus?.staged_update?.ready_to_install) return
+    Modal.confirm({
+      title: '安装已验证的更新？',
+      content: '司命会关闭当前窗口，由已验证的新版本替换旧程序后重新启动。未验证的更新不会被安装。',
+      okText: '安装并重启',
+      cancelText: '取消',
+      onOk: async () => {
+        setInstallingUpdate(true)
+        try {
+          await apiClient.post('/config/update/install')
+          message.success('更新已安排，司命即将重启')
+        } catch (err: any) {
+          setInstallingUpdate(false)
+          message.error(err.message || '安装更新失败')
+        }
+      },
+    })
+  }
 
   const applyContentRootResponse = (settings: ContentRootSettings, successText: string) => {
     setContentRoot(settings)
@@ -821,6 +960,106 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           <Text type="secondary">
             如果 CLI 自己创建或修改 chapters/*.md，前端不会显示；这表示它绕过了数据库。写作计划会校验这一点并提示修复。
           </Text>
+        </Space>
+      </Card>
+
+      <Card title={<span><DesktopOutlined /> 启动方式</span>} style={{ marginTop: 16 }} loading={launcherLoading && !launcherSettings}>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Paragraph style={{ margin: 0 }}>
+            选择司命下次启动时打开界面的方式。切换不会重启当前程序，也不会影响作品和模型配置。
+          </Paragraph>
+          <Radio.Group value={launchMode} onChange={(event) => setLaunchMode(event.target.value)}>
+            <Space direction="vertical" size={8}>
+              <Radio value="desktop">
+                <Text strong>桌面窗口</Text>
+                <Text type="secondary"> 使用内嵌 WebView2 打开司命。</Text>
+              </Radio>
+              <Radio value="browser">
+                <Text strong>浏览器模式</Text>
+                <Text type="secondary"> 司命只启动本地服务，并用默认浏览器打开，不启动内嵌 WebView2。</Text>
+              </Radio>
+            </Space>
+          </Radio.Group>
+          <Space wrap>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              aria-label="保存启动方式"
+              loading={launcherLoading}
+              disabled={launcherSettings?.launch_mode === launchMode}
+              onClick={saveLaunchMode}
+            >
+              保存启动方式
+            </Button>
+            <Text type="secondary">当前保存：{launcherSettings?.launch_mode === 'browser' ? '浏览器模式' : '桌面窗口'}</Text>
+          </Space>
+          <Alert
+            showIcon
+            type="info"
+            message="浏览器模式可避免由司命启动 Edge WebView2"
+            description="它不能阻止浏览器自身更新，但能避免 Siming.exe 启动内嵌 WebView2 后被安全软件按父进程关联提示。"
+          />
+        </Space>
+      </Card>
+
+      <Card title={<span><SafetyCertificateOutlined /> 安全更新</span>} style={{ marginTop: 16 }}>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Paragraph style={{ margin: 0 }}>
+            司命不会在启动时自动检查、下载或替换程序。只有你点击下方按钮后，才会检查版本；下载后必须通过 SHA256 和 Windows 代码签名校验，才能安装。
+          </Paragraph>
+          <Space wrap>
+            <Button aria-label="检查更新" icon={<ReloadOutlined />} loading={checkingUpdate} onClick={checkForUpdates}>
+              检查更新
+            </Button>
+            {updateStatus?.update_available && updateStatus.update && (
+              <Button
+                type="primary"
+                icon={<DownloadOutlined />}
+                aria-label={`下载并校验 ${updateStatus.update.version}`}
+                loading={downloadingUpdate}
+                disabled={!updateStatus.update.sha256_available}
+                onClick={downloadUpdate}
+              >
+                下载并校验 {updateStatus.update.version}
+              </Button>
+            )}
+            {updateStatus?.staged_update?.ready_to_install && (
+              <Button
+                type="primary"
+                icon={<SafetyCertificateOutlined />}
+                aria-label="安装并重启"
+                loading={installingUpdate}
+                onClick={installUpdate}
+              >
+                安装并重启
+              </Button>
+            )}
+          </Space>
+          {!updateStatus && (
+            <Text type="secondary">尚未检查更新。不会有后台下载或静默安装。</Text>
+          )}
+          {updateStatus && !updateStatus.update_available && !updateStatus.staged_update && (
+            <Text type="secondary">已检查：当前版本 {updateStatus.current_version} 暂无可验证更新。</Text>
+          )}
+          {updateStatus?.update_available && updateStatus.update && (
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="可用版本">{updateStatus.update.version}</Descriptions.Item>
+              <Descriptions.Item label="SHA256">
+                {updateStatus.update.sha256_available ? '发布页提供，下载后会复核' : '发布页未提供，司命不会下载或安装'}
+              </Descriptions.Item>
+              <Descriptions.Item label="代码签名">下载后必须验证为可信签名</Descriptions.Item>
+            </Descriptions>
+          )}
+          {updateStatus?.staged_update && (
+            <Alert
+              showIcon
+              type={updateStatus.staged_update.ready_to_install ? 'success' : 'warning'}
+              message={updateStatus.staged_update.ready_to_install ? '更新已验证，可以由你确认安装' : '已下载的更新需要重新校验'}
+              description={updateStatus.staged_update.ready_to_install
+                ? `版本 ${updateStatus.staged_update.version}，SHA256：${updateStatus.staged_update.sha256}`
+                : updateStatus.staged_update.error || '请重新下载更新。'}
+            />
+          )}
         </Space>
       </Card>
 
