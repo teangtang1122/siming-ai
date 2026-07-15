@@ -130,6 +130,15 @@ def test_onboarding_connection_test_can_request_a_shorter_timeout():
         ConnectionTestRequest(provider="opencode_cli", timeout_seconds=10)
 
 
+def test_certificate_chain_failure_has_a_distinct_actionable_classification():
+    message = (
+        "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+        "unable to get local issuer certificate (_ssl.c:1010)>"
+    )
+
+    assert opencode_onboarding._activation_failure_kind(message) == "certificate_verification"
+
+
 def test_mirror_candidates_keep_official_first_and_require_https(monkeypatch):
     monkeypatch.setenv(
         "SIMING_OPENCODE_MIRROR_URLS",

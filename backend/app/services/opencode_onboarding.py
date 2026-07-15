@@ -724,6 +724,19 @@ def submit_opencode_auth_credential(job_id: str, credential: str) -> dict[str, A
 
 def _activation_failure_kind(message: str) -> str:
     value = message.lower()
+    if any(
+        token in value
+        for token in (
+            "certificate_verify_failed",
+            "certificate verify failed",
+            "unable to get local issuer certificate",
+            "self-signed certificate",
+            "self signed certificate",
+            "证书验证失败",
+            "证书链",
+        )
+    ):
+        return "certificate_verification"
     if any(token in value for token in ("auth", "login", "unauthorized", "登录", "凭据")):
         return "authentication_required"
     if any(token in value for token in ("quota", "rate limit", "free usage", "额度", "限流")):
@@ -1002,9 +1015,13 @@ def _activation_worker(job_id: str) -> None:
             error=message,
             failure_kind=kind,
             next_action=(
-                "请检查网络后点击重试，司命会从上次下载进度继续。"
-                if kind == "network"
-                else "点击重试；如果仍然失败，可导出诊断信息反馈给项目维护者。"
+                "请确认 Windows 日期和时间正确，并完成 Windows 更新后重试。司命会使用系统受信任证书，且不会关闭 HTTPS 校验。"
+                if kind == "certificate_verification"
+                else (
+                    "请检查网络后点击重试，司命会从上次下载进度继续。"
+                    if kind == "network"
+                    else "点击重试；如果仍然失败，可导出诊断信息反馈给项目维护者。"
+                )
             ),
         )
 

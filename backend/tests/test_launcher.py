@@ -146,6 +146,14 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         banned = " ".join(("Execution" + "Policy", "By" + "pass"))
         self.assertNotIn(banned, source)
 
+    def test_system_trust_is_configured_before_network_frameworks_are_imported(self):
+        source = Path(launcher.__file__).read_text(encoding="utf-8")
+
+        self.assertLess(
+            source.index("SYSTEM_TRUST_STATUS = configure_system_trust()"),
+            source.index("import uvicorn"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

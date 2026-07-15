@@ -275,13 +275,15 @@ export function GettingStartedPanel() {
     : null
   const retryLabel = job?.failure_kind === 'network'
     ? '继续下载'
-    : job?.failure_kind === 'disk_space'
-      ? '释放空间后重试'
-      : job?.failure_kind === 'permission_or_antivirus'
-        ? '允许后重试'
-        : job?.failure_kind === 'quota_or_rate_limit'
-          ? '重新检查免费额度'
-          : '重试'
+    : job?.failure_kind === 'certificate_verification'
+      ? '重新验证连接'
+      : job?.failure_kind === 'disk_space'
+        ? '释放空间后重试'
+        : job?.failure_kind === 'permission_or_antivirus'
+          ? '允许后重试'
+          : job?.failure_kind === 'quota_or_rate_limit'
+            ? '重新检查免费额度'
+            : '重试'
   const credentialRequired = job?.auth_status === 'credential_required' || job?.phase === 'credential_required'
   const authenticationActive = ['running', 'submitted'].includes(job?.auth_status || '')
 
@@ -361,7 +363,11 @@ export function GettingStartedPanel() {
               className="getting-started-alert"
               type="error"
               showIcon
-              message={job?.failure_kind === 'quota_or_rate_limit' ? '当前免费额度暂时不可用' : '这次没有准备完成'}
+              message={job?.failure_kind === 'quota_or_rate_limit'
+                ? '当前免费额度暂时不可用'
+                : job?.failure_kind === 'certificate_verification'
+                  ? 'Windows 证书验证没有完成'
+                  : '这次没有准备完成'}
               description={job?.next_action || '司命会保留下载进度，可以直接重试。'}
               action={<Button icon={<ReloadOutlined />} onClick={() => void retryActivation()}>{retryLabel}</Button>}
             />

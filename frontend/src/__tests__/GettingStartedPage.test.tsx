@@ -101,4 +101,24 @@ describe('GettingStartedPanel', () => {
     expect(await screen.findByText('正在等待 OpenCode 官方登录')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/retry')
   })
+
+  it('explains a Windows certificate-chain failure without suggesting unsafe TLS bypasses', async () => {
+    api.get.mockResolvedValue({ data: { data: {
+      ...baseStatus,
+      activation_job: {
+        id: 'job-cert', status: 'failed', phase: 'failed', percent: 4,
+        message: '免费写作能力暂时没有准备完成',
+        failure_kind: 'certificate_verification',
+        next_action: '请确认 Windows 日期和时间正确，并完成 Windows 更新后重试。司命会使用系统受信任证书，且不会关闭 HTTPS 校验。',
+        error: '<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED]>',
+        free_models: [],
+      },
+    } } })
+
+    render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
+
+    expect(await screen.findByText('Windows 证书验证没有完成')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /重新验证连接/ })).toBeInTheDocument()
+    expect(screen.getByText(/不会关闭 HTTPS 校验/)).toBeInTheDocument()
+  })
 })

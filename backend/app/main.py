@@ -3,6 +3,11 @@ import asyncio
 import sys
 from pathlib import Path
 
+from .core.system_trust import configure_system_trust
+
+
+SYSTEM_TRUST_STATUS = configure_system_trust()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles

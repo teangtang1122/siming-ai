@@ -15,6 +15,11 @@ import subprocess
 import time
 from pathlib import Path
 
+from app.core.system_trust import configure_system_trust
+
+
+SYSTEM_TRUST_STATUS = configure_system_trust()
+
 import uvicorn
 
 
@@ -455,6 +460,10 @@ def _wait_for_server(host: str, port: int, timeout: float = 30.0) -> bool:
 
 def main() -> None:
     _log(f"{APP_NAME} launcher entered with argv={sys.argv!r}")
+    _log(
+        "HTTPS trust backend: "
+        f"{SYSTEM_TRUST_STATUS.backend}; enabled={SYSTEM_TRUST_STATUS.enabled}"
+    )
     if "--mcp-server" in sys.argv:
         _run_mcp_server()
         return
