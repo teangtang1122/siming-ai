@@ -11,10 +11,6 @@ on:
         description: Release tag to validate, for example v2.7.13
         required: true
         type: string
-      source_ref:
-        description: Git ref to test; defaults to the release tag
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -33,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.source_ref || inputs.tag) || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -52,6 +48,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          git fetch --tags --force
+          $headCommit = (git rev-parse HEAD).Trim()
+          $tagCommit = (git rev-list -n 1 $tag).Trim()
+          if (-not $tagCommit -or $headCommit -ne $tagCommit) {
+            throw "Release validation must build the exact tag commit. HEAD=$headCommit tag=$tagCommit"
+          }
           $frontendVersion = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
           $backendVersion = (Select-String -Path backend/app/version.py -Pattern 'APP_VERSION\s*=\s*["'']([^"'']+)' | Select-Object -First 1).Matches.Groups[1].Value
           if ($tag -ne "v$frontendVersion" -or $frontendVersion -ne $backendVersion) {

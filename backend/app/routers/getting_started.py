@@ -4,16 +4,22 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.orm import Session
 
 from ..ai.local_cli_adapter import DEFAULT_CLI_ARGS
+from ..ai.local_runtime_policy import local_runtime_disabled
 from ..core.crypto import encrypt
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import APIConfig
 from ..database.session import get_db
 from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
+from ..services.model_readiness import (
+    READINESS_READY,
+    is_model_config_usable,
+    mark_model_unverified,
+)
 from ..services.opencode_onboarding import (
     OPENCODE_INSTALL_DOCS_URL,
     OPENCODE_MODELS_DOCS_URL,
@@ -29,6 +35,7 @@ from ..services.opencode_onboarding import (
     retry_opencode_activation,
     start_opencode_activation,
     start_opencode_install,
+    submit_opencode_auth_credential,
 )
 
 
@@ -44,9 +51,24 @@ class OpenCodeActivateRequest(BaseModel):
     preferred_model: str | None = Field(None, max_length=200)
 
 
+class OpenCodeCredentialRequest(BaseModel):
+    credential: SecretStr = Field(..., min_length=1, max_length=4096)
+
+
 def _getting_started_summary(db: Session) -> dict:
     opencode_config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
     global_config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
+    usable_configs = [
+        config
+        for config in db.query(APIConfig).filter(APIConfig.readiness_status == READINESS_READY).all()
+        if not local_runtime_disabled(config.provider)
+    ]
+    detected_configs = db.query(APIConfig).filter(APIConfig.readiness_status == "detected").all()
+    usable_global = (
+        global_config
+        if is_model_config_usable(global_config) and not local_runtime_disabled(global_config.provider)
+        else None
+    )
     return {
         "installed": bool(opencode_config and opencode_config.cli_command),
         "command": opencode_config.cli_command if opencode_config else None,
@@ -60,13 +82,16 @@ def _getting_started_summary(db: Session) -> dict:
         "install_location": str(managed_opencode_command()),
         "configured": bool(opencode_config),
         "configured_model": opencode_config.default_model if opencode_config else None,
-        "is_global_default": bool(opencode_config and opencode_config.is_global_default),
+        "is_global_default": bool(opencode_config and opencode_config.is_global_default and is_model_config_usable(opencode_config)),
         "has_any_model": bool(db.query(APIConfig.id).first()),
-        "needs_setup": global_config is None,
+        "has_detected_models": bool(detected_configs),
+        "has_usable_models": bool(usable_configs),
+        "needs_setup": usable_global is None,
+        "recommended_action": "start_writing" if usable_global else "verify_detected" if detected_configs else "activate_opencode",
         "global_model": {
-            "provider": global_config.provider,
-            "model": global_config.default_model,
-        } if global_config else None,
+            "provider": usable_global.provider,
+            "model": usable_global.default_model,
+        } if usable_global else None,
         "activation_job": get_latest_opencode_activation_job(db),
         "official_links": {
             "releases": OPENCODE_RELEASES_URL,
@@ -88,7 +113,7 @@ def _getting_started_status(db: Session, *, refresh: bool = False) -> dict:
         **inspected,
         "configured": bool(opencode_config),
         "configured_model": opencode_config.default_model if opencode_config else None,
-        "is_global_default": bool(opencode_config and opencode_config.is_global_default),
+        "is_global_default": bool(opencode_config and opencode_config.is_global_default and is_model_config_usable(opencode_config)),
     }
 
 
@@ -146,8 +171,19 @@ def authenticate_activation(job_id: str):
     try:
         result = open_opencode_authentication(job_id)
     except RuntimeError as exc:
-        raise NotFoundError(str(exc)) from exc
-    return ApiResponse.success(data=result, message="已打开 OpenCode 官方登录页面")
+        if "不存在" in str(exc):
+            raise NotFoundError(str(exc)) from exc
+        raise ValidationError(str(exc)) from exc
+    return ApiResponse.success(data=result, message="OpenCode 官方登录已经启动")
+
+
+@router.post("/config/getting-started/opencode/jobs/{job_id}/credential")
+def submit_activation_credential(job_id: str, payload: OpenCodeCredentialRequest):
+    try:
+        result = submit_opencode_auth_credential(job_id, payload.credential.get_secret_value())
+    except RuntimeError as exc:
+        raise ValidationError(str(exc)) from exc
+    return ApiResponse.success(data=result, message="一次性凭据已提交")
 
 
 @router.get("/config/getting-started/opencode/install/{job_id}")
@@ -178,6 +214,7 @@ def configure_opencode(payload: OpenCodeConfigureRequest, db: Session = Depends(
         config.provider_type = "local_cli"
         config.cli_command = command
         config.cli_args = json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False)
+        mark_model_unverified(config, source="getting_started_configure")
     else:
         config = APIConfig(
             provider="opencode_cli",
@@ -187,6 +224,8 @@ def configure_opencode(payload: OpenCodeConfigureRequest, db: Session = Depends(
             provider_type="local_cli",
             cli_command=command,
             cli_args=json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False),
+            readiness_status="unverified",
+            readiness_json='{"source":"getting_started_configure"}',
         )
         db.add(config)
     db.commit()

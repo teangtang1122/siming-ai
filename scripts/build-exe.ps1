@@ -151,6 +151,7 @@ try {
     "--collect-submodules", "uvicorn",
     "--collect-submodules", "httptools",
     "--collect-submodules", "watchfiles",
+    "--collect-all", "winpty",
     "--hidden-import", "sqlite3",
     "--hidden-import", "webview",
     "--hidden-import", "webview.platforms",

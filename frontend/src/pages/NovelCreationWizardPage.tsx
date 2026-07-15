@@ -704,7 +704,8 @@ function NovelCreationWizardPage() {
           </div>
           <Space wrap>
             {session && <Tag color="processing">草稿修订 {session.revision}</Tag>}
-            {!inWorkbench && <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="选择生成模型" style={{ minWidth: 260 }} />}
+            {!inWorkbench && hasModels && modelOptions.length > 1 && <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="切换可用模型" style={{ minWidth: 260 }} />}
+            {!inWorkbench && hasModels && modelOptions.length === 1 && <Tag color="success">AI 已准备好</Tag>}
             <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>配置模型</Button>
             {session && <Button onClick={resetWorkspace}>新建立项</Button>}
           </Space>
@@ -779,7 +780,7 @@ function NovelCreationWizardPage() {
                 }]} />
                 <div className="creation-primary-actions">
                   <Button size="large" icon={<SaveOutlined />} loading={busy} onClick={saveIntake}>只保存草稿</Button>
-                  <Button size="large" type="primary" icon={<RocketOutlined />} loading={busy} onClick={generateConcepts}>生成三套轻量创意</Button>
+                  <Button size="large" type="primary" icon={<RocketOutlined />} loading={busy} disabled={!hasModels || !selectedModel} onClick={generateConcepts}>生成三套轻量创意</Button>
                 </div>
               </Form>
             </main>

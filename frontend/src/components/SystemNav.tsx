@@ -38,22 +38,24 @@ function SystemNav({ current }: SystemNavProps) {
 
   return (
     <nav className="system-nav" aria-label="系统导航">
-      <button className="system-nav-brand" type="button" onClick={() => navigate('/dashboard')}>
+      <button className="system-nav-brand" type="button" aria-label="返回作品库" onClick={() => navigate('/dashboard')}>
         <BookOutlined aria-hidden="true" />
         <Text strong>司命</Text>
       </button>
       <Space size={4} className="system-nav-links">
         {navItems.map((item) => (
-          <Button
-            key={item.key}
-            type="text"
-            icon={item.icon}
-            className={active === item.key ? 'system-nav-link-active' : undefined}
-            aria-current={active === item.key ? 'page' : undefined}
-            onClick={() => navigate(item.path)}
-          >
-            {item.label}
-          </Button>
+          <Tooltip key={item.key} title={item.label}>
+            <Button
+              type="text"
+              icon={item.icon}
+              className={active === item.key ? 'system-nav-link-active' : undefined}
+              aria-label={item.label}
+              aria-current={active === item.key ? 'page' : undefined}
+              onClick={() => navigate(item.path)}
+            >
+              {item.label}
+            </Button>
+          </Tooltip>
         ))}
       </Space>
       <div className="system-nav-tools">

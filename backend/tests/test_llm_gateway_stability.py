@@ -13,6 +13,7 @@ from app.ai.local_cli_adapter import LOCAL_CLI_TIMEOUT_GRACE_SECONDS, LocalCLIAd
 from app.core.crypto import encrypt
 from app.core.exceptions import LLMError
 from app.database.models import APIConfig
+from app.database.migrations import ensure_runtime_schema
 from app.database.session import Base, SessionLocal, engine
 
 
@@ -52,6 +53,7 @@ class GatewayStabilityTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         Base.metadata.create_all(bind=engine)
+        ensure_runtime_schema(engine)
 
     @classmethod
     def tearDownClass(cls):
@@ -70,6 +72,8 @@ class GatewayStabilityTestCase(unittest.TestCase):
                 api_key_encrypted=encrypt("test-key"),
                 default_model="gemini-2.5-flash",
                 is_global_default=True,
+                readiness_status="ready",
+                readiness_json='{"source":"test"}',
             ))
             db.commit()
         finally:

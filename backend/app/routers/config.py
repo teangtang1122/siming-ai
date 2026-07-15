@@ -45,6 +45,16 @@ from ..database.session import get_db
 from ..schemas.config import APIConfigCreate, ConnectionTestRequest, GlobalModelSetting, ModelListRequest
 from ..services.content_store import content_root as resolve_content_root, migrate_projects_to_content_root
 from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
+from ..services.model_readiness import (
+    READINESS_READY,
+    is_model_config_usable,
+    mark_model_failure,
+    mark_model_ready,
+    mark_model_testing,
+    mark_model_unavailable,
+    mark_model_unverified,
+    readiness_payload,
+)
 
 router = APIRouter(tags=["config"])
 
@@ -454,6 +464,7 @@ def _config_payload(cfg: APIConfig, include_masked_key: bool = False) -> dict:
         deconstruct_input_char_limit=cfg.deconstruct_input_char_limit,
         deconstruct_item_char_limit=cfg.deconstruct_item_char_limit,
     ))
+    data.update(readiness_payload(cfg))
     if include_masked_key:
         if is_local_cli_provider(cfg.provider):
             data["api_key_masked"] = "Local CLI"
@@ -549,6 +560,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         existing.max_output_tokens = payload.max_output_tokens
         existing.deconstruct_input_char_limit = payload.deconstruct_input_char_limit
         existing.deconstruct_item_char_limit = payload.deconstruct_item_char_limit
+        mark_model_unverified(existing, source="manual_edit")
         db.commit()
         db.refresh(existing)
         return ApiResponse.success(
@@ -564,6 +576,8 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         base_url_override=base_url_override,
         cli_command=cli_command,
         cli_args=cli_args,
+        readiness_status="unverified",
+        readiness_json='{"source":"manual"}',
         max_output_tokens=payload.max_output_tokens,
         deconstruct_input_char_limit=payload.deconstruct_input_char_limit,
         deconstruct_item_char_limit=payload.deconstruct_item_char_limit,
@@ -754,6 +768,63 @@ async def test_connection(payload: ConnectionTestRequest):
         raise LLMError("Request timed out")
 
 
+@router.post("/config/models/{provider}/verify")
+async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)):
+    """Run a real saved-config test and persist whether the model is usable."""
+
+    if local_runtime_disabled(provider):
+        raise ValidationError(local_runtime_disabled_message())
+    config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
+    if not config:
+        raise NotFoundError(f"Provider config '{provider}' not found")
+
+    mark_model_testing(config)
+    db.commit()
+    db.refresh(config)
+
+    is_cli = is_local_cli_provider(provider)
+    is_runtime = provider == "local_llama_cpp"
+    payload = ConnectionTestRequest(
+        provider=provider,
+        api_key=None if is_cli or is_runtime else decrypt(config.api_key_encrypted),
+        base_url_override=config.base_url_override,
+        cli_command=config.cli_command,
+        cli_args=config.cli_args,
+        model=config.default_model,
+    )
+    try:
+        test_result = await test_connection(payload)
+    except Exception as exc:
+        if not mark_model_failure(config, exc, source="manual_verify"):
+            mark_model_unavailable(config, exc, source="manual_verify")
+        db.commit()
+        raise
+
+    mark_model_ready(config, source="manual_verify")
+    usable_global = db.query(APIConfig).filter(
+        APIConfig.is_global_default == True,  # noqa: E712
+        APIConfig.readiness_status == READINESS_READY,
+    ).first()
+    became_global = usable_global is None
+    if became_global:
+        db.query(APIConfig).update({"is_global_default": False})
+        config.is_global_default = True
+    db.commit()
+    db.refresh(config)
+    return ApiResponse.success(
+        data={
+            "config": _config_payload(config),
+            "test": test_result.data,
+            "became_global_default": became_global,
+        },
+        message=(
+            f"{_provider_label(provider)} 已验证并设为全局默认模型"
+            if became_global
+            else f"{_provider_label(provider)} 已验证，可以用于创作"
+        ),
+    )
+
+
 @router.post("/chat/completion")
 async def chat_completion(payload: ChatCompletionRequest):
     try:
@@ -803,7 +874,7 @@ def delete_model_config(provider: str, db: Session = Depends(get_db)):
 @router.get("/config/global-model")
 def get_global_model(db: Session = Depends(get_db)):
     config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
-    if not config or local_runtime_disabled(config.provider):
+    if not config or not is_model_config_usable(config) or local_runtime_disabled(config.provider):
         return ApiResponse.success(data={"provider": None, "model": None}, message="未设置全局默认模型")
     return ApiResponse.success(data={
         "provider": config.provider,
@@ -818,6 +889,8 @@ def set_global_model(payload: GlobalModelSetting, db: Session = Depends(get_db))
     config = db.query(APIConfig).filter(APIConfig.provider == payload.provider).first()
     if not config:
         raise NotFoundError(f"未找到提供商 '{payload.provider}' 的配置，请先添加API配置")
+    if not is_model_config_usable(config):
+        raise ValidationError("这个模型尚未通过真实对话测试，请先点击“测试并启用”")
 
     db.query(APIConfig).update({"is_global_default": False})
     config.is_global_default = True

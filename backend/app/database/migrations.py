@@ -109,6 +109,27 @@ def ensure_runtime_schema(engine: Engine) -> None:
                 cols = ", ".join(c.name for c in index.columns)
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index.name} ON {table_name} ({cols})"))
 
+        # Existing installations predate the readiness contract. Preserve the
+        # selected global model, while requiring every other legacy config to
+        # pass an explicit verification before it can be used.
+        inspector = inspect(conn)
+        if inspector.has_table("api_configs"):
+            columns = {column["name"] for column in inspector.get_columns("api_configs")}
+            if {"readiness_status", "readiness_json"}.issubset(columns):
+                conn.execute(text(
+                    "UPDATE api_configs "
+                    "SET readiness_status = 'ready', "
+                    "readiness_json = '{\"source\":\"legacy_global\"}' "
+                    "WHERE is_global_default = 1 "
+                    "AND readiness_status = 'unverified' "
+                    "AND (readiness_json IS NULL OR readiness_json = '')"
+                ))
+                conn.execute(text(
+                    "UPDATE api_configs "
+                    "SET readiness_json = '{\"source\":\"legacy_existing\"}' "
+                    "WHERE (readiness_json IS NULL OR readiness_json = '')"
+                ))
+
     # --- RAG FTS5 virtual table (try/except, never fail startup) ---
     try:
         with engine.begin() as fts_conn:

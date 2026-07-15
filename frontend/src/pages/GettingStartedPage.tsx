@@ -42,7 +42,7 @@ interface FreeModelOption {
 }
 
 type ActivationStatus = 'pending' | 'running' | 'auth_required' | 'ready' | 'failed'
-type ActivationPhase = 'checking' | 'downloading' | 'verifying' | 'auth_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
+type ActivationPhase = 'checking' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
 
 interface ActivationJob {
   id: string
@@ -60,6 +60,9 @@ interface ActivationJob {
   bytes_total?: number
   estimated_seconds_remaining?: number | null
   auth_url?: string
+  auth_mode?: 'browser' | 'credential' | null
+  auth_status?: 'running' | 'credential_required' | 'submitted' | 'completed' | 'failed' | 'interrupted' | null
+  auth_prompt?: string | null
 }
 
 interface GettingStartedStatus {
@@ -70,6 +73,9 @@ interface GettingStartedStatus {
   configured_model?: string | null
   is_global_default: boolean
   needs_setup: boolean
+  has_detected_models: boolean
+  has_usable_models: boolean
+  recommended_action?: string
   global_model?: { provider: string; model: string } | null
   activation_job?: ActivationJob | null
 }
@@ -145,7 +151,7 @@ export function GettingStartedPanel() {
   const [job, setJob] = useState<ActivationJob | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>()
   const [setupError, setSetupError] = useState('')
-  const [waitingForAuthReturn, setWaitingForAuthReturn] = useState(false)
+  const [authCredential, setAuthCredential] = useState('')
 
   const fetchStatus = useCallback(async (refresh = false, summaryOnly = false) => {
     setLoading(true)
@@ -176,7 +182,8 @@ export function GettingStartedPanel() {
   }, [fetchStatus])
 
   useEffect(() => {
-    if (!job || !['pending', 'running'].includes(job.status)) return
+    const authRunning = ['running', 'submitted'].includes(job?.auth_status || '')
+    if (!job || (!['pending', 'running'].includes(job.status) && !authRunning)) return
     const timer = window.setTimeout(async () => {
       try {
         const response = await apiClient.get<ApiEnvelope<ActivationJob>>(`/config/getting-started/opencode/jobs/${job.id}`)
@@ -219,33 +226,31 @@ export function GettingStartedPanel() {
   const openAuthentication = async () => {
     if (!job) return
     try {
-      await apiClient.post(`/config/getting-started/opencode/jobs/${job.id}/authenticate`)
-      setWaitingForAuthReturn(true)
-      message.info('已打开 OpenCode 官方登录页面。完成登录后回到司命，将自动继续检测。')
+      const response = await apiClient.post<ApiEnvelope<ActivationJob>>(`/config/getting-started/opencode/jobs/${job.id}/authenticate`)
+      setJob(response.data.data)
+      message.info('官方登录已经启动，浏览器打开后完成登录即可。')
     } catch (error) {
       setSetupError(errorText(error))
     }
   }
 
-  useEffect(() => {
-    if (!waitingForAuthReturn || job?.status !== 'auth_required') return
-    const continueAfterLogin = async () => {
-      setWaitingForAuthReturn(false)
-      setSetupError('')
-      try {
-        const response = await apiClient.post<ApiEnvelope<ActivationJob>>(`/config/getting-started/opencode/jobs/${job.id}/retry`)
-        setJob(response.data.data)
-      } catch (error) {
-        setSetupError(errorText(error))
-      }
+  const submitAuthCredential = async () => {
+    if (!job || !authCredential.trim()) return
+    try {
+      const response = await apiClient.post<ApiEnvelope<ActivationJob>>(
+        `/config/getting-started/opencode/jobs/${job.id}/credential`,
+        { credential: authCredential },
+      )
+      setAuthCredential('')
+      setJob(response.data.data)
+    } catch (error) {
+      setSetupError(errorText(error))
     }
-    window.addEventListener('focus', continueAfterLogin, { once: true })
-    return () => window.removeEventListener('focus', continueAfterLogin)
-  }, [job?.id, job?.status, waitingForAuthReturn])
+  }
 
   const currentStep = useMemo(() => {
     if (job?.status === 'ready' || status?.is_global_default) return 2
-    if (job && ['discovering_models', 'testing', 'auth_required'].includes(job.phase)) return 1
+    if (job && ['discovering_models', 'testing', 'auth_required', 'authenticating', 'credential_required'].includes(job.phase)) return 1
     return 0
   }, [job, status])
 
@@ -254,7 +259,7 @@ export function GettingStartedPanel() {
     return <Alert type="error" showIcon message="暂时无法检查电脑环境" description={setupError || '请确认司命仍在运行。'} action={<Button onClick={() => void fetchStatus(true)}>重新检查</Button>} />
   }
 
-  const ready = job?.status === 'ready' || !status.needs_setup || status.is_global_default
+  const ready = job?.status === 'ready' || (status.is_global_default && status.has_usable_models !== false)
   const activeModel = status.global_model
     ? `${status.global_model.provider}:${status.global_model.model}`
     : job?.selected_model
@@ -277,6 +282,8 @@ export function GettingStartedPanel() {
         : job?.failure_kind === 'quota_or_rate_limit'
           ? '重新检查免费额度'
           : '重试'
+  const credentialRequired = job?.auth_status === 'credential_required' || job?.phase === 'credential_required'
+  const authenticationActive = ['running', 'submitted'].includes(job?.auth_status || '')
 
   return (
     <div className="getting-started-panel">
@@ -321,14 +328,31 @@ export function GettingStartedPanel() {
             </Button>
           )}
 
-          {job?.status === 'auth_required' && (
+          {(job?.status === 'auth_required' || authenticationActive) && (
             <Alert
               className="getting-started-alert"
               type="info"
               showIcon
-              message="还差一次免费的官方登录"
-              description="不需要购买，也不需要填写 API Key。登录完成后回到司命继续检测。"
-              action={<Space wrap><Button type="primary" onClick={() => void openAuthentication()}>打开官方登录</Button><Button onClick={() => void retryActivation()}>我已登录，继续</Button></Space>}
+              message={credentialRequired ? '请输入官方页面给出的一次性凭据' : authenticationActive ? '正在等待官方登录完成' : '还差一次免费的官方登录'}
+              description={job?.auth_prompt || job?.next_action || '不需要购买，也不需要在司命中保存 API Key。登录完成后会自动继续检测。'}
+              action={credentialRequired ? (
+                <Space.Compact>
+                  <Input.Password
+                    value={authCredential}
+                    onChange={(event) => setAuthCredential(event.target.value)}
+                    placeholder="一次性验证码或令牌"
+                    aria-label="OpenCode 一次性验证码或令牌"
+                    onPressEnter={() => void submitAuthCredential()}
+                  />
+                  <Button type="primary" disabled={!authCredential.trim()} onClick={() => void submitAuthCredential()}>提交</Button>
+                </Space.Compact>
+              ) : (
+                <Space wrap>
+                  {!authenticationActive && job?.auth_status !== 'failed' && <Button type="primary" onClick={() => void openAuthentication()}>开始官方登录</Button>}
+                  {job?.auth_url && <Button href={job.auth_url} target="_blank">打开登录地址</Button>}
+                  {job?.auth_status === 'failed' && <Button onClick={() => void openAuthentication()}>重新登录</Button>}
+                </Space>
+              )}
             />
           )}
 

@@ -66,6 +66,8 @@ const model = {
   provider: 'opencode_cli',
   default_model: 'free-model',
   is_global_default: true,
+  readiness_status: 'ready',
+  is_usable: true,
 }
 
 function conceptSession(id = 'session-1') {
@@ -186,6 +188,39 @@ test('allows a no-model author to save and restore a creation draft', async ({ p
   await expect(page.getByRole('button', { name: zh.saveDraft })).toBeEnabled()
   await page.getByRole('button', { name: zh.saveDraft }).click()
   await expect(page).toHaveURL(/session=draft-1/)
+})
+
+test('does not treat a detected Claude CLI as a usable writing model', async ({ page }) => {
+  await mockApi(page, {
+    models: [{
+      id: 'claude-detected',
+      provider: 'claude_cli',
+      default_model: 'claude-code',
+      is_global_default: false,
+      readiness_status: 'detected',
+      is_usable: false,
+    }],
+  })
+  await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
+
+  await expect(page.getByText(zh.noModel)).toBeVisible()
+  await expect(page.getByRole('combobox', { name: '\u9009\u62e9\u672c\u9636\u6bb5\u6a21\u578b' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /\u751f\u6210\u4e09\u5957\u8f7b\u91cf\u521b\u610f/ })).toBeDisabled()
+})
+
+test('keeps mobile navigation named and touch-sized at 390px', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockApi(page)
+  await page.goto('/novel-creation', { waitUntil: 'domcontentloaded' })
+
+  for (const name of ['\u4f5c\u54c1\u5e93', '\u65b0\u4e66\u7acb\u9879', 'AI \u52a9\u624b', '\u7cfb\u7edf\u8bbe\u7f6e']) {
+    const button = page.getByRole('button', { name, exact: true })
+    await expect(button).toBeVisible()
+    const box = await button.boundingBox()
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+  }
+  await expect(page.getByRole('button', { name: '\u65b0\u4e66\u7acb\u9879' })).toHaveAttribute('aria-current', 'page')
 })
 
 test('shows quota exhaustion as an error with the CLI runtime diagnostics', async ({ page }) => {

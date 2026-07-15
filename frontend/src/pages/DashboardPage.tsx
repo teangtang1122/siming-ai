@@ -59,6 +59,9 @@ interface ApiResponse<T> {
 
 interface GettingStartedSummary {
   needs_setup: boolean
+  has_detected_models?: boolean
+  has_usable_models?: boolean
+  recommended_action?: string
 }
 
 interface UploadResult {
@@ -364,9 +367,15 @@ function DashboardPage() {
           <Button icon={<UploadOutlined />} size="large" onClick={() => openCreateModal()}>
             直接创建或导入
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>
-            创建新作品
-          </Button>
+          {needsModelSetup ? (
+            <Button type="primary" icon={<RocketOutlined />} size="large" onClick={() => navigate('/getting-started')}>
+              免费准备 AI
+            </Button>
+          ) : (
+            <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>
+              创建新作品
+            </Button>
+          )}
         </Space>
       </header>
 
@@ -377,8 +386,8 @@ function DashboardPage() {
             <Text strong>第一次使用？先免费把 AI 接上</Text>
             <Text type="secondary">不用 API Key，不用打开命令行。司命可以自动安装 OpenCode，并帮你选择当前可用的免费模型。</Text>
           </div>
-          <Button type="primary" size="large" onClick={() => navigate('/getting-started')}>
-            免费开始 <ArrowRightOutlined />
+          <Button size="large" onClick={openNovelCreation}>
+            先写立项草稿 <ArrowRightOutlined />
           </Button>
         </section>
       )}
@@ -448,14 +457,7 @@ function DashboardPage() {
           <Empty
             image={<FolderOpenOutlined className="dashboard-empty-icon" />}
             description={searchKeyword ? '没有找到匹配的作品' : '作品库还是空的。建议先立项，让司命一起建立角色、世界和前 15 章细纲。'}
-          >
-            {!searchKeyword && (
-              <Space wrap>
-                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>开始新书立项</Button>
-                <Button icon={<UploadOutlined />} size="large" onClick={() => openCreateModal()}>直接创建或导入</Button>
-              </Space>
-            )}
-          </Empty>
+          />
         </div>
       ) : (
         <div className="dashboard-grid">

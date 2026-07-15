@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -101,6 +101,7 @@ def test_configure_opencode_saves_cli_without_making_it_global_before_test():
     assert result.data["model"] == "opencode/deepseek-v4-flash-free"
     assert saved.provider_type == "local_cli"
     assert saved.is_global_default is False
+    assert saved.readiness_status == "unverified"
     assert saved.cli_command == inspected["command"]
 
 
@@ -113,6 +114,8 @@ def test_summary_status_does_not_launch_cli_probes():
 
     inspect_probe.assert_not_called()
     assert result.data["needs_setup"] is True
+    assert result.data["has_usable_models"] is False
+    assert result.data["recommended_action"] == "activate_opencode"
     assert result.data["free_models"] == []
 
 
@@ -273,3 +276,52 @@ def test_activation_pauses_for_official_auth_without_changing_config():
     save_config.assert_not_called()
     auth_updates = [item.kwargs for item in update.call_args_list if item.kwargs.get("status") == "auth_required"]
     assert auth_updates and auth_updates[-1]["phase"] == "auth_required"
+
+
+def test_managed_auth_opens_captured_url_and_retries_after_auth_list_verification():
+    class FakeAuthProcess:
+        def __init__(self):
+            self.alive = True
+
+        def isalive(self):
+            return self.alive
+
+        def read(self):
+            self.alive = False
+            return "Continue in your browser: https://opencode.ai/auth/device"
+
+        def wait(self):
+            return 0
+
+        def write(self, _value):
+            return None
+
+    process = FakeAuthProcess()
+    with patch.object(opencode_onboarding, "_update_activation") as update, patch.object(
+        opencode_onboarding, "_auth_list_has_credentials", return_value=True
+    ), patch.object(opencode_onboarding, "retry_opencode_activation") as retry, patch(
+        "webbrowser.open", return_value=True
+    ) as open_browser:
+        opencode_onboarding._authentication_worker("job-auth", r"C:\managed\opencode.exe", process)
+
+    open_browser.assert_called_once_with("https://opencode.ai/auth/device")
+    retry.assert_called_once_with("job-auth")
+    assert any(item.kwargs.get("auth_status") == "completed" for item in update.call_args_list)
+
+
+def test_one_time_auth_credential_is_written_without_returning_or_logging_it():
+    process = MagicMock()
+    process.isalive.return_value = True
+    opencode_onboarding._auth_sessions["job-secret"] = opencode_onboarding._ManagedAuthSession(process=process)
+    try:
+        with patch.object(
+            opencode_onboarding,
+            "_update_activation",
+            return_value={"id": "job-secret", "auth_status": "submitted"},
+        ):
+            result = opencode_onboarding.submit_opencode_auth_credential("job-secret", "secret-token-value")
+    finally:
+        opencode_onboarding._auth_sessions.pop("job-secret", None)
+
+    process.write.assert_called_once_with("secret-token-value\r")
+    assert "secret-token-value" not in str(result)

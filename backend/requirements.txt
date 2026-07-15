@@ -15,4 +15,5 @@ python-docx==1.2.0
 ddgs==9.0.0
 croniter>=2.0
 pywebview>=5.0
+pywinpty==3.0.5; platform_system == "Windows"
 PyYAML>=6.0

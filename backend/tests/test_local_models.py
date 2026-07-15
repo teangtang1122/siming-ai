@@ -92,6 +92,8 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
             api_key_encrypted="",
             default_model="claude-code",
             is_global_default=True,
+            readiness_status="ready",
+            readiness_json='{"source":"test_verification"}',
         ))
         db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3-14b-q4", context_length=32768))
         db.commit()

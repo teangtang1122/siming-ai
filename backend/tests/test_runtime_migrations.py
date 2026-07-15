@@ -13,6 +13,35 @@ from app.services.workspace.run_log import mark_interrupted_assistant_runs
 
 
 class RuntimeMigrationTestCase(unittest.TestCase):
+    def test_legacy_model_configs_get_non_destructive_readiness_backfill(self):
+        engine = create_engine("sqlite:///:memory:")
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE api_configs ("
+                "id VARCHAR(36) PRIMARY KEY, provider VARCHAR(50), api_key_encrypted TEXT, "
+                "default_model VARCHAR(100), is_global_default INTEGER DEFAULT 0)"
+            ))
+            conn.execute(text(
+                "INSERT INTO api_configs (id, provider, api_key_encrypted, default_model, is_global_default) VALUES "
+                "('global', 'openai', 'encrypted', 'gpt-test', 1), "
+                "('secondary', 'claude_cli', 'encrypted', 'claude-code', 0)"
+            ))
+
+        Base.metadata.create_all(bind=engine)
+        ensure_runtime_schema(engine)
+
+        with engine.connect() as conn:
+            rows = {
+                row.provider: (row.readiness_status, row.readiness_json)
+                for row in conn.execute(text(
+                    "SELECT provider, readiness_status, readiness_json FROM api_configs"
+                ))
+            }
+        self.assertEqual(rows["openai"][0], "ready")
+        self.assertIn("legacy_global", rows["openai"][1])
+        self.assertEqual(rows["claude_cli"][0], "unverified")
+        self.assertIn("legacy_existing", rows["claude_cli"][1])
+
     def test_runtime_schema_needs_sync_detects_missing_columns(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:

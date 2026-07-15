@@ -230,6 +230,8 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
             provider_type="local_cli",
             cli_command=command,
             cli_args=json.dumps(DEFAULT_CLI_ARGS[provider], ensure_ascii=False),
+            readiness_status="detected",
+            readiness_json='{"source":"auto_detect"}',
         ))
         created.append(provider)
     if created or changed:

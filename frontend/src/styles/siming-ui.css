@@ -65,7 +65,7 @@ select {
   display: inline-flex;
   font: inherit;
   gap: 9px;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 10px;
 }
 
@@ -80,7 +80,7 @@ select {
 
 .system-nav-links .ant-btn {
   color: var(--ant-color-text-secondary);
-  min-height: 38px;
+  min-height: 44px;
   padding-inline: 14px;
 }
 
@@ -94,6 +94,11 @@ select {
   align-items: center;
   display: flex;
   gap: 4px;
+}
+
+.system-nav-tools .ant-btn {
+  min-height: 44px;
+  min-width: 44px;
 }
 
 .siming-section-header {
@@ -161,6 +166,7 @@ select {
   .system-nav {
     grid-template-columns: auto 1fr auto;
     margin-bottom: 16px;
+    row-gap: 4px;
   }
 
   .system-nav-brand .ant-typography,
@@ -169,11 +175,22 @@ select {
   }
 
   .system-nav-links {
-    justify-self: start;
+    display: grid;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: repeat(4, minmax(44px, 1fr));
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .system-nav-links .ant-space-item {
+    min-width: 0;
   }
 
   .system-nav-links .ant-btn {
+    min-width: 44px;
     padding-inline: 10px;
+    width: 100%;
   }
 
   .siming-section-header {

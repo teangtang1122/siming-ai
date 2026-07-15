@@ -10,6 +10,7 @@ from ..core.crypto import decrypt
 from ..core.exceptions import LLMError, NotFoundError
 from ..database.models import APIConfig, LocalModelTaskSetting
 from ..database.session import SessionLocal
+from ..services.model_readiness import is_model_config_usable, record_gateway_failure
 from .anthropic_adapter import AnthropicAdapter
 from .base import BaseAdapter
 from .capabilities import (
@@ -141,8 +142,8 @@ class LLMGateway:
         db = SessionLocal()
         try:
             config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
-            if not config:
-                raise NotFoundError("未配置全局默认模型，请先前往系统设置配置模型")
+            if not config or not is_model_config_usable(config):
+                raise NotFoundError("未配置可用的全局默认模型，请先前往系统设置测试并启用模型")
             if local_runtime_disabled(config.provider):
                 raise NotFoundError(local_runtime_disabled_message())
             return config.provider, config.default_model
@@ -155,7 +156,7 @@ class LLMGateway:
         try:
             configs = db.query(APIConfig).all()
             for cfg in configs:
-                if local_runtime_disabled(cfg.provider):
+                if local_runtime_disabled(cfg.provider) or not is_model_config_usable(cfg):
                     continue
                 if cfg.default_model == model_name:
                     return cfg.provider, cfg.default_model
@@ -226,7 +227,7 @@ class LLMGateway:
         db = SessionLocal()
         try:
             config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
-            if not config:
+            if not config or not is_model_config_usable(config):
                 return None
             if local_runtime_disabled(config.provider):
                 return None
@@ -362,6 +363,10 @@ class LLMGateway:
             config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
             if not config:
                 raise NotFoundError(f"未找到提供商 '{provider}' 的 API 配置，请先前往系统设置配置")
+            if not is_model_config_usable(config):
+                raise NotFoundError(
+                    f"提供商 '{provider}' 尚未通过真实对话测试，请先前往系统设置点击“测试并启用”"
+                )
             return config
         finally:
             db.close()
@@ -468,20 +473,25 @@ class LLMGateway:
         except LLMError as exc:
             if safe_tool_choice is not None and should_retry_without_tool_choice(exc):
                 notes.append("接口拒绝 tool_choice，已自动去掉该参数重试")
-                result = await cls._call_with_retry(
-                    attempts=1,
-                    timeout_seconds=wait_timeout_seconds,
-                    call_factory=lambda: adapter.chat_completion(
-                        messages=messages,
-                        model=model_name,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        extra_body=call_extra_body,
-                        tools=safe_tools,
-                        tool_choice=None,
-                    ),
-                )
+                try:
+                    result = await cls._call_with_retry(
+                        attempts=1,
+                        timeout_seconds=wait_timeout_seconds,
+                        call_factory=lambda: adapter.chat_completion(
+                            messages=messages,
+                            model=model_name,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            extra_body=call_extra_body,
+                            tools=safe_tools,
+                            tool_choice=None,
+                        ),
+                    )
+                except LLMError as retry_error:
+                    record_gateway_failure(provider, retry_error)
+                    raise
             else:
+                record_gateway_failure(provider, exc)
                 raise
 
         result.setdefault("model", model_name)
@@ -547,16 +557,20 @@ class LLMGateway:
             except LLMError as exc:
                 last_error = exc
                 if _is_non_retryable(exc) or produced:
+                    record_gateway_failure(provider, exc)
                     raise
             except Exception as exc:
                 last_error = LLMError(f"流式调用失败: {exc}")
                 if produced:
+                    record_gateway_failure(provider, last_error)
                     raise last_error
 
             if attempt < attempts:
                 await asyncio.sleep(min(8, attempt * 1.5))
 
-        raise last_error or LLMError("流式请求失败，已达到最大重试次数")
+        final_error = last_error or LLMError("流式请求失败，已达到最大重试次数")
+        record_gateway_failure(provider, final_error)
+        raise final_error
 
     @classmethod
     async def stream_chat_completion_with_tools(
@@ -627,13 +641,17 @@ class LLMGateway:
                     notes.append("接口拒绝 tool_choice，已自动去掉该参数重试")
                     safe_tool_choice = None
                 elif _is_non_retryable(exc) or produced:
+                    record_gateway_failure(provider, exc)
                     raise
             except Exception as exc:
                 last_error = LLMError(f"流式调用失败: {exc}")
                 if produced:
+                    record_gateway_failure(provider, last_error)
                     raise last_error
 
             if attempt < attempts:
                 await asyncio.sleep(min(8, attempt * 1.5))
 
-        raise last_error or LLMError("流式请求失败，已达到最大重试次数")
+        final_error = last_error or LLMError("流式请求失败，已达到最大重试次数")
+        record_gateway_failure(provider, final_error)
+        raise final_error

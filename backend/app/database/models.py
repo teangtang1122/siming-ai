@@ -420,6 +420,9 @@ class APIConfig(Base):
     provider_type = Column(String(20), nullable=False, default="api")  # api/local_cli/local_runtime
     cli_command = Column(String(500), nullable=True)
     cli_args = Column(Text, nullable=True)  # JSON array or shell-like argument string
+    readiness_status = Column(String(30), nullable=False, default="unverified")
+    readiness_json = Column(Text, nullable=True)
+    last_tested_at = Column(DateTime, nullable=True)
     max_output_tokens = Column(Integer, nullable=True)
     deconstruct_input_char_limit = Column(Integer, nullable=True)
     deconstruct_item_char_limit = Column(Integer, nullable=True)
@@ -441,6 +444,10 @@ class OpenCodeActivationJob(Base):
     error = Column(Text, nullable=True)
     failure_kind = Column(String(50), nullable=True)
     next_action = Column(Text, nullable=True)
+    auth_mode = Column(String(30), nullable=True)
+    auth_status = Column(String(30), nullable=True)
+    auth_prompt = Column(Text, nullable=True)
+    auth_url = Column(String(1000), nullable=True)
     command = Column(String(500), nullable=True)
     version = Column(String(100), nullable=True)
     selected_model = Column(String(200), nullable=True)

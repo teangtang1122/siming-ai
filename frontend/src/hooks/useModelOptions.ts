@@ -12,6 +12,12 @@ export interface ModelConfig {
   provider: string
   default_model: string
   is_global_default: boolean
+  readiness_status: 'detected' | 'unverified' | 'testing' | 'ready' | 'auth_required' | 'quota_limited' | 'unavailable'
+  is_usable: boolean
+  readiness_message?: string
+  readiness_source?: string | null
+  failure_class?: string | null
+  last_tested_at?: string | null
   base_url_override?: string
   max_output_tokens?: number | null
   effective_max_output_tokens?: number
@@ -85,7 +91,7 @@ export function useModelOptions() {
   }, [refresh])
 
   const modelOptions = useMemo<ModelSelectOption[]>(() => (
-    configs.map((config) => {
+    configs.filter((config) => config.is_usable && config.readiness_status === 'ready').map((config) => {
       const model = normalizeModel(config.provider, config.default_model)
       const localRuntimeSuffix = config.provider === 'local_llama_cpp' ? '（本地文本）' : ''
       return {
@@ -99,8 +105,13 @@ export function useModelOptions() {
   ), [configs])
 
   const defaultModel = useMemo(
-    () => modelOptions.find((option) => option.isGlobalDefault)?.value || modelOptions[0]?.value,
+    () => modelOptions.find((option) => option.isGlobalDefault)?.value,
     [modelOptions],
+  )
+
+  const detectedConfigs = useMemo(
+    () => configs.filter((config) => !config.is_usable),
+    [configs],
   )
 
   return {
@@ -110,5 +121,7 @@ export function useModelOptions() {
     loading,
     refresh,
     hasModels: modelOptions.length > 0,
+    hasDetectedModels: detectedConfigs.length > 0,
+    detectedConfigs,
   }
 }

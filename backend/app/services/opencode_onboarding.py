@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ import time
 import uuid
 import zipfile
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -28,6 +30,7 @@ from app.ai.local_cli_adapter import (
     discover_local_cli_models,
     hidden_subprocess_kwargs,
 )
+from app.services.model_readiness import mark_model_failure, mark_model_ready, mark_model_unavailable
 
 
 OPENCODE_RELEASE_API = "https://api.github.com/repos/anomalyco/opencode/releases/latest"
@@ -44,6 +47,23 @@ _jobs_lock = threading.Lock()
 _activation_start_lock = threading.Lock()
 _inspection_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _inspection_cache_lock = threading.Lock()
+_auth_sessions_lock = threading.Lock()
+
+
+@dataclass
+class _ManagedAuthSession:
+    process: Any
+    credential: str = ""
+
+
+_auth_sessions: dict[str, _ManagedAuthSession] = {}
+_ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_AUTH_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+_AUTH_CREDENTIAL_PROMPT_RE = re.compile(
+    r"(?i)(paste|enter|input|provide).{0,40}(token|code|credential)|"
+    r"(token|code|credential).{0,40}(paste|enter|input|provide)|"
+    r"请输入.{0,20}(令牌|验证码|凭据)",
+)
 
 
 def _app_home() -> Path:
@@ -454,6 +474,10 @@ def _activation_payload(job: Any) -> dict[str, Any]:
         "error": job.error,
         "failure_kind": job.failure_kind,
         "next_action": job.next_action,
+        "auth_mode": getattr(job, "auth_mode", None),
+        "auth_status": getattr(job, "auth_status", None),
+        "auth_prompt": getattr(job, "auth_prompt", None),
+        "auth_url": getattr(job, "auth_url", None),
         "command": job.command,
         "version": job.version,
         "selected_model": job.selected_model,
@@ -465,7 +489,6 @@ def _activation_payload(job: Any) -> dict[str, Any]:
         "bytes_total": job.bytes_total or 0,
         "estimated_seconds_remaining": job.estimated_seconds_remaining,
         "attempt_count": job.attempt_count or 0,
-        "auth_url": OPENCODE_AUTH_URL,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
@@ -509,6 +532,196 @@ def get_latest_opencode_activation_job(db: Any | None = None) -> dict[str, Any] 
         return _activation_payload(job) if job else None
 
 
+def _safe_auth_text(value: object, credential: str = "") -> str:
+    text = _ANSI_ESCAPE_RE.sub("", str(value or "")).replace("\x00", " ")
+    if credential:
+        text = text.replace(credential, "[redacted]")
+    text = re.sub(
+        r"(?i)((?:token|credential|secret|authorization)\s*[:=]\s*)[^\s,;]+",
+        r"\1[redacted]",
+        text,
+    )
+    return " ".join(text.split())[-600:]
+
+
+def _spawn_auth_process(command: str) -> Any:
+    try:
+        from winpty import PtyProcess
+    except ImportError as exc:  # pragma: no cover - packaged Windows runtime owns the dependency
+        raise RuntimeError("司命缺少托管登录组件，请重新安装当前版本") from exc
+    return PtyProcess.spawn(
+        _subprocess_command(command, ["auth", "login", "--provider", "opencode"]),
+        cwd=tempfile.gettempdir(),
+    )
+
+
+def _auth_list_has_credentials(command: str) -> bool:
+    try:
+        result = subprocess.run(
+            _subprocess_command(command, ["auth", "list"]),
+            cwd=tempfile.gettempdir(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            **hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = _safe_auth_text("\n".join([result.stdout or "", result.stderr or ""]))
+    lowered = output.lower()
+    return result.returncode == 0 and bool(output) and not any(
+        token in lowered for token in ("no credentials", "0 credentials", "not logged in")
+    )
+
+
+def _authentication_worker(job_id: str, command: str, process: Any) -> None:
+    opened_url = ""
+    exit_code: int | None = None
+    try:
+        while process.isalive():
+            try:
+                chunk = process.read()
+            except EOFError:
+                break
+            with _auth_sessions_lock:
+                session = _auth_sessions.get(job_id)
+                credential = session.credential if session else ""
+            safe_chunk = _safe_auth_text(chunk, credential)
+            if not safe_chunk:
+                continue
+
+            urls = _AUTH_URL_RE.findall(safe_chunk)
+            auth_url = urls[-1].rstrip(".,);]") if urls else ""
+            changes: dict[str, Any] = {
+                "auth_prompt": safe_chunk,
+                "auth_status": "running",
+                "phase": "authenticating",
+                "message": "正在等待 OpenCode 完成官方登录",
+            }
+            if auth_url:
+                changes.update({"auth_mode": "browser", "auth_url": auth_url})
+                if auth_url != opened_url:
+                    import webbrowser
+
+                    webbrowser.open(auth_url)
+                    opened_url = auth_url
+            if re.search(r"(?i)press\s+enter.{0,40}(browser|login|continue)", safe_chunk):
+                process.write("\r")
+            elif _AUTH_CREDENTIAL_PROMPT_RE.search(safe_chunk):
+                changes.update({
+                    "status": "auth_required",
+                    "phase": "credential_required",
+                    "auth_mode": "credential",
+                    "auth_status": "credential_required",
+                    "message": "OpenCode 正在等待一次性验证码或令牌",
+                    "next_action": "在司命中输入官方页面给出的验证码或令牌；内容不会保存或写入日志。",
+                })
+            _update_activation(job_id, **changes)
+
+        try:
+            exit_code = process.wait()
+        except Exception:
+            exit_code = getattr(process, "exitstatus", None)
+
+        if exit_code in (None, 0) and _auth_list_has_credentials(command):
+            _update_activation(
+                job_id,
+                status="auth_required",
+                phase="auth_required",
+                auth_status="completed",
+                percent=92,
+                message="官方登录已完成，正在重新验证免费模型",
+                error=None,
+                failure_kind=None,
+                next_action=None,
+            )
+            retry_opencode_activation(job_id)
+            return
+
+        _update_activation(
+            job_id,
+            status="auth_required",
+            phase="auth_required",
+            auth_status="failed",
+            message="官方登录没有完成",
+            failure_kind="authentication_required",
+            next_action="重新开始登录；如果浏览器没有打开，可复制登录地址到浏览器。",
+        )
+    except Exception as exc:
+        _update_activation(
+            job_id,
+            status="auth_required",
+            phase="auth_required",
+            auth_status="failed",
+            message="托管登录过程已中断",
+            error=_safe_auth_text(exc),
+            failure_kind="authentication_required",
+            next_action="点击重新登录；司命不会保存本次输入的凭据。",
+        )
+    finally:
+        with _auth_sessions_lock:
+            _auth_sessions.pop(job_id, None)
+
+
+def start_opencode_authentication(job_id: str) -> dict[str, Any]:
+    job = get_opencode_activation_job(job_id)
+    if not job:
+        raise RuntimeError("OpenCode 激活任务不存在")
+    command = resolve_opencode_command(job.get("command"))
+    if not command:
+        raise RuntimeError("没有找到可运行的 OpenCode，请先重新检测或安装")
+
+    with _auth_sessions_lock:
+        existing = _auth_sessions.get(job_id)
+        if existing and existing.process.isalive():
+            return get_opencode_activation_job(job_id) or job
+        process = _spawn_auth_process(command)
+        _auth_sessions[job_id] = _ManagedAuthSession(process=process)
+
+    payload = _update_activation(
+        job_id,
+        status="running",
+        phase="authenticating",
+        auth_mode="browser",
+        auth_status="running",
+        auth_prompt=None,
+        auth_url=None,
+        message="正在启动 OpenCode 官方登录",
+        error=None,
+        next_action="浏览器打开后完成登录；司命会自动继续验证。",
+    )
+    threading.Thread(
+        target=_authentication_worker,
+        args=(job_id, command, process),
+        daemon=True,
+        name=f"opencode-auth-{job_id[:8]}",
+    ).start()
+    return payload
+
+
+def submit_opencode_auth_credential(job_id: str, credential: str) -> dict[str, Any]:
+    value = str(credential or "").strip()
+    if not value:
+        raise RuntimeError("请输入官方登录页面提供的验证码或令牌")
+    with _auth_sessions_lock:
+        session = _auth_sessions.get(job_id)
+        if not session or not session.process.isalive():
+            raise RuntimeError("这次登录会话已经结束，请重新开始登录")
+        session.credential = value
+        session.process.write(value + "\r")
+    return _update_activation(
+        job_id,
+        status="running",
+        phase="authenticating",
+        auth_status="submitted",
+        auth_prompt="一次性凭据已提交，正在等待 OpenCode 验证",
+        message="正在验证官方登录",
+        next_action="请稍候，司命会自动继续。",
+    )
+
+
 def _activation_failure_kind(message: str) -> str:
     value = message.lower()
     if any(token in value for token in ("auth", "login", "unauthorized", "登录", "凭据")):
@@ -522,6 +735,24 @@ def _activation_failure_kind(message: str) -> str:
     if any(token in value for token in ("timed out", "timeout", "network", "urlopen", "http error", "网络")):
         return "network"
     return "runtime"
+
+
+def _save_activation_readiness_failure(message: str, *, unavailable_fallback: bool = False) -> None:
+    from app.database.models import APIConfig
+    from app.database.session import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
+            if config:
+                changed = mark_model_failure(config, message, source="opencode_activation")
+                if not changed and unavailable_fallback:
+                    mark_model_unavailable(config, message, source="opencode_activation")
+                    changed = True
+                if changed:
+                    db.commit()
+    except Exception:
+        return
 
 
 async def _test_opencode_model(command: str, model: str) -> None:
@@ -574,6 +805,7 @@ def _save_activated_config(command: str, model: str) -> None:
         config.provider_type = "local_cli"
         config.cli_command = command
         config.cli_args = json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False)
+        mark_model_ready(config, source="opencode_activation")
         db.query(APIConfig).update({"is_global_default": False})
         config.is_global_default = True
         db.commit()
@@ -727,6 +959,7 @@ def _activation_worker(job_id: str) -> None:
                 kind = _activation_failure_kind(message)
                 failures.append((model, kind, message))
                 if kind == "authentication_required":
+                    _save_activation_readiness_failure(message)
                     _update_activation(
                         job_id,
                         status="auth_required",
@@ -741,6 +974,7 @@ def _activation_worker(job_id: str) -> None:
 
         kinds = {item[1] for item in failures}
         if kinds == {"quota_or_rate_limit"}:
+            _save_activation_readiness_failure(failures[-1][2])
             _update_activation(
                 job_id,
                 status="failed",
@@ -759,6 +993,7 @@ def _activation_worker(job_id: str) -> None:
     except Exception as exc:
         message = str(exc)
         kind = _activation_failure_kind(message)
+        _save_activation_readiness_failure(message, unavailable_fallback=True)
         _update_activation(
             job_id,
             status="failed",
@@ -828,6 +1063,10 @@ def retry_opencode_activation(job_id: str) -> dict[str, Any]:
             job.error = None
             job.failure_kind = None
             job.next_action = None
+            job.auth_mode = None
+            job.auth_status = None
+            job.auth_prompt = None
+            job.auth_url = None
             job.attempt_count = (job.attempt_count or 0) + 1
             db.commit()
             payload = _activation_payload(job)
@@ -841,13 +1080,7 @@ def retry_opencode_activation(job_id: str) -> dict[str, Any]:
 
 
 def open_opencode_authentication(job_id: str) -> dict[str, Any]:
-    job = get_opencode_activation_job(job_id)
-    if not job:
-        raise RuntimeError("OpenCode 激活任务不存在")
-    import webbrowser
-
-    opened = webbrowser.open(OPENCODE_AUTH_URL)
-    return {"opened": bool(opened), "auth_url": OPENCODE_AUTH_URL}
+    return start_opencode_authentication(job_id)
 
 
 def resume_incomplete_opencode_activations() -> int:
@@ -858,10 +1091,20 @@ def resume_incomplete_opencode_activations() -> int:
         jobs = db.query(OpenCodeActivationJob).filter(
             OpenCodeActivationJob.status.in_(["pending", "running"])
         ).all()
-        job_ids = [job.id for job in jobs]
+        job_ids: list[str] = []
         for job in jobs:
-            job.status = "pending"
-            job.message = "应用重新启动，正在恢复免费体验任务"
+            if job.phase in {"authenticating", "credential_required"} or job.auth_status in {
+                "running", "submitted", "credential_required"
+            }:
+                job.status = "auth_required"
+                job.phase = "auth_required"
+                job.auth_status = "interrupted"
+                job.message = "应用重新启动，请重新开始官方登录"
+                job.next_action = "点击登录按钮重新开始；上次输入没有保存。"
+            else:
+                job.status = "pending"
+                job.message = "应用重新启动，正在恢复免费体验任务"
+                job_ids.append(job.id)
         db.commit()
     for job_id in job_ids:
         threading.Thread(

@@ -37,6 +37,12 @@
   margin-top: 0;
 }
 
+.settings-readiness-message {
+  display: block;
+  max-width: 260px;
+  white-space: normal;
+}
+
 @media (max-width: 760px) {
   .settings-page {
     padding: 16px;

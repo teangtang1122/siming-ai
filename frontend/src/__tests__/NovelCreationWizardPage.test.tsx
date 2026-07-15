@@ -81,10 +81,11 @@ describe('NovelCreationWizardPage', () => {
     expect(screen.getByDisplayValue('空降凶手')).toBeInTheDocument()
   })
 
-  it('labels the model picker and exposes the mobile genre-scroll hint', async () => {
+  it('uses the only ready model directly and exposes the mobile genre-scroll hint', async () => {
     renderPage()
 
-    expect(await screen.findByRole('combobox', { name: '选择本阶段模型' })).toBeInTheDocument()
+    expect(await screen.findByText('AI 已准备好')).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: '选择本阶段模型' })).not.toBeInTheDocument()
     expect(screen.getByText('选择题材')).toBeInTheDocument()
     expect(screen.getByText('左右滑动选择')).toBeInTheDocument()
   })

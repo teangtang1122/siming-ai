@@ -77,23 +77,28 @@ describe('GettingStartedPanel', () => {
     }))
   })
 
-  it('continues activation automatically when the author returns from official login', async () => {
+  it('starts managed official login without relying on a window-focus retry', async () => {
     const authJob = {
       id: 'job-auth', status: 'auth_required', phase: 'auth_required', percent: 90,
       message: '需要完成一次免费的官方登录', free_models: [],
     }
     api.get.mockResolvedValue({ data: { data: { ...baseStatus, activation_job: authJob } } })
     api.post.mockImplementation((url: string) => {
-      if (url.endsWith('/authenticate')) return Promise.resolve({ data: { data: { opened: true } } })
-      if (url.endsWith('/retry')) return Promise.resolve({ data: { data: { ...authJob, status: 'pending', phase: 'checking' } } })
+      if (url.endsWith('/authenticate')) return Promise.resolve({ data: { data: {
+        ...authJob,
+        status: 'running',
+        phase: 'authenticating',
+        auth_mode: 'managed_cli',
+        auth_status: 'running',
+        auth_prompt: '正在等待 OpenCode 官方登录',
+      } } })
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
 
     render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
-    fireEvent.click(await screen.findByRole('button', { name: '打开官方登录' }))
+    fireEvent.click(await screen.findByRole('button', { name: '开始官方登录' }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/authenticate'))
-    fireEvent.focus(window)
-
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/retry'))
+    expect(await screen.findByText('正在等待 OpenCode 官方登录')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/retry')
   })
 })

@@ -276,6 +276,7 @@ class McpAutoConfigTest(unittest.TestCase):
         self.assertEqual(added.provider, "mimocode_cli")
         self.assertEqual(added.cli_command, "mimo.cmd")
         self.assertEqual(added.default_model, "xiaomi/mimo-v2.5-pro")
+        self.assertEqual(added.readiness_status, "detected")
         self.assertIn("--dangerously-skip-permissions", added.cli_args)
         db.commit.assert_called_once()
 

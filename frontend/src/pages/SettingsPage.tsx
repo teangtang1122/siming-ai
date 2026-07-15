@@ -26,7 +26,6 @@ import {
   EditOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
-  GlobalOutlined,
   ReloadOutlined,
   FolderOpenOutlined,
   SaveOutlined,
@@ -49,6 +48,12 @@ interface ModelConfig {
   provider: string
   default_model: string
   is_global_default: boolean
+  readiness_status: 'detected' | 'unverified' | 'testing' | 'ready' | 'auth_required' | 'quota_limited' | 'unavailable'
+  is_usable: boolean
+  readiness_message?: string
+  readiness_source?: string | null
+  failure_class?: string | null
+  last_tested_at?: string | null
   base_url_override?: string
   provider_type?: string
   cli_command?: string
@@ -235,6 +240,24 @@ const DEFAULT_CLI_ARGS: Record<string, string> = {
   custom_cli: '["{prompt}"]',
 }
 
+const READINESS_LABELS: Record<ModelConfig['readiness_status'], string> = {
+  detected: '已检测，待验证',
+  unverified: '待验证',
+  testing: '正在测试',
+  ready: '可用',
+  auth_required: '需要登录',
+  quota_limited: '额度受限',
+  unavailable: '暂不可用',
+}
+
+const readinessColor = (status: ModelConfig['readiness_status']) => {
+  if (status === 'ready') return 'success'
+  if (status === 'testing') return 'processing'
+  if (status === 'auth_required' || status === 'quota_limited') return 'warning'
+  if (status === 'unavailable') return 'error'
+  return 'default'
+}
+
 type LaunchMode = 'desktop' | 'browser'
 
 interface LauncherSettings {
@@ -363,13 +386,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [form] = Form.useForm()
-  const [globalForm] = Form.useForm()
   const modalProvider = Form.useWatch('provider', form)
-  const globalSelectedProvider = Form.useWatch('provider', globalForm)
 
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
+  const [verifyingProvider, setVerifyingProvider] = useState<string>()
   const [connectionTestResult, setConnectionTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [contentRoot, setContentRoot] = useState<ContentRootSettings | null>(null)
   const [contentRootPath, setContentRootPath] = useState('')
@@ -399,16 +421,10 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     try {
       const res = await apiClient.get<{ code: number; data: GlobalModel }>('/config/global-model')
       setGlobalModel(res.data.data)
-      if (res.data.data.provider && res.data.data.model) {
-        globalForm.setFieldsValue({
-          provider: res.data.data.provider,
-          model: normalizeDefaultModel(res.data.data.provider, res.data.data.model),
-        })
-      }
     } catch (err: any) {
       // ignore if not set
     }
-  }, [globalForm])
+  }, [])
 
   const fetchContentRoot = useCallback(async () => {
     setContentRootLoading(true)
@@ -757,11 +773,29 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     }
   }
 
-  const handleSetGlobal = async (values: { provider: string; model: string }) => {
+  const verifySavedConfig = async (provider: string) => {
+    setVerifyingProvider(provider)
+    try {
+      const response = await apiClient.post<{ code: number; message: string; data: { became_global_default: boolean } }>(
+        `/config/models/${provider}/verify`,
+      )
+      message.success(response.data.message || '模型已经通过真实对话测试')
+      await Promise.all([fetchConfigs(), fetchGlobalModel()])
+    } catch (err: any) {
+      message.error(err.message || '真实对话测试失败')
+      await fetchConfigs()
+    } finally {
+      setVerifyingProvider(undefined)
+    }
+  }
+
+  const handleSetGlobal = async (provider: string) => {
+    const config = configs.find((item) => item.provider === provider)
+    if (!config) return
     try {
       await apiClient.put('/config/global-model', {
-        provider: values.provider,
-        model: values.model,
+        provider,
+        model: normalizeDefaultModel(provider, config.default_model),
       })
       message.success('全局默认模型已设置')
       fetchGlobalModel()
@@ -787,10 +821,22 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       render: (value: string, record: ModelConfig) => normalizeDefaultModel(record.provider, value),
     },
     {
-      title: 'API Key',
-      dataIndex: 'api_key_masked',
-      key: 'api_key_masked',
-      render: (v?: string) => v || '****',
+      title: '可用状态',
+      dataIndex: 'readiness_status',
+      key: 'readiness_status',
+      render: (status: ModelConfig['readiness_status'], record: ModelConfig) => (
+        <Space direction="vertical" size={0}>
+          <Tag color={readinessColor(status)}>{READINESS_LABELS[status]}</Tag>
+          <Text type="secondary" className="settings-readiness-message">{record.readiness_message}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: '凭据',
+      key: 'credential',
+      render: (_: unknown, record: ModelConfig) => (
+        isLocalCliProvider(record.provider) ? '本机工具，无需 API Key' : '已加密保存'
+      ),
     },
     {
       title: '全局默认',
@@ -800,27 +846,23 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         v ? <Tag icon={<CheckCircleOutlined />} color="success">是</Tag> : <span>—</span>,
     },
     {
-      title: '自定义端点',
-      dataIndex: 'base_url_override',
-      key: 'base_url_override',
-      render: (v?: string) => v || '—',
-    },
-    {
-      title: '安全长度',
-      key: 'safety_limits',
-      render: (_: any, record: ModelConfig) => (
-        <Space size={4} wrap>
-          <Tag>输出 {Number(record.effective_max_output_tokens || record.max_output_tokens || 0).toLocaleString()}</Tag>
-          <Tag>合并输入 {Number(record.effective_deconstruct_input_char_limit || record.deconstruct_input_char_limit || 0).toLocaleString()}</Tag>
-          <Tag>单条 {Number(record.effective_deconstruct_item_char_limit || record.deconstruct_item_char_limit || 0).toLocaleString()}</Tag>
-        </Space>
-      ),
-    },
-    {
       title: '操作',
       key: 'action',
       render: (_: any, record: ModelConfig) => (
-        <Space>
+        <Space wrap>
+          {!record.is_usable && (
+            <Button
+              type="primary"
+              icon={<ReloadOutlined />}
+              loading={verifyingProvider === record.provider}
+              onClick={() => void verifySavedConfig(record.provider)}
+            >
+              测试并启用
+            </Button>
+          )}
+          {record.is_usable && !record.is_global_default && (
+            <Button onClick={() => void handleSetGlobal(record.provider)}>设为默认</Button>
+          )}
           <Button
             type="text"
             icon={<EditOutlined />}
@@ -841,18 +883,8 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     },
   ]
 
-  const availableProvidersForGlobal = configs.map((c) => ({
-    value: c.provider,
-    label: providerLabel(c.provider),
-    model: c.default_model,
-  }))
-
-  const availableModelsForGlobal = configs
-    .filter((c) => !globalSelectedProvider || c.provider === globalSelectedProvider)
-    .map((c) => ({
-      value: normalizeDefaultModel(c.provider, c.default_model),
-      label: `${providerLabel(c.provider)} · ${normalizeDefaultModel(c.provider, c.default_model)}`,
-    }))
+  const readyConfigs = configs.filter((config) => config.is_usable)
+  const pendingConfigs = configs.filter((config) => !config.is_usable)
 
   const defaultModelOptions = modelOptions.length > 0 ? modelOptions : fallbackModelOptions(modalProvider)
 
@@ -1026,9 +1058,18 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       </>}
 
       {settingsSection === 'ai' && <>
+      <Alert
+        showIcon
+        type={globalModel.provider ? 'success' : 'warning'}
+        message={globalModel.provider ? 'AI 已准备好' : '还没有可用于创作的模型'}
+        description={globalModel.provider && globalModel.model
+          ? `当前默认：${providerLabel(globalModel.provider)} · ${normalizeDefaultModel(globalModel.provider, globalModel.model)}`
+          : '检测到工具并不代表已经登录或有可用额度。请对一个配置执行真实对话测试。'}
+      />
+
       <Card
         className="settings-card"
-        title="模型提供商配置"
+        title="可用模型"
         extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={() => handleAddOrEdit()}>
             添加配置
@@ -1036,73 +1077,29 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         }
       >
         <Table
-          dataSource={configs}
+          dataSource={readyConfigs}
           columns={columns}
           rowKey="id"
           loading={loading}
           pagination={false}
-          locale={{ emptyText: '暂无模型配置，请点击右上角添加' }}
+          locale={{ emptyText: '还没有通过真实对话测试的模型' }}
+          scroll={{ x: 900 }}
         />
       </Card>
 
-      <Card className="settings-card" title={<span><GlobalOutlined /> 全局默认模型</span>}>
-        {globalModel.provider ? (
-          <Descriptions size="small" column={2} bordered>
-            <Descriptions.Item label="当前全局默认提供商">
-              <Tag color={providerColor(globalModel.provider)}>
-                {providerLabel(globalModel.provider)}
-              </Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="当前全局默认模型">
-              {globalModel.provider && globalModel.model ? normalizeDefaultModel(globalModel.provider, globalModel.model) : globalModel.model}
-            </Descriptions.Item>
-          </Descriptions>
-        ) : (
-          <p style={{ color: 'var(--ant-color-text-tertiary)' }}>尚未设置全局默认模型</p>
-        )}
-
-        <Divider style={{ margin: '16px 0' }} />
-
-        <Form
-          form={globalForm}
-          layout="inline"
-          onFinish={handleSetGlobal}
-        >
-          <Form.Item
-            name="provider"
-            label="选择提供商"
-            rules={[{ required: true, message: '请选择提供商' }]}
-          >
-            <Select
-              style={{ width: 180 }}
-              placeholder="选择提供商"
-              options={availableProvidersForGlobal}
-              onChange={(val) => {
-                const cfg = configs.find((c) => c.provider === val)
-                globalForm.setFieldsValue({ model: cfg ? normalizeDefaultModel(cfg.provider, cfg.default_model) : undefined })
-              }}
-            />
-          </Form.Item>
-          <Form.Item
-            name="model"
-            label="模型名"
-            rules={[{ required: true, message: '请选择模型名' }]}
-          >
-            <Select
-              style={{ width: 240 }}
-              placeholder="从已配置模型中选择"
-              options={availableModelsForGlobal}
-              optionFilterProp="label"
-              showSearch
-              notFoundContent="暂无已配置模型"
-            />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" htmlType="submit">
-              设为全局默认
-            </Button>
-          </Form.Item>
-        </Form>
+      <Card className="settings-card" title="检测到但尚未可用">
+        <Paragraph type="secondary">
+          这里的 CLI 或 API 配置尚未验证登录、模型和额度。测试成功前不会出现在助手、新书或写作模型列表中。
+        </Paragraph>
+        <Table
+          dataSource={pendingConfigs}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          pagination={false}
+          locale={{ emptyText: '没有待验证的配置' }}
+          scroll={{ x: 900 }}
+        />
       </Card>
 
       <ContextGovernanceSettingsPanel />

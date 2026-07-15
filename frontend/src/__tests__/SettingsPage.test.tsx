@@ -54,7 +54,8 @@ describe('SettingsPage startup and update controls', () => {
   it('does not check or download updates during initial load', async () => {
     render(<SettingsPage embedded />)
 
-    expect(await screen.findByText('模型提供商配置')).toBeInTheDocument()
+    expect(await screen.findByText('可用模型')).toBeInTheDocument()
+    expect(screen.getByText('检测到但尚未可用')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: '应用与数据' }))
     expect(await screen.findByText('启动方式')).toBeInTheDocument()
     expect(screen.getByText('尚未检查更新。不会有后台下载或静默安装。')).toBeInTheDocument()

@@ -160,12 +160,12 @@ describe('DashboardPage', () => {
   // ------------------------------------------------------------------
   // TC-F02: Renders "create" prompt button in empty state
   // ------------------------------------------------------------------
-  it('should show create button in empty state', async () => {
+  it('should keep one creation action and one import action in the page header', async () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText('开始新书立项')).toBeInTheDocument()
-      expect(screen.getAllByText('直接创建或导入').length).toBeGreaterThan(0)
+      expect(screen.getAllByRole('button', { name: /创建新作品/ })).toHaveLength(1)
+      expect(screen.getAllByRole('button', { name: /直接创建或导入/ })).toHaveLength(1)
     })
   })
 
@@ -369,7 +369,9 @@ describe('DashboardPage', () => {
     renderDashboard()
 
     expect(await screen.findByText('第一次使用？先免费把 AI 接上')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /免费开始/ }))
+    expect(screen.getAllByRole('button', { name: /免费准备 AI/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /先写立项草稿/ })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: /免费准备 AI/ }))
     expect(mockNavigate).toHaveBeenCalledWith('/getting-started')
   })
 

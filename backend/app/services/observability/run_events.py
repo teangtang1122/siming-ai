@@ -32,6 +32,10 @@ def classify_failure(message: str | None) -> str | None:
         return "auth"
     if "timeout" in lower or "超时" in text or "请求超时" in text:
         return "timeout"
+    if re.search(r"cannot connect|connection (?:failed|refused|reset)|network error|网络连接|无法连接", lower + " " + text):
+        return "network"
+    if re.search(r"unavailable|not available|executable.*not found|command.*not found", lower):
+        return "unavailable"
     if "没有收到模型的文字回复" in text or "empty response" in lower or "no text" in lower:
         return "empty_response"
     if "only `read` tool" in lower or "工具均未注册" in text or "tool" in lower and "not registered" in lower:
@@ -76,4 +80,3 @@ def merge_event_metadata(
     if not payload:
         return None
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-

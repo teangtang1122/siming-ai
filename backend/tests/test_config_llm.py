@@ -57,6 +57,20 @@ async def _collect_async_chunks(generator):
     return [chunk async for chunk in generator]
 
 
+def _mark_config_ready(provider: str) -> None:
+    """Simulate a successful saved-config verification without a real network call."""
+    db = SessionLocal()
+    try:
+        config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
+        if config is None:
+            raise AssertionError(f"missing test config: {provider}")
+        config.readiness_status = "ready"
+        config.readiness_json = json.dumps({"source": "test_verification"})
+        db.commit()
+    finally:
+        db.close()
+
+
 # ===========================================================================
 # Part 1: API Config CRUD Tests
 # ===========================================================================
@@ -703,6 +717,14 @@ class TestGlobalModelAPI(unittest.TestCase):
                 "default_model": default_model,
             },
         )
+        db = SessionLocal()
+        try:
+            config = db.query(APIConfig).filter(APIConfig.provider == provider).one()
+            config.readiness_status = "ready"
+            config.readiness_json = '{"source":"test"}'
+            db.commit()
+        finally:
+            db.close()
         if is_global_default:
             self.client.put(
                 f"{API_PREFIX}/config/global-model",
@@ -1121,6 +1143,7 @@ class TestLLMGatewayChatCompletion(unittest.TestCase):
                 "default_model": "gpt-4o",
             },
         )
+        _mark_config_ready("openai")
         self.client.put(
             f"{API_PREFIX}/config/global-model",
             json={"provider": "openai", "model": "gpt-4o"},
@@ -1216,7 +1239,7 @@ class TestLLMGatewayChatCompletion(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 502)
         body = response.json()
-        self.assertIn("未配置全局默认模型", body["message"])
+        self.assertIn("未配置可用的全局默认模型", body["message"])
 
     # ------------------------------------------------------------------
     # TC-41: Chat completion with unconfigured custom provider fails
@@ -1244,6 +1267,7 @@ class TestLLMGatewayChatCompletion(unittest.TestCase):
                 "base_url_override": "https://openrouter.example.test/v1",
             },
         )
+        _mark_config_ready("openrouter")
 
         mock_client = MagicMock()
         mock_completion = MagicMock()
@@ -1361,6 +1385,7 @@ class TestLLMGatewayStreamCompletion(unittest.TestCase):
                 "default_model": "gpt-4o",
             },
         )
+        _mark_config_ready("openai")
         self.client.put(
             f"{API_PREFIX}/config/global-model",
             json={"provider": "openai", "model": "gpt-4o"},
@@ -1612,6 +1637,7 @@ class TestConfigLLMIntegration(unittest.TestCase):
                 "default_model": "deepseek-v4-flash",
             },
         )
+        _mark_config_ready("deepseek")
 
         # Step 2: Set as global default
         resp = self.client.put(
@@ -1695,6 +1721,8 @@ class TestConfigLLMIntegration(unittest.TestCase):
             f"{API_PREFIX}/config/models",
             json={"provider": "deepseek", "api_key": "sk-deepseek", "default_model": "deepseek-v4-flash"},
         )
+        _mark_config_ready("openai")
+        _mark_config_ready("deepseek")
 
         # Set openai as default
         self.client.put(
