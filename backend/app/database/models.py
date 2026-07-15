@@ -417,6 +417,7 @@ class APIConfig(Base):
     default_model = Column(String(100), nullable=False)
     is_global_default = Column(Boolean, default=False)
     base_url_override = Column(String(500), nullable=True)
+    api_protocol = Column(String(30), nullable=False, default="auto")  # auto/chat_completions/responses
     provider_type = Column(String(20), nullable=False, default="api")  # api/local_cli/local_runtime
     cli_command = Column(String(500), nullable=True)
     cli_args = Column(Text, nullable=True)  # JSON array or shell-like argument string

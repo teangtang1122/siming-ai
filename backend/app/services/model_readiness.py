@@ -134,12 +134,12 @@ def mark_model_testing(config: APIConfig, *, source: str = "manual_verify") -> N
     set_model_readiness(config, READINESS_TESTING, source=source)
 
 
-def mark_model_ready(config: APIConfig, *, source: str) -> None:
+def mark_model_ready(config: APIConfig, *, source: str, message: object | None = None) -> None:
     set_model_readiness(
         config,
         READINESS_READY,
         source=source,
-        message=_STATUS_MESSAGES[READINESS_READY],
+        message=message or _STATUS_MESSAGES[READINESS_READY],
         tested=True,
     )
 

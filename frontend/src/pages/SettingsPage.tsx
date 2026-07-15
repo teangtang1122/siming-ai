@@ -55,6 +55,7 @@ interface ModelConfig {
   failure_class?: string | null
   last_tested_at?: string | null
   base_url_override?: string
+  api_protocol?: 'auto' | 'chat_completions' | 'responses'
   provider_type?: string
   cli_command?: string
   cli_args?: string
@@ -602,6 +603,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           custom_provider: isKnownProvider ? undefined : cfg.provider,
           default_model: defaultModel,
           base_url_override: cfg.base_url_override || '',
+          api_protocol: cfg.api_protocol || 'auto',
           provider_type: cfg.provider_type || (isLocalCliProvider(cfg.provider) ? 'local_cli' : 'api'),
           cli_command: cfg.cli_command || DEFAULT_CLI_COMMANDS[cfg.provider] || '',
           cli_args: cfg.cli_args || DEFAULT_CLI_ARGS[cfg.provider] || '',
@@ -650,6 +652,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         api_key: isCli ? undefined : values.api_key,
         default_model: defaultModel,
         base_url_override: isCli ? null : values.base_url_override || null,
+        api_protocol: isCli ? 'chat_completions' : values.api_protocol || 'auto',
         provider_type: isCli ? 'local_cli' : 'api',
         cli_command: isCli ? values.cli_command || DEFAULT_CLI_COMMANDS[provider] || null : null,
         cli_args: isCli ? values.cli_args || DEFAULT_CLI_ARGS[provider] || null : null,
@@ -753,19 +756,32 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       message.warning('自定义 OpenAI 兼容提供商必须填写 API 端点')
       return
     }
+    if (!values.default_model) {
+      message.warning('请先填写要实际调用的模型名')
+      return
+    }
 
     setTestingConnection(true)
     setConnectionTestResult(null)
     try {
-      await apiClient.post('/config/models/test', {
+      const response = await apiClient.post<{
+        code: number
+        data: { api_protocol?: 'chat_completions' | 'responses'; base_url?: string }
+      }>('/config/models/test', {
         provider,
         api_key: isCli ? undefined : apiKey,
         base_url_override: isCli ? undefined : baseUrl,
+        api_protocol: isCli ? undefined : values.api_protocol || 'auto',
         cli_command: isCli ? values.cli_command || DEFAULT_CLI_COMMANDS[provider] : undefined,
         cli_args: isCli ? values.cli_args || DEFAULT_CLI_ARGS[provider] : undefined,
-        model: isCli ? values.default_model : undefined,
+        model: values.default_model,
       })
-      setConnectionTestResult({ success: true, message: isCli ? '本机 CLI 真实对话成功' : '连接成功，API Key 有效' })
+      const protocol = response.data.data?.api_protocol
+      const protocolLabel = protocol === 'responses' ? 'Responses API' : 'Chat Completions'
+      setConnectionTestResult({
+        success: true,
+        message: isCli ? '本机 CLI 真实对话成功' : `模型真实回复成功（${protocolLabel}）`,
+      })
     } catch (err: any) {
       setConnectionTestResult({ success: false, message: err.message || '连接失败' })
     } finally {
@@ -1139,6 +1155,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   cli_args: isLocalCliProvider(provider) ? DEFAULT_CLI_ARGS[provider] || '' : undefined,
                   api_key: isLocalCliProvider(provider) ? undefined : form.getFieldValue('api_key'),
                   base_url_override: isLocalCliProvider(provider) ? undefined : form.getFieldValue('base_url_override'),
+                  api_protocol: isLocalCliProvider(provider) ? 'chat_completions' : 'auto',
                 })
                 if (isLocalCliProvider(provider) || form.getFieldValue('api_key')) {
                   fetchModels()
@@ -1176,21 +1193,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           {!isLocalCliProvider(modalProvider) && (
           <Form.Item
             name="api_key"
-            label={
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                API Key
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<ReloadOutlined spin={testingConnection} />}
-                  loading={testingConnection}
-                  onClick={testConnection}
-                  style={{ padding: 0 }}
-                >
-                  测试连接
-                </Button>
-              </span>
-            }
+            label="API Key"
             rules={[{ required: true, message: '请输入 API Key' }]}
           >
             <Input.Password
@@ -1247,19 +1250,6 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 测试本机 CLI
               </Button>
             </>
-          )}
-
-          {connectionTestResult && (
-            <div style={{
-              marginTop: -16, marginBottom: 16, fontSize: 13,
-              color: connectionTestResult.success ? '#52c41a' : '#ff4d4f',
-            }}>
-              {connectionTestResult.success
-                ? <CheckCircleOutlined />
-                : <CloseCircleOutlined />
-              }
-              {' '}{connectionTestResult.message}
-            </div>
           )}
 
           <Form.Item
@@ -1364,6 +1354,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           />
 
           {!isLocalCliProvider(modalProvider) && (
+          <>
           <Form.Item
             name="base_url_override"
             label={isCustomProviderSelection(modalProvider) ? 'API 端点' : '自定义 API 端点（可选）'}
@@ -1383,6 +1374,42 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               }}
             />
           </Form.Item>
+          <Form.Item
+            name="api_protocol"
+            label="API 协议"
+            initialValue="auto"
+            extra="推荐自动识别。若服务商文档写有 wire_api = responses、Responses API 或 Codex API，可直接选择 Responses API。"
+          >
+            <Select
+              options={[
+                { value: 'auto', label: '自动识别（推荐）' },
+                { value: 'chat_completions', label: 'Chat Completions' },
+                { value: 'responses', label: 'Responses API' },
+              ]}
+            />
+          </Form.Item>
+          <Button
+            type="default"
+            icon={<ReloadOutlined spin={testingConnection} />}
+            loading={testingConnection}
+            onClick={testConnection}
+            style={{ marginBottom: 16 }}
+          >
+            用当前模型真实测试
+          </Button>
+          {connectionTestResult && (
+            <div style={{
+              marginTop: -8, marginBottom: 16, fontSize: 13,
+              color: connectionTestResult.success ? '#52c41a' : '#ff4d4f',
+            }}>
+              {connectionTestResult.success
+                ? <CheckCircleOutlined />
+                : <CloseCircleOutlined />
+              }
+              {' '}{connectionTestResult.message}
+            </div>
+          )}
+          </>
           )}
         </Form>
       </Modal>

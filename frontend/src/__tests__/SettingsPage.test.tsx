@@ -84,4 +84,48 @@ describe('SettingsPage startup and update controls', () => {
     expect(await screen.findByRole('button', { name: '下载并校验 2.8.0' })).toBeInTheDocument()
     expect(screen.getByText('发布页提供，下载后会复核')).toBeInTheDocument()
   })
+
+  it('tests a custom Responses endpoint with the configured model instead of listing models', async () => {
+    api.get.mockImplementation((url: string) => {
+      if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
+        id: 'yls-config',
+        provider: 'yls',
+        default_model: 'gpt-5.6-sol',
+        base_url_override: 'https://code.example/codex',
+        api_protocol: 'responses',
+        provider_type: 'api',
+        readiness_status: 'unverified',
+        readiness_message: '待验证',
+        is_usable: false,
+        is_global_default: false,
+      }] } } })
+      if (url === '/config/global-model') return Promise.resolve({ data: { data: { provider: null, model: null } } })
+      if (url === '/config/content-root') return Promise.resolve({ data: { data: {
+        current_path: 'D:/Siming/projects', default_path: 'D:/Siming/projects', is_default: true,
+        exists: true, is_empty: true,
+      } } })
+      if (url === '/config/launcher') return Promise.resolve({ data: { data: launcherSettings } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/models/test') {
+        return Promise.resolve({ data: { data: { api_protocol: 'responses', base_url: 'https://code.example/codex' } } })
+      }
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    render(<SettingsPage embedded />)
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+    fireEvent.change(await screen.findByLabelText('API Key'), { target: { value: 'secret-key' } })
+    fireEvent.click(screen.getByRole('button', { name: /用当前模型真实测试/ }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models/test', expect.objectContaining({
+      provider: 'yls',
+      api_key: 'secret-key',
+      base_url_override: 'https://code.example/codex',
+      api_protocol: 'responses',
+      model: 'gpt-5.6-sol',
+    })))
+    expect(await screen.findByText('模型真实回复成功（Responses API）')).toBeInTheDocument()
+  })
 })

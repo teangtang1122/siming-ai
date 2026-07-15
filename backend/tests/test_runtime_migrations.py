@@ -13,6 +13,33 @@ from app.services.workspace.run_log import mark_interrupted_assistant_runs
 
 
 class RuntimeMigrationTestCase(unittest.TestCase):
+    def test_models_404_false_negative_is_reset_for_protocol_reverification(self):
+        engine = create_engine("sqlite:///:memory:")
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE api_configs ("
+                "id VARCHAR(36) PRIMARY KEY, provider VARCHAR(50), api_key_encrypted TEXT, "
+                "default_model VARCHAR(100), is_global_default INTEGER DEFAULT 0, "
+                "provider_type VARCHAR(20) DEFAULT 'api', readiness_status VARCHAR(30), readiness_json TEXT)"
+            ))
+            conn.execute(text(
+                "INSERT INTO api_configs "
+                "(id, provider, api_key_encrypted, default_model, provider_type, readiness_status, readiness_json) "
+                "VALUES ('custom', 'yls', 'encrypted', 'gpt-test', 'api', 'unavailable', "
+                "'{\"source\":\"manual_verify\",\"message\":\"HTTP 404 at /codex/models\"}')"
+            ))
+
+        Base.metadata.create_all(bind=engine)
+        ensure_runtime_schema(engine)
+
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT api_protocol, readiness_status, readiness_json FROM api_configs WHERE provider = 'yls'"
+            )).one()
+        self.assertEqual(row.api_protocol, "auto")
+        self.assertEqual(row.readiness_status, "unverified")
+        self.assertIn("protocol_migration", row.readiness_json)
+
     def test_legacy_model_configs_get_non_destructive_readiness_backfill(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:

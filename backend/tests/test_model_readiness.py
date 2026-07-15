@@ -90,6 +90,38 @@ def test_saved_config_verification_marks_ready_and_assigns_first_global():
     assert response.data["became_global_default"] is True
 
 
+def test_saved_custom_api_verification_persists_detected_responses_protocol():
+    db = _session()
+    config = APIConfig(
+        provider="yls",
+        api_key_encrypted=encrypt("sk-test"),
+        default_model="gpt-test",
+        provider_type="api",
+        base_url_override="https://proxy.example/codex/",
+        api_protocol="auto",
+        readiness_status="unverified",
+    )
+    db.add(config)
+    db.commit()
+
+    with patch.object(
+        config_router,
+        "test_connection",
+        new=AsyncMock(return_value=ApiResponse.success(data={
+            "reply": "OK",
+            "api_protocol": "responses",
+            "base_url": "https://proxy.example/codex",
+        })),
+    ):
+        response = asyncio.run(config_router.verify_saved_model_config("yls", db))
+
+    db.refresh(config)
+    assert config.api_protocol == "responses"
+    assert config.base_url_override == "https://proxy.example/codex"
+    assert config.readiness_status == "ready"
+    assert response.data["test"]["api_protocol"] == "responses"
+
+
 def test_saved_config_verification_persists_quota_failure():
     db = _session()
     config = APIConfig(

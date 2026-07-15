@@ -11,6 +11,7 @@ import time
 import webbrowser
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -18,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from openai import (
     APIConnectionError as OpenAIConnectionError,
     APIError as OpenAIAPIError,
+    APITimeoutError as OpenAITimeoutError,
     AuthenticationError as OpenAIAuthError,
     AsyncOpenAI,
 )
@@ -25,6 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..ai.gateway import LLMGateway
+from ..ai.anthropic_adapter import AnthropicAdapter
 from ..ai.local_cli_adapter import (
     LocalCLIAdapter,
     DEFAULT_CLI_ARGS,
@@ -110,6 +113,9 @@ LOCAL_CLI_PROVIDER_TYPE = "local_cli"
 LOCAL_CLI_PLACEHOLDER_KEY = "__local_cli__"
 LOCAL_RUNTIME_PROVIDER_TYPE = "local_runtime"
 LOCAL_RUNTIME_PLACEHOLDER_KEY = "__local_runtime__"
+API_PROTOCOL_AUTO = "auto"
+API_PROTOCOL_CHAT = "chat_completions"
+API_PROTOCOL_RESPONSES = "responses"
 
 
 def _app_home() -> Path:
@@ -389,6 +395,118 @@ def _resolve_base_url(provider: str, base_url_override: str | None) -> str:
     return PROVIDER_DEFAULT_BASE_URLS[provider]
 
 
+def _is_custom_api_provider(provider: str) -> bool:
+    return provider not in PROVIDER_DEFAULT_BASE_URLS and not is_local_cli_provider(provider)
+
+
+def _protocol_label(protocol: str) -> str:
+    return "Responses API" if protocol == API_PROTOCOL_RESPONSES else "Chat Completions"
+
+
+def _protocol_candidates(protocol: str) -> list[str]:
+    if protocol == API_PROTOCOL_CHAT:
+        return [API_PROTOCOL_CHAT]
+    if protocol == API_PROTOCOL_RESPONSES:
+        return [API_PROTOCOL_RESPONSES]
+    return [API_PROTOCOL_CHAT, API_PROTOCOL_RESPONSES]
+
+
+def _base_url_candidates(base_url: str, *, allow_v1_fallback: bool) -> list[str]:
+    normalized = base_url.rstrip("/")
+    candidates = [normalized]
+    path = urlsplit(normalized).path.rstrip("/").lower()
+    if allow_v1_fallback and not path.endswith(("/v1", "/v1beta/openai")):
+        candidates.append(f"{normalized}/v1")
+    return candidates
+
+
+def _openai_error_status(error: BaseException) -> int | None:
+    status = getattr(error, "status_code", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _probe_error_detail(error: BaseException) -> str:
+    status = _openai_error_status(error)
+    prefix = f"HTTP {status}: " if status else ""
+    return f"{prefix}{str(error)}"[:600]
+
+
+async def _probe_openai_protocol(
+    *,
+    provider: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    requested_protocol: str,
+) -> dict:
+    attempts: list[str] = []
+    for candidate_base in _base_url_candidates(
+        base_url,
+        allow_v1_fallback=_is_custom_api_provider(provider),
+    ):
+        for protocol in _protocol_candidates(requested_protocol):
+            client = AsyncOpenAI(api_key=api_key, base_url=candidate_base)
+            try:
+                if protocol == API_PROTOCOL_RESPONSES:
+                    response = await asyncio.wait_for(
+                        client.responses.create(
+                            model=model,
+                            input="Reply with exactly: OK",
+                            max_output_tokens=128,
+                            store=False,
+                        ),
+                        timeout=30,
+                    )
+                    reply = str(getattr(response, "output_text", "") or "").strip()
+                else:
+                    response = await asyncio.wait_for(
+                        client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+                            max_tokens=32,
+                        ),
+                        timeout=30,
+                    )
+                    reply = str(response.choices[0].message.content or "").strip()
+                if not reply:
+                    raise LLMError(f"{_protocol_label(protocol)} returned an empty response")
+                return {
+                    "model": model,
+                    "reply": reply[:200],
+                    "api_protocol": protocol,
+                    "base_url": candidate_base,
+                }
+            except OpenAIAuthError as exc:
+                raise LLMError(f"{_provider_label(provider)} API key is invalid") from exc
+            except OpenAIConnectionError as exc:
+                raise LLMError(f"Cannot connect to {_provider_label(provider)}") from exc
+            except (OpenAITimeoutError, asyncio.TimeoutError) as exc:
+                raise LLMError(f"{_provider_label(provider)} request timed out") from exc
+            except OpenAIAPIError as exc:
+                status = _openai_error_status(exc)
+                if status in {401, 403}:
+                    raise LLMError(f"{_provider_label(provider)} API key is invalid") from exc
+                if status == 429:
+                    raise LLMError(f"{_provider_label(provider)} quota or rate limit reached: {exc}") from exc
+                attempts.append(
+                    f"{_protocol_label(protocol)} @ {candidate_base}: {_probe_error_detail(exc)}"
+                )
+            except LLMError as exc:
+                attempts.append(f"{_protocol_label(protocol)} @ {candidate_base}: {exc}")
+            finally:
+                await client.close()
+
+    attempted = "; ".join(attempts[-4:]) or "no compatible endpoint responded"
+    raise LLMError(
+        f"{_provider_label(provider)} could not complete a real model response. "
+        f"Checked the configured model '{model}' with the selected API protocol(s). "
+        f"Attempts: {attempted}. Check the Base URL, model name, and API protocol."
+    )
+
+
 def _is_anthropic_provider(provider: str) -> bool:
     return provider == "anthropic"
 
@@ -451,6 +569,7 @@ def _config_payload(cfg: APIConfig, include_masked_key: bool = False) -> dict:
         "default_model": default_model,
         "is_global_default": cfg.is_global_default,
         "base_url_override": cfg.base_url_override,
+        "api_protocol": getattr(cfg, "api_protocol", None) or API_PROTOCOL_AUTO,
         "provider_type": getattr(cfg, "provider_type", None) or _normalize_provider_type(cfg.provider),
         "cli_command": getattr(cfg, "cli_command", None),
         "cli_args": getattr(cfg, "cli_args", None),
@@ -555,6 +674,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         existing.default_model = default_model
         existing.provider_type = LOCAL_CLI_PROVIDER_TYPE if is_cli else LOCAL_RUNTIME_PROVIDER_TYPE if is_runtime else "api"
         existing.base_url_override = base_url_override
+        existing.api_protocol = API_PROTOCOL_CHAT if is_cli or is_runtime else payload.api_protocol
         existing.cli_command = cli_command
         existing.cli_args = cli_args
         existing.max_output_tokens = payload.max_output_tokens
@@ -574,6 +694,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         default_model=default_model,
         provider_type=LOCAL_CLI_PROVIDER_TYPE if is_cli else LOCAL_RUNTIME_PROVIDER_TYPE if is_runtime else "api",
         base_url_override=base_url_override,
+        api_protocol=API_PROTOCOL_CHAT if is_cli or is_runtime else payload.api_protocol,
         cli_command=cli_command,
         cli_args=cli_args,
         readiness_status="unverified",
@@ -653,6 +774,8 @@ async def _list_anthropic_models(api_key: str, base_url: str) -> list[dict]:
 async def list_provider_models(payload: ModelListRequest):
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
+    warning = None
+    manual_entry_required = False
     if is_local_cli_provider(payload.provider):
         models = local_cli_model_options(payload.provider, payload.cli_command, payload.cli_args)
     elif payload.provider == "local_llama_cpp":
@@ -664,10 +787,27 @@ async def list_provider_models(payload: ModelListRequest):
         if _is_anthropic_provider(payload.provider):
             models = await _list_anthropic_models(payload.api_key, base_url)
         else:
-            models = await _list_openai_compatible_models(payload.api_key, base_url, payload.provider)
+            try:
+                models = await _list_openai_compatible_models(payload.api_key, base_url, payload.provider)
+            except LLMError as exc:
+                if _is_custom_api_provider(payload.provider) and any(
+                    marker in str(exc).lower() for marker in ("404", "405", "not found", "method not allowed")
+                ):
+                    models = []
+                    manual_entry_required = True
+                    warning = "该接口未提供模型列表，请手动填写服务商支持的模型名；这不代表模型不可用"
+                else:
+                    raise
 
     models = _normalize_model_list_for_provider(payload.provider, models)
-    return ApiResponse.success(data={"models": models}, message=f"Fetched {len(models)} models")
+    return ApiResponse.success(
+        data={
+            "models": models,
+            "manual_entry_required": manual_entry_required,
+            "warning": warning,
+        },
+        message=warning or f"Fetched {len(models)} models",
+    )
 
 
 @router.post("/config/models/test")
@@ -737,35 +877,46 @@ async def test_connection(payload: ConnectionTestRequest):
 
     if not payload.api_key:
         raise ValidationError("API Key is required")
+    model = (payload.model or "").strip()
+    if not model:
+        raise ValidationError("请先填写要实际调用的模型名")
     base_url = _resolve_base_url(payload.provider, payload.base_url_override)
 
-    try:
-        if _is_anthropic_provider(payload.provider):
-            url = f"{base_url}/v1/models"
-            headers = {"x-api-key": payload.api_key, "anthropic-version": "2023-06-01"}
-            async with httpx.AsyncClient(timeout=15) as http:
-                resp = await http.get(url, headers=headers)
-            if resp.status_code == 401:
-                raise LLMError("Anthropic API key is invalid")
-            resp.raise_for_status()
-        else:
-            client = AsyncOpenAI(api_key=payload.api_key, base_url=base_url)
-            await asyncio.wait_for(client.models.list(), timeout=15)
-        return ApiResponse.success(message=f"{_provider_label(payload.provider)} connection succeeded")
-    except OpenAIAuthError:
-        raise LLMError(f"{_provider_label(payload.provider)} API key is invalid")
-    except OpenAIConnectionError:
-        raise LLMError(f"Cannot connect to {_provider_label(payload.provider)}")
-    except OpenAIAPIError as exc:
-        raise LLMError(f"{_provider_label(payload.provider)} API error: {exc}")
-    except httpx.ConnectError:
-        raise LLMError("Cannot connect to Anthropic")
-    except httpx.TimeoutException:
-        raise LLMError("Request timed out")
-    except httpx.HTTPStatusError as exc:
-        raise LLMError(f"Anthropic API error: HTTP {exc.response.status_code}")
-    except asyncio.TimeoutError:
-        raise LLMError("Request timed out")
+    if _is_anthropic_provider(payload.provider):
+        adapter = AnthropicAdapter(api_key=payload.api_key, base_url=base_url)
+        result = await asyncio.wait_for(
+            adapter.chat_completion(
+                messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+                model=model,
+                temperature=0,
+                max_tokens=32,
+            ),
+            timeout=30,
+        )
+        reply = str(result.get("content") or "").strip()
+        if not reply:
+            raise LLMError("Anthropic returned an empty response")
+        test_data = {
+            "model": model,
+            "reply": reply[:200],
+            "api_protocol": API_PROTOCOL_CHAT,
+            "base_url": base_url,
+        }
+    else:
+        test_data = await _probe_openai_protocol(
+            provider=payload.provider,
+            api_key=payload.api_key,
+            base_url=base_url,
+            model=model,
+            requested_protocol=payload.api_protocol,
+        )
+    return ApiResponse.success(
+        data=test_data,
+        message=(
+            f"{_provider_label(payload.provider)} real conversation succeeded "
+            f"({_protocol_label(test_data['api_protocol'])})"
+        ),
+    )
 
 
 @router.post("/config/models/{provider}/verify")
@@ -788,6 +939,7 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
         provider=provider,
         api_key=None if is_cli or is_runtime else decrypt(config.api_key_encrypted),
         base_url_override=config.base_url_override,
+        api_protocol=getattr(config, "api_protocol", None) or API_PROTOCOL_AUTO,
         cli_command=config.cli_command,
         cli_args=config.cli_args,
         model=config.default_model,
@@ -800,7 +952,17 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
         db.commit()
         raise
 
-    mark_model_ready(config, source="manual_verify")
+    test_data = test_result.data or {}
+    detected_protocol = str(test_data.get("api_protocol") or "").strip()
+    if detected_protocol in {API_PROTOCOL_CHAT, API_PROTOCOL_RESPONSES} and not is_cli and not is_runtime:
+        config.api_protocol = detected_protocol
+    resolved_base_url = str(test_data.get("base_url") or "").strip()
+    if resolved_base_url and config.base_url_override and resolved_base_url != config.base_url_override:
+        config.base_url_override = resolved_base_url
+    ready_message = None
+    if detected_protocol:
+        ready_message = f"真实对话成功，使用 {_protocol_label(detected_protocol)}"
+    mark_model_ready(config, source="manual_verify", message=ready_message)
     usable_global = db.query(APIConfig).filter(
         APIConfig.is_global_default == True,  # noqa: E712
         APIConfig.readiness_status == READINESS_READY,

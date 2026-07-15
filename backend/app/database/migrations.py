@@ -129,6 +129,21 @@ def ensure_runtime_schema(engine: Engine) -> None:
                     "SET readiness_json = '{\"source\":\"legacy_existing\"}' "
                     "WHERE (readiness_json IS NULL OR readiness_json = '')"
                 ))
+                if "api_protocol" in columns:
+                    # Before 2.8.4 custom OpenAI-compatible endpoints were
+                    # verified only through GET /models. A 404 there does not
+                    # prove that Chat Completions or Responses is unavailable.
+                    conn.execute(text(
+                        "UPDATE api_configs "
+                        "SET readiness_status = 'unverified', "
+                        "readiness_json = '{\"source\":\"protocol_migration\","
+                        "\"message\":\"旧版模型列表验证不适用于此接口，请重新点击测试并启用\"}' "
+                        "WHERE provider_type = 'api' "
+                        "AND provider NOT IN ('openai','anthropic','deepseek','qwen','gemini') "
+                        "AND readiness_status = 'unavailable' "
+                        "AND readiness_json LIKE '%404%' "
+                        "AND readiness_json LIKE '%/models%'"
+                    ))
 
     # --- RAG FTS5 virtual table (try/except, never fail startup) ---
     try:

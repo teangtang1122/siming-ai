@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -21,6 +21,7 @@ LOCAL_CLI_PROVIDER_IDS = {
     "custom_cli",
 }
 LOCAL_RUNTIME_PROVIDER_IDS = {"local_llama_cpp"}
+APIProtocol = Literal["auto", "chat_completions", "responses"]
 
 
 def validate_provider_id(provider: str) -> str:
@@ -37,6 +38,7 @@ class APIConfigCreate(BaseModel):
     api_key: Optional[str] = Field(None, description="API key; not required for local CLI providers")
     default_model: str = Field(..., min_length=1, max_length=100, description="Default model name")
     base_url_override: Optional[str] = Field(None, max_length=500, description="Custom API endpoint")
+    api_protocol: APIProtocol = Field("auto", description="OpenAI-compatible wire protocol")
     provider_type: Optional[str] = Field(None, max_length=20, description="api, local_cli, or local_runtime")
     cli_command: Optional[str] = Field(None, max_length=500, description="Local CLI command")
     cli_args: Optional[str] = Field(
@@ -104,9 +106,10 @@ class ConnectionTestRequest(BaseModel):
     provider: str = Field(..., min_length=1, max_length=50, description="Provider id")
     api_key: Optional[str] = Field(None, description="API key")
     base_url_override: Optional[str] = Field(None, max_length=500, description="Custom API endpoint")
+    api_protocol: APIProtocol = Field("auto", description="OpenAI-compatible wire protocol")
     cli_command: Optional[str] = Field(None, max_length=500, description="Local CLI command")
     cli_args: Optional[str] = Field(None, max_length=2000, description="Local CLI args")
-    model: Optional[str] = Field(None, max_length=200, description="Model used by the local CLI smoke test")
+    model: Optional[str] = Field(None, max_length=200, description="Model used by the real generation smoke test")
     timeout_seconds: Optional[int] = Field(None, ge=15, le=180, description="Optional shorter CLI smoke-test timeout")
 
     @field_validator("provider")

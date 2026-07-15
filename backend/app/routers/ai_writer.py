@@ -1483,6 +1483,7 @@ async def workspace_assistant_stream(
                     tool_call_buffers: dict[int, dict] = {}
                     fc_error = None
                     reasoning_buffer = ""
+                    provider_state: list[dict] = []
                     try:
                         stream_gen = LLMGateway.stream_chat_completion_with_tools(
                             messages=messages,
@@ -1520,6 +1521,7 @@ async def workspace_assistant_stream(
                             elif chunk["type"] == "done":
                                 if not reasoning_buffer:
                                     reasoning_buffer = chunk.get("reasoning_content", "")
+                                provider_state = chunk.get("provider_state") or []
                     except LLMError as e:
                         fc_error = e
                         if "API Key" in str(e) or "提供商" in str(e):
@@ -1921,6 +1923,8 @@ async def workspace_assistant_stream(
                 }
                 if reasoning_buffer:
                     _asst_msg["reasoning_content"] = reasoning_buffer
+                if provider_state:
+                    _asst_msg["provider_state"] = provider_state
                 messages.append(_asst_msg)
                 for tc, ar in zip(tool_calls, all_results):
                     messages.append({

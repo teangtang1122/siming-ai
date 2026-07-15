@@ -1,6 +1,7 @@
 param(
   [switch]$OneDir,
-  [string]$PipIndexUrl = "https://pypi.org/simple"
+  [string]$PipIndexUrl = "https://pypi.org/simple",
+  [string]$OutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,7 +12,11 @@ $BackendDir = Join-Path $Root "backend"
 $FrontendDir = Join-Path $Root "frontend"
 $BuildDir = Join-Path $Root ".build"
 $VenvDir = Join-Path $BuildDir "packager-venv"
-$DistDir = Join-Path $Root "release"
+$DistDir = if ($OutputDirectory) {
+  [System.IO.Path]::GetFullPath($OutputDirectory)
+} else {
+  Join-Path $Root "release"
+}
 $AppName = "Siming"
 $DefaultUpdateRepo = "teangtang1122/siming-ai"
 

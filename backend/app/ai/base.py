@@ -12,11 +12,13 @@ class BaseAdapter(ABC):
         base_url: Optional[str] = None,
         cli_command: Optional[str] = None,
         cli_args: Optional[str] = None,
+        api_protocol: str = "chat_completions",
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.cli_command = cli_command
         self.cli_args = cli_args
+        self.api_protocol = api_protocol
 
     @abstractmethod
     async def chat_completion(

@@ -443,6 +443,7 @@ class LLMGateway:
             base_url=config.provider if adapter_cls is LocalCLIAdapter else config.base_url_override,
             cli_command=getattr(config, "cli_command", None),
             cli_args=getattr(config, "cli_args", None),
+            api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
         )
         timeout_seconds = timeout or DEFAULT_TIMEOUT
         call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
@@ -525,6 +526,7 @@ class LLMGateway:
             base_url=config.provider if adapter_cls is LocalCLIAdapter else config.base_url_override,
             cli_command=getattr(config, "cli_command", None),
             cli_args=getattr(config, "cli_args", None),
+            api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
         )
         timeout_seconds = timeout or DEFAULT_TIMEOUT
         call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
@@ -601,6 +603,7 @@ class LLMGateway:
             base_url=config.provider if adapter_cls is LocalCLIAdapter else config.base_url_override,
             cli_command=getattr(config, "cli_command", None),
             cli_args=getattr(config, "cli_args", None),
+            api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
         )
         timeout_seconds = timeout or DEFAULT_TIMEOUT
         call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
