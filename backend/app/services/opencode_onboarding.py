@@ -467,6 +467,7 @@ def get_opencode_install_job(job_id: str) -> dict[str, Any] | None:
 def _activation_payload(job: Any) -> dict[str, Any]:
     return {
         "id": job.id,
+        "operation_id": getattr(job, "operation_id", None),
         "status": job.status,
         "phase": job.phase,
         "percent": job.percent,
@@ -502,9 +503,57 @@ def _update_activation(job_id: str, **changes: Any) -> dict[str, Any]:
         job = db.query(OpenCodeActivationJob).filter(OpenCodeActivationJob.id == job_id).first()
         if not job:
             raise RuntimeError("OpenCode 激活任务不存在")
+        old_phase = job.phase
+        old_status = job.status
+        old_message = job.message
+        old_model = job.selected_model
+        old_percent = int(job.percent or 0)
         for key, value in changes.items():
             setattr(job, key, value)
         job.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        if job.operation_id:
+            from app.database.models import OperationRun
+            from app.services.operation_runtime import update_operation
+
+            operation = db.query(OperationRun).filter(OperationRun.id == job.operation_id).first()
+            if operation:
+                operation.model_source = job.selected_model or operation.model_source
+                lifecycle = {
+                    "pending": "queued",
+                    "running": "running",
+                    "auth_required": "waiting_user",
+                    "ready": "completed",
+                    "failed": "failed",
+                }.get(job.status, "running")
+                determinate = bool(job.phase == "downloading" and job.bytes_total)
+                meaningful = (
+                    old_phase != job.phase
+                    or old_status != job.status
+                    or old_message != job.message
+                    or old_model != job.selected_model
+                    or abs(int(job.percent or 0) - old_percent) >= 1
+                )
+                update_operation(
+                    db,
+                    operation,
+                    status=lifecycle,
+                    phase=job.phase,
+                    message=job.message,
+                    event_type="activation_progress" if meaningful else None,
+                    payload={
+                        "phase": job.phase,
+                        "selected_model": job.selected_model,
+                        "previous_model": old_model,
+                        "bytes_downloaded": job.bytes_downloaded,
+                        "bytes_total": job.bytes_total,
+                    } if meaningful else None,
+                    progress_mode="determinate" if determinate else "indeterminate",
+                    progress_current=int(job.bytes_downloaded or 0) if determinate else None,
+                    progress_total=int(job.bytes_total or 0) if determinate else None,
+                    failure_class=job.failure_kind,
+                    next_action=job.next_action,
+                    checkpoint=meaningful and int(job.percent or 0) > old_percent,
+                )
         db.commit()
         db.refresh(job)
         return _activation_payload(job)
@@ -942,11 +991,15 @@ def _activation_worker(job_id: str) -> None:
         failures: list[tuple[str, str, str]] = []
         for index, option in enumerate(ordered):
             model = str(option.get("id") or "")
+            previous_failure = failures[-1] if failures else None
+            testing_message = f"正在测试免费模型：{model}"
+            if previous_failure:
+                testing_message = f"{previous_failure[0]} 当前不可用（{previous_failure[1]}），已切换测试：{model}"
             _update_activation(
                 job_id,
                 phase="testing",
                 percent=min(98, 90 + index * 2),
-                message="正在完成最后一次可用性测试",
+                message=testing_message,
                 selected_model=model,
             )
             try:
@@ -1050,6 +1103,25 @@ def start_opencode_activation(*, preferred_model: str | None = None) -> dict[str
                 preferred_model=preferred_model,
             )
             db.add(job)
+            db.flush()
+            from app.services.operation_runtime import ensure_operation
+
+            operation = ensure_operation(
+                db,
+                source_kind="opencode_activation",
+                source_id=job.id,
+                title="准备免费写作 AI",
+                status="queued",
+                phase="checking",
+                message="正在检查这台电脑",
+                tool_mode="managed_opencode",
+                resume_url="/getting-started",
+                can_pause=False,
+                can_cancel=False,
+                can_retry=False,
+                progress_mode="indeterminate",
+            )
+            job.operation_id = operation.id
             db.commit()
             db.refresh(job)
             payload = _activation_payload(job)

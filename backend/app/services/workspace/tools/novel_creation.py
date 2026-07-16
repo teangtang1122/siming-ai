@@ -19,8 +19,9 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from ....ai.gateway import LLMGateway
-from ....ai.local_cli_adapter import DEFAULT_LOCAL_CLI_TIMEOUT, is_local_cli_provider
+from ....ai.local_cli_adapter import is_local_cli_provider
 from ....core.json_repair import parse_json_object
+from ...operation_runtime import current_operation_id, record_operation_signal
 from ...novel_creation_interview import (
     INTERVIEW_API_TIMEOUT_SECONDS,
     INTERVIEW_CLI_TIMEOUT_SECONDS,
@@ -2394,9 +2395,44 @@ def _is_local_runtime_planning_model(model: str | None) -> bool:
 
 
 def _blueprint_llm_limits(model: str | None, *, single: bool) -> tuple[int, int]:
-    if _is_local_cli_planning_model(model):
-        return DEFAULT_LOCAL_CLI_TIMEOUT, 12000 if single else 18000
-    return (120 if single else 180), 9000 if single else 18000
+    return 0, (12000 if single and _is_local_cli_planning_model(model) else 9000 if single else 18000)
+
+
+async def _stream_blueprint_completion(
+    *,
+    messages: list[dict[str, str]],
+    model: str | None,
+    temperature: float,
+    max_tokens: int,
+    retry: int,
+    activity_message: str = "模型正在生成并校验新书方案",
+) -> str:
+    chunks: list[str] = []
+    emitted_chars = 0
+    last_report_at = 0.0
+    operation_id = current_operation_id()
+    stream = LLMGateway.stream_chat_completion(
+        messages=messages,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=0,
+        retry=retry,
+        extra_body=_novel_creation_cli_context(model),
+    )
+    async for chunk in stream:
+        chunks.append(chunk)
+        emitted_chars += len(chunk)
+        now = time.monotonic()
+        if operation_id and now - last_report_at >= 2:
+            last_report_at = now
+            record_operation_signal(
+                operation_id,
+                "output",
+                {"output_chars": emitted_chars},
+                message=activity_message,
+            )
+    return "".join(chunks)
 
 
 def _planning_model_diagnostics(model: str | None) -> tuple[str | None, str | None]:
@@ -2778,22 +2814,19 @@ async def _call_llm_for_blueprints(
     model: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
     """Call LLM to generate/refine blueprints. Returns parsed JSON or None on failure."""
-    timeout_seconds, max_output_tokens = _blueprint_llm_limits(model, single=False)
+    _, max_output_tokens = _blueprint_llm_limits(model, single=False)
     try:
-        result = await LLMGateway.chat_completion(
+        raw = (await _stream_blueprint_completion(
             messages=messages,
             model=model,
             temperature=0.8,
             max_tokens=max_output_tokens,
-            timeout=timeout_seconds,
             retry=1,
-            extra_body=_novel_creation_cli_context(model),
-        )
+        )).strip()
     except Exception as exc:
         _logger.warning("LLM blueprint generation failed: %s", exc)
         return None
 
-    raw = (result.get("content") or "").strip()
     if not raw:
         _logger.warning("LLM returned empty content")
         return None
@@ -2836,22 +2869,19 @@ async def _call_llm_for_single_blueprint(
     model: str | None = None,
 ) -> dict[str, Any] | None:
     """Call LLM to generate a single blueprint. Returns parsed JSON or None on failure."""
-    timeout_seconds, max_output_tokens = _blueprint_llm_limits(model, single=True)
+    _, max_output_tokens = _blueprint_llm_limits(model, single=True)
     try:
-        result = await LLMGateway.chat_completion(
+        raw = (await _stream_blueprint_completion(
             messages=messages,
             model=model,
             temperature=0.9,
             max_tokens=max_output_tokens,
-            timeout=timeout_seconds,
             retry=0,
-            extra_body=_novel_creation_cli_context(model),
-        )
+        )).strip()
     except Exception as exc:
         _logger.warning("LLM single blueprint generation failed: %s", exc)
         return None
 
-    raw = (result.get("content") or "").strip()
     if not raw:
         return None
 
@@ -5477,22 +5507,20 @@ async def refresh_question_options(
     ]
 
     try:
-        result = await LLMGateway.chat_completion(
+        raw = (await _stream_blueprint_completion(
             messages=messages,
             model=model,
             temperature=0.9,
             max_tokens=800,
-            timeout=15,
             retry=0,
-            extra_body=_novel_creation_cli_context(model),
-        )
+            activity_message="正在生成一个不同的回答方向",
+        )).strip()
     except Exception as exc:
         _logger.warning("Refresh question options failed: %s", exc)
-        return {"question": question, "options": []}
+        raise RuntimeError(f"生成新选项失败：{exc}") from exc
 
-    raw = (result.get("content") or "").strip()
     if not raw:
-        return {"question": question, "options": []}
+        raise RuntimeError("模型没有返回新的回答选项")
 
     parsed = parse_json_object(raw)
     if parsed is None:
@@ -5505,13 +5533,13 @@ async def refresh_question_options(
         try:
             parsed = json.loads(clean)
         except (json.JSONDecodeError, ValueError):
-            return {"question": question, "options": []}
+            raise RuntimeError("模型返回的新选项格式无法解析")
 
     if isinstance(parsed, dict) and "options" in parsed:
         new_options = [o for o in parsed["options"] if o not in existing_options]
         return {"question": question, "options": new_options[:1]}
 
-    return {"question": question, "options": []}
+    raise RuntimeError("模型没有返回可用的新选项")
 
 
 async def system_chat_completion(
@@ -5600,25 +5628,16 @@ async def system_chat_completion(
     ]
 
     try:
-        provider = LLMGateway.provider_for_model(model)
-        if is_local_cli_provider(provider):
-            request_timeout = DEFAULT_LOCAL_CLI_TIMEOUT
-        elif provider == "local_llama_cpp":
-            request_timeout = 120
-        else:
-            request_timeout = 30
-        result = await LLMGateway.chat_completion(
+        reply = (await _stream_blueprint_completion(
             messages=messages,
             model=model,
             temperature=0.7,
             max_tokens=800,
-            timeout=request_timeout,
             retry=0,
-            extra_body=_novel_creation_cli_context(model),
-        )
-        reply = (result.get("content") or "").strip()
+            activity_message="司命正在组织回复",
+        )).strip()
         if not reply:
-            reply = "抱歉，我没有理解你的意思。你可以继续描述任何在意的创作想法，或者直接说「查看我的作品列表」。"
+            raise RuntimeError("没有收到模型的文字回复")
     except Exception as exc:
         _logger.warning("System chat failed: %s", exc, exc_info=True)
         detail = str(exc).strip()
@@ -5626,10 +5645,10 @@ async def system_chat_completion(
             detail = f"({type(exc).__name__})"
         if len(detail) > 500:
             detail = detail[:500] + "..."
-        reply = (
+        raise RuntimeError(
             f"当前选择的模型 {model_identity} 调用失败：{detail}"
             "。请在系统设置中点击“测试本机 CLI”查看登录、模型或额度状态。"
-        )
+        ) from exc
 
     return {"reply": reply}
 

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database.models import AgentRun, AgentRunEvent
 from app.services.observability.run_events import merge_event_metadata
+from app.services.operation_runtime import ensure_operation, fail_operation, finish_operation, record_operation_signal
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ def create_run(
     source: str = "mcp",
     client_name: str | None = None,
     title: str | None = None,
+    create_operation: bool = True,
 ) -> AgentRun:
     """Create a new Agent run."""
     run = AgentRun(
@@ -64,6 +66,26 @@ def create_run(
         status="created",
     )
     db.add(run)
+    db.flush()
+    if create_operation:
+        operation = ensure_operation(
+            db,
+            source_kind="agent",
+            source_id=run.id,
+            project_id=project_id,
+            title=title or "外部 Agent 任务",
+            status="queued",
+            phase="created",
+            message="任务已创建，等待 Agent 开始",
+            model_source=client_name,
+            tool_mode=source,
+            resume_url=f"/project/{project_id}",
+            can_pause=False,
+            can_cancel=True,
+            can_retry=False,
+            progress_mode="indeterminate",
+        )
+        run.operation_id = operation.id
     db.commit()
     db.refresh(run)
     logger.info("Agent run created: %s (project=%s)", run.id, project_id)
@@ -116,6 +138,29 @@ def update_run_status(
     run.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(run)
+    status_map = {
+        "created": "queued",
+        "running": "running",
+        "waiting_confirmation": "waiting_user",
+        "completed": "completed",
+        "failed": "failed",
+        "cancelled": "cancelled",
+    }
+    if run.operation_id:
+        if status == "completed":
+            finish_operation(run.operation_id, message=summary or "Agent 任务已完成", db=db)
+        elif status == "failed":
+            fail_operation(run.operation_id, summary or "Agent 任务失败", db=db)
+        elif status == "cancelled":
+            finish_operation(run.operation_id, message=summary or "Agent 任务已取消", status="cancelled", db=db)
+        else:
+            record_operation_signal(
+                run.operation_id,
+                "phase",
+                {"phase": current_step or status, "lifecycle_status": status_map.get(status, "running")},
+                message=current_step or summary or "Agent 正在执行",
+                db=db,
+            )
     return run
 
 
@@ -195,6 +240,27 @@ def add_event(
     run.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(event)
+    if run.operation_id:
+        if run.status == "completed":
+            finish_operation(run.operation_id, message=message or "Agent 任务已完成", db=db)
+        elif run.status == "failed":
+            fail_operation(run.operation_id, message or "Agent 任务失败", next_action=next_action, db=db)
+        else:
+            signal = "checkpoint" if checkpoint_id or event_type in {"tool_result", "chapter_completed"} else "tool"
+            record_operation_signal(
+                run.operation_id,
+                signal,
+                {
+                    "event_type": event_type,
+                    "lifecycle_status": "running" if run.status in {"created", "running"} else "waiting_user",
+                    "model_source": model_source,
+                    "tool_mode": tool_mode,
+                    "checkpoint_id": checkpoint_id,
+                    "storage_target": storage_target,
+                },
+                message=message,
+                db=db,
+            )
     return event
 
 
@@ -231,4 +297,5 @@ def cancel_run(db: Session, run_id: str) -> AgentRun | None:
     run.completed_at = datetime.utcnow()
     db.commit()
     db.refresh(run)
+    finish_operation(run.operation_id, message="Agent 任务已取消", status="cancelled", db=db)
     return run

@@ -9,6 +9,7 @@ from pathlib import Path
 from ...core.crypto import encrypt
 from ...database.models import APIConfig, LocalModel, LocalModelTaskSetting, LocalRuntimeInstallation, ModelDownloadTask
 from ...database.session import SessionLocal
+from ..operation_runtime import ensure_operation, update_operation
 from .downloads import download_with_fallback
 from .hardware import detect_hardware
 from .manifest import model_spec
@@ -100,6 +101,23 @@ def create_model_download(model_key: str) -> str:
             sha256=spec.get("sha256"),
         )
         db.add(task)
+        db.flush()
+        operation = ensure_operation(
+            db,
+            source_kind="download",
+            source_id=task.id,
+            title=f"下载本机 AI 模型 · {model_key}",
+            status="queued",
+            phase="queued",
+            message="模型下载已排队",
+            tool_mode="resumable_download",
+            resume_url="/models",
+            can_pause=False,
+            can_cancel=False,
+            can_retry=False,
+            progress_mode="indeterminate",
+        )
+        task.operation_id = operation.id
         db.commit()
         task_id = task.id
     _start_thread(task_id, _run_model_download, task_id, model_key)
@@ -127,6 +145,23 @@ def create_runtime_download() -> str:
             status="queued",
         )
         db.add(task)
+        db.flush()
+        operation = ensure_operation(
+            db,
+            source_kind="download",
+            source_id=task.id,
+            title="下载本机 AI 运行环境",
+            status="queued",
+            phase="queued",
+            message="运行环境下载已排队",
+            tool_mode="resumable_download",
+            resume_url="/models",
+            can_pause=False,
+            can_cancel=False,
+            can_retry=False,
+            progress_mode="indeterminate",
+        )
+        task.operation_id = operation.id
         db.commit()
         task_id = task.id
     _start_thread(task_id, _run_runtime_download, task_id)
@@ -139,6 +174,28 @@ def resume_incomplete_downloads() -> None:
         tasks = db.query(ModelDownloadTask).filter(
             ModelDownloadTask.status.in_(["queued", "downloading"])
         ).all()
+        for task in tasks:
+            if task.operation_id:
+                continue
+            operation = ensure_operation(
+                db,
+                source_kind="download",
+                source_id=task.id,
+                title=(f"下载本机 AI 模型 · {task.target_key}" if task.kind == "model" else "下载本机 AI 运行环境"),
+                status="queued" if task.status == "queued" else "running",
+                phase=task.status,
+                message="正在恢复未完成的下载",
+                tool_mode="resumable_download",
+                resume_url="/models",
+                can_pause=False,
+                can_cancel=False,
+                can_retry=False,
+                progress_mode="determinate" if task.total_bytes else "indeterminate",
+                progress_current=int(task.downloaded_bytes or 0),
+                progress_total=int(task.total_bytes) if task.total_bytes else None,
+            )
+            task.operation_id = operation.id
+        db.commit()
         pending = [(task.id, task.kind, task.target_key) for task in tasks]
     for task_id, kind, target_key in pending:
         if kind == "runtime":
@@ -165,6 +222,39 @@ def _set_task(task_id: str, **values) -> None:
         for key, value in values.items():
             setattr(task, key, value)
         task.updated_at = datetime.utcnow()
+        if task.operation_id:
+            from ...database.models import OperationRun
+
+            operation = db.query(OperationRun).filter(OperationRun.id == task.operation_id).first()
+            if operation:
+                lifecycle = {
+                    "queued": "queued",
+                    "downloading": "running",
+                    "completed": "completed",
+                    "failed": "failed",
+                }.get(task.status, "running")
+                label = "本机 AI 模型" if task.kind == "model" else "本机 AI 运行环境"
+                if lifecycle == "completed":
+                    message = f"{label}下载完成"
+                elif lifecycle == "failed":
+                    message = task.error_message or f"{label}下载失败"
+                else:
+                    message = f"正在下载{label}"
+                update_operation(
+                    db,
+                    operation,
+                    status=lifecycle,
+                    health_status="active",
+                    phase=task.status,
+                    message=message,
+                    event_type=lifecycle if lifecycle in {"completed", "failed"} else None,
+                    progress_mode="determinate" if task.total_bytes else "indeterminate",
+                    progress_current=int(task.downloaded_bytes or 0),
+                    progress_total=int(task.total_bytes) if task.total_bytes else None,
+                    output=task.status == "downloading",
+                    failure_class="download_error" if lifecycle == "failed" else None,
+                    next_action="返回模型中心检查下载源和磁盘空间" if lifecycle == "failed" else None,
+                )
         db.commit()
 
 

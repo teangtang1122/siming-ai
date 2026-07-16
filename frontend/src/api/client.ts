@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosInstance } from 'axios'
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios'
 
 const API_BASE_URL = '/api/v1'
 const API_TIMEOUT_MS = 600000
@@ -45,8 +45,8 @@ class ApiClient {
     return this.client.get<T>(url, { params })
   }
 
-  post<T>(url: string, data?: unknown) {
-    return this.client.post<T>(url, data)
+  post<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
+    return this.client.post<T>(url, data, config)
   }
 
   put<T>(url: string, data?: unknown) {

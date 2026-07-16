@@ -38,6 +38,8 @@ def classify_failure(message: str | None) -> str | None:
         return "unavailable"
     if "没有收到模型的文字回复" in text or "empty response" in lower or "no text" in lower:
         return "empty_response"
+    if re.search(r"invalid\s+(?:json|response)|json.*(?:parse|format)|cannot parse", lower) or "格式无法解析" in text:
+        return "invalid_response"
     if "only `read` tool" in lower or "工具均未注册" in text or "tool" in lower and "not registered" in lower:
         return "tool_unavailable"
     if "未入库" in text or "orphan" in lower or "mirror" in lower and "database" in lower:

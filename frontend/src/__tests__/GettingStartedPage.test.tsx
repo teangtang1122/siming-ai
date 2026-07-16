@@ -30,10 +30,13 @@ describe('GettingStartedPanel', () => {
     } } })
 
     render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
-    fireEvent.click(await screen.findByRole('button', { name: /免费开始写小说/ }))
+    expect(await screen.findByText('从一句故事想法开始')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /准备 AI 并开始构思/ }))
 
-    expect(screen.getByText('不用命令行')).toBeInTheDocument()
-    expect(screen.getByText('不用填写 API Key')).toBeInTheDocument()
+    expect(screen.getByText('无需安装开发工具')).toBeInTheDocument()
+    expect(screen.getByText('无需打开命令行')).toBeInTheDocument()
+    expect(screen.getByText('每一步都能看到进度')).toBeInTheDocument()
+    expect(screen.getByText(/DeepSeek V4 Flash/)).toBeInTheDocument()
     expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/activate', { preferred_model: null })
     expect(screen.queryByText(/先安装 Node.js/)).not.toBeInTheDocument()
   })

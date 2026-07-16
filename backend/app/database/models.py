@@ -438,6 +438,7 @@ class OpenCodeActivationJob(Base):
     __tablename__ = "opencode_activation_jobs"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(30), nullable=False, default="pending")
     phase = Column(String(40), nullable=False, default="checking")
     percent = Column(Integer, nullable=False, default=0)
@@ -480,6 +481,7 @@ class DeconstructionReport(Base):
     source_filename = Column(String(500), nullable=False)
     report_data = Column(Text, nullable=False)  # JSON
     status = Column(String(20), default="processing")  # processing/completed/failed
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     project = relationship("Project", back_populates="deconstruction_reports")
@@ -670,6 +672,7 @@ class ModelDownloadTask(Base):
     __tablename__ = "model_download_tasks"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
     kind = Column(String(30), nullable=False, default="model")
     target_key = Column(String(120), nullable=False)
     source_url = Column(Text, nullable=True)
@@ -800,6 +803,7 @@ class AssistantRun(Base):
     conversation_id = Column(String(36), ForeignKey("assistant_conversations.id", ondelete="CASCADE"), nullable=True)
     user_message_id = Column(String(36), ForeignKey("assistant_messages.id", ondelete="SET NULL"), nullable=True)
     assistant_message_id = Column(String(36), ForeignKey("assistant_messages.id", ondelete="SET NULL"), nullable=True)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(30), nullable=False, default="running")
     phase = Column(String(50), nullable=True)
     scope = Column(String(50), nullable=True)
@@ -866,6 +870,7 @@ class CatalogingJob(Base):
     execution_mode = Column(String(20), nullable=False, default="auto")
     execution_backend = Column(String(30), nullable=False, default="internal_llm")
     agent_run_id = Column(String(36), nullable=True)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
     current_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
     last_completed_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
     blocked_chapter_id = Column(String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
@@ -1182,6 +1187,7 @@ class ContextRebuildJob(Base):
     __tablename__ = "context_rebuild_jobs"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
     policy_version = Column(Integer, nullable=False, default=1)
     status = Column(String(30), nullable=False, default="queued")
     requested_by = Column(String(100), nullable=True)
@@ -1404,6 +1410,7 @@ class AgentRun(Base):
     source = Column(String(50), nullable=False, default="mcp")  # mcp | internal
     client_name = Column(String(100), nullable=True)  # claude-code, codex, etc.
     title = Column(String(200), nullable=True)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(30), nullable=False, default="created")  # created|running|waiting_confirmation|completed|failed|cancelled
     current_step = Column(String(200), nullable=True)
     summary = Column(Text, nullable=True)
@@ -1580,6 +1587,9 @@ class NovelCreationStageRun(Base):
     failure_class = Column(String(50), nullable=True)
     storage_target = Column(String(50), nullable=False, default="session_draft")
     context_manifest_id = Column(String(36), ForeignKey("context_manifests.id", ondelete="SET NULL"), nullable=True)
+    operation_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True)
+    input_revision = Column(Integer, nullable=True)
+    input_snapshot_hash = Column(String(64), nullable=True)
     next_action = Column(Text, nullable=True)
     request_json = Column(JSON, nullable=True)
     result_json = Column(JSON, nullable=True)
@@ -1619,6 +1629,78 @@ class NovelCreationStageEvent(Base):
     __table_args__ = (
         UniqueConstraint("run_id", "sequence", name="uq_novel_creation_stage_event_sequence"),
         Index("ix_novel_creation_stage_events_run", "run_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 26c. operation_runs - unified, durable projection for long-running work
+# ---------------------------------------------------------------------------
+class OperationRun(Base):
+    __tablename__ = "operation_runs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    source_kind = Column(String(50), nullable=False)
+    source_id = Column(String(100), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    title = Column(String(300), nullable=False)
+    status = Column(String(30), nullable=False, default="running")
+    health_status = Column(String(30), nullable=False, default="active")
+    phase = Column(String(80), nullable=True)
+    current_message = Column(Text, nullable=True)
+    progress_mode = Column(String(20), nullable=False, default="indeterminate")
+    progress_current = Column(Integer, nullable=True)
+    progress_total = Column(Integer, nullable=True)
+    model_source = Column(String(200), nullable=True)
+    tool_mode = Column(String(80), nullable=True)
+    failure_class = Column(String(80), nullable=True)
+    next_action = Column(Text, nullable=True)
+    resume_url = Column(Text, nullable=True)
+    can_pause = Column(Boolean, nullable=False, default=False)
+    can_cancel = Column(Boolean, nullable=False, default=True)
+    can_retry = Column(Boolean, nullable=False, default=True)
+    input_revision = Column(Integer, nullable=True)
+    input_snapshot_hash = Column(String(64), nullable=True)
+    process_metrics_json = Column(JSON, nullable=True)
+    heartbeat_at = Column(DateTime, nullable=True)
+    last_activity_at = Column(DateTime, nullable=True)
+    last_output_at = Column(DateTime, nullable=True)
+    last_checkpoint_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    events = relationship(
+        "OperationEvent",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="OperationEvent.sequence",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("source_kind", "source_id", name="uq_operation_runs_source"),
+        Index("ix_operation_runs_status", "status"),
+        Index("ix_operation_runs_updated", "updated_at"),
+        Index("ix_operation_runs_project", "project_id"),
+    )
+
+
+class OperationEvent(Base):
+    __tablename__ = "operation_events"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    run_id = Column(String(36), ForeignKey("operation_runs.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String(50), nullable=False)
+    status = Column(String(30), nullable=False, default="running")
+    message = Column(Text, nullable=True)
+    payload_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    run = relationship("OperationRun", back_populates="events")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_operation_event_sequence"),
+        Index("ix_operation_events_run", "run_id"),
     )
 
 

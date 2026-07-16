@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -180,9 +180,17 @@ def test_quick_stage_run_streams_each_stage_and_keeps_final_review_unapplied():
 def test_stage_run_classifies_invalid_token_with_actionable_next_step():
     db = _db()
     session = _ready_session(db)
+
+    def invalid_token_stream(**_kwargs):
+        async def generate():
+            raise RuntimeError("(InvalidToken)")
+            yield ""
+
+        return generate()
+
     with patch(
-        "app.services.workspace.tools.novel_creation_v2.LLMGateway.chat_completion",
-        new=AsyncMock(side_effect=RuntimeError("(InvalidToken)")),
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=MagicMock(side_effect=invalid_token_stream),
     ):
         result = asyncio.run(generate_novel_creation_stage(db, "", {
             "session_id": session.id,

@@ -20,6 +20,22 @@ from app.services.novel_creation_interview import (
 
 
 class NovelCreationInterviewDecisionTest(unittest.TestCase):
+    @staticmethod
+    def _streaming_completion(*results):
+        queue = list(results)
+
+        def create_stream(**_kwargs):
+            result = queue.pop(0)
+
+            async def generate():
+                if isinstance(result, BaseException):
+                    raise result
+                yield str(result.get("content") or "") if isinstance(result, dict) else str(result)
+
+            return generate()
+
+        return MagicMock(side_effect=create_stream)
+
     def test_model_receives_full_history_and_asks_one_contextual_question(self):
         response = {
             "action": "ask_more",
@@ -35,13 +51,14 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             {"question": "你更想从哪里开始？", "answer": "从她逃出实验室的那一夜开始"},
             {"question": "追捕她的人是谁？", "answer": "她曾经最信任的训练官"},
         ]
+        chat_mock = self._streaming_completion({"content": json.dumps(response, ensure_ascii=False)})
         with patch(
             "app.services.novel_creation_interview.LLMGateway.model_identity",
             return_value=("openai", "test-model"),
         ), patch(
-            "app.services.novel_creation_interview.LLMGateway.chat_completion",
-            new=AsyncMock(return_value={"content": json.dumps(response, ensure_ascii=False)}),
-        ) as chat_mock:
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=chat_mock,
+        ):
             result = asyncio.run(decide_next_interview_step(
                 user_brief="我想写一个被秘密组织培养的实验体",
                 qa_history=history,
@@ -54,7 +71,7 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
         self.assertEqual(result["action"], "ask_more")
         self.assertEqual(len(result["questions"]), 1)
         self.assertIn("主动违抗组织", result["questions"][0]["question"])
-        kwargs = chat_mock.await_args.kwargs
+        kwargs = chat_mock.call_args.kwargs
         self.assertEqual(kwargs["timeout"], INTERVIEW_API_TIMEOUT_SECONDS)
         self.assertEqual(kwargs["retry"], 0)
         prompt = "\n".join(item["content"] for item in kwargs["messages"])
@@ -62,7 +79,8 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
         self.assertIn("她曾经最信任的训练官", prompt)
         self.assertIn("从她逃出实验室的那一夜开始", prompt)
 
-    def test_local_cli_interview_has_short_independent_timeout(self):
+    def test_local_cli_interview_has_no_arbitrary_total_timeout(self):
+        chat_mock = self._streaming_completion({"content": '{"action":"generate","reason":"信息足够"}'})
         with patch(
             "app.services.novel_creation_interview.LLMGateway.model_identity",
             return_value=("codex_cli", "codex-cli"),
@@ -70,20 +88,17 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             "app.services.novel_creation_interview.is_local_cli_provider",
             return_value=True,
         ), patch(
-            "app.services.novel_creation_interview.LLMGateway.chat_completion",
-            new=AsyncMock(return_value={"content": '{"action":"generate","reason":"信息足够"}'}),
-        ) as chat_mock:
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=chat_mock,
+        ):
             result = asyncio.run(decide_next_interview_step(
                 user_brief="写一个实验体逃亡的故事",
                 model="codex_cli:codex-cli",
             ))
 
         self.assertEqual(result["action"], "generate")
-        self.assertEqual(chat_mock.await_args.kwargs["timeout"], INTERVIEW_CLI_TIMEOUT_SECONDS)
-        self.assertEqual(
-            chat_mock.await_args.kwargs["extra_body"],
-            {"local_cli_timeout_grace_seconds": INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS},
-        )
+        self.assertEqual(chat_mock.call_args.kwargs["timeout"], INTERVIEW_CLI_TIMEOUT_SECONDS)
+        self.assertIsNone(chat_mock.call_args.kwargs["extra_body"])
 
     def test_dynamic_interview_drops_model_supplied_choices(self):
         content = json.dumps({
@@ -100,8 +115,8 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             "app.services.novel_creation_interview.LLMGateway.model_identity",
             return_value=("openai", "test-model"),
         ), patch(
-            "app.services.novel_creation_interview.LLMGateway.chat_completion",
-            new=AsyncMock(return_value={"content": content}),
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=self._streaming_completion({"content": content}),
         ):
             result = asyncio.run(decide_next_interview_step(
                 user_brief="一个实验体逃离组织的故事",
@@ -116,8 +131,8 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             "app.services.novel_creation_interview.LLMGateway.model_identity",
             return_value=("opencode_cli", "free-model"),
         ), patch(
-            "app.services.novel_creation_interview.LLMGateway.chat_completion",
-            new=AsyncMock(side_effect=RuntimeError("Free usage exceeded, retrying in 9h")),
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=self._streaming_completion(RuntimeError("Free usage exceeded, retrying in 9h")),
         ):
             with self.assertRaises(NovelInterviewError) as raised:
                 asyncio.run(decide_next_interview_step(
@@ -134,8 +149,8 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             "app.services.novel_creation_interview.LLMGateway.model_identity",
             return_value=("openai", "test-model"),
         ), patch(
-            "app.services.novel_creation_interview.LLMGateway.chat_completion",
-            new=AsyncMock(return_value={"content": ""}),
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=self._streaming_completion({"content": ""}),
         ):
             with self.assertRaises(NovelInterviewError) as raised:
                 asyncio.run(decide_next_interview_step(user_brief="创建新小说"))
@@ -151,8 +166,8 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             "app.services.novel_creation_interview.LLMGateway.model_identity",
             return_value=("openai", "test-model"),
         ), patch(
-            "app.services.novel_creation_interview.LLMGateway.chat_completion",
-            new=AsyncMock(return_value={"content": content}),
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
+            new=self._streaming_completion({"content": content}),
         ):
             with self.assertRaises(NovelInterviewError) as raised:
                 asyncio.run(decide_next_interview_step(
@@ -168,9 +183,9 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             {"question": f"动态问题 {index}", "answer": f"回答 {index}"}
             for index in range(INTERVIEW_MAX_TURNS)
         ]
-        chat_mock = AsyncMock()
+        chat_mock = MagicMock()
         with patch(
-            "app.services.novel_creation_interview.LLMGateway.chat_completion",
+            "app.services.novel_creation_interview.LLMGateway.stream_chat_completion",
             new=chat_mock,
         ):
             result = asyncio.run(decide_next_interview_step(
@@ -179,7 +194,7 @@ class NovelCreationInterviewDecisionTest(unittest.TestCase):
             ))
 
         self.assertEqual(result["action"], "generate")
-        chat_mock.assert_not_awaited()
+        chat_mock.assert_not_called()
 
 
 class NovelCreationInterviewPersistenceTest(unittest.TestCase):

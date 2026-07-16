@@ -3,6 +3,7 @@ import { Alert, Layout, Spin } from 'antd'
 import { Suspense, lazy, useEffect } from 'react'
 import { useAppStore } from './stores'
 import { apiClient } from './api/client'
+import GlobalOperationCenter from './components/GlobalOperationCenter'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const ProjectWorkspace = lazy(() => import('./pages/ProjectWorkspace'))
@@ -127,6 +128,7 @@ function App() {
     <Layout style={{ minHeight: '100vh' }} className="siming-grain">
       <a className="siming-skip-link" href="#main-content">跳到主要内容</a>
       <GlobalErrorBanner />
+      <GlobalOperationCenter />
       <Content id="main-content" tabIndex={-1} style={{ padding: 0 }}>
         <ProjectPreloader />
         <FirstRunSetupGate />

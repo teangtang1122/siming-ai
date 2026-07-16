@@ -11,8 +11,10 @@ from unittest.mock import patch
 
 from app.core.exceptions import LLMError
 from app.ai.local_cli_adapter import (
+    CLIStalledError,
     LocalCLIAdapter,
     OPENCODE_DEFAULT_MODEL,
+    communicate_with_cli_quota_detection,
     detect_cli_auth_error,
     detect_cli_quota_error,
     discover_local_cli_models,
@@ -347,6 +349,54 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             ))
 
         self.assertLess(time.monotonic() - started, 3)
+
+    def test_cli_cpu_activity_prevents_false_stall_without_text_output(self):
+        async def run_busy_cli():
+            code = (
+                "import time; end=time.perf_counter()+0.45; value=0; "
+                "exec('while time.perf_counter() < end:\\n value += 1'); print('finished', flush=True)"
+            )
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                code,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
+            )
+            return await communicate_with_cli_quota_detection(
+                process,
+                poll_seconds=0.02,
+                quiet_seconds=0.04,
+                suspected_stall_seconds=0.1,
+                stalled_seconds=0.2,
+            )
+
+        stdout, stderr = asyncio.run(run_busy_cli())
+        self.assertIn(b"finished", stdout)
+        self.assertEqual(stderr, b"")
+
+    def test_closed_output_streams_do_not_bypass_stall_monitor(self):
+        async def run_silent_cli():
+            code = "import os,time; os.close(1); os.close(2); time.sleep(5)"
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                code,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
+            )
+            return await communicate_with_cli_quota_detection(
+                process,
+                poll_seconds=0.02,
+                quiet_seconds=0.04,
+                suspected_stall_seconds=0.1,
+                stalled_seconds=0.2,
+            )
+
+        with self.assertRaisesRegex(CLIStalledError, "确认卡住"):
+            asyncio.run(run_silent_cli())
 
     def test_runtime_cwd_does_not_fall_back_to_process_cwd(self):
         with patch.dict(

@@ -1,6 +1,7 @@
 """Sequential SSE orchestrator for project cataloging."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -59,6 +60,7 @@ def job_to_dict(job: CatalogingJob) -> dict[str, Any]:
         "execution_mode": job.execution_mode,
         "execution_backend": job.execution_backend or "internal_llm",
         "agent_run_id": job.agent_run_id,
+        "operation_id": job.operation_id,
         "current_chapter_id": job.current_chapter_id,
         "last_completed_chapter_id": job.last_completed_chapter_id,
         "blocked_chapter_id": job.blocked_chapter_id,
@@ -251,6 +253,8 @@ def create_cataloging_job(
     model_source: str | None = None,
     provider: str | None = None,
 ) -> CatalogingJob:
+    from ..operation_runtime import ensure_operation
+
     chapters = ordered_chapters(db, project_id, chapter_ids)
     job = CatalogingJob(
         project_id=project_id,
@@ -266,6 +270,26 @@ def create_cataloging_job(
     )
     db.add(job)
     db.flush()
+    operation = ensure_operation(
+        db,
+        source_kind="cataloging",
+        source_id=job.id,
+        project_id=project_id,
+        title=f"作品建档 · {len(chapters)} 章",
+        status="queued",
+        phase="queued",
+        message="建档任务已创建，正在准备第一章",
+        model_source=model,
+        tool_mode=execution_backend,
+        resume_url=f"/project/{project_id}?view=cataloging",
+        can_pause=True,
+        can_cancel=True,
+        can_retry=True,
+        progress_mode="determinate",
+        progress_current=0,
+        progress_total=len(chapters),
+    )
+    job.operation_id = operation.id
     for index, chapter in enumerate(chapters):
         db.add(CatalogingChapterRun(
             job_id=job.id,
@@ -280,8 +304,16 @@ def create_cataloging_job(
 
 
 async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[str, None]:
+    from ..operation_runtime import finish_operation, heartbeat_loop, iterate_with_operation
+
     db = SessionLocal()
+    heartbeat_task: asyncio.Task | None = None
+    operation_id: str | None = None
     try:
+        initial_job = _get_job(db, project_id, job_id)
+        operation_id = initial_job.operation_id
+        if operation_id:
+            heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
         yield sse_event({"type": "status", "message": "作品建档任务开始", "job_id": job_id})
         while True:
             job = _get_job(db, project_id, job_id)
@@ -297,6 +329,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
                 db.commit()
+                finish_operation(operation_id, message=f"作品建档完成，共处理 {job.completed_chapters or job.total_chapters or 0} 章")
                 yield sse_event({"type": "completed", "job": job_to_dict(job)})
                 yield "data: [DONE]\n\n"
                 return
@@ -310,7 +343,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                     yield sse_event({"type": "waiting_confirmation", "job": job_to_dict(job), "run": run_to_dict(run)})
                     yield "data: [DONE]\n\n"
                     return
-                async for event in _apply_run(db, job, run):
+                async for event in iterate_with_operation(operation_id, _apply_run(db, job, run)):
                     yield event
                 continue
 
@@ -324,7 +357,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 yield "data: [DONE]\n\n"
                 return
 
-            async for event in _extract_run(db, job, run):
+            async for event in iterate_with_operation(operation_id, _extract_run(db, job, run)):
                 yield event
 
             db.refresh(job)
@@ -344,9 +377,12 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 yield "data: [DONE]\n\n"
                 return
 
-            async for event in _apply_run(db, job, run):
+            async for event in iterate_with_operation(operation_id, _apply_run(db, job, run)):
                 yield event
     finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
         db.close()
 
 

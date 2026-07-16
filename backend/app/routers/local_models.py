@@ -96,6 +96,7 @@ def _model_payload(model: LocalModel) -> dict:
 def _task_payload(task: ModelDownloadTask) -> dict:
     return {
         "id": task.id,
+        "operation_id": task.operation_id,
         "kind": task.kind,
         "target_key": task.target_key,
         "source_url": task.source_url,

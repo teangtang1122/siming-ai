@@ -12,6 +12,7 @@ TERMINAL_RUN_STATUSES = {"completed", "completed_with_warnings", "skipped_by_use
 
 
 def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
+    previous_completed = int(job.completed_chapters or 0)
     db.flush()
     job.completed_chapters = (
         db.query(CatalogingChapterRun)
@@ -24,6 +25,37 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
         .count()
     )
     job.updated_at = datetime.utcnow()
+    if job.operation_id:
+        from ...database.models import OperationRun
+        from ..operation_runtime import update_operation
+
+        operation = db.query(OperationRun).filter(OperationRun.id == job.operation_id).first()
+        if operation:
+            completed = int(job.completed_chapters or 0)
+            status_map = {
+                "queued": "queued",
+                "running": "running",
+                "waiting_confirmation": "waiting_user",
+                "paused": "paused",
+                "paused_on_failure": "paused",
+                "completed": "completed",
+                "failed": "failed",
+                "cancelled": "cancelled",
+            }
+            update_operation(
+                db,
+                operation,
+                status=status_map.get(job.status, operation.status),
+                phase="cataloging",
+                message=f"作品建档：已完成 {completed}/{job.total_chapters or 0} 章",
+                progress_mode="determinate",
+                progress_current=completed,
+                progress_total=int(job.total_chapters or 0),
+                checkpoint=completed > previous_completed,
+                event_type="checkpoint" if completed > previous_completed else None,
+                payload={"completed_chapters": completed, "total_chapters": int(job.total_chapters or 0)},
+                next_action=job.error,
+            )
 
 
 def first_blocking_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun | None:

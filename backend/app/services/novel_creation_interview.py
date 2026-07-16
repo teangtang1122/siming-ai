@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from app.ai.gateway import LLMGateway
@@ -12,8 +13,8 @@ from app.services.observability.run_events import classify_failure
 
 
 INTERVIEW_MAX_TURNS = 8
-INTERVIEW_API_TIMEOUT_SECONDS = 30
-INTERVIEW_CLI_TIMEOUT_SECONDS = 45
+INTERVIEW_API_TIMEOUT_SECONDS = 0
+INTERVIEW_CLI_TIMEOUT_SECONDS = 0
 INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS = 10
 
 
@@ -178,13 +179,14 @@ async def decide_next_interview_step(
     is_local_cli = is_local_cli_provider(provider)
     timeout = INTERVIEW_CLI_TIMEOUT_SECONDS if is_local_cli else INTERVIEW_API_TIMEOUT_SECONDS
     call_extra_body = dict(extra_body or {})
-    if is_local_cli:
-        # An interview asks for one small JSON decision. Keep the adapter's
-        # cleanup allowance short so a stalled CLI cannot hold the author for
-        # the long writing-task timeout.
-        call_extra_body["local_cli_timeout_grace_seconds"] = INTERVIEW_CLI_TIMEOUT_GRACE_SECONDS
     try:
-        result = await LLMGateway.chat_completion(
+        chunks: list[str] = []
+        output_chars = 0
+        last_report_at = 0.0
+        from app.services.operation_runtime import current_operation_id, record_operation_signal
+
+        operation_id = current_operation_id()
+        stream = LLMGateway.stream_chat_completion(
             messages=messages,
             model=model,
             temperature=0.6,
@@ -193,10 +195,22 @@ async def decide_next_interview_step(
             retry=0,
             extra_body=call_extra_body or None,
         )
+        async for chunk in stream:
+            chunks.append(chunk)
+            output_chars += len(chunk)
+            now = time.monotonic()
+            if operation_id and now - last_report_at >= 2:
+                last_report_at = now
+                record_operation_signal(
+                    operation_id,
+                    "output",
+                    {"output_chars": output_chars, "phase": "novel_interview"},
+                    "正在根据你的回答判断下一步",
+                )
     except Exception as exc:
         _raise_interview_error(str(exc))
 
-    raw = _text((result or {}).get("content"))
+    raw = _text("".join(chunks))
     if not raw:
         _raise_interview_error("没有收到模型的文字回复。", "empty_response")
     payload = _parse_interview_payload(raw)

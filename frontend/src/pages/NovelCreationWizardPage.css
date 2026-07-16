@@ -331,6 +331,23 @@
   margin-top: 6px;
 }
 
+.creation-run-detail {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.creation-run-indeterminate {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.creation-result-revision {
+  margin-top: 16px;
+}
+
 .creation-json-editor,
 .creation-json-preview {
   margin-top: 16px;

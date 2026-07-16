@@ -462,8 +462,8 @@ def _compact_seed_blueprint(seed: dict[str, Any], form: dict[str, Any]) -> dict[
     }
 
 
-def _selected_blueprint(session: NovelCreationSession) -> dict[str, Any]:
-    draft = initialize_session_draft(session)
+def _selected_blueprint(session: NovelCreationSession, draft_override: dict[str, Any] | None = None) -> dict[str, Any]:
+    draft = deepcopy(draft_override) if isinstance(draft_override, dict) else initialize_session_draft(session)
     selected_id = draft.get("selected_concept_id")
     selected = next((item for item in draft.get("concepts", []) if item.get("id") == selected_id), None)
     if not selected:
@@ -558,17 +558,21 @@ def _opening_outline(blueprint: dict[str, Any], form: dict[str, Any]) -> dict[st
     return {"opening_chapter_count": 15, "chapters": chapters, "sections": sections, "section_rule": "每章3个场景事件，允许作者调整为2至6个"}
 
 
-def derive_stage(session: NovelCreationSession, stage: str) -> dict[str, Any]:
+def derive_stage(
+    session: NovelCreationSession,
+    stage: str,
+    draft_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if stage not in STAGE_ORDER:
         raise ValueError(f"unknown stage: {stage}")
-    draft = initialize_session_draft(session)
+    draft = deepcopy(draft_override) if isinstance(draft_override, dict) else initialize_session_draft(session)
     form = _dict(draft.get("form"))
     if stage == "constraints":
         return form
     if stage == "concepts":
         selected = draft.get("selected_concept_id")
         return {"options": _list(draft.get("concepts")), "selected_concept_id": selected}
-    blueprint = _selected_blueprint(session)
+    blueprint = _selected_blueprint(session, draft)
     if stage == "world_style":
         return {
             "writing_style": _text(form.get("writing_style") or blueprint.get("writing_style")),
@@ -639,8 +643,8 @@ def derive_stage(session: NovelCreationSession, stage: str) -> dict[str, Any]:
         return _opening_outline(blueprint, form)
     stages = draft.get("stages", {})
     opening = _dict(stages.get("opening_outline", {}).get("data")) or _opening_outline(blueprint, form)
-    characters = _dict(stages.get("characters", {}).get("data")) or derive_stage(session, "characters")
-    world = _dict(stages.get("world_style", {}).get("data")) or derive_stage(session, "world_style")
+    characters = _dict(stages.get("characters", {}).get("data")) or derive_stage(session, "characters", draft)
+    world = _dict(stages.get("world_style", {}).get("data")) or derive_stage(session, "world_style", draft)
     blocking = []
     for required_stage in ("constraints", "concepts", "world_style", "characters", "locations", "macro_outline", "opening_outline"):
         status = _dict(stages.get(required_stage)).get("status")
@@ -758,7 +762,13 @@ def build_apply_blueprint(session: NovelCreationSession) -> dict[str, Any]:
 
 
 def create_run(db: Session, session: NovelCreationSession, stage: str, request: dict[str, Any]) -> NovelCreationStageRun:
+    from .operation_runtime import ensure_operation, input_snapshot_hash
+
     model = _text(request.get("model")) or None
+    draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    input_snapshot = deepcopy(draft)
+    revision = int(session.revision or 0)
+    snapshot_hash = input_snapshot_hash(input_snapshot)
     run = NovelCreationStageRun(
         session_id=session.id,
         stage=stage,
@@ -770,14 +780,42 @@ def create_run(db: Session, session: NovelCreationSession, stage: str, request: 
         context_manifest_id=_text(request.get("context_manifest_id")) or None,
         request_json=deepcopy(request),
         current_message=f"正在生成{STAGE_LABELS.get(stage, stage)}",
+        input_revision=revision,
+        input_snapshot_hash=snapshot_hash,
     )
     db.add(run)
     db.flush()
+    operation = ensure_operation(
+        db,
+        source_kind="novel_creation",
+        source_id=run.id,
+        title=f"新书立项 · {STAGE_LABELS.get(stage, stage)}",
+        status="running",
+        phase=stage,
+        message=run.current_message,
+        model_source=model,
+        tool_mode="session_stage",
+        resume_url=f"/novel-creation?session={session.id}&run={run.id}",
+        can_pause=False,
+        can_cancel=True,
+        can_retry=False,
+        input_revision=revision,
+        snapshot_hash=snapshot_hash,
+    )
+    run.operation_id = operation.id
+    request_copy = deepcopy(request)
+    request_copy["input_revision"] = revision
+    request_copy["input_snapshot_hash"] = snapshot_hash
+    request_copy["input_snapshot"] = input_snapshot
+    request_copy["operation_id"] = operation.id
+    run.request_json = request_copy
     add_run_event(db, run, "started", "running", run.current_message, {"model_source": model, "storage_target": "session_draft"})
     return run
 
 
 def add_run_event(db: Session, run: NovelCreationStageRun, event_type: str, status: str, message: str, payload: dict[str, Any] | None = None) -> NovelCreationStageEvent:
+    from .operation_runtime import update_operation
+
     sequence = len(run.events or []) + 1
     event = NovelCreationStageEvent(
         run_id=run.id,
@@ -789,6 +827,35 @@ def add_run_event(db: Session, run: NovelCreationStageRun, event_type: str, stat
     )
     db.add(event)
     db.flush()
+    if run.operation_id:
+        from ..database.models import OperationRun
+
+        operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
+        if operation:
+            if isinstance(payload, dict) and payload.get("model_source"):
+                operation.model_source = str(payload["model_source"])
+            progress_current = None
+            progress_total = None
+            progress_mode = None
+            if isinstance(payload, dict) and payload.get("stage"):
+                stage_name = str(payload["stage"])
+                if stage_name in STAGE_ORDER:
+                    progress_current = STAGE_ORDER.index(stage_name) + (1 if event_type == "stage_completed" else 0)
+                    progress_total = len(STAGE_ORDER)
+                    progress_mode = "determinate" if run.stage == "all" else "indeterminate"
+            update_operation(
+                db,
+                operation,
+                phase=str((payload or {}).get("stage") or run.stage),
+                message=message,
+                event_type=event_type,
+                payload=payload,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                progress_mode=progress_mode,
+                checkpoint=event_type == "stage_completed",
+                health_status="active",
+            )
     return event
 
 
@@ -799,6 +866,21 @@ def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]
     run.next_action = "审阅并确认本阶段，或编辑后重新生成"
     run.completed_at = datetime.utcnow()
     add_run_event(db, run, "completed", "ok", run.current_message, {"storage_target": run.storage_target, "next_action": run.next_action})
+    if run.operation_id:
+        from ..database.models import OperationRun
+        from .operation_runtime import update_operation
+
+        operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
+        if operation:
+            update_operation(
+                db,
+                operation,
+                status="completed",
+                health_status="active",
+                message=run.current_message,
+                next_action=run.next_action,
+                checkpoint=True,
+            )
 
 
 def fail_run(db: Session, run: NovelCreationStageRun, exc: Exception) -> None:
@@ -818,6 +900,21 @@ def fail_run(db: Session, run: NovelCreationStageRun, exc: Exception) -> None:
     run.completed_at = datetime.utcnow()
     run.session.last_error_json = {"failure_class": failure_class, "message": message, "next_action": advice, "run_id": run.id}
     add_run_event(db, run, "failed", "error", message, {"failure_class": failure_class, "next_action": advice})
+    if run.operation_id:
+        from ..database.models import OperationRun
+        from .operation_runtime import update_operation
+
+        operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
+        if operation:
+            update_operation(
+                db,
+                operation,
+                status="failed",
+                health_status="stalled" if "卡住" in message else operation.health_status,
+                message=message,
+                failure_class=failure_class,
+                next_action=advice,
+            )
 
 
 def serialize_run(run: NovelCreationStageRun, include_events: bool = True) -> dict[str, Any]:
@@ -832,6 +929,9 @@ def serialize_run(run: NovelCreationStageRun, include_events: bool = True) -> di
         "failure_class": run.failure_class,
         "storage_target": run.storage_target,
         "context_manifest_id": run.context_manifest_id,
+        "operation_id": run.operation_id,
+        "input_revision": run.input_revision,
+        "input_snapshot_hash": run.input_snapshot_hash,
         "next_action": run.next_action,
         "result": deepcopy(run.result_json),
         "current_message": run.current_message,

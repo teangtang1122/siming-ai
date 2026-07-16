@@ -22,9 +22,10 @@ from .core.exceptions import (
 from .database.backup import backup_sqlite_database
 from .database.session import Base, SessionLocal, engine
 from .database.migrations import ensure_runtime_schema
-from .routers import projects, config, getting_started, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging, agent, skill, scheduler, mcp, external_agent, external_agent_global, tools, novel_creation, system_assistant, local_models, prompt_packs, narrative_governance, context_governance
+from .routers import projects, config, getting_started, worldbuilding, characters, outline, chapters, ai_writer, stats, export, deconstruct, importer, cataloging, agent, skill, scheduler, mcp, external_agent, external_agent_global, tools, novel_creation, system_assistant, local_models, prompt_packs, narrative_governance, context_governance, operations
 from .services.content_store import migrate_legacy_projects_to_files
 from .services.workspace.run_log import mark_interrupted_assistant_runs
+from .services.operation_runtime import mark_interrupted_operations
 from .version import APP_VERSION
 
 settings = get_settings()
@@ -57,6 +58,7 @@ ensure_runtime_schema(engine)
 with SessionLocal() as db:
     migrate_legacy_projects_to_files(db)
     mark_interrupted_assistant_runs(db)
+    mark_interrupted_operations(db)
 
 app = FastAPI(
     title="司命 API",
@@ -104,6 +106,7 @@ app.include_router(system_assistant.router, prefix="/api/v1")
 app.include_router(local_models.router, prefix="/api/v1")
 app.include_router(narrative_governance.router, prefix="/api/v1")
 app.include_router(context_governance.router, prefix="/api/v1")
+app.include_router(operations.router, prefix="/api/v1")
 
 
 @app.get("/")

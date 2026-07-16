@@ -144,11 +144,16 @@ interface CreationSession {
 
 interface StageRun {
   id: string
+  session_id?: string
   stage: string
   status: string
   current_message?: string
   failure_class?: string
   next_action?: string
+  operation_id?: string
+  input_revision?: number
+  input_snapshot_hash?: string
+  model_source?: string
 }
 
 const CORE_STAGES = ['world_style', 'characters', 'locations', 'macro_outline', 'opening_outline', 'final_review']
@@ -384,7 +389,20 @@ function NovelCreationWizardPage() {
   const [editorData, setEditorData] = useState<Record<string, unknown>>({})
   const [presetSearch, setPresetSearch] = useState('')
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [formEditTick, setFormEditTick] = useState(0)
+  const [saveNotice, setSaveNotice] = useState('')
+  const [runConnection, setRunConnection] = useState<'connected' | 'reconnecting'>('connected')
+  const [activeRun, setActiveRun] = useState<StageRun | null>(null)
+  const [resultRevisionNotice, setResultRevisionNotice] = useState('')
   const watchingRunRef = useRef<string | null>(null)
+  const defaultsAppliedRef = useRef(false)
+  const loadRequestRef = useRef(0)
+  const saveRequestRef = useRef(0)
+  const loadedSessionIdRef = useRef<string | null>(null)
+  const hydratingFormRef = useRef(false)
+  const formDirtyRef = useRef(false)
+  const editTickRef = useRef(0)
+  const editedDuringRunRef = useRef(false)
 
   const requestedSessionId = searchParams.get('session') || undefined
   const requestedRunId = searchParams.get('run')
@@ -410,10 +428,19 @@ function NovelCreationWizardPage() {
   }, [])
 
   const loadSession = useCallback(async (sessionId: string) => {
+    const requestId = ++loadRequestRef.current
     const response = await apiClient.get<ApiResponse<CreationSession>>(`/novel-creation/sessions/${sessionId}`)
     const loaded = response.data.data
+    if (requestId !== loadRequestRef.current) return loaded
     setSession(loaded)
-    if (loaded.draft?.form) form.setFieldsValue(loaded.draft.form)
+    const switchingSession = loadedSessionIdRef.current !== loaded.id
+    if (loaded.draft?.form && (switchingSession || !formDirtyRef.current)) {
+      hydratingFormRef.current = true
+      form.setFieldsValue(loaded.draft.form)
+      hydratingFormRef.current = false
+      formDirtyRef.current = false
+    }
+    loadedSessionIdRef.current = loaded.id
     setSearchParams((current) => {
       if (current.get('session') === loaded.id) return current
       const next = new URLSearchParams(current)
@@ -424,27 +451,39 @@ function NovelCreationWizardPage() {
   }, [form, setSearchParams])
 
   useEffect(() => {
-    const initialize = async () => {
+    let cancelled = false
+    const initializeCatalog = async () => {
       try {
         const response = await apiClient.get<ApiResponse<PresetCatalog>>('/novel-creation/presets')
+        if (cancelled) return
         setCatalog(response.data.data)
         const first = response.data.data.categories[0]
-        form.setFieldsValue({
-          brief: '', preset_id: first?.id || 'free', theme_id: first?.themes[0]?.id,
-          genre: first?.label || '自由创作', target_audience: '成年大众', platform: '暂不确定',
-          target_words: 600000, target_chapters: 240,
-          world_tone: first?.defaults.world_tone || '', story_structure: first?.defaults.story_structure || '',
-          pacing: first?.defaults.pacing || '', writing_style: first?.defaults.writing_style || '',
-          special_requirements: first?.defaults.special_requirements || [], avoid: first?.defaults.avoid || [],
-        })
+        if (!requestedSessionId && !defaultsAppliedRef.current) {
+          defaultsAppliedRef.current = true
+          hydratingFormRef.current = true
+          form.setFieldsValue({
+            brief: '', preset_id: first?.id || 'free', theme_id: first?.themes[0]?.id,
+            genre: first?.label || '自由创作', target_audience: '成年大众', platform: '暂不确定',
+            target_words: 600000, target_chapters: 240,
+            world_tone: first?.defaults.world_tone || '', story_structure: first?.defaults.story_structure || '',
+            pacing: first?.defaults.pacing || '', writing_style: first?.defaults.writing_style || '',
+            special_requirements: first?.defaults.special_requirements || [], avoid: first?.defaults.avoid || [],
+          })
+          hydratingFormRef.current = false
+        }
         await loadSessions()
-        if (requestedSessionId) await loadSession(requestedSessionId)
       } catch (error) {
-        message.error(errorText(error))
+        if (!cancelled) message.error(errorText(error))
       }
     }
-    void initialize()
-  }, [form, loadSession, loadSessions, requestedSessionId])
+    void initializeCatalog()
+    return () => { cancelled = true }
+  }, [form, loadSessions, requestedSessionId])
+
+  useEffect(() => {
+    if (!requestedSessionId) return
+    void loadSession(requestedSessionId).catch((error) => message.error(errorText(error)))
+  }, [loadSession, requestedSessionId])
 
   useEffect(() => {
     if (defaultModel && !selectedModel) setSelectedModel(defaultModel)
@@ -453,6 +492,51 @@ function NovelCreationWizardPage() {
   useEffect(() => {
     if (requestedModel) setSelectedModel(requestedModel)
   }, [requestedModel])
+
+  const markFormEdited = useCallback(() => {
+    if (hydratingFormRef.current) return
+    formDirtyRef.current = true
+    editTickRef.current += 1
+    setFormEditTick(editTickRef.current)
+    setSaveNotice('修改尚未保存')
+    if (watchingRunRef.current) editedDuringRunRef.current = true
+  }, [])
+
+  useEffect(() => {
+    if (!session || !formDirtyRef.current) return
+    const capturedTick = formEditTick
+    const requestId = ++saveRequestRef.current
+    const timer = window.setTimeout(async () => {
+      const values = form.getFieldsValue(true)
+      try {
+        const response = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, {
+          form: values,
+          expected_revision: session.revision,
+        })
+        if (requestId !== saveRequestRef.current) return
+        setSession(response.data.data)
+        if (capturedTick === editTickRef.current) {
+          formDirtyRef.current = false
+          setSaveNotice('已自动保存为下一版草稿')
+        }
+      } catch (error) {
+        if (requestId !== saveRequestRef.current) return
+        const structured = error as Error & { response?: { status?: number } }
+        if (structured.response?.status === 409) {
+          setSaveNotice('检测到草稿版本变化，本地修改仍保留，正在重新同步')
+          try {
+            const latest = await apiClient.get<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`)
+            setSession(latest.data.data)
+            editTickRef.current += 1
+            setFormEditTick(editTickRef.current)
+          } catch { /* keep local form authoritative until the next retry */ }
+        } else {
+          setSaveNotice('自动保存暂时失败，本地修改仍保留')
+        }
+      }
+    }, 800)
+    return () => window.clearTimeout(timer)
+  }, [form, formEditTick, session])
 
   const applyPreset = (preset: GenrePreset) => {
     form.setFieldsValue({
@@ -466,12 +550,28 @@ function NovelCreationWizardPage() {
       special_requirements: preset.defaults.special_requirements,
       avoid: preset.defaults.avoid,
     })
+    markFormEdited()
   }
 
   const persistIntake = async () => {
     const values = await form.validateFields()
-    if (session && concepts.length === 0) {
-      const response = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, { form: values })
+    ++saveRequestRef.current
+    if (session) {
+      const save = async (expectedRevision: number) => apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, {
+        form: values,
+        expected_revision: expectedRevision,
+      })
+      let response
+      try {
+        response = await save(session.revision)
+      } catch (error) {
+        const structured = error as Error & { response?: { status?: number } }
+        if (structured.response?.status !== 409) throw error
+        const latest = await apiClient.get<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`)
+        response = await save(latest.data.data.revision)
+      }
+      formDirtyRef.current = false
+      setSaveNotice('草稿已保存')
       setSession(response.data.data)
       return response.data.data
     }
@@ -483,6 +583,9 @@ function NovelCreationWizardPage() {
     const payload = created.raw as { session?: CreationSession }
     const createdSession = payload.session || (await apiClient.get<ApiResponse<CreationSession>>(`/novel-creation/sessions/${created.id}`)).data.data
     setSession(createdSession)
+    loadedSessionIdRef.current = createdSession.id
+    formDirtyRef.current = false
+    setSaveNotice('草稿已保存')
     setSearchParams({ session: created.id }, { replace: true })
     await loadSessions()
     return createdSession
@@ -507,9 +610,13 @@ function NovelCreationWizardPage() {
     }
     setBusy(true)
     setRunMessage('正在理解创作约束并生成三套轻量创意...')
+    setRunProgress(0)
+    setResultRevisionNotice('')
+    editedDuringRunRef.current = false
     try {
       const saved = await persistIntake()
-      const run = await startNovelCreationConceptRun(saved.id, selectedModel)
+      const run = await startNovelCreationConceptRun(saved.id, selectedModel, saved.revision)
+      setActiveRun(run)
       const query = workbenchUrl(saved.id, run.id, selectedModel).split('?')[1] || ''
       setSearchParams(new URLSearchParams(query), { replace: true })
       watchRun(run.id)
@@ -524,7 +631,9 @@ function NovelCreationWizardPage() {
     if (watchingRunRef.current === runId) return
     watchingRunRef.current = runId
     setBusy(true)
+    setRunConnection('connected')
     const source = new EventSource(`/api/v1/novel-creation/runs/${runId}/stream`)
+    source.onopen = () => setRunConnection('connected')
     const handleEvent = (event: MessageEvent) => {
       try {
         const payload = JSON.parse(event.data) as { message?: string; event_type?: string; payload?: { stage?: string } }
@@ -544,50 +653,64 @@ function NovelCreationWizardPage() {
     source.addEventListener('done', (event) => {
       source.close()
       watchingRunRef.current = null
+      setRunConnection('connected')
+      let finished: StageRun | null = null
       try {
-        const finished = JSON.parse((event as MessageEvent).data) as StageRun
+        finished = JSON.parse((event as MessageEvent).data) as StageRun
+        setActiveRun(finished)
         if (finished.status === 'failed') {
           message.error(finished.current_message || '阶段生成失败')
         } else {
           message.success('阶段结果已保存到立项草稿')
         }
       } catch { /* the session refresh below is authoritative */ }
-      if (session) void loadSession(session.id)
+      const targetSessionId = finished?.session_id || requestedSessionId || session?.id
+      if (finished?.input_revision != null) {
+        const suffix = editedDuringRunRef.current ? '；运行期间的新修改已保存为下一版，不会被旧结果覆盖' : ''
+        setResultRevisionNotice(`本次结果基于草稿 v${finished.input_revision}${suffix}`)
+      }
+      if (targetSessionId) void loadSession(targetSessionId)
       setBusy(false)
       setRunMessage('')
       setRunProgress(100)
     })
     source.onerror = () => {
-      source.close()
-      watchingRunRef.current = null
-      if (session) void loadSession(session.id)
-      setBusy(false)
-      setRunMessage('')
-      setRunProgress(0)
+      setRunConnection('reconnecting')
+      setRunMessage('进度连接中断，正在重新连接；后台任务仍在运行...')
+      void apiClient.get<ApiResponse<StageRun>>(`/novel-creation/runs/${runId}`).then((response) => {
+        const current = response.data.data
+        setActiveRun(current)
+        if (current.current_message) setRunMessage(current.current_message)
+      }).catch(() => undefined)
     }
-  }, [loadSession, session])
+  }, [loadSession, requestedSessionId, session?.id])
 
   useEffect(() => {
     const activeRun = requestedRunId
       ? session?.runs?.find((run) => run.id === requestedRunId && run.status === 'running')
       : session?.runs?.find((run) => run.status === 'running')
     if (!activeRun) return
+    setActiveRun(activeRun)
     setRunMessage(activeRun.current_message || '正在恢复立项任务...')
     watchRun(activeRun.id)
   }, [requestedRunId, session?.id, session?.runs, watchRun])
 
-  const startStageRun = async (stage: string, autoConfirm = false) => {
-    if (!session || !selectedModel) return
+  const startStageRun = async (stage: string, autoConfirm = false, runSession: CreationSession | null = session) => {
+    if (!runSession || !selectedModel) return
     setBusy(true)
-    setRunProgress(5)
+    setRunProgress(0)
     setRunMessage(`正在生成${stage === 'all' ? '完整立项档案' : stageLabels[stage] || stage}...`)
+    setResultRevisionNotice('')
+    editedDuringRunRef.current = false
     try {
-      const response = await apiClient.post<ApiResponse<{ run: StageRun }>>(`/novel-creation/sessions/${session.id}/runs`, {
+      const response = await apiClient.post<ApiResponse<{ run: StageRun }>>(`/novel-creation/sessions/${runSession.id}/runs`, {
         stage,
         model: selectedModel,
         use_model: true,
         auto_confirm: autoConfirm,
+        expected_revision: runSession.revision,
       })
+      setActiveRun(response.data.data.run)
       watchRun(response.data.data.run.id)
     } catch (error) {
       setBusy(false)
@@ -601,12 +724,16 @@ function NovelCreationWizardPage() {
     if (!session) return
     setBusy(true)
     try {
-      await apiClient.patch(`/novel-creation/sessions/${session.id}`, { selected_concept_id: conceptId, quick_mode: quickMode })
+      await apiClient.patch(`/novel-creation/sessions/${session.id}`, {
+        selected_concept_id: conceptId,
+        quick_mode: quickMode,
+        expected_revision: session.revision,
+      })
       await apiClient.post(`/novel-creation/sessions/${session.id}/stages/constraints/confirm`, { data: session.draft?.form, confirm: true, source: 'author' })
       await apiClient.post(`/novel-creation/sessions/${session.id}/stages/concepts/confirm`, { data: { options: concepts, selected_concept_id: conceptId }, confirm: true, source: 'author' })
-      await loadSession(session.id)
+      const refreshed = await loadSession(session.id)
       setBusy(false)
-      await startStageRun(quickMode ? 'all' : 'world_style', quickMode)
+      await startStageRun(quickMode ? 'all' : 'world_style', quickMode, refreshed)
     } catch (error) {
       setBusy(false)
       message.error(errorText(error))
@@ -704,6 +831,7 @@ function NovelCreationWizardPage() {
           </div>
           <Space wrap>
             {session && <Tag color="processing">草稿修订 {session.revision}</Tag>}
+            {saveNotice && <Tag color={saveNotice.includes('失败') ? 'warning' : 'default'}>{saveNotice}</Tag>}
             {!inWorkbench && hasModels && modelOptions.length > 1 && <Select aria-label="选择本阶段模型" loading={modelsLoading} value={selectedModel} onChange={setSelectedModel} options={modelOptions} placeholder="切换可用模型" style={{ minWidth: 260 }} />}
             {!inWorkbench && hasModels && modelOptions.length === 1 && <Tag color="success">AI 已准备好</Tag>}
             <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>配置模型</Button>
@@ -729,14 +857,14 @@ function NovelCreationWizardPage() {
                     <strong>{preset.label}</strong><span>{preset.description}</span>
                   </button>
                 ))}
-                <button type="button" className={`creation-preset-item ${form.getFieldValue('preset_id') === 'free' ? 'active' : ''}`} onClick={() => form.setFieldsValue({ preset_id: 'free', genre: '自由创作', theme_id: undefined })}>
+                <button type="button" className={`creation-preset-item ${form.getFieldValue('preset_id') === 'free' ? 'active' : ''}`} onClick={() => { form.setFieldsValue({ preset_id: 'free', genre: '自由创作', theme_id: undefined }); markFormEdited() }}>
                   <strong>自由创作</strong><span>不套用题材画像，从作者约束开始</span>
                 </button>
               </div>
             </aside>
 
             <main className="creation-intake-main">
-              <Form form={form} layout="vertical" requiredMark="optional">
+              <Form form={form} layout="vertical" requiredMark="optional" onValuesChange={markFormEdited}>
                 <Form.Item name="preset_id" hidden><Input /></Form.Item>
                 <Form.Item name="genre" hidden><Input /></Form.Item>
                 <div className="creation-form-heading"><div><Title level={3}>把故事的边界说清楚</Title><Text type="secondary">题材画像会自动填入可编辑约束，任何字段都不是强制答案。</Text></div>{activePreset && <Tooltip title="恢复该题材的原始预设"><Button icon={<ReloadOutlined />} onClick={() => applyPreset(activePreset)}>恢复预设</Button></Tooltip>}</div>
@@ -754,7 +882,10 @@ function NovelCreationWizardPage() {
                       options={catalog.length_options.map((item) => ({ label: item.label, value: item.id }))}
                       onChange={(event) => {
                         const length = catalog.length_options.find((item) => item.id === event.target.value)
-                        if (length) form.setFieldsValue({ target_words: length.words, target_chapters: length.chapters })
+                        if (length) {
+                          form.setFieldsValue({ target_words: length.words, target_chapters: length.chapters })
+                          markFormEdited()
+                        }
                       }}
                     />
                   </Form.Item>
@@ -862,8 +993,34 @@ function NovelCreationWizardPage() {
         {busy && (
           <div className="creation-run-bar" aria-live="polite">
             <CloudSyncOutlined spin />
-            <div><Text strong>{runMessage || '正在处理立项任务...'}</Text><Progress percent={runProgress} status="active" showInfo={false} /></div>
+            <div className="creation-run-detail">
+              <Space size={6} wrap>
+                <Text strong>{runMessage || '正在处理立项任务...'}</Text>
+                <Tag color={runConnection === 'connected' ? 'processing' : 'warning'}>{runConnection === 'connected' ? '运行中' : '正在重新连接'}</Tag>
+                {activeRun?.model_source && <Tag>{activeRun.model_source}</Tag>}
+                {activeRun?.input_revision != null && <Tag>基于草稿 v{activeRun.input_revision}</Tag>}
+              </Space>
+              {activeRun?.stage === 'all' && runProgress > 0
+                ? <Progress percent={runProgress} status="active" showInfo />
+                : <div className="creation-run-indeterminate"><Spin size="small" /><Text type="secondary">模型正在推进；无法准确估算时不显示虚假百分比</Text></div>}
+              {editedDuringRunRef.current && <Text type="warning">你刚才的修改会保存为下一版，不会改变当前这次生成。</Text>}
+            </div>
           </div>
+        )}
+
+        {resultRevisionNotice && !busy && (
+          <Alert
+            className="creation-result-revision"
+            type="info"
+            showIcon
+            message={resultRevisionNotice}
+            action={editedDuringRunRef.current ? (
+              <Space wrap>
+                <Button onClick={() => { editedDuringRunRef.current = false; setResultRevisionNotice('') }}>接受本次结果</Button>
+                <Button type="primary" onClick={() => activeRun?.stage === 'concepts' ? void generateConcepts() : void startStageRun(activeRun?.stage || currentStage)}>按最新版重新生成</Button>
+              </Space>
+            ) : undefined}
+          />
         )}
 
         {session?.last_error && !busy && (

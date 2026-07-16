@@ -29,6 +29,7 @@ router = APIRouter(tags=["context-governance"])
 def _job_payload(job: ContextRebuildJob) -> dict:
     return {
         "id": job.id,
+        "operation_id": job.operation_id,
         "policy_version": job.policy_version,
         "status": job.status,
         "requested_by": job.requested_by,

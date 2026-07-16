@@ -66,8 +66,22 @@ interface StartSessionData {
   session?: { id: string }
 }
 
+export interface NovelCreationRunSummary {
+  id: string
+  session_id?: string
+  stage: string
+  status: string
+  current_message?: string
+  failure_class?: string
+  next_action?: string
+  operation_id?: string
+  input_revision?: number
+  input_snapshot_hash?: string
+  model_source?: string
+}
+
 interface ConceptRunData {
-  run: { id: string; status: string; current_message?: string }
+  run: NovelCreationRunSummary
 }
 
 export interface StartNovelCreationSessionInput {
@@ -94,13 +108,12 @@ export function defaultInterviewRuntime(
   source: InterviewModelSource = 'unknown',
 ): InterviewRuntime {
   const [provider] = String(model || '').split(':')
-  const isLocalCli = provider.endsWith('_cli')
   return {
     effective_model: model || undefined,
     provider: provider || undefined,
     model_source: source,
     tool_mode: 'dynamic_interview_json',
-    timeout_seconds: isLocalCli ? 45 : 30,
+    timeout_seconds: 0,
     quota_status: 'unknown',
   }
 }
@@ -124,12 +137,13 @@ export async function startNovelCreationSession(input: StartNovelCreationSession
   return { id, raw: data }
 }
 
-export async function startNovelCreationConceptRun(sessionId: string, model?: string) {
+export async function startNovelCreationConceptRun(sessionId: string, model?: string, expectedRevision?: number) {
   const response = await apiClient.post<ApiResponse<ConceptRunData>>(`/novel-creation/sessions/${sessionId}/runs`, {
     stage: 'concepts',
     model,
     use_model: true,
     operation: 'generate_concepts',
+    expected_revision: expectedRevision,
   })
   return response.data.data.run
 }
@@ -230,6 +244,7 @@ export function useNovelCreationInterviewController({
           skip_questions: skipQuestions,
           ...(requestedModel ? { model: requestedModel } : {}),
         },
+        { timeout: 0 },
       )
       const transition = commitTransition(response.data.data, running)
       setState(transition.state)

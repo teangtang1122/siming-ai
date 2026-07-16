@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.ai.local_cli_adapter import (
+    CLIStalledError,
     CLIQuotaLimitError,
     CLILaunch,
     DEFAULT_CLI_COMMANDS,
@@ -48,6 +49,12 @@ from app.services.cataloging.candidate_io import candidate_to_dict
 from app.services.cataloging.fact_store import fact_to_dict
 from app.services.cataloging.orchestrator import job_to_dict, run_to_dict, sse_event
 from app.services.cataloging import orchestrator as cataloging_orchestrator
+from app.services.operation_runtime import (
+    finish_operation,
+    record_operation_signal,
+    register_operation_actions,
+    unregister_operation_actions,
+)
 
 
 _COORDINATORS: dict[str, asyncio.Task] = {}
@@ -55,9 +62,7 @@ _PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 _TERMINAL_JOBS = {"completed", "failed", "cancelled"}
 _TERMINAL_RUNS = {"completed", "completed_with_warnings", "skipped_by_user"}
 _MAX_NO_SAVE_ATTEMPTS = 3
-_DEFAULT_CLI_TOTAL_TIMEOUT_SECONDS = 1200
-_DEFAULT_CLI_IDLE_TIMEOUT_SECONDS = 600
-_DEFAULT_CLI_POLL_SECONDS = 15
+_DEFAULT_CLI_POLL_SECONDS = 5
 
 
 def _timeout_seconds_from_env(name: str, default: float) -> float:
@@ -153,6 +158,7 @@ def _active_agent_run(db: Session, job: CatalogingJob, provider: str) -> AgentRu
         source="internal_cli",
         client_name=provider,
         title=f"作品建档：{job.total_chapters or 0} 章",
+        create_operation=False,
     )
     job.agent_run_id = run.id
     job.updated_at = datetime.utcnow()
@@ -184,6 +190,16 @@ def ensure_local_cli_cataloging_worker(
             _coordinate_cataloging(job.id, provider),
             name=f"cataloging-cli-{job.id}",
         )
+    if job.operation_id:
+        register_operation_actions(
+            job.operation_id,
+            **{
+                "pause": lambda: _pause_cataloging_operation(job.id),
+                "continue": lambda: _continue_cataloging_operation(job.id, provider),
+                "cancel": lambda: _cancel_cataloging_operation(job.id),
+                "retry_current_unit": lambda: _retry_cataloging_operation(job.id, provider),
+            },
+        )
     return {
         "agent_run_id": run.id,
         "provider": provider,
@@ -212,6 +228,76 @@ def cancel_local_cli_cataloging_worker(job_id: str, *, terminal: bool = False) -
                 run.completed_at = datetime.utcnow() if terminal else None
                 run.updated_at = datetime.utcnow()
                 db.commit()
+    finally:
+        db.close()
+
+
+async def _pause_cataloging_operation(job_id: str) -> None:
+    from app.services.cataloging.job_control import pause_job, refresh_job_progress
+
+    db = SessionLocal()
+    try:
+        job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+        if not job or job.status in _TERMINAL_JOBS:
+            return
+        pause_job(job)
+        refresh_job_progress(db, job)
+        db.commit()
+    finally:
+        db.close()
+    cancel_local_cli_cataloging_worker(job_id, terminal=False)
+
+
+async def _continue_cataloging_operation(job_id: str, provider: str) -> None:
+    from app.services.cataloging.job_control import refresh_job_progress, resume_job
+
+    db = SessionLocal()
+    try:
+        job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+        if not job or job.status in _TERMINAL_JOBS:
+            return
+        resume_job(job)
+        refresh_job_progress(db, job)
+        db.commit()
+        ensure_local_cli_cataloging_worker(db, job, provider=provider)
+    finally:
+        db.close()
+
+
+async def _cancel_cataloging_operation(job_id: str) -> None:
+    from app.services.cataloging.job_control import cancel_job, refresh_job_progress
+
+    db = SessionLocal()
+    try:
+        job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+        if not job:
+            return
+        cancel_job(job)
+        refresh_job_progress(db, job)
+        db.commit()
+    finally:
+        db.close()
+    cancel_local_cli_cataloging_worker(job_id, terminal=True)
+    unregister_operation_actions(job.operation_id if job else None)
+
+
+async def _retry_cataloging_operation(job_id: str, provider: str) -> None:
+    from app.services.cataloging.job_control import first_blocking_run, refresh_job_progress, reset_run_for_retry
+
+    db = SessionLocal()
+    try:
+        job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
+        if not job or job.status in _TERMINAL_JOBS:
+            return
+        run = first_blocking_run(db, job)
+        if run:
+            reset_run_for_retry(db, job, run)
+        else:
+            job.status = "running"
+            job.error = None
+            refresh_job_progress(db, job)
+        db.commit()
+        ensure_local_cli_cataloging_worker(db, job, provider=provider)
     finally:
         db.close()
 
@@ -798,54 +884,38 @@ async def _run_cli_turn(
         **hidden_subprocess_kwargs(),
     )
     _PROCESSES[job.id] = process
-    communicate_task = asyncio.create_task(
-        communicate_with_cli_quota_detection(
-            process,
-            input_bytes=launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None,
-        )
-    )
-    started_at = datetime.utcnow()
-    last_progress_at = started_at
-    total_timeout = _timeout_seconds_from_env(
-        "SIMING_CATALOGING_CLI_TOTAL_TIMEOUT_SECONDS",
-        _DEFAULT_CLI_TOTAL_TIMEOUT_SECONDS,
-    )
-    idle_timeout = _timeout_seconds_from_env(
-        "SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS",
-        _DEFAULT_CLI_IDLE_TIMEOUT_SECONDS,
-    )
     poll_seconds = _timeout_seconds_from_env(
         "SIMING_CATALOGING_CLI_POLL_SECONDS",
         _DEFAULT_CLI_POLL_SECONDS,
     )
+    if job.operation_id:
+        operation_db = SessionLocal()
+        try:
+            record_operation_signal(
+                job.operation_id,
+                "phase",
+                {
+                    "phase": stage,
+                    "current_object": f"第 {run.chapter_order + 1} 章：{chapter.title}",
+                    "model": model,
+                    "pid": process.pid,
+                },
+                message=f"正在处理第 {run.chapter_order + 1} 章：{chapter.title}",
+                db=operation_db,
+            )
+        finally:
+            operation_db.close()
     try:
-        while True:
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    asyncio.shield(communicate_task),
-                    timeout=max(0.1, min(poll_seconds, idle_timeout, total_timeout)),
-                )
-                break
-            except CLIQuotaLimitError as exc:
-                raise RuntimeError(str(exc)) from exc
-            except asyncio.TimeoutError:
-                now = datetime.utcnow()
-                latest_event_at = _latest_agent_event_at(agent_run_id)
-                if latest_event_at and latest_event_at > last_progress_at:
-                    last_progress_at = latest_event_at
-                elapsed = (now - started_at).total_seconds()
-                idle = (now - last_progress_at).total_seconds()
-                if elapsed >= total_timeout:
-                    await _terminate_process_tree(process)
-                    await _cancel_communicate_task(communicate_task)
-                    raise RuntimeError(f"本机 CLI 单章建档超过 {int(total_timeout)} 秒，已终止")
-                if idle >= idle_timeout:
-                    await _terminate_process_tree(process)
-                    await _cancel_communicate_task(communicate_task)
-                    raise RuntimeError(
-                        f"本机 CLI 单章建档超过 {int(idle_timeout)} 秒没有汇报进度，已终止；"
-                        "请重试当前章节或切换模型。"
-                    )
+        stdout, stderr = await communicate_with_cli_quota_detection(
+            process,
+            input_bytes=launch.stdin_text.encode("utf-8") if launch.stdin_text is not None else None,
+            timeout_seconds=None,
+            operation_id=job.operation_id,
+            external_activity_probe=lambda: _latest_agent_event_at(agent_run_id),
+            poll_seconds=poll_seconds,
+        )
+    except CLIQuotaLimitError as exc:
+        raise RuntimeError(str(exc)) from exc
     finally:
         _PROCESSES.pop(job.id, None)
     out_text = stdout.decode("utf-8", errors="replace").strip()
@@ -883,6 +953,13 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job.completed_at = datetime.utcnow()
                     db.commit()
                     update_run_status(db, agent_run.id, "completed", summary="作品建档完成")
+                    if job.operation_id:
+                        finish_operation(
+                            job.operation_id,
+                            message=f"作品建档完成，共处理 {job.completed_chapters or job.total_chapters or 0} 章",
+                            db=db,
+                        )
+                        unregister_operation_actions(job.operation_id)
                     return
                 if run.status == "failed":
                     job.status = "paused_on_failure"
@@ -909,6 +986,19 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                 agent_run.status = "running"
                 agent_run.current_step = f"第 {run.chapter_order + 1} 章：{stage}"
                 db.commit()
+                if job.operation_id:
+                    record_operation_signal(
+                        job.operation_id,
+                        "phase",
+                        {
+                            "phase": stage,
+                            "chapter_id": chapter.id,
+                            "chapter_order": run.chapter_order,
+                            "current_object": chapter.title,
+                        },
+                        message=f"开始处理第 {run.chapter_order + 1} 章：{chapter.title}",
+                        db=db,
+                    )
                 add_event(
                     db,
                     agent_run.id,
@@ -954,12 +1044,15 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
                     run = db.query(CatalogingChapterRun).filter(CatalogingChapterRun.id == run_snapshot.id).first()
                     if job and run:
+                        from app.services.cataloging.job_control import refresh_job_progress
+
                         run.status = "failed"
                         run.error = str(exc)
                         job.status = "paused_on_failure"
                         job.blocked_chapter_id = run.chapter_id
                         job.current_chapter_id = run.chapter_id
                         job.error = run.error
+                        refresh_job_progress(db, job)
                         add_event(
                             db,
                             agent_run_id,
@@ -975,6 +1068,18 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                         )
                         db.commit()
                         update_run_status(db, agent_run_id, "failed", summary=run.error)
+                        if job.operation_id:
+                            record_operation_signal(
+                                job.operation_id,
+                                "stalled" if isinstance(exc, CLIStalledError) else "error",
+                                {
+                                    "chapter_id": run.chapter_id,
+                                    "chapter_order": run.chapter_order,
+                                    "error": run.error,
+                                },
+                                message=run.error,
+                                db=db,
+                            )
                     return
                 finally:
                     db.close()
@@ -1050,11 +1155,22 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     run.status = "failed"
                     run.error = f"本机 CLI 未通过 MCP 保存本章事实或候选；直连 JSONL 兜底也失败：{fallback_error}"
                 if run.status == "failed":
+                    from app.services.cataloging.job_control import refresh_job_progress
+
                     job.status = "paused_on_failure"
                     job.blocked_chapter_id = run.chapter_id
                     job.error = run.error
+                    refresh_job_progress(db, job)
                     db.commit()
                     update_run_status(db, agent_run_id, "failed", summary=run.error)
+                    if job.operation_id:
+                        record_operation_signal(
+                            job.operation_id,
+                            "error",
+                            {"chapter_id": run.chapter_id, "error": run.error},
+                            message=run.error,
+                            db=db,
+                        )
                     return
                 if run.status == "awaiting_confirmation" and job.execution_mode == "manual":
                     job.status = "waiting_confirmation"
@@ -1066,6 +1182,18 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     db.commit()
                     return
                 db.commit()
+                if job.operation_id and run.status in _TERMINAL_RUNS:
+                    record_operation_signal(
+                        job.operation_id,
+                        "checkpoint",
+                        {
+                            "chapter_id": run.chapter_id,
+                            "chapter_order": run.chapter_order,
+                            "chapter_status": run.status,
+                        },
+                        message=f"第 {run.chapter_order + 1} 章已保存检查点",
+                        db=db,
+                    )
             finally:
                 db.close()
     except asyncio.CancelledError:

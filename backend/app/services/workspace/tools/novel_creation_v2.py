@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import nullcontext
 from copy import deepcopy
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....ai.gateway import LLMGateway
+from ...operation_runtime import current_operation_id, record_operation_signal
 from ....core.json_repair import parse_json_object
 from ....database.models import NovelCreationSession, NovelCreationStageRun
 from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
@@ -54,18 +56,60 @@ def _free_opencode_candidates(model: str) -> list[str]:
     return [model, *[candidate for candidate in discovered if candidate != model]]
 
 
+async def _stream_model_text(
+    *,
+    messages: list[dict[str, Any]],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    extra_body: dict[str, Any] | None,
+) -> str:
+    chunks: list[str] = []
+    emitted_chars = 0
+    last_report_at = 0.0
+    operation_id = current_operation_id()
+    generator = LLMGateway.stream_chat_completion(
+        messages=messages,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=0,
+        retry=0,
+        extra_body=extra_body,
+    )
+    async for chunk in generator:
+        chunks.append(chunk)
+        emitted_chars += len(chunk)
+        now = time.monotonic()
+        if operation_id and now - last_report_at >= 2:
+            last_report_at = now
+            record_operation_signal(
+                operation_id,
+                "output",
+                {"output_chars": emitted_chars},
+                message="模型正在生成并校验立项内容",
+            )
+    return "".join(chunks)
+
+
 async def _generate_compact_concepts_with_fallback(
     session: NovelCreationSession,
     model: str,
     *,
     context_manifest: Any,
     on_fallback: Any,
+    input_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     last_error: Exception | None = None
     candidates = _free_opencode_candidates(model)
     for index, candidate in enumerate(candidates):
         try:
-            return await _generate_compact_concepts(session, candidate, context_manifest=context_manifest)
+            return await _generate_compact_concepts(
+                session,
+                candidate,
+                context_manifest=context_manifest,
+                input_snapshot=input_snapshot,
+            )
         except Exception as exc:
             last_error = exc
             failure = classify_failure(str(exc))
@@ -142,9 +186,10 @@ async def _generate_compact_concepts(
     model: str,
     *,
     context_manifest: Any | None = None,
+    input_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate decision-ready concepts, never a complete project blueprint."""
-    draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    draft = deepcopy(input_snapshot) if isinstance(input_snapshot, dict) else (session.draft_json if isinstance(session.draft_json, dict) else {})
     interview = draft.get("interview") if isinstance(draft.get("interview"), dict) else {}
     context = {
         "brief": _text(session.user_brief),
@@ -181,20 +226,17 @@ async def _generate_compact_concepts(
     from ....services.content_store import content_root
 
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
-        result = await LLMGateway.chat_completion(
+        raw = await _stream_model_text(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             model=model,
             temperature=0.8,
             max_tokens=3200,
-            timeout=180,
-            retry=0,
             extra_body=LLMGateway.local_cli_extra_body(
                 model,
                 cwd=str(content_root()),
                 base={"moshu_task_type": "planning", "storage_target": "session_draft"},
             ),
         )
-    raw = _text(result.get("content")) if isinstance(result, dict) else ""
     if not raw:
         raise RuntimeError("模型没有返回轻量创意卡")
     parsed = parse_json_object(raw)
@@ -211,8 +253,9 @@ async def _enhance_with_model(
     model: str,
     *,
     context_manifest: Any | None = None,
+    input_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    draft = deepcopy(input_snapshot) if isinstance(input_snapshot, dict) else (session.draft_json if isinstance(session.draft_json, dict) else {})
     context = {
         "form": draft.get("form"),
         "selected_concept_id": draft.get("selected_concept_id"),
@@ -237,20 +280,17 @@ async def _enhance_with_model(
     from ....services.content_store import content_root
 
     with activate_context_manifest(context_manifest) if context_manifest else nullcontext():
-        result = await LLMGateway.chat_completion(
+        raw = await _stream_model_text(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             model=model,
             temperature=0.65,
             max_tokens=12000 if stage == "opening_outline" else 6000,
-            timeout=180,
-            retry=0,
             extra_body=LLMGateway.local_cli_extra_body(
                 model,
                 cwd=str(content_root()),
                 base={"moshu_task_type": "planning", "storage_target": "session_draft"},
             ),
         )
-    raw = _text(result.get("content")) if isinstance(result, dict) else ""
     if not raw:
         raise RuntimeError("没有收到模型的文字回复")
     parsed = parse_json_object(raw)
@@ -290,11 +330,14 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
     auto_confirm = bool(args.get("auto_confirm", stage == "all"))
     existing_run_id = _text(args.get("_run_id"))
     run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == existing_run_id).first() if existing_run_id else None
+    run_request = run.request_json if run and isinstance(run.request_json, dict) else {}
+    current_draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+    working_draft = deepcopy(run_request.get("input_snapshot")) if isinstance(run_request.get("input_snapshot"), dict) else deepcopy(current_draft)
     orchestrator = ContextOrchestrator(db)
     manifest_id = _text(args.get("context_manifest_id")) or _text(getattr(run, "context_manifest_id", ""))
     manifest = orchestrator.get_manifest(manifest_id) if manifest_id else None
     if manifest is None:
-        draft = session.draft_json if isinstance(session.draft_json, dict) else {}
+        draft = working_draft
         manifest = orchestrator.prepare(
             project_id=None,
             task_type="new_project",
@@ -351,7 +394,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                     run,
                     "model_fallback",
                     "running",
-                    "当前免费模型暂时不可用，正在自动尝试另一个",
+                    f"免费模型 {previous} 暂时不可用，已明确切换为 {following}",
                     {
                         "previous_model": previous,
                         "model_source": following,
@@ -365,6 +408,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 model,
                 context_manifest=manifest,
                 on_fallback=record_fallback,
+                input_snapshot=working_draft,
             )
             concept_stage = save_compact_concepts(session, concepts)
             generated["concepts"] = deepcopy(concept_stage.get("data") or {})
@@ -390,10 +434,22 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 )
                 run.current_message = f"正在生成{STAGE_LABELS.get(name, name)}"
                 db.commit()
-                baseline = derive_stage(session, name)
-                data = await _enhance_with_model(session, name, baseline, model, context_manifest=manifest) if use_model and model and name != "final_review" else baseline
+                baseline = derive_stage(session, name, working_draft)
+                data = await _enhance_with_model(
+                    session,
+                    name,
+                    baseline,
+                    model,
+                    context_manifest=manifest,
+                    input_snapshot=working_draft,
+                ) if use_model and model and name != "final_review" else baseline
                 _validate_stage(name, data)
                 save_stage(session, name, data, confirm=auto_confirm, source="model" if use_model and model else "contract")
+                working_draft.setdefault("stages", {})[name] = {
+                    "status": "confirmed" if auto_confirm else "generated",
+                    "data": deepcopy(data),
+                    "source": "model" if use_model and model else "contract",
+                }
                 generated[name] = deepcopy(data)
                 add_run_event(
                     db,
@@ -405,7 +461,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 )
                 db.commit()
         if stage == "all":
-            final = derive_stage(session, "final_review")
+            final = derive_stage(session, "final_review", working_draft)
             save_stage(session, "final_review", final, confirm=False, source="contract")
             generated["final_review"] = final
             add_run_event(

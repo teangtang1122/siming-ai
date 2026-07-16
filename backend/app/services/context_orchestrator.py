@@ -1723,6 +1723,49 @@ class ContextOrchestrator:
             encoding="utf-8",
         )
 
+    def _sync_rebuild_operation(self, job: ContextRebuildJob, *, message: str | None = None) -> None:
+        from .operation_runtime import ensure_operation, update_operation
+
+        lifecycle = {
+            "queued": "queued",
+            "running": "running",
+            "completed": "completed",
+            "failed": "failed",
+        }.get(job.status, "running")
+        processed = int(job.completed_projects or 0) + int(job.failed_projects or 0)
+        operation = ensure_operation(
+            self.db,
+            source_kind="context_rebuild",
+            source_id=job.id,
+            title=f"上下文索引重建 · {job.total_projects or 0} 个作品",
+            status=lifecycle,
+            phase=job.status,
+            message=message or "正在重建作品上下文索引",
+            tool_mode="context_indexer",
+            resume_url="/dashboard",
+            can_pause=False,
+            can_cancel=False,
+            can_retry=False,
+            progress_mode="determinate" if job.total_projects else "indeterminate",
+            progress_current=processed,
+            progress_total=int(job.total_projects) if job.total_projects else None,
+        )
+        job.operation_id = operation.id
+        update_operation(
+            self.db,
+            operation,
+            status=lifecycle,
+            health_status="active",
+            phase=job.status,
+            message=message or operation.current_message,
+            progress_mode="determinate" if job.total_projects else "indeterminate",
+            progress_current=processed,
+            progress_total=int(job.total_projects) if job.total_projects else None,
+            failure_class="context_rebuild_error" if lifecycle == "failed" else None,
+            next_action="返回上下文治理页面重试失败作品" if lifecycle == "failed" else None,
+        )
+        self.db.flush()
+
     def create_rebuild_job(self, *, requested_by: str = "system", project_ids: Sequence[str] | None = None) -> ContextRebuildJob:
         active = (
             self.db.query(ContextRebuildJob)
@@ -1734,6 +1777,7 @@ class ContextOrchestrator:
             .first()
         )
         if active:
+            self._sync_rebuild_operation(active, message="上下文索引重建仍在运行")
             return active
 
         requested_ids = [str(value) for value in (project_ids or []) if str(value)]
@@ -1802,15 +1846,21 @@ class ContextOrchestrator:
                 status="queued",
                 index_version=CONTEXT_INDEX_VERSION,
             ))
+        self._sync_rebuild_operation(
+            job,
+            message="上下文索引重建已排队" if ids else "当前上下文索引已经是最新版本",
+        )
         self.db.flush()
         return job
 
     def run_rebuild_job(self, job: ContextRebuildJob) -> ContextRebuildJob:
         if job.status == "completed":
+            self._sync_rebuild_operation(job, message="上下文索引重建已完成")
             return job
         job.status = "running"
         job.started_at = job.started_at or datetime.utcnow()
-        self.db.flush()
+        self._sync_rebuild_operation(job, message="正在准备上下文索引重建")
+        self.db.commit()
         rows = (
             self.db.query(ContextRebuildProject)
             .filter(ContextRebuildProject.job_id == job.id)
@@ -1826,6 +1876,8 @@ class ContextOrchestrator:
             self.db.flush()
             try:
                 row.current_source_type = "lexical"
+                self._sync_rebuild_operation(job, message=f"正在重建作品 {row.project_id} 的关键词索引")
+                self.db.commit()
                 lexical = reindex_project(self.db, row.project_id)
                 row.indexed_chunks = int(lexical.get("total_chunks") or 0)
                 row.current_source_type = "semantic"
@@ -1840,7 +1892,24 @@ class ContextOrchestrator:
                 row.error = str(exc)[:8000]
                 row.completed_at = datetime.utcnow()
                 job.failed_projects = int(job.failed_projects or 0) + 1
-            self.db.flush()
+            self._sync_rebuild_operation(
+                job,
+                message=(f"作品 {row.project_id} 索引重建完成" if row.status == "completed" else f"作品 {row.project_id} 索引重建失败"),
+            )
+            if job.operation_id:
+                from ..database.models import OperationRun
+                from .operation_runtime import update_operation
+
+                operation = self.db.query(OperationRun).filter(OperationRun.id == job.operation_id).first()
+                if operation:
+                    update_operation(
+                        self.db,
+                        operation,
+                        event_type="checkpoint",
+                        payload={"project_id": row.project_id, "status": row.status},
+                        checkpoint=True,
+                    )
+            self.db.commit()
         remaining = self.db.query(ContextRebuildProject).filter(
             ContextRebuildProject.job_id == job.id,
             ContextRebuildProject.status.in_(["queued", "running"]),
@@ -1848,7 +1917,11 @@ class ContextOrchestrator:
         if not remaining:
             job.status = "completed" if not job.failed_projects else "failed"
             job.completed_at = datetime.utcnow()
-        self.db.flush()
+        self._sync_rebuild_operation(
+            job,
+            message="上下文索引重建完成" if job.status == "completed" else "部分作品的上下文索引重建失败",
+        )
+        self.db.commit()
         return job
 
     def retry_rebuild_job(self, job: ContextRebuildJob) -> ContextRebuildJob:
@@ -1867,6 +1940,7 @@ class ContextOrchestrator:
             job.error = None
             job.failed_projects = max(0, int(job.failed_projects or 0) - len(failed))
             job.completed_at = None
+            self._sync_rebuild_operation(job, message="失败作品已重新排队")
         self.db.flush()
         return job
 
@@ -1957,8 +2031,15 @@ def run_context_rebuild_job(job_id: str) -> None:
             return
         ContextOrchestrator(db).run_rebuild_job(job)
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        job = db.query(ContextRebuildJob).filter(ContextRebuildJob.id == job_id).first()
+        if job:
+            job.status = "failed"
+            job.error = str(exc)[:8000]
+            job.completed_at = datetime.utcnow()
+            ContextOrchestrator(db)._sync_rebuild_operation(job, message=f"上下文索引重建失败：{exc}")
+            db.commit()
         raise
     finally:
         db.close()

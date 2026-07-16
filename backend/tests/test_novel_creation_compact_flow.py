@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pytest
+from fastapi import HTTPException
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,10 +13,16 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import NovelCreationSession
 from app.database.session import Base
-from app.routers.novel_creation import NovelCreationStageRunRequest, start_creation_stage_run
+from app.routers.novel_creation import (
+    NovelCreationSessionPatchRequest,
+    NovelCreationStageRunRequest,
+    start_creation_stage_run,
+    update_creation_session,
+)
 from app.services.novel_creation_workspace import (
     STAGE_ORDER,
     build_apply_blueprint,
+    create_run as create_stage_run,
     derive_stage,
     initialize_session_draft,
     patch_session,
@@ -24,6 +32,23 @@ from app.services.novel_creation_workspace import (
 from app.services.workspace.tools.novel_creation import advance_novel_creation_interview, apply_novel_blueprint
 from app.services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage
 from app.services.novel_creation_interview import INTERVIEW_CLI_TIMEOUT_SECONDS
+from app.services.operation_runtime import input_snapshot_hash
+
+
+def _streaming_completion(*results):
+    queue = list(results)
+
+    def create_stream(**_kwargs):
+        result = queue.pop(0)
+
+        async def generate():
+            if isinstance(result, BaseException):
+                raise result
+            yield str(result.get("content") or "") if isinstance(result, dict) else str(result)
+
+        return generate()
+
+    return MagicMock(side_effect=create_stream)
 
 
 def _db():
@@ -182,10 +207,11 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
     db = _db()
     session = _session(db)
     content = json.dumps({"concepts": _concepts()})
+    completion = _streaming_completion({"content": content})
     with patch(
-        "app.services.workspace.tools.novel_creation_v2.LLMGateway.chat_completion",
-        new=AsyncMock(return_value={"content": content}),
-    ) as completion:
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=completion,
+    ):
         result = asyncio.run(generate_novel_creation_stage(db, "", {
             "session_id": session.id,
             "stage": "concepts",
@@ -194,8 +220,8 @@ def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():
         }))
 
     assert result["status"] == "ok"
-    assert completion.await_args.kwargs["max_tokens"] == 3200
-    assert completion.await_args.kwargs["retry"] == 0
+    assert completion.call_args.kwargs["max_tokens"] == 3200
+    assert completion.call_args.kwargs["retry"] == 0
     assert session.blueprint_json is None
     assert len(session.draft_json["concepts"]) == 3
     assert len(session.draft_json["concept_seeds"]) == 3
@@ -206,12 +232,12 @@ def test_compact_concepts_switch_to_another_free_model_on_quota_failure():
     db = _db()
     session = _session(db)
     content = json.dumps({"concepts": _concepts()})
-    completion = AsyncMock(side_effect=[RuntimeError("free usage quota exceeded"), {"content": content}])
+    completion = _streaming_completion(RuntimeError("free usage quota exceeded"), {"content": content})
     with patch(
         "app.services.workspace.tools.novel_creation_v2._free_opencode_candidates",
         return_value=["opencode_cli:opencode/first-free", "opencode_cli:opencode/second-free"],
     ), patch(
-        "app.services.workspace.tools.novel_creation_v2.LLMGateway.chat_completion",
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
         new=completion,
     ):
         result = asyncio.run(generate_novel_creation_stage(db, "", {
@@ -222,7 +248,7 @@ def test_compact_concepts_switch_to_another_free_model_on_quota_failure():
         }))
 
     assert result["status"] == "ok"
-    assert [item.kwargs["model"] for item in completion.await_args_list] == [
+    assert [item.kwargs["model"] for item in completion.call_args_list] == [
         "opencode_cli:opencode/first-free",
         "opencode_cli:opencode/second-free",
     ]
@@ -234,8 +260,8 @@ def test_invalid_concepts_fail_then_a_retry_can_succeed():
     session = _session(db)
     invalid = json.dumps({"concepts": _concepts()[:2]})
     with patch(
-        "app.services.workspace.tools.novel_creation_v2.LLMGateway.chat_completion",
-        new=AsyncMock(return_value={"content": invalid}),
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=_streaming_completion({"content": invalid}),
     ):
         failed = asyncio.run(generate_novel_creation_stage(db, "", {
             "session_id": session.id,
@@ -248,8 +274,8 @@ def test_invalid_concepts_fail_then_a_retry_can_succeed():
 
     valid = json.dumps({"concepts": _concepts()})
     with patch(
-        "app.services.workspace.tools.novel_creation_v2.LLMGateway.chat_completion",
-        new=AsyncMock(return_value={"content": valid}),
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=_streaming_completion({"content": valid}),
     ):
         retried = asyncio.run(generate_novel_creation_stage(db, "", {
             "session_id": session.id,
@@ -259,6 +285,43 @@ def test_invalid_concepts_fail_then_a_retry_can_succeed():
         }))
     assert retried["status"] == "ok"
     assert retried["data"]["run"]["id"] != failed["data"]["run"]["id"]
+
+
+def test_stage_run_freezes_the_click_time_draft_revision_and_hash():
+    db = _db()
+    session = _session(db)
+    clicked_revision = session.revision
+    clicked_draft = json.loads(json.dumps(session.draft_json))
+    run = create_stage_run(db, session, "concepts", {"model": "openai:test"})
+
+    patch_session(session, {"form": {"brief": "A later author edit"}})
+    db.commit()
+
+    assert run.input_revision == clicked_revision
+    assert run.request_json["input_snapshot"] == clicked_draft
+    assert run.input_snapshot_hash == input_snapshot_hash(clicked_draft)
+    assert run.request_json["input_snapshot"]["form"]["brief"] != session.draft_json["form"]["brief"]
+
+
+def test_stale_session_patch_returns_conflict_without_overwriting_author_text():
+    db = _db()
+    session = _session(db)
+    original_brief = session.draft_json["form"]["brief"]
+    stale_revision = int(session.revision or 0) - 1
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(update_creation_session(
+            session.id,
+            NovelCreationSessionPatchRequest(
+                form={"brief": "This stale text must not win"},
+                expected_revision=stale_revision,
+            ),
+            db,
+        ))
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["current_revision"] == session.revision
+    assert session.draft_json["form"]["brief"] == original_brief
 
 
 def test_compact_seed_can_drive_stages_and_final_apply_blueprint():

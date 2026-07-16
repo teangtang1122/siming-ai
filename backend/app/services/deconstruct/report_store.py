@@ -45,6 +45,7 @@ def report_payload(report: DeconstructionReport) -> dict:
     data.setdefault("id", report.id)
     data.setdefault("status", report.status)
     data.setdefault("created_at", report.created_at.isoformat() if report.created_at else None)
+    data.setdefault("operation_id", report.operation_id)
     return data
 
 
@@ -105,6 +106,31 @@ def create_deconstruct_report(
         report_data=json.dumps(report_data, ensure_ascii=False),
     )
     db.add(report)
+    db.flush()
+    from ..operation_runtime import ensure_operation
+
+    operation = ensure_operation(
+        db,
+        source_kind="deconstruct",
+        source_id=report.id,
+        project_id=project_id,
+        title=f"拆书分析：{title}",
+        status="queued",
+        phase="queued",
+        message=f"准备分析 {len(chunks)} 个分块",
+        model_source=reduce_model or map_model,
+        tool_mode="map_reduce",
+        resume_url=f"/project/{project_id}?view=deconstruct",
+        can_pause=False,
+        can_cancel=True,
+        can_retry=False,
+        progress_mode="determinate",
+        progress_current=0,
+        progress_total=len(chunks),
+    )
+    report.operation_id = operation.id
+    report_data["operation_id"] = operation.id
+    report.report_data = json.dumps(report_data, ensure_ascii=False)
     db.commit()
     db.refresh(report)
     return report

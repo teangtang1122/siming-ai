@@ -23,11 +23,31 @@ from app.ai.local_cli_adapter import (
     ensure_opencode_logging_args,
     hidden_subprocess_kwargs,
     parse_cli_launch,
+    terminate_cli_process_tree,
 )
 from app.database.models import APIConfig, AgentRun, Project
 from app.database.session import SessionLocal
 from app.services.content_store import ensure_project_folder
-from app.services.external_agent.run_service import add_event, create_run, update_run_status
+from app.services.external_agent.run_service import add_event, cancel_run, create_run, update_run_status
+from app.services.operation_runtime import register_operation_actions, unregister_operation_actions
+
+
+_TASKS: dict[str, asyncio.Task] = {}
+_PROCESSES: dict[str, asyncio.subprocess.Process] = {}
+
+
+async def _cancel_local_cli_agent(run_id: str) -> None:
+    process = _PROCESSES.get(run_id)
+    if process and process.returncode is None:
+        await terminate_cli_process_tree(process)
+    task = _TASKS.get(run_id)
+    if task and not task.done():
+        task.cancel()
+    db = SessionLocal()
+    try:
+        cancel_run(db, run_id)
+    finally:
+        db.close()
 
 
 def _select_cli_config(db: Session, provider: str | None = None) -> APIConfig | None:
@@ -154,7 +174,10 @@ async def _run_cli_process(
     cwd: str,
 ) -> None:
     db = SessionLocal()
+    operation_id: str | None = None
     try:
+        run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+        operation_id = run.operation_id if run else None
         add_event(
             db,
             run_id,
@@ -177,10 +200,13 @@ async def _run_cli_process(
             env=env,
             **hidden_subprocess_kwargs(),
         )
+        _PROCESSES[run_id] = proc
         try:
             stdout, stderr = await communicate_with_cli_quota_detection(
                 proc,
                 input_bytes=stdin_text.encode("utf-8") if stdin_text is not None else None,
+                timeout_seconds=None,
+                operation_id=operation_id,
             )
         except CLIQuotaLimitError as exc:
             stdout = exc.stdout.encode("utf-8")
@@ -251,6 +277,10 @@ async def _run_cli_process(
             next_action="test_local_cli_or_switch_provider",
         )
     finally:
+        _PROCESSES.pop(run_id, None)
+        _TASKS.pop(run_id, None)
+        if operation_id:
+            unregister_operation_actions(operation_id)
         db.close()
 
 
@@ -352,7 +382,7 @@ def start_local_cli_agent_worker(
     launch = parse_cli_launch(cfg.cli_args, provider, _task_prompt(task_file), model)
     args = list(launch.args)
     ensure_opencode_logging_args(provider, args)
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_cli_process(
             run_id=run.id,
             project_id=project_id,
@@ -363,6 +393,12 @@ def start_local_cli_agent_worker(
             cwd=str(Path(project.folder_path or task_file.parent).resolve()),
         )
     )
+    _TASKS[run.id] = task
+    if run.operation_id:
+        register_operation_actions(
+            run.operation_id,
+            cancel=lambda: _cancel_local_cli_agent(run.id),
+        )
     return {
         "status": "ok",
         "detail": f"已启动本机 CLI Agent：{provider}",

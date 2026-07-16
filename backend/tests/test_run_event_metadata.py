@@ -11,6 +11,11 @@ def test_classify_network_unavailability():
     assert classify_failure("Cannot connect to OpenAI") == "network"
 
 
+def test_classify_empty_and_invalid_model_responses():
+    assert classify_failure("没有收到模型的文字回复") == "empty_response"
+    assert classify_failure("模型返回的新选项格式无法解析") == "invalid_response"
+
+
 def test_merge_event_metadata_adds_failure_class_and_next_action():
     payload_json = merge_event_metadata(
         json.dumps({"tool": "opencode"}),

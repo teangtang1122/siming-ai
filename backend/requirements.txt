@@ -17,4 +17,5 @@ croniter>=2.0
 pywebview>=5.0
 pywinpty==3.0.5; platform_system == "Windows"
 truststore==0.10.4
+psutil==7.2.2
 PyYAML>=6.0

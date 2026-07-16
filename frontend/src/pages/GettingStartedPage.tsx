@@ -8,6 +8,7 @@ import {
   Progress,
   Select,
   Space,
+  Spin,
   Steps,
   Typography,
   message,
@@ -140,7 +141,7 @@ function FirstIdea({ modelReady, model }: { modelReady: boolean; model?: string 
         </Button>
         <Button onClick={() => navigate('/dashboard')}>先看看作品库</Button>
       </Space>
-      <Text type="secondary">当前可免费使用的模型可能有额度限制；不可用时司命会自动尝试其他免费模型。</Text>
+      <Text type="secondary">当前使用的完整模型 ID 会显示在任务记录中；若免费模型发生切换，司命会明确记录。</Text>
     </div>
   )
 }
@@ -290,9 +291,9 @@ export function GettingStartedPanel() {
   return (
     <div className="getting-started-panel">
       <div className="getting-started-promise" aria-label="免费开始的特点">
-        <span><ThunderboltOutlined /> 不用命令行</span>
-        <span><SafetyCertificateOutlined /> 不用填写 API Key</span>
-        <span><ToolOutlined /> 不需要管理员权限</span>
+        <span><ThunderboltOutlined /> 无需安装开发工具</span>
+        <span><SafetyCertificateOutlined /> 无需打开命令行</span>
+        <span><ToolOutlined /> 每一步都能看到进度</span>
       </div>
 
       <div className="getting-started-layout">
@@ -306,12 +307,14 @@ export function GettingStartedPanel() {
         </aside>
 
         <section className="getting-started-work" aria-live="polite">
-          <Title level={3}>先免费体验一次 AI 写小说</Title>
-          <Paragraph>司命会自动完成下载、安装、选择和测试。你不需要知道 CLI、模型供应商或 API Key 是什么。</Paragraph>
+          <Title level={3}>从一句故事想法开始</Title>
+          <Paragraph>司命会先为这台电脑准备写作所需的 AI。准备好后，你可以马上生成三套小说方向。</Paragraph>
 
           {running ? (
             <div className="getting-started-progress">
-              <Progress percent={job?.percent || 0} status="active" />
+              {Boolean(job?.bytes_total)
+                ? <Progress percent={job?.percent || 0} status="active" />
+                : <div className="getting-started-indeterminate"><Spin /><Text>正在执行当前步骤，不估算虚假百分比</Text></div>}
               <div className="getting-started-progress-meta">
                 <Text>{job?.message || '正在准备...'}</Text>
                 {Boolean(job?.bytes_total) && <Text type="secondary">{downloaded} / {total}</Text>}
@@ -326,7 +329,7 @@ export function GettingStartedPanel() {
               disabled={!status.platform_supported}
               onClick={() => void startActivation()}
             >
-              免费开始写小说
+              准备 AI 并开始构思
             </Button>
           )}
 
@@ -384,7 +387,7 @@ export function GettingStartedPanel() {
         type="info"
         showIcon
         message="关于当前可免费使用的模型"
-        description="免费模型、额度和数据政策由 OpenCode 或对应模型服务提供方决定，未来可能调整。小说内容会发送给所选云端模型处理，免费模型的数据可能被服务方用于改进模型，请勿提交私密或敏感内容。"
+        description="免费方案使用 OpenCode 提供的免费开源模型 DeepSeek V4 Flash。更多高质量模型仍需前往相应模型官网自行订阅。免费模型、额度和数据政策可能调整；小说内容会发送给所选云端模型处理，请勿提交私密或敏感内容。"
       />
 
       <Collapse ghost className="getting-started-alternatives" items={[{

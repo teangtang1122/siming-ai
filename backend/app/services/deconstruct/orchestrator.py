@@ -31,6 +31,13 @@ from .pipeline import (
     summarize_chunk_result,
 )
 from .report_store import append_log, get_report_or_404, load_report_data, report_payload
+from ..operation_runtime import (
+    activate_operation,
+    fail_operation,
+    finish_operation,
+    heartbeat_loop,
+    record_operation_signal,
+)
 
 
 def sse_event(event_type: str, data: dict | list) -> str:
@@ -599,8 +606,19 @@ async def run_deconstruct_job(
     from .model_selection import limits_info_for
 
     db = SessionLocal()
+    heartbeat_task: asyncio.Task | None = None
+    operation_id: str | None = None
     try:
         report = get_report_or_404(db, project_id, report_id)
+        operation_id = report.operation_id
+        if operation_id:
+            heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
+            record_operation_signal(
+                operation_id,
+                "phase",
+                {"phase": "map", "total_chunks": len(chunks)},
+                message=f"开始分析 {len(chunks)} 个分块",
+            )
         progress_data = load_report_data(report)
         started_at = datetime.utcnow()
         progress_data.update({
@@ -608,7 +626,7 @@ async def run_deconstruct_job(
             "phase": "map",
             "started_at": started_at.isoformat(),
         })
-        append_log(progress_data, f"开始分块拆书分析，并发 {map_concurrency}，单块超时 {MAP_TIMEOUT_SECONDS} 秒")
+        append_log(progress_data, f"开始分块拆书分析，并发 {map_concurrency}；按真实活动监测，不设总时限")
         report.status = "processing"
         report.report_data = json.dumps(progress_data, ensure_ascii=False)
         db.commit()
@@ -618,7 +636,36 @@ async def run_deconstruct_job(
         async def limited_map(index: int, chunk: str) -> tuple[int, dict]:
             async with semaphore:
                 try:
-                    return index, await map_chunk(chunk, index, map_model, options)
+                    if operation_id:
+                        record_operation_signal(
+                            operation_id,
+                            "phase",
+                            {"phase": "map", "chunk_index": index, "total_chunks": len(chunks)},
+                            message=f"正在分析第 {index + 1}/{len(chunks)} 个分块",
+                        )
+                    result: dict | None = None
+                    with activate_operation(operation_id):
+                        async for event in stream_map_chunk(chunk, index, map_model, options):
+                            event_type = event.get("type")
+                            if event_type == "token" and operation_id:
+                                token = str(event.get("content") or "")
+                                record_operation_signal(
+                                    operation_id,
+                                    "output",
+                                    {"chunk_index": index, "output_chars": len(token)},
+                                    message=f"第 {index + 1}/{len(chunks)} 个分块正在生成",
+                                )
+                            elif event_type in {"retry", "repair_start", "repair_done"} and operation_id:
+                                record_operation_signal(
+                                    operation_id,
+                                    "tool",
+                                    {"chunk_index": index, "activity": event_type},
+                                    message=f"第 {index + 1}/{len(chunks)} 个分块正在校验输出",
+                                )
+                            elif event_type == "result":
+                                candidate = event.get("result")
+                                result = candidate if isinstance(candidate, dict) else {"_error": "missing_result"}
+                    return index, result or {"_error": "missing_result"}
                 except Exception as exc:
                     return index, {"_raw": str(exc), "_error": "llm_failed"}
 
@@ -660,6 +707,22 @@ async def run_deconstruct_job(
             report.report_data = json.dumps(progress_data, ensure_ascii=False)
             db.commit()
             db.refresh(report)
+            if operation_id:
+                record_operation_signal(
+                    operation_id,
+                    "checkpoint",
+                    {
+                        "phase": "map",
+                        "chunk_index": index,
+                        "completed": completed_chunks,
+                        "failed": failed_chunks,
+                        "total": len(chunks),
+                        "progress_mode": "determinate",
+                        "progress_current": completed_chunks,
+                        "progress_total": len(chunks),
+                    },
+                    message=f"拆书分块 {completed_chunks}/{len(chunks)} 已保存",
+                )
 
         final_map_results = [item or {"_error": "missing_result"} for item in map_results]
         progress_data = load_report_data(report)
@@ -676,7 +739,20 @@ async def run_deconstruct_job(
         db.commit()
         db.refresh(report)
 
-        reduce_data = await reduce_analysis(final_map_results, title, total_words, reduce_model, options, golden_text)
+        if operation_id:
+            record_operation_signal(
+                operation_id,
+                "phase",
+                {
+                    "phase": "reduce",
+                    "completed": completed_chunks,
+                    "total": len(chunks),
+                    "progress_mode": "indeterminate",
+                },
+                message="分块分析完成，正在合并拆书结果",
+            )
+        with activate_operation(operation_id):
+            reduce_data = await reduce_analysis(final_map_results, title, total_words, reduce_model, options, golden_text)
         if reduce_data.get("_error"):
             progress_data = load_report_data(report)
             append_log(progress_data, f"自动合并输出异常：{reduce_data.get('_error')}", "warning")
@@ -722,6 +798,20 @@ async def run_deconstruct_job(
         report.status = "completed"
         report.report_data = json.dumps(result, ensure_ascii=False)
         db.commit()
+        finish_operation(operation_id, message=f"拆书分析完成，共处理 {completed_chunks} 个分块")
+    except asyncio.CancelledError:
+        if report_id:
+            try:
+                report = get_report_or_404(db, project_id, report_id)
+                cancelled = load_report_data(report)
+                cancelled.update({"status": "cancelled", "phase": "cancelled"})
+                append_log(cancelled, "任务已由用户取消，已完成的分块仍保留", "warning")
+                report.status = "cancelled"
+                report.report_data = json.dumps(cancelled, ensure_ascii=False)
+                db.commit()
+            except Exception:
+                pass
+        finish_operation(operation_id, message="拆书任务已取消，已完成分块已保留", status="cancelled")
     except Exception as exc:
         try:
             report = get_report_or_404(db, project_id, report_id)
@@ -738,5 +828,9 @@ async def run_deconstruct_job(
             db.commit()
         except Exception:
             pass
+        fail_operation(operation_id, exc, next_action="可从拆书页面重新开始，或重跑失败分块")
     finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
         db.close()

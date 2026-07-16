@@ -4,13 +4,17 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Literal
+import uuid
+from datetime import datetime
+from typing import Any, Awaitable, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ..ai.gateway import LLMGateway
+from ..ai.local_cli_adapter import is_local_cli_provider
 from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..database.models import NovelCreationSession, NovelCreationStageRun
@@ -23,6 +27,17 @@ from ..services.novel_creation_workspace import (
     serialize_run,
     serialize_session,
 )
+from ..services.observability.run_events import classify_failure
+from ..services.operation_runtime import (
+    activate_operation,
+    ensure_operation,
+    fail_operation,
+    finish_operation,
+    heartbeat_loop,
+    input_snapshot_hash,
+    register_operation_actions,
+    unregister_operation_actions,
+)
 from ..services.workspace.tools.novel_creation import (
     advance_novel_creation_interview,
     apply_novel_blueprint,
@@ -33,6 +48,108 @@ from ..services.workspace.tools.novel_creation import (
 from ..services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage, submit_novel_creation_stage
 
 router = APIRouter(tags=["novel-creation"])
+
+
+def _operation_model_identity(model: str | None) -> tuple[str | None, str]:
+    effective_model = model
+    try:
+        selection = LLMGateway.select_model_for_task(
+            task_type="novel_creation",
+            model_override=model,
+        )
+        effective_model = selection.model or effective_model
+    except Exception:
+        pass
+    if not effective_model:
+        return None, "model_stream"
+    try:
+        provider, model_name = LLMGateway.model_identity(
+            effective_model,
+            {"moshu_task_type": "planning"},
+        )
+        model_label = f"{provider}:{model_name}"
+        tool_mode = "local_cli_stream" if is_local_cli_provider(provider) else "api_stream"
+        return model_label, tool_mode
+    except Exception:
+        return effective_model, "model_stream"
+
+
+def _start_inline_operation(
+    db: Session,
+    *,
+    source_kind: str,
+    title: str,
+    phase: str,
+    model: str | None,
+    resume_url: str,
+    input_value: Any,
+    input_revision: int | None = None,
+) -> str:
+    model_source, tool_mode = _operation_model_identity(model)
+    operation = ensure_operation(
+        db,
+        source_kind=source_kind,
+        source_id=str(uuid.uuid4()),
+        title=title,
+        phase=phase,
+        message="正在连接模型并等待首段输出",
+        model_source=model_source,
+        tool_mode=tool_mode,
+        resume_url=resume_url,
+        can_pause=False,
+        can_cancel=True,
+        can_retry=False,
+        input_revision=input_revision,
+        snapshot_hash=input_snapshot_hash(input_value),
+    )
+    db.commit()
+    return operation.id
+
+
+async def _run_inline_operation(
+    operation_id: str,
+    runner: Callable[[], Awaitable[Any]],
+    *,
+    success_message: str,
+) -> Any:
+    heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        register_operation_actions(operation_id, cancel=current_task.cancel)
+    try:
+        with activate_operation(operation_id):
+            result = await runner()
+        finish_operation(operation_id, message=success_message)
+        return result
+    except asyncio.CancelledError:
+        finish_operation(operation_id, message="任务已由用户取消", status="cancelled")
+        raise
+    except Exception as exc:
+        fail_operation(operation_id, exc, next_action="可检查模型状态后重试本轮")
+        raise
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        unregister_operation_actions(operation_id)
+
+
+def _inline_operation_http_error(exc: Exception) -> HTTPException:
+    failure_class = classify_failure(str(exc)) or "unknown"
+    next_action = {
+        "quota_or_rate_limit": "请等待额度恢复，或切换到有额度的模型后重试。",
+        "auth": "请到模型设置重新登录或填写凭据，测试成功后重试。",
+        "timeout": "任务已保留；可继续等待模型活动，或切换更快的模型重试。",
+        "empty_response": "模型没有返回有效内容，请重试本轮或切换模型。",
+        "invalid_response": "模型返回格式无法解析，请重试本轮。",
+    }.get(failure_class, "请检查模型状态后重试本轮。")
+    return HTTPException(
+        status_code=422,
+        detail={
+            "message": str(exc) or "模型调用失败",
+            "failure_class": failure_class,
+            "next_action": next_action,
+        },
+    )
 
 
 class NovelCreationStartRequest(BaseModel):
@@ -114,23 +231,43 @@ async def advance_creation_interview(
     payload: NovelCreationInterviewNextRequest,
     db: Session = Depends(get_db),
 ):
-    result = await advance_novel_creation_interview(
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    operation_id = _start_inline_operation(
         db,
-        "",
-        {**payload.model_dump(), "session_id": session_id},
+        source_kind="novel_interview",
+        title="新书立项 · 动态采访",
+        phase="interview",
+        model=payload.model,
+        resume_url=f"/novel-creation?session={session_id}",
+        input_value={"session_id": session_id, **payload.model_dump()},
+        input_revision=int(session.revision or 0) if session else None,
     )
-    if result.get("status") != "ok":
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": result.get("detail") or "动态采访失败",
-                "failure_class": runtime.get("failure_class") or data.get("failure_class"),
-                "next_action": runtime.get("next_action") or data.get("next_action"),
-                "runtime": runtime,
-            },
+
+    async def run_interview() -> dict[str, Any]:
+        result = await advance_novel_creation_interview(
+            db,
+            "",
+            {**payload.model_dump(), "session_id": session_id},
         )
+        if result.get("status") != "ok":
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": result.get("detail") or "动态采访失败",
+                    "failure_class": runtime.get("failure_class") or data.get("failure_class"),
+                    "next_action": runtime.get("next_action") or data.get("next_action"),
+                    "runtime": runtime,
+                },
+            )
+        return result
+
+    result = await _run_inline_operation(
+        operation_id,
+        run_interview,
+        success_message="本轮动态采访已完成",
+    )
     return ApiResponse.success(data=result.get("data"), message=result.get("detail") or "采访状态已更新")
 
 
@@ -150,6 +287,7 @@ class NovelCreationSessionPatchRequest(BaseModel):
     form: dict[str, Any] | None = None
     selected_concept_id: str | None = None
     quick_mode: bool | None = None
+    expected_revision: int | None = None
 
 
 class NovelCreationStageRunRequest(BaseModel):
@@ -159,6 +297,7 @@ class NovelCreationStageRunRequest(BaseModel):
     auto_confirm: bool = False
     operation: str = "generate"
     session_patch: dict[str, Any] | None = None
+    expected_revision: int | None = None
 
 
 class NovelCreationStageConfirmRequest(BaseModel):
@@ -194,8 +333,17 @@ async def update_creation_session(session_id: str, payload: NovelCreationSession
     session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
+    if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "立项草稿已在其他位置更新，本地修改尚未覆盖服务器版本",
+                "current_revision": int(session.revision or 0),
+                "session": serialize_session(session),
+            },
+        )
     try:
-        patch_session(session, payload.model_dump(exclude_none=True))
+        patch_session(session, payload.model_dump(exclude_none=True, exclude={"expected_revision"}))
         db.commit()
         return ApiResponse.success(data=serialize_session(session), message="立项草稿已保存")
     except ValueError as exc:
@@ -217,9 +365,29 @@ async def delete_creation_session(session_id: str, db: Session = Depends(get_db)
 
 async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, Any]) -> None:
     db = SessionLocal()
+    heartbeat_task: asyncio.Task | None = None
+    run: NovelCreationStageRun | None = None
     try:
-        await generate_novel_creation_stage(db, "", {**request, "session_id": session_id, "_run_id": run_id})
+        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+        operation_id = run.operation_id if run else None
+        if operation_id:
+            heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
+        with activate_operation(operation_id):
+            await generate_novel_creation_stage(db, "", {**request, "session_id": session_id, "_run_id": run_id})
+    except asyncio.CancelledError:
+        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+        if run and run.status == "running":
+            run.status = "cancelled"
+            run.current_message = "立项任务已取消，已保存内容不会丢失"
+            run.completed_at = datetime.utcnow()
+            db.commit()
+        raise
     finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+        if run and run.operation_id:
+            unregister_operation_actions(run.operation_id)
         db.close()
 
 
@@ -230,6 +398,15 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if payload.stage not in {*STAGE_ORDER, "all"}:
         raise HTTPException(status_code=400, detail="未知立项阶段")
+    if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "立项草稿版本已经变化，请确认当前内容后重新生成",
+                "current_revision": int(session.revision or 0),
+                "session": serialize_session(session),
+            },
+        )
     existing = (
         db.query(NovelCreationStageRun)
         .filter(
@@ -246,10 +423,15 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
             message="该阶段任务仍在运行，已恢复订阅",
         )
     request = payload.model_dump()
+    if payload.session_patch:
+        patch_session(session, payload.session_patch)
+        request["session_patch"] = None
     run = create_run(db, session, payload.stage, request)
     db.commit()
     run_id = run.id
-    asyncio.create_task(_run_creation_stage(run_id, session_id, request))
+    task = asyncio.create_task(_run_creation_stage(run_id, session_id, request))
+    if run.operation_id:
+        register_operation_actions(run.operation_id, cancel=task.cancel)
     return ApiResponse.success(data={"run": serialize_run(run), "stream_url": f"/api/novel-creation/runs/{run_id}/stream"}, message="阶段任务已创建")
 
 
@@ -265,8 +447,8 @@ async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
 async def stream_creation_stage_run(run_id: str):
     async def events():
         sent = 0
-        idle = 0
-        while idle < 900:
+        tick = 0
+        while True:
             db = SessionLocal()
             try:
                 run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
@@ -289,7 +471,9 @@ async def stream_creation_stage_run(run_id: str):
                     return
             finally:
                 db.close()
-            idle += 1
+            tick += 1
+            if tick % 20 == 0:
+                yield "event: heartbeat\ndata: {}\n\n"
             await asyncio.sleep(0.5)
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -317,14 +501,35 @@ class RefreshQuestionRequest(BaseModel):
 @router.post("/novel-creation/refresh-question")
 async def refresh_question(payload: RefreshQuestionRequest, db: Session = Depends(get_db)):
     from app.services.workspace.tools.novel_creation import refresh_question_options
-    result = await refresh_question_options(
-        db=db,
-        session_id=payload.session_id,
-        question=payload.question,
-        existing_options=payload.existing_options,
-        user_brief=payload.user_brief,
+
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == payload.session_id).first()
+    operation_id = _start_inline_operation(
+        db,
+        source_kind="novel_interview_option",
+        title="新书立项 · 更换回答选项",
+        phase="refreshing_option",
         model=payload.model,
+        resume_url=f"/novel-creation?session={payload.session_id}",
+        input_value=payload.model_dump(),
+        input_revision=int(session.revision or 0) if session else None,
     )
+
+    async def run_refresh() -> dict[str, Any]:
+        return await refresh_question_options(
+            db=db,
+            session_id=payload.session_id,
+            question=payload.question,
+            existing_options=payload.existing_options,
+            user_brief=payload.user_brief,
+            model=payload.model,
+        )
+
+    try:
+        result = await _run_inline_operation(operation_id, run_refresh, success_message="新的回答选项已生成")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _inline_operation_http_error(exc) from exc
     return ApiResponse.success(data=result)
 
 
@@ -335,14 +540,33 @@ class SystemChatRequest(BaseModel):
 
 
 @router.post("/novel-creation/system-chat")
-async def system_chat(payload: SystemChatRequest):
+async def system_chat(payload: SystemChatRequest, db: Session = Depends(get_db)):
     """General conversation endpoint for system assistant without project context."""
     from app.services.workspace.tools.novel_creation import system_chat_completion
-    result = await system_chat_completion(
-        message=payload.message,
-        context=payload.context or {},
+
+    operation_id = _start_inline_operation(
+        db,
+        source_kind="system_chat",
+        title="司命对话",
+        phase="generating_reply",
         model=payload.model,
+        resume_url="/gui",
+        input_value={"message": payload.message, "context": payload.context or {}, "model": payload.model},
     )
+
+    async def run_chat() -> dict[str, Any]:
+        return await system_chat_completion(
+            message=payload.message,
+            context=payload.context or {},
+            model=payload.model,
+        )
+
+    try:
+        result = await _run_inline_operation(operation_id, run_chat, success_message="司命已返回回复")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _inline_operation_http_error(exc) from exc
     return ApiResponse.success(data=result)
 
 

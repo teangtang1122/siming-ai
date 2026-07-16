@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import AssistantRun, AssistantRunStep
+from ..operation_runtime import ensure_operation, fail_operation, finish_operation, record_operation_signal
 
 
 MAX_JSON_CHARS = 80_000
@@ -49,6 +50,25 @@ def create_assistant_run(
         updated_at=datetime.utcnow(),
     )
     db.add(run)
+    db.flush()
+    operation = ensure_operation(
+        db,
+        source_kind="assistant",
+        source_id=run.id,
+        project_id=project_id,
+        title="作品助手任务",
+        status="running",
+        phase="setup",
+        message="正在准备作品上下文",
+        model_source=model,
+        tool_mode=assistant_mode,
+        resume_url=f"/project/{project_id}",
+        can_pause=False,
+        can_cancel=False,
+        can_retry=False,
+        progress_mode="indeterminate",
+    )
+    run.operation_id = operation.id
     db.commit()
     db.refresh(run)
     return run
@@ -88,6 +108,12 @@ def start_run_step(
     db.add(step)
     db.commit()
     db.refresh(step)
+    record_operation_signal(
+        run.operation_id,
+        "tool" if step_type == "tool" else "phase",
+        {"phase": step_type, "tool": tool, "iteration": iteration},
+        message=detail or (f"正在执行 {tool}" if tool else f"正在进行 {step_type}"),
+    )
     return step
 
 
@@ -110,6 +136,14 @@ def finish_run_step(
     step.completed_at = now
     step.updated_at = now
     db.commit()
+    run = step.run
+    if run and run.operation_id:
+        record_operation_signal(
+            run.operation_id,
+            "checkpoint" if status in {"completed", "ok"} else "tool",
+            {"phase": step.step_type, "tool": step.tool, "step_status": status},
+            message=detail or error or (f"{step.tool or step.step_type} 已完成" if status in {"completed", "ok"} else None),
+        )
 
 
 def mark_assistant_run(
@@ -134,6 +168,12 @@ def mark_assistant_run(
     if status in {"completed", "error", "aborted", "cancelled"}:
         run.completed_at = now
     db.commit()
+    if status == "completed":
+        finish_operation(run.operation_id, message="作品助手已返回结果")
+    elif status in {"error", "aborted"}:
+        fail_operation(run.operation_id, error or "作品助手执行失败")
+    elif status == "cancelled":
+        finish_operation(run.operation_id, message="作品助手任务已取消", status="cancelled")
 
 
 def run_payload(run: AssistantRun) -> dict:
@@ -142,6 +182,7 @@ def run_payload(run: AssistantRun) -> dict:
         "project_id": run.project_id,
         "conversation_id": run.conversation_id,
         "assistant_message_id": run.assistant_message_id,
+        "operation_id": run.operation_id,
         "status": run.status,
         "phase": run.phase,
         "scope": run.scope,

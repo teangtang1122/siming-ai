@@ -30,6 +30,7 @@ from ..workspace.run_log import (
     mark_assistant_run,
     run_payload,
 )
+from ..operation_runtime import iterate_with_operation, record_operation_signal
 from .orchestrator import PlanOrchestrator, _serialize_step
 from .plan_graph import PlanGraph
 from .planner import build_plan_from_intent, detect_intent, plan_local_cli_writing
@@ -645,6 +646,7 @@ def _stream_cataloging_job(
             user_message_id=user_msg_db.id,
             assistant_message_id=assistant_msg_db.id,
             scope=scope,
+            assistant_mode="quality",
             model=model,
         )
 
@@ -1029,7 +1031,23 @@ async def detect_and_stream_plan(
             | registry.get_names_by_type("generator")
         )
         try:
-            async for event in orchestrator.execute_plan(plan.id):
+            async for event in iterate_with_operation(
+                assistant_run.operation_id,
+                orchestrator.execute_plan(plan.id),
+            ):
+                event_type = str(event.get("type") or "")
+                signal = "checkpoint" if event_type == "step_result" else "tool"
+                record_operation_signal(
+                    assistant_run.operation_id,
+                    signal,
+                    {
+                        "phase": "plan",
+                        "event_type": event_type,
+                        "step_key": event.get("step_key"),
+                        "tool": event.get("tool"),
+                    },
+                    message=event.get("detail") or event.get("label") or event.get("tool") or "正在执行创作计划",
+                )
                 if event.get("type") == "step_result":
                     step_key = event.get("step_key", "")
                     tool = event.get("tool", "")

@@ -354,6 +354,10 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
         from app.services.workspace.tools.novel_creation import system_chat_completion
 
         selected_model = "codex_cli:codex-cli"
+
+        async def response_stream():
+            yield "你好，我正在使用 Codex CLI。"
+
         with patch(
             "app.services.workspace.tools.novel_creation.LLMGateway.model_identity",
             return_value=("codex_cli", "codex-cli"),
@@ -361,8 +365,8 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
             "app.services.workspace.tools.novel_creation._novel_creation_cli_context",
             return_value={"local_cli_cwd": r"D:\novels"},
         ), patch(
-            "app.services.workspace.tools.novel_creation.LLMGateway.chat_completion",
-            new=AsyncMock(return_value={"content": "你好，我正在使用 Codex CLI。"}),
+            "app.services.workspace.tools.novel_creation.LLMGateway.stream_chat_completion",
+            return_value=response_stream(),
         ) as completion_mock:
             result = asyncio.run(system_chat_completion(
                 message="你是什么模型？",
@@ -371,10 +375,10 @@ class SystemAssistantModelOverrideTest(unittest.TestCase):
             ))
 
         self.assertEqual(result["reply"], "你好，我正在使用 Codex CLI。")
-        self.assertEqual(completion_mock.await_args.kwargs["model"], selected_model)
-        self.assertEqual(completion_mock.await_args.kwargs["timeout"], 180)
+        self.assertEqual(completion_mock.call_args.kwargs["model"], selected_model)
+        self.assertEqual(completion_mock.call_args.kwargs["timeout"], 0)
         self.assertEqual(
-            completion_mock.await_args.kwargs["extra_body"],
+            completion_mock.call_args.kwargs["extra_body"],
             {"local_cli_cwd": r"D:\novels"},
         )
 

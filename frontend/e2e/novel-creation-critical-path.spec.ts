@@ -12,7 +12,7 @@ const zh = {
   runtimeToggle: '\u67e5\u770b\u5f53\u524d\u6a21\u578b\u4e0e\u8fd0\u884c\u72b6\u6001',
   create: '\u786e\u8ba4\u5e76\u521b\u5efa\u6b63\u5f0f\u4f5c\u54c1',
   freeStart: '\u514d\u8d39\u5f00\u59cb',
-  installOpenCode: '\u514d\u8d39\u5f00\u59cb\u5199\u5c0f\u8bf4',
+  installOpenCode: '\u51c6\u5907 AI \u5e76\u5f00\u59cb\u6784\u601d',
 }
 
 const catalog = {
@@ -220,6 +220,10 @@ test('keeps mobile navigation named and touch-sized at 390px', async ({ page }) 
     expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
   }
+  const taskCenter = page.getByRole('button', { name: /\u5168\u5c40\u4efb\u52a1\u4e2d\u5fc3/ })
+  const taskCenterBox = await taskCenter.boundingBox()
+  expect(taskCenterBox?.width ?? 0).toBeGreaterThanOrEqual(44)
+  expect(taskCenterBox?.height ?? 0).toBeGreaterThanOrEqual(44)
   await expect(page.getByRole('button', { name: '\u65b0\u4e66\u7acb\u9879' })).toHaveAttribute('aria-current', 'page')
 })
 
@@ -232,7 +236,7 @@ test('shows quota exhaustion as an error with the CLI runtime diagnostics', asyn
         next_action: '\u5207\u6362\u6709\u989d\u5ea6\u7684\u6a21\u578b\u540e\u91cd\u8bd5\u3002',
         runtime: {
           effective_model: 'opencode_cli:free-model', provider: 'opencode_cli', model_source: 'global_default',
-          tool_mode: 'local_cli_text_json', timeout_seconds: 45, quota_status: 'exhausted_or_limited',
+          tool_mode: 'local_cli_text_json', timeout_seconds: 0, quota_status: 'exhausted_or_limited',
         },
       },
     }, 422),
@@ -253,12 +257,12 @@ test('shows a timeout as an error rather than a completed assistant turn', async
   await mockApi(page, {
     onInterview: async (route) => fulfill(route, {
       detail: {
-        message: '\u8bf7\u6c42\u8d85\u65f6\uff0845 \u79d2\uff09',
+        message: '\u4e0a\u6e38\u7f51\u7edc\u8fde\u63a5\u8d85\u65f6',
         failure_class: 'timeout',
         next_action: '\u5207\u6362\u66f4\u5feb\u7684\u6a21\u578b\u540e\u91cd\u8bd5\u3002',
         runtime: {
           effective_model: 'codex_cli:codex-cli', provider: 'codex_cli', model_source: 'global_default',
-          tool_mode: 'local_cli_text_json', timeout_seconds: 45, quota_status: 'unknown',
+          tool_mode: 'local_cli_text_json', timeout_seconds: 0, quota_status: 'unknown',
         },
       },
     }, 422),
@@ -268,10 +272,10 @@ test('shows a timeout as an error rather than a completed assistant turn', async
   await page.getByRole('button', { name: new RegExp(zh.send) }).click()
 
   const failure = page.locator('[data-message-status="error"]')
-  await expect(failure).toContainText('\u8bf7\u6c42\u8d85\u65f6')
+  await expect(failure).toContainText('\u8fde\u63a5\u8d85\u65f6')
   await expect(failure).toContainText('\u6267\u884c\u5931\u8d25')
   await page.getByLabel(zh.runtimeToggle).click()
-  await expect(page.getByLabel(zh.runtime)).toContainText('\u8d85\u65f645 \u79d2')
+  await expect(page.getByLabel(zh.runtime)).toContainText('\u4e0d\u8bbe\u603b\u65f6\u9650\uff0c\u6309\u6d3b\u52a8\u68c0\u6d4b')
 })
 
 test('keeps a failed interview skip in the error state', async ({ page }) => {
@@ -348,7 +352,7 @@ test('automatically guides a first-time user to one-click OpenCode setup', async
 
   await expect(page).toHaveURL(/\/getting-started$/)
   await expect(page.getByRole('button', { name: new RegExp(zh.installOpenCode) })).toBeVisible()
-  await expect(page.getByText('\u4e0d\u7528\u586b\u5199 API Key')).toBeVisible()
+  await expect(page.getByText('\u65e0\u9700\u6253\u5f00\u547d\u4ee4\u884c')).toBeVisible()
 })
 
 test('turns one story sentence into the first three-concept run after setup', async ({ page }) => {

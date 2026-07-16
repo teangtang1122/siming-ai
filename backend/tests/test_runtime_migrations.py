@@ -119,6 +119,8 @@ class RuntimeMigrationTestCase(unittest.TestCase):
             "novel_creation_stage_runs",
             "novel_creation_stage_events",
             "worldbuilding_relations",
+            "operation_runs",
+            "operation_events",
         }:
             self.assertIn(table_name, table_names)
 
@@ -140,6 +142,11 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         creation_columns = {column["name"] for column in inspector.get_columns("novel_creation_sessions")}
         for column_name in ("schema_version", "current_stage", "revision", "draft_json", "checkpoints_json", "last_error_json"):
             self.assertIn(column_name, creation_columns)
+
+        download_columns = {column["name"] for column in inspector.get_columns("model_download_tasks")}
+        rebuild_columns = {column["name"] for column in inspector.get_columns("context_rebuild_jobs")}
+        self.assertIn("operation_id", download_columns)
+        self.assertIn("operation_id", rebuild_columns)
 
         with engine.connect() as conn:
             self.assertEqual(conn.execute(text("SELECT COUNT(*) FROM projects")).scalar_one(), 1)

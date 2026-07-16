@@ -179,9 +179,58 @@ describe('NovelCreationWizardPage', () => {
       expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
         stage: 'world_style',
         auto_confirm: false,
+        expected_revision: 2,
       }))
     })
   })
+
+  it('keeps local form text and retries against the latest revision after a conflict', async () => {
+    const initialSession = {
+      id: 'session-1', status: 'drafting', revision: 2, current_stage: 'constraints',
+      draft: {
+        form: { brief: '服务器初稿', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [], stages: {},
+      },
+    }
+    const latestSession = {
+      ...initialSession,
+      revision: 3,
+      draft: { ...initialSession.draft, form: { ...initialSession.draft.form, brief: '服务器并发修改' } },
+    }
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [initialSession] } } })
+      if (url === '/novel-creation/sessions/session-1') {
+        const sessionFetches = mockGet.mock.calls.filter(([path]) => path === url).length
+        return Promise.resolve({ data: { data: sessionFetches > 1 ? latestSession : initialSession } })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    let patchCount = 0
+    mockPatch.mockImplementation((_url: string, body: { form: typeof initialSession.draft.form }) => {
+      patchCount += 1
+      if (patchCount === 1) {
+        const conflict = Object.assign(new Error('revision conflict'), { response: { status: 409 } })
+        return Promise.reject(conflict)
+      }
+      return Promise.resolve({ data: { data: {
+        ...latestSession,
+        revision: 4,
+        draft: { ...latestSession.draft, form: body.form },
+      } } })
+    })
+
+    const user = userEvent.setup()
+    renderPage('/novel-creation?session=session-1')
+    const brief = await screen.findByRole('textbox', { name: '故事梗概或最想写的画面' })
+    await user.clear(brief)
+    await user.type(brief, '作者本地最新版')
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledTimes(2), { timeout: 4000 })
+    expect(brief).toHaveValue('作者本地最新版')
+    expect(mockPatch.mock.calls[0][1]).toEqual(expect.objectContaining({ expected_revision: 2 }))
+    expect(mockPatch.mock.calls[1][1]).toEqual(expect.objectContaining({ expected_revision: 3 }))
+  }, 10_000)
 
   it('edits stage fields without exposing raw JSON by default', async () => {
     const session = {

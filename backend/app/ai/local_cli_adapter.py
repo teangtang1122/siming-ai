@@ -18,7 +18,12 @@ import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
+
+try:
+    import psutil
+except ImportError:  # packaged builds install psutil; source fallbacks stay usable
+    psutil = None
 
 from .base import BaseAdapter
 from ..core.exceptions import LLMError
@@ -691,6 +696,63 @@ class CLITimeoutError(RuntimeError):
         self.stderr = stderr
 
 
+class CLIStalledError(CLITimeoutError):
+    """Raised only after the complete CLI process tree has stopped making progress."""
+
+
+class CLIInterruptedError(RuntimeError):
+    """Raised when the monitored CLI process tree disappears unexpectedly."""
+
+
+def sample_cli_process_tree(pid: int) -> dict[str, Any]:
+    """Return non-sensitive liveness, CPU and IO counters for a CLI process tree."""
+    if psutil is None:
+        return {"alive": True, "process_count": 1, "metrics_available": False}
+    try:
+        root = psutil.Process(pid)
+        processes = [root, *root.children(recursive=True)]
+    except (psutil.Error, OSError):
+        return {"alive": False, "process_count": 0, "metrics_available": True}
+    cpu_seconds = 0.0
+    read_bytes = 0
+    write_bytes = 0
+    rss_bytes = 0
+    alive = 0
+    for process in processes:
+        try:
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                continue
+            alive += 1
+            cpu = process.cpu_times()
+            cpu_seconds += float(cpu.user) + float(cpu.system)
+            io = process.io_counters()
+            read_bytes += int(getattr(io, "read_bytes", 0) or 0)
+            write_bytes += int(getattr(io, "write_bytes", 0) or 0)
+            rss_bytes += int(process.memory_info().rss or 0)
+        except (psutil.Error, OSError):
+            continue
+    return {
+        "alive": alive > 0,
+        "process_count": alive,
+        "cpu_seconds": round(cpu_seconds, 3),
+        "read_bytes": read_bytes,
+        "write_bytes": write_bytes,
+        "rss_bytes": rss_bytes,
+        "metrics_available": True,
+    }
+
+
+def _process_metrics_advanced(previous: dict[str, Any] | None, current: dict[str, Any]) -> bool:
+    if previous is None:
+        return True
+    if not current.get("metrics_available"):
+        return False
+    return any(
+        float(current.get(key) or 0) > float(previous.get(key) or 0)
+        for key in ("cpu_seconds", "read_bytes", "write_bytes")
+    ) or int(current.get("process_count") or 0) != int(previous.get("process_count") or 0)
+
+
 def _first_relevant_line(text: str) -> str:
     for line in str(text or "").splitlines():
         stripped = line.strip()
@@ -765,12 +827,47 @@ async def communicate_with_cli_quota_detection(
     input_bytes: bytes | None = None,
     extra_texts: tuple[str, ...] = (),
     timeout_seconds: float | None = None,
+    operation_id: str | None = None,
+    external_activity_probe: Callable[[], Any] | None = None,
+    poll_seconds: float = 5.0,
+    quiet_seconds: float | None = None,
+    suspected_stall_seconds: float | None = None,
+    stalled_seconds: float | None = None,
 ) -> tuple[bytes, bytes]:
     """Communicate with a CLI while scanning live output for quota failures."""
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
     queue: asyncio.Queue[tuple[str, bytes | None]] = asyncio.Queue()
     deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
+    quiet_after = quiet_seconds or float(os.environ.get("SIMING_CLI_QUIET_SECONDS", 600))
+    suspect_after = suspected_stall_seconds or float(os.environ.get("SIMING_CLI_SUSPECTED_STALL_SECONDS", 1800))
+    stalled_after = stalled_seconds or float(os.environ.get("SIMING_CLI_STALLED_SECONDS", 3600))
+    last_meaningful_activity = time.monotonic()
+    last_output_activity = last_meaningful_activity
+    last_metrics: dict[str, Any] | None = None
+    last_external_activity: Any = None
+    reported_health = "active"
+
+    if operation_id is None:
+        try:
+            from ..services.operation_runtime import current_operation_id
+
+            operation_id = current_operation_id()
+        except Exception:
+            operation_id = None
+
+    def _report(signal: str, payload: dict[str, Any] | None = None, message: str | None = None) -> None:
+        if not operation_id:
+            return
+        try:
+            from ..services.operation_runtime import record_operation_signal
+
+            record_operation_signal(operation_id, signal, payload, message)
+        except Exception:
+            # Progress reporting must never break the provider call.
+            return
+
+    _report("phase", {"pid": process.pid}, "本机 CLI 已启动，正在等待模型处理")
 
     def _decoded_output() -> tuple[str, str]:
         return (
@@ -811,16 +908,68 @@ async def communicate_with_cli_quota_detection(
     stdin_task = asyncio.create_task(_write_stdin())
     active_readers = len(readers)
     try:
-        while active_readers:
+        while active_readers or process.returncode is None:
+            if active_readers == 0 and process.returncode is not None:
+                break
             try:
-                if deadline is None:
-                    _name, chunk = await queue.get()
-                else:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise asyncio.TimeoutError
-                    _name, chunk = await asyncio.wait_for(queue.get(), timeout=remaining)
+                now_monotonic = time.monotonic()
+                remaining = deadline - now_monotonic if deadline is not None else None
+                if remaining is not None and remaining <= 0:
+                    raise asyncio.TimeoutError
+                wait_seconds = max(0.1, min(poll_seconds, remaining)) if remaining is not None else max(0.1, poll_seconds)
+                _name, chunk = await asyncio.wait_for(queue.get(), timeout=wait_seconds)
             except asyncio.TimeoutError as exc:
+                now_monotonic = time.monotonic()
+                if deadline is None or now_monotonic < deadline:
+                    metrics = sample_cli_process_tree(process.pid)
+                    try:
+                        external_activity = external_activity_probe() if external_activity_probe else None
+                    except Exception:
+                        external_activity = None
+                    advanced = _process_metrics_advanced(last_metrics, metrics)
+                    if external_activity is not None and external_activity != last_external_activity:
+                        last_external_activity = external_activity
+                        advanced = True
+                        _report("tool", {"activity": str(external_activity)[:200]}, "CLI 已执行司命工具")
+                    if advanced:
+                        last_meaningful_activity = now_monotonic
+                        reported_health = "active"
+                        _report("process", metrics, "模型进程仍在计算")
+                    else:
+                        _report("heartbeat", metrics)
+                    last_metrics = metrics
+                    idle = now_monotonic - last_meaningful_activity
+                    output_idle = now_monotonic - last_output_activity
+                    if not metrics.get("alive") and process.returncode is None:
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=max(0.2, poll_seconds))
+                        except asyncio.TimeoutError:
+                            _report(
+                                "disconnected",
+                                {**metrics, "lifecycle_status": "interrupted"},
+                                "CLI 进程已经意外中断",
+                            )
+                            await terminate_cli_process_tree(process)
+                            raise CLIInterruptedError(
+                                "本机 CLI 进程已经意外中断，最近检查点已保留",
+                            )
+                        continue
+                    elif idle >= stalled_after and metrics.get("metrics_available"):
+                        _report("stalled", metrics, "CLI 进程已确认长时间没有任何活动")
+                        out_text, err_text = _decoded_output()
+                        await terminate_cli_process_tree(process)
+                        raise CLIStalledError(
+                            "本机 CLI 已确认卡住：进程、输出、工具调用和磁盘读写均长时间没有变化",
+                            stdout=out_text,
+                            stderr=err_text,
+                        )
+                    elif idle >= suspect_after and reported_health != "suspected_stall":
+                        reported_health = "suspected_stall"
+                        _report("suspected_stall", metrics, "暂时没有检测到活动，可继续等待或重试当前任务")
+                    elif output_idle >= quiet_after and reported_health == "active":
+                        reported_health = "quiet"
+                        _report("quiet", metrics, "暂时没有新文字输出，模型进程仍在运行")
+                    continue
                 out_text, err_text = _decoded_output()
                 quota_error = detect_cli_quota_error(*extra_texts, err_text, out_text)
                 await terminate_cli_process_tree(process)
@@ -835,6 +984,11 @@ async def communicate_with_cli_quota_detection(
             if chunk is None:
                 active_readers -= 1
                 continue
+            now_monotonic = time.monotonic()
+            last_meaningful_activity = now_monotonic
+            last_output_activity = now_monotonic
+            reported_health = "active"
+            _report("output", {"stream": _name, "bytes": len(chunk)}, "模型正在返回内容")
             out_text, err_text = _decoded_output()
             quota_error = detect_cli_quota_error(*extra_texts, err_text, out_text)
             if quota_error:
@@ -1118,8 +1272,11 @@ class LocalCLIAdapter(BaseAdapter):
         return CLILaunch(args=args), prompt_file
 
     @staticmethod
-    def _timeout_seconds(extra_body: Optional[dict]) -> float:
-        raw = (extra_body or {}).get("local_cli_timeout_seconds", DEFAULT_LOCAL_CLI_TIMEOUT)
+    def _timeout_seconds(extra_body: Optional[dict]) -> float | None:
+        body = extra_body or {}
+        raw = body.get("local_cli_timeout_seconds", DEFAULT_LOCAL_CLI_TIMEOUT)
+        if "local_cli_timeout_seconds" in body and raw in (None, 0, "0", "none", "unbounded"):
+            return None
         try:
             value = float(raw)
         except (TypeError, ValueError):
@@ -1210,6 +1367,7 @@ class LocalCLIAdapter(BaseAdapter):
                 proc,
                 input_bytes=stdin_bytes,
                 timeout_seconds=self._timeout_seconds(extra_body),
+                operation_id=str((extra_body or {}).get("operation_id") or "") or None,
             )
         except CLIQuotaLimitError as exc:
             if cleanup_codex_output_file and codex_output_file:
@@ -1218,7 +1376,7 @@ class LocalCLIAdapter(BaseAdapter):
                 except OSError:
                     pass
             raise LLMError(str(exc)) from exc
-        except CLITimeoutError as exc:
+        except (CLITimeoutError, CLIStalledError) as exc:
             if cleanup_codex_output_file and codex_output_file:
                 try:
                     os.unlink(codex_output_file)

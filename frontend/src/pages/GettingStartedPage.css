@@ -76,6 +76,13 @@
   margin: 24px 0;
 }
 
+.getting-started-indeterminate {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-height: 40px;
+}
+
 .getting-started-progress-meta {
   display: flex;
   justify-content: space-between;

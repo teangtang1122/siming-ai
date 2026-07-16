@@ -2,6 +2,7 @@
 import json
 import asyncio
 import re
+import time
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, Optional
 
@@ -98,6 +99,7 @@ from ..services.workspace.run_recovery import (
     resume_from_step,
     resume_run,
 )
+from ..services.operation_runtime import record_operation_signal
 from ..services.agent.bridge import detect_and_stream_plan
 from ..schemas.ai_writer import WorkspaceAssistantRequest
 
@@ -1276,6 +1278,22 @@ async def workspace_assistant_stream(
         final_model = ""
         final_usage = None
         parsed_fallback: dict = {}
+        last_operation_report_at = 0.0
+
+        def report_model_activity(text: str, *, signal: str = "output", message: str = "模型正在生成回复") -> None:
+            nonlocal last_operation_report_at
+            if not assistant_run or not assistant_run.operation_id:
+                return
+            now = time.monotonic()
+            if now - last_operation_report_at < 2:
+                return
+            last_operation_report_at = now
+            record_operation_signal(
+                assistant_run.operation_id,
+                signal,
+                {"output_chars": len(text or "")},
+                message=message,
+            )
         try:
             # --- Phase 1: Setup ---
             selected_node = _find_outline_by_title_or_id(db, project_id, payload.selected_outline_node_id)
@@ -1350,6 +1368,9 @@ async def workspace_assistant_stream(
                 payload.model,
                 cwd=project_folder,
             )
+            if assistant_run.operation_id:
+                local_cli_extra_body = dict(local_cli_extra_body or {})
+                local_cli_extra_body["operation_id"] = assistant_run.operation_id
             style_context = build_style_context(project, concise=True)
             selected_context: list[str] = []
             if selected_node:
@@ -1490,7 +1511,7 @@ async def workspace_assistant_stream(
                             model=payload.model,
                             temperature=payload.temperature or 0.3,
                             max_tokens=payload.max_tokens,
-                            timeout=300,
+                            timeout=0,
                             retry=1,
                             extra_body=local_cli_extra_body,
                             tools=workspace_tool_schemas,
@@ -1499,10 +1520,13 @@ async def workspace_assistant_stream(
                         async for chunk in stream_gen:
                             if chunk["type"] == "content_delta":
                                 content_buffer.append(chunk["delta"])
+                                report_model_activity(chunk["delta"])
                                 yield _sse_event({"type": "thinking_delta", "delta": chunk["delta"]})
                             elif chunk["type"] == "reasoning_delta":
                                 reasoning_buffer += chunk["delta"]
+                                report_model_activity(chunk["delta"], message="模型正在思考")
                             elif chunk["type"] == "tool_call_delta":
+                                report_model_activity(chunk.get("name") or chunk.get("arguments_delta") or "", signal="tool", message="模型正在准备工具调用")
                                 idx = chunk["index"]
                                 if idx not in tool_call_buffers:
                                     tool_call_buffers[idx] = {"id": chunk.get("id", ""), "name": "", "arguments": ""}
@@ -1548,13 +1572,14 @@ async def workspace_assistant_stream(
                         model=payload.model,
                         temperature=payload.temperature or 0.3,
                         max_tokens=payload.max_tokens,
-                        timeout=300,
+                        timeout=0,
                         retry=1,
                         extra_body=local_cli_extra_body,
                     )
                     try:
                         async for chunk in stream_gen:
                             raw_buffer.append(chunk)
+                            report_model_activity(chunk)
                             yield _sse_event({"type": "thinking_delta", "delta": chunk})
                     except Exception as stream_err:
                         stream_error = stream_err

@@ -9,8 +9,9 @@ from typing import Callable
 
 import httpx
 
-from ...database.models import ModelDownloadTask
+from ...database.models import ModelDownloadTask, OperationRun
 from ...database.session import SessionLocal
+from ..operation_runtime import update_operation
 
 
 ProgressCallback = Callable[[dict], None]
@@ -88,4 +89,19 @@ def _persist_progress(task_id: str, **values) -> None:
             if hasattr(task, key):
                 setattr(task, key, value)
         task.updated_at = datetime.utcnow()
+        if task.operation_id:
+            operation = db.query(OperationRun).filter(OperationRun.id == task.operation_id).first()
+            if operation:
+                update_operation(
+                    db,
+                    operation,
+                    status="running",
+                    health_status="active",
+                    phase="downloading",
+                    message=f"正在下载 {task.target_key}",
+                    progress_mode="determinate" if task.total_bytes else "indeterminate",
+                    progress_current=int(task.downloaded_bytes or 0),
+                    progress_total=int(task.total_bytes) if task.total_bytes else None,
+                    output=True,
+                )
         db.commit()

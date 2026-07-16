@@ -357,12 +357,14 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         old_env = {
             name: os.environ.get(name)
             for name in [
-                "SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS",
                 "SIMING_CATALOGING_CLI_POLL_SECONDS",
+                "SIMING_CLI_SUSPECTED_STALL_SECONDS",
+                "SIMING_CLI_STALLED_SECONDS",
             ]
         }
-        os.environ["SIMING_CATALOGING_CLI_IDLE_TIMEOUT_SECONDS"] = "0.2"
         os.environ["SIMING_CATALOGING_CLI_POLL_SECONDS"] = "0.05"
+        os.environ["SIMING_CLI_SUSPECTED_STALL_SECONDS"] = "0.1"
+        os.environ["SIMING_CLI_STALLED_SECONDS"] = "0.2"
         db = self.Session()
         try:
             job = create_cataloging_job(
@@ -384,7 +386,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
             )
 
             with patch("app.services.cataloging.local_cli_agent.SessionLocal", self.Session):
-                with self.assertRaisesRegex(RuntimeError, "没有汇报进度"):
+                with self.assertRaisesRegex(RuntimeError, "确认卡住"):
                     asyncio.run(_run_cli_turn(
                         job=job,
                         run=run,

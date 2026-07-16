@@ -59,6 +59,7 @@ function SystemNav({ current }: SystemNavProps) {
         ))}
       </Space>
       <div className="system-nav-tools">
+        <span id="global-operation-nav-slot" className="global-operation-nav-slot" />
         <Tooltip title="系统设置">
           <Button
             type="text"

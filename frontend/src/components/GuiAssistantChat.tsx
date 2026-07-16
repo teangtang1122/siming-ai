@@ -778,7 +778,7 @@ function GuiAssistantChat() {
             importedFiles: pendingFiles.map(f => ({ name: f.name, length: f.content.length })),
             history: messages.slice(-6).map(m => ({ role: m.role, content: m.content })),
           },
-        })
+        }, { timeout: 0 })
         const reply = String(chatRes.data?.data?.reply || '').trim()
         if (!reply) {
           throw new Error('当前模型没有返回文字回复。请重试，或在系统设置中测试当前模型/CLI。')
@@ -1206,6 +1206,7 @@ function GuiAssistantChat() {
           user_brief: systemBrief,
           model: selectedModel,
         },
+        { timeout: 0 },
       )
       const newOptions = res.data?.data?.options || []
       if (newOptions.length > 0) {
@@ -1217,8 +1218,8 @@ function GuiAssistantChat() {
         } : null)
         setSelectedOption(newOptions[0])
       }
-    } catch {
-      // silent fail
+    } catch (err) {
+      setLastAssistantMessage(err instanceof Error ? err.message : '生成新选项失败，请重试。', 'error')
     } finally {
       setIsRefreshing(false)
     }
@@ -1730,7 +1731,10 @@ function GuiAssistantChat() {
         <div><dt>模型</dt><dd>{interviewRuntime.effective_model || '未配置'}</dd></div>
         <div><dt>来源</dt><dd>{runtimeSourceLabel[interviewRuntime.model_source || 'unknown'] || '待确认'}</dd></div>
         <div><dt>工具模式</dt><dd>{runtimeToolModeLabel.replace('工具模式：', '')}</dd></div>
-        <div><dt>超时</dt><dd>{interviewRuntime.timeout_seconds || 30} 秒</dd></div>
+        <div>
+          <dt>运行时限</dt>
+          <dd>{interviewRuntime.timeout_seconds ? `${interviewRuntime.timeout_seconds} 秒` : '不设总时限，按活动检测'}</dd>
+        </div>
         <div><dt>额度</dt><dd>{runtimeQuotaLabel.replace('额度：', '')}</dd></div>
       </dl>
       {runtimeHasProblem && <Text type="danger">请切换有额度的模型后重试当前操作。</Text>}
@@ -1820,6 +1824,7 @@ function GuiAssistantChat() {
             </Text>
           </div>
           <Space className="gui-chat-header-actions">
+            <span id="global-operation-nav-slot" className="global-operation-nav-slot" />
             <Button
               icon={<HistoryOutlined />}
               onClick={() => setSidebarCollapsed((value) => !value)}

@@ -375,12 +375,14 @@ class LLMGateway:
     async def _call_with_retry(
         *,
         attempts: int,
-        timeout_seconds: int,
+        timeout_seconds: int | None,
         call_factory: Callable[[], Awaitable[T]],
     ) -> T:
         last_error: BaseException | None = None
         for attempt in range(1, attempts + 1):
             try:
+                if timeout_seconds is None:
+                    return await call_factory()
                 return await asyncio.wait_for(call_factory(), timeout=timeout_seconds)
             except asyncio.TimeoutError as exc:
                 last_error = LLMError(f"请求超时（{timeout_seconds}秒）")
@@ -400,19 +402,39 @@ class LLMGateway:
     def _local_cli_timeout_body(
         adapter_cls: type[BaseAdapter],
         extra_body: Optional[dict],
-        timeout_seconds: int,
-    ) -> tuple[Optional[dict], int]:
+        timeout_seconds: int | None,
+    ) -> tuple[Optional[dict], int | None]:
         if adapter_cls is not LocalCLIAdapter:
             return extra_body, timeout_seconds
         body = dict(extra_body or {})
         body.setdefault("local_cli_timeout_seconds", timeout_seconds)
+        try:
+            from app.services.operation_runtime import current_operation_id
+
+            operation_id = current_operation_id()
+            if operation_id:
+                body.setdefault("operation_id", operation_id)
+        except Exception:
+            pass
         raw_grace_seconds = body.pop("local_cli_timeout_grace_seconds", None)
         try:
             grace_seconds = int(raw_grace_seconds)
         except (TypeError, ValueError):
             grace_seconds = LOCAL_CLI_TIMEOUT_GRACE_SECONDS
         grace_seconds = max(0, min(grace_seconds, LOCAL_CLI_TIMEOUT_GRACE_SECONDS))
-        return body, timeout_seconds + grace_seconds
+        return body, timeout_seconds + grace_seconds if timeout_seconds is not None else None
+
+    @staticmethod
+    def _timeout_value(timeout: Optional[int]) -> int | None:
+        if timeout == 0:
+            return None
+        return timeout or DEFAULT_TIMEOUT
+
+    @staticmethod
+    async def _next_stream_item(generator: AsyncGenerator[T, None], timeout_seconds: int | None) -> T:
+        if timeout_seconds is None:
+            return await generator.__anext__()
+        return await asyncio.wait_for(generator.__anext__(), timeout=timeout_seconds)
 
     @classmethod
     async def chat_completion(
@@ -445,7 +467,7 @@ class LLMGateway:
             cli_args=getattr(config, "cli_args", None),
             api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
         )
-        timeout_seconds = timeout or DEFAULT_TIMEOUT
+        timeout_seconds = cls._timeout_value(timeout)
         call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
             adapter_cls,
             extra_body,
@@ -528,7 +550,7 @@ class LLMGateway:
             cli_args=getattr(config, "cli_args", None),
             api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
         )
-        timeout_seconds = timeout or DEFAULT_TIMEOUT
+        timeout_seconds = cls._timeout_value(timeout)
         call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
             adapter_cls,
             extra_body,
@@ -549,13 +571,13 @@ class LLMGateway:
                 )
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(gen.__anext__(), timeout=wait_timeout_seconds)
+                        chunk = await cls._next_stream_item(gen, wait_timeout_seconds)
                     except StopAsyncIteration:
                         return
                     produced = True
                     yield chunk
             except asyncio.TimeoutError:
-                last_error = LLMError(f"流式请求超时（{timeout_seconds}秒）")
+                last_error = LLMError(f"流式请求超时（{timeout_seconds or '未限制'}秒）")
             except LLMError as exc:
                 last_error = exc
                 if _is_non_retryable(exc) or produced:
@@ -605,7 +627,7 @@ class LLMGateway:
             cli_args=getattr(config, "cli_args", None),
             api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
         )
-        timeout_seconds = timeout or DEFAULT_TIMEOUT
+        timeout_seconds = cls._timeout_value(timeout)
         call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
             adapter_cls,
             extra_body,
@@ -629,7 +651,7 @@ class LLMGateway:
                 )
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(gen.__anext__(), timeout=wait_timeout_seconds)
+                        chunk = await cls._next_stream_item(gen, wait_timeout_seconds)
                     except StopAsyncIteration:
                         return
                     produced = True
@@ -637,7 +659,7 @@ class LLMGateway:
                         chunk.setdefault("request_meta", request_meta(provider, model_name, notes))
                     yield chunk
             except asyncio.TimeoutError:
-                last_error = LLMError(f"流式请求超时（{timeout_seconds}秒）")
+                last_error = LLMError(f"流式请求超时（{timeout_seconds or '未限制'}秒）")
             except LLMError as exc:
                 last_error = exc
                 if safe_tool_choice is not None and should_retry_without_tool_choice(exc) and not produced:
