@@ -35,3 +35,4 @@ def test_publisher_stops_when_repository_verification_is_unavailable():
 
     assert "gh repo create" not in script
     assert "Publishing stopped without changing repository state" in script
+    assert "$ExistingTagExitCode" in script

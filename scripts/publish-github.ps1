@@ -138,8 +138,12 @@ try {
   if (-not $CurrentBranch) {
     throw "Release publishing requires a named branch, not detached HEAD."
   }
+  $PreviousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
   $ExistingTagCommit = git rev-list -n 1 $Tag 2>$null
-  if ($LASTEXITCODE -ne 0) {
+  $ExistingTagExitCode = $LASTEXITCODE
+  $ErrorActionPreference = $PreviousErrorActionPreference
+  if ($ExistingTagExitCode -ne 0) {
     $ExistingTagCommit = ""
   } else {
     $ExistingTagCommit = ($ExistingTagCommit | Select-Object -First 1).Trim()
