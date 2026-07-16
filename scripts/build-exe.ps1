@@ -34,20 +34,64 @@ function Require-Command {
   throw $Hint
 }
 
-function Resolve-BuildPython {
-  $BackendPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
-  if (Test-Path $BackendPython) {
-    return $BackendPython
+function Test-PackagingPython {
+  param([Parameter(Mandatory=$true)][string]$PythonPath)
+  $PreviousErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "SilentlyContinue"
+    $BaseExecutable = & $PythonPath -c "import sys,tkinter; print(sys._base_executable)" 2>$null
+    $ProbeExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $PreviousErrorAction
   }
+  if ($ProbeExitCode -ne 0 -or -not $BaseExecutable) {
+    return $false
+  }
+
+  # Astral's standalone runtime is excellent for isolated development, but its
+  # Windows bootloader currently leaves PyInstaller one-file apps suspended
+  # before the Python entry point. Keep it available for tests, not releases.
+  $NormalizedBase = [System.IO.Path]::GetFullPath(($BaseExecutable | Select-Object -Last 1))
+  return $NormalizedBase -notmatch '[\\/]uv[\\/]python[\\/]'
+}
+
+function Resolve-BuildPython {
+  if ($env:SIMING_BUILD_PYTHON) {
+    $ConfiguredPython = [System.IO.Path]::GetFullPath($env:SIMING_BUILD_PYTHON)
+    if (-not (Test-Path -LiteralPath $ConfiguredPython)) {
+      throw "SIMING_BUILD_PYTHON does not exist: $ConfiguredPython"
+    }
+    if (-not (Test-PackagingPython -PythonPath $ConfiguredPython)) {
+      throw "SIMING_BUILD_PYTHON must provide Tk and a PyInstaller-compatible Windows runtime: $ConfiguredPython"
+    }
+    return $ConfiguredPython
+  }
+
+  # Packaging is intentionally isolated from the backend test environment.
+  # Managed Python distributions can be valid for tests while producing a
+  # PyInstaller bootloader that cannot start on a normal Windows desktop.
   $Python = Get-Command "python" -ErrorAction SilentlyContinue
-  if ($Python) {
+  if ($Python -and (Test-PackagingPython -PythonPath $Python.Source)) {
     return $Python.Source
   }
   $Py = Get-Command "py" -ErrorAction SilentlyContinue
-  if ($Py) {
+  if ($Py -and (Test-PackagingPython -PythonPath $Py.Source)) {
     return $Py.Source
   }
-  throw "Python is required on the packaging machine."
+  $BackendPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+  if ((Test-Path $BackendPython) -and (Test-PackagingPython -PythonPath $BackendPython)) {
+    return $BackendPython
+  }
+  throw "A Windows Python runtime with Tk and PyInstaller support is required on the packaging machine."
+}
+
+function Get-PythonRuntimeIdentity {
+  param([Parameter(Mandatory=$true)][string]$PythonPath)
+  $IdentityJson = & $PythonPath -c "import json,sys; print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', 'base_executable': sys._base_executable}))"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to inspect Python runtime: $PythonPath"
+  }
+  return ($IdentityJson | ConvertFrom-Json)
 }
 
 function Invoke-Native {
@@ -98,17 +142,23 @@ Write-Step "Using build Python: $PythonExe"
 Require-Command -Names @("node") -Hint "Node.js is required on the packaging machine." | Out-Null
 Require-Command -Names @("npm") -Hint "npm is required on the packaging machine." | Out-Null
 
-$BuildPythonVersion = (& $PythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+$BuildPythonRuntime = Get-PythonRuntimeIdentity -PythonPath $PythonExe
+$BuildPythonVersion = $BuildPythonRuntime.version
+$BuildPythonBase = [System.IO.Path]::GetFullPath($BuildPythonRuntime.base_executable)
 $ExistingVenvPython = Join-Path $VenvDir "Scripts\python.exe"
 if (Test-Path -LiteralPath $ExistingVenvPython) {
-  $PackagerPythonVersion = (& $ExistingVenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
-  if ($PackagerPythonVersion -ne $BuildPythonVersion) {
+  $PackagerPythonRuntime = Get-PythonRuntimeIdentity -PythonPath $ExistingVenvPython
+  $PackagerPythonVersion = $PackagerPythonRuntime.version
+  $PackagerPythonBase = [System.IO.Path]::GetFullPath($PackagerPythonRuntime.base_executable)
+  $VersionChanged = $PackagerPythonVersion -ne $BuildPythonVersion
+  $RuntimeChanged = -not $PackagerPythonBase.Equals($BuildPythonBase, [System.StringComparison]::OrdinalIgnoreCase)
+  if ($VersionChanged -or $RuntimeChanged) {
     $ResolvedBuildDir = [System.IO.Path]::GetFullPath($BuildDir).TrimEnd('\') + '\'
     $ResolvedVenvDir = [System.IO.Path]::GetFullPath($VenvDir)
     if (-not $ResolvedVenvDir.StartsWith($ResolvedBuildDir, [System.StringComparison]::OrdinalIgnoreCase)) {
       throw "Refusing to replace packager environment outside the build directory: $ResolvedVenvDir"
     }
-    Write-Step "Recreating packager environment for Python $BuildPythonVersion (was $PackagerPythonVersion)..."
+    Write-Step "Recreating packager environment for Python $BuildPythonVersion at $BuildPythonBase..."
     Remove-Item -LiteralPath $ResolvedVenvDir -Recurse -Force
   }
 }
