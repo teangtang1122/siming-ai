@@ -1,258 +1,154 @@
 # 司命 / Siming
 
-长篇小说的命运织机。
+**长篇小说的命运织机。**
 
-司命是一个本地运行的长篇小说 AI 工作台。它把章节、大纲、角色状态、关系网、世界观、伏笔、写作偏好和 AI 工作流放进同一个项目，让模型在几十万字之后仍能找到该看的资料、记住角色当前状态，并把生成结果真正保存回作品。
+Siming is a local-first AI workspace for planning, writing, archiving, and maintaining continuity in long-form fiction.
 
-仓库名：`siming-ai`
+[![Latest Release](https://img.shields.io/github/v/release/teangtang1122/siming-ai?display_name=tag&sort=semver)](https://github.com/teangtang1122/siming-ai/releases/latest)
+![Windows x64](https://img.shields.io/badge/Windows-x64-2979ff?logo=windows11&logoColor=white)
+[![Backend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/backend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/backend-ci.yml)
+[![Frontend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-3c7a57.svg)](LICENSE)
 
-## 当前重点
+[下载最新版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming.exe) · [查看文档](docs/) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
 
-- v2.8.6 新增全局任务中心与真实卡死检测：长任务不设总时限，结合输出、工具调用、进程活动和业务检查点判断健康度，并修复新书表单版本闪烁。
-- v2.8.5 让内置 Python 网络组件使用 Windows 系统证书库；全新电脑无需安装 Python 或证书包，OpenCode、更新器和本地运行时下载保持严格 HTTPS 校验。
-- v2.8.4 支持 Chat Completions 与 Responses API 自动识别；自定义中转站即使没有 `/models` 接口，也可用手动模型名完成真实对话验证并参与创作。
-- v2.8.3 将“检测到 CLI”和“模型真实可用”彻底分开：只有完成真实对话验证的模型才会进入助手、新书和写作流程。
-- OpenCode 官方登录由司命通过 Windows ConPTY 托管，登录地址与一次性凭据都在 GUI 内处理；鉴权、额度、超时和不可用状态会给出准确提示。
-- 仪表盘首次任务、设置页模型分组与移动导航已统一；正式发行资产必须从版本 tag 指向的精确提交构建。
-- OpenCode 激活任务和下载进度会保存在本地数据库；应用重启后可以继续，免费模型受限时会自动尝试下一个候选。
-- 项目品牌已更名为 `司命 / Siming`，正式发布产物为 `Siming.exe`。
-- GitHub 更新仓库默认指向 `teangtang1122/siming-ai`。
-- 发布资产只保留 `Siming.exe`；不再生成或上传 `Moshu.exe`、`NovelWritingAgent.exe`。
-- 新的外部 Agent / MCP 自动配置默认写入 `siming` 服务器条目；旧的 `moshu` 条目会被迁移或清理。
-- 为了不破坏旧项目和旧客户端，部分内部协议名仍保留兼容 ID，例如 `moshu://`、`get_moshu_usage_guide`、`moshu_task_type`。
+[![司命新书立项工作台，展示《雾海拾光》的三套轻量创意方向](docs/images/readme/novel-creation.png)](docs/images/readme/novel-creation.png)
 
-## 它解决什么痛点
+*新书立项工作台：先比较三套故事发动机，再逐步生成角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
 
-直接用通用大模型写长篇小说，常见问题并不只是“文笔不够好”：
+> **2.8.7** 使用真实界面截图重新整理了项目入口。当前版本已具备新书立项、长任务活动检测、章节版本回退、叙事账本与统一作品建档。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
 
-- 上下文越长，越容易忘记前文设定、时间线、伏笔和力量规则。
-- 角色容易 OOC，尤其会忘记当前位置、年龄、境界、伤势、目标、关系变化和已有装备。
-- 完本小说或几十万字资料无法一次塞进上下文，手动整理角色卡和世界观又很耗时。
-- 大纲、正文、角色状态和世界观分别维护，写完一章后经常忘记同步更新。
-- 不同模型、Claude Code、Codex、OpenCode 等工具各有一套调用方式，换入口后工作流和质量容易变化。
-- 禁用句式、文风偏好和创作技巧散落在聊天记录里，模型未必持续遵守。
+## 它解决什么问题
 
-司命通过作品建档、RAG 上下文选择、角色/世界观时间线、Plan Agent、技能提示词、项目记忆和统一工具链解决这些问题。数据库是唯一权威写入源，本地 Markdown/JSON 镜像供模型快速阅读；所有修改通过司命写回，前端、索引、版本历史和缓存保持一致。
+用通用大模型直接写长篇，真正难的往往不是生成一段文字，而是让几百章的事实持续一致：
 
-## 杀毒软件误报
+- 角色的年龄、外貌、位置、伤势、目标和关系会随时间变化。
+- 大纲、正文、世界观、伏笔和时间线容易分散，写后还需要反复手工同步。
+- 几十万字无法一次塞进模型，只靠聊天记忆很快就会丢失前文。
+- API、Claude Code、Codex、OpenCode 等入口的能力和错误提示不一致，长任务也很难判断是在计算还是真的卡住。
 
-Windows 杀毒软件如果把打包版识别为木马，最常见原因不是业务代码本身，而是未签名的 PyInstaller/内嵌 Python 运行时具备这些特征：
+司命把正文、大纲、角色状态、世界观、叙事账本和 AI 工作流放在同一个本地项目中。数据库是权威写入源，Markdown/JSON 文件作为可阅读镜像；修改通过司命工具落库，让前端、索引、版本历史和文件保持一致。
 
-- 单文件 exe 会在临时目录解包 Python 运行时。
-- 程序会启动本地 Web 服务和浏览器页面。
-- 程序可能启动 Claude Code、Codex、OpenCode 等本机 CLI。
-- 用户选择本地模型时，程序会启动 llama.cpp 或训练/推理相关进程。
-
-司命不会把模型权重打包进 exe，也不会主动上传用户作品数据。正式分发前建议对发布包做代码签名、固定 Release 资产来源，并提示用户只从官方 GitHub Release 下载。
-
-## 3 分钟上手
+## 3 分钟开始
 
 ### 1. 下载并启动
 
-从 GitHub Release 下载 `Siming.exe`，双击运行即可。普通用户不需要安装 Python、Node.js，也不需要手动配置 MCP。
+从 [官方 GitHub Release](https://github.com/teangtang1122/siming-ai/releases/latest) 下载 `Siming.exe`，双击即可启动。普通使用者不需要安装 Python、Node.js，也不需要打开 CMD 或 PowerShell。
 
-首次启动时选择小说数据目录。默认目录为：
+首次启动会让你选择小说数据目录；不修改时使用 `%LOCALAPPDATA%\Siming`。旧版 `%LOCALAPPDATA%\Moshu` 和 `%LOCALAPPDATA%\NovelWritingAgent` 数据会兼容读取，不会被主动删除。
+
+### 2. 点击“准备 AI 并开始构思”
+
+没有任何模型配置时，司命会为 Windows 自动下载、校验并测试 OpenCode，整个过程都在图形界面里完成。测试通过后才会把模型标记为可用。
+
+免费方案当前使用 OpenCode 提供的免费开源模型 DeepSeek V4 Flash，运行时会显示完整模型 ID：
 
 ```text
-%LOCALAPPDATA%\Siming
+opencode_cli:opencode/deepseek-v4-flash-free
 ```
 
-如果检测到旧版目录 `%LOCALAPPDATA%\Moshu` 或 `%LOCALAPPDATA%\NovelWritingAgent`，司命会自动兼容读取，不会主动删除旧数据。
+免费模型、额度与数据政策由对应服务提供方决定，可能随时调整。若实际模型发生切换，司命会在运行记录中明确显示；更多高质量模型仍需前往相应模型官网自行订阅。
 
-### 2. 免费开始写小说
+### 3. 说一句故事想法
 
-完全没有模型配置时，司命会自动打开“快速开始”。点击“免费开始写小说”后，司命会：
+输入一句梗概，司命会先给出三套轻量创意。选定方向后，可以使用完整向导逐步确认角色、世界观、卷纲和前 15 章细纲，也可以快速生成后再统一审阅。正式作品只会在最终确认时创建。
 
-1. 从 OpenCode 官方 Release 下载约 70 MB 的 Windows CLI，并核对官方 SHA256。
-2. 自动发现和测试当前可免费使用的模型，不要求你理解模型名称。
-3. 测试成功后设为默认模型，并让你用一句故事想法生成三套小说创意。
+## 界面预览
 
-不需要安装 Node.js、打开命令行或填写 API Key。免费模型、额度和数据政策由 OpenCode 或对应模型服务提供方决定，未来可能调整；请勿向免费模型提交私密或敏感内容。
+| 首次准备 AI | 作品写作工作台 |
+| --- | --- |
+| [![司命首次使用页，展示准备 AI 并开始构思按钮](docs/images/readme/quick-start.png)](docs/images/readme/quick-start.png) | [![司命作品写作工作台，展示《雾海拾光》章节列表、摘要和正文编辑器](docs/images/readme/project-workspace.png)](docs/images/readme/project-workspace.png) |
+| 不需要开发工具或命令行，下载、校验和模型测试都有明确步骤。 | 章节、大纲节点、摘要、正文与版本历史在同一工作台内管理。 |
 
-已经有模型的用户仍可在系统设置里选择其他来源：
+[![司命全局任务中心，展示《雾海拾光》正在处理第 138/600 章的作品建档任务](docs/images/readme/task-center.png)](docs/images/readme/task-center.png)
 
-在系统设置里选择一种模型来源：
+*全局任务中心：跨页面查看当前阶段、处理对象、模型、已用时间和运行健康度。建档和拆书不设总时限，只会在输出、工具、进程和业务检查点都长时间没有变化时判定卡住。*
 
-- 云端 API：OpenAI、Anthropic Claude、DeepSeek、Google Gemini、通义千问或 OpenAI 兼容接口。
-- 本机 CLI：Claude Code、Codex、OpenCode、MiMo Code、Cursor Agent、Kilo Code、Qwen Code、Hermes Agent 或 OpenClaw。
-- 本地模型：由司命下载并管理的 GGUF 模型和 llama.cpp 运行时。
-
-选择本机 CLI 后，司命会自动检测程序、合并 MCP 配置，并默认写入名为 `siming` 的 MCP 条目。
-
-维护者可通过 `SIMING_OPENCODE_MIRROR_URLS` 配置分号分隔的 HTTPS 下载镜像模板，其中 `{url}` 表示官方 URL、`{asset}` 表示官方文件名。官方源始终优先，镜像文件也必须通过官方 SHA256 校验。
-
-### 3. 创建或导入作品
-
-你可以：
-
-- 从零创建一本新小说。
-- 上传已有 TXT/DOCX 小说并按章节导入。
-- 对完本小说运行作品建档，为续写、同人、番外或改写建立资料库。
-- 创建空白作品后手动写作。
-
-### 4. 开始工作
-
-进入作品后可以直接说：
-
-- “根据当前大纲写第 151 章。”
-- “检查这一章是否和角色状态、世界观冲突。”
-- “规划接下来十章，先给我确认方向。”
-- “把这 150 章逐章建档。”
-- “更新主角当前伤势、位置和目标。”
-
-运行过程会显示模型、工具调用、任务阶段、失败原因和可重试入口。
+> 四张截图均由 `npm run screenshots:readme` 使用真实前端与稳定的虚构数据生成，不读取本机作品、路径、凭据或模型账户。
 
 ## 核心能力
 
-### 作品建档
+| 能力 | 作者能得到什么 |
+| --- | --- |
+| 新书立项 | 三套轻量创意、可编辑的分阶段向导、全书卷纲与前 15 章细纲；每章包含 2–6 个场景节点。 |
+| 作品建档 | 逐章提取摘要、大纲、角色状态、关系、世界观、时间线、伏笔与故事线，可从检查点继续。 |
+| 写作与上下文 | 按任务预算选择大纲、场景、近期摘要、角色当前状态、有效线索和未解决动作，避免整本书硬塞给模型。 |
+| 叙事账本 | 跟踪已完成节拍、已揭露线索、读者承诺和故事线状态，写后归档并为下一章注入关键事实。 |
+| 版本与回退 | 每次写章前后保留快照；对新章不满意时，可查看差异并恢复旧版，同步回退相关档案和文件镜像。 |
+| 长任务运行 | 展示阶段、最近活动、模型和健康度；支持暂停、继续、取消和重试当前单元，已完成章节不会因后续失败而丢失。 |
 
-建档按章节推进，每章会提取并更新：
+## 模型与隐私
 
-- 章节摘要和大纲节点。
-- 角色档案、别名、关系和出场记录。
-- 角色当前位置、年龄/时间变化、境界、身体状态、心理状态、目标、冲突和装备。
-- 世界观条目、规则证据和时间线。
-- 角色与世界观的版本历史。
+司命可以使用 OpenAI、Anthropic Claude、DeepSeek、Google Gemini、通义千问、OpenAI 兼容中转站，也可以调用 Claude Code、Codex、OpenCode 等本机 CLI。仅“检测到命令”不等于可用；只有完成真实对话测试的模型才会进入新书、助手和写作流程。
 
-事实抽取和候选写入分离。失败时保留已完成阶段，可从失败章节继续，不需要整轮重跑。
+- 作品数据库、文件镜像、快照和任务记录保存在你选择的本机目录。
+- 司命不会自主把整个作品库上传到项目服务器。
+- 使用云端 API 或需联网的 CLI 时，当前任务选中的提示词、正文片段和上下文会发送给对应提供方处理。
+- API Key 由本机配置使用；OpenCode 的一次性登录凭据仅传递给当前登录进程，不保存、不回显、不写日志。
 
-### 写作与 Plan Agent
+请根据内容敏感程度阅读所选模型提供方的数据政策，不要向免费云端模型提交隐私或机密内容。
 
-质量模式会按计划执行：
+## 下载与信任
 
-1. 检索大纲、近期摘要、角色、关系、世界观、记忆和技能。
-2. 设计剧情。
-3. 进行角色扮演或多角色对戏。
-4. 生成正文。
-5. 评估章节质量与冲突。
-6. 保存章节。
-7. 更新角色变化。
-8. 更新新增世界观。
+当前 `Siming.exe` **尚未完成代码签名**。PyInstaller 打包的单文件 EXE 会在运行时解压内嵌 Python 组件、启动本地 Web 服务，并在用户授权时启动本机 CLI，因此部分杀毒软件可能产生误报。
 
-失败步骤可以单独重试，也可以从失败步骤继续。
+为减少供应链风险：
 
-### RAG 与上下文
+1. 只从 [`teangtang1122/siming-ai` 官方 Releases](https://github.com/teangtang1122/siming-ai/releases) 下载。
+2. 下载同一版本的 `sha256.txt`，用 `certutil -hashfile Siming.exe SHA256` 计算文件哈希并与其对照。
+3. 不要使用网盘、聊天群或第三方网站二次分发的 EXE。
 
-当作品有数百条世界观、角色和章节摘要时，司命会按当前任务混合检索和预算打包，优先选择当前大纲节点、近期章节、相关角色状态、冲突规则、用户偏好和项目记忆。
+发行页会同时提供 `Siming.exe`、`update.json` 和 `sha256.txt`，三者在发布前会进行版本、下载地址和 SHA256 一致性校验。
 
-### 外部 Agent / No API 流程
+## 外部 Agent 与提示词投稿
 
-外部 Agent 默认走不消耗司命内部模型额度的 API-free 流程：
+司命支持让 Claude Code、Codex、OpenCode 等外部 Agent 通过 MCP 读取项目上下文。镜像文件可以直接读取；章节、角色、大纲和世界观的新建或修改必须通过司命工具入库，不把“直接写出一个 Markdown 文件”当作完成。
 
-- 只有用户明确要求使用司命内部 API 时，才调用 `internal_llm` 工具。
-- 中文小说始终用中文保存角色名、别名、章节标题、摘要、大纲、事实和世界观。
-- 读取优先使用本地作品文件镜像。
-- 写入、删除、更新和验证必须通过 MCP 工具完成。
-- 建档先读取 `cataloging_external_no_api` Prompt Pack。
-- 写作先准备上下文、保存草稿、记录评审，再创建章节和更新故事状态。
+提示词贡献不要求作者掌握 Git。在作品的“提示词投稿”页面中，可以直接修改快速模式或质量模式提示词，补充改动说明、预期效果和测试记录，然后生成投稿包和预填好的 GitHub Issue。
 
-常用只读工具：
+专业文档：
 
-```text
-list_projects
-get_project_files_info
-list_project_files
-read_project_file
-search_project_files
-get_prompt_pack
-get_moshu_usage_guide
-```
+- [外部 Agent 无 API 写作](docs/agent/external-no-api-writing.md)
+- [外部 Agent 无 API 建档](docs/agent/external-no-api-cataloging.md)
+- [MCP 权限包与工具](docs/mcp/permission-packs-and-tools.md)
+- [MCP 安全边界](docs/mcp/security.md)
 
-常用写入工具：
+## 开发与贡献
 
-```text
-create_project
-create_chapter / update_chapter
-create_character / update_character
-create_outline_node / update_outline_node
-create_worldbuilding_entry / update_worldbuilding_entry
-save_external_chapter_draft
-apply_external_story_updates
-```
-
-## v2.6.1 重点
-
-- 发布链路改为只生成、上传和校验 `Siming.exe`。
-- `update.json` 和 `sha256.txt` 只包含 `Siming.exe`，更新器不再回退下载旧 exe 名。
-- 旧数据目录、旧环境变量和旧 MCP 协议名仍按兼容层读取，但不再作为发布产物。
-
-## v2.6.0 重点
-
-- 全项目更名为 `司命 / Siming`，仓库为 `siming-ai`，宣传语为“长篇小说的命运织机”。
-- 修复建档模型路由：显式模型优先，其次全局默认 API/CLI，只有明确选择本地任务模型或无全局默认时才进入本地任务模型。
-- 新书生成和建档入口补齐模型传递，减少 CLI 可用却误报 `need_model` 或被本地模型抢跑的问题。
-- 新书生成取消模板兜底冒充 LLM 输出；候选允许部分成功并重试失败分支。
-- 建档候选解析兼容 `character_state`、缺失 `type` 但字段可推断的角色/世界观/关系/大纲候选。
-- 候选写入会跳过未命名角色、空壳角色状态、无内容世界观和缺少摘要的大纲，避免污染作品档案。
-- MCP/外部 Agent 默认服务器名迁移为 `siming`，并保留旧 `moshu` 配置迁移。
-
-## 开发
-
-后端：
+普通使用者只需要 `Siming.exe`。以下环境仅面向源码贡献者。
 
 ```powershell
+# 后端
 cd backend
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
-```
 
-前端：
-
-```powershell
+# 前端（新终端）
 cd frontend
 npm install
 npm run dev
 ```
 
-常用检查：
+提交前的常用检查：
 
 ```powershell
 backend\.venv\Scripts\python.exe -m pytest backend/tests -q
-cd frontend
-npm run build
+npm --prefix frontend run lint
+npm --prefix frontend test
+npm --prefix frontend run build
+npm --prefix frontend run test:e2e
+npm --prefix frontend run screenshots:readme
 ```
 
-打包：
+本地打包使用 `.\build-exe.bat`，产物为 `release\Siming.exe`、`release\update.json` 和 `release\sha256.txt`。提交代码、文档、可复现问题或者通过 GUI 生成的提示词投稿都很欢迎。
 
-```powershell
-.\build-exe.bat
-```
+## 路线图与许可证
 
-发布：
+- [项目路线图](docs/roadmap.md)
+- [项目管理与发布约定](docs/project-management.md)
+- [全部版本发布记录](https://github.com/teangtang1122/siming-ai/releases)
+- [功能建议与问题反馈](https://github.com/teangtang1122/siming-ai/issues)
 
-```powershell
-powershell -NoProfile -File scripts\publish-github.ps1
-```
-
-项目管理和路线图见：
-
-- [docs/project-management.md](docs/project-management.md)
-- [docs/roadmap.md](docs/roadmap.md)
-
-## 打包产物
-
-默认打包输出：
-
-```text
-release\Siming.exe
-release\update.json
-release\sha256.txt
-```
-
-`Siming.exe` 是唯一正式分发文件。旧数据目录仍会自动兼容读取，但旧 exe 名不再生成、不再上传。
-
-## 外部 Agent MCP
-
-手动启动 MCP 入口：
-
-```powershell
-python scripts\moshu-mcp-server.py --permission-pack auto
-```
-
-入口脚本文件名暂时保留 `moshu-mcp-server.py`，用于兼容旧文档和旧配置；客户端里的服务器条目应使用 `siming`。
-
-## 许可证
-
-本项目采用 Apache License 2.0，详见 [LICENSE](LICENSE)。
+本项目采用 [Apache License 2.0](LICENSE)。
