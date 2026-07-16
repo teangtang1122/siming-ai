@@ -98,6 +98,21 @@ Write-Step "Using build Python: $PythonExe"
 Require-Command -Names @("node") -Hint "Node.js is required on the packaging machine." | Out-Null
 Require-Command -Names @("npm") -Hint "npm is required on the packaging machine." | Out-Null
 
+$BuildPythonVersion = (& $PythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+$ExistingVenvPython = Join-Path $VenvDir "Scripts\python.exe"
+if (Test-Path -LiteralPath $ExistingVenvPython) {
+  $PackagerPythonVersion = (& $ExistingVenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+  if ($PackagerPythonVersion -ne $BuildPythonVersion) {
+    $ResolvedBuildDir = [System.IO.Path]::GetFullPath($BuildDir).TrimEnd('\') + '\'
+    $ResolvedVenvDir = [System.IO.Path]::GetFullPath($VenvDir)
+    if (-not $ResolvedVenvDir.StartsWith($ResolvedBuildDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Refusing to replace packager environment outside the build directory: $ResolvedVenvDir"
+    }
+    Write-Step "Recreating packager environment for Python $BuildPythonVersion (was $PackagerPythonVersion)..."
+    Remove-Item -LiteralPath $ResolvedVenvDir -Recurse -Force
+  }
+}
+
 Write-Step "Building frontend static files..."
 Push-Location $FrontendDir
 try {
@@ -116,6 +131,9 @@ if (-not (Test-Path (Join-Path $VenvDir "Scripts\python.exe"))) {
 }
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+
+Write-Step "Verifying the Windows GUI runtime..."
+Invoke-Native $VenvPython @("-c", "import tkinter; print(f'Tk {tkinter.TkVersion}')")
 
 Write-Step "Installing backend dependencies and PyInstaller..."
 Invoke-Native $VenvPython @("-m", "pip", "install", "-i", $PipIndexUrl, "--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "--upgrade", "pip")

@@ -12,3 +12,5 @@ def test_packager_includes_dynamic_database_migration_module():
 
     assert '"--hidden-import", "app.database.migrations"' in script
     assert '"--add-data", "$(Join-Path $BackendDir \'alembic\')' in script
+    assert "PackagerPythonVersion -ne $BuildPythonVersion" in script
+    assert 'import tkinter' in script
