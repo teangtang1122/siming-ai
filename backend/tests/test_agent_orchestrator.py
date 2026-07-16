@@ -20,7 +20,7 @@ from app.database.models import (
     Base,
     Project,
 )
-from app.database.session import get_db
+from app.database.session import engine as app_engine, get_db
 from app.services.agent.bridge import _apply_assistant_mode_to_intent
 from app.services.agent.orchestrator import PlanOrchestrator, _serialize_step
 from app.services.agent.plan_graph import PlanGraph, StepDef
@@ -40,6 +40,17 @@ API_PREFIX = "/api/v1"
 
 engine = create_engine(os.environ["DATABASE_URL"], connect_args={"check_same_thread": False})
 TestSession = sessionmaker(bind=engine)
+
+
+def tearDownModule():
+    """Release SQLite handles before deleting the shared module database."""
+    Base.metadata.drop_all(bind=engine)
+    engine.dispose()
+    app_engine.dispose()
+    try:
+        os.remove("test_agent_orchestrator.db")
+    except OSError:
+        pass
 
 
 def _run_async(coro):
@@ -311,10 +322,6 @@ class OrchestratorTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         Base.metadata.drop_all(bind=engine)
-        try:
-            os.remove("test_agent_orchestrator.db")
-        except OSError:
-            pass
 
     def setUp(self):
         self.db = TestSession()
@@ -423,10 +430,6 @@ class OrchestratorExecutionTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         Base.metadata.drop_all(bind=engine)
-        try:
-            os.remove("test_agent_orchestrator.db")
-        except OSError:
-            pass
 
     def setUp(self):
         self.db = TestSession()
@@ -667,10 +670,6 @@ class AgentRouterTestCase(unittest.TestCase):
     def tearDownClass(cls):
         Base.metadata.drop_all(bind=engine)
         app.dependency_overrides.clear()
-        try:
-            os.remove("test_agent_orchestrator.db")
-        except OSError:
-            pass
 
     def setUp(self):
         db = TestSession()
