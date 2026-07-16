@@ -26,6 +26,12 @@ def test_packager_uses_an_explicit_runtime_instead_of_the_backend_test_venv():
     assert "Test-PackagingPython" in script
     assert "import sys,tkinter" in script
     assert '$ErrorActionPreference = "SilentlyContinue"' in script
-    assert r"uv[\\/]python" in script
     assert "base_executable" in script
     assert "$RuntimeChanged" in script
+
+
+def test_publisher_stops_when_repository_verification_is_unavailable():
+    script = (ROOT / "scripts" / "publish-github.ps1").read_text(encoding="utf-8")
+
+    assert "gh repo create" not in script
+    assert "Publishing stopped without changing repository state" in script

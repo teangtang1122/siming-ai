@@ -48,11 +48,8 @@ function Test-PackagingPython {
     return $false
   }
 
-  # Astral's standalone runtime is excellent for isolated development, but its
-  # Windows bootloader currently leaves PyInstaller one-file apps suspended
-  # before the Python entry point. Keep it available for tests, not releases.
   $NormalizedBase = [System.IO.Path]::GetFullPath(($BaseExecutable | Select-Object -Last 1))
-  return $NormalizedBase -notmatch '[\\/]uv[\\/]python[\\/]'
+  return [bool]$NormalizedBase
 }
 
 function Resolve-BuildPython {

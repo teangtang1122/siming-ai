@@ -55,9 +55,14 @@ try {
   }
 
   if (-not $DryRun) {
-    gh repo view $Repo 1>$null 2>$null
-    if ($LASTEXITCODE -ne 0) {
-      gh repo create $Repo "--$Visibility" --source . --remote origin
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $RepoViewOutput = gh repo view $Repo 2>&1
+    $RepoViewExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $PreviousErrorActionPreference
+    if ($RepoViewExitCode -ne 0) {
+      $RepoViewMessage = ($RepoViewOutput | Out-String).Trim()
+      throw "Unable to verify GitHub repository '$Repo'. Publishing stopped without changing repository state. $RepoViewMessage"
     }
   }
 
