@@ -507,6 +507,18 @@ async def submit_novel_creation_stage(db: Session, project_id: str, args: dict[s
         return {"tool": "submit_novel_creation_stage", "status": "skipped", "detail": "Session not found", "data": None}
     if stage not in STAGE_ORDER:
         return {"tool": "submit_novel_creation_stage", "status": "skipped", "detail": "Unknown stage", "data": None}
+    expected_revision = args.get("expected_revision")
+    if expected_revision is not None and int(session.revision or 0) != int(expected_revision):
+        return {
+            "tool": "submit_novel_creation_stage",
+            "status": "error",
+            "detail": "Novel creation session revision conflict",
+            "data": {
+                "failure_class": "revision_conflict",
+                "current_revision": int(session.revision or 0),
+                "session": serialize_session(session),
+            },
+        }
     data = args.get("data")
     if not isinstance(data, dict):
         data = derive_stage(session, stage)

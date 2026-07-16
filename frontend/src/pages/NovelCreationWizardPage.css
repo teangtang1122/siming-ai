@@ -148,6 +148,36 @@
   margin-top: 22px;
 }
 
+.creation-stage-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 8;
+  margin: 28px -24px -24px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+  background: color-mix(in srgb, var(--ant-color-bg-container) 94%, transparent);
+  box-shadow: 0 -10px 24px rgb(28 37 46 / 6%);
+  backdrop-filter: blur(10px);
+}
+
+.creation-stage-actions:empty {
+  display: none;
+}
+
+.creation-stage-heading-focus {
+  min-width: 0;
+  border-radius: 6px;
+  outline: none;
+}
+
+.creation-stage-heading-focus:focus-visible {
+  box-shadow: 0 0 0 3px var(--ant-color-primary-border);
+}
+
+.creation-stage-outcome {
+  margin-top: 18px;
+}
+
 .creation-resume-band {
   grid-column: 1 / -1;
   padding: 18px;
@@ -477,6 +507,32 @@
   .creation-concepts-main,
   .creation-stage-main {
     padding: 16px;
+  }
+
+  .creation-stage-actions {
+    position: fixed;
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: 12px;
+    z-index: 30;
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 16px;
+    border: 1px solid var(--ant-color-border-secondary);
+    border-radius: 8px;
+    background: var(--ant-color-bg-container);
+    box-shadow: 0 10px 30px rgb(28 37 46 / 18%);
+  }
+
+  .creation-stage-actions .ant-btn {
+    width: 100%;
+    min-height: 44px;
+    white-space: normal;
+  }
+
+  .creation-stage-main {
+    padding-bottom: 148px;
   }
 
   .creation-run-bar {

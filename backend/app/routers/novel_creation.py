@@ -22,6 +22,7 @@ from ..database.session import SessionLocal
 from ..services.novel_creation_workspace import (
     STAGE_ORDER,
     create_run,
+    generation_blockers,
     get_presets,
     patch_session,
     serialize_run,
@@ -304,6 +305,13 @@ class NovelCreationStageConfirmRequest(BaseModel):
     data: dict[str, Any] | None = None
     confirm: bool = True
     source: str = "author"
+    expected_revision: int | None = None
+
+
+class NovelCreationStagePatchRequest(BaseModel):
+    data: dict[str, Any]
+    source: str = "author"
+    expected_revision: int
 
 
 @router.get("/novel-creation/presets")
@@ -407,6 +415,18 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
                 "session": serialize_session(session),
             },
         )
+    blocked_by = generation_blockers(session, payload.stage)
+    if blocked_by:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "请先确认前置阶段，再生成当前内容。",
+                "failure_class": "stage_blocked",
+                "blocked_by": blocked_by,
+                "session": serialize_session(session),
+                "next_action": f"返回“{blocked_by[0]['label']}”完成确认。",
+            },
+        )
     existing = (
         db.query(NovelCreationStageRun)
         .filter(
@@ -480,12 +500,50 @@ async def stream_creation_stage_run(run_id: str):
 
 @router.post("/novel-creation/sessions/{session_id}/stages/{stage}/confirm")
 async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCreationStageConfirmRequest, db: Session = Depends(get_db)):
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "立项草稿版本已经变化，请检查最新内容后再确认。",
+                "current_revision": int(session.revision or 0),
+                "session": serialize_session(session),
+            },
+        )
     result = await submit_novel_creation_stage(db, "", {
         "session_id": session_id,
         "stage": stage,
         "data": payload.data,
         "confirm": payload.confirm,
         "source": payload.source,
+        "expected_revision": payload.expected_revision,
+    })
+    return _tool_response(result)
+
+
+@router.patch("/novel-creation/sessions/{session_id}/stages/{stage}")
+async def update_creation_stage(session_id: str, stage: str, payload: NovelCreationStagePatchRequest, db: Session = Depends(get_db)):
+    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="立项草稿不存在")
+    if int(session.revision or 0) != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "立项草稿版本已经变化，本地修改尚未覆盖最新版本。",
+                "current_revision": int(session.revision or 0),
+                "session": serialize_session(session),
+            },
+        )
+    result = await submit_novel_creation_stage(db, "", {
+        "session_id": session_id,
+        "stage": stage,
+        "data": payload.data,
+        "confirm": False,
+        "source": payload.source,
+        "expected_revision": payload.expected_revision,
     })
     return _tool_response(result)
 

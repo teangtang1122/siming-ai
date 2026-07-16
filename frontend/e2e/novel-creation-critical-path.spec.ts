@@ -1,5 +1,12 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
+const unexpectedApiRequests = new WeakMap<Page, string[]>()
+
+test.afterEach(async ({ page }) => {
+  await page.goto('about:blank').catch(() => undefined)
+  expect(unexpectedApiRequests.get(page) || [], 'all browser API calls must be explicitly mocked').toEqual([])
+})
+
 const zh = {
   workbench: '\u65b0\u4e66\u7acb\u9879\u5de5\u4f5c\u53f0',
   noModel: '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u6a21\u578b',
@@ -113,13 +120,63 @@ async function mockApi(page: Page, options: {
   gettingStarted?: Record<string, unknown>
   onInterview?: (route: Route, call: number) => Promise<void>
   onApply?: (route: Route) => Promise<void>
+  onStageConfirm?: (route: Route, stage: string) => Promise<void>
+  onStageRun?: (route: Route) => Promise<void>
 } = {}) {
   let interviewCalls = 0
   let startedSession: Record<string, unknown> | undefined
-  await page.route('**/api/v1/**', async (route) => {
+  const unexpected: string[] = []
+  unexpectedApiRequests.set(page, unexpected)
+  await page.addInitScript(() => {
+    class MockEventSource {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSED = 2
+      readonly CONNECTING = 0
+      readonly OPEN = 1
+      readonly CLOSED = 2
+      readonly url: string
+      readonly withCredentials = false
+      readyState = MockEventSource.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      constructor(url: string | URL) {
+        this.url = String(url)
+        window.setTimeout(() => {
+          if (this.readyState === MockEventSource.CLOSED) return
+          this.readyState = MockEventSource.OPEN
+          this.onopen?.(new Event('open'))
+        }, 0)
+      }
+
+      addEventListener() {}
+
+      removeEventListener() {}
+
+      dispatchEvent() {
+        return true
+      }
+
+      close() {
+        this.readyState = MockEventSource.CLOSED
+      }
+    }
+
+    Object.defineProperty(window, 'EventSource', {
+      configurable: true,
+      writable: true,
+      value: MockEventSource,
+    })
+  })
+  await page.context().route('**/*', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
     const method = request.method()
+    if (!path.startsWith('/api/v1/')) {
+      return route.continue()
+    }
 
     if (path === '/api/v1/config/models') {
       return fulfill(route, { code: 0, data: { items: options.models ?? [model], total: (options.models ?? [model]).length } })
@@ -136,6 +193,9 @@ async function mockApi(page: Page, options: {
     }
     if (path === '/api/v1/projects') {
       return fulfill(route, { code: 0, data: { items: [], total: 0 } })
+    }
+    if (path === '/api/v1/operations') {
+      return fulfill(route, { code: 0, data: { items: [] } })
     }
     if (path === '/api/v1/novel-creation/presets') {
       return fulfill(route, { code: 0, data: catalog })
@@ -154,11 +214,20 @@ async function mockApi(page: Page, options: {
       if (options.onInterview) return options.onInterview(route, interviewCalls)
       return fulfill(route, { code: 0, data: { session_id: 'session-1', state: 'ready', history: [] } })
     }
+    const stageConfirm = path.match(/^\/api\/v1\/novel-creation\/sessions\/[^/]+\/stages\/([^/]+)\/confirm$/)
+    if (stageConfirm && method === 'POST') {
+      if (options.onStageConfirm) return options.onStageConfirm(route, stageConfirm[1])
+      return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession() })
+    }
+    if (path.startsWith('/api/v1/novel-creation/sessions/') && method === 'PATCH') {
+      return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession() })
+    }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && method === 'GET') {
       const sessionId = path.split('/').pop() || 'session-1'
       return fulfill(route, { code: 0, data: options.session ?? startedSession ?? conceptSession(sessionId) })
     }
     if (path.startsWith('/api/v1/novel-creation/sessions/') && path.endsWith('/runs') && method === 'POST') {
+      if (options.onStageRun) return options.onStageRun(route)
       return fulfill(route, { code: 0, data: { run: { id: 'run-1', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u4e09\u5957\u8f7b\u91cf\u521b\u610f' } } })
     }
     if (path === '/api/v1/novel-creation/apply' && method === 'POST') {
@@ -174,7 +243,11 @@ async function mockApi(page: Page, options: {
     if (path.includes('/ai/system-assistant/conversations/') && path.endsWith('/turns') && method === 'POST') {
       return fulfill(route, { code: 0, data: { conversation: { id: 'conversation-1', title: '\u65b0\u4e66' } } })
     }
-    return fulfill(route, { code: 0, data: {} })
+    if (path.startsWith('/api/v1/projects/project-1')) {
+      return fulfill(route, { code: 0, data: path.endsWith('/chapters') || path.endsWith('/outline') ? { items: [], total: 0 } : { id: 'project-1', title: '\u88c2\u9699\u5b9e\u9a8c\u4f53' } })
+    }
+    unexpected.push(`${method} ${path}`)
+    return fulfill(route, { detail: `Unexpected mocked API request: ${method} ${path}` }, 599)
   })
 }
 
@@ -398,4 +471,94 @@ test('restores a draft and creates the final project only after final review', a
   await expect(page.getByRole('button', { name: zh.create })).toBeEnabled()
   await page.getByRole('button', { name: zh.create }).click()
   await expect(page).toHaveURL(/\/project\/project-1/)
+})
+
+test('keeps a generated world stage visible until confirmation and only then starts characters', async ({ page }) => {
+  const worldData = {
+    writing_style: '\u51b7\u9759\u514b\u5236',
+    world_tone: '\u9b54\u6cd5\u4f1a\u4fb5\u8680\u4e2a\u4eba\u8bb0\u5fc6',
+    story_structure: '\u9003\u4ea1\u3001\u7ed3\u76df\u4e0e\u63ed\u5bc6\u4e09\u7ebf\u4ea4\u7ec7',
+    pacing: '\u6bcf\u7ae0\u63a8\u8fdb\u4e00\u4e2a\u5371\u673a',
+    style_rules: ['\u5148\u5448\u73b0\u540e\u89e3\u91ca'],
+    worldbuilding: [{ title: '\u8bb0\u5fc6\u9b54\u6cd5', content: '\u65bd\u6cd5\u4f1a\u5931\u53bb\u4eb2\u5386\u8bb0\u5fc6' }],
+  }
+  const session = {
+    ...conceptSession(),
+    revision: 5,
+    current_stage: 'characters',
+    stage_flow: {
+      attention_stage: 'world_style',
+      recommended_stage: 'world_style',
+      legacy_current_stage: 'characters',
+      pending_confirmations: ['world_style'],
+      items: {
+        world_style: { stage: 'world_style', label: '\u6587\u98ce\u4e0e\u4e16\u754c\u89c2', status: 'generated', can_view: true, can_generate: true, can_confirm: true, blocked_by: [], actions: ['view', 'edit', 'regenerate', 'confirm'], next_stage: 'characters' },
+        characters: { stage: 'characters', label: '\u89d2\u8272\u4e0e\u5173\u7cfb', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'world_style', label: '\u6587\u98ce\u4e0e\u4e16\u754c\u89c2', reason: 'not_confirmed' }], actions: [], next_stage: 'locations' },
+      },
+    },
+    draft: {
+      ...conceptSession().draft,
+      selected_concept_id: 'concept-1',
+      stages: {
+        world_style: { status: 'generated', data: worldData },
+        characters: { status: 'pending', data: null },
+      },
+    },
+  }
+  const confirmed = {
+    ...session,
+    revision: 6,
+    current_stage: 'characters',
+    stage_flow: {
+      ...session.stage_flow,
+      attention_stage: 'characters',
+      recommended_stage: 'characters',
+      pending_confirmations: [],
+      items: {
+        ...session.stage_flow.items,
+        world_style: { ...session.stage_flow.items.world_style, status: 'confirmed', can_confirm: false },
+        characters: { ...session.stage_flow.items.characters, can_view: true, can_generate: true, blocked_by: [], actions: ['view', 'generate'] },
+      },
+    },
+    draft: {
+      ...session.draft,
+      stages: {
+        ...session.draft.stages,
+        world_style: { status: 'confirmed', data: worldData },
+      },
+    },
+  }
+  let confirmBody: Record<string, unknown> | undefined
+  let runBody: Record<string, unknown> | undefined
+  await mockApi(page, {
+    session,
+    sessions: [session],
+    onStageConfirm: async (route, stage) => {
+      expect(stage).toBe('world_style')
+      confirmBody = route.request().postDataJSON()
+      return fulfill(route, { code: 0, data: confirmed })
+    },
+    onStageRun: async (route) => {
+      runBody = route.request().postDataJSON()
+      return fulfill(route, { code: 0, data: { run: { id: 'run-characters', session_id: 'session-1', stage: 'characters', status: 'running', current_message: '\u6b63\u5728\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' } } })
+    },
+  })
+  await page.goto('/novel-creation?session=session-1&stage=characters', { waitUntil: 'domcontentloaded' })
+
+  await expect(page.getByRole('heading', { name: '\u6587\u98ce\u4e0e\u4e16\u754c\u89c2' })).toBeVisible()
+  await expect(page.getByText('\u751f\u6210\u5b8c\u6210\uff0c\u7b49\u5f85\u4f60\u786e\u8ba4')).toBeVisible()
+  const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' })
+  await expect(confirmAndContinue).toBeEnabled()
+  expect(runBody).toBeUndefined()
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(confirmAndContinue).toBeVisible()
+  const actionBox = await confirmAndContinue.boundingBox()
+  expect(actionBox?.height ?? 0).toBeGreaterThanOrEqual(44)
+  expect((actionBox?.y ?? 844) + (actionBox?.height ?? 0)).toBeLessThanOrEqual(844)
+
+  await confirmAndContinue.click()
+  await expect.poll(() => runBody).toBeTruthy()
+  expect(confirmBody).toMatchObject({ confirm: true, expected_revision: 5 })
+  expect(runBody).toMatchObject({ stage: 'characters', expected_revision: 6, auto_confirm: false })
 })

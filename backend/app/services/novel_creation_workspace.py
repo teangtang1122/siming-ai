@@ -366,6 +366,105 @@ def save_compact_concepts(session: NovelCreationSession, concepts: list[dict[str
     return draft["stages"]["concepts"]
 
 
+def generation_blockers(session: NovelCreationSession, stage: str) -> list[dict[str, str]]:
+    """Return confirmed-stage prerequisites that prevent a generation run."""
+    if stage not in {*STAGE_ORDER, "all"}:
+        return [{"stage": stage, "label": stage, "reason": "unknown_stage"}]
+    if stage in {"constraints", "concepts"}:
+        return []
+
+    draft = _dict(session.draft_json)
+    stages = _dict(draft.get("stages"))
+    if stage == "all":
+        required = ("constraints", "concepts")
+    else:
+        required = STAGE_ORDER[:STAGE_ORDER.index(stage)]
+    blockers = []
+    for required_stage in required:
+        status = _dict(stages.get(required_stage)).get("status") or "pending"
+        if status != "confirmed":
+            blockers.append({
+                "stage": required_stage,
+                "label": STAGE_LABELS[required_stage],
+                "reason": "stale" if status == "stale" else "not_confirmed",
+            })
+    return blockers
+
+
+def build_stage_flow(session: NovelCreationSession) -> dict[str, Any]:
+    """Project stored stage data into an author-facing, recoverable workflow."""
+    draft = _dict(session.draft_json)
+    stages = _dict(draft.get("stages"))
+    items: dict[str, dict[str, Any]] = {}
+
+    attention_stage: str | None = None
+    for stage in STAGE_ORDER:
+        state = _dict(stages.get(stage))
+        status = _text(state.get("status"), "pending")
+        if attention_stage is None and status in {"generated", "stale"} and state.get("data") is not None:
+            attention_stage = stage
+
+    legacy_stage = session.current_stage if session.current_stage in STAGE_ORDER else None
+    if attention_stage is None:
+        attention_stage = legacy_stage
+
+    recommended_stage: str | None = None
+    if attention_stage:
+        attention_state = _dict(stages.get(attention_stage))
+        if attention_state.get("status") in {"generated", "stale"}:
+            recommended_stage = attention_stage
+    if recommended_stage is None:
+        for stage in STAGE_ORDER:
+            state = _dict(stages.get(stage))
+            status = _text(state.get("status"), "pending")
+            if status == "confirmed":
+                continue
+            if not generation_blockers(session, stage):
+                recommended_stage = stage
+                break
+    if recommended_stage is None:
+        recommended_stage = "final_review"
+
+    for index, stage in enumerate(STAGE_ORDER):
+        state = _dict(stages.get(stage))
+        status = _text(state.get("status"), "pending")
+        blockers = generation_blockers(session, stage)
+        has_data = state.get("data") is not None
+        can_generate = stage not in {"constraints", "concepts"} and not blockers
+        can_confirm = has_data and status in {"generated", "stale"} and not blockers
+        can_view = has_data or status in {"generated", "confirmed", "stale"} or stage in {attention_stage, recommended_stage}
+        actions = ["view"] if can_view else []
+        if has_data:
+            actions.append("edit")
+        if can_generate:
+            actions.append("regenerate" if has_data else "generate")
+        if can_confirm:
+            actions.append("confirm")
+        items[stage] = {
+            "stage": stage,
+            "label": STAGE_LABELS[stage],
+            "status": status,
+            "can_view": can_view,
+            "can_generate": can_generate,
+            "can_confirm": can_confirm,
+            "blocked_by": blockers,
+            "actions": actions,
+            "next_stage": STAGE_ORDER[index + 1] if index + 1 < len(STAGE_ORDER) else None,
+        }
+
+    pending_confirmations = [
+        stage for stage in STAGE_ORDER
+        if items[stage]["status"] in {"generated", "stale"} and items[stage]["can_confirm"]
+    ]
+    return {
+        "attention_stage": attention_stage,
+        "recommended_stage": recommended_stage,
+        "legacy_current_stage": legacy_stage,
+        "pending_confirmations": pending_confirmations,
+        "items": items,
+    }
+
+
 def serialize_session(session: NovelCreationSession, include_runs: bool = True) -> dict[str, Any]:
     data = {
         "id": session.id,
@@ -387,6 +486,7 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
         "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
     }
+    data["stage_flow"] = build_stage_flow(session)
     if include_runs:
         data["runs"] = [serialize_run(run, include_events=False) for run in list(session.stage_runs or [])[-10:]]
     return data
@@ -713,8 +813,11 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
             draft["selected_concept_id"] = selected_id
     if changed:
         _invalidate_after(draft, stage)
-    next_index = min(STAGE_ORDER.index(stage) + 1, len(STAGE_ORDER) - 1)
-    session.current_stage = STAGE_ORDER[next_index]
+    if confirm:
+        next_index = min(STAGE_ORDER.index(stage) + 1, len(STAGE_ORDER) - 1)
+        session.current_stage = STAGE_ORDER[next_index]
+    else:
+        session.current_stage = stage
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1
     session.status = "reviewing"

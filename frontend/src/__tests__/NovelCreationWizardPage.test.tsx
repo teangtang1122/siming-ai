@@ -248,7 +248,7 @@ describe('NovelCreationWizardPage', () => {
       if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
-    mockPost.mockResolvedValue({ data: { data: session } })
+    mockPatch.mockResolvedValue({ data: { data: session } })
 
     const user = userEvent.setup()
     renderPage('/novel-creation?session=session-1')
@@ -262,10 +262,87 @@ describe('NovelCreationWizardPage', () => {
     await user.click(screen.getByRole('button', { name: '保存修改' }))
 
     await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/world_style/confirm', expect.objectContaining({
+      expect(mockPatch).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/world_style', expect.objectContaining({
         data: expect.objectContaining({ world_tone: '记忆有明确代价' }),
-        confirm: false,
+        expected_revision: 3,
       }))
     })
   }, 10_000)
+
+  it('returns a legacy-misaligned session to the earliest stage awaiting confirmation', async () => {
+    const worldData = {
+      world_tone: '信息公平',
+      writing_style: '精确克制',
+      story_structure: '三层谜团',
+      pacing: '证据推进',
+      style_rules: ['证据可回看'],
+      worldbuilding: [{ title: '记忆传播', content: '记忆会通过接触传播' }],
+    }
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 5, current_stage: 'characters',
+      stage_flow: {
+        attention_stage: 'world_style',
+        recommended_stage: 'world_style',
+        pending_confirmations: ['world_style'],
+        items: {
+          world_style: { stage: 'world_style', label: '文风与世界观', status: 'generated', can_view: true, can_generate: true, can_confirm: true, blocked_by: [], actions: ['view', 'edit', 'regenerate', 'confirm'], next_stage: 'characters' },
+          characters: { stage: 'characters', label: '角色与关系', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'world_style', label: '文风与世界观', reason: 'not_confirmed' }], actions: [], next_stage: 'locations' },
+        },
+      },
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [{ id: 'concept-1', source_index: 0, title: '灰港遗忘症', logline: '女孩用遗忘换取感染者的记忆。', protagonist_seed: { name: '林七', identity: '医生', goal: '找母亲', lack: '害怕遗忘' }, world_hook: '记忆传播', core_conflict: '救人就会遗忘', story_engine: '读忆换线索', opening_hook: '陌生人说出她的童年', differentiators: [], risks: [], coverage: { score: 92, covered: [], missing: [] } }],
+        selected_concept_id: 'concept-1',
+        stages: {
+          world_style: { status: 'generated', data: worldData },
+          characters: { status: 'pending', data: null },
+        },
+      },
+    }
+    const confirmed = {
+      ...session,
+      revision: 6,
+      current_stage: 'characters',
+      stage_flow: {
+        ...session.stage_flow,
+        attention_stage: 'characters',
+        recommended_stage: 'characters',
+        pending_confirmations: [],
+        items: {
+          ...session.stage_flow.items,
+          world_style: { ...session.stage_flow.items.world_style, status: 'confirmed', can_confirm: false },
+          characters: { ...session.stage_flow.items.characters, can_view: true, can_generate: true, blocked_by: [], actions: ['view', 'generate'] },
+        },
+      },
+      draft: {
+        ...session.draft,
+        stages: {
+          ...session.draft.stages,
+          world_style: { status: 'confirmed', data: worldData },
+        },
+      },
+    }
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    mockPost.mockResolvedValue({ data: { data: confirmed } })
+
+    const user = userEvent.setup()
+    renderPage('/novel-creation?session=session-1&stage=characters')
+
+    expect(await screen.findByRole('heading', { name: '文风与世界观' })).toBeInTheDocument()
+    expect(screen.getByText('生成完成，等待你确认')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '仅确认，稍后继续' }))
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/stages/world_style/confirm', expect.objectContaining({
+        confirm: true,
+        expected_revision: 5,
+      }))
+    })
+    expect(mockPost.mock.calls.some(([url]) => String(url).endsWith('/runs'))).toBe(false)
+  })
 })

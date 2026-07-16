@@ -19,8 +19,10 @@ from app.database.session import Base
 from app.services.novel_creation_workspace import (
     STAGE_ORDER,
     attach_concepts,
+    build_stage_flow,
     build_apply_blueprint,
     derive_stage,
+    generation_blockers,
     get_presets,
     initialize_session_draft,
     patch_session,
@@ -28,7 +30,10 @@ from app.services.novel_creation_workspace import (
 )
 from app.services.workspace.registry import registry
 from app.services.workspace.tools.novel_creation import apply_novel_blueprint
-from app.services.workspace.tools.novel_creation_v2 import generate_novel_creation_stage
+from app.services.workspace.tools.novel_creation_v2 import (
+    generate_novel_creation_stage,
+    submit_novel_creation_stage,
+)
 
 
 def _blueprint(title: str = "雾城记") -> dict:
@@ -119,6 +124,76 @@ def test_stage_edit_keeps_three_checkpoints_and_invalidates_downstream():
     assert len(session.checkpoints_json["characters"]) == 3
     assert session.draft_json["stages"]["locations"]["status"] == "stale"
     assert session.draft_json["stages"]["opening_outline"]["status"] == "stale"
+
+
+def test_generated_stage_remains_current_until_the_author_confirms_it():
+    db = _db()
+    session = _ready_session(db)
+    world = deepcopy(derive_stage(session, "world_style"))
+
+    save_stage(session, "world_style", world, confirm=False, source="model")
+
+    assert session.current_stage == "world_style"
+    assert session.draft_json["stages"]["world_style"]["status"] == "generated"
+    flow = build_stage_flow(session)
+    assert flow["attention_stage"] == "world_style"
+    assert flow["recommended_stage"] == "world_style"
+    assert flow["items"]["world_style"]["can_confirm"] is True
+
+    save_stage(session, "world_style", world, confirm=True, source="author")
+    assert session.current_stage == "characters"
+
+
+def test_stage_flow_recovers_a_legacy_session_that_advanced_before_confirmation():
+    db = _db()
+    session = _ready_session(db)
+    world = deepcopy(derive_stage(session, "world_style"))
+    session.draft_json["stages"]["world_style"] = {
+        "status": "generated",
+        "data": world,
+        "source": "model",
+    }
+    session.draft_json["stages"]["characters"] = {"status": "pending", "data": None}
+    session.current_stage = "characters"
+
+    flow = build_stage_flow(session)
+
+    assert flow["legacy_current_stage"] == "characters"
+    assert flow["attention_stage"] == "world_style"
+    assert flow["pending_confirmations"] == ["world_style"]
+    assert flow["items"]["characters"]["can_view"] is False
+    assert flow["items"]["characters"]["blocked_by"][0]["stage"] == "world_style"
+
+
+def test_generation_blockers_require_confirmed_upstream_stages():
+    db = _db()
+    session = _ready_session(db)
+    session.draft_json["stages"]["world_style"]["status"] = "generated"
+
+    blockers = generation_blockers(session, "characters")
+
+    assert [item["stage"] for item in blockers] == ["world_style"]
+    assert generation_blockers(session, "concepts") == []
+
+
+def test_stage_submission_rejects_a_stale_expected_revision():
+    db = _db()
+    session = _ready_session(db)
+    current_revision = int(session.revision or 0)
+    world = deepcopy(derive_stage(session, "world_style"))
+
+    result = asyncio.run(submit_novel_creation_stage(db, "", {
+        "session_id": session.id,
+        "stage": "world_style",
+        "data": world,
+        "confirm": False,
+        "expected_revision": current_revision - 1,
+    }))
+
+    assert result["status"] == "error"
+    assert result["data"]["failure_class"] == "revision_conflict"
+    assert result["data"]["current_revision"] == current_revision
+    assert int(session.revision or 0) == current_revision
 
 
 def test_build_apply_blueprint_keeps_macro_only_and_first_fifteen_detailed():

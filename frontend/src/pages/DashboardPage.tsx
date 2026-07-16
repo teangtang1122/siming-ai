@@ -45,6 +45,11 @@ interface NovelCreationDraftSummary {
   id: string
   current_stage?: string
   updated_at?: string
+  stage_flow?: {
+    attention_stage?: string | null
+    pending_confirmations?: string[]
+    items?: Record<string, { label?: string; status?: string }>
+  }
   draft?: {
     form?: { brief?: string; genre?: string }
     concepts?: Array<{ title?: string }>
@@ -438,7 +443,14 @@ function DashboardPage() {
               >
                 <Space direction="vertical" size={2}>
                   <Text>{draft.draft?.form?.genre || '自由创作'}</Text>
-                  <Text type="secondary">{draft.current_stage || '创作约束'} · {draft.updated_at ? new Date(draft.updated_at).toLocaleString('zh-CN') : '刚刚保存'}</Text>
+                  <Text type="secondary">
+                    {(() => {
+                      const attention = draft.stage_flow?.attention_stage
+                      const item = attention ? draft.stage_flow?.items?.[attention] : undefined
+                      const prefix = item?.status === 'generated' || item?.status === 'stale' ? '待你确认：' : ''
+                      return `${prefix}${item?.label || draft.current_stage || '创作约束'}`
+                    })()} · {draft.updated_at ? new Date(draft.updated_at).toLocaleString('zh-CN') : '刚刚保存'}
+                  </Text>
                   <Text className="dashboard-draft-continue">继续完善 <ArrowRightOutlined /></Text>
                 </Space>
               </Card>

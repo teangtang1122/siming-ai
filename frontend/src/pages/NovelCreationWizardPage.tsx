@@ -107,6 +107,26 @@ interface StageState {
   updated_at?: string
 }
 
+interface StageFlowItem {
+  stage: string
+  label: string
+  status: StageState['status']
+  can_view: boolean
+  can_generate: boolean
+  can_confirm: boolean
+  blocked_by: Array<{ stage: string; label: string; reason: string }>
+  actions: string[]
+  next_stage?: string | null
+}
+
+interface StageFlow {
+  attention_stage?: string | null
+  recommended_stage?: string | null
+  legacy_current_stage?: string | null
+  pending_confirmations: string[]
+  items: Record<string, StageFlowItem>
+}
+
 interface CreationFormValues {
   brief: string
   preset_id: string
@@ -130,6 +150,7 @@ interface CreationSession {
   current_stage?: string
   created_project_id?: string
   revision: number
+  stage_flow?: StageFlow
   updated_at?: string
   last_error?: { failure_class?: string; message?: string; next_action?: string }
   runs?: StageRun[]
@@ -394,7 +415,9 @@ function NovelCreationWizardPage() {
   const [runConnection, setRunConnection] = useState<'connected' | 'reconnecting'>('connected')
   const [activeRun, setActiveRun] = useState<StageRun | null>(null)
   const [resultRevisionNotice, setResultRevisionNotice] = useState('')
+  const [stageActionError, setStageActionError] = useState('')
   const watchingRunRef = useRef<string | null>(null)
+  const stageHeadingRef = useRef<HTMLDivElement | null>(null)
   const defaultsAppliedRef = useRef(false)
   const loadRequestRef = useRef(0)
   const saveRequestRef = useRef(0)
@@ -407,13 +430,30 @@ function NovelCreationWizardPage() {
   const requestedSessionId = searchParams.get('session') || undefined
   const requestedRunId = searchParams.get('run')
   const requestedModel = searchParams.get('model') || undefined
+  const requestedStage = searchParams.get('stage') || undefined
 
   const watchedPresetId = Form.useWatch('preset_id', form)
   const activePreset = useMemo(() => catalog?.categories.find((item) => item.id === watchedPresetId), [catalog, watchedPresetId])
   const concepts = session?.draft?.concepts || []
   const selectedConceptId = session?.draft?.selected_concept_id
-  const currentStage = session?.current_stage && CORE_STAGES.includes(session.current_stage) ? session.current_stage : 'world_style'
+  const attentionStage = session?.stage_flow?.attention_stage
+  const currentStage = (
+    requestedStage
+    && CORE_STAGES.includes(requestedStage)
+    && session?.stage_flow?.items?.[requestedStage]?.can_view
+  )
+    ? requestedStage
+    : attentionStage && CORE_STAGES.includes(attentionStage)
+      ? attentionStage
+      : session?.current_stage && CORE_STAGES.includes(session.current_stage)
+        ? session.current_stage
+        : 'world_style'
   const currentStageState = session?.draft?.stages?.[currentStage]
+  const currentStageFlow = session?.stage_flow?.items?.[currentStage]
+  const recommendedStage = session?.stage_flow?.recommended_stage
+  const nextStage = currentStageFlow?.next_stage && CORE_STAGES.includes(currentStageFlow.next_stage)
+    ? currentStageFlow.next_stage
+    : undefined
   const stageLabels = catalog?.stage_labels || {}
   const filteredPresets = useMemo(() => {
     const keyword = presetSearch.trim().toLowerCase()
@@ -442,13 +482,34 @@ function NovelCreationWizardPage() {
     }
     loadedSessionIdRef.current = loaded.id
     setSearchParams((current) => {
-      if (current.get('session') === loaded.id) return current
       const next = new URLSearchParams(current)
       next.set('session', loaded.id)
+      const existingStage = next.get('stage')
+      const flow = loaded.stage_flow
+      const targetStage = existingStage && flow?.items?.[existingStage]?.can_view
+        ? existingStage
+        : flow?.attention_stage || flow?.recommended_stage || loaded.current_stage
+      if (targetStage && CORE_STAGES.includes(targetStage)) next.set('stage', targetStage)
+      else next.delete('stage')
+      if (next.toString() === current.toString()) return current
       return next
     }, { replace: true })
     return loaded
   }, [form, setSearchParams])
+
+  const viewStage = useCallback((stage: string, replace = false) => {
+    if (!CORE_STAGES.includes(stage)) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('stage', stage)
+      return next
+    }, { replace })
+    setStageActionError('')
+  }, [setSearchParams])
+
+  const focusStageHeading = useCallback(() => {
+    window.requestAnimationFrame(() => stageHeadingRef.current?.focus())
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -669,7 +730,9 @@ function NovelCreationWizardPage() {
         const suffix = editedDuringRunRef.current ? '；运行期间的新修改已保存为下一版，不会被旧结果覆盖' : ''
         setResultRevisionNotice(`本次结果基于草稿 v${finished.input_revision}${suffix}`)
       }
-      if (targetSessionId) void loadSession(targetSessionId)
+      if (targetSessionId) {
+        void loadSession(targetSessionId).then(() => focusStageHeading())
+      }
       setBusy(false)
       setRunMessage('')
       setRunProgress(100)
@@ -683,7 +746,7 @@ function NovelCreationWizardPage() {
         if (current.current_message) setRunMessage(current.current_message)
       }).catch(() => undefined)
     }
-  }, [loadSession, requestedSessionId, session?.id])
+  }, [focusStageHeading, loadSession, requestedSessionId, session?.id])
 
   useEffect(() => {
     const activeRun = requestedRunId
@@ -696,8 +759,9 @@ function NovelCreationWizardPage() {
   }, [requestedRunId, session?.id, session?.runs, watchRun])
 
   const startStageRun = async (stage: string, autoConfirm = false, runSession: CreationSession | null = session) => {
-    if (!runSession || !selectedModel) return
+    if (!runSession || !selectedModel) return false
     setBusy(true)
+    setStageActionError('')
     setRunProgress(0)
     setRunMessage(`正在生成${stage === 'all' ? '完整立项档案' : stageLabels[stage] || stage}...`)
     setResultRevisionNotice('')
@@ -711,12 +775,16 @@ function NovelCreationWizardPage() {
         expected_revision: runSession.revision,
       })
       setActiveRun(response.data.data.run)
+      if (stage !== 'all') viewStage(stage)
       watchRun(response.data.data.run.id)
+      return true
     } catch (error) {
       setBusy(false)
       setRunMessage('')
       setRunProgress(0)
+      setStageActionError(errorText(error))
       message.error(errorText(error))
+      return false
     }
   }
 
@@ -724,36 +792,77 @@ function NovelCreationWizardPage() {
     if (!session) return
     setBusy(true)
     try {
-      await apiClient.patch(`/novel-creation/sessions/${session.id}`, {
+      const selection = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}`, {
         selected_concept_id: conceptId,
         quick_mode: quickMode,
         expected_revision: session.revision,
       })
-      await apiClient.post(`/novel-creation/sessions/${session.id}/stages/constraints/confirm`, { data: session.draft?.form, confirm: true, source: 'author' })
-      await apiClient.post(`/novel-creation/sessions/${session.id}/stages/concepts/confirm`, { data: { options: concepts, selected_concept_id: conceptId }, confirm: true, source: 'author' })
-      const refreshed = await loadSession(session.id)
+      const constraints = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/constraints/confirm`, {
+        data: selection.data.data.draft?.form,
+        confirm: true,
+        source: 'author',
+        expected_revision: selection.data.data.revision,
+      })
+      const conceptConfirmation = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/concepts/confirm`, {
+        data: { options: concepts, selected_concept_id: conceptId },
+        confirm: true,
+        source: 'author',
+        expected_revision: constraints.data.data.revision,
+      })
+      setSession(conceptConfirmation.data.data)
+      viewStage('world_style', true)
       setBusy(false)
-      await startStageRun(quickMode ? 'all' : 'world_style', quickMode, refreshed)
+      await startStageRun(quickMode ? 'all' : 'world_style', quickMode, conceptConfirmation.data.data)
     } catch (error) {
       setBusy(false)
       message.error(errorText(error))
     }
   }
 
-  const confirmCurrentStage = async () => {
+  const confirmCurrentStage = async (continueToNext: boolean) => {
     if (!session || !currentStageState?.data) return
     setBusy(true)
+    setStageActionError('')
     try {
-      await apiClient.post(`/novel-creation/sessions/${session.id}/stages/${currentStage}/confirm`, { data: currentStageState.data, confirm: true, source: 'author' })
-      const refreshed = await loadSession(session.id)
-      const next = refreshed.current_stage
+      const response = await apiClient.post<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/${currentStage}/confirm`, {
+        data: currentStageState.data,
+        confirm: true,
+        source: 'author',
+        expected_revision: session.revision,
+      })
+      const refreshed = response.data.data
+      setSession(refreshed)
       setBusy(false)
-      if (next && next !== 'final_review') await startStageRun(next)
-      else if (next === 'final_review' && !refreshed.draft?.stages.final_review?.data) await startStageRun('final_review')
+      if (!continueToNext) {
+        viewStage(currentStage, true)
+        focusStageHeading()
+        return
+      }
+      const next = refreshed.stage_flow?.recommended_stage || refreshed.current_stage
+      if (next && CORE_STAGES.includes(next)) {
+        viewStage(next)
+        const started = await startStageRun(next, false, refreshed)
+        if (!started) {
+          setStageActionError(`${stageLabels[currentStage] || currentStage}已确认，但${stageLabels[next] || next}尚未开始生成。你可以安全重试下一阶段。`)
+          viewStage(currentStage, true)
+        }
+      }
     } catch (error) {
       setBusy(false)
+      setStageActionError(errorText(error))
       message.error(errorText(error))
     }
+  }
+
+  const continueFromConfirmedStage = async () => {
+    if (!session) return
+    const target = recommendedStage && CORE_STAGES.includes(recommendedStage)
+      ? recommendedStage
+      : nextStage
+    if (!target) return
+    viewStage(target)
+    const started = await startStageRun(target, false, session)
+    if (!started) viewStage(currentStage, true)
   }
 
   const openEditor = () => {
@@ -772,8 +881,13 @@ function NovelCreationWizardPage() {
     if (!session) return
     try {
       const data = JSON.parse(editorText) as Record<string, unknown>
-      await apiClient.post(`/novel-creation/sessions/${session.id}/stages/${currentStage}/confirm`, { data, confirm: false, source: 'author' })
-      await loadSession(session.id)
+      const response = await apiClient.patch<ApiResponse<CreationSession>>(`/novel-creation/sessions/${session.id}/stages/${currentStage}`, {
+        data,
+        source: 'author',
+        expected_revision: session.revision,
+      })
+      setSession(response.data.data)
+      viewStage(currentStage, true)
       setEditorOpen(false)
       message.success('修改已保存，下游阶段已按需标记为待重新生成')
     } catch (error) {
@@ -819,6 +933,9 @@ function NovelCreationWizardPage() {
   const inConceptSelection = concepts.length > 0 && !selectedConceptId
   const inWorkbench = Boolean(selectedConceptId)
   const finalData = session?.draft?.stages.final_review?.data as Record<string, unknown> | undefined
+  const recommendedStageLabel = recommendedStage ? stageLabels[recommendedStage] || recommendedStage : ''
+  const nextStageLabel = nextStage ? stageLabels[nextStage] || nextStage : recommendedStageLabel
+  const currentBlockers = currentStageFlow?.blocked_by || []
 
   return (
     <div className="creation-page">
@@ -958,22 +1075,94 @@ function NovelCreationWizardPage() {
           <main className="creation-workbench">
             <aside className="creation-stage-nav">
               <Title level={4}>立项进度</Title>
-              <Steps direction="vertical" current={Math.max(0, CORE_STAGES.indexOf(currentStage))} items={CORE_STAGES.map((stage) => ({
-                title: stageLabels[stage] || stage,
-                status: session?.draft?.stages[stage]?.status === 'confirmed' ? 'finish' : session?.draft?.stages[stage]?.status === 'stale' ? 'error' : stage === currentStage ? 'process' : 'wait',
-                description: <Tag color={stageTone(session?.draft?.stages[stage]?.status)}>{stageStatusLabel(session?.draft?.stages[stage]?.status)}</Tag>,
-              }))} />
+              <Steps
+                direction="vertical"
+                current={Math.max(0, CORE_STAGES.indexOf(currentStage))}
+                onChange={(index) => {
+                  const stage = CORE_STAGES[index]
+                  const canView = session?.stage_flow?.items?.[stage]?.can_view
+                    ?? Boolean(session?.draft?.stages?.[stage]?.data || stage === currentStage)
+                  if (canView) viewStage(stage)
+                }}
+                items={CORE_STAGES.map((stage) => {
+                  const state = session?.draft?.stages[stage]
+                  const flow = session?.stage_flow?.items?.[stage]
+                  const canView = flow?.can_view ?? Boolean(state?.data || stage === currentStage)
+                  return {
+                    title: stageLabels[stage] || stage,
+                    disabled: !canView,
+                    status: state?.status === 'confirmed'
+                      ? 'finish'
+                      : state?.status === 'stale'
+                        ? 'error'
+                        : stage === currentStage || state?.status === 'generated'
+                          ? 'process'
+                          : 'wait',
+                    description: (
+                      <Space direction="vertical" size={2}>
+                        <Tag color={stageTone(state?.status)}>{stageStatusLabel(state?.status)}</Tag>
+                        {!canView && flow?.blocked_by?.[0] && <Text type="secondary">先确认{flow.blocked_by[0].label}</Text>}
+                      </Space>
+                    ),
+                  }
+                })}
+              />
               <Alert type="info" showIcon message={session?.draft?.quick_mode ? '快速模式' : '完整向导'} description="所有内容仍在立项草稿中，最终确认前不会创建正式作品。" />
             </aside>
             <section className="creation-stage-main">
               <div className="creation-section-heading">
-                <div><Title level={3}>{stageLabels[currentStage] || currentStage}</Title><Space><Tag color={stageTone(currentStageState?.status)}>{stageStatusLabel(currentStageState?.status)}</Tag>{currentStageState?.stale_reason && <Text type="warning">{currentStageState.stale_reason}</Text>}</Space></div>
+                <div ref={stageHeadingRef} tabIndex={-1} className="creation-stage-heading-focus">
+                  <Title level={3}>{stageLabels[currentStage] || currentStage}</Title>
+                  <Space wrap>
+                    <Tag color={stageTone(currentStageState?.status)}>{stageStatusLabel(currentStageState?.status)}</Tag>
+                    {currentStage === attentionStage && currentStageState?.status === 'generated' && <Tag color="gold">需要你的确认</Tag>}
+                    {currentStageState?.stale_reason && <Text type="warning">{currentStageState.stale_reason}</Text>}
+                  </Space>
+                </div>
                 <Space wrap>
                   <Select aria-label="选择当前阶段模型" value={selectedModel} onChange={setSelectedModel} options={modelOptions} style={{ minWidth: 250 }} />
-                  <Button icon={<ReloadOutlined />} onClick={() => void startStageRun(currentStage)} disabled={busy}>重新生成</Button>
+                  <Button icon={<ReloadOutlined />} onClick={() => void startStageRun(currentStage)} disabled={busy || currentStageFlow?.can_generate === false}>重新生成</Button>
                   <Button icon={<EditOutlined />} onClick={openEditor} disabled={!currentStageState?.data || busy}>编辑阶段内容</Button>
                 </Space>
               </div>
+              {currentStageState?.status === 'generated' && currentStageState.data && (
+                <Alert
+                  className="creation-stage-outcome"
+                  type="success"
+                  showIcon
+                  message={currentStage === 'final_review' ? '最终审阅已生成，等待你创建正式作品' : '生成完成，等待你确认'}
+                  description="内容已保存到立项草稿。你可以先阅读、修改或重新生成；只有确认后才会进入下一阶段。"
+                />
+              )}
+              {currentStageState?.status === 'stale' && (
+                <Alert
+                  className="creation-stage-outcome"
+                  type="warning"
+                  showIcon
+                  message="上游内容已变化，本阶段需要重新校验"
+                  description={currentStageState.stale_reason || '请检查内容后重新生成或编辑，再完成确认。'}
+                />
+              )}
+              {currentStageState?.status === 'pending' && currentBlockers.length > 0 && (
+                <Alert
+                  className="creation-stage-outcome"
+                  type="info"
+                  showIcon
+                  message={`先确认“${currentBlockers[0].label}”`}
+                  description="前置阶段确认后，这一阶段才会开放生成，避免后续内容建立在未定稿的信息上。"
+                  action={<Button onClick={() => viewStage(currentBlockers[0].stage)}>返回确认</Button>}
+                />
+              )}
+              {stageActionError && (
+                <Alert
+                  className="creation-stage-outcome"
+                  type="error"
+                  showIcon
+                  message="下一步没有启动"
+                  description={stageActionError}
+                  action={recommendedStage && recommendedStage !== currentStage ? <Button onClick={() => void continueFromConfirmedStage()}>重试生成{recommendedStageLabel}</Button> : undefined}
+                />
+              )}
               <StagePreview stage={currentStage} data={currentStageState?.data} />
               <div className="creation-stage-actions">
                 {currentStage === 'final_review' ? (
@@ -982,9 +1171,22 @@ function NovelCreationWizardPage() {
                   ) : (
                     <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!finalData?.ready || busy} loading={busy} onClick={createProject}>确认并创建正式作品</Button>
                   )
-                ) : (
-                  <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!currentStageState?.data || busy} loading={busy} onClick={confirmCurrentStage}>确认本阶段并继续</Button>
-                )}
+                ) : currentStageState?.status === 'generated' || currentStageState?.status === 'stale' ? (
+                  <>
+                    <Button size="large" disabled={!currentStageState?.data || busy} onClick={() => void confirmCurrentStage(false)}>仅确认，稍后继续</Button>
+                    <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!currentStageState?.data || busy} loading={busy} onClick={() => void confirmCurrentStage(true)}>
+                      {nextStageLabel ? `确认并生成${nextStageLabel}` : '确认本阶段'}
+                    </Button>
+                  </>
+                ) : currentStageState?.status === 'confirmed' && recommendedStage && recommendedStage !== currentStage ? (
+                  <Button size="large" type="primary" icon={<PlayCircleOutlined />} disabled={busy} loading={busy} onClick={() => void continueFromConfirmedStage()}>
+                    生成{recommendedStageLabel}
+                  </Button>
+                ) : currentStageFlow?.can_generate ? (
+                  <Button size="large" type="primary" icon={<PlayCircleOutlined />} disabled={busy} loading={busy} onClick={() => void startStageRun(currentStage)}>
+                    生成{stageLabels[currentStage] || currentStage}
+                  </Button>
+                ) : null}
               </div>
             </section>
           </main>
