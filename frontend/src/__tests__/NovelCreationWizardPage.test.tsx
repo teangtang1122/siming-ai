@@ -271,10 +271,10 @@ describe('NovelCreationWizardPage', () => {
 
   it('returns a legacy-misaligned session to the earliest stage awaiting confirmation', async () => {
     const worldData = {
-      world_tone: '信息公平',
-      writing_style: '精确克制',
-      story_structure: '三层谜团',
-      pacing: '证据推进',
+      world_tone: { core_tone: '冷峻但保留希望', reader_experience: '持续感到规则压力' },
+      writing_style: { narrative_perspective: '第三人称限知', sentence_rhythm: ['危机用短句', '余波用长句'] },
+      story_structure: { main_line: '逃亡与揭密并进', stages: ['失控', '结盟', '反攻'] },
+      pacing: { opening: '快速入局', middle: '张弛交替' },
       style_rules: ['证据可回看'],
       worldbuilding: [{ title: '记忆传播', content: '记忆会通过接触传播' }],
     }
@@ -335,6 +335,11 @@ describe('NovelCreationWizardPage', () => {
 
     expect(await screen.findByRole('heading', { name: '文风与世界观' })).toBeInTheDocument()
     expect(screen.getByText('生成完成，等待你确认')).toBeInTheDocument()
+    expect(screen.getByText('冷峻但保留希望')).toBeInTheDocument()
+    expect(screen.getByText('第三人称限知')).toBeInTheDocument()
+    expect(screen.getByText('逃亡与揭密并进')).toBeInTheDocument()
+    expect(screen.getByText('快速入局')).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent('[object Object]')
     await user.click(screen.getByRole('button', { name: '仅确认，稍后继续' }))
 
     await waitFor(() => {

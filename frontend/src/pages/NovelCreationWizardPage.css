@@ -281,6 +281,46 @@
   margin-top: 22px;
 }
 
+.creation-preview-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.creation-preview-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+
+.creation-preview-field {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.35fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+}
+
+.creation-preview-field dt {
+  color: var(--ant-color-text-secondary);
+}
+
+.creation-preview-field dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.creation-preview-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.creation-worldbuilding-content {
+  line-height: 1.7;
+}
+
 .creation-item-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -483,6 +523,11 @@
 
   .creation-stage-main {
     order: 1;
+  }
+
+  .creation-preview-field {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 
   .creation-stage-nav {

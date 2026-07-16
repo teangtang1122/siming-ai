@@ -216,6 +216,9 @@ const stageFieldLabels: Record<string, string> = {
   role_type: '角色类型', background: '背景', personality: '性格', goal: '目标', current_goal: '当前目标', profile: '写作锁',
   source_title: '起点', target_title: '终点', relation_type: '关系类型', start_chapter: '起始章节', end_chapter: '结束章节',
   client_id: '内部标识', parent_client_id: '所属章节', metadata: '场景信息', ready: '可以创建', blocking: '阻塞项', warnings: '提醒', counts: '数量检查',
+  core_tone: '核心基调', atmosphere: '氛围', emotional_color: '情绪色彩', reader_experience: '读者感受',
+  narrative_perspective: '叙事视角', perspective: '叙事视角', sentence_rhythm: '句式节奏', language_style: '语言风格',
+  main_line: '主线结构', stages: '阶段安排', opening: '开篇节奏', middle: '中段节奏', climax: '高潮节奏',
 }
 
 function fieldLabel(key: string) {
@@ -229,6 +232,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function collectionItemLabel(value: unknown, index: number) {
   if (!isRecord(value)) return `第 ${index + 1} 项`
   return String(value.title || value.name || value.client_id || value.source_title || `第 ${index + 1} 项`)
+}
+
+function StructuredPreviewValue({ value }: { value: unknown }) {
+  if (value == null || value === '') {
+    return <Text type="secondary">未提供</Text>
+  }
+  if (typeof value === 'boolean') {
+    return <span className="creation-preview-value">{value ? '是' : '否'}</span>
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    return <span className="creation-preview-value">{String(value)}</span>
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <Text type="secondary">未提供</Text>
+    return (
+      <ul className="creation-preview-list">
+        {value.map((item, index) => (
+          <li key={`${collectionItemLabel(item, index)}-${index}`}>
+            <StructuredPreviewValue value={item} />
+          </li>
+        ))}
+      </ul>
+    )
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value)
+    if (entries.length === 0) return <Text type="secondary">未提供</Text>
+    return (
+      <dl className="creation-preview-fields">
+        {entries.map(([key, child]) => (
+          <div className="creation-preview-field" key={key}>
+            <dt>{fieldLabel(key)}</dt>
+            <dd><StructuredPreviewValue value={child} /></dd>
+          </div>
+        ))}
+      </dl>
+    )
+  }
+  return <span className="creation-preview-value">{String(value)}</span>
 }
 
 function StructuredValueEditor({ fieldKey, value, onChange }: { fieldKey: string; value: unknown; onChange: (value: unknown) => void }) {
@@ -291,16 +333,18 @@ function StagePreview({ stage, data }: { stage: string; data?: Record<string, un
     const world = Array.isArray(data.worldbuilding) ? data.worldbuilding as Array<Record<string, unknown>> : []
     return (
       <div className="creation-stage-preview">
-        <Descriptions column={2} size="small" bordered>
-          <Descriptions.Item label="世界基调">{String(data.world_tone || '')}</Descriptions.Item>
-          <Descriptions.Item label="正文风格">{String(data.writing_style || '')}</Descriptions.Item>
-          <Descriptions.Item label="结构">{String(data.story_structure || '')}</Descriptions.Item>
-          <Descriptions.Item label="节奏">{String(data.pacing || '')}</Descriptions.Item>
+        <Descriptions column={{ xs: 1, sm: 1, md: 2, lg: 2, xl: 2, xxl: 2 }} size="small" bordered>
+          <Descriptions.Item label="世界基调"><StructuredPreviewValue value={data.world_tone} /></Descriptions.Item>
+          <Descriptions.Item label="正文风格"><StructuredPreviewValue value={data.writing_style} /></Descriptions.Item>
+          <Descriptions.Item label="结构"><StructuredPreviewValue value={data.story_structure} /></Descriptions.Item>
+          <Descriptions.Item label="节奏"><StructuredPreviewValue value={data.pacing} /></Descriptions.Item>
         </Descriptions>
         <div className="creation-item-grid">
           {world.map((item, index) => (
             <Card key={`${String(item.title)}-${index}`} size="small" title={String(item.title || `设定 ${index + 1}`)} extra={<Tag>{String(item.dimension || 'culture')}</Tag>}>
-              <Paragraph ellipsis={{ rows: 4, expandable: true, symbol: '展开' }}>{String(item.content || item.description || '')}</Paragraph>
+              <div className="creation-worldbuilding-content">
+                <StructuredPreviewValue value={item.content || item.description} />
+              </div>
             </Card>
           ))}
         </div>

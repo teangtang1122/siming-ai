@@ -486,10 +486,22 @@ test('restores a draft and creates the final project only after final review', a
 test('keeps a generated world stage visible until confirmation and only then starts characters', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const worldData = {
-    writing_style: '\u51b7\u9759\u514b\u5236',
-    world_tone: '\u9b54\u6cd5\u4f1a\u4fb5\u8680\u4e2a\u4eba\u8bb0\u5fc6',
-    story_structure: '\u9003\u4ea1\u3001\u7ed3\u76df\u4e0e\u63ed\u5bc6\u4e09\u7ebf\u4ea4\u7ec7',
-    pacing: '\u6bcf\u7ae0\u63a8\u8fdb\u4e00\u4e2a\u5371\u673a',
+    writing_style: {
+      narrative_perspective: '\u7b2c\u4e09\u4eba\u79f0\u9650\u77e5',
+      sentence_rhythm: ['\u5371\u673a\u7528\u77ed\u53e5', '\u4f59\u6ce2\u7528\u957f\u53e5'],
+    },
+    world_tone: {
+      core_tone: '\u51b7\u5cfb\u4f46\u4fdd\u7559\u5e0c\u671b',
+      reader_experience: '\u6301\u7eed\u611f\u5230\u89c4\u5219\u538b\u529b',
+    },
+    story_structure: {
+      main_line: '\u9003\u4ea1\u4e0e\u63ed\u5bc6\u5e76\u8fdb',
+      stages: ['\u5931\u63a7', '\u7ed3\u76df', '\u53cd\u653b'],
+    },
+    pacing: {
+      opening: '\u5feb\u901f\u5165\u5c40',
+      middle: '\u5f20\u5f1b\u4ea4\u66ff',
+    },
     style_rules: ['\u5148\u5448\u73b0\u540e\u89e3\u91ca'],
     worldbuilding: [{ title: '\u8bb0\u5fc6\u9b54\u6cd5', content: '\u65bd\u6cd5\u4f1a\u5931\u53bb\u4eb2\u5386\u8bb0\u5fc6' }],
   }
@@ -558,6 +570,11 @@ test('keeps a generated world stage visible until confirmation and only then sta
 
   await expect(page.getByRole('heading', { name: '\u6587\u98ce\u4e0e\u4e16\u754c\u89c2' })).toBeVisible()
   await expect(page.getByText('\u751f\u6210\u5b8c\u6210\uff0c\u7b49\u5f85\u4f60\u786e\u8ba4')).toBeVisible()
+  await expect(page.getByText('\u51b7\u5cfb\u4f46\u4fdd\u7559\u5e0c\u671b')).toBeVisible()
+  await expect(page.getByText('\u7b2c\u4e09\u4eba\u79f0\u9650\u77e5')).toBeVisible()
+  await expect(page.getByText('\u9003\u4ea1\u4e0e\u63ed\u5bc6\u5e76\u8fdb')).toBeVisible()
+  await expect(page.getByText('\u5feb\u901f\u5165\u5c40')).toBeVisible()
+  await expect(page.locator('body')).not.toContainText('[object Object]')
   await expectNoSeriousAccessibilityViolations(page)
   if (!process.env.CI) {
     await expect(page).toHaveScreenshot('novel-creation-world-style-desktop.png', {

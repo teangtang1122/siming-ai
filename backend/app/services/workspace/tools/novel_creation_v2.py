@@ -35,6 +35,65 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+_WORLD_STYLE_TEXT_FIELDS = ("writing_style", "world_tone", "story_structure", "pacing")
+_AUTHOR_FIELD_LABELS = {
+    "writing_style": "正文风格",
+    "world_tone": "世界基调",
+    "story_structure": "剧情结构",
+    "pacing": "叙事节奏",
+    "core_tone": "核心基调",
+    "atmosphere": "氛围",
+    "emotional_color": "情绪色彩",
+    "reader_experience": "读者感受",
+    "narrative_perspective": "叙事视角",
+    "perspective": "叙事视角",
+    "sentence_rhythm": "句式节奏",
+    "language_style": "语言风格",
+    "main_line": "主线结构",
+    "stages": "阶段安排",
+    "opening": "开篇节奏",
+    "middle": "中段节奏",
+    "climax": "高潮节奏",
+    "summary": "摘要",
+    "description": "说明",
+    "content": "内容",
+}
+
+
+def _author_field_label(key: Any) -> str:
+    text = _text(key)
+    return _AUTHOR_FIELD_LABELS.get(text, text.replace("_", " "))
+
+
+def _author_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "；".join(item for item in (_author_text(entry) for entry in value) if item)
+    if isinstance(value, dict):
+        parts = []
+        for key, child in value.items():
+            child_text = _author_text(child)
+            if child_text:
+                parts.append(f"{_author_field_label(key)}：{child_text}")
+        return "；".join(parts)
+    return _text(value)
+
+
+def _normalize_stage_data(stage: str, data: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(data)
+    if stage == "world_style":
+        for field in _WORLD_STYLE_TEXT_FIELDS:
+            normalized[field] = _author_text(normalized.get(field))
+    return normalized
+
+
 def _session(db: Session, session_id: str) -> NovelCreationSession | None:
     return db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
 
@@ -126,7 +185,7 @@ async def _generate_compact_concepts_with_fallback(
 
 def _stage_contract(stage: str) -> str:
     contracts = {
-        "world_style": "保留 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups 字段；worldbuilding 使用司命六维分类。",
+        "world_style": "保留 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups 字段；writing_style、world_tone、story_structure、pacing 必须各自是非空字符串，不得返回对象或数组；worldbuilding 使用司命六维分类。",
         "characters": "返回 characters 和 relationships。每个角色保留年龄、外貌、位置、状态，并包含 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。",
         "locations": "返回 entries 和 relations。关系必须含 source_title、target_title、relation_type、description、metadata。",
         "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；只做全书宏观结构，不展开全部章节。",
@@ -139,6 +198,14 @@ def _stage_contract(stage: str) -> str:
 def _validate_stage(stage: str, data: dict[str, Any]) -> None:
     if not isinstance(data, dict) or not data:
         raise ValueError("模型没有返回可用的阶段对象")
+    if stage == "world_style":
+        invalid = [
+            _AUTHOR_FIELD_LABELS[field]
+            for field in _WORLD_STYLE_TEXT_FIELDS
+            if not isinstance(data.get(field), str) or not data[field].strip()
+        ]
+        if invalid:
+            raise ValueError("文风与世界观缺少可读文本：" + "、".join(invalid))
     if stage == "opening_outline":
         chapters = data.get("chapters") if isinstance(data.get("chapters"), list) else []
         sections = data.get("sections") if isinstance(data.get("sections"), list) else []
@@ -297,6 +364,7 @@ async def _enhance_with_model(
     if not isinstance(parsed, dict):
         raise RuntimeError("模型返回的阶段 JSON 格式不合法")
     data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+    data = _normalize_stage_data(stage, data)
     _validate_stage(stage, data)
     return data
 
@@ -443,6 +511,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                     context_manifest=manifest,
                     input_snapshot=working_draft,
                 ) if use_model and model and name != "final_review" else baseline
+                data = _normalize_stage_data(name, data)
                 _validate_stage(name, data)
                 save_stage(session, name, data, confirm=auto_confirm, source="model" if use_model and model else "contract")
                 working_draft.setdefault("stages", {})[name] = {
@@ -523,6 +592,7 @@ async def submit_novel_creation_stage(db: Session, project_id: str, args: dict[s
     if not isinstance(data, dict):
         data = derive_stage(session, stage)
     try:
+        data = _normalize_stage_data(stage, data)
         _validate_stage(stage, data)
         save_stage(session, stage, data, confirm=bool(args.get("confirm", True)), source=_text(args.get("source")) or "author")
         db.commit()
