@@ -260,6 +260,19 @@
   margin-top: 0;
 }
 
+.creation-stage-nav .ant-steps-item-disabled .ant-steps-item-title,
+.creation-stage-nav .ant-steps-item-disabled .ant-steps-item-description,
+.creation-stage-nav .ant-steps-item-disabled .ant-typography-secondary {
+  color: var(--ant-color-text-secondary) !important;
+  opacity: 1;
+}
+
+.creation-attention-tag {
+  background: var(--ant-color-warning-bg);
+  border-color: var(--ant-color-warning-border);
+  color: var(--ant-color-warning-text);
+}
+
 .creation-stage-main {
   min-height: 680px;
 }
@@ -466,6 +479,14 @@
   .creation-intake-layout,
   .creation-workbench {
     grid-template-columns: 1fr;
+  }
+
+  .creation-stage-main {
+    order: 1;
+  }
+
+  .creation-stage-nav {
+    order: 2;
   }
 
   .creation-taxonomy,

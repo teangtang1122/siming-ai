@@ -29,6 +29,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { PersistentOutcome } from '../components/interaction'
 import { useModelOptions } from '../hooks/useModelOptions'
 import {
   type ApiResponse,
@@ -44,6 +45,7 @@ import {
   phaseLabel,
   reportPercent,
   formatSeconds,
+  deconstructReportOutcome,
 } from './deconstruct'
 
 const { Title, Text, Paragraph } = Typography
@@ -65,6 +67,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
   const [reports, setReports] = useState<ReportSummary[]>([])
   const [reduceStreamText, setReduceStreamText] = useState('')
   const [reduceStreaming, setReduceStreaming] = useState(false)
+  const [streamDisconnected, setStreamDisconnected] = useState(false)
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions()
 
   const appendReduceStatus = (line: string) => {
@@ -109,6 +112,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
       setProgressReport(report)
       setReduceStreamText('')
       setReduceStreaming(false)
+      setStreamDisconnected(false)
       if (!silent) {
         message.success('已加载持久化拆书报告')
       }
@@ -136,6 +140,39 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
     }
   }, [model, defaultModel])
 
+  useEffect(() => {
+    const reportId = progressReport?.id
+    if (!streamDisconnected || !reportId || ['completed', 'failed', 'cancelled'].includes(progressReport.status)) {
+      return
+    }
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const res = await apiClient.get<ApiResponse<DeconstructReport>>(`/projects/${projectId}/deconstruct/${reportId}`)
+        if (cancelled) return
+        const report = res.data.data
+        setProgressReport(report)
+        if (report.status === 'completed') {
+          setResult(report)
+          setAnalyzing(false)
+          setStreamDisconnected(false)
+          void fetchReports()
+        } else if (report.status === 'failed' || report.status === 'cancelled') {
+          setAnalyzing(false)
+          setStreamDisconnected(false)
+        }
+      } catch {
+        // Keep polling. A broken page connection must not be treated as a failed backend task.
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [fetchReports, progressReport?.id, progressReport?.status, projectId, streamDisconnected])
+
 
   const selectedChapters = useMemo(() => {
     const ids = new Set(selectedChapterIds)
@@ -162,6 +199,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
     () => (preview?.chapters || []).slice(0, 3).map((chapter, index) => `${index + 1}. ${chapter.title}`),
     [preview?.chapters],
   )
+  const reportOutcome = useMemo(() => deconstructReportOutcome(progressReport), [progressReport])
 
   const handleAnalyze = async () => {
     if (sourceMode === 'chapters' && selectedChapterIds.length === 0) {
@@ -178,6 +216,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
     setProgressReport(null)
     setReduceStreamText('')
     setReduceStreaming(false)
+    setStreamDisconnected(false)
 
     const payload = sourceMode === 'chapters'
       ? {
@@ -205,6 +244,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
           map_concurrency: mapConcurrency,
         }
 
+    let activeReportId: string | undefined
     apiClient.stream(
       `/projects/${projectId}/deconstruct/stream`,
       payload,
@@ -213,6 +253,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
           const event = JSON.parse(raw)
           switch (event.type) {
             case 'init':
+              activeReportId = event.report_id
               setProgressReport({
                 id: event.report_id,
                 title: event.title,
@@ -411,25 +452,35 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
 
             case 'reduce_complete': {
               setReduceStreaming(false)
+              setStreamDisconnected(false)
               const report = event as DeconstructReport
               setResult(report)
               setProgressReport(report)
               setAnalyzing(false)
               fetchReports()
-              message.success('拆书分析完成，结果已自动合并')
               break
             }
 
             case 'reduce_error':
               setAnalyzing(false)
               setReduceStreaming(false)
-              message.error(event.message || '合并阶段出错')
+              setProgressReport((prev) => prev ? {
+                ...prev,
+                status: 'failed',
+                phase: 'failed',
+                reduce_error: event.message || '合并阶段出错',
+              } : prev)
               break
 
             case 'error':
               setAnalyzing(false)
               setReduceStreaming(false)
-              message.error(event.message || '拆书任务失败')
+              setProgressReport((prev) => prev ? {
+                ...prev,
+                status: 'failed',
+                phase: 'failed',
+                error: event.message || '拆书任务失败',
+              } : prev)
               break
 
             case 'done':
@@ -438,9 +489,13 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
         } catch { /* ignore parse errors for partial chunks */ }
       },
       (err) => {
-        setAnalyzing(false)
         setReduceStreaming(false)
-        message.error(err.message || 'SSE连接失败')
+        if (activeReportId) {
+          setStreamDisconnected(true)
+        } else {
+          setAnalyzing(false)
+          message.error(err.message || '拆书任务连接失败')
+        }
       },
     )
   }
@@ -455,6 +510,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
     setAnalyzing(true)
     setReduceStreamText('')
     setReduceStreaming(false)
+    setStreamDisconnected(false)
     const payload = {
       model: model || defaultModel || undefined,
       analysis_mode: 'fast',
@@ -606,29 +662,33 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
               break
             case 'reduce_complete': {
               setReduceStreaming(false)
+              setStreamDisconnected(false)
               const nextReport = event as DeconstructReport
               setResult(nextReport)
               setProgressReport(nextReport)
               setAnalyzing(false)
               fetchReports()
-              message.success('失败分块已重跑并重新合并')
               break
             }
             case 'reduce_error':
             case 'error':
               setAnalyzing(false)
               setReduceStreaming(false)
-              message.error(event.message || '重跑失败块失败')
+              setProgressReport((prev) => prev ? {
+                ...prev,
+                status: 'failed',
+                phase: 'failed',
+                error: event.message || '重跑失败块失败',
+              } : prev)
               break
             case 'done':
               break
           }
         } catch { /* ignore */ }
       },
-      (err) => {
-        setAnalyzing(false)
+      () => {
         setReduceStreaming(false)
-        message.error(err.message || '重跑失败块连接失败')
+        setStreamDisconnected(true)
       },
     )
   }
@@ -834,6 +894,22 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
           >
             {progressReport ? (
               <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                {streamDisconnected && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    role="status"
+                    message="进度连接正在恢复"
+                    description="后台拆书任务不会因此停止，页面正在轮询已保存的分块和检查点。"
+                  />
+                )}
+                {reportOutcome && (
+                  <PersistentOutcome
+                    outcome={reportOutcome.outcome}
+                    title={reportOutcome.title}
+                    result={reportOutcome.result}
+                  />
+                )}
                 <div>
                   <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                     <Text strong>{phaseLabel(progressReport.phase)}</Text>

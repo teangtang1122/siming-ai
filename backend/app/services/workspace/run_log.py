@@ -154,6 +154,7 @@ def mark_assistant_run(
     phase: str | None = None,
     error: str | None = None,
     final_reply: str | None = None,
+    outcome: str | None = None,
 ) -> None:
     if not run:
         return
@@ -169,7 +170,38 @@ def mark_assistant_run(
         run.completed_at = now
     db.commit()
     if status == "completed":
-        finish_operation(run.operation_id, message="作品助手已返回结果")
+        normalized = outcome or ("completed_with_reply" if str(final_reply or "").strip() else "empty_response")
+        messages = {
+            "completed_with_reply": "作品助手已回复",
+            "completed_with_tools": "作品助手已完成工具操作",
+            "partial_success": "作品助手完成了部分操作",
+            "empty_response": "模型没有返回文字或工具结果",
+            "skipped_preflight": "预检已跳过执行，等待补充信息",
+            "waiting_user": "作品助手正在等待你的确认",
+            "blocked": "作品助手任务已阻塞，等待你处理",
+        }
+        message = messages.get(normalized, "作品助手已返回结果")
+        waiting = normalized in {"waiting_user", "blocked"}
+        incomplete = [message] if normalized in {"partial_success", "empty_response", "skipped_preflight", "waiting_user", "blocked"} else []
+        finish_operation(
+            run.operation_id,
+            message=message,
+            status="waiting_user" if waiting else "completed",
+            outcome=normalized,
+            attention={
+                "kind": "confirmation" if normalized == "waiting_user" else "recovery",
+                "title": message,
+                "message": "返回作品助手查看详情并继续。",
+                "action_label": "返回作品助手",
+                "action_url": f"/project/{run.project_id}",
+                "blocking": True,
+            } if waiting else None,
+            result={
+                "summary": message,
+                "completed": [message] if normalized in {"completed_with_reply", "completed_with_tools", "partial_success"} else [],
+                "incomplete": incomplete,
+            },
+        )
     elif status in {"error", "aborted"}:
         fail_operation(run.operation_id, error or "作品助手执行失败")
     elif status == "cancelled":

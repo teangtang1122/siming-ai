@@ -32,4 +32,30 @@ describe('assistantOutcomeToRunLog', () => {
     expect(log.status).toBe('blocked')
     expect(log.message).toContain('阻塞')
   })
+
+  it('surfaces partial success and waiting confirmation explicitly', () => {
+    const partial = assistantOutcomeToRunLog(
+      { ...createEmptyWorkspaceResponse(), reply: '正文已保存', outcome: 'partial_success' },
+      'project',
+    )
+    const waiting = assistantOutcomeToRunLog(
+      { ...createEmptyWorkspaceResponse(), reply: '请确认', outcome: 'waiting_user' },
+      'project',
+    )
+
+    expect(partial.status).toBe('blocked')
+    expect(partial.message).toContain('部分')
+    expect(waiting.status).toBe('blocked')
+    expect(waiting.message).toContain('等待你的确认')
+  })
+
+  it('does not turn an unknown empty outcome into generic completion', () => {
+    const log = assistantOutcomeToRunLog(
+      { ...createEmptyWorkspaceResponse(), reply: '' },
+      'project',
+    )
+
+    expect(log.status).toBe('skipped')
+    expect(log.message).toContain('没有返回')
+  })
 })

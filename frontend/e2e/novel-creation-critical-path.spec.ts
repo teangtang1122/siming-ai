@@ -1,6 +1,15 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import AxeBuilder from '@axe-core/playwright'
 
 const unexpectedApiRequests = new WeakMap<Page, string[]>()
+
+async function expectNoSeriousAccessibilityViolations(page: Page) {
+  const result = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze()
+  const serious = result.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact || ''))
+  expect(serious, 'core author flows must not have serious accessibility violations').toEqual([])
+}
 
 test.afterEach(async ({ page }) => {
   await page.goto('about:blank').catch(() => undefined)
@@ -298,6 +307,7 @@ test('keeps mobile navigation named and touch-sized at 390px', async ({ page }) 
   expect(taskCenterBox?.width ?? 0).toBeGreaterThanOrEqual(44)
   expect(taskCenterBox?.height ?? 0).toBeGreaterThanOrEqual(44)
   await expect(page.getByRole('button', { name: '\u65b0\u4e66\u7acb\u9879' })).toHaveAttribute('aria-current', 'page')
+  await expectNoSeriousAccessibilityViolations(page)
 })
 
 test('shows quota exhaustion as an error with the CLI runtime diagnostics', async ({ page }) => {
@@ -474,6 +484,7 @@ test('restores a draft and creates the final project only after final review', a
 })
 
 test('keeps a generated world stage visible until confirmation and only then starts characters', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
   const worldData = {
     writing_style: '\u51b7\u9759\u514b\u5236',
     world_tone: '\u9b54\u6cd5\u4f1a\u4fb5\u8680\u4e2a\u4eba\u8bb0\u5fc6',
@@ -547,15 +558,35 @@ test('keeps a generated world stage visible until confirmation and only then sta
 
   await expect(page.getByRole('heading', { name: '\u6587\u98ce\u4e0e\u4e16\u754c\u89c2' })).toBeVisible()
   await expect(page.getByText('\u751f\u6210\u5b8c\u6210\uff0c\u7b49\u5f85\u4f60\u786e\u8ba4')).toBeVisible()
+  await expectNoSeriousAccessibilityViolations(page)
+  if (!process.env.CI) {
+    await expect(page).toHaveScreenshot('novel-creation-world-style-desktop.png', {
+      animations: 'disabled',
+      caret: 'hide',
+    })
+  }
   const confirmAndContinue = page.getByRole('button', { name: '\u786e\u8ba4\u5e76\u751f\u6210\u89d2\u8272\u4e0e\u5173\u7cfb' })
   await expect(confirmAndContinue).toBeEnabled()
   expect(runBody).toBeUndefined()
 
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(confirmAndContinue).toBeVisible()
+  for (const name of ['\u4f5c\u54c1\u5e93', '\u65b0\u4e66\u7acb\u9879', 'AI \u52a9\u624b']) {
+    const navigationButton = page.getByRole('button', { name, exact: true })
+    await expect(navigationButton).toBeVisible()
+    const navigationBox = await navigationButton.boundingBox()
+    expect(navigationBox?.height ?? 0).toBeGreaterThanOrEqual(44)
+    expect(navigationBox?.y ?? 999).toBeLessThan(140)
+  }
   const actionBox = await confirmAndContinue.boundingBox()
   expect(actionBox?.height ?? 0).toBeGreaterThanOrEqual(44)
   expect((actionBox?.y ?? 844) + (actionBox?.height ?? 0)).toBeLessThanOrEqual(844)
+  if (!process.env.CI) {
+    await expect(page).toHaveScreenshot('novel-creation-world-style-mobile.png', {
+      animations: 'disabled',
+      caret: 'hide',
+    })
+  }
 
   await confirmAndContinue.click()
   await expect.poll(() => runBody).toBeTruthy()

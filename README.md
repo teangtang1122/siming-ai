@@ -16,7 +16,7 @@ Siming is a local-first AI workspace for planning, writing, archiving, and maint
 
 *新书立项工作台：先比较三套故事发动机，再逐步生成角色、世界观、卷纲和前 15 章细纲。图中内容均为虚构演示数据。*
 
-> **2.8.8** 修复了新书立项阶段生成后无法确认的问题，并让待确认草稿能够准确返回作者需要处理的位置。当前版本已具备新书立项、长任务活动检测、章节版本回退、叙事账本与统一作品建档。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
+> **2.9.0** 将“已完成”拆分为等待确认、部分完成、空回复、跳过、阻塞与失败等真实结果，并统一了新书立项、AI 助手、作品建档、拆书和外部 Agent 的操作反馈。写作、大纲、角色与世界观页面现在也会持续显示保存状态和恢复入口。历史变更请查看 [GitHub Releases](https://github.com/teangtang1122/siming-ai/releases)。
 
 ## 它解决什么问题
 

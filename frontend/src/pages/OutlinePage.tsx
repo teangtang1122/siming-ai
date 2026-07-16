@@ -27,6 +27,7 @@ import {
   SaveOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { SaveStatusIndicator } from '../components/interaction'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './OutlinePage.css'
@@ -192,7 +193,15 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const { setAiContext, refreshKey } = useAiPanelContext()
-  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
+  const {
+    saveStatus,
+    saveError,
+    markDirty,
+    markSaved,
+    markSaving,
+    markSaveFailed,
+    confirmLeave,
+  } = useUnsavedGuard()
 
   const selectedNode = useMemo(
     () => flat.find((node) => node.id === selectedId) || null,
@@ -328,7 +337,12 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   }
 
   const saveOutlineNode = async (values: OutlineFormValues) => {
+    if (!values.title.trim()) {
+      message.warning('请输入节点标题')
+      return
+    }
     setSaving(true)
+    markSaving()
     try {
       const payload = {
         parent_id: values.parent_id || null,
@@ -341,28 +355,21 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         metadata: values.metadata || {},
       }
 
-      if (!payload.title) {
-        message.warning('请输入节点标题')
-        return
-      }
-
       if (creating || !selectedId) {
         const res = await apiClient.post<ApiResponse<OutlineNode>>(`/projects/${projectId}/outline`, payload)
         setSelectedId(res.data.data.id)
         setCreating(false)
-        message.success('大纲节点已创建')
       } else {
         const res = await apiClient.put<ApiResponse<OutlineNode>>(
           `/projects/${projectId}/outline/${selectedId}`,
           payload
         )
         setSelectedId(res.data.data.id)
-        message.success('大纲节点已保存')
       }
       markSaved()
       fetchOutline()
     } catch (err: any) {
-      message.error(err.message || '保存大纲失败')
+      markSaveFailed(err.message || '保存大纲失败')
     } finally {
       setSaving(false)
     }
@@ -504,10 +511,13 @@ function OutlinePage({ projectId }: OutlinePageProps) {
                 {editorTitle}
               </Title>
               {!creating && selectedNode && (
-                <Text type="secondary">
-                  {nodeTypeLabel(selectedNode.node_type)} · {statusLabel(selectedNode.status)}
-                  {selectedCharacterNames ? ` · ${selectedCharacterNames}` : ''}
-                </Text>
+                <Space size={8} wrap>
+                  <Text type="secondary">
+                    {nodeTypeLabel(selectedNode.node_type)} · {statusLabel(selectedNode.status)}
+                    {selectedCharacterNames ? ` · ${selectedCharacterNames}` : ''}
+                  </Text>
+                  <SaveStatusIndicator status={saveStatus} error={saveError} />
+                </Space>
               )}
             </div>
             <Space>

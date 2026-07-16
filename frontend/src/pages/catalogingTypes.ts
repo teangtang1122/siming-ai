@@ -118,6 +118,24 @@ export const catalogingStatusColor: Record<string, string> = {
   apply_failed: 'red',
 }
 
+export const catalogingStatusLabel: Record<string, string> = {
+  queued: '等待开始',
+  running: '正在建档',
+  waiting_confirmation: '等待确认',
+  paused_on_failure: '遇到问题，已暂停',
+  paused: '已暂停',
+  completed: '建档完成',
+  failed: '建档失败',
+  cancelled: '已取消',
+  pending: '待处理',
+  edited: '已编辑',
+  approved: '已确认',
+  rejected: '已拒绝',
+  applying: '正在写入',
+  applied: '已写入',
+  apply_failed: '写入失败',
+}
+
 export function safeStringify(value: unknown) {
   return JSON.stringify(value || {}, null, 2)
 }

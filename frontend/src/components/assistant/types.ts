@@ -25,8 +25,10 @@ export interface WorkspaceAction {
 export type WorkspaceAssistantOutcome =
   | 'completed_with_reply'
   | 'completed_with_tools'
+  | 'partial_success'
   | 'empty_response'
   | 'skipped_preflight'
+  | 'waiting_user'
   | 'blocked'
   | 'failed'
   | string

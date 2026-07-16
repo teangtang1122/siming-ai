@@ -182,6 +182,45 @@ select {
   margin-top: 24px !important;
 }
 
+.siming-action-bar {
+  align-items: center;
+  background: color-mix(in srgb, var(--ant-color-bg-container) 96%, transparent);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  bottom: 12px;
+  box-shadow: 0 8px 24px rgba(24, 24, 22, 0.1);
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 18px;
+  padding: 10px 12px;
+  position: sticky;
+  z-index: 8;
+}
+
+.siming-adaptive-help {
+  margin-bottom: 14px;
+}
+
+.siming-flow-navigator .ant-steps-item:not(.ant-steps-item-disabled) {
+  cursor: pointer;
+}
+
+.siming-flow-navigator .ant-steps-item-title,
+.siming-flow-navigator .ant-steps-item-description {
+  overflow-wrap: anywhere;
+}
+
+.operation-center-outcome {
+  margin-top: 10px;
+}
+
+.operation-center-attention {
+  border-left: 3px solid var(--ant-color-info);
+  margin-top: 8px;
+  padding-left: 10px;
+}
+
 .siming-section-header {
   align-items: flex-start;
   display: flex;
@@ -261,6 +300,13 @@ select {
     width: 100% !important;
   }
 
+  .siming-action-bar {
+    border-radius: 0;
+    bottom: 0;
+    margin-inline: -16px;
+    padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+  }
+
   .siming-page-wrapper {
     padding: 16px !important;
   }
@@ -272,20 +318,21 @@ select {
   }
 
   .system-nav-brand .ant-typography,
-  .system-nav-links .ant-btn > span:not(.anticon) {
+  .system-nav-links .ant-btn > span:not(.ant-btn-icon) {
     display: none;
   }
 
-  .system-nav-links {
-    display: grid;
+  .system-nav .system-nav-links.ant-space {
+    display: grid !important;
     grid-column: 1 / -1;
     grid-row: 2;
-    grid-template-columns: repeat(4, minmax(44px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
     justify-self: stretch;
     width: 100%;
   }
 
   .system-nav-links .ant-space-item {
+    display: flex;
     min-width: 0;
   }
 

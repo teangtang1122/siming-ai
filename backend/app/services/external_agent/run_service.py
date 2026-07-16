@@ -8,9 +8,15 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.database.models import AgentRun, AgentRunEvent
+from app.database.models import AgentRun, AgentRunEvent, OperationRun
 from app.services.observability.run_events import merge_event_metadata
-from app.services.operation_runtime import ensure_operation, fail_operation, finish_operation, record_operation_signal
+from app.services.operation_runtime import (
+    ensure_operation,
+    fail_operation,
+    finish_operation,
+    record_operation_signal,
+    update_operation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +154,61 @@ def update_run_status(
     }
     if run.operation_id:
         if status == "completed":
-            finish_operation(run.operation_id, message=summary or "Agent 任务已完成", db=db)
+            finish_operation(
+                run.operation_id,
+                message=summary or "Agent 任务已完成",
+                outcome="completed_with_tools",
+                result={
+                    "summary": summary or "Agent 任务已完成",
+                    "completed": ["Agent 已完成任务"],
+                    "incomplete": [],
+                },
+                attention={},
+                db=db,
+            )
         elif status == "failed":
             fail_operation(run.operation_id, summary or "Agent 任务失败", db=db)
         elif status == "cancelled":
-            finish_operation(run.operation_id, message=summary or "Agent 任务已取消", status="cancelled", db=db)
+            finish_operation(
+                run.operation_id,
+                message=summary or "Agent 任务已取消",
+                status="cancelled",
+                outcome="cancelled",
+                result={"summary": summary or "Agent 任务已取消", "completed": [], "incomplete": ["任务未完成"]},
+                attention={},
+                db=db,
+            )
+        elif status == "waiting_confirmation":
+            operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
+            if operation:
+                update_operation(
+                    db,
+                    operation,
+                    status="waiting_user",
+                    phase=current_step or status,
+                    message=current_step or summary or "Agent 正在等待确认",
+                    attention={
+                        "kind": "confirmation",
+                        "title": "外部 Agent 请求写入",
+                        "message": summary or current_step or "请审阅写入请求后继续。",
+                        "action_label": "查看写入请求",
+                        "action_url": f"/project/{run.project_id}",
+                        "blocking": True,
+                    },
+                    result={
+                        "summary": summary or "Agent 写入请求等待确认",
+                        "completed": [],
+                        "incomplete": ["写入请求尚未确认"],
+                    },
+                    outcome="waiting_user",
+                    event_type="waiting_user",
+                )
+                db.commit()
         else:
+            operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
+            if operation:
+                update_operation(db, operation, attention={}, result={})
+                db.commit()
             record_operation_signal(
                 run.operation_id,
                 "phase",
@@ -242,7 +297,18 @@ def add_event(
     db.refresh(event)
     if run.operation_id:
         if run.status == "completed":
-            finish_operation(run.operation_id, message=message or "Agent 任务已完成", db=db)
+            finish_operation(
+                run.operation_id,
+                message=message or "Agent 任务已完成",
+                outcome="completed_with_tools",
+                result={
+                    "summary": message or "Agent 任务已完成",
+                    "completed": ["Agent 已完成任务"],
+                    "incomplete": [],
+                },
+                attention={},
+                db=db,
+            )
         elif run.status == "failed":
             fail_operation(run.operation_id, message or "Agent 任务失败", next_action=next_action, db=db)
         else:

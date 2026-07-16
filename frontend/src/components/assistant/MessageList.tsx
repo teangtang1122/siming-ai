@@ -5,6 +5,8 @@ import { ChapterVersionPanel } from '../ChapterVersionPanel'
 import { NarrativeLedgerPanel } from '../NarrativeLedgerPanel'
 import { ContextPreviewPanel } from '../ContextPreviewPanel'
 import { findStorageHealth, StorageRepairActions } from '../StorageRepairActions'
+import { PersistentOutcome } from '../interaction'
+import type { OperationOutcome } from '../interaction'
 import type { WorkspaceAssistantMessage, SkillMatch, WorkspaceToolLog } from './types'
 import { SCOPE_LABEL } from './constants'
 
@@ -15,6 +17,25 @@ function chapterVersionActions(item: WorkspaceAssistantMessage): WorkspaceToolLo
     ...(item.data?.applied_actions || []),
     ...(item.data?.tool_logs || []),
   ].filter((action) => action.tool === 'list_chapter_versions' && action.data)
+}
+
+const PERSISTENT_OUTCOMES = new Set([
+  'partial_success',
+  'empty_response',
+  'skipped_preflight',
+  'waiting_user',
+  'blocked',
+  'failed',
+])
+
+function assistantOutcomeResult(item: WorkspaceAssistantMessage) {
+  const completed = (item.data?.applied_actions || [])
+    .filter((action) => action.status !== 'error')
+    .map((action) => action.detail || action.tool || '工具操作')
+  const incomplete = (item.data?.tool_logs || [])
+    .filter((action) => action.status === 'error')
+    .map((action) => action.detail || action.tool || '工具操作')
+  return { completed, incomplete }
 }
 
 interface MessageListProps {
@@ -87,6 +108,12 @@ export function MessageList({
               <Paragraph style={{ marginTop: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>
                 {item.content}
               </Paragraph>
+              {item.role === 'assistant' && item.data?.outcome && PERSISTENT_OUTCOMES.has(item.data.outcome) && (
+                <PersistentOutcome
+                  outcome={item.data.outcome as OperationOutcome}
+                  result={assistantOutcomeResult(item)}
+                />
+              )}
 
               {/* Context preview panels for chapter_writer / preview_writing_context */}
               {item.data?.applied_actions?.map((action, i) => {

@@ -30,6 +30,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { SaveStatusIndicator } from '../components/interaction'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './WorldbuildingPage.css'
@@ -98,7 +99,15 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   const [draft, setDraft] = useState<DraftEntry>({ title: '', content: '', sort_order: 0 })
 
   const { refreshKey } = useAiPanelContext()
-  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
+  const {
+    saveStatus,
+    saveError,
+    markDirty,
+    markSaved,
+    markSaving,
+    markSaveFailed,
+    confirmLeave,
+  } = useUnsavedGuard()
 
   const [contentModal, setContentModal] = useState<WorldbuildingEntry | null>(null)
 
@@ -159,6 +168,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     setCreating(false)
     setEditingId(null)
     setDraft({ title: '', content: '', sort_order: 0 })
+    markSaved()
   }
 
   const saveDraft = async () => {
@@ -172,6 +182,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     }
 
     setSaving(true)
+    markSaving()
     try {
       const payload = {
         dimension: activeDimension,
@@ -182,17 +193,15 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
 
       if (creating) {
         await apiClient.post(`/projects/${projectId}/worldbuilding`, payload)
-        message.success('世界观条目已创建')
       } else if (editingId) {
         await apiClient.put(`/projects/${projectId}/worldbuilding/${editingId}`, payload)
-        message.success('世界观条目已保存')
       }
 
       markSaved()
       cancelEdit()
       fetchEntries()
     } catch (err: any) {
-      message.error(err.message || '保存世界观条目失败')
+      markSaveFailed(err.message || '保存世界观条目失败')
     } finally {
       setSaving(false)
     }
@@ -343,7 +352,10 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
       <div className="worldbuilding-shell">
         <section className="worldbuilding-main">
           <div className="worldbuilding-toolbar">
-            <Title level={4} style={{ margin: 0 }}>世界观</Title>
+            <Space size={8} wrap>
+              <Title level={4} style={{ margin: 0 }}>世界观</Title>
+              {editingId && <SaveStatusIndicator status={saveStatus} error={saveError} />}
+            </Space>
             <Space>
               <Button icon={<ReloadOutlined />} onClick={fetchEntries} loading={loading}>
                 刷新

@@ -1661,6 +1661,8 @@ class OperationRun(Base):
     input_revision = Column(Integer, nullable=True)
     input_snapshot_hash = Column(String(64), nullable=True)
     process_metrics_json = Column(JSON, nullable=True)
+    attention_json = Column(JSON, nullable=True)
+    result_json = Column(JSON, nullable=True)
     heartbeat_at = Column(DateTime, nullable=True)
     last_activity_at = Column(DateTime, nullable=True)
     last_output_at = Column(DateTime, nullable=True)

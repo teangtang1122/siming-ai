@@ -975,15 +975,32 @@ def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]
 
         operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
         if operation:
+            attention_stage = run.session.current_stage if run.stage == "all" else run.stage
             update_operation(
                 db,
                 operation,
-                status="completed",
+                status="waiting_user",
                 health_status="active",
                 message=run.current_message,
                 next_action=run.next_action,
                 checkpoint=True,
+                attention={
+                    "kind": "confirmation",
+                    "title": "阶段内容等待确认",
+                    "message": run.next_action,
+                    "action_label": "审阅阶段内容",
+                    "action_url": f"/novel-creation?session={run.session_id}&stage={attention_stage}",
+                    "blocking": True,
+                },
+                result={
+                    "summary": run.current_message,
+                    "completed": [f"{STAGE_LABELS.get(attention_stage, attention_stage)}内容已生成并保存到立项草稿"],
+                    "incomplete": ["阶段尚未由作者确认"],
+                },
+                outcome="waiting_user",
             )
+            operation.can_cancel = False
+            operation.can_retry = False
 
 
 def fail_run(db: Session, run: NovelCreationStageRun, exc: Exception) -> None:

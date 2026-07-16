@@ -520,6 +520,40 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
         "source": payload.source,
         "expected_revision": payload.expected_revision,
     })
+    if payload.confirm:
+        from ..database.models import OperationRun
+        from ..services.operation_runtime import update_operation
+
+        latest_run = (
+            db.query(NovelCreationStageRun)
+            .filter(
+                NovelCreationStageRun.session_id == session_id,
+                NovelCreationStageRun.stage.in_([stage, "all"]),
+                NovelCreationStageRun.operation_id.isnot(None),
+            )
+            .order_by(NovelCreationStageRun.completed_at.desc(), NovelCreationStageRun.created_at.desc())
+            .first()
+        )
+        if latest_run and latest_run.operation_id:
+            operation = db.query(OperationRun).filter(OperationRun.id == latest_run.operation_id).first()
+            if operation and operation.status == "waiting_user":
+                update_operation(
+                    db,
+                    operation,
+                    status="completed",
+                    message="阶段内容已由作者确认",
+                    next_action="继续处理下一阶段",
+                    attention={},
+                    result={
+                        "summary": "阶段内容已生成并由作者确认",
+                        "completed": ["阶段生成", "作者确认"],
+                        "incomplete": [],
+                    },
+                    outcome="completed_with_tools",
+                    event_type="confirmed",
+                    checkpoint=True,
+                )
+                db.commit()
     return _tool_response(result)
 
 

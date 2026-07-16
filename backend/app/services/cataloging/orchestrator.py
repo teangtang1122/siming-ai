@@ -329,7 +329,18 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
                 db.commit()
-                finish_operation(operation_id, message=f"作品建档完成，共处理 {job.completed_chapters or job.total_chapters or 0} 章")
+                completed = int(job.completed_chapters or job.total_chapters or 0)
+                finish_operation(
+                    operation_id,
+                    message=f"作品建档完成，共处理 {completed} 章",
+                    outcome="completed_with_tools",
+                    result={
+                        "summary": f"作品建档完成，共处理 {completed} 章",
+                        "completed": [f"{completed} 章已完成"],
+                        "incomplete": [],
+                    },
+                    attention={},
+                )
                 yield sse_event({"type": "completed", "job": job_to_dict(job)})
                 yield "data: [DONE]\n\n"
                 return
@@ -339,6 +350,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 if job.execution_mode != "auto":
                     job.status = "waiting_confirmation"
                     job.blocked_chapter_id = run.chapter_id
+                    refresh_job_progress(db, job)
                     db.commit()
                     yield sse_event({"type": "waiting_confirmation", "job": job_to_dict(job), "run": run_to_dict(run)})
                     yield "data: [DONE]\n\n"
@@ -372,6 +384,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 run.status = "awaiting_confirmation"
                 job.status = "waiting_confirmation"
                 job.blocked_chapter_id = run.chapter_id
+                refresh_job_progress(db, job)
                 db.commit()
                 yield sse_event({"type": "waiting_confirmation", "job": job_to_dict(job), "run": run_to_dict(run)})
                 yield "data: [DONE]\n\n"

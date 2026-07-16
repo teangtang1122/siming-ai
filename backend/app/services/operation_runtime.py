@@ -19,9 +19,42 @@ from ..database.session import SessionLocal
 from .observability.run_events import classify_failure
 
 
+LIFECYCLE_STATUSES = {
+    "draft",
+    "queued",
+    "running",
+    "waiting_user",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+}
 ACTIVE_STATUSES = {"queued", "running", "waiting_user", "paused"}
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 HEALTH_VALUES = {"active", "quiet", "suspected_stall", "stalled", "disconnected"}
+OUTCOME_VALUES = {
+    "completed_with_reply",
+    "completed_with_tools",
+    "partial_success",
+    "empty_response",
+    "skipped_preflight",
+    "waiting_user",
+    "blocked",
+    "failed",
+    "cancelled",
+    "interrupted",
+}
+LEGACY_STATUS_MAP = {
+    "created": "queued",
+    "pending": "queued",
+    "processing": "running",
+    "in_progress": "running",
+    "waiting_confirmation": "waiting_user",
+    "awaiting_confirmation": "waiting_user",
+    "error": "failed",
+    "aborted": "interrupted",
+}
 _CURRENT_OPERATION_ID: ContextVar[str | None] = ContextVar("siming_operation_id", default=None)
 _ACTION_HANDLERS: dict[str, dict[str, Callable[[], Any]]] = {}
 T = TypeVar("T")
@@ -38,6 +71,53 @@ def input_snapshot_hash(value: Any) -> str:
 
 def current_operation_id() -> str | None:
     return _CURRENT_OPERATION_ID.get()
+
+
+def project_lifecycle_status(status: str | None) -> str:
+    value = str(status or "running").strip().lower()
+    projected = LEGACY_STATUS_MAP.get(value, value)
+    return projected if projected in LIFECYCLE_STATUSES else "running"
+
+
+def _copy_dict(value: Any) -> dict[str, Any] | None:
+    return deepcopy(value) if isinstance(value, dict) and value else None
+
+
+def _result_with_outcome(
+    result: dict[str, Any] | None,
+    outcome: str | None,
+) -> dict[str, Any] | None:
+    payload = _copy_dict(result) or {}
+    normalized_outcome = str(outcome or payload.get("outcome") or "").strip()
+    if normalized_outcome in OUTCOME_VALUES:
+        payload["outcome"] = normalized_outcome
+    return payload or None
+
+
+def _default_outcome(operation: OperationRun, status: str) -> str | None:
+    result = operation.result_json if isinstance(operation.result_json, dict) else {}
+    explicit = str(result.get("outcome") or "").strip()
+    if explicit in OUTCOME_VALUES:
+        return explicit
+    if status == "waiting_user":
+        return "waiting_user"
+    if status == "failed":
+        return "failed"
+    if status == "cancelled":
+        return "cancelled"
+    if status == "interrupted":
+        return "interrupted"
+    if status != "completed":
+        return None
+    completed = result.get("completed")
+    incomplete = result.get("incomplete")
+    if isinstance(completed, list) and completed and isinstance(incomplete, list) and incomplete:
+        return "partial_success"
+    if str(result.get("reply") or "").strip():
+        return "completed_with_reply"
+    if any(result.get(key) for key in ("changes", "created", "updated", "tool_results")):
+        return "completed_with_tools"
+    return "empty_response"
 
 
 @contextmanager
@@ -76,6 +156,9 @@ def ensure_operation(
     progress_total: int | None = None,
     input_revision: int | None = None,
     snapshot_hash: str | None = None,
+    attention: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    outcome: str | None = None,
 ) -> OperationRun:
     operation = (
         db.query(OperationRun)
@@ -83,13 +166,15 @@ def ensure_operation(
         .first()
     )
     now = utcnow()
+    lifecycle = project_lifecycle_status(status)
+    result_payload = _result_with_outcome(result, outcome)
     if operation is None:
         operation = OperationRun(
             source_kind=source_kind,
             source_id=str(source_id),
             project_id=project_id,
             title=title[:300],
-            status=status,
+            status=lifecycle,
             health_status="active",
             phase=phase,
             current_message=message,
@@ -104,6 +189,8 @@ def ensure_operation(
             progress_total=progress_total,
             input_revision=input_revision,
             input_snapshot_hash=snapshot_hash,
+            attention_json=_copy_dict(attention),
+            result_json=result_payload,
             heartbeat_at=now,
             last_activity_at=now,
             created_at=now,
@@ -111,12 +198,12 @@ def ensure_operation(
         )
         db.add(operation)
         db.flush()
-        add_operation_event(db, operation, "started", status, message or title, {"phase": phase})
+        add_operation_event(db, operation, "started", lifecycle, message or title, {"phase": phase})
         return operation
 
     operation.title = title[:300] or operation.title
     operation.project_id = project_id or operation.project_id
-    operation.status = status or operation.status
+    operation.status = lifecycle
     operation.phase = phase or operation.phase
     operation.current_message = message or operation.current_message
     operation.model_source = model_source or operation.model_source
@@ -130,6 +217,10 @@ def ensure_operation(
     operation.progress_total = progress_total if progress_total is not None else operation.progress_total
     operation.input_revision = input_revision if input_revision is not None else operation.input_revision
     operation.input_snapshot_hash = snapshot_hash or operation.input_snapshot_hash
+    if attention is not None:
+        operation.attention_json = _copy_dict(attention)
+    if result is not None or outcome is not None:
+        operation.result_json = result_payload
     operation.updated_at = now
     return operation
 
@@ -180,11 +271,14 @@ def update_operation(
     checkpoint: bool = False,
     output: bool = False,
     process_metrics: dict[str, Any] | None = None,
+    attention: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    outcome: str | None = None,
     activity: bool = False,
 ) -> OperationRun:
     now = utcnow()
     if status:
-        operation.status = status
+        operation.status = project_lifecycle_status(status)
     if health_status in HEALTH_VALUES:
         operation.health_status = health_status
     if phase is not None:
@@ -203,6 +297,10 @@ def update_operation(
         operation.next_action = next_action
     if process_metrics is not None:
         operation.process_metrics_json = deepcopy(process_metrics)
+    if attention is not None:
+        operation.attention_json = _copy_dict(attention)
+    if result is not None or outcome is not None:
+        operation.result_json = _result_with_outcome(result, outcome)
     operation.heartbeat_at = now
     operation.updated_at = now
     health_only_events = {"heartbeat", "quiet", "suspected_stall", "stalled", "disconnected"}
@@ -311,6 +409,9 @@ def finish_operation(
     message: str,
     status: str = "completed",
     next_action: str | None = None,
+    outcome: str | None = None,
+    attention: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
     db: Session | None = None,
 ) -> None:
     if not operation_id:
@@ -328,6 +429,9 @@ def finish_operation(
             message=message,
             event_type=status,
             next_action=next_action,
+            attention=attention,
+            result=result,
+            outcome=outcome,
         )
         session.commit()
 
@@ -362,6 +466,12 @@ def fail_operation(
             event_type="failed",
             failure_class=classify_failure(message) or "unknown",
             next_action=next_action,
+            result={
+                "summary": message,
+                "completed": [],
+                "incomplete": [message],
+            },
+            outcome="failed",
         )
         session.commit()
 
@@ -391,7 +501,7 @@ async def invoke_operation_action(operation_id: str, action: str) -> bool:
 
 
 def _derived_health(operation: OperationRun, now: datetime) -> str:
-    if operation.status not in ACTIVE_STATUSES:
+    if project_lifecycle_status(operation.status) not in ACTIVE_STATUSES:
         return operation.health_status
     heartbeat = operation.heartbeat_at or operation.updated_at or operation.created_at
     if heartbeat and now - heartbeat > timedelta(seconds=60):
@@ -407,18 +517,35 @@ def _derived_health(operation: OperationRun, now: datetime) -> str:
 
 def serialize_operation(operation: OperationRun, *, include_events: bool = False) -> dict[str, Any]:
     now = utcnow()
+    status = project_lifecycle_status(operation.status)
+    result = _copy_dict(operation.result_json)
+    attention = _copy_dict(operation.attention_json)
+    outcome = _default_outcome(operation, status)
     elapsed = max(0, int(((operation.completed_at or now) - operation.created_at).total_seconds())) if operation.created_at else 0
     percent = None
     if operation.progress_mode == "determinate" and operation.progress_total:
         percent = max(0, min(100, round((operation.progress_current or 0) / operation.progress_total * 100)))
+    public_result = None
+    if result:
+        public_result = {
+            key: deepcopy(result.get(key))
+            for key in ("outcome", "summary", "completed", "incomplete", "warnings")
+            if result.get(key) not in (None, "", [])
+        } or None
     data = {
         "id": operation.id,
         "source_kind": operation.source_kind,
         "source_id": operation.source_id,
         "project_id": operation.project_id,
         "title": operation.title,
-        "status": operation.status,
+        "status": status,
         "health_status": _derived_health(operation, now),
+        "outcome": outcome,
+        "attention": attention,
+        "result": public_result,
+        "result_summary": (result or {}).get("summary") or (
+            operation.current_message if status in TERMINAL_STATUSES or status == "waiting_user" else None
+        ),
         "phase": operation.phase,
         "current_message": operation.current_message,
         "progress": {
@@ -448,6 +575,7 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
         "completed_at": operation.completed_at.isoformat() if operation.completed_at else None,
     }
     if include_events:
+        data["result"] = result
         data["events"] = [
             {
                 "sequence": event.sequence,
@@ -463,13 +591,25 @@ def serialize_operation(operation: OperationRun, *, include_events: bool = False
 
 
 def mark_interrupted_operations(db: Session) -> int:
-    runs = db.query(OperationRun).filter(OperationRun.status.in_(["queued", "running", "waiting_user"])).all()
+    runs = db.query(OperationRun).filter(OperationRun.status.in_(["queued", "running"])).all()
     now = utcnow()
     for operation in runs:
         operation.status = "interrupted"
         operation.health_status = "disconnected"
         operation.current_message = "司命上次关闭时任务仍在运行，可从最近检查点重试"
         operation.next_action = "重新打开原页面并重试当前单元"
+        operation.attention_json = {
+            "kind": "recovery",
+            "title": "任务在上次关闭时被中断",
+            "message": operation.next_action,
+            "blocking": True,
+        }
+        operation.result_json = {
+            "outcome": "interrupted",
+            "summary": operation.current_message,
+            "completed": [],
+            "incomplete": [operation.next_action],
+        }
         operation.completed_at = now
         operation.updated_at = now
         add_operation_event(db, operation, "interrupted", "interrupted", operation.current_message)

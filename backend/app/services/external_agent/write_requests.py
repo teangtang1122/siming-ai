@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.database.models import AgentRun, AgentRunEvent
-from app.services.external_agent.run_service import add_event, get_run
+from app.services.external_agent.run_service import add_event, get_run, update_run_status
 from app.mcp.permissions import issue_confirmation_token
 
 logger = logging.getLogger(__name__)
@@ -72,11 +71,13 @@ def request_write(
     if not event:
         return {"status": "error", "detail": "Cannot add event to terminal run"}
 
-    # Update run status to waiting_confirmation
-    run.status = "waiting_confirmation"
-    run.current_step = f"Waiting for confirmation: {write_type}"
-    run.updated_at = datetime.utcnow()
-    db.commit()
+    update_run_status(
+        db,
+        run_id,
+        "waiting_confirmation",
+        current_step=f"Waiting for confirmation: {write_type}",
+        summary=payload_summary[:500],
+    )
 
     return {
         "status": "ok",
@@ -149,11 +150,13 @@ def confirm_write(
         }, ensure_ascii=False),
     )
 
-    # Update run status back to running
-    run.status = "running"
-    run.current_step = f"Executing confirmed write: {write_type}"
-    run.updated_at = datetime.utcnow()
-    db.commit()
+    update_run_status(
+        db,
+        run_id,
+        "running",
+        current_step=f"Executing confirmed write: {write_type}",
+        summary=f"Write confirmed: {write_type}",
+    )
 
     return {
         "status": "ok",
@@ -205,11 +208,13 @@ def reject_write(
         }, ensure_ascii=False),
     )
 
-    # Update run status back to running
-    run.status = "running"
-    run.current_step = "Write rejected, continuing..."
-    run.updated_at = datetime.utcnow()
-    db.commit()
+    update_run_status(
+        db,
+        run_id,
+        "running",
+        current_step="Write rejected, continuing...",
+        summary=reason[:200] if reason else "Write rejected by user",
+    )
 
     return {
         "status": "ok",

@@ -8,6 +8,7 @@ import {
   SaveOutlined, SettingOutlined, TeamOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { SaveStatusIndicator } from '../components/interaction'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
@@ -139,7 +140,15 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [mergeApplying, setMergeApplying] = useState(false)
   const { setAiContext, refreshKey } = useAiPanelContext()
   const { modelOptions, loading: modelsLoading } = useModelOptions()
-  const { markDirty, markSaved, confirmLeave } = useUnsavedGuard()
+  const {
+    saveStatus,
+    saveError,
+    markDirty,
+    markSaved,
+    markSaving,
+    markSaveFailed,
+    confirmLeave,
+  } = useUnsavedGuard()
 
   const fetchCharacters = useCallback(async (q?: string) => {
     setLoading(true)
@@ -180,8 +189,9 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         profile: res.data.data.profile,
         is_evolution_tracked: res.data.data.is_evolution_tracked,
       })
+      markSaved()
     } catch (err: any) { message.error(err.message || '获取角色详情失败') }
-  }, [form, projectId])
+  }, [form, markSaved, projectId])
 
   const fetchVersions = useCallback(async (characterId: string) => {
     try {
@@ -234,11 +244,13 @@ function CharactersPage({ projectId }: CharactersPageProps) {
       setSelectedId(null); setSelectedDetail(null); setVersions([]); setAiConfig(null)
       form.resetFields(); aiConfigForm.resetFields()
       form.setFieldsValue({ abilities: [], is_evolution_tracked: true, role_type: 'supporting' })
+      markSaved()
     })
   }
 
   const saveCharacter = async (values: CharacterFormValues) => {
     setSaving(true)
+    markSaving()
     try {
       const payload = {
         ...values,
@@ -248,14 +260,14 @@ function CharactersPage({ projectId }: CharactersPageProps) {
       }
       if (selectedId) {
         const res = await apiClient.put<ApiResponse<Character>>(`/projects/${projectId}/characters/${selectedId}`, { ...payload, change_summary: '前端手动保存角色档案' })
-        setSelectedId(res.data.data.id); message.success('角色已保存')
+        setSelectedId(res.data.data.id)
       } else {
         const res = await apiClient.post<ApiResponse<Character>>(`/projects/${projectId}/characters`, payload)
-        setSelectedId(res.data.data.id); message.success('角色已创建')
+        setSelectedId(res.data.data.id)
       }
       markSaved()
       fetchCharacters(keyword); fetchNetwork()
-    } catch (err: any) { message.error(err.message || '保存角色失败') }
+    } catch (err: any) { markSaveFailed(err.message || '保存角色失败') }
     finally { setSaving(false) }
   }
 
@@ -442,7 +454,12 @@ function CharactersPage({ projectId }: CharactersPageProps) {
           <div className="characters-editor-head">
             <div>
               <Title level={4} style={{ margin: 0 }}>{selectedDetail ? selectedDetail.name : '新角色'}</Title>
-              {selectedDetail && <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>}
+              {selectedDetail && (
+                <Space size={8} wrap>
+                  <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>
+                  <SaveStatusIndicator status={saveStatus} error={saveError} />
+                </Space>
+              )}
               {selectedDetail && selectedDetail.aliases && selectedDetail.aliases.length > 0 && (
                 <div className="characters-alias-row">
                   {selectedDetail.aliases.map((alias) => <Tag key={alias} color="blue">{alias}</Tag>)}

@@ -37,6 +37,7 @@ import {
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 import SystemNav from '../components/SystemNav'
+import { AdaptiveHelp } from '../components/interaction'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
 import { GettingStartedPanel } from './GettingStartedPage'
 import './SettingsPage.css'
@@ -1082,6 +1083,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           ? `当前默认：${providerLabel(globalModel.provider)} · ${normalizeDefaultModel(globalModel.provider, globalModel.model)}`
           : '检测到工具并不代表已经登录或有可用额度。请对一个配置执行真实对话测试。'}
       />
+      <AdaptiveHelp
+        preferenceKey="model-readiness"
+        title="只要一个模型显示“可用”，司命就能开始创作"
+        description="登录方式、协议和输出限制只在排查问题时需要。日常使用只需确认上方显示“AI 已准备好”。"
+      />
 
       <Card
         className="settings-card"
@@ -1118,7 +1124,14 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         />
       </Card>
 
-      <ContextGovernanceSettingsPanel />
+      <Collapse
+        className="settings-card"
+        items={[{
+          key: 'advanced-ai',
+          label: '高级设置：上下文与技术参数',
+          children: <ContextGovernanceSettingsPanel />,
+        }]}
+      />
       </>}
 
       <Modal

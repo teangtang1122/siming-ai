@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { Modal } from 'antd'
+import type { SaveStatus } from '../components/interaction'
 
 /**
  * 拦截浏览器关闭/刷新，防止未保存数据丢失。
@@ -13,6 +14,8 @@ import { Modal } from 'antd'
 export function useUnsavedGuard() {
   const dirtyRef = useRef(false)
   const [isDirty, setIsDirty] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved')
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -28,32 +31,58 @@ export function useUnsavedGuard() {
   const markDirty = useCallback(() => {
     dirtyRef.current = true
     setIsDirty(true)
+    setSaveStatus('dirty')
+    setSaveError(null)
   }, [])
 
   const markSaved = useCallback(() => {
     dirtyRef.current = false
     setIsDirty(false)
+    setSaveStatus('saved')
+    setSaveError(null)
   }, [])
 
-  /** 如果有未保存更改，弹窗确认；确认后执行 callback */
+  const markSaving = useCallback(() => {
+    setSaveStatus('saving')
+    setSaveError(null)
+  }, [])
+
+  const markSaveFailed = useCallback((error?: string) => {
+    dirtyRef.current = true
+    setIsDirty(true)
+    setSaveStatus('error')
+    setSaveError(error || '保存失败，请重试。')
+  }, [])
+
   const confirmLeave = useCallback((callback: () => void) => {
     if (!dirtyRef.current) {
       callback()
       return
     }
     Modal.confirm({
-      title: '未保存的更改',
-      content: '当前页面有未保存的修改，确定要离开吗？',
-      okText: '离开',
-      cancelText: '留下',
+      title: '还有未保存的修改',
+      content: '离开后，这些修改不会保留。你可以先留下并保存，或确认放弃修改。',
+      okText: '放弃并离开',
+      cancelText: '留下保存',
       okButtonProps: { danger: true },
       onOk: () => {
         dirtyRef.current = false
         setIsDirty(false)
+        setSaveStatus('saved')
+        setSaveError(null)
         callback()
       },
     })
   }, [])
 
-  return { isDirty, markDirty, markSaved, confirmLeave }
+  return {
+    isDirty,
+    saveStatus,
+    saveError,
+    markDirty,
+    markSaved,
+    markSaving,
+    markSaveFailed,
+    confirmLeave,
+  }
 }

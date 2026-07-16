@@ -21,11 +21,16 @@
 }
 
 .worldbuilding-toolbar {
+  background: var(--ant-color-bg-container);
+  border-bottom: 1px solid var(--ant-color-border-secondary);
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 16px 16px 0;
+  padding: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 4;
 }
 
 @media (max-width: 1080px) {

@@ -54,7 +54,13 @@
 }
 
 .writer-editor-head {
+  background: var(--ant-color-bg-container);
+  border-bottom: 1px solid var(--ant-color-border-secondary);
   margin-bottom: 16px;
+  padding-bottom: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 4;
 }
 
 /* Chapter list items */

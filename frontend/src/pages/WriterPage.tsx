@@ -29,6 +29,7 @@ import {
   SaveOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { SaveStatusIndicator } from '../components/interaction'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './WriterPage.css'
@@ -145,7 +146,16 @@ function WriterPage({ projectId }: WriterPageProps) {
   const [chapters, setChapters] = useState<ChapterItem[]>([])
   const [outlineOptions, setOutlineOptions] = useState<Array<{ value: string; label: string }>>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const { isDirty, markDirty, markSaved, confirmLeave } = useUnsavedGuard()
+  const {
+    isDirty,
+    saveStatus,
+    saveError,
+    markDirty,
+    markSaved,
+    markSaving,
+    markSaveFailed,
+    confirmLeave,
+  } = useUnsavedGuard()
   const [detail, setDetail] = useState<ChapterDetail | null>(null)
   const [snapshots, setSnapshots] = useState<SnapshotItem[]>([])
   const [creating, setCreating] = useState(false)
@@ -307,23 +317,22 @@ function WriterPage({ projectId }: WriterPageProps) {
   const saveChapter = async (values: ChapterFormValues) => {
     if (!values.title.trim()) { message.warning('请输入章节标题'); return }
     setSaving(true)
+    markSaving()
     try {
       const payload = { title: values.title.trim(), outline_node_id: values.outline_node_id || null, content: values.content || '' }
       if (creating || !selectedId) {
         const res = await apiClient.post<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters`, payload)
         setSelectedId(res.data.data.id)
         setCreating(false)
-        message.success('章节已创建')
       } else {
         const res = await apiClient.put<ApiResponse<ChapterDetail>>(`/projects/${projectId}/chapters/${selectedId}`, { ...payload, trigger_type: 'manual_save' })
         setDetail(res.data.data)
-        message.success('章节已保存并创建快照')
         fetchSnapshots(selectedId)
       }
       markSaved()
       fetchChapters()
     } catch (err: any) {
-      message.error(err.message || '保存章节失败')
+      markSaveFailed(err.message || '保存章节失败')
     } finally {
       setSaving(false)
     }
@@ -349,6 +358,7 @@ function WriterPage({ projectId }: WriterPageProps) {
       setDetail(res.data.data)
       form.setFieldsValue({ title: res.data.data.title, outline_node_id: res.data.data.outline_node_id || undefined, content: res.data.data.content })
       message.success('已恢复历史版本')
+      markSaved()
       fetchSnapshots(selectedId)
       fetchChapters()
     } catch (err: any) {
@@ -424,7 +434,7 @@ function WriterPage({ projectId }: WriterPageProps) {
               {detail && !creating && (
                 <Space size={8} wrap>
                   <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
-                  <Tag color={isDirty ? 'warning' : 'success'}>{isDirty ? '有未保存修改' : '已保存'}</Tag>
+                  <SaveStatusIndicator status={saveStatus} error={saveError} />
                 </Space>
               )}
             </div>

@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Collapse,
+  Alert,
   Empty,
   List,
   Space,
@@ -20,6 +21,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { PersistentOutcome } from './interaction'
 import { findStorageHealth, StorageRepairActions } from './StorageRepairActions'
 import type { AgentRun, AgentRunEvent, EventPayload } from '../types/agentRun'
 
@@ -153,6 +155,7 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
   const [events, setEvents] = useState<AgentRunEvent[]>([])
   const [loading, setLoading] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
+  const [streamDisconnected, setStreamDisconnected] = useState(false)
   const eventSourceRef = useRef<EventSource | null>(null)
 
   const fetchRuns = useCallback(async () => {
@@ -160,7 +163,11 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
       const resp = await apiClient.get<ApiResponse<{ items: AgentRun[] }>>(
         `/projects/${projectId}/agent-runs`
       )
-      setRuns(resp.data.data.items)
+      const items = resp.data.data.items
+      setRuns(items)
+      setSelectedRun((current) => (
+        current ? items.find((item) => item.id === current.id) || current : current
+      ))
     } catch {
       // Silent fail for initial load
     }
@@ -184,6 +191,12 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
   }, [panelOpen, fetchRuns])
 
   useEffect(() => {
+    if (!panelOpen) return
+    const timer = window.setInterval(() => void fetchRuns(), 3000)
+    return () => window.clearInterval(timer)
+  }, [fetchRuns, panelOpen])
+
+  useEffect(() => {
     if (selectedRun) {
       fetchEvents(selectedRun.id)
     }
@@ -199,10 +212,12 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
       `/api/v1/projects/${projectId}/agent-runs/${selectedRun.id}/stream`
     )
     eventSourceRef.current = es
+    es.onopen = () => setStreamDisconnected(false)
 
     es.addEventListener('agent_run_event', (e) => {
       try {
         const event = JSON.parse(e.data) as AgentRunEvent
+        setStreamDisconnected(false)
         setEvents(prev => [...prev, event])
       } catch {
         // Ignore parse errors
@@ -212,8 +227,8 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
     es.onerror = () => {
       es.close()
       eventSourceRef.current = null
-      // Refresh run status
-      fetchRuns()
+      setStreamDisconnected(true)
+      void fetchRuns()
     }
 
     return () => {
@@ -256,6 +271,16 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
     >
       {panelOpen && (
         <>
+          {streamDisconnected && (
+            <Alert
+              type="info"
+              showIcon
+              role="status"
+              message="Agent 事件流正在重新连接"
+              description="后台任务不会因此停止，当前状态会继续通过轮询刷新。"
+              style={{ marginBottom: 12 }}
+            />
+          )}
           {runs.length === 0 ? (
             <Empty
               description="暂无外部 Agent 运行记录"
@@ -308,6 +333,34 @@ function ExternalAgentRunPanel({ projectId }: ExternalAgentRunPanelProps) {
                   >
                     {run.summary && (
                       <Paragraph style={{ marginBottom: 8 }}>{run.summary}</Paragraph>
+                    )}
+                    {run.status === 'waiting_confirmation' && (
+                      <PersistentOutcome
+                        outcome="waiting_user"
+                        title="Agent 已准备好写入内容，等待你的确认"
+                        description={run.summary || '确认写入后任务才会继续，当前结果不会被静默提交。'}
+                      />
+                    )}
+                    {run.status === 'completed' && (
+                      <PersistentOutcome
+                        outcome="completed_with_tools"
+                        title="Agent 任务已完成"
+                        description={run.summary || '工具结果和写入记录已保存。'}
+                      />
+                    )}
+                    {run.status === 'failed' && (
+                      <PersistentOutcome
+                        outcome="failed"
+                        title="Agent 任务失败"
+                        description={run.summary || '可查看下方事件定位失败步骤。'}
+                      />
+                    )}
+                    {run.status === 'cancelled' && (
+                      <PersistentOutcome
+                        outcome="cancelled"
+                        title="Agent 任务已取消"
+                        description={run.summary || '已经完成的写入不会被自动撤销。'}
+                      />
                     )}
                     {selectedRun?.id === run.id && events.length > 0 && (
                       <List

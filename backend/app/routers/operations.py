@@ -97,13 +97,40 @@ async def _action(operation_id: str, action: str, db: Session) -> ApiResponse:
     if not handled:
         raise HTTPException(status_code=409, detail="该任务当前不支持此操作，请返回原页面处理")
     if action == "cancel":
-        update_operation(db, operation, status="cancelled", message="任务已取消", event_type="cancelled")
+        update_operation(
+            db,
+            operation,
+            status="cancelled",
+            message="任务已取消",
+            event_type="cancelled",
+            attention={},
+            result={"summary": "任务已取消", "completed": [], "incomplete": ["任务未完成"]},
+            outcome="cancelled",
+        )
     elif action == "pause":
         update_operation(db, operation, status="paused", message="任务已暂停", event_type="paused")
     elif action == "continue":
-        update_operation(db, operation, status="running", health_status="active", message="任务继续运行", event_type="continued")
+        update_operation(
+            db,
+            operation,
+            status="running",
+            health_status="active",
+            message="任务继续运行",
+            event_type="continued",
+            attention={},
+            result={},
+        )
     else:
-        update_operation(db, operation, status="running", health_status="active", message="正在重试当前单元", event_type="retrying")
+        update_operation(
+            db,
+            operation,
+            status="running",
+            health_status="active",
+            message="正在重试当前单元",
+            event_type="retrying",
+            attention={},
+            result={},
+        )
     db.commit()
     return ApiResponse.success(data=serialize_operation(operation, include_events=True))
 

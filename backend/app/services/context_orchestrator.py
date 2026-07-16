@@ -1733,6 +1733,27 @@ class ContextOrchestrator:
             "failed": "failed",
         }.get(job.status, "running")
         processed = int(job.completed_projects or 0) + int(job.failed_projects or 0)
+        result = None
+        outcome = None
+        if lifecycle == "completed":
+            failed = int(job.failed_projects or 0)
+            result = {
+                "summary": (
+                    f"上下文索引重建完成：{job.completed_projects or 0} 个成功，{failed} 个失败"
+                    if failed
+                    else f"上下文索引重建完成：{job.completed_projects or 0} 个作品"
+                ),
+                "completed": [f"{job.completed_projects or 0} 个作品已完成"],
+                "incomplete": [f"{failed} 个作品失败"] if failed else [],
+            }
+            outcome = "partial_success" if failed else "completed_with_tools"
+        elif lifecycle == "failed":
+            result = {
+                "summary": job.error or "上下文索引重建失败",
+                "completed": [f"{job.completed_projects or 0} 个作品已完成"] if job.completed_projects else [],
+                "incomplete": [job.error or "重建任务未完成"],
+            }
+            outcome = "partial_success" if job.completed_projects else "failed"
         operation = ensure_operation(
             self.db,
             source_kind="context_rebuild",
@@ -1749,6 +1770,8 @@ class ContextOrchestrator:
             progress_mode="determinate" if job.total_projects else "indeterminate",
             progress_current=processed,
             progress_total=int(job.total_projects) if job.total_projects else None,
+            result=result,
+            outcome=outcome,
         )
         job.operation_id = operation.id
         update_operation(
@@ -1763,6 +1786,9 @@ class ContextOrchestrator:
             progress_total=int(job.total_projects) if job.total_projects else None,
             failure_class="context_rebuild_error" if lifecycle == "failed" else None,
             next_action="返回上下文治理页面重试失败作品" if lifecycle == "failed" else None,
+            attention={},
+            result=result,
+            outcome=outcome,
         )
         self.db.flush()
 

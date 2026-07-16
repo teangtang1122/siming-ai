@@ -145,8 +145,11 @@ class RuntimeMigrationTestCase(unittest.TestCase):
 
         download_columns = {column["name"] for column in inspector.get_columns("model_download_tasks")}
         rebuild_columns = {column["name"] for column in inspector.get_columns("context_rebuild_jobs")}
+        operation_columns = {column["name"] for column in inspector.get_columns("operation_runs")}
         self.assertIn("operation_id", download_columns)
         self.assertIn("operation_id", rebuild_columns)
+        self.assertIn("attention_json", operation_columns)
+        self.assertIn("result_json", operation_columns)
 
         with engine.connect() as conn:
             self.assertEqual(conn.execute(text("SELECT COUNT(*) FROM projects")).scalar_one(), 1)

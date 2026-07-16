@@ -77,16 +77,22 @@ export function assistantOutcomeToRunLog(
       return { tool, status: 'ok', message: 'AI助手已回复' }
     case 'completed_with_tools':
       return { tool, status: 'ok', message: 'AI助手已完成工具操作' }
+    case 'partial_success':
+      return { tool, status: 'blocked', message: 'AI助手完成了部分操作，仍有内容需要处理' }
     case 'empty_response':
       return { tool, status: 'skipped', message: '模型没有返回文字或工具结果' }
     case 'skipped_preflight':
       return { tool, status: 'skipped', message: '预检已跳过执行，等待补充信息' }
+    case 'waiting_user':
+      return { tool, status: 'blocked', message: 'AI助手正在等待你的确认' }
     case 'blocked':
       return { tool, status: 'blocked', message: '任务已阻塞，等待确认或修复' }
     case 'failed':
       return { tool, status: 'error', message: '任务执行失败，部分数据可能未保存' }
     default:
-      return { tool, status: 'ok', message: payload.reply?.trim() ? 'AI助手已回复' : 'AI助手已完成' }
+      return payload.reply?.trim()
+        ? { tool, status: 'ok', message: 'AI助手已回复' }
+        : { tool, status: 'skipped', message: '模型没有返回文字或工具结果' }
   }
 }
 

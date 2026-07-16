@@ -18,7 +18,6 @@ import {
   Select,
   Space,
   Spin,
-  Steps,
   Tag,
   Timeline,
   Tooltip,
@@ -27,7 +26,6 @@ import {
 } from 'antd'
 import {
   BookOutlined,
-  CheckCircleOutlined,
   CloudSyncOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -39,6 +37,10 @@ import {
   SettingOutlined,
 } from '@ant-design/icons'
 import SystemNav from '../components/SystemNav'
+import {
+  FlowNavigator,
+} from '../components/interaction'
+import { StageActionBar, StageFeedback } from '../components/novel-creation'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
 import {
@@ -1075,7 +1077,7 @@ function NovelCreationWizardPage() {
           <main className="creation-workbench">
             <aside className="creation-stage-nav">
               <Title level={4}>立项进度</Title>
-              <Steps
+              <FlowNavigator
                 direction="vertical"
                 current={Math.max(0, CORE_STAGES.indexOf(currentStage))}
                 onChange={(index) => {
@@ -1115,7 +1117,7 @@ function NovelCreationWizardPage() {
                   <Title level={3}>{stageLabels[currentStage] || currentStage}</Title>
                   <Space wrap>
                     <Tag color={stageTone(currentStageState?.status)}>{stageStatusLabel(currentStageState?.status)}</Tag>
-                    {currentStage === attentionStage && currentStageState?.status === 'generated' && <Tag color="gold">需要你的确认</Tag>}
+                    {currentStage === attentionStage && currentStageState?.status === 'generated' && <Tag className="creation-attention-tag">需要你的确认</Tag>}
                     {currentStageState?.stale_reason && <Text type="warning">{currentStageState.stale_reason}</Text>}
                   </Space>
                 </div>
@@ -1125,69 +1127,40 @@ function NovelCreationWizardPage() {
                   <Button icon={<EditOutlined />} onClick={openEditor} disabled={!currentStageState?.data || busy}>编辑阶段内容</Button>
                 </Space>
               </div>
-              {currentStageState?.status === 'generated' && currentStageState.data && (
-                <Alert
-                  className="creation-stage-outcome"
-                  type="success"
-                  showIcon
-                  message={currentStage === 'final_review' ? '最终审阅已生成，等待你创建正式作品' : '生成完成，等待你确认'}
-                  description="内容已保存到立项草稿。你可以先阅读、修改或重新生成；只有确认后才会进入下一阶段。"
-                />
-              )}
-              {currentStageState?.status === 'stale' && (
-                <Alert
-                  className="creation-stage-outcome"
-                  type="warning"
-                  showIcon
-                  message="上游内容已变化，本阶段需要重新校验"
-                  description={currentStageState.stale_reason || '请检查内容后重新生成或编辑，再完成确认。'}
-                />
-              )}
-              {currentStageState?.status === 'pending' && currentBlockers.length > 0 && (
-                <Alert
-                  className="creation-stage-outcome"
-                  type="info"
-                  showIcon
-                  message={`先确认“${currentBlockers[0].label}”`}
-                  description="前置阶段确认后，这一阶段才会开放生成，避免后续内容建立在未定稿的信息上。"
-                  action={<Button onClick={() => viewStage(currentBlockers[0].stage)}>返回确认</Button>}
-                />
-              )}
-              {stageActionError && (
-                <Alert
-                  className="creation-stage-outcome"
-                  type="error"
-                  showIcon
-                  message="下一步没有启动"
-                  description={stageActionError}
-                  action={recommendedStage && recommendedStage !== currentStage ? <Button onClick={() => void continueFromConfirmedStage()}>重试生成{recommendedStageLabel}</Button> : undefined}
-                />
-              )}
+              <StageFeedback
+                currentStage={currentStage}
+                status={currentStageState?.status}
+                hasData={Boolean(currentStageState?.data)}
+                staleReason={currentStageState?.stale_reason}
+                blockers={currentBlockers}
+                error={stageActionError}
+                recommendedStageLabel={recommendedStageLabel}
+                canRetryNext={Boolean(recommendedStage && recommendedStage !== currentStage)}
+                onViewStage={viewStage}
+                onRetryNext={() => void continueFromConfirmedStage()}
+              />
               <StagePreview stage={currentStage} data={currentStageState?.data} />
-              <div className="creation-stage-actions">
-                {currentStage === 'final_review' ? (
-                  session.created_project_id ? (
-                    <Button size="large" type="primary" icon={<BookOutlined />} onClick={() => navigate(`/project/${session.created_project_id}`)}>进入已创建作品</Button>
-                  ) : (
-                    <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!finalData?.ready || busy} loading={busy} onClick={createProject}>确认并创建正式作品</Button>
-                  )
-                ) : currentStageState?.status === 'generated' || currentStageState?.status === 'stale' ? (
-                  <>
-                    <Button size="large" disabled={!currentStageState?.data || busy} onClick={() => void confirmCurrentStage(false)}>仅确认，稍后继续</Button>
-                    <Button size="large" type="primary" icon={<CheckCircleOutlined />} disabled={!currentStageState?.data || busy} loading={busy} onClick={() => void confirmCurrentStage(true)}>
-                      {nextStageLabel ? `确认并生成${nextStageLabel}` : '确认本阶段'}
-                    </Button>
-                  </>
-                ) : currentStageState?.status === 'confirmed' && recommendedStage && recommendedStage !== currentStage ? (
-                  <Button size="large" type="primary" icon={<PlayCircleOutlined />} disabled={busy} loading={busy} onClick={() => void continueFromConfirmedStage()}>
-                    生成{recommendedStageLabel}
-                  </Button>
-                ) : currentStageFlow?.can_generate ? (
-                  <Button size="large" type="primary" icon={<PlayCircleOutlined />} disabled={busy} loading={busy} onClick={() => void startStageRun(currentStage)}>
-                    生成{stageLabels[currentStage] || currentStage}
-                  </Button>
-                ) : null}
-              </div>
+              <StageActionBar
+                currentStage={currentStage}
+                status={currentStageState?.status}
+                hasData={Boolean(currentStageState?.data)}
+                busy={busy}
+                createdProjectId={session.created_project_id}
+                finalReady={Boolean(finalData?.ready)}
+                recommendedStage={recommendedStage}
+                recommendedStageLabel={recommendedStageLabel}
+                nextStageLabel={nextStageLabel}
+                canGenerate={Boolean(currentStageFlow?.can_generate)}
+                currentStageLabel={stageLabels[currentStage] || currentStage}
+                onOpenProject={() => {
+                  if (session.created_project_id) navigate(`/project/${session.created_project_id}`)
+                }}
+                onCreateProject={() => void createProject()}
+                onConfirmOnly={() => void confirmCurrentStage(false)}
+                onConfirmAndContinue={() => void confirmCurrentStage(true)}
+                onContinue={() => void continueFromConfirmedStage()}
+                onGenerate={() => void startStageRun(currentStage)}
+              />
             </section>
           </main>
         ) : null}

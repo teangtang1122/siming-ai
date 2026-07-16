@@ -42,10 +42,43 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                 "failed": "failed",
                 "cancelled": "cancelled",
             }
+            lifecycle = status_map.get(job.status, operation.status)
+            attention: dict = {}
+            result = None
+            outcome = None
+            if lifecycle == "waiting_user":
+                attention = {
+                    "kind": "confirmation",
+                    "title": "建档候选等待确认",
+                    "message": job.error or "请审阅当前章节的建档候选后继续。",
+                    "action_label": "查看建档候选",
+                    "action_url": f"/project/{job.project_id}?view=cataloging",
+                    "blocking": True,
+                }
+                result = {
+                    "summary": f"已完成 {completed}/{job.total_chapters or 0} 章，当前章节等待确认",
+                    "completed": [f"{completed} 章已完成"],
+                    "incomplete": ["当前章节候选尚未确认"],
+                }
+                outcome = "waiting_user"
+            elif lifecycle == "completed":
+                result = {
+                    "summary": f"作品建档完成，共处理 {completed} 章",
+                    "completed": [f"{completed} 章已完成"],
+                    "incomplete": [],
+                }
+                outcome = "completed_with_tools"
+            elif lifecycle == "failed":
+                result = {
+                    "summary": job.error or "作品建档失败",
+                    "completed": [f"{completed} 章已完成"] if completed else [],
+                    "incomplete": [job.error or "剩余章节未完成"],
+                }
+                outcome = "partial_success" if completed else "failed"
             update_operation(
                 db,
                 operation,
-                status=status_map.get(job.status, operation.status),
+                status=lifecycle,
                 phase="cataloging",
                 message=f"作品建档：已完成 {completed}/{job.total_chapters or 0} 章",
                 progress_mode="determinate",
@@ -55,6 +88,9 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
                 event_type="checkpoint" if completed > previous_completed else None,
                 payload={"completed_chapters": completed, "total_chapters": int(job.total_chapters or 0)},
                 next_action=job.error,
+                attention=attention,
+                result=result,
+                outcome=outcome,
             )
 
 

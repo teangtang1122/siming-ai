@@ -4,6 +4,8 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { Badge, Button, Drawer, Empty, Flex, Progress, Space, Spin, Tag, Tooltip, Typography, message } from 'antd'
 import { CloseCircleOutlined, ClockCircleOutlined, PauseOutlined, PlayCircleOutlined, ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { PersistentOutcome } from './interaction'
+import type { OperationAttention, OperationOutcome, OperationResult } from './interaction'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -14,6 +16,10 @@ interface OperationRun {
   source_kind: string
   title: string
   status: string
+  outcome?: OperationOutcome
+  attention?: OperationAttention
+  result?: OperationResult
+  result_summary?: string
   health_status: 'active' | 'quiet' | 'suspected_stall' | 'stalled' | 'disconnected'
   phase?: string
   current_message?: string
@@ -38,7 +44,7 @@ const healthMeta: Record<OperationRun['health_status'], { label: string; color: 
   disconnected: { label: '运行连接中断', color: 'error' },
 }
 const statusLabels: Record<string, string> = {
-  queued: '等待开始', running: '运行中', waiting_user: '等待确认', paused: '已暂停',
+  draft: '草稿', queued: '等待开始', running: '运行中', waiting_user: '等待确认', paused: '已暂停',
   completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断',
 }
 
@@ -66,6 +72,7 @@ function OperationItem({ operation, onAction, onOpen }: {
   onOpen: (operation: OperationRun) => void
 }) {
   const active = ACTIVE_STATUSES.has(operation.status)
+  const computing = operation.status === 'queued' || operation.status === 'running'
   const health = healthMeta[operation.health_status] || healthMeta.active
   const progress = operation.progress || { mode: 'indeterminate' }
   return (
@@ -75,23 +82,27 @@ function OperationItem({ operation, onAction, onOpen }: {
           <Space size={6} wrap>
             <Text strong>{operation.title}</Text>
             <Tag>{statusLabels[operation.status] || operation.status}</Tag>
-            {active && <Tag color={health.color}>{health.label}</Tag>}
+            {computing && <Tag color={health.color}>{health.label}</Tag>}
           </Space>
           <Paragraph className="operation-center-message" ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}>
             {operation.current_message || '正在等待新的运行信息'}
           </Paragraph>
         </div>
-        {operation.resume_url && <Button size="small" onClick={() => onOpen(operation)}>查看</Button>}
+        {operation.status !== 'waiting_user' && (operation.attention?.action_url || operation.resume_url) && (
+          <Button size="small" onClick={() => onOpen(operation)}>
+            {operation.attention?.action_label || '查看'}
+          </Button>
+        )}
       </Flex>
 
-      {active && progress.mode === 'determinate' && Boolean(progress.total) ? (
+      {computing && progress.mode === 'determinate' && Boolean(progress.total) ? (
         <Progress
           percent={progress.percent || 0}
           size="small"
           format={() => `${progress.current || 0}/${progress.total}`}
           aria-label={`已完成 ${progress.current || 0}，共 ${progress.total}`}
         />
-      ) : active ? (
+      ) : computing ? (
         <div className="operation-center-indeterminate" aria-live="polite">
           <Spin size="small" />
           <Text type="secondary">正在等待下一条真实活动，不估算完成百分比</Text>
@@ -104,6 +115,15 @@ function OperationItem({ operation, onAction, onOpen }: {
         {operation.phase && <span>阶段 {operation.phase}</span>}
         {operation.model_source && <span>模型 {operation.model_source}</span>}
       </div>
+      {operation.outcome && (operation.status === 'waiting_user' || !active) && (
+        <PersistentOutcome
+          className="operation-center-outcome"
+          outcome={operation.outcome}
+          attention={operation.attention}
+          result={operation.result || { summary: operation.result_summary }}
+          onAction={operation.attention?.action_url || operation.resume_url ? () => onOpen(operation) : undefined}
+        />
+      )}
       {operation.next_action && <Text className="operation-center-next" type="secondary">下一步：{operation.next_action}</Text>}
       {active && (
         <Space size={6} wrap className="operation-center-actions">
@@ -198,7 +218,8 @@ export default function GlobalOperationCenter() {
   }, [refresh])
 
   const openResult = useCallback((operation: OperationRun) => {
-    if (operation.resume_url) navigate(operation.resume_url)
+    const target = operation.attention?.action_url || operation.resume_url
+    if (target) navigate(target)
     setOpen(false)
   }, [navigate])
 
@@ -209,7 +230,7 @@ export default function GlobalOperationCenter() {
         size="small"
         className={`global-operation-badge${navTarget ? '' : ' global-operation-badge-floating'}`}
       >
-        <Button className="global-operation-trigger" icon={<UnorderedListOutlined />} aria-label={`全局任务中心，${activeOperations.length} 个任务正在运行`} onClick={() => setOpen(true)}>任务</Button>
+        <Button className="global-operation-trigger" icon={<UnorderedListOutlined />} aria-label={`全局任务中心，${activeOperations.length} 个任务正在进行或等待处理`} onClick={() => setOpen(true)}>任务</Button>
       </Badge>
     </Tooltip>
   )

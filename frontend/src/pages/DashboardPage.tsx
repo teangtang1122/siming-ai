@@ -4,7 +4,6 @@ import {
   Alert,
   Button,
   Card,
-  Empty,
   Form,
   Input,
   Modal,
@@ -28,6 +27,7 @@ import {
 } from '@ant-design/icons'
 import SystemNav from '../components/SystemNav'
 import PageWrapper from '../components/PageWrapper'
+import { AuthorEmptyState } from '../components/interaction'
 import { apiClient } from '../api/client'
 import { useAppStore } from '../stores'
 import './DashboardPage.css'
@@ -466,9 +466,11 @@ function DashboardPage() {
           </div>
         ) : projects.length === 0 ? (
         <div className="dashboard-empty siming-surface">
-          <Empty
+          <AuthorEmptyState
             image={<FolderOpenOutlined className="dashboard-empty-icon" />}
             description={searchKeyword ? '没有找到匹配的作品' : '作品库还是空的。建议先立项，让司命一起建立角色、世界和前 15 章细纲。'}
+            actionLabel={searchKeyword ? undefined : '开始新书立项'}
+            onAction={searchKeyword ? undefined : openNovelCreation}
           />
         </div>
       ) : (

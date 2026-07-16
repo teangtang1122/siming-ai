@@ -60,7 +60,7 @@ describe('GlobalOperationCenter', () => {
   it('shows real health and avoids a fabricated percentage for indeterminate work', async () => {
     render(<MemoryRouter><GlobalOperationCenter /></MemoryRouter>)
 
-    const trigger = await screen.findByRole('button', { name: '全局任务中心，1 个任务正在运行' })
+    const trigger = await screen.findByRole('button', { name: '全局任务中心，1 个任务正在进行或等待处理' })
     fireEvent.click(trigger)
 
     expect(await screen.findByText('疑似停滞')).toBeInTheDocument()
@@ -74,12 +74,51 @@ describe('GlobalOperationCenter', () => {
 
   it('treats an SSE break as reconnection while polling remains active', async () => {
     render(<MemoryRouter><GlobalOperationCenter /></MemoryRouter>)
-    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，1 个任务正在运行' }))
+    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，1 个任务正在进行或等待处理' }))
     await waitFor(() => expect(FakeEventSource.last?.url).toBe('/api/v1/operations/operation-1/stream'))
 
     act(() => FakeEventSource.last?.onerror?.(new Event('error')))
 
     expect(await screen.findByText('进度流正在重新连接，已改用状态轮询')).toBeInTheDocument()
     expect(screen.getByText('作品建档 · 第151章')).toBeInTheDocument()
+  })
+
+  it('shows a persistent author action instead of a running spinner while waiting for confirmation', async () => {
+    api.get.mockResolvedValue({
+      data: {
+        data: {
+          items: [{
+            ...operation,
+            status: 'waiting_user',
+            health_status: 'active',
+            outcome: 'waiting_user',
+            current_message: '文风与世界观已经生成',
+            result_summary: '阶段内容已保存到立项草稿',
+            result: {
+              outcome: 'waiting_user',
+              summary: '阶段内容已保存到立项草稿',
+              completed: ['生成文风与世界观'],
+              incomplete: ['作者确认'],
+            },
+            attention: {
+              kind: 'confirmation',
+              title: '阶段内容等待确认',
+              message: '请审阅后确认。',
+              action_label: '审阅阶段内容',
+              action_url: '/novel-creation?session=session-1&stage=world_style',
+            },
+          }],
+        },
+      },
+    })
+
+    render(<MemoryRouter><GlobalOperationCenter /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，1 个任务正在进行或等待处理' }))
+
+    expect(await screen.findByText('阶段内容等待确认')).toBeInTheDocument()
+    expect(screen.getByText('已完成：生成文风与世界观')).toBeInTheDocument()
+    expect(screen.getByText('未完成：作者确认')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '审阅阶段内容' })).toBeInTheDocument()
+    expect(screen.queryByText('正在等待下一条真实活动，不估算完成百分比')).not.toBeInTheDocument()
   })
 })

@@ -650,9 +650,9 @@ def _workspace_outcome(
 ) -> str:
     """Return a stable user-facing outcome for an assistant turn."""
     if failed_logs:
-        return "failed"
+        return "partial_success" if applied_actions else "failed"
     if needs_confirmation:
-        return "blocked"
+        return "waiting_user"
     if str(raw_reply or "").strip():
         return "completed_with_reply"
     if applied_actions or tool_logs or searched_context:
@@ -2145,9 +2145,10 @@ async def workspace_assistant_stream(
             mark_assistant_run(
                 db,
                 assistant_run,
-                status="error" if failed_logs else "completed",
-                phase="error" if failed_logs else "completed",
+                status="error" if outcome == "failed" else "completed",
+                phase="error" if outcome == "failed" else outcome,
                 final_reply=final_reply_for_save,
+                outcome=outcome,
             )
 
             # --- Auto-extract memories from conversation (fire-and-forget) ---

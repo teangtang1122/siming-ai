@@ -954,9 +954,17 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     db.commit()
                     update_run_status(db, agent_run.id, "completed", summary="作品建档完成")
                     if job.operation_id:
+                        completed = int(job.completed_chapters or job.total_chapters or 0)
                         finish_operation(
                             job.operation_id,
-                            message=f"作品建档完成，共处理 {job.completed_chapters or job.total_chapters or 0} 章",
+                            message=f"作品建档完成，共处理 {completed} 章",
+                            outcome="completed_with_tools",
+                            result={
+                                "summary": f"作品建档完成，共处理 {completed} 章",
+                                "completed": [f"{completed} 章已完成"],
+                                "incomplete": [],
+                            },
+                            attention={},
                             db=db,
                         )
                         unregister_operation_actions(job.operation_id)
