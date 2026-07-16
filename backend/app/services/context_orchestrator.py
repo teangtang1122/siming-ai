@@ -9,8 +9,6 @@ contract instead of three unrelated prompt assemblers.
 from __future__ import annotations
 
 from array import array
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -23,6 +21,11 @@ from typing import Any, Iterable, Sequence
 from sqlalchemy import event, or_
 from sqlalchemy.orm import Session
 
+from ..architecture.context_runtime import (
+    ActiveContextManifest,
+    activate_context_manifest,
+    active_context_manifest,
+)
 from ..database.models import (
     AssistantMemory,
     Chapter,
@@ -68,41 +71,6 @@ MANIFEST_STATUSES = {
 
 _MANIFEST_INVALIDATION_KEY = "siming_context_manifest_source_changes"
 _MANIFEST_INVALIDATION_GUARD = "siming_context_manifest_invalidation_running"
-
-
-@dataclass(frozen=True)
-class ActiveContextManifest:
-    """Request-local manifest rendered once for a gateway execution."""
-
-    manifest_id: str
-    rendered_context: str
-    output_reserve_tokens: int
-
-
-_ACTIVE_CONTEXT_MANIFEST: ContextVar[ActiveContextManifest | None] = ContextVar(
-    "siming_active_context_manifest",
-    default=None,
-)
-
-
-@contextmanager
-def activate_context_manifest(manifest: ContextManifest):
-    """Bind a manifest to nested internal gateway calls for one task."""
-    active = ActiveContextManifest(
-        manifest_id=manifest.id,
-        rendered_context=manifest.rendered_context or "",
-        output_reserve_tokens=manifest.output_reserve_tokens,
-    )
-    token = _ACTIVE_CONTEXT_MANIFEST.set(active)
-    try:
-        yield active
-    finally:
-        _ACTIVE_CONTEXT_MANIFEST.reset(token)
-
-
-def active_context_manifest() -> ActiveContextManifest | None:
-    """Return the request-local manifest selected by the workspace executor."""
-    return _ACTIVE_CONTEXT_MANIFEST.get()
 
 
 def _sha256(value: str) -> str:

@@ -1,0 +1,1 @@
+"""Novel-creation persistence implementations."""

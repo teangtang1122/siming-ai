@@ -81,7 +81,7 @@ async def create_project(db: Session, project_id: str, args: dict[str, Any]) -> 
     if not title:
         return {"tool": "create_project", "status": "skipped", "detail": "作品标题为空"}
 
-    from ..run_recovery import check_idempotency, generate_idempotency_key
+    from ..idempotency import check_idempotency, generate_idempotency_key
 
     idem_key = generate_idempotency_key(db, "create_project", project_id, args)
     if idem_key:

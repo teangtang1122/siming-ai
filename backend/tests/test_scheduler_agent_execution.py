@@ -10,6 +10,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 class RunTaskPromptTest(unittest.TestCase):
     """Verify _run_task_prompt uses the agent tool chain."""
 
+    @classmethod
+    def setUpClass(cls):
+        from app.bootstrap.composition import configure_application_services
+
+        configure_application_services()
+
     def _mock_task(self):
         task = MagicMock()
         task.id = "task1"

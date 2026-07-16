@@ -1,0 +1,1 @@
+"""Story domain rules."""

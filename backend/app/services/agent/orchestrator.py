@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from ...database.models import AgentPlan, AgentPlanStep
 from ..workspace.executor import execute_workspace_action
+from ..workspace.idempotency import check_idempotency, generate_idempotency_key
 from ..workspace.registry import registry
-from ..workspace.run_recovery import check_idempotency, generate_idempotency_key
 from .plan_graph import PlanGraph, StepDef
 from .step_args import resolve_step_args
 

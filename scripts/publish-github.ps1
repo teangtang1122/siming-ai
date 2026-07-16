@@ -76,9 +76,17 @@ try {
   if (Test-Path $ExePath) {
     $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
     $version = $Tag.TrimStart("v")
+    $isPrerelease = $version.Contains("-")
+    $updateChannel = if ($isPrerelease) { "preview" } else { "stable" }
+    $downloadUrl = if ($isPrerelease) {
+      "https://github.com/$Repo/releases/download/$Tag/$AppName.exe"
+    } else {
+      "https://github.com/$Repo/releases/latest/download/$AppName.exe"
+    }
     $manifest = [ordered]@{
       version = $version
-      download_url = "https://github.com/$Repo/releases/latest/download/$AppName.exe"
+      channel = $updateChannel
+      download_url = $downloadUrl
       sha256 = $sha
       repo = $Repo
     } | ConvertTo-Json -Depth 3
@@ -121,10 +129,25 @@ try {
     return
   }
 
-  if (-not (git tag --list $Tag)) {
+  $CurrentBranch = (git branch --show-current).Trim()
+  if (-not $CurrentBranch) {
+    throw "Release publishing requires a named branch, not detached HEAD."
+  }
+  $ExistingTagCommit = git rev-list -n 1 $Tag 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    $ExistingTagCommit = ""
+  } else {
+    $ExistingTagCommit = ($ExistingTagCommit | Select-Object -First 1).Trim()
+  }
+  $HeadCommit = (git rev-parse HEAD).Trim()
+  if ($ExistingTagCommit -and $ExistingTagCommit -ne $HeadCommit) {
+    throw "Tag $Tag already points to $ExistingTagCommit, not HEAD $HeadCommit."
+  }
+  if (-not $ExistingTagCommit) {
     git tag -a $Tag -m "Siming $Tag"
   }
-  git push -u origin main --follow-tags
+  git push -u origin $CurrentBranch
+  git push origin $Tag
 
   $PreviousErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
@@ -132,7 +155,18 @@ try {
   $ReleaseExists = $LASTEXITCODE -eq 0
   $ErrorActionPreference = $PreviousErrorActionPreference
   if (-not $ReleaseExists) {
-    gh release create $Tag -R $Repo --title $Tag --notes "Siming $Tag"
+    $ReleaseArgs = @(
+      "release", "create", $Tag,
+      "-R", $Repo,
+      "--title", $Tag,
+      "--notes", "Siming $Tag"
+    )
+    if ($Tag.Contains("-")) {
+      $ReleaseArgs += "--prerelease"
+    }
+    gh @ReleaseArgs
+  } elseif ($Tag.Contains("-")) {
+    gh release edit $Tag -R $Repo --prerelease
   }
   $ExistingRelease = gh release view $Tag -R $Repo --json assets | ConvertFrom-Json
   $ExistingAssetNames = @($ExistingRelease.assets | ForEach-Object { $_.name })

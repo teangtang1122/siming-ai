@@ -1,0 +1,1 @@
+"""Continuity delivery adapters."""

@@ -21,7 +21,7 @@ async def create_character(
     if not name:
         return {"tool": "create_character", "status": "skipped", "detail": "角色名为空"}
 
-    from ..run_recovery import generate_idempotency_key, check_idempotency
+    from ..idempotency import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_character", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)

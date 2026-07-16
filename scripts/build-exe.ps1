@@ -152,12 +152,14 @@ try {
     "--specpath", $BuildDir,
     "--paths", $BackendDir,
     "--add-data", "${FrontendDist}${Separator}frontend/dist",
+    "--add-data", "$(Join-Path $BackendDir 'alembic')${Separator}alembic",
     "--collect-submodules", "app",
     "--collect-submodules", "uvicorn",
     "--collect-submodules", "httptools",
     "--collect-submodules", "watchfiles",
     "--collect-all", "winpty",
     "--hidden-import", "sqlite3",
+    "--hidden-import", "app.database.migrations",
     "--hidden-import", "webview",
     "--hidden-import", "webview.platforms",
     "--hidden-import", "clr_loader",
@@ -185,9 +187,18 @@ $ExePath = if ($OneDir) {
 $BackendPathForPython = $BackendDir.Replace("\", "\\")
 $Version = (& $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.version import APP_VERSION; print(APP_VERSION)").Trim()
 $Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
+$IsPrerelease = $Version.Contains("-")
+$ReleaseTag = "v$Version"
+$UpdateChannel = if ($IsPrerelease) { "preview" } else { "stable" }
+$DownloadUrl = if ($IsPrerelease) {
+  "https://github.com/$DefaultUpdateRepo/releases/download/$ReleaseTag/$AppName.exe"
+} else {
+  "https://github.com/$DefaultUpdateRepo/releases/latest/download/$AppName.exe"
+}
 $Manifest = [ordered]@{
   version = $Version
-  download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/$AppName.exe"
+  channel = $UpdateChannel
+  download_url = $DownloadUrl
   sha256 = $Sha256
   repo = $DefaultUpdateRepo
 } | ConvertTo-Json -Depth 3

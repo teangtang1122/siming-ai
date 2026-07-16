@@ -1,0 +1,1 @@
+"""Story module migration target."""

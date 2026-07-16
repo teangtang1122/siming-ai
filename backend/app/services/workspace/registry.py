@@ -218,6 +218,8 @@ class ToolRegistry:
                 "expose_to_mcp": td.expose_to_mcp,
                 "mcp_permission_pack": self._derive_mcp_pack(td),
                 "requires_confirmation": td.requires_confirmation,
+                "estimated_cost": td.estimated_cost,
+                "idempotent": td.idempotent,
             })
         return result
 

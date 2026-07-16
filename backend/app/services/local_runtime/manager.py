@@ -1,7 +1,6 @@
 """Lifecycle manager for Siming's managed llama.cpp server."""
 from __future__ import annotations
 
-import atexit
 import json
 import os
 import re
@@ -61,7 +60,6 @@ class LocalRuntimeManager:
         self._port: int | None = None
         self._last_adjustment: str | None = None
         self._last_log_path: str | None = None
-        atexit.register(self.stop)
 
     @property
     def base_url(self) -> str | None:
@@ -213,6 +211,8 @@ class LocalRuntimeManager:
             self._context_length = None
             self._requested_context_length = None
             self._adapter_signature = ""
+            if process is None and port is None:
+                return
             if process and process.poll() is None:
                 try:
                     process.terminate()

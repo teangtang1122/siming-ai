@@ -1,0 +1,1 @@
+"""Continuity domain rules."""

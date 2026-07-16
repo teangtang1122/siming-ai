@@ -1869,3 +1869,8 @@ class NarrativeCheckpoint(Base):
         UniqueConstraint("project_id", "sequence", name="uq_narrative_checkpoint_sequence"),
         Index("ix_narrative_checkpoints_project", "project_id", "sequence"),
     )
+
+
+# Infrastructure metadata remains import-compatible through this module while
+# its implementation lives outside the legacy monolithic model file.
+from .schema_models import SchemaMetadata  # noqa: E402,F401

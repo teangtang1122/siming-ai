@@ -14,6 +14,10 @@ class UpdaterVersionTestCase(unittest.TestCase):
     def test_semver_comparison(self):
         self.assertTrue(is_newer_version("0.1.2", "0.1.1"))
         self.assertTrue(is_newer_version("v1.0.0", "0.9.9"))
+        self.assertTrue(is_newer_version("3.0.0-alpha.2", "3.0.0-alpha.1"))
+        self.assertTrue(is_newer_version("3.0.0-beta.1", "3.0.0-alpha.9"))
+        self.assertTrue(is_newer_version("3.0.0", "3.0.0-rc.1"))
+        self.assertFalse(is_newer_version("3.0.0-alpha.1", "3.0.0"))
         self.assertFalse(is_newer_version("0.1.1", "0.1.1"))
         self.assertFalse(is_newer_version("0.1.0", "0.1.1"))
         self.assertFalse(is_newer_version("", "0.1.1"))
@@ -56,6 +60,55 @@ class UpdaterVersionTestCase(unittest.TestCase):
         manifest = updater._manifest_from_github_release("example/repo")
 
         self.assertIsNone(manifest)
+
+    @patch("app.updater._request")
+    @patch("app.updater._request_json")
+    def test_preview_channel_selects_latest_prerelease(
+        self,
+        mock_request_json,
+        mock_request,
+    ):
+        mock_request_json.return_value = [
+            {
+                "tag_name": "v3.0.0-alpha.1",
+                "prerelease": True,
+                "draft": False,
+                "assets": [
+                    {
+                        "name": "Siming.exe",
+                        "browser_download_url": "https://example.test/a1.exe",
+                    }
+                ],
+            },
+            {
+                "tag_name": "v2.9.1",
+                "prerelease": False,
+                "draft": False,
+                "assets": [
+                    {
+                        "name": "Siming.exe",
+                        "browser_download_url": "https://example.test/stable.exe",
+                    }
+                ],
+            },
+        ]
+        mock_request.return_value = b""
+
+        manifest = updater._manifest_from_github_release(
+            "example/repo",
+            "preview",
+        )
+
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest["version"], "3.0.0-alpha.1")
+        self.assertEqual(manifest["download_url"], "https://example.test/a1.exe")
+
+    def test_prerelease_build_defaults_to_preview_channel(self):
+        self.assertEqual(
+            updater.default_update_channel("3.0.0-alpha.1"),
+            "preview",
+        )
+        self.assertEqual(updater.default_update_channel("3.0.0"), "stable")
 
     @patch.dict("os.environ", {"SIMING_DISABLE_UPDATE": "1"}, clear=True)
     def test_siming_disable_update_env_var(self):

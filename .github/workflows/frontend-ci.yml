@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - ".jscpd.json"
       - ".github/workflows/frontend-ci.yml"
   push:
-    branches: [main]
+    branches: [main, "codex/3.0-architecture"]
     paths:
       - "frontend/**"
+      - ".jscpd.json"
       - ".github/workflows/frontend-ci.yml"
 
 jobs:
@@ -34,6 +36,11 @@ jobs:
 
       - name: Run frontend tests
         run: npm test
+
+      - name: Validate frontend architecture
+        run: |
+          npm run architecture
+          npm run duplicates
 
       - name: Build frontend
         run: npm run build

@@ -21,7 +21,7 @@ async def create_relationship(
     if not source or not target or source.id == target.id:
         return {"tool": "create_relationship", "status": "skipped", "detail": "关系角色无效"}
 
-    from ..run_recovery import generate_idempotency_key, check_idempotency
+    from ..idempotency import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_relationship", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)

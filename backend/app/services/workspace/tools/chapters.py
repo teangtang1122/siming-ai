@@ -250,7 +250,7 @@ async def create_chapter(
     if not title or not content.strip():
         return {"tool": "create_chapter", "status": "skipped", "detail": "章节标题或正文为空"}
 
-    from ..run_recovery import generate_idempotency_key, check_idempotency
+    from ..idempotency import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_chapter", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)

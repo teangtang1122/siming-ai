@@ -1,10 +1,10 @@
 """Workspace Quality pack — full workspace assistant with evaluation pipeline."""
 from __future__ import annotations
 
-from ...services.workspace.tool_schemas import SEARCH_TOOL_NAMES, WRITE_TOOL_NAMES
+from ..workspace_contract import SCOPE_LABELS, WORKSPACE_TOOL_NAMES
 from . import PromptPack
 
-ALL_WORKSPACE_TOOL_NAMES: set[str] = SEARCH_TOOL_NAMES | WRITE_TOOL_NAMES
+ALL_WORKSPACE_TOOL_NAMES = WORKSPACE_TOOL_NAMES
 
 
 def _build_system(
@@ -15,8 +15,6 @@ def _build_system(
     tool_names: list[str] | set[str] | None = None,
 ) -> str:
     """Quality-mode controller prompt."""
-    from ..workspace_assistant import SCOPE_LABELS
-
     scope_label = SCOPE_LABELS.get(scope, "项目规划")
     if tool_names is not None:
         return _build_scoped_system(

@@ -1,0 +1,1 @@
+"""Story delivery adapters."""

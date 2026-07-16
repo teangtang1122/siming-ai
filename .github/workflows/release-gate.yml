@@ -41,7 +41,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: Verify tag matches application version
         shell: pwsh
@@ -69,6 +71,8 @@ jobs:
         run: |
           npm run lint
           npm test
+          npm run architecture
+          npm run duplicates
           npm run build
           npx playwright install chromium
           npm run test:e2e
@@ -77,11 +81,17 @@ jobs:
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest
+          python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Validate backend
         working-directory: backend
-        run: python ../scripts/run-backend-tests-isolated.py tests
+        run: |
+          python scripts/run_quality.py
+          python ../scripts/run-backend-tests-isolated.py tests
+
+      - name: Validate generated API types
+        working-directory: frontend
+        run: npm run api:check
 
       - name: Build distributable
         shell: cmd

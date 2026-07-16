@@ -1,0 +1,1 @@
+"""Model-runtime domain rules."""

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ...database.models import Skill, SkillVersion
 from ...schemas.skill import SkillResponse
+from .tool_catalog import get_tool_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -253,22 +254,7 @@ def list_skill_templates() -> list[dict]:
 
 def list_skill_tools() -> list[dict]:
     """Return workspace tool metadata for the skill editor."""
-    from ..workspace.registry import registry
-
-    tools = []
-    for name in sorted(registry.all_names()):
-        td = registry.get(name)
-        if not td:
-            continue
-        tools.append({
-            "name": td.name,
-            "description": td.description,
-            "tool_type": td.tool_type,
-            "estimated_cost": td.estimated_cost,
-            "idempotent": td.idempotent,
-            "requires_confirmation": td.requires_confirmation,
-        })
-    return tools
+    return sorted(get_tool_catalog(), key=lambda item: str(item.get("name") or ""))
 
 
 # ── Prompt Injection Protection ────────────────────────────────────────

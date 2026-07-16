@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Optional, TypeVar
 
+from ..architecture.context_runtime import active_context_manifest
 from ..core.crypto import decrypt
 from ..core.exceptions import LLMError, NotFoundError
 from ..database.models import APIConfig, LocalModelTaskSetting
@@ -90,12 +91,7 @@ def _apply_active_context_manifest(
     max_tokens: Optional[int],
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """Inject the executor-selected manifest for every governed gateway call."""
-    try:
-        from ..services.context_orchestrator import active_context_manifest
-
-        active = active_context_manifest()
-    except Exception:
-        active = None
+    active = active_context_manifest()
     if active is None:
         return messages, extra_body, max_tokens
 

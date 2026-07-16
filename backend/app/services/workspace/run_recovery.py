@@ -8,116 +8,14 @@ Provides three layers:
 from __future__ import annotations
 
 import json
-import hashlib
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from ...database.models import AssistantRun, AssistantRunStep, Chapter, Character, OutlineNode, WorldbuildingEntry, CharacterRelationship
 from .executor import execute_workspace_action
+from .idempotency import check_idempotency, generate_idempotency_key
 from .run_log import finish_run_step, mark_assistant_run, start_run_step, step_payload
-
-
-# ---------------------------------------------------------------------------
-# Idempotency
-# ---------------------------------------------------------------------------
-
-def generate_idempotency_key(
-    db: Session,
-    tool: str,
-    project_id: str,
-    args: dict,
-) -> str | None:
-    """Generate a natural key for idempotent write operations."""
-    if tool == "create_chapter":
-        key = str(args.get("outline_node_id") or args.get("title") or "").strip()
-        return f"create_chapter:{project_id}:{key}" if key else None
-
-    if tool == "create_character":
-        key = str(args.get("name") or "").strip()
-        return f"create_character:{project_id}:{key}" if key else None
-
-    if tool == "create_outline_node":
-        parent = str(args.get("parent_id") or "").strip()
-        title = str(args.get("title") or "").strip()
-        key = f"{parent}:{title}" if parent else title
-        return f"create_outline_node:{project_id}:{key}" if key else None
-
-    if tool == "create_outline_nodes":
-        nodes = args.get("nodes")
-        if not isinstance(nodes, list) or not nodes:
-            return None
-        natural_keys: list[str] = []
-        default_parent = str(args.get("parent_id") or "").strip()
-        for item in nodes[:8]:
-            if not isinstance(item, dict):
-                continue
-            parent = str(item.get("parent_id") or default_parent).strip()
-            title = str(item.get("title") or "").strip()
-            if title:
-                natural_keys.append(f"{parent}:{title}" if parent else title)
-        if not natural_keys:
-            return None
-        digest = hashlib.sha256("|".join(natural_keys).encode("utf-8")).hexdigest()[:16]
-        return f"create_outline_nodes:{project_id}:{digest}"
-
-    if tool == "create_worldbuilding_entry":
-        dim = str(args.get("dimension") or "").strip()
-        title = str(args.get("title") or "").strip()
-        key = f"{dim}:{title}"
-        return f"create_worldbuilding_entry:{project_id}:{key}" if title else None
-
-    if tool == "create_relationship":
-        src = str(args.get("source") or args.get("from") or "").strip()
-        tgt = str(args.get("target") or args.get("to") or "").strip()
-        if not src or not tgt:
-            return None
-        # Try to resolve names to IDs for canonical ordering
-        from .utils import find_character_by_name_or_id
-        src_char = find_character_by_name_or_id(db, project_id, src)
-        tgt_char = find_character_by_name_or_id(db, project_id, tgt)
-        if src_char and tgt_char:
-            a, b = sorted([src_char.id, tgt_char.id])
-            return f"create_relationship:{project_id}:{a}:{b}"
-        # Fallback: sort by name string
-        a, b = sorted([src.lower(), tgt.lower()])
-        return f"create_relationship:{project_id}:{a}:{b}"
-
-    return None
-
-
-def check_idempotency(
-    db: Session,
-    project_id: str,
-    idempotency_key: str,
-) -> dict | None:
-    """Check if a step with the same idempotency_key already succeeded."""
-    existing = (
-        db.query(AssistantRunStep)
-        .filter(
-            AssistantRunStep.project_id == project_id,
-            AssistantRunStep.idempotency_key == idempotency_key,
-            AssistantRunStep.status == "ok",
-        )
-        .order_by(AssistantRunStep.completed_at.desc())
-        .first()
-    )
-    if not existing:
-        return None
-
-    result = {}
-    if existing.result_json:
-        try:
-            result = json.loads(existing.result_json)
-        except Exception:
-            pass
-
-    return {
-        "tool": existing.tool or "",
-        "status": "ok",
-        "detail": "已存在，跳过重复创建",
-        "data": result.get("data"),
-    }
 
 
 # ---------------------------------------------------------------------------

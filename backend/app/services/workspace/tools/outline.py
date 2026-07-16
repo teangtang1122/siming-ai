@@ -87,7 +87,7 @@ async def create_outline_node(
             "data": outline_node_payload(existing),
         }
 
-    from ..run_recovery import generate_idempotency_key, check_idempotency
+    from ..idempotency import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_outline_node", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)
