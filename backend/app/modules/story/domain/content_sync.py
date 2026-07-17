@@ -1,4 +1,5 @@
 """Domain vocabulary for database-authoritative content mirror updates."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

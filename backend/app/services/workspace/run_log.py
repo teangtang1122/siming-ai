@@ -262,5 +262,5 @@ def mark_interrupted_assistant_runs(db: Session) -> int:
         run.updated_at = now
         run.completed_at = now
     if runs:
-        db.commit()
+        db.flush()
     return len(runs)

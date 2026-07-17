@@ -1,4 +1,5 @@
 """Transactional outbox and post-commit content mirror projection runner."""
+
 from __future__ import annotations
 
 import logging
@@ -204,10 +205,14 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
     elif target is ContentSyncTarget.PROJECT_MANIFEST:
         write_project_manifest(session, project)
     elif target is ContentSyncTarget.CHAPTER:
-        chapter = session.query(Chapter).filter(
-            Chapter.id == job.entity_id,
-            Chapter.project_id == project.id,
-        ).first()
+        chapter = (
+            session.query(Chapter)
+            .filter(
+                Chapter.id == job.entity_id,
+                Chapter.project_id == project.id,
+            )
+            .first()
+        )
         if chapter is None:
             return "target_missing"
         sync_chapter_to_file(
@@ -217,18 +222,26 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
             index=int(payload.get("index") or 0),
         )
     elif target is ContentSyncTarget.CHARACTER:
-        character = session.query(Character).filter(
-            Character.id == job.entity_id,
-            Character.project_id == project.id,
-        ).first()
+        character = (
+            session.query(Character)
+            .filter(
+                Character.id == job.entity_id,
+                Character.project_id == project.id,
+            )
+            .first()
+        )
         if character is None:
             return "target_missing"
         sync_character_to_file(session, project, character)
     elif target is ContentSyncTarget.WORLD_BUILDING:
-        entry = session.query(WorldbuildingEntry).filter(
-            WorldbuildingEntry.id == job.entity_id,
-            WorldbuildingEntry.project_id == project.id,
-        ).first()
+        entry = (
+            session.query(WorldbuildingEntry)
+            .filter(
+                WorldbuildingEntry.id == job.entity_id,
+                WorldbuildingEntry.project_id == project.id,
+            )
+            .first()
+        )
         if entry is None:
             return "target_missing"
         sync_worldbuilding_to_file(session, project, entry)
@@ -290,9 +303,7 @@ class ContentSyncProcessor:
     def recover_interrupted(self) -> int:
         with self._session_factory() as session:
             session.info[_SKIP_AUTO_DISPATCH] = True
-            jobs = session.query(ContentSyncJob).filter(
-                ContentSyncJob.status == "running"
-            ).all()
+            jobs = session.query(ContentSyncJob).filter(ContentSyncJob.status == "running").all()
             for job in jobs:
                 job.status = "failed"
                 job.last_error = "Application stopped while mirror synchronization was running."
@@ -462,8 +473,7 @@ def recover_content_sync_queue(*, limit: int = 200) -> dict[str, int]:
     with SessionLocal() as session:
         for project in session.query(Project).all():
             manifest_exists = bool(
-                project.folder_path
-                and (Path(project.folder_path) / MANIFEST_NAME).exists()
+                project.folder_path and (Path(project.folder_path) / MANIFEST_NAME).exists()
             )
             if manifest_exists:
                 continue

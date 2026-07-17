@@ -1,4 +1,5 @@
 """Explicit application startup and shutdown lifecycle."""
+
 from __future__ import annotations
 
 import asyncio
@@ -39,9 +40,10 @@ def _run_legacy_startup_recovery() -> None:
     from ..services.workspace.run_log import mark_interrupted_assistant_runs
 
     recover_content_sync_queue()
-    with SessionLocal() as db:
-        mark_interrupted_assistant_runs(db)
-        mark_interrupted_operations(db)
+    with SqlAlchemyUnitOfWork(SessionLocal) as uow:
+        mark_interrupted_assistant_runs(uow.session)
+        mark_interrupted_operations(uow.session)
+        uow.commit()
 
 
 def _start_scheduler() -> None:
@@ -71,9 +73,7 @@ def _schedule_context_rebuild() -> None:
         from ..services.context_orchestrator import ContextOrchestrator, run_context_rebuild_job
 
         with SqlAlchemyUnitOfWork(SessionLocal) as uow:
-            job = ContextOrchestrator(uow.session).create_rebuild_job(
-                requested_by="startup"
-            )
+            job = ContextOrchestrator(uow.session).create_rebuild_job(requested_by="startup")
             job_id = job.id if job.status == "queued" else ""
             uow.commit()
         if job_id:

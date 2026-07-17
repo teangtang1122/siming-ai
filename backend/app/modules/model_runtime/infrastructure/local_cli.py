@@ -1,0 +1,21 @@
+"""Model-runtime boundary for local coding-agent CLI execution.
+
+The legacy adapter remains import-compatible while its process runner is
+incrementally split. New model-runtime code depends on this boundary only.
+"""
+
+from app.ai.local_cli_adapter import (
+    LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
+    LocalCLIAdapter,
+    detect_cli_quota_error,
+    effective_local_cli_model,
+    is_local_cli_provider,
+)
+
+__all__ = [
+    "LOCAL_CLI_TIMEOUT_GRACE_SECONDS",
+    "LocalCLIAdapter",
+    "detect_cli_quota_error",
+    "effective_local_cli_model",
+    "is_local_cli_provider",
+]

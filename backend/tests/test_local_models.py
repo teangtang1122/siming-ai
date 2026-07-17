@@ -53,7 +53,7 @@ def test_task_setting_does_not_route_to_disabled_local_runtime():
         db.add(LocalModelTaskSetting(task_type="writing", model_key="qwen3-8b-q4"))
         db.commit()
 
-    with patch("app.ai.gateway.SessionLocal", Session):
+    with patch("app.modules.model_runtime.infrastructure.configuration.SessionLocal", Session):
         selected = LLMGateway._model_for_task(None, {"moshu_task_type": "writing"})
     assert selected is None
     assert LLMGateway._model_for_task("deepseek:custom", {"moshu_task_type": "writing"}) == "deepseek:custom"
@@ -67,7 +67,10 @@ def test_task_setting_routes_to_local_runtime_when_enabled():
         db.add(LocalModelTaskSetting(task_type="writing", model_key="qwen3-8b-q4"))
         db.commit()
 
-    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch("app.ai.gateway.SessionLocal", Session):
+    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch(
+        "app.modules.model_runtime.infrastructure.configuration.SessionLocal",
+        Session,
+    ):
         selected = LLMGateway._model_for_task(None, {"moshu_task_type": "writing"})
     assert selected == "local_llama_cpp:qwen3-8b-q4"
 
@@ -98,7 +101,10 @@ def test_global_default_model_wins_over_task_local_setting_until_opt_in():
         db.add(LocalModelTaskSetting(task_type="cataloging", model_key="qwen3-14b-q4", context_length=32768))
         db.commit()
 
-    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch("app.ai.gateway.SessionLocal", Session):
+    with patch.dict(os.environ, {"SIMING_ENABLE_LOCAL_RUNTIME": "1"}), patch(
+        "app.modules.model_runtime.infrastructure.configuration.SessionLocal",
+        Session,
+    ):
         selected = LLMGateway.select_model_for_task(task_type="cataloging")
         opt_in = LLMGateway.select_model_for_task(
             task_type="cataloging",

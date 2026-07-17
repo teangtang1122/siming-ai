@@ -850,7 +850,7 @@ async def communicate_with_cli_quota_detection(
 
     if operation_id is None:
         try:
-            from ..services.operation_runtime import current_operation_id
+            from ..modules.operations.interfaces.runtime import current_operation_id
 
             operation_id = current_operation_id()
         except Exception:

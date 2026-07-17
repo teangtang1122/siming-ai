@@ -7,7 +7,24 @@ name = Architecture contracts do not depend on legacy services
 type = forbidden
 source_modules =
     app.architecture
-    app.modules
+forbidden_modules =
+    app.ai
+    app.mcp
+    app.routers
+    app.services
+
+[importlinter:contract:module-applications-avoid-legacy-runtime]
+name = Module application layers do not depend on legacy runtime
+type = forbidden
+source_modules =
+    app.modules.story.application
+    app.modules.creation.application
+    app.modules.continuity.application
+    app.modules.assistant.application
+    app.modules.operations.application
+    app.modules.model_runtime.application
+    app.modules.context.application
+    app.modules.integrations.application
 forbidden_modules =
     app.ai
     app.mcp

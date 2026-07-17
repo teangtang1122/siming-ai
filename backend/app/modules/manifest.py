@@ -1,4 +1,5 @@
 """Canonical module ownership map."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

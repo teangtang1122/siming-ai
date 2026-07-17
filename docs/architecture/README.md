@@ -30,6 +30,12 @@ are projected through the durable `content_sync_jobs` outbox introduced in
 alpha.2. A story command commits its business rows and synchronization intents
 atomically; projection runs only after that commit and can be retried safely.
 
+Alpha.3 moves model configuration, provider selection, operation state, and
+context rebuild execution behind module-owned ports. The model gateway receives
+configuration snapshots instead of opening database sessions. Long-running
+features publish one operation vocabulary, while context rebuilds commit one
+project checkpoint at a time so a later failure cannot erase completed work.
+
 ## Enforced Rules
 
 - Import cycles are forbidden.
@@ -55,7 +61,9 @@ lint-imports
 - `3.0.0-alpha.1`: factory, lifespan, Alembic baseline, contracts, UoW, gates.
 - `3.0.0-alpha.2`: story writes and versions use explicit command boundaries;
   content mirrors use a durable, retryable post-commit outbox.
-- `3.0.0-alpha.3`: model runtime, local CLI, operations, and context.
+- `3.0.0-alpha.3`: model runtime uses configuration ports; operations share one
+  state machine and service; context rebuilds use durable per-project UoW
+  checkpoints; legacy imports remain compatibility-only facades.
 - `3.0.0-beta.1`: PromptSpec, ToolSpec, assistant, creation, and continuity.
 - `3.0.0-beta.2`: frontend feature boundaries and generated API types.
 - `3.0.0-rc.1`: cleanup, migration rehearsals, security, recovery, performance.

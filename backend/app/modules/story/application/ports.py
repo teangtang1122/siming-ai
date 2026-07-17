@@ -1,4 +1,5 @@
 """Application ports for story write use cases."""
+
 from __future__ import annotations
 
 from typing import Protocol

@@ -15,6 +15,7 @@ class UpdaterVersionTestCase(unittest.TestCase):
         self.assertTrue(is_newer_version("0.1.2", "0.1.1"))
         self.assertTrue(is_newer_version("v1.0.0", "0.9.9"))
         self.assertTrue(is_newer_version("3.0.0-alpha.2", "3.0.0-alpha.1"))
+        self.assertTrue(is_newer_version("3.0.0-alpha.3", "3.0.0-alpha.2"))
         self.assertTrue(is_newer_version("3.0.0-beta.1", "3.0.0-alpha.9"))
         self.assertTrue(is_newer_version("3.0.0", "3.0.0-rc.1"))
         self.assertFalse(is_newer_version("3.0.0-alpha.1", "3.0.0"))

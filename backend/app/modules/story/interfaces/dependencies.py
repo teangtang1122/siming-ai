@@ -1,4 +1,5 @@
 """FastAPI dependencies for story command transaction boundaries."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator

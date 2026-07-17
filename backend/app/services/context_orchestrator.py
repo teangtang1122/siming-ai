@@ -21,11 +21,12 @@ from typing import Any, Iterable, Sequence
 from sqlalchemy import event, or_
 from sqlalchemy.orm import Session
 
-from ..architecture.context_runtime import (
+from ..modules.context.application.runtime import (
     ActiveContextManifest,
     activate_context_manifest,
     active_context_manifest,
 )
+from ..modules.model_runtime.application.runtime import resolve_model_identity
 from ..database.models import (
     AssistantMemory,
     Chapter,
@@ -560,9 +561,7 @@ class ContextOrchestrator:
             # Keep this resolution database-free. The gateway may have no
             # configured default while a caller is only previewing context.
             try:
-                from ..ai.gateway import LLMGateway
-
-                provider, model_name = LLMGateway.model_identity(raw)
+                provider, model_name = resolve_model_identity(raw)
             except Exception:
                 provider = "unknown"
         profile = (
@@ -1854,7 +1853,7 @@ class ContextOrchestrator:
         job.status = "running"
         job.started_at = job.started_at or datetime.utcnow()
         self._sync_rebuild_operation(job, message="正在准备上下文索引重建")
-        self.db.commit()
+        self.db.flush()
         rows = (
             self.db.query(ContextRebuildProject)
             .filter(ContextRebuildProject.job_id == job.id)
@@ -1871,7 +1870,7 @@ class ContextOrchestrator:
             try:
                 row.current_source_type = "lexical"
                 self._sync_rebuild_operation(job, message=f"正在重建作品 {row.project_id} 的关键词索引")
-                self.db.commit()
+                self.db.flush()
                 lexical = reindex_project(self.db, row.project_id)
                 row.indexed_chunks = int(lexical.get("total_chunks") or 0)
                 row.current_source_type = "semantic"
@@ -1903,7 +1902,7 @@ class ContextOrchestrator:
                         payload={"project_id": row.project_id, "status": row.status},
                         checkpoint=True,
                     )
-            self.db.commit()
+            self.db.flush()
         remaining = self.db.query(ContextRebuildProject).filter(
             ContextRebuildProject.job_id == job.id,
             ContextRebuildProject.status.in_(["queued", "running"]),
@@ -1915,7 +1914,7 @@ class ContextOrchestrator:
             job,
             message="上下文索引重建完成" if job.status == "completed" else "部分作品的上下文索引重建失败",
         )
-        self.db.commit()
+        self.db.flush()
         return job
 
     def retry_rebuild_job(self, job: ContextRebuildJob) -> ContextRebuildJob:
@@ -2016,24 +2015,6 @@ def run_context_rebuild_job(job_id: str) -> None:
     request session that created a job, so this helper owns a short-lived
     session and leaves the job state resumable after a process restart.
     """
-    from ..database.session import SessionLocal
+    from ..modules.context.application.rebuild import run_context_rebuild
 
-    db = SessionLocal()
-    try:
-        job = db.query(ContextRebuildJob).filter(ContextRebuildJob.id == job_id).first()
-        if not job:
-            return
-        ContextOrchestrator(db).run_rebuild_job(job)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        job = db.query(ContextRebuildJob).filter(ContextRebuildJob.id == job_id).first()
-        if job:
-            job.status = "failed"
-            job.error = str(exc)[:8000]
-            job.completed_at = datetime.utcnow()
-            ContextOrchestrator(db)._sync_rebuild_operation(job, message=f"上下文索引重建失败：{exc}")
-            db.commit()
-        raise
-    finally:
-        db.close()
+    run_context_rebuild(job_id)

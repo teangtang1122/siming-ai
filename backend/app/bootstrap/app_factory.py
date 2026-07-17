@@ -1,4 +1,5 @@
 """FastAPI application factory without import-time side effects."""
+
 from __future__ import annotations
 
 import sys
@@ -28,9 +29,7 @@ def find_frontend_dist() -> Path | None:
     candidates: list[Path] = []
     if getattr(sys, "frozen", False):
         candidates.append(
-            Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-            / "frontend"
-            / "dist"
+            Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "frontend" / "dist"
         )
     backend_dir = Path(__file__).resolve().parents[3]
     repo_dir = backend_dir.parent
