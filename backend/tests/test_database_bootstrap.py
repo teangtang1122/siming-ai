@@ -36,9 +36,9 @@ def test_fresh_database_is_initialized_and_versioned():
                 ).scalar_one()
             assert result.mode == "initialized"
             assert result.read_only is False
-            assert result.schema_revision == revision == "300a1_baseline"
+            assert result.schema_revision == revision == "300a2_content_sync"
             assert epoch == SCHEMA_EPOCH
-            assert {"projects", "chapters", "operation_runs"} <= tables
+            assert {"projects", "chapters", "operation_runs", "content_sync_jobs"} <= tables
         finally:
             engine.dispose()
 
@@ -79,7 +79,7 @@ def test_recognized_legacy_database_is_backed_up_and_preserved():
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             assert title == "Legacy Story"
-            assert revision == "300a1_baseline"
+            assert revision == "300a2_content_sync"
         finally:
             engine.dispose()
 
@@ -125,6 +125,42 @@ def test_current_database_bootstrap_is_idempotent():
             assert second.mode == "ready"
             assert second.backup_path is None
             assert second.schema_revision == first.schema_revision
+        finally:
+            engine.dispose()
+
+
+def test_alpha1_database_upgrades_to_content_sync_outbox():
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "alpha1.db"
+        url = _database_url(database_path)
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "CREATE TABLE alembic_version "
+                        "(version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO alembic_version (version_num) "
+                        "VALUES ('300a1_baseline')"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE TABLE siming_schema_metadata "
+                        "(key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL, "
+                        "updated_at DATETIME NOT NULL)"
+                    )
+                )
+
+            result = bootstrap_database(engine, database_url=url)
+
+            assert result.mode == "migrated"
+            assert result.schema_revision == "300a2_content_sync"
+            assert "content_sync_jobs" in inspect(engine).get_table_names()
         finally:
             engine.dispose()
 

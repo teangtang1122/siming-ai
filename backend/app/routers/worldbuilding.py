@@ -10,13 +10,15 @@ from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import Project, WorldbuildingEntry, WorldbuildingTimeline, WorldbuildingVersion
 from ..database.session import get_db
+from ..modules.story.application.commands import StoryCommandContext
+from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.worldbuilding import (
     WorldbuildingDimension,
     WorldbuildingEntryCreate,
     WorldbuildingEntryResponse,
     WorldbuildingEntryUpdate,
 )
-from ..services.content_store import delete_project_file, sync_worldbuilding_to_file
 
 router = APIRouter(tags=["worldbuilding"])
 
@@ -95,17 +97,23 @@ def list_worldbuilding_entries(
 def create_worldbuilding_entry(
     project_id: str,
     payload: WorldbuildingEntryCreate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Create a worldbuilding entry."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
 
     entry = WorldbuildingEntry(project_id=project_id, **payload.model_dump())
     db.add(entry)
-    db.commit()
-    db.refresh(entry)
-    sync_worldbuilding_to_file(db, project, entry)
-    db.commit()
+    db.flush()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.WORLD_BUILDING,
+            entity_id=entry.id,
+        ),
+    )
+    command.finish()
     db.refresh(entry)
     return ApiResponse.success(data=_entry_to_dict(entry), message="世界观条目创建成功")
 
@@ -115,10 +123,11 @@ def update_worldbuilding_entry(
     project_id: str,
     entry_id: str,
     payload: WorldbuildingEntryUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Update a worldbuilding entry."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     entry = _get_entry_or_404(db, project_id, entry_id)
 
     update_data = payload.model_dump(exclude_unset=True)
@@ -128,10 +137,14 @@ def update_worldbuilding_entry(
     for field, value in update_data.items():
         setattr(entry, field, value)
 
-    db.commit()
-    db.refresh(entry)
-    sync_worldbuilding_to_file(db, project, entry)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.WORLD_BUILDING,
+            entity_id=entry.id,
+        ),
+    )
+    command.finish()
     db.refresh(entry)
     return ApiResponse.success(data=_entry_to_dict(entry), message="世界观条目更新成功")
 
@@ -140,16 +153,33 @@ def update_worldbuilding_entry(
 def delete_worldbuilding_entry(
     project_id: str,
     entry_id: str,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Delete a worldbuilding entry."""
+    db = command.session
     project = get_project_or_404(db, project_id)
     entry = _get_entry_or_404(db, project_id, entry_id)
     content_file_path = entry.content_file_path
 
     db.delete(entry)
-    delete_project_file(project, content_file_path)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.FILE_DELETE,
+            entity_id=entry_id,
+            payload={
+                "folder_path": project.folder_path,
+                "relative_path": content_file_path,
+            },
+        ),
+    )
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.WORLD_BUILDING_RELATIONSHIPS,
+        ),
+    )
+    command.finish()
     return ApiResponse.success(message="世界观条目已删除")
 
 

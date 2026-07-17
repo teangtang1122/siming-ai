@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import OutlineNode, Project
-from ....services.content_store import sync_outline_to_file
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ....services.story_granularity import (
     extract_chapter_number,
     normalize_node_type,
@@ -119,8 +120,15 @@ async def create_outline_node(
     replace_outline_links_by_names(db, project_id, node, character_names)
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        sync_outline_to_file(db, project)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.OUTLINE,
+                entity_id=node.id,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "create_outline_node",
         "status": "ok",
@@ -256,8 +264,14 @@ async def update_outline_node(
     node.updated_at = datetime.utcnow()
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        sync_outline_to_file(db, project)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.OUTLINE,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "update_outline_node",
         "status": "ok",
@@ -293,6 +307,13 @@ async def delete_outline_node(
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
         db.flush()
-        sync_outline_to_file(db, project)
-    db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.OUTLINE,
+                entity_id=node.id,
+                source="workspace_tool",
+            ),
+        )
     return {"tool": "delete_outline_node", "status": "ok", "detail": f"已删除大纲：{title}"}

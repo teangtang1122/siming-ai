@@ -26,7 +26,9 @@ The 2.9 implementation remains active while use cases migrate one by one.
 names remain stable, and Alembic preserves all table names and primary keys.
 
 The database is the only write authority. File mirrors are derived content and
-will move to a durable post-commit synchronization queue in alpha.2.
+are projected through the durable `content_sync_jobs` outbox introduced in
+alpha.2. A story command commits its business rows and synchronization intents
+atomically; projection runs only after that commit and can be retried safely.
 
 ## Enforced Rules
 
@@ -51,7 +53,8 @@ lint-imports
 ## Release Stages
 
 - `3.0.0-alpha.1`: factory, lifespan, Alembic baseline, contracts, UoW, gates.
-- `3.0.0-alpha.2`: story writes, versions, and content mirror synchronization.
+- `3.0.0-alpha.2`: story writes and versions use explicit command boundaries;
+  content mirrors use a durable, retryable post-commit outbox.
 - `3.0.0-alpha.3`: model runtime, local CLI, operations, and context.
 - `3.0.0-beta.1`: PromptSpec, ToolSpec, assistant, creation, and continuity.
 - `3.0.0-beta.2`: frontend feature boundaries and generated API types.

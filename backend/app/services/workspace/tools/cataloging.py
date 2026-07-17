@@ -8,7 +8,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
-from ....services.content_store import sync_project_to_files
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ....services.cataloging.applier import apply_candidates_for_run
 from ....services.cataloging.candidate_validation import inspect_candidate_coverage
 from ....services.cataloging.candidate_io import candidate_to_dict
@@ -264,8 +265,14 @@ async def apply_pending_cataloging(db: Session, project_id: str, args: dict[str,
     job.status = "running"
     job.blocked_chapter_id = None
     refresh_job_progress(db, job)
-    sync_project_to_files(db, job.project_id)
-    db.flush()
+    queue_content_sync(
+        db,
+        ContentSyncIntent(
+            project_id=job.project_id,
+            target=ContentSyncTarget.PROJECT,
+            source="cataloging_workspace_tool",
+        ),
+    )
     if job.execution_mode == "auto" and job.execution_backend != "local_cli_agent":
         asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
     data: dict[str, Any] = {"job": job_to_dict(job), "run": run_to_dict(run), "events": events}

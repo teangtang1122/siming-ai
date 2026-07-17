@@ -9,7 +9,8 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ....database.models import Project
-from ....services.content_store import delete_project_folder, ensure_project_folder, write_project_manifest
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 
 
 def _project_payload(project: Project) -> dict:
@@ -103,9 +104,15 @@ async def create_project(db: Session, project_id: str, args: dict[str, Any]) -> 
     )
     db.add(project)
     db.flush()
-    ensure_project_folder(db, project)
-    write_project_manifest(db, project)
-    db.flush()
+    queue_content_sync(
+        db,
+        ContentSyncIntent(
+            project_id=project.id,
+            target=ContentSyncTarget.PROJECT,
+            entity_id=project.id,
+            source="workspace_tool",
+        ),
+    )
     return {
         "tool": "create_project",
         "status": "ok",
@@ -146,8 +153,15 @@ async def update_project_info(db: Session, project_id: str, args: dict[str, Any]
         changed = True
     if changed:
         project.updated_at = datetime.utcnow()
-        write_project_manifest(db, project)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project.id,
+                target=ContentSyncTarget.PROJECT_MANIFEST,
+                entity_id=project.id,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "update_project_info",
         "status": "ok",
@@ -164,7 +178,16 @@ async def delete_project(db: Session, project_id: str, args: dict[str, Any]) -> 
     if not project:
         return {"tool": "delete_project", "status": "skipped", "detail": "未找到作品"}
     title = project.title
-    delete_project_folder(project)
+    folder_path = project.folder_path
     db.delete(project)
-    db.flush()
+    queue_content_sync(
+        db,
+        ContentSyncIntent(
+            project_id=target_id,
+            target=ContentSyncTarget.PROJECT_DELETE,
+            entity_id=target_id,
+            payload={"folder_path": folder_path},
+            source="workspace_tool",
+        ),
+    )
     return {"tool": "delete_project", "status": "ok", "detail": f"已删除作品：{title}", "data": {"id": target_id}}

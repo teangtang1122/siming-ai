@@ -1,5 +1,4 @@
 """Database models — all 17 tables for the novel writing AI agent."""
-import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Text, Integer, DateTime, Boolean, ForeignKey, Float,
@@ -7,11 +6,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from .session import Base
-
-
-def generate_uuid():
-    """Generate a new UUID string."""
-    return str(uuid.uuid4())
+from .models_support import generate_uuid
 
 
 def default_external_agent_enabled_packs():
@@ -1874,3 +1869,4 @@ class NarrativeCheckpoint(Base):
 # Infrastructure metadata remains import-compatible through this module while
 # its implementation lives outside the legacy monolithic model file.
 from .schema_models import SchemaMetadata  # noqa: E402,F401
+from ..modules.story.infrastructure.models import ContentSyncJob  # noqa: E402,F401

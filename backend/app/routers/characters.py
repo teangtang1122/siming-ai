@@ -18,6 +18,9 @@ from ..database.models import (
     CharacterVersion,
 )
 from ..database.session import get_db
+from ..modules.story.application.commands import StoryCommandContext
+from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.character import (
     CharacterAIConfigUpdate,
     CharacterCreate,
@@ -35,11 +38,6 @@ from ..services.character_service import (
     loads_list,
     snapshot_character,
     sync_character_aliases,
-)
-from ..services.content_store import (
-    delete_project_file,
-    sync_character_to_file,
-    sync_relationships_to_file,
 )
 from ..services.character_merge_service import (
     build_character_merge_preview,
@@ -83,9 +81,14 @@ def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depe
 
 
 @router.post("/projects/{project_id}/characters")
-def create_character(project_id: str, payload: CharacterCreate, db: Session = Depends(get_db)):
+def create_character(
+    project_id: str,
+    payload: CharacterCreate,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Create a character."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     character = Character(
         project_id=project_id,
         name=payload.name,
@@ -110,10 +113,14 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
     db.add(character)
     db.flush()
     sync_character_aliases(db, character, payload.aliases)
-    db.commit()
-    db.refresh(character)
-    sync_character_to_file(db, project, character)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER,
+            entity_id=character.id,
+        ),
+    )
+    command.finish()
     db.refresh(character)
     return ApiResponse.success(data=character_to_dict(character), message="角色创建成功")
 
@@ -191,9 +198,10 @@ def preview_character_merge(
 def merge_duplicate_characters(
     project_id: str,
     payload: CharacterMergeRequest,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Merge a duplicate character into a primary character card."""
+    db = command.session
     get_project_or_404(db, project_id)
     try:
         result = merge_characters(
@@ -205,7 +213,21 @@ def merge_duplicate_characters(
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    db.commit()
+    for character_id in (payload.primary_id, payload.secondary_id):
+        command.queue(
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER,
+                entity_id=character_id,
+            ),
+        )
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+        ),
+    )
+    command.finish()
     return ApiResponse.success(data=result, message="角色已合并")
 
 
@@ -224,10 +246,11 @@ def update_character(
     project_id: str,
     character_id: str,
     payload: CharacterUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Update character fields and create a version snapshot."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     update_data = payload.model_dump(exclude_unset=True)
     change_summary = update_data.pop("change_summary", None)
@@ -253,17 +276,26 @@ def update_character(
         change_summary=change_summary or "手动更新角色档案",
     )
     db.add(snapshot)
-    db.commit()
-    db.refresh(character)
-    sync_character_to_file(db, project, character)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER,
+            entity_id=character.id,
+        ),
+    )
+    command.finish()
     db.refresh(character)
     return ApiResponse.success(data=character_to_dict(character), message="角色更新成功")
 
 
 @router.delete("/projects/{project_id}/characters/{character_id}")
-def delete_character(project_id: str, character_id: str, db: Session = Depends(get_db)):
+def delete_character(
+    project_id: str,
+    character_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Delete a character and its relationships."""
+    db = command.session
     project = get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     content_file_path = character.content_file_path
@@ -275,9 +307,24 @@ def delete_character(project_id: str, character_id: str, db: Session = Depends(g
         ),
     ).delete(synchronize_session=False)
     db.delete(character)
-    delete_project_file(project, content_file_path)
-    sync_relationships_to_file(db, project)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.FILE_DELETE,
+            entity_id=character_id,
+            payload={
+                "folder_path": project.folder_path,
+                "relative_path": content_file_path,
+            },
+        ),
+    )
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+        ),
+    )
+    command.finish()
     return ApiResponse.success(message="角色已删除")
 
 
@@ -326,9 +373,10 @@ def update_character_relationships(
     project_id: str,
     character_id: str,
     payload: RelationshipUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Replace all relationships connected to the current character."""
+    db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     target_ids = {item.target_character_id for item in payload.relationships}
@@ -362,13 +410,24 @@ def update_character_relationships(
         )
         db.add(relationship)
 
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+        ),
+    )
+    command.finish()
     return get_relationship_network(project_id, db)
 
 
 @router.get("/projects/{project_id}/characters/{character_id}/ai-config")
-def get_character_ai_config(project_id: str, character_id: str, db: Session = Depends(get_db)):
+def get_character_ai_config(
+    project_id: str,
+    character_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Get a character's AI dialogue configuration."""
+    db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     config = character.ai_config
@@ -376,7 +435,7 @@ def get_character_ai_config(project_id: str, character_id: str, db: Session = De
         from ..database.models import CharacterAIConfig
         config = CharacterAIConfig(character_id=character.id)
         db.add(config)
-        db.commit()
+        command.finish()
         db.refresh(config)
     return ApiResponse.success(data={
         "id": config.id,
@@ -397,9 +456,10 @@ def update_character_ai_config(
     project_id: str,
     character_id: str,
     payload: CharacterAIConfigUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Update a character's AI dialogue configuration."""
+    db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     from ..database.models import CharacterAIConfig
@@ -415,7 +475,7 @@ def update_character_ai_config(
     for field, value in update_data.items():
         setattr(config, field, value)
 
-    db.commit()
+    command.finish()
     db.refresh(config)
     return ApiResponse.success(data={
         "id": config.id,
@@ -479,8 +539,13 @@ def list_change_logs(
 
 
 @router.put("/projects/{project_id}/characters/change-logs/{log_id}/confirm")
-def confirm_change_log(project_id: str, log_id: str, db: Session = Depends(get_db)):
+def confirm_change_log(
+    project_id: str,
+    log_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Confirm a detected character change and apply it to the character."""
+    db = command.session
     get_project_or_404(db, project_id)
     log = (
         db.query(CharacterChangeLog)
@@ -505,14 +570,26 @@ def confirm_change_log(project_id: str, log_id: str, db: Session = Depends(get_d
             f"确认角色变化：{log.change_type}",
             source_chapter_id=log.chapter_id,
         )
+        command.queue(
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER,
+                entity_id=character.id,
+            ),
+        )
 
-    db.commit()
+    command.finish()
     return ApiResponse.success(message="变更已确认并应用")
 
 
 @router.delete("/projects/{project_id}/characters/change-logs/{log_id}")
-def reject_change_log(project_id: str, log_id: str, db: Session = Depends(get_db)):
+def reject_change_log(
+    project_id: str,
+    log_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Reject (delete) a detected character change."""
+    db = command.session
     get_project_or_404(db, project_id)
     log = (
         db.query(CharacterChangeLog)
@@ -526,7 +603,7 @@ def reject_change_log(project_id: str, log_id: str, db: Session = Depends(get_db
         raise ValidationError("已确认的变更不可删除，请通过角色编辑撤销")
 
     db.delete(log)
-    db.commit()
+    command.finish()
     return ApiResponse.success(message="变更已拒绝")
 
 
@@ -536,9 +613,10 @@ def batch_confirm_change_logs(
     chapter_id: Optional[str] = None,
     character_id: Optional[str] = None,
     action: str = Query("confirm", description="confirm or reject"),
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Batch confirm or reject all unconfirmed change logs matching the filters."""
+    db = command.session
     get_project_or_404(db, project_id)
     if action not in ("confirm", "reject"):
         raise ValidationError("action must be 'confirm' or 'reject'")
@@ -554,11 +632,13 @@ def batch_confirm_change_logs(
         query = query.filter(CharacterChangeLog.character_id == character_id)
 
     logs = query.all()
+    changed_character_ids: set[str] = set()
     if action == "confirm":
         for log in logs:
             log.confirmed = True
             character = db.query(Character).filter(Character.id == log.character_id).first()
             if character and apply_change_log_to_character(character, log):
+                changed_character_ids.add(character.id)
                 create_character_version(
                     db,
                     character,
@@ -566,5 +646,13 @@ def batch_confirm_change_logs(
                     source_chapter_id=log.chapter_id,
                 )
 
-    db.commit()
+    for changed_character_id in changed_character_ids:
+        command.queue(
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER,
+                entity_id=changed_character_id,
+            ),
+        )
+    command.finish()
     return ApiResponse.success(message=f"已{ '确认' if action == 'confirm' else '拒绝' } {len(logs)} 条变更记录")

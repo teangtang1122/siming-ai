@@ -48,10 +48,19 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     def __init__(
         self,
         session_factory: Callable[[], Session] = SessionLocal,
+        *,
+        close_session: bool = True,
     ) -> None:
         self._session_factory = session_factory
+        self._close_session = close_session
         self._committed = False
         self.session = None  # type: ignore[assignment]
+
+    @classmethod
+    def from_session(cls, session: Session) -> SqlAlchemyUnitOfWork:
+        """Bind a request-owned session without taking over its lifecycle."""
+
+        return cls(lambda: session, close_session=False)
 
     def __enter__(self) -> Self:
         self.session = self._session_factory()
@@ -68,7 +77,8 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             if exc_type is not None or not self._committed:
                 self.rollback()
         finally:
-            self.session.close()
+            if self._close_session:
+                self.session.close()
 
     def flush(self) -> None:
         self.session.flush()

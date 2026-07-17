@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from ..core.db_helpers import get_outline_node_or_404, get_project_or_404
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.story.application.commands import StoryCommandContext
+from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.importer import ConfirmImportRequest, ImportSplitRequest
 from ..ai.gateway import LLMGateway
 from ..services import import_service as _import_service
@@ -15,7 +18,6 @@ from ..services.import_service import (
     execute_import,
     parse_uploaded_file,
 )
-from ..services.content_store import sync_project_to_files
 
 router = APIRouter(tags=["import"])
 
@@ -52,11 +54,22 @@ async def import_preview(
 
 
 @router.post("/projects/{project_id}/import/confirm")
-def confirm_import(project_id: str, payload: ConfirmImportRequest, db: Session = Depends(get_db)):
+def confirm_import(
+    project_id: str,
+    payload: ConfirmImportRequest,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Save imported text as chapters based on split suggestions."""
+    db = command.session
     get_project_or_404(db, project_id)
     get_outline_node_or_404(db, project_id, payload.outline_node_id)
     chapters = execute_import(db, project_id, payload.text, payload.splits, payload.outline_node_id)
-    sync_project_to_files(db, project_id)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.PROJECT,
+            source="import",
+        ),
+    )
+    command.finish()
     return ApiResponse.success(data={"chapters": chapters, "total": len(chapters)}, message=f"成功导入 {len(chapters)} 章")

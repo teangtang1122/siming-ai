@@ -15,7 +15,10 @@ from ...ai.gateway import LLMGateway
 from ...ai.local_cli_adapter import is_local_cli_provider
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter, Project
 from ...database.session import SessionLocal
-from ..content_store import ensure_project_folder, sync_chapter_to_file, sync_project_to_files
+from ...modules.story.application.content_sync import (
+    enqueue_project_sync,
+    ensure_chapter_mirror,
+)
 from .applier import apply_candidates_for_run, candidate_to_dict
 from .candidate_store import try_create_candidate
 from .constants import (
@@ -412,15 +415,9 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
     project_folder = ""
     chapter_file = ""
     if project:
-        folder = ensure_project_folder(db, project)
-        path = folder / chapter.content_file_path if chapter.content_file_path else None
-        if not path or not path.exists():
-            sync_chapter_to_file(db, project, chapter, index=run.chapter_order + 1)
-            path = folder / chapter.content_file_path if chapter.content_file_path else None
+        folder, path = ensure_chapter_mirror(db, project, chapter, index=run.chapter_order + 1, source="cataloging")
         project_folder = str(folder)
-        if path and path.exists():
-            chapter_file = str(path.resolve())
-        db.commit()
+        chapter_file = str(path)
 
     chapter_text = chapter.content or ""
     if not chapter_text and chapter_file:
@@ -641,15 +638,9 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
     project_folder = ""
     chapter_file = ""
     if project:
-        folder = ensure_project_folder(db, project)
-        path = folder / chapter.content_file_path if chapter.content_file_path else None
-        if not path or not path.exists():
-            sync_chapter_to_file(db, project, chapter, index=run.chapter_order + 1)
-            path = folder / chapter.content_file_path if chapter.content_file_path else None
+        folder, path = ensure_chapter_mirror(db, project, chapter, index=run.chapter_order + 1, source="cataloging")
         project_folder = str(folder)
-        if path and path.exists():
-            chapter_file = str(path.resolve())
-        db.commit()
+        chapter_file = str(path)
     chapter_text = chapter.content or ""
     if not chapter_text and chapter_file:
         try:
@@ -1183,7 +1174,7 @@ async def _apply_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun)
     job.blocked_chapter_id = None
     job.error = None
     refresh_job_progress(db, job)
-    sync_project_to_files(db, job.project_id)
+    enqueue_project_sync(db, job.project_id, source="cataloging")
     db.commit()
     yield sse_event({"type": "chapter_completed", "job": job_to_dict(job), "run": run_to_dict(run), "warnings": has_failed})
 

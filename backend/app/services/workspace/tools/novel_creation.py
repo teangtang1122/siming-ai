@@ -5027,7 +5027,7 @@ async def apply_novel_blueprint(
         WorldbuildingRelation,
         NovelCreationSession,
     )
-    from app.services.content_store import sync_project_to_files
+    from app.modules.story.application.content_sync import enqueue_project_sync
     from app.services.novel_creation_workspace import build_apply_blueprint
 
     session_id = _clean_text(args.get("session_id"))
@@ -5322,17 +5322,17 @@ async def apply_novel_blueprint(
         session.status = "completed"
         session.completed_at = datetime.utcnow()
 
+        sync_job = enqueue_project_sync(db, project.id, source="novel_creation")
         db.commit()
-
         if _is_real_session(db):
-            try:
-                sync_project_to_files(db, project.id)
-                db.commit()
-            except Exception as sync_exc:
-                db.rollback()
-                created_items["warnings"].append(
-                    f"作品已成功入库，但文件镜像同步失败：{sync_exc}。请在作品设置中执行“同步项目文件”。"
+            db.refresh(sync_job)
+            if sync_job.status != "completed":
+                warning = (
+                    f"作品已入库，但文件镜像同步失败：{sync_job.last_error or '未知错误'}。请在作品设置中重试。"
+                    if sync_job.status == "failed"
+                    else "作品已入库，文件镜像仍在后台排队；司命会自动重试。"
                 )
+                created_items["warnings"].append(warning)
 
         return {
             "tool": "apply_novel_blueprint",

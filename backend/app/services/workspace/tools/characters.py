@@ -8,7 +8,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import Character, CharacterAIConfig, CharacterVersion, Project
-from ....services.content_store import delete_project_file, sync_character_to_file
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ..utils import character_payload, find_character_by_name_or_id
 
 
@@ -77,9 +78,15 @@ async def create_character(
         ))
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        db.flush()
-        sync_character_to_file(db, project, character)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER,
+                entity_id=character.id,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "create_character",
         "status": "ok",
@@ -155,9 +162,15 @@ async def update_character(
         ))
         project = db.query(Project).filter(Project.id == project_id).first()
         if project:
-            db.flush()
-            sync_character_to_file(db, project, character)
-            db.flush()
+            queue_content_sync(
+                db,
+                ContentSyncIntent(
+                    project_id=project_id,
+                    target=ContentSyncTarget.CHARACTER,
+                    entity_id=character.id,
+                    source="workspace_tool",
+                ),
+            )
     return {
         "tool": "update_character",
         "status": "ok",
@@ -179,6 +192,25 @@ async def delete_character(
     content_file_path = character.content_file_path
     db.delete(character)
     if project:
-        delete_project_file(project, content_file_path)
-    db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.FILE_DELETE,
+                entity_id=character.id,
+                payload={
+                    "folder_path": project.folder_path,
+                    "relative_path": content_file_path,
+                },
+                source="workspace_tool",
+            ),
+        )
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+                source="workspace_tool",
+            ),
+        )
     return {"tool": "delete_character", "status": "ok", "detail": f"已删除角色：{name}"}

@@ -42,8 +42,8 @@ from app.database.models import (
     Project,
 )
 from app.database.session import SessionLocal
+from app.modules.story.application.content_sync import ensure_chapter_mirror
 from app.prompts.cataloging_source import get_external_cataloging_system_prompt
-from app.services.content_store import ensure_project_folder, sync_chapter_to_file
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
 from app.services.cataloging.candidate_io import candidate_to_dict
 from app.services.cataloging.fact_store import fact_to_dict
@@ -498,13 +498,13 @@ def _ensure_chapter_file(
     chapter: Chapter,
     chapter_order: int,
 ) -> tuple[Path, Path]:
-    folder = ensure_project_folder(db, project)
-    path = folder / chapter.content_file_path if chapter.content_file_path else None
-    if not path or not path.exists():
-        sync_chapter_to_file(db, project, chapter, index=chapter_order + 1)
-        path = folder / chapter.content_file_path
-        db.commit()
-    return folder, path.resolve()
+    return ensure_chapter_mirror(
+        db,
+        project,
+        chapter,
+        index=chapter_order + 1,
+        source="local_cli_cataloging",
+    )
 
 
 def _turn_stage(run: CatalogingChapterRun, mode: str) -> str:

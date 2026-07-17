@@ -7,6 +7,9 @@ from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import OutlineNode
 from ..database.session import get_db
+from ..modules.story.application.commands import StoryCommandContext
+from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.outline import (
     OutlineNodeCreate,
     OutlineNodeUpdate,
@@ -20,7 +23,6 @@ from ..services.outline_service import (
     outline_payload,
     replace_character_links,
 )
-from ..services.content_store import sync_outline_to_file
 
 router = APIRouter(tags=["outline"])
 
@@ -62,10 +64,11 @@ def get_outline(project_id: str, db: Session = Depends(get_db)):
 def create_outline_node(
     project_id: str,
     payload: OutlineNodeCreate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Create an outline node."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     _get_parent_or_404(db, project_id, payload.parent_id)
 
     node = OutlineNode(
@@ -82,10 +85,15 @@ def create_outline_node(
     db.flush()
     links = extract_character_links(payload.character_ids, payload.characters)
     replace_character_links(db, project_id, node, links or [])
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.OUTLINE,
+            entity_id=node.id,
+        ),
+    )
+    command.finish()
     db.refresh(node)
-    sync_outline_to_file(db, project)
-    db.commit()
     return ApiResponse.success(data=node_to_dict(node), message="大纲节点已创建")
 
 
@@ -93,10 +101,11 @@ def create_outline_node(
 def reorder_outline(
     project_id: str,
     payload: OutlineReorderRequest,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Reorder outline nodes and optionally move them to a new parent."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     items = _normalize_reorder_items(payload)
     if not items:
         raise ValidationError("未提供排序数据")
@@ -118,9 +127,13 @@ def reorder_outline(
         node.parent_id = item.parent_id
         node.sort_order = item.sort_order
 
-    db.commit()
-    sync_outline_to_file(db, project)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.OUTLINE,
+        ),
+    )
+    command.finish()
     return ApiResponse.success(data=outline_payload(db, project_id), message="大纲排序已更新")
 
 
@@ -129,10 +142,11 @@ def update_outline_node(
     project_id: str,
     node_id: str,
     payload: OutlineNodeUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Update an outline node and its linked characters."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     node = _get_node_or_404(db, project_id, node_id)
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data:
@@ -149,20 +163,35 @@ def update_outline_node(
         setattr(node, field, value)
     replace_character_links(db, project_id, node, links)
 
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.OUTLINE,
+            entity_id=node.id,
+        ),
+    )
+    command.finish()
     db.refresh(node)
-    sync_outline_to_file(db, project)
-    db.commit()
     return ApiResponse.success(data=node_to_dict(node), message="大纲节点已更新")
 
 
 @router.delete("/projects/{project_id}/outline/{node_id}")
-def delete_outline_node(project_id: str, node_id: str, db: Session = Depends(get_db)):
+def delete_outline_node(
+    project_id: str,
+    node_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Delete an outline node and its descendants."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     node = _get_node_or_404(db, project_id, node_id)
     db.delete(node)
-    db.commit()
-    sync_outline_to_file(db, project)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.OUTLINE,
+            entity_id=node_id,
+        ),
+    )
+    command.finish()
     return ApiResponse.success(message="大纲节点已删除")

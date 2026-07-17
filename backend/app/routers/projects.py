@@ -13,12 +13,10 @@ from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
 from ..database.models import Project
 from ..database.session import get_db
+from ..modules.story.application.commands import StoryCommandContext
+from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.project import ProjectCreate, ProjectListItem, ProjectResponse, ProjectUpdate
-from ..services.content_store import (
-    delete_project_folder,
-    ensure_project_folder,
-    write_project_manifest,
-)
 from ..services.storage_contract import storage_health
 from ..services.workspace import execute_workspace_action
 
@@ -50,19 +48,27 @@ def list_projects(
 
 
 @router.post("/projects")
-def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
+def create_project(
+    payload: ProjectCreate,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Create a new project and initialize its folder-backed content store."""
+    db = command.session
     data = payload.model_dump()
     if data.get("tags") is not None:
         data["tags"] = json.dumps(data["tags"], ensure_ascii=False)
 
     project = Project(**data)
     db.add(project)
-    db.commit()
-    db.refresh(project)
-    ensure_project_folder(db, project)
-    write_project_manifest(db, project)
-    db.commit()
+    db.flush()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project.id,
+            target=ContentSyncTarget.PROJECT,
+            entity_id=project.id,
+        ),
+    )
+    command.finish()
     db.refresh(project)
     return ApiResponse.success(
         data=ProjectResponse.model_validate(project).model_dump(),
@@ -80,8 +86,13 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/projects/{project_id}")
-def update_project(project_id: str, payload: ProjectUpdate, db: Session = Depends(get_db)):
+def update_project(
+    project_id: str,
+    payload: ProjectUpdate,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Update project information and its project manifest."""
+    db = command.session
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise NotFoundError("作品不存在")
@@ -96,10 +107,14 @@ def update_project(project_id: str, payload: ProjectUpdate, db: Session = Depend
     for field, value in update_data.items():
         setattr(project, field, value)
 
-    db.commit()
-    db.refresh(project)
-    write_project_manifest(db, project)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project.id,
+            target=ContentSyncTarget.PROJECT_MANIFEST,
+            entity_id=project.id,
+        ),
+    )
+    command.finish()
     db.refresh(project)
     return ApiResponse.success(
         data=ProjectResponse.model_validate(project).model_dump(),
@@ -120,9 +135,10 @@ def get_project_storage_health(project_id: str, db: Session = Depends(get_db)):
 async def repair_project_storage(
     project_id: str,
     payload: ProjectStorageRepairRequest,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Run an explicit repair path through the workspace tool contract."""
+    db = command.session
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise NotFoundError("作品不存在")
@@ -138,10 +154,10 @@ async def repair_project_storage(
         {"tool": "sync_project_files", "arguments": arguments},
     )
     if result.get("status") == "ok":
-        db.commit()
+        command.finish()
         db.refresh(project)
     else:
-        db.rollback()
+        command.rollback()
         project = db.query(Project).filter(Project.id == project_id).first()
 
     data = dict(result.get("data") or {})
@@ -153,13 +169,25 @@ async def repair_project_storage(
 
 
 @router.delete("/projects/{project_id}")
-def delete_project(project_id: str, db: Session = Depends(get_db)):
+def delete_project(
+    project_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Delete a project and all associated database state."""
+    db = command.session
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise NotFoundError("作品不存在")
 
-    delete_project_folder(project)
+    folder_path = project.folder_path
     db.delete(project)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.PROJECT_DELETE,
+            entity_id=project_id,
+            payload={"folder_path": folder_path},
+        ),
+    )
+    command.finish()
     return ApiResponse.success(message="作品已删除")

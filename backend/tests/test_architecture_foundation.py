@@ -1,6 +1,8 @@
 """Tests for contracts introduced by the 3.0 architecture foundation."""
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, create_engine, select
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -50,6 +52,17 @@ def test_unit_of_work_commits_only_when_explicit():
         uow.commit()
     with Session() as session:
         assert session.scalar(select(Row.id)) == 2
+    engine.dispose()
+
+
+def test_request_bound_unit_of_work_rolls_back_without_closing_owner_session():
+    engine, Session = _session_factory()
+    with Session() as session:
+        with patch.object(session, "close", wraps=session.close) as close:
+            with SqlAlchemyUnitOfWork.from_session(session) as uow:
+                uow.session.add(Row(id=3))
+            close.assert_not_called()
+        assert session.scalar(select(Row.id).where(Row.id == 3)) is None
     engine.dispose()
 
 

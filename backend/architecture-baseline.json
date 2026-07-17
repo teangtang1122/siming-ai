@@ -1,5 +1,5 @@
 {
-  "legacy_direct_commit_calls": 324,
+  "legacy_direct_commit_calls": 280,
   "oversized_modules": {
     "backend/app/ai/local_cli_adapter.py": 1510,
     "backend/app/database/models.py": 1876,

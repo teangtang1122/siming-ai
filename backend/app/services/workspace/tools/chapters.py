@@ -17,6 +17,8 @@ from ....database.models import (
     Character,
     Project,
 )
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ....services.chapter_service import (
     create_snapshot,
     diff_snapshots,
@@ -24,7 +26,6 @@ from ....services.chapter_service import (
     restore_chapter_from_snapshot,
     snapshot_to_item,
 )
-from ....services.content_store import delete_project_file, sync_chapter_to_file
 from ....services.narrative_ledger import restore_ledger_checkpoint
 from ....services.narrative_governance import create_narrative_checkpoint
 from ....services.style_rules import _repair_forbidden_sentence_text
@@ -295,8 +296,15 @@ async def create_chapter(
         f"由AI助手关联至章节「{title[:50]}」",
     )
     if project:
-        sync_chapter_to_file(db, project, chapter)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHAPTER,
+                entity_id=chapter.id,
+                source="workspace_tool",
+            ),
+        )
 
     return {
         "tool": "create_chapter",
@@ -407,8 +415,15 @@ async def update_chapter(
             f"由AI助手更新章节「{chapter.title[:50]}」",
         )
     if project:
-        sync_chapter_to_file(db, project, chapter)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHAPTER,
+                entity_id=chapter.id,
+                source="workspace_tool",
+            ),
+        )
 
     return {
         "tool": "update_chapter",
@@ -476,8 +491,15 @@ async def restore_chapter_version(
     restored = restore_chapter_from_snapshot(db, chapter, snapshot)
     ledger_restore = restore_ledger_checkpoint(db, project_id, chapter, snapshot.id)
     if project:
-        sync_chapter_to_file(db, project, chapter)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHAPTER,
+                entity_id=chapter.id,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "restore_chapter_version",
         "status": "ok",
@@ -575,8 +597,19 @@ async def delete_chapter(
     db.query(ChapterSummary).filter(ChapterSummary.chapter_id == chapter.id).delete()
     db.delete(chapter)
     if project:
-        delete_project_file(project, content_file_path)
-    db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.FILE_DELETE,
+                entity_id=chapter.id,
+                payload={
+                    "folder_path": project.folder_path,
+                    "relative_path": content_file_path,
+                },
+                source="workspace_tool",
+            ),
+        )
 
     detail = f"已删除章节：{title}"
     if reverted:

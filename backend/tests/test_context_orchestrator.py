@@ -225,14 +225,13 @@ class ContextOrchestratorTestCase(unittest.TestCase):
             for item in manifest.items
             if item.required
         ])
-        with patch("app.services.workspace.tools.chapters.sync_chapter_to_file"):
-            created = asyncio.run(create_chapter(self.db, "p1", {
-                "title": "Opening",
-                "content": "The protagonist crosses the city gate.",
-                "context_manifest_id": manifest.id,
-                "_context_execution_route": "external_mcp",
-                "skip_style_repair": True,
-            }))
+        created = asyncio.run(create_chapter(self.db, "p1", {
+            "title": "Opening",
+            "content": "The protagonist crosses the city gate.",
+            "context_manifest_id": manifest.id,
+            "_context_execution_route": "external_mcp",
+            "skip_style_repair": True,
+        }))
         self.assertEqual(created["status"], "ok")
 
 

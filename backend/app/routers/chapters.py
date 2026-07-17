@@ -11,6 +11,9 @@ from ..core.response import ApiResponse
 from ..core.utils import count_words
 from ..database.models import Chapter, ChapterSnapshot
 from ..database.session import get_db
+from ..modules.story.application.commands import StoryCommandContext
+from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.chapter import ChapterCreate, ChapterUpdate
 from ..services.chapter_service import (
     chapter_to_detail,
@@ -23,10 +26,6 @@ from ..services.chapter_service import (
 )
 from ..services.narrative_ledger import restore_ledger_checkpoint
 from ..services.narrative_governance import create_narrative_checkpoint
-from ..services.content_store import (
-    delete_project_file,
-    sync_chapter_to_file,
-)
 from ..services.outline_service import load_outline_nodes, outline_sort_context
 
 router = APIRouter(tags=["chapters"])
@@ -83,8 +82,13 @@ def list_chapters(project_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/projects/{project_id}/chapters")
-def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depends(get_db)):
+def create_chapter(
+    project_id: str,
+    payload: ChapterCreate,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Create a chapter linked to an optional outline node."""
+    db = command.session
     project = get_project_or_404(db, project_id)
     get_outline_node_or_404(db, project_id, payload.outline_node_id)
     if payload.context_manifest_id:
@@ -118,10 +122,14 @@ def create_chapter(project_id: str, payload: ChapterCreate, db: Session = Depend
     db.flush()
     db.add(create_snapshot(chapter, "manual_save"))
     create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} 创建", trigger_type="chapter_create")
-    db.commit()
-    db.refresh(chapter)
-    sync_chapter_to_file(db, project, chapter)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHAPTER,
+            entity_id=chapter.id,
+        ),
+    )
+    command.finish()
     db.refresh(chapter)
     outline_context = outline_sort_context(load_outline_nodes(db, project_id))
     return ApiResponse.success(data=chapter_to_detail(chapter, outline_context), message="章节已创建")
@@ -141,9 +149,10 @@ def save_chapter(
     project_id: str,
     chapter_id: str,
     payload: ChapterUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Save chapter fields and create a version snapshot in the same transaction."""
+    db = command.session
     project = get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     update_data = payload.model_dump(exclude_unset=True)
@@ -185,24 +194,43 @@ def save_chapter(
     chapter.current_version = (chapter.current_version or 1) + 1
     db.add(create_snapshot(chapter, trigger_type))
     create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} v{chapter.current_version}", trigger_type=trigger_type)
-    db.commit()
-    db.refresh(chapter)
-    sync_chapter_to_file(db, project, chapter)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHAPTER,
+            entity_id=chapter.id,
+        ),
+    )
+    command.finish()
     db.refresh(chapter)
     outline_context = outline_sort_context(load_outline_nodes(db, project_id))
     return ApiResponse.success(data=chapter_to_detail(chapter, outline_context), message="章节已保存")
 
 
 @router.delete("/projects/{project_id}/chapters/{chapter_id}")
-def delete_chapter(project_id: str, chapter_id: str, db: Session = Depends(get_db)):
+def delete_chapter(
+    project_id: str,
+    chapter_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Delete a chapter and its snapshots."""
+    db = command.session
     project = get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     content_file_path = chapter.content_file_path
     db.delete(chapter)
-    delete_project_file(project, content_file_path)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.FILE_DELETE,
+            entity_id=chapter_id,
+            payload={
+                "folder_path": project.folder_path,
+                "relative_path": content_file_path,
+            },
+        ),
+    )
+    command.finish()
     return ApiResponse.success(message="章节已删除")
 
 
@@ -257,19 +285,23 @@ def restore_chapter_snapshot(
     project_id: str,
     chapter_id: str,
     snapshot_id: str,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Restore a chapter to a snapshot and create a new restore snapshot."""
+    db = command.session
     get_project_or_404(db, project_id)
     chapter = _get_chapter_or_404(db, project_id, chapter_id)
     snapshot = _get_snapshot_or_404(db, project_id, chapter_id, snapshot_id)
     restore_chapter_from_snapshot(db, chapter, snapshot)
     ledger_restore = restore_ledger_checkpoint(db, project_id, chapter, snapshot.id)
-    db.commit()
-    db.refresh(chapter)
-    project = get_project_or_404(db, project_id)
-    sync_chapter_to_file(db, project, chapter)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHAPTER,
+            entity_id=chapter.id,
+        ),
+    )
+    command.finish()
     db.refresh(chapter)
     outline_context = outline_sort_context(load_outline_nodes(db, project_id))
     data = chapter_to_detail(chapter, outline_context)

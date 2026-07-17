@@ -27,6 +27,7 @@ moshu-projects/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-*/
 .mypy_cache/
 .venv/
 venv/

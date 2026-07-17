@@ -32,12 +32,14 @@ class RuntimeBootstrapStatus:
 
 def _run_legacy_startup_recovery() -> None:
     """Run compatibility recovery after the database schema is available."""
-    from ..services.content_store import migrate_legacy_projects_to_files
+    from ..modules.story.infrastructure.content_sync import (
+        recover_content_sync_queue,
+    )
     from ..services.operation_runtime import mark_interrupted_operations
     from ..services.workspace.run_log import mark_interrupted_assistant_runs
 
+    recover_content_sync_queue()
     with SessionLocal() as db:
-        migrate_legacy_projects_to_files(db)
         mark_interrupted_assistant_runs(db)
         mark_interrupted_operations(db)
 

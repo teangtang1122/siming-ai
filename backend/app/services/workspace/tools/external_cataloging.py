@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.modules.story.application.content_sync import ensure_chapter_mirror
 from app.prompts.cataloging_source import get_outline_granularity_rules
 from app.services.cataloging.constants import VALID_ITEM_TYPES
 from app.services.cataloging.jsonl import normalize_candidate
@@ -861,21 +862,20 @@ async def get_next_external_cataloging_chapter(
         db.commit()
 
     from app.database.models import Project
-    from app.services.content_store import ensure_project_folder, sync_chapter_to_file
 
     project = db.query(Project).filter(Project.id == effective_project_id).first()
     project_folder = ""
     content_file_path = ""
     if project:
-        folder = ensure_project_folder(db, project)
-        file_path = folder / chapter.content_file_path if chapter.content_file_path else None
-        if not file_path or not file_path.exists():
-            sync_chapter_to_file(db, project, chapter, index=chapter_run.chapter_order + 1)
-            file_path = folder / chapter.content_file_path if chapter.content_file_path else None
+        folder, file_path = ensure_chapter_mirror(
+            db,
+            project,
+            chapter,
+            index=chapter_run.chapter_order + 1,
+            source="external_cataloging",
+        )
         project_folder = str(folder)
-        if file_path and file_path.exists():
-            content_file_path = str(file_path.resolve())
-        db.commit()
+        content_file_path = str(file_path)
 
     return {
         "tool": "get_next_external_cataloging_chapter",
