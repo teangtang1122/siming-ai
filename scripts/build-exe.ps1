@@ -218,6 +218,7 @@ try {
     "--paths", $BackendDir,
     "--add-data", "${FrontendDist}${Separator}frontend/dist",
     "--add-data", "$(Join-Path $BackendDir 'alembic')${Separator}alembic",
+    "--add-data", "$(Join-Path $BackendDir 'prompt_specs')${Separator}prompt_specs",
     "--collect-submodules", "app",
     "--collect-submodules", "uvicorn",
     "--collect-submodules", "httptools",

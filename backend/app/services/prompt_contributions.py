@@ -63,6 +63,8 @@ def _markdown_body(package: dict[str, Any], diff_text: str) -> str:
         f"- pack_id: `{pack['pack_id']}`",
         f"- scope: `{pack['scope']}`",
         f"- base_version: `{pack['version']}`",
+        f"- prompt_spec: `{pack.get('prompt_spec_id') or 'legacy'}`",
+        f"- base_hash: `{pack.get('base_hash') or '未提供'}`",
         "",
         "## 投稿人",
         f"- 署名：{contributor.get('name') or '未填写'}",
@@ -102,6 +104,8 @@ def _issue_body(package: dict[str, Any], markdown_path: Path, json_path: Path, d
         f"- pack_id: `{pack['pack_id']}`",
         f"- scope: `{pack['scope']}`",
         f"- base_version: `{pack['version']}`",
+        f"- prompt_spec: `{pack.get('prompt_spec_id') or 'legacy'}`",
+        f"- base_hash: `{pack.get('base_hash') or '未提供'}`",
         f"- 投稿人：{package['contributor'].get('name') or '未填写'}",
         "",
         "## 做了哪些修改",
@@ -145,6 +149,9 @@ def build_prompt_contribution_package(
     before_prompt = str(pack_detail.get("system_prompt") or "")
     after_prompt = edited_system_prompt
     diff_text, diff_stats = _prompt_diff(before_prompt, after_prompt)
+    prompt_spec = pack_detail.get("prompt_spec")
+    if not isinstance(prompt_spec, dict):
+        prompt_spec = {}
     now = datetime.utcnow().replace(microsecond=0)
     package = {
         "schema_version": CONTRIBUTION_SCHEMA_VERSION,
@@ -160,6 +167,9 @@ def build_prompt_contribution_package(
             "scope": pack_detail.get("scope"),
             "version": pack_detail.get("version"),
             "summary": pack_detail.get("summary"),
+            "prompt_spec_id": prompt_spec.get("prompt_spec_id"),
+            "prompt_spec_version": prompt_spec.get("prompt_spec_version"),
+            "base_hash": prompt_spec.get("prompt_spec_hash"),
         },
         "contributor": {
             "name": (contributor_name or "").strip() or None,

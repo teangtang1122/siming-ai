@@ -17,6 +17,9 @@ RUFF_TARGETS = [
     "app/database/schema_models.py",
     "app/core/numbers.py",
     "app/prompts/workspace_contract.py",
+    "app/modules/assistant",
+    "app/modules/creation",
+    "app/modules/continuity",
     "app/services/scheduler/ports.py",
     "app/services/skills/tool_catalog.py",
     "app/services/workspace/idempotency.py",
@@ -24,6 +27,8 @@ RUFF_TARGETS = [
     "scripts",
     "tests/test_architecture_foundation.py",
     "tests/test_database_bootstrap.py",
+    "tests/test_prompt_spec_compiler.py",
+    "tests/test_tool_spec_catalog.py",
 ]
 
 
@@ -40,6 +45,7 @@ def _lint_imports_executable() -> str:
 
 def main() -> int:
     _run([sys.executable, str(ROOT / "scripts" / "check-architecture.py")], cwd=ROOT)
+    _run([sys.executable, "scripts/compile_prompts.py"], cwd=BACKEND)
     _run([sys.executable, "-m", "ruff", "check", *RUFF_TARGETS], cwd=BACKEND)
     _run([_lint_imports_executable()], cwd=BACKEND)
     return 0

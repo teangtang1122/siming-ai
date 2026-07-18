@@ -5,8 +5,17 @@ from __future__ import annotations
 
 def configure_application_services() -> None:
     """Connect application ports to infrastructure implementations."""
+    from ..modules.assistant.application.prompt_compiler import PromptCompiler
+    from ..modules.assistant.infrastructure.prompt_files import MarkdownPromptRepository
+    from ..modules.assistant.interfaces.prompts import configure_prompt_compiler
     from ..modules.context.application.rebuild import configure_context_rebuild_runner
     from ..modules.context.infrastructure.rebuild import ContextRebuildRunner
+    from ..modules.continuity.application.prompting import ContinuityPromptService
+    from ..modules.continuity.interfaces.dependencies import (
+        configure_continuity_prompt_service,
+    )
+    from ..modules.creation.application.prompting import NovelCreationPromptService
+    from ..modules.creation.interfaces.dependencies import configure_creation_prompt_service
     from ..modules.model_runtime.application.runtime import (
         ModelRuntime,
         configure_model_runtime,
@@ -35,6 +44,13 @@ def configure_application_services() -> None:
         run_workspace_scheduled_task,
     )
 
+    prompt_compiler = PromptCompiler(
+        MarkdownPromptRepository(),
+        known_tools=registry.all_names(),
+    )
+    configure_prompt_compiler(prompt_compiler)
+    configure_creation_prompt_service(NovelCreationPromptService(prompt_compiler))
+    configure_continuity_prompt_service(ContinuityPromptService(prompt_compiler))
     configure_task_runner(run_workspace_scheduled_task)
     configure_tool_catalog(registry.list_for_frontend)
     configure_model_runtime(ModelRuntime(SqlAlchemyModelConfiguration()))

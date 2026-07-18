@@ -10,6 +10,8 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
 
+from ...modules.assistant.application.tool_catalog import build_domain_tool_specs
+from .spec_registry import ToolSpecRegistryMixin
 from .types import ToolHandler
 
 
@@ -43,20 +45,23 @@ class ToolDef:
 # ToolRegistry — manages all registered tools
 # ---------------------------------------------------------------------------
 
-class ToolRegistry:
+class ToolRegistry(ToolSpecRegistryMixin):
     """Central registry for workspace tools."""
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolDef] = {}
+        self._specs: dict[str, ToolSpec] = {}
+        self._aliases: dict[str, str] = {}
 
     def register(self, tool_def: ToolDef) -> None:
         self._tools[tool_def.name] = tool_def
+        self._specs[tool_def.name] = self._legacy_spec(tool_def)
 
     def get(self, name: str) -> ToolDef | None:
-        return self._tools.get(name)
+        return self._tools.get(self._aliases.get(name, name))
 
     def get_handler(self, name: str) -> ToolHandler | None:
-        td = self._tools.get(name)
+        td = self.get(name)
         return td.handler if td else None
 
     def all_names(self) -> list[str]:
@@ -75,17 +80,8 @@ class ToolRegistry:
                 continue
             if exclude_types and td.tool_type in exclude_types:
                 continue
-            schema: dict = {"type": "object", "properties": td.input_schema}
-            if td.required:
-                schema["required"] = td.required
-            result.append({
-                "type": "function",
-                "function": {
-                    "name": td.name,
-                    "description": td.description,
-                    "parameters": schema,
-                },
-            })
+            spec = self._specs[td.name]
+            result.append(spec.openai_schema())
         return result
 
     def get_names_by_type(self, tool_type: str) -> set[str]:
@@ -206,21 +202,9 @@ class ToolRegistry:
         """Return tool metadata dicts for frontend display."""
         result = []
         for td in self._tools.values():
-            result.append({
-                "name": td.name,
-                "description": td.description,
-                "tool_type": td.tool_type,
-                "permission_tags": list(td.permission_tags),
-                "risk_level": td.risk_level,
-                "writes_project_data": td.writes_project_data,
-                "expose_to_internal_agent": td.expose_to_internal_agent,
-                "expose_to_scheduler": td.expose_to_scheduler,
-                "expose_to_mcp": td.expose_to_mcp,
-                "mcp_permission_pack": self._derive_mcp_pack(td),
-                "requires_confirmation": td.requires_confirmation,
-                "estimated_cost": td.estimated_cost,
-                "idempotent": td.idempotent,
-            })
+            metadata = self._specs[td.name].frontend_metadata()
+            metadata["mcp_permission_pack"] = self._derive_mcp_pack(td)
+            result.append(metadata)
         return result
 
 
@@ -2928,3 +2912,12 @@ def _classify_all() -> None:
 
 
 _classify_all()
+
+# Typed domain specs replace selected legacy projections after permission
+# classification. Every unmigrated tool keeps an exact legacy JSON schema.
+registry.rebuild_legacy_specs()
+registry.bind_specs(
+    build_domain_tool_specs(
+        {name: registry.get(name) for name in registry.all_names()}
+    )
+)

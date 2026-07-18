@@ -264,11 +264,14 @@ async def _generate_compact_concepts(
         "interview_history": interview.get("history") or [],
         "interview_reason": _text(interview.get("reason")),
     }
-    system = (
-        "你是司命的新书立项编辑。只生成供作者选择方向的轻量创意卡，"
-        "不要生成完整世界观、配角表、卷纲、章节细纲或正式项目。"
-        "三张卡必须有实质差异，且都要遵守作者给出的约束。"
-        "只输出 JSON，不要 Markdown。"
+    from ....modules.creation.interfaces.dependencies import render_creation_prompt
+
+    system = render_creation_prompt(
+        task_kind="生成三套轻量创意方向",
+        task_rules=(
+            "只生成恰好三张轻量创意卡，不生成完整世界观、配角表、卷纲或章节细纲。"
+            "三张卡必须遵守作者约束，并在故事发动机、冲突结构和开篇压力上有实质差异。"
+        ),
     )
     shape = {
         "concepts": [{
@@ -333,10 +336,14 @@ async def _enhance_with_model(
         },
         "baseline": baseline,
     }
-    system = (
-        "你是司命的新书立项编辑。你只处理当前阶段，不提前创建正式项目，也不写文件。"
-        "必须返回一个 JSON 对象，顶层只有 data 字段。所有结论应能被作者编辑。"
-        "不要用 Markdown，不要省略必填字段。"
+    from ....modules.creation.interfaces.dependencies import render_creation_prompt
+
+    system = render_creation_prompt(
+        task_kind=f"深化阶段：{STAGE_LABELS.get(stage, stage)}",
+        task_rules=(
+            "只深化当前阶段的 baseline，顶层只返回 data 字段；"
+            "保留作者约束、已确认事实和专名，不提前生成下游阶段。"
+        ),
     )
     user = (
         f"当前阶段：{STAGE_LABELS.get(stage, stage)}\n"

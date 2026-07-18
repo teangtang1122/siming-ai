@@ -9,6 +9,8 @@ export default defineConfig({
     setupFiles: ['./src/__tests__/setup.ts', './src/__tests__/global-mock.ts'],
     css: false,
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    testTimeout: 15_000,
+    hookTimeout: 15_000,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],

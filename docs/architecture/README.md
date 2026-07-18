@@ -36,6 +36,11 @@ configuration snapshots instead of opening database sessions. Long-running
 features publish one operation vocabulary, while context rebuilds commit one
 project checkpoint at a time so a later failure cannot erase completed work.
 
+Beta.1 introduces compiled PromptSpecs and typed ToolSpecs. Assistant, creation,
+and continuity prompts now share versioned Markdown/YAML sources, deterministic
+golden checks, and source hashes. OpenAI, MCP, and frontend tool projections use
+the same catalog while unmigrated tools retain exact compatibility schemas.
+
 ## Enforced Rules
 
 - Import cycles are forbidden.
@@ -54,6 +59,7 @@ python scripts/check-architecture.py
 cd backend
 ruff check app/architecture app/bootstrap app/modules
 lint-imports
+python scripts/compile_prompts.py
 ```
 
 ## Release Stages
@@ -64,7 +70,8 @@ lint-imports
 - `3.0.0-alpha.3`: model runtime uses configuration ports; operations share one
   state machine and service; context rebuilds use durable per-project UoW
   checkpoints; legacy imports remain compatibility-only facades.
-- `3.0.0-beta.1`: PromptSpec, ToolSpec, assistant, creation, and continuity.
+- `3.0.0-beta.1`: compiled PromptSpec sources, typed ToolSpec projections, and
+  assistant/creation/continuity compatibility facades.
 - `3.0.0-beta.2`: frontend feature boundaries and generated API types.
 - `3.0.0-rc.1`: cleanup, migration rehearsals, security, recovery, performance.
 - `3.0.0`: stable release after RC validation.

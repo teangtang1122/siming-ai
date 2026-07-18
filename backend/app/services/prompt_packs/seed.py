@@ -40,12 +40,12 @@ def _get_cataloging_shared_content() -> dict:
     """Load cataloging content from the single source of truth."""
     from app.prompts.cataloging_source import (
         get_external_cataloging_forbidden_patterns,
-        get_external_cataloging_system_prompt,
         get_external_cataloging_workflow,
     )
+    from app.modules.assistant.infrastructure.runtime import render_prompt
 
     return {
-        "system_prompt": get_external_cataloging_system_prompt(),
+        "system_prompt": render_prompt("continuity.cataloging.external"),
         "workflow_json": get_external_cataloging_workflow(),
         "forbidden_patterns_json": get_external_cataloging_forbidden_patterns(),
     }
@@ -535,9 +535,34 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
 # ── Seed function ────────────────────────────────────────────────────────
 def _refresh_builtin_cataloging_pack_defs() -> None:
     cataloging_content = _get_cataloging_shared_content()
+    from app.modules.assistant.infrastructure.runtime import (
+        get_compiled_prompt,
+        render_prompt,
+    )
+
+    prompt_ids = {
+        "new_project_setup": "creation.novel.stage",
+        "chapter_writing_quality": "assistant.chapter.quality",
+        "cataloging_external_no_api": "continuity.cataloging.external",
+    }
     for pack in BUILTIN_PACKS:
-        if pack.get("pack_id") == "cataloging_external_no_api":
+        pack_id = str(pack.get("pack_id") or "")
+        if pack_id == "cataloging_external_no_api":
             pack.update(cataloging_content)
+        elif pack_id == "new_project_setup":
+            pack["system_prompt"] = render_prompt(
+                "creation.novel.stage",
+                task_kind="协助作者完成新书立项",
+                task_rules="从创作约束和三套轻量创意开始，按阶段确认，最终审阅前不创建正式作品。",
+            )
+        spec_id = prompt_ids.get(pack_id)
+        if spec_id:
+            compiled = get_compiled_prompt(spec_id)
+            pack["tags_json"] = {
+                "prompt_spec_id": compiled.spec_id,
+                "prompt_spec_version": compiled.version,
+                "prompt_spec_hash": compiled.sha256,
+            }
 
 
 _refresh_builtin_cataloging_pack_defs()
@@ -627,7 +652,7 @@ def seed_builtin_packs(db: Session) -> int:
             existing.context_policy_json = merged.get("context_policy_json")
             existing.output_contract_json = merged.get("output_contract_json")
             existing.is_builtin = True
-            existing.tags_json = None
+            existing.tags_json = merged.get("tags_json")
             continue
 
         pack = PublicPromptPack(
@@ -645,7 +670,7 @@ def seed_builtin_packs(db: Session) -> int:
             output_contract_json=merged.get("output_contract_json"),
             enabled=True,
             is_builtin=True,
-            tags_json=None,
+            tags_json=merged.get("tags_json"),
         )
         db.add(pack)
         created += 1

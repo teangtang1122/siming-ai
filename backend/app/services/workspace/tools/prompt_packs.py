@@ -422,6 +422,7 @@ async def get_prompt_pack(
             "forbidden_patterns": pack.forbidden_patterns_json,
             "context_policy": pack.context_policy_json,
             "output_contract": pack.output_contract_json,
+            "prompt_spec": pack.tags_json if isinstance(pack.tags_json, dict) else None,
         },
     }
 
