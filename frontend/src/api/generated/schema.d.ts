@@ -4264,10 +4264,7 @@ export interface components {
         };
         /** Body_import_file_api_v1_projects__project_id__import_file_post */
         Body_import_file_api_v1_projects__project_id__import_file_post: {
-            /**
-             * File
-             * Format: binary
-             */
+            /** File */
             file: string;
         };
         /** CatalogingCandidateBulkUpdate */
@@ -4291,7 +4288,9 @@ export interface components {
             /** Item Type */
             item_type: string;
             /** Payload */
-            payload: Record<string, never>;
+            payload: {
+                [key: string]: unknown;
+            };
             /**
              * Status
              * @default edited
@@ -4304,7 +4303,9 @@ export interface components {
         /** CatalogingCandidateUpdate */
         CatalogingCandidateUpdate: {
             /** Payload */
-            payload?: Record<string, never> | null;
+            payload?: {
+                [key: string]: unknown;
+            } | null;
             /** Status */
             status?: ("pending" | "edited" | "approved" | "rejected" | "applying" | "applied" | "apply_failed") | null;
         };
@@ -4505,7 +4506,9 @@ export interface components {
              * Profile
              * @description 稳定写作锁
              */
-            profile?: Record<string, never> | null;
+            profile?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Realm Or Level
              * @description 境界/等级
@@ -4596,7 +4599,9 @@ export interface components {
             /** Physical State */
             physical_state?: string | null;
             /** Profile */
-            profile?: Record<string, never> | null;
+            profile?: {
+                [key: string]: unknown;
+            } | null;
             /** Realm Or Level */
             realm_or_level?: string | null;
             /** Role Type */
@@ -4608,11 +4613,15 @@ export interface components {
          */
         ChatCompletionRequest: {
             /** Extra Body */
-            extra_body?: Record<string, never> | null;
+            extra_body?: {
+                [key: string]: unknown;
+            } | null;
             /** Max Tokens */
             max_tokens?: number | null;
             /** Messages */
-            messages: Record<string, never>[];
+            messages: {
+                [key: string]: unknown;
+            }[];
             /** Model */
             model?: string | null;
             /**
@@ -4701,7 +4710,9 @@ export interface components {
         /** ContextEvidenceSubmission */
         ContextEvidenceSubmission: {
             /** Sources */
-            sources?: Record<string, never>[];
+            sources?: {
+                [key: string]: unknown;
+            }[];
         };
         /** ContextManifestOverride */
         ContextManifestOverride: {
@@ -4716,7 +4727,9 @@ export interface components {
         /** ContextManifestPrepare */
         ContextManifestPrepare: {
             /** Arguments */
-            arguments?: Record<string, never>;
+            arguments?: {
+                [key: string]: unknown;
+            };
             /**
              * Execution Route
              * @default internal_api
@@ -5071,7 +5084,9 @@ export interface components {
              */
             model_source: string;
             /** Models */
-            models?: Record<string, never>[];
+            models?: {
+                [key: string]: unknown;
+            }[];
             /**
              * Needs Setup
              * @default true
@@ -5123,7 +5138,9 @@ export interface components {
         /** GovernanceCandidateBatch */
         GovernanceCandidateBatch: {
             /** Candidates */
-            candidates?: Record<string, never>[];
+            candidates?: {
+                [key: string]: unknown;
+            }[];
             /** Chapter Id */
             chapter_id?: string | null;
             /**
@@ -5136,7 +5153,9 @@ export interface components {
         /** GovernanceItemPayload */
         GovernanceItemPayload: {
             /** Data */
-            data: Record<string, never>;
+            data: {
+                [key: string]: unknown;
+            };
             /** Type */
             type: string;
         };
@@ -5422,7 +5441,9 @@ export interface components {
             /** Expected Revision */
             expected_revision?: number | null;
             /** Form */
-            form?: Record<string, never> | null;
+            form?: {
+                [key: string]: unknown;
+            } | null;
             /** Quick Mode */
             quick_mode?: boolean | null;
             /** Selected Concept Id */
@@ -5436,7 +5457,9 @@ export interface components {
              */
             confirm: boolean;
             /** Data */
-            data?: Record<string, never> | null;
+            data?: {
+                [key: string]: unknown;
+            } | null;
             /** Expected Revision */
             expected_revision?: number | null;
             /**
@@ -5448,7 +5471,9 @@ export interface components {
         /** NovelCreationStagePatchRequest */
         NovelCreationStagePatchRequest: {
             /** Data */
-            data: Record<string, never>;
+            data: {
+                [key: string]: unknown;
+            };
             /** Expected Revision */
             expected_revision: number;
             /**
@@ -5474,7 +5499,9 @@ export interface components {
              */
             operation: string;
             /** Session Patch */
-            session_patch?: Record<string, never> | null;
+            session_patch?: {
+                [key: string]: unknown;
+            } | null;
             /** Stage */
             stage: string;
             /**
@@ -5486,7 +5513,9 @@ export interface components {
         /** NovelCreationStartRequest */
         NovelCreationStartRequest: {
             /** Author Overrides */
-            author_overrides?: Record<string, never>;
+            author_overrides?: {
+                [key: string]: unknown;
+            };
             /** Avoid */
             avoid?: string[];
             /**
@@ -5673,7 +5702,9 @@ export interface components {
             /** Message */
             message?: string | null;
             /** Payload */
-            payload?: Record<string, never> | null;
+            payload?: {
+                [key: string]: unknown;
+            } | null;
             /** Sequence */
             sequence: number;
             /** Status */
@@ -5760,7 +5791,9 @@ export interface components {
             /** Phase */
             phase?: string | null;
             /** Process Metrics */
-            process_metrics?: Record<string, never> | null;
+            process_metrics?: {
+                [key: string]: unknown;
+            } | null;
             progress: components["schemas"]["OperationProgressResponse"];
             /** Project Id */
             project_id?: string | null;
@@ -5826,7 +5859,9 @@ export interface components {
             /** Characters */
             characters?: components["schemas"]["OutlineCharacterLinkInput"][] | null;
             /** Metadata */
-            metadata?: Record<string, never> | null;
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Node Type
              * @description volume/chapter/section
@@ -5864,7 +5899,9 @@ export interface components {
             /** Characters */
             characters?: components["schemas"]["OutlineCharacterLinkInput"][] | null;
             /** Metadata */
-            metadata?: Record<string, never> | null;
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
             /** Node Type */
             node_type?: ("volume" | "chapter" | "section") | null;
             /** Parent Id */
@@ -6332,7 +6369,9 @@ export interface components {
         /** SystemChatRequest */
         SystemChatRequest: {
             /** Context */
-            context?: Record<string, never> | null;
+            context?: {
+                [key: string]: unknown;
+            } | null;
             /** Message */
             message: string;
             /** Model */
@@ -6354,11 +6393,15 @@ export interface components {
              */
             assistant_content: string;
             /** Blueprints */
-            blueprints?: Record<string, never>[] | null;
+            blueprints?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Creation Session Id */
             creation_session_id?: string | null;
             /** Payload */
-            payload?: Record<string, never> | null;
+            payload?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Status
              * @default completed
@@ -6412,6 +6455,10 @@ export interface components {
         };
         /** ValidationError */
         ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
             /** Location */
             loc: (string | number)[];
             /** Message */
@@ -6440,7 +6487,9 @@ export interface components {
             /** Conversation Id */
             conversation_id?: string | null;
             /** History */
-            history?: Record<string, never>[];
+            history?: {
+                [key: string]: unknown;
+            }[];
             /** Max Tokens */
             max_tokens?: number | null;
             /** Message */
@@ -8139,7 +8188,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {

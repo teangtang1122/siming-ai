@@ -1,6 +1,6 @@
 # Siming 3.0 Security Review
 
-Reviewed for `3.0.0`. This review covers repository code and deterministic tests; it is not a third-party penetration test.
+Reviewed for `3.0.1`. This review covers repository code and deterministic tests; it is not a third-party penetration test.
 
 ## Closed Findings
 
@@ -12,6 +12,8 @@ Reviewed for `3.0.0`. This review covers repository code and deterministic tests
 | P1 | Standalone migration classification depended on unrelated import order | Bootstrap now explicitly loads the complete model metadata |
 | P1 | Remote Google Fonts created an unnecessary network request | Removed remote font loading and use local system font fallbacks |
 | P2 | Browser responses lacked a consistent hardening policy | Added CSP, frame denial, no-sniff, referrer and permissions headers |
+| P1 | Backend runtime dependencies contained published vulnerabilities | Upgraded FastAPI/Starlette, multipart parsing, cryptography, aiohttp and dotenv to audited fix versions |
+| P1 | Frontend runtime dependencies contained published vulnerabilities | Upgraded Axios, React Router, markdown-it and linkify-it to audited fix versions |
 
 ## Residual Risks
 
@@ -30,6 +32,8 @@ cd backend
 .venv\Scripts\python.exe -m pytest -q tests\test_http_security.py tests\test_sqlite_backup.py tests\test_database_bootstrap.py tests\test_migration_rehearsal.py
 cd ..
 backend\.venv\Scripts\python.exe scripts\run-performance-baseline.py
+backend\.venv\Scripts\python.exe -m pip_audit -r backend\requirements.txt
+npm --prefix frontend audit --omit=dev --registry=https://registry.npmjs.org
 ```
 
 Release validation additionally runs backend tests, frontend lint/test/build, browser E2E, exact-tag asset verification and executable smoke tests.
