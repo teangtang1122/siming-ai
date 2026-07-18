@@ -1,6 +1,8 @@
 """Resumable downloads with source fallback, progress persistence, and checksums."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import hashlib
 import shutil
 from datetime import datetime
@@ -104,4 +106,4 @@ def _persist_progress(task_id: str, **values) -> None:
                     progress_total=int(task.total_bytes) if task.total_bytes else None,
                     output=True,
                 )
-        db.commit()
+        commit_session(db)

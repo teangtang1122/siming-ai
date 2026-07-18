@@ -10,6 +10,8 @@ restarts. The in-memory OrderedDict acts as an L1 cache for fast lookups.
 """
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 from collections import OrderedDict
 from datetime import datetime
 from typing import Any
@@ -54,7 +56,7 @@ def store_chapter_draft(
                 content=content,
             )
             db.add(row)
-            db.commit()
+            commit_session(db)
         except Exception:
             db.rollback()
 

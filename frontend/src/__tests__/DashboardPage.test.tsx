@@ -82,19 +82,27 @@ const mockDeleteProject = vi.fn()
 
 let mockProjects: unknown[] = []
 let mockLoading = false
+let mockNeedsSetup = false
 
-vi.mock('../stores', () => ({
-  useAppStore: (selector?: (state: Record<string, unknown>) => unknown) => {
-    const state = {
-      projects: mockProjects,
-      loading: mockLoading,
-      fetchProjects: mockFetchProjects,
-      createProject: mockCreateProject,
-      updateProject: mockUpdateProject,
-      deleteProject: mockDeleteProject,
+vi.mock('../features/projects', () => ({
+  useProjects: (keyword?: string) => {
+    mockFetchProjects(keyword)
+    return {
+      data: { items: mockProjects, total: mockProjects.length },
+      isLoading: mockLoading,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
     }
-    return selector ? selector(state) : state
   },
+  useCreateProject: () => ({ mutateAsync: mockCreateProject }),
+  useUpdateProject: () => ({ mutateAsync: mockUpdateProject }),
+  useDeleteProject: () => ({ mutateAsync: mockDeleteProject }),
+}))
+
+vi.mock('../features/onboarding', () => ({
+  useGettingStartedSummary: () => ({ data: { needs_setup: mockNeedsSetup } }),
 }))
 
 // ---------------------------------------------------------------------------
@@ -131,6 +139,7 @@ describe('DashboardPage', () => {
     vi.clearAllMocks()
     mockProjects = []
     mockLoading = false
+    mockNeedsSetup = false
     mockFetchProjects.mockResolvedValue(undefined)
     mockCreateProject.mockResolvedValue(makeProject({ id: 'new-1', title: '新作品' }))
     mockUpdateProject.mockResolvedValue(makeProject({ id: 'edit-1', title: '已编辑' }))
@@ -138,9 +147,6 @@ describe('DashboardPage', () => {
     mockApiGet.mockImplementation((url: string) => {
       if (url === '/novel-creation/sessions') {
         return Promise.resolve({ data: { data: { sessions: [] } } })
-      }
-      if (url === '/config/getting-started') {
-        return Promise.resolve({ data: { data: { needs_setup: false } } })
       }
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
@@ -356,15 +362,7 @@ describe('DashboardPage', () => {
   })
 
   it('should guide an unconfigured first-time user to the free setup flow', async () => {
-    mockApiGet.mockImplementation((url: string) => {
-      if (url === '/novel-creation/sessions') {
-        return Promise.resolve({ data: { data: { sessions: [] } } })
-      }
-      if (url === '/config/getting-started') {
-        return Promise.resolve({ data: { data: { needs_setup: true } } })
-      }
-      return Promise.reject(new Error(`unexpected GET ${url}`))
-    })
+    mockNeedsSetup = true
 
     renderDashboard()
 

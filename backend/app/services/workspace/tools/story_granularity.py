@@ -1,6 +1,8 @@
 """Story granularity archive, audit, and repair tools."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 import re
 from datetime import datetime
@@ -209,7 +211,7 @@ async def _generate_candidates_with_llm(
 ) -> list[dict[str, Any]]:
     if not model:
         return []
-    from ....ai.gateway import LLMGateway
+    from ....modules.model_runtime.application.execution import model_executor as LLMGateway
     project = db.query(Project).filter(Project.id == project_id).first()
     characters = _linked_characters_for_chapter(db, project_id, chapter, content)
     outline = chapter_outline_node(db, project_id, chapter)
@@ -510,7 +512,7 @@ async def archive_chapter_after_write(
                 apply_governance_candidates(db, project_id, governance_candidates, chapter_id=chapter.id)
             governance_checkpoint = create_narrative_checkpoint(db, project_id, chapter=chapter, label=f"{chapter.title} 写后归档", trigger_type="post_write_archive")
     job.updated_at = datetime.utcnow()
-    db.commit()
+    commit_session(db)
     ledger_items = list_narrative_ledger(db, project_id, chapter_id=chapter.id)
     ledger_counts = {"new": 0, "advanced": 0, "fulfilled": 0, "invalidated": 0, "pending_review": 0}
     for event in applied_events:
@@ -585,7 +587,7 @@ async def update_narrative_ledger_entry(
     entry = revise_narrative_ledger_entry(db, project_id, entry_id, args)
     if not entry:
         return {"tool": "update_narrative_ledger_entry", "status": "skipped", "detail": "Narrative ledger entry was not found", "data": None}
-    db.commit()
+    commit_session(db)
     return {"tool": "update_narrative_ledger_entry", "status": "ok", "detail": "Narrative ledger entry updated", "data": entry}
 
 

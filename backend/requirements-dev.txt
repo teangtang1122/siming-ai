@@ -1,0 +1,3 @@
+pytest>=8.0,<9
+ruff>=0.11,<1
+import-linter>=2.1,<3

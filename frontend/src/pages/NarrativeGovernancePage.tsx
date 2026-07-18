@@ -1,60 +1,52 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Alert, Button, Card, Col, Descriptions, Empty, List, Modal, Popconfirm, Row, Segmented, Space, Statistic, Table, Tabs, Tag, Typography, message } from 'antd'
 import { CheckCircleOutlined, ClockCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, RollbackOutlined } from '@ant-design/icons'
-import { apiClient } from '../api/client'
+import {
+  type GovernanceItem,
+  type NarrativeCheckpoint as Checkpoint,
+  getNarrativeCheckpointDiff,
+  useNarrativeDashboard,
+  useRestoreNarrativeCheckpoint,
+  useUpdateNarrativeStatus,
+} from '../features/narrativeGovernance'
 
 const { Text, Title } = Typography
-
-interface ApiResponse<T> { code: number; message: string; data: T }
-interface GovernanceItem { id: string; title?: string; description?: string; status: string; importance?: string; priority?: string; cause?: string; effect?: string; strength?: number; target_chapter_number?: number; evidence?: string; created_at?: string }
-interface Checkpoint { id: string; sequence: number; label: string; trigger_type: string; chapter_id?: string; created_at?: string }
-interface Dashboard {
-  foreshadowings: GovernanceItem[]
-  causal_edges: GovernanceItem[]
-  narrative_debts: GovernanceItem[]
-  character_states: Array<Record<string, unknown>>
-  quality_metrics: Array<Record<string, unknown>>
-  checkpoints: Checkpoint[]
-  counts: { open_foreshadowings: number; open_causal_edges: number; open_debts: number; high_risk?: number }
-}
 
 const statusColor: Record<string, string> = { open: 'blue', deferred: 'orange', pending_review: 'gold', fulfilled: 'green', resolved: 'green', abandoned: 'default', invalidated: 'red' }
 
 export default function NarrativeGovernancePage({ projectId }: { projectId: string }) {
   const [view, setView] = useState('all')
-  const [data, setData] = useState<Dashboard | null>(null)
-  const [loading, setLoading] = useState(false)
   const [diff, setDiff] = useState<Record<string, unknown> | null>(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const response = await apiClient.get<ApiResponse<Dashboard>>(`/projects/${projectId}/narrative-governance`, { view })
-      setData(response.data.data)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载叙事治理状态失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [projectId, view])
-
-  useEffect(() => { load() }, [load])
+  const dashboardQuery = useNarrativeDashboard(projectId, view)
+  const statusMutation = useUpdateNarrativeStatus(projectId)
+  const restoreMutation = useRestoreNarrativeCheckpoint(projectId)
+  const data = dashboardQuery.data
+  const loading = dashboardQuery.isLoading || dashboardQuery.isFetching
 
   const updateStatus = async (type: string, id: string, status: string) => {
-    await apiClient.patch(`/projects/${projectId}/narrative-governance/items/${type}/${id}`, { status })
-    message.success('状态已更新')
-    load()
+    try {
+      await statusMutation.mutateAsync({ type, id, status })
+      message.success('状态已更新')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '状态更新失败')
+    }
   }
 
   const showDiff = async (checkpoint: Checkpoint) => {
-    const response = await apiClient.get<ApiResponse<Record<string, unknown>>>(`/projects/${projectId}/narrative-governance/checkpoints/${checkpoint.id}/diff`)
-    setDiff(response.data.data)
+    try {
+      setDiff(await getNarrativeCheckpointDiff(projectId, checkpoint.id))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '差异加载失败')
+    }
   }
 
   const restore = async (checkpoint: Checkpoint) => {
-    await apiClient.post(`/projects/${projectId}/narrative-governance/checkpoints/${checkpoint.id}/restore`)
-    message.success('叙事状态已回滚')
-    load()
+    try {
+      await restoreMutation.mutateAsync(checkpoint.id)
+      message.success('叙事状态已回滚')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '回滚失败')
+    }
   }
 
   const actionButtons = (type: string, item: GovernanceItem) => (
@@ -88,7 +80,7 @@ export default function NarrativeGovernancePage({ projectId }: { projectId: stri
     <div style={{ maxWidth: 1500, margin: '0 auto' }}>
       <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
         <div><Title level={3} style={{ margin: 0 }}>叙事治理</Title><Text type="secondary">伏笔、因果、债务、角色动态、质量与世界线检查点</Text></div>
-        <Space><Segmented value={view} onChange={(value) => setView(String(value))} options={[{ label: '全部', value: 'all' }, { label: '即将到期', value: 'due' }, { label: '高风险', value: 'risk' }]} /><Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新</Button></Space>
+        <Space><Segmented value={view} onChange={(value) => setView(String(value))} options={[{ label: '全部', value: 'all' }, { label: '即将到期', value: 'due' }, { label: '高风险', value: 'risk' }]} /><Button icon={<ReloadOutlined />} loading={loading} onClick={() => dashboardQuery.refetch()}>刷新</Button></Space>
       </Space>
 
       <Row gutter={12} style={{ marginBottom: 16 }}>

@@ -73,8 +73,21 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
                 )
 
             self.assertEqual(response.data["launch_mode"], "browser")
+            self.assertIn(response.data["update_channel"], {"stable", "preview"})
             self.assertTrue(response.data["restart_required"])
             self.assertEqual(launcher._saved_launch_mode(home), "browser")
+
+    def test_update_channel_is_saved_with_launcher_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            with patch.dict(os.environ, {"SIMING_HOME": str(home)}, clear=False):
+                response = config.update_launcher_settings(
+                    config.LauncherSettingsUpdateRequest(
+                        update_channel="preview"
+                    )
+                )
+
+            self.assertEqual(response.data["update_channel"], "preview")
 
     def test_browser_mode_starts_local_server_without_creating_a_webview_window(self):
         class FakeThread:

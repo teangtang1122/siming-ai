@@ -34,20 +34,61 @@ function Require-Command {
   throw $Hint
 }
 
-function Resolve-BuildPython {
-  $BackendPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
-  if (Test-Path $BackendPython) {
-    return $BackendPython
+function Test-PackagingPython {
+  param([Parameter(Mandatory=$true)][string]$PythonPath)
+  $PreviousErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "SilentlyContinue"
+    $BaseExecutable = & $PythonPath -c "import sys,tkinter; print(sys._base_executable)" 2>$null
+    $ProbeExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $PreviousErrorAction
   }
+  if ($ProbeExitCode -ne 0 -or -not $BaseExecutable) {
+    return $false
+  }
+
+  $NormalizedBase = [System.IO.Path]::GetFullPath(($BaseExecutable | Select-Object -Last 1))
+  return [bool]$NormalizedBase
+}
+
+function Resolve-BuildPython {
+  if ($env:SIMING_BUILD_PYTHON) {
+    $ConfiguredPython = [System.IO.Path]::GetFullPath($env:SIMING_BUILD_PYTHON)
+    if (-not (Test-Path -LiteralPath $ConfiguredPython)) {
+      throw "SIMING_BUILD_PYTHON does not exist: $ConfiguredPython"
+    }
+    if (-not (Test-PackagingPython -PythonPath $ConfiguredPython)) {
+      throw "SIMING_BUILD_PYTHON must provide Tk and a PyInstaller-compatible Windows runtime: $ConfiguredPython"
+    }
+    return $ConfiguredPython
+  }
+
+  # Packaging is intentionally isolated from the backend test environment.
+  # Managed Python distributions can be valid for tests while producing a
+  # PyInstaller bootloader that cannot start on a normal Windows desktop.
   $Python = Get-Command "python" -ErrorAction SilentlyContinue
-  if ($Python) {
+  if ($Python -and (Test-PackagingPython -PythonPath $Python.Source)) {
     return $Python.Source
   }
   $Py = Get-Command "py" -ErrorAction SilentlyContinue
-  if ($Py) {
+  if ($Py -and (Test-PackagingPython -PythonPath $Py.Source)) {
     return $Py.Source
   }
-  throw "Python is required on the packaging machine."
+  $BackendPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+  if ((Test-Path $BackendPython) -and (Test-PackagingPython -PythonPath $BackendPython)) {
+    return $BackendPython
+  }
+  throw "A Windows Python runtime with Tk and PyInstaller support is required on the packaging machine."
+}
+
+function Get-PythonRuntimeIdentity {
+  param([Parameter(Mandatory=$true)][string]$PythonPath)
+  $IdentityJson = & $PythonPath -c "import json,sys; print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', 'base_executable': sys._base_executable}))"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to inspect Python runtime: $PythonPath"
+  }
+  return ($IdentityJson | ConvertFrom-Json)
 }
 
 function Invoke-Native {
@@ -98,6 +139,27 @@ Write-Step "Using build Python: $PythonExe"
 Require-Command -Names @("node") -Hint "Node.js is required on the packaging machine." | Out-Null
 Require-Command -Names @("npm") -Hint "npm is required on the packaging machine." | Out-Null
 
+$BuildPythonRuntime = Get-PythonRuntimeIdentity -PythonPath $PythonExe
+$BuildPythonVersion = $BuildPythonRuntime.version
+$BuildPythonBase = [System.IO.Path]::GetFullPath($BuildPythonRuntime.base_executable)
+$ExistingVenvPython = Join-Path $VenvDir "Scripts\python.exe"
+if (Test-Path -LiteralPath $ExistingVenvPython) {
+  $PackagerPythonRuntime = Get-PythonRuntimeIdentity -PythonPath $ExistingVenvPython
+  $PackagerPythonVersion = $PackagerPythonRuntime.version
+  $PackagerPythonBase = [System.IO.Path]::GetFullPath($PackagerPythonRuntime.base_executable)
+  $VersionChanged = $PackagerPythonVersion -ne $BuildPythonVersion
+  $RuntimeChanged = -not $PackagerPythonBase.Equals($BuildPythonBase, [System.StringComparison]::OrdinalIgnoreCase)
+  if ($VersionChanged -or $RuntimeChanged) {
+    $ResolvedBuildDir = [System.IO.Path]::GetFullPath($BuildDir).TrimEnd('\') + '\'
+    $ResolvedVenvDir = [System.IO.Path]::GetFullPath($VenvDir)
+    if (-not $ResolvedVenvDir.StartsWith($ResolvedBuildDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Refusing to replace packager environment outside the build directory: $ResolvedVenvDir"
+    }
+    Write-Step "Recreating packager environment for Python $BuildPythonVersion at $BuildPythonBase..."
+    Remove-Item -LiteralPath $ResolvedVenvDir -Recurse -Force
+  }
+}
+
 Write-Step "Building frontend static files..."
 Push-Location $FrontendDir
 try {
@@ -117,6 +179,9 @@ if (-not (Test-Path (Join-Path $VenvDir "Scripts\python.exe"))) {
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
+Write-Step "Verifying the Windows GUI runtime..."
+Invoke-Native $VenvPython @("-c", "import tkinter; print(f'Tk {tkinter.TkVersion}')")
+
 Write-Step "Installing backend dependencies and PyInstaller..."
 Invoke-Native $VenvPython @("-m", "pip", "install", "-i", $PipIndexUrl, "--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "--upgrade", "pip")
 Invoke-Native $VenvPython @("-m", "pip", "install", "-i", $PipIndexUrl, "--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "-r", (Join-Path $BackendDir "requirements.txt"), "pyinstaller")
@@ -132,6 +197,14 @@ Remove-Item -LiteralPath (Join-Path $BuildDir "release-assets") -Recurse -Force 
 $PyInstallerMode = if ($OneDir) { "--onedir" } else { "--onefile" }
 $Separator = ":"
 $FrontendDist = Join-Path $FrontendDir "dist"
+$BackendPathForPython = $BackendDir.Replace("\", "\\")
+$DynamicWorkspaceModules = @(
+  & $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.services.workspace.dynamic_modules import LEGACY_HANDLER_MODULES; print(*LEGACY_HANDLER_MODULES, sep='\n')"
+)
+if ($LASTEXITCODE -ne 0 -or $DynamicWorkspaceModules.Count -eq 0) {
+  throw "Unable to resolve dynamic workspace modules for packaging."
+}
+$DynamicWorkspaceModules = @($DynamicWorkspaceModules | Where-Object { $_ })
 
 Write-Step "Creating Windows executable..."
 $IconPath = Join-Path $BackendDir "Siming.ico"
@@ -152,18 +225,28 @@ try {
     "--specpath", $BuildDir,
     "--paths", $BackendDir,
     "--add-data", "${FrontendDist}${Separator}frontend/dist",
+    "--add-data", "$(Join-Path $BackendDir 'alembic')${Separator}alembic",
+    "--add-data", "$(Join-Path $BackendDir 'prompt_specs')${Separator}prompt_specs",
     "--collect-submodules", "app",
+    "--collect-submodules", "app.services.workspace.tools",
     "--collect-submodules", "uvicorn",
     "--collect-submodules", "httptools",
     "--collect-submodules", "watchfiles",
     "--collect-all", "winpty",
     "--hidden-import", "sqlite3",
+    "--hidden-import", "app.database.migrations",
     "--hidden-import", "webview",
     "--hidden-import", "webview.platforms",
     "--hidden-import", "clr_loader",
     "--hidden-import", "pythonnet",
     (Join-Path $BackendDir "launcher.py")
   )
+  $EntryPointIndex = $PyInstallerArgs.Count - 1
+  foreach ($ModuleName in $DynamicWorkspaceModules) {
+    $PyInstallerArgs.Insert($EntryPointIndex, "--hidden-import")
+    $PyInstallerArgs.Insert($EntryPointIndex + 1, [string]$ModuleName)
+    $EntryPointIndex += 2
+  }
   if (Test-Path -LiteralPath $IconPath) {
     Write-Step "Using icon: $IconPath"
     # Insert before the last element (the entry-point .py script)
@@ -182,12 +265,20 @@ $ExePath = if ($OneDir) {
 } else {
   Join-Path $DistDir "$AppName.exe"
 }
-$BackendPathForPython = $BackendDir.Replace("\", "\\")
 $Version = (& $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.version import APP_VERSION; print(APP_VERSION)").Trim()
 $Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
+$IsPrerelease = $Version.Contains("-")
+$ReleaseTag = "v$Version"
+$UpdateChannel = if ($IsPrerelease) { "preview" } else { "stable" }
+$DownloadUrl = if ($IsPrerelease) {
+  "https://github.com/$DefaultUpdateRepo/releases/download/$ReleaseTag/$AppName.exe"
+} else {
+  "https://github.com/$DefaultUpdateRepo/releases/latest/download/$AppName.exe"
+}
 $Manifest = [ordered]@{
   version = $Version
-  download_url = "https://github.com/$DefaultUpdateRepo/releases/latest/download/$AppName.exe"
+  channel = $UpdateChannel
+  download_url = $DownloadUrl
   sha256 = $Sha256
   repo = $DefaultUpdateRepo
 } | ConvertTo-Json -Depth 3

@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import Project, WorldbuildingEntry
-from ....services.content_store import delete_project_file, sync_worldbuilding_to_file
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ..utils import (
     WORLD_DIMENSIONS,
     find_worldbuilding_by_title_or_id,
@@ -29,7 +30,7 @@ async def create_worldbuilding_entry(
     if not title or not content:
         return {"tool": "create_worldbuilding_entry", "status": "skipped", "detail": "世界观标题或内容为空"}
 
-    from ..run_recovery import generate_idempotency_key, check_idempotency
+    from ..idempotency import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_worldbuilding_entry", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)
@@ -66,8 +67,15 @@ async def create_worldbuilding_entry(
     db.flush()
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        sync_worldbuilding_to_file(db, project, entry)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.WORLD_BUILDING,
+                entity_id=entry.id,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "create_worldbuilding_entry",
         "status": "ok",
@@ -103,8 +111,15 @@ async def update_worldbuilding_entry(
     entry.updated_at = datetime.utcnow()
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        sync_worldbuilding_to_file(db, project, entry)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.WORLD_BUILDING,
+                entity_id=entry.id,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "update_worldbuilding_entry",
         "status": "ok",
@@ -126,6 +141,25 @@ async def delete_worldbuilding_entry(
     content_file_path = entry.content_file_path
     db.delete(entry)
     if project:
-        delete_project_file(project, content_file_path)
-    db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.FILE_DELETE,
+                entity_id=entry.id,
+                payload={
+                    "folder_path": project.folder_path,
+                    "relative_path": content_file_path,
+                },
+                source="workspace_tool",
+            ),
+        )
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.WORLD_BUILDING_RELATIONSHIPS,
+                source="workspace_tool",
+            ),
+        )
     return {"tool": "delete_worldbuilding_entry", "status": "ok", "detail": f"已删除世界观：{title}"}

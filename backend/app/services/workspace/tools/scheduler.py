@@ -69,7 +69,7 @@ async def create_scheduled_task(db: Session, project_id: str, args: dict[str, An
     if not name or not prompt:
         return {"tool": "create_scheduled_task", "status": "skipped", "detail": "任务名称或提示词为空"}
 
-    from ..run_recovery import check_idempotency, generate_idempotency_key
+    from ..idempotency import check_idempotency, generate_idempotency_key
 
     idem_key = generate_idempotency_key(db, "create_scheduled_task", project_id, args)
     if idem_key:

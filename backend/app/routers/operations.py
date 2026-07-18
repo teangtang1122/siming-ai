@@ -1,78 +1,44 @@
-"""Unified long-running operation APIs."""
+"""HTTP and SSE adapters for the unified operation center."""
 from __future__ import annotations
 
-import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 
 from ..core.response import ApiResponse
-from ..database.models import OperationRun
-from ..database.session import SessionLocal, get_db
-from ..services.operation_runtime import (
-    ACTIVE_STATUSES,
-    add_operation_event,
-    invoke_operation_action,
-    serialize_operation,
-    update_operation,
-)
+from ..modules.operations.interfaces.contracts import OperationListData, OperationResponse
+from ..modules.operations.interfaces.dependencies import get_operation_service
 
 
 router = APIRouter(tags=["operations"])
 
 
-@router.get("/operations")
+@router.get("/operations", response_model=ApiResponse[OperationListData])
 def list_operations(
     active_only: bool = False,
     limit: int = Query(30, ge=1, le=100),
-    db: Session = Depends(get_db),
 ):
-    query = db.query(OperationRun)
-    if active_only:
-        query = query.filter(OperationRun.status.in_(list(ACTIVE_STATUSES)))
-    rows = query.order_by(OperationRun.updated_at.desc(), OperationRun.created_at.desc()).limit(limit).all()
-    return ApiResponse.success(data={"items": [serialize_operation(item) for item in rows]})
+    items = get_operation_service().list(active_only=active_only, limit=limit)
+    return ApiResponse.success(data={"items": items})
 
 
-@router.get("/operations/{operation_id}")
-def get_operation(operation_id: str, db: Session = Depends(get_db)):
-    operation = db.query(OperationRun).filter(OperationRun.id == operation_id).first()
+@router.get("/operations/{operation_id}", response_model=ApiResponse[OperationResponse])
+def get_operation(operation_id: str):
+    operation = get_operation_service().get(operation_id, include_events=True)
     if not operation:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return ApiResponse.success(data=serialize_operation(operation, include_events=True))
+    return ApiResponse.success(data=operation)
 
 
 @router.get("/operations/{operation_id}/stream")
 async def stream_operation(operation_id: str, after: int = 0):
     async def events():
-        sent = max(0, after)
-        while True:
-            with SessionLocal() as db:
-                operation = db.query(OperationRun).filter(OperationRun.id == operation_id).first()
-                if not operation:
-                    yield "event: error\ndata: " + json.dumps({"message": "任务不存在"}, ensure_ascii=False) + "\n\n"
-                    return
-                rows = list(operation.events or [])
-                for event in rows:
-                    if event.sequence <= sent:
-                        continue
-                    sent = event.sequence
-                    payload = {
-                        "sequence": event.sequence,
-                        "event_type": event.event_type,
-                        "status": event.status,
-                        "message": event.message,
-                        "payload": event.payload_json,
-                    }
-                    yield f"event: operation_event\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                snapshot = serialize_operation(operation)
-                yield f"event: heartbeat\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
-                if operation.status in {"completed", "failed", "cancelled", "interrupted"}:
-                    yield f"event: done\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
-                    return
-            await asyncio.sleep(2)
+        async for event_name, payload in get_operation_service().stream(
+            operation_id,
+            after=after,
+        ):
+            yield f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         events(),
@@ -81,75 +47,30 @@ async def stream_operation(operation_id: str, after: int = 0):
     )
 
 
-async def _action(operation_id: str, action: str, db: Session) -> ApiResponse:
-    operation = db.query(OperationRun).filter(OperationRun.id == operation_id).first()
-    if not operation:
+async def _action(operation_id: str, action: str) -> ApiResponse:
+    status, payload = await get_operation_service().action(operation_id, action)
+    if status == "not_found":
         raise HTTPException(status_code=404, detail="任务不存在")
-    allowed = {
-        "pause": operation.can_pause,
-        "continue": operation.can_pause,
-        "cancel": operation.can_cancel,
-        "retry_current_unit": operation.can_retry,
-    }.get(action, False)
-    if not allowed:
+    if status != "ok":
         raise HTTPException(status_code=409, detail="该任务当前不支持此操作，请返回原页面处理")
-    handled = await invoke_operation_action(operation_id, action)
-    if not handled:
-        raise HTTPException(status_code=409, detail="该任务当前不支持此操作，请返回原页面处理")
-    if action == "cancel":
-        update_operation(
-            db,
-            operation,
-            status="cancelled",
-            message="任务已取消",
-            event_type="cancelled",
-            attention={},
-            result={"summary": "任务已取消", "completed": [], "incomplete": ["任务未完成"]},
-            outcome="cancelled",
-        )
-    elif action == "pause":
-        update_operation(db, operation, status="paused", message="任务已暂停", event_type="paused")
-    elif action == "continue":
-        update_operation(
-            db,
-            operation,
-            status="running",
-            health_status="active",
-            message="任务继续运行",
-            event_type="continued",
-            attention={},
-            result={},
-        )
-    else:
-        update_operation(
-            db,
-            operation,
-            status="running",
-            health_status="active",
-            message="正在重试当前单元",
-            event_type="retrying",
-            attention={},
-            result={},
-        )
-    db.commit()
-    return ApiResponse.success(data=serialize_operation(operation, include_events=True))
+    return ApiResponse.success(data=payload)
 
 
 @router.post("/operations/{operation_id}/pause")
-async def pause_operation(operation_id: str, db: Session = Depends(get_db)):
-    return await _action(operation_id, "pause", db)
+async def pause_operation(operation_id: str):
+    return await _action(operation_id, "pause")
 
 
 @router.post("/operations/{operation_id}/continue")
-async def continue_operation(operation_id: str, db: Session = Depends(get_db)):
-    return await _action(operation_id, "continue", db)
+async def continue_operation(operation_id: str):
+    return await _action(operation_id, "continue")
 
 
 @router.post("/operations/{operation_id}/cancel")
-async def cancel_operation(operation_id: str, db: Session = Depends(get_db)):
-    return await _action(operation_id, "cancel", db)
+async def cancel_operation(operation_id: str):
+    return await _action(operation_id, "cancel")
 
 
 @router.post("/operations/{operation_id}/retry-current-unit")
-async def retry_operation_unit(operation_id: str, db: Session = Depends(get_db)):
-    return await _action(operation_id, "retry_current_unit", db)
+async def retry_operation_unit(operation_id: str):
+    return await _action(operation_id, "retry_current_unit")

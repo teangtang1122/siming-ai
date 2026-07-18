@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import os
 import threading
 import time
 from typing import Any
 
+from ..core.legacy_env import get_compatible_env
 
 DEFAULT_TTL_SECONDS = 60
 _MEMORY_LOCK = threading.RLock()
@@ -27,7 +27,7 @@ def _redis_client() -> Any | None:
         return None
     if _REDIS_CLIENT is not None:
         return _REDIS_CLIENT
-    url = os.environ.get("SIMING_REDIS_URL") or os.environ.get("MOSHU_REDIS_URL") or os.environ.get("REDIS_URL")
+    url = get_compatible_env("SIMING_REDIS_URL", "REDIS_URL")
     if not url:
         _REDIS_CLIENT = False
         return None

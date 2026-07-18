@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....ai.gateway import LLMGateway
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....core.json_repair import parse_json_object
 from ....database.models import Character, OutlineNode, Project
 from ....prompts.outline_writer_prompts import build_outline_writer_messages

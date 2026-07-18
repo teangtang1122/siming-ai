@@ -1,0 +1,1 @@
+"""Novel-creation domain rules."""

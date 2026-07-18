@@ -1,23 +1,25 @@
 """Encryption utilities for API Key protection."""
 import os
-from typing import Optional
+
 from cryptography.fernet import Fernet
+
+from .legacy_env import get_compatible_env
 
 
 def _get_or_create_key() -> bytes:
     """Get or create the encryption key.
     
-    Reads from environment variable NOVEL_AGENT_KEY.
+    Reads from the canonical SIMING_KEY environment variable.
     If not set, generates a new key and stores it in a local file.
     The key is a 32-byte url-safe base64-encoded bytes string.
     """
-    env_key = os.environ.get("SIMING_KEY") or os.environ.get("MOSHU_KEY") or os.environ.get("NOVEL_AGENT_KEY")
+    env_key = get_compatible_env("SIMING_KEY")
     if env_key:
         return env_key.encode()
 
-    key_file = os.environ.get("SIMING_KEY_FILE") or os.environ.get("MOSHU_KEY_FILE") or os.environ.get("NOVEL_AGENT_KEY_FILE")
+    key_file = get_compatible_env("SIMING_KEY_FILE")
     if not key_file:
-        app_home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+        app_home = get_compatible_env("SIMING_HOME")
         if app_home:
             key_file = os.path.join(app_home, ".crypto_key")
         else:
@@ -36,7 +38,7 @@ def _get_or_create_key() -> bytes:
     return key
 
 
-_fernet: Optional[Fernet] = None
+_fernet: Fernet | None = None
 
 
 def get_fernet() -> Fernet:

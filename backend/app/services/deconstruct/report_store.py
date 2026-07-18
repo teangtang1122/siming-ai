@@ -1,4 +1,6 @@
 """Report CRUD helpers for the deconstruct pipeline."""
+
+from app.architecture.uow import commit_session
 import json
 from datetime import datetime
 from typing import Optional
@@ -131,6 +133,6 @@ def create_deconstruct_report(
     report.operation_id = operation.id
     report_data["operation_id"] = operation.id
     report.report_data = json.dumps(report_data, ensure_ascii=False)
-    db.commit()
+    commit_session(db)
     db.refresh(report)
     return report

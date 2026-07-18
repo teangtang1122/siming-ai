@@ -1768,9 +1768,9 @@ class TestLocalCLIConnectionTimeout(unittest.TestCase):
             model="codex-cli",
         )
         with patch("app.routers.config._validate_cli_command"), patch(
-            "app.routers.config.LocalCLIAdapter"
+            "app.modules.model_runtime.infrastructure.verification.LocalCLIAdapter"
         ), patch(
-            "app.routers.config.asyncio.wait_for",
+            "app.modules.model_runtime.infrastructure.verification.asyncio.wait_for",
             new=AsyncMock(return_value={"content": "I read the file, but it contained question marks."}),
         ):
             with self.assertRaises(LLMError) as caught:
@@ -1790,9 +1790,9 @@ class TestLocalCLIConnectionTimeout(unittest.TestCase):
             model="codex-cli",
         )
         with patch("app.routers.config._validate_cli_command"), patch(
-            "app.routers.config.LocalCLIAdapter"
+            "app.modules.model_runtime.infrastructure.verification.LocalCLIAdapter"
         ) as adapter_cls, patch(
-            "app.routers.config.asyncio.wait_for",
+            "app.modules.model_runtime.infrastructure.verification.asyncio.wait_for",
             new=AsyncMock(side_effect=asyncio.TimeoutError),
         ):
             adapter_cls.return_value.chat_completion = MagicMock(return_value=None)

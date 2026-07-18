@@ -4,7 +4,7 @@ Connects the main assistant chat flow with the plan orchestrator:
 detect_intent -> build_plan -> create_plan -> execute_plan (SSE events).
 """
 from __future__ import annotations
-
+from app.architecture.uow import commit_session
 import json
 import re
 from datetime import datetime, timedelta
@@ -227,7 +227,7 @@ def _enrich_outline_intent(
 
 def _model_provider(model: str | None) -> str:
     try:
-        from ...ai.gateway import LLMGateway
+        from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 
         return LLMGateway.provider_for_model(model)
     except Exception:
@@ -294,7 +294,7 @@ def _stream_assistant_notice(
         )
         db.add(user_msg_db)
         db.add(assistant_msg_db)
-        db.commit()
+        commit_session(db)
         db.refresh(conversation)
         db.refresh(user_msg_db)
         db.refresh(assistant_msg_db)
@@ -338,7 +338,7 @@ def _stream_assistant_notice(
         assistant_msg_db.status = "completed"
         assistant_msg_db.updated_at = datetime.utcnow()
         conversation.updated_at = datetime.utcnow()
-        db.commit()
+        commit_session(db)
 
         mark_assistant_run(
             db,
@@ -500,7 +500,7 @@ def _schedule_memory_extraction(project_id: str, user_message: str, assistant_re
     if not user_message.strip() or not assistant_reply.strip():
         return
     try:
-        from ...ai.gateway import LLMGateway
+        from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 
         if not LLMGateway.supports_tool_calling(model):
             return
@@ -512,7 +512,7 @@ def _schedule_memory_extraction(project_id: str, user_message: str, assistant_re
     async def _extract_and_save_memories() -> None:
         import logging
 
-        from ...ai.gateway import LLMGateway
+        from ...modules.model_runtime.application.execution import model_executor as LLMGateway
         from ...database.session import SessionLocal
         from ...prompts.packs.memory_extraction import PACK
         from ..workspace.tools.memory import remember
@@ -634,7 +634,7 @@ def _stream_cataloging_job(
         )
         db.add(user_msg_db)
         db.add(assistant_msg_db)
-        db.commit()
+        commit_session(db)
         db.refresh(conversation)
         db.refresh(user_msg_db)
         db.refresh(assistant_msg_db)
@@ -781,7 +781,7 @@ def _stream_cataloging_job(
         assistant_msg_db.status = "completed"
         assistant_msg_db.updated_at = datetime.utcnow()
         conversation.updated_at = datetime.utcnow()
-        db.commit()
+        commit_session(db)
 
         mark_assistant_run(
             db, assistant_run,
@@ -961,7 +961,7 @@ async def detect_and_stream_plan(
         )
         db.add(user_msg_db)
         db.add(assistant_msg_db)
-        db.commit()
+        commit_session(db)
         db.refresh(conversation)
         db.refresh(user_msg_db)
         db.refresh(assistant_msg_db)
@@ -1157,7 +1157,7 @@ async def detect_and_stream_plan(
         assistant_msg_db.status = "completed"
         assistant_msg_db.updated_at = datetime.utcnow()
         conversation.updated_at = datetime.utcnow()
-        db.commit()
+        commit_session(db)
 
         mark_assistant_run(
             db, assistant_run,

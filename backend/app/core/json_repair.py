@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from ..ai.gateway import LLMGateway
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 
 
 def strip_json_fences(text: str) -> str:

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   Alert,
@@ -24,6 +25,11 @@ import {
   ToolOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import {
+  getGettingStartedStatus,
+  onboardingKeys,
+  useGettingStartedStatus,
+} from '../features/onboarding'
 import PageWrapper from '../components/PageWrapper'
 import SystemNav from '../components/SystemNav'
 import {
@@ -147,40 +153,33 @@ function FirstIdea({ modelReady, model }: { modelReady: boolean; model?: string 
 }
 
 export function GettingStartedPanel() {
-  const [status, setStatus] = useState<GettingStartedStatus | null>(null)
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
+  const statusQuery = useGettingStartedStatus()
+  const status = statusQuery.data as GettingStartedStatus | undefined
+  const loading = statusQuery.isLoading
   const [job, setJob] = useState<ActivationJob | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>()
   const [setupError, setSetupError] = useState('')
   const [authCredential, setAuthCredential] = useState('')
 
-  const fetchStatus = useCallback(async (refresh = false, summaryOnly = false) => {
-    setLoading(true)
+  const fetchStatus = useCallback(async (refresh = false) => {
     try {
-      let response = await apiClient.get<ApiEnvelope<GettingStartedStatus>>('/config/getting-started', {
-        refresh,
-        summary: summaryOnly,
-      })
-      if (summaryOnly && response.data.data.needs_setup) {
-        response = await apiClient.get<ApiEnvelope<GettingStartedStatus>>('/config/getting-started', {
-          refresh,
-          summary: false,
-        })
-      }
-      const next = response.data.data
-      setStatus(next)
+      const next = await getGettingStartedStatus(false, refresh) as GettingStartedStatus
+      queryClient.setQueryData(onboardingKeys.detail(), next)
+      void queryClient.invalidateQueries({ queryKey: onboardingKeys.summary() })
       if (next.activation_job && next.activation_job.status !== 'ready') setJob(next.activation_job)
       setSelectedModel((current) => current || next.recommended_model || next.free_models?.[0]?.id)
     } catch (error) {
       setSetupError(errorText(error))
-    } finally {
-      setLoading(false)
     }
-  }, [])
+  }, [queryClient])
 
   useEffect(() => {
-    void fetchStatus(false, true)
-  }, [fetchStatus])
+    if (!status) return
+    const activationJob = status.activation_job || null
+    if (activationJob && activationJob.status !== 'ready') setJob(activationJob)
+    setSelectedModel((current) => current || status.recommended_model || status.free_models?.[0]?.id)
+  }, [status])
 
   useEffect(() => {
     const authRunning = ['running', 'submitted'].includes(job?.auth_status || '')
@@ -192,7 +191,7 @@ export function GettingStartedPanel() {
         setJob(next)
         if (next.status === 'ready') {
           localStorage.removeItem('siming_getting_started_deferred')
-          await fetchStatus(false, true)
+          await fetchStatus(false)
         }
       } catch (error) {
         setSetupError(errorText(error))
@@ -257,7 +256,7 @@ export function GettingStartedPanel() {
 
   if (loading && !status) return <div className="getting-started-loading" role="status">正在检查这台电脑...</div>
   if (!status) {
-    return <Alert type="error" showIcon message="暂时无法检查电脑环境" description={setupError || '请确认司命仍在运行。'} action={<Button onClick={() => void fetchStatus(true)}>重新检查</Button>} />
+    return <Alert type="error" showIcon message="暂时无法检查电脑环境" description={setupError || (statusQuery.error instanceof Error ? statusQuery.error.message : '请确认司命仍在运行。')} action={<Button onClick={() => void fetchStatus(true)}>重新检查</Button>} />
   }
 
   const ready = job?.status === 'ready' || (status.is_global_default && status.has_usable_models !== false)

@@ -11,7 +11,9 @@ from openai import NotFoundError
 
 from app.ai.openai_adapter import OpenAIAdapter
 from app.core.exceptions import LLMError
-from app.routers.config import _probe_openai_protocol, list_provider_models
+from app.modules.model_runtime.application.verification import ModelProbeRequest
+from app.modules.model_runtime.infrastructure.verification import _probe_openai
+from app.routers.config import list_provider_models
 from app.schemas.config import ModelListRequest
 
 
@@ -42,14 +44,17 @@ def test_auto_protocol_probe_uses_real_responses_call_after_chat_404():
     )
     client.close = AsyncMock()
 
-    with patch("app.routers.config.AsyncOpenAI", return_value=client):
-        result = asyncio.run(_probe_openai_protocol(
+    with patch(
+        "app.modules.model_runtime.infrastructure.verification.AsyncOpenAI",
+        return_value=client,
+    ):
+        result = asyncio.run(_probe_openai(ModelProbeRequest(
             provider="custom_proxy",
             api_key="secret",
             base_url="https://proxy.example/codex",
             model="gpt-test",
-            requested_protocol="auto",
-        ))
+            api_protocol="auto",
+        )))
 
     assert result["api_protocol"] == "responses"
     assert result["base_url"] == "https://proxy.example/codex"
@@ -64,10 +69,11 @@ def test_custom_model_catalog_404_allows_manual_model_entry():
         api_key="secret",
         base_url_override="https://proxy.example/codex",
     )
-    with patch(
-        "app.routers.config._list_openai_compatible_models",
-        new=AsyncMock(side_effect=LLMError("API error: HTTP 404 Not Found at /models")),
-    ):
+    verification = MagicMock()
+    verification.list_models = AsyncMock(
+        side_effect=LLMError("API error: HTTP 404 Not Found at /models")
+    )
+    with patch("app.routers.config.get_model_verification", return_value=verification):
         response = asyncio.run(list_provider_models(payload))
 
     assert response.data["models"] == []

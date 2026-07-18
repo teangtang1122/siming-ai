@@ -1,6 +1,8 @@
 """Conflict suggestion, character change detection, and worldbuilding conflict detection workspace tools."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json as _json
 import re as _re
 from datetime import datetime
@@ -8,7 +10,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....ai.gateway import LLMGateway
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....database.models import (
     Chapter,
     ChapterCharacter,
@@ -295,7 +297,7 @@ async def detect_character_changes(
                 ))
 
     if chapter_id:
-        db.commit()
+        commit_session(db)
 
     return {
         "tool": "detect_character_changes",

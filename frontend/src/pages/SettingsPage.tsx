@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Card,
   Collapse,
@@ -35,7 +36,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
-import { useAppStore } from '../stores'
+import { projectKeys } from '../features/projects'
 import SystemNav from '../components/SystemNav'
 import { AdaptiveHelp } from '../components/interaction'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
@@ -261,9 +262,11 @@ const readinessColor = (status: ModelConfig['readiness_status']) => {
 }
 
 type LaunchMode = 'desktop' | 'browser'
+type UpdateChannel = 'stable' | 'preview'
 
 interface LauncherSettings {
   launch_mode: LaunchMode
+  update_channel: UpdateChannel
   restart_required: boolean
   browser_mode_description: string
 }
@@ -277,6 +280,7 @@ interface UpdateSignature {
 
 interface UpdateMetadata {
   version: string
+  channel: UpdateChannel
   source: string
   download_url: string
   sha256_available: boolean
@@ -292,6 +296,7 @@ interface StagedUpdate {
 
 interface UpdateStatus {
   current_version: string
+  update_channel: UpdateChannel
   update_available: boolean
   update?: UpdateMetadata | null
   staged_update?: StagedUpdate | null
@@ -381,7 +386,7 @@ interface SettingsPageProps {
 }
 
 function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
-  const { fetchProjects } = useAppStore()
+  const queryClient = useQueryClient()
   const [configs, setConfigs] = useState<ModelConfig[]>([])
   const [globalModel, setGlobalModel] = useState<GlobalModel>({ provider: null, model: null })
   const [loading, setLoading] = useState(false)
@@ -400,6 +405,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [contentRootLoading, setContentRootLoading] = useState(false)
   const [launcherSettings, setLauncherSettings] = useState<LauncherSettings | null>(null)
   const [launchMode, setLaunchMode] = useState<LaunchMode>('desktop')
+  const [updateChannel, setUpdateChannel] = useState<UpdateChannel>('stable')
   const [launcherLoading, setLauncherLoading] = useState(false)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
@@ -447,6 +453,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       const res = await apiClient.get<{ code: number; data: LauncherSettings }>('/config/launcher')
       setLauncherSettings(res.data.data)
       setLaunchMode(res.data.data.launch_mode)
+      setUpdateChannel(res.data.data.update_channel || 'stable')
     } catch (err: any) {
       message.error(err.message || '获取启动方式失败')
     } finally {
@@ -459,8 +466,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     fetchGlobalModel()
     fetchContentRoot()
     fetchLauncherSettings()
-    fetchProjects()
-  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchLauncherSettings, fetchProjects])
+  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchLauncherSettings])
 
   const saveLaunchMode = async () => {
     setLauncherLoading(true)
@@ -472,6 +478,22 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       message.success('启动方式已保存，下次启动生效')
     } catch (err: any) {
       message.error(err.message || '保存启动方式失败')
+    } finally {
+      setLauncherLoading(false)
+    }
+  }
+
+  const saveUpdateChannel = async () => {
+    setLauncherLoading(true)
+    try {
+      const res = await apiClient.put<{ code: number; data: LauncherSettings }>('/config/launcher', {
+        update_channel: updateChannel,
+      })
+      setLauncherSettings(res.data.data)
+      setUpdateStatus(null)
+      message.success('更新通道已保存')
+    } catch (err: any) {
+      message.error(err.message || '保存更新通道失败')
     } finally {
       setLauncherLoading(false)
     }
@@ -545,7 +567,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     } else {
       message.success(successText)
     }
-    fetchProjects()
+    void queryClient.invalidateQueries({ queryKey: projectKeys.all })
   }
 
   const saveContentRoot = async () => {
@@ -973,7 +995,34 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           <Paragraph style={{ margin: 0 }}>
             司命不会在启动时自动检查、下载或替换程序。只有你点击下方按钮后，才会检查版本；下载后必须通过 SHA256 和 Windows 代码签名校验，才能安装。
           </Paragraph>
+          <Radio.Group
+            value={updateChannel}
+            onChange={(event) => {
+              setUpdateChannel(event.target.value)
+              setUpdateStatus(null)
+            }}
+          >
+            <Space direction="vertical" size={8}>
+              <Radio value="stable">
+                <Text strong>稳定通道</Text>
+                <Text type="secondary"> 只接收正式版本，适合日常创作。</Text>
+              </Radio>
+              <Radio value="preview">
+                <Text strong>预览通道</Text>
+                <Text type="secondary"> 可接收 alpha、beta 和 RC，用于参与 3.0 测试。</Text>
+              </Radio>
+            </Space>
+          </Radio.Group>
           <Space wrap>
+            <Button
+              icon={<SaveOutlined />}
+              aria-label="保存更新通道"
+              loading={launcherLoading}
+              disabled={launcherSettings?.update_channel === updateChannel}
+              onClick={saveUpdateChannel}
+            >
+              保存更新通道
+            </Button>
             <Button aria-label="检查更新" icon={<ReloadOutlined />} loading={checkingUpdate} onClick={checkForUpdates}>
               检查更新
             </Button>
@@ -1010,6 +1059,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           {updateStatus?.update_available && updateStatus.update && (
             <Descriptions size="small" column={1} bordered>
               <Descriptions.Item label="可用版本">{updateStatus.update.version}</Descriptions.Item>
+              <Descriptions.Item label="更新通道">
+                {updateStatus.update.channel === 'preview' ? '预览通道' : '稳定通道'}
+              </Descriptions.Item>
               <Descriptions.Item label="SHA256">
                 {updateStatus.update.sha256_available ? '发布页提供，下载后会复核' : '发布页未提供，司命不会下载或安装'}
               </Descriptions.Item>

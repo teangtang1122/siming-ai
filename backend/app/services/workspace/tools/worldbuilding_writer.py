@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....ai.gateway import LLMGateway
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....database.models import Project
 from ....prompts.worldbuilding_writer_prompts import build_worldbuilding_writer_messages
 from ....prompts.style_prompts import build_style_context

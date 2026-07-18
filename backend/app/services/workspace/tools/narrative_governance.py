@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -29,7 +31,7 @@ async def apply_narrative_governance_candidates(db: Session, project_id: str, ar
     if mode != "apply":
         return {"tool": "apply_narrative_governance_candidates", "status": "ok", "detail": f"已预览 {len(candidates)} 条治理候选", "data": {"items": candidates, "applied": False}}
     items = apply_governance_candidates(db, project_id, candidates, chapter_id=str(args.get("chapter_id") or "") or None)
-    db.commit()
+    commit_session(db)
     return {"tool": "apply_narrative_governance_candidates", "status": "ok", "detail": f"已应用 {len(items)} 条治理候选", "data": {"items": items, "applied": True}}
 
 
@@ -43,7 +45,7 @@ async def diff_narrative_checkpoint(db: Session, project_id: str, args: dict[str
 async def restore_narrative_governance_checkpoint(db: Session, project_id: str, args: dict[str, Any]) -> dict:
     checkpoint_id = str(args.get("checkpoint_id") or "")
     row = restore_narrative_checkpoint(db, project_id, checkpoint_id)
-    db.commit()
+    commit_session(db)
     return {"tool": "restore_narrative_governance_checkpoint", "status": "ok", "detail": "叙事治理状态已回滚", "data": {"id": row.id, "sequence": row.sequence, "label": row.label}}
 
 

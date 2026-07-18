@@ -17,35 +17,89 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .core.legacy_env import compatible_env_enabled, get_compatible_env
 from .version import APP_VERSION, DEFAULT_UPDATE_REPO
-
 
 USER_AGENT = f"Siming/{APP_VERSION}"
 EXE_NAME = "Siming.exe"
 COMPATIBLE_EXE_NAMES = {EXE_NAME.lower()}
 CHECKSUM_ASSET_NAMES = {"sha256.txt", f"{EXE_NAME.lower()}.sha256"}
 STAGED_UPDATE_FILENAME = "pending-update.json"
+UPDATE_CHANNELS = {"stable", "preview"}
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
+    core, _prerelease = _parse_semver(value)
+    return core
+
+
+def _parse_semver(value: str) -> tuple[tuple[int, int, int], tuple[str, ...] | None]:
     text = str(value or "").strip().lower().removeprefix("v")
-    parts = re.findall(r"\d+", text)
-    return tuple(int(part) for part in parts) if parts else (0,)
+    match = re.fullmatch(
+        r"(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9a-z.-]+))?",
+        text,
+    )
+    if not match:
+        return (0, 0, 0), None
+    core = tuple(int(part or 0) for part in match.groups()[:3])
+    prerelease = (
+        tuple(part for part in match.group(4).split(".") if part)
+        if match.group(4)
+        else None
+    )
+    return core, prerelease
+
+
+def _compare_prerelease(
+    left: tuple[str, ...] | None,
+    right: tuple[str, ...] | None,
+) -> int:
+    if left is None and right is None:
+        return 0
+    if left is None:
+        return 1
+    if right is None:
+        return -1
+    for left_part, right_part in zip(left, right):
+        if left_part == right_part:
+            continue
+        left_numeric = left_part.isdigit()
+        right_numeric = right_part.isdigit()
+        if left_numeric and right_numeric:
+            return 1 if int(left_part) > int(right_part) else -1
+        if left_numeric != right_numeric:
+            return -1 if left_numeric else 1
+        return 1 if left_part > right_part else -1
+    if len(left) == len(right):
+        return 0
+    return 1 if len(left) > len(right) else -1
 
 
 def is_newer_version(latest: str, current: str = APP_VERSION) -> bool:
-    latest_parts = _version_tuple(latest)
-    current_parts = _version_tuple(current)
-    width = max(len(latest_parts), len(current_parts))
-    return latest_parts + (0,) * (width - len(latest_parts)) > current_parts + (0,) * (width - len(current_parts))
+    latest_core, latest_prerelease = _parse_semver(latest)
+    current_core, current_prerelease = _parse_semver(current)
+    if latest_core != current_core:
+        return latest_core > current_core
+    return _compare_prerelease(latest_prerelease, current_prerelease) > 0
+
+
+def default_update_channel(version: str = APP_VERSION) -> str:
+    _core, prerelease = _parse_semver(version)
+    return "preview" if prerelease is not None else "stable"
+
+
+def resolve_update_channel(channel: str | None = None) -> str:
+    selected = str(
+        channel
+        or get_compatible_env("SIMING_UPDATE_CHANNEL")
+        or ""
+    ).strip().lower()
+    return selected if selected in UPDATE_CHANNELS else default_update_channel()
 
 
 def _github_token() -> str | None:
     return (
-        os.environ.get("SIMING_GITHUB_TOKEN")
-        or os.environ.get("MOSHU_GITHUB_TOKEN")
-        or os.environ.get("NOVEL_AGENT_GITHUB_TOKEN")
-        or os.environ.get("GITHUB_TOKEN")
+        get_compatible_env("SIMING_GITHUB_TOKEN", "GITHUB_TOKEN")
     )
 
 
@@ -66,7 +120,7 @@ def _request(url: str, timeout: float = 8.0) -> bytes:
         return response.read()
 
 
-def _request_json(url: str, timeout: float = 8.0) -> dict[str, Any]:
+def _request_json(url: str, timeout: float = 8.0) -> Any:
     return json.loads(_request(url, timeout=timeout).decode("utf-8-sig"))
 
 
@@ -84,8 +138,10 @@ def _manifest_from_url(url: str) -> dict[str, Any] | None:
     }
 
 
-def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
-    release = _request_json(f"https://api.github.com/repos/{repo}/releases/latest")
+def _manifest_from_release_payload(
+    repo: str,
+    release: dict[str, Any],
+) -> dict[str, Any] | None:
     tag = str(release.get("tag_name") or release.get("name") or "").strip()
     version = tag.removeprefix("v")
     assets = release.get("assets") if isinstance(release.get("assets"), list) else []
@@ -117,32 +173,75 @@ def _manifest_from_github_release(repo: str) -> dict[str, Any] | None:
     }
 
 
-def find_latest_update() -> dict[str, Any] | None:
+def _release_has_executable(release: dict[str, Any]) -> bool:
+    assets = release.get("assets") if isinstance(release.get("assets"), list) else []
+    return any(
+        isinstance(asset, dict)
+        and str(asset.get("name") or "").lower() == EXE_NAME.lower()
+        for asset in assets
+    )
+
+
+def _manifest_from_github_release(
+    repo: str,
+    channel: str = "stable",
+) -> dict[str, Any] | None:
+    selected_channel = resolve_update_channel(channel)
+    if selected_channel == "stable":
+        release = _request_json(
+            f"https://api.github.com/repos/{repo}/releases/latest"
+        )
+        if not isinstance(release, dict):
+            return None
+        return _manifest_from_release_payload(repo, release)
+
+    releases = _request_json(
+        f"https://api.github.com/repos/{repo}/releases?per_page=30"
+    )
+    if not isinstance(releases, list):
+        return None
+    eligible = [
+        release
+        for release in releases
+        if isinstance(release, dict)
+        and not release.get("draft")
+        and _release_has_executable(release)
+    ]
+    if not eligible:
+        return None
+    latest = eligible[0]
+    for candidate in eligible[1:]:
+        candidate_version = str(
+            candidate.get("tag_name") or candidate.get("name") or ""
+        )
+        latest_version = str(latest.get("tag_name") or latest.get("name") or "")
+        if is_newer_version(candidate_version, latest_version):
+            latest = candidate
+    return _manifest_from_release_payload(repo, latest)
+
+
+def find_latest_update(channel: str | None = None) -> dict[str, Any] | None:
     """Return metadata only.  This function never downloads an update."""
-    if (
-        os.environ.get("SIMING_DISABLE_UPDATE") == "1"
-        or os.environ.get("MOSHU_DISABLE_UPDATE") == "1"
-        or os.environ.get("NOVEL_AGENT_DISABLE_UPDATE") == "1"
-    ):
+    if compatible_env_enabled("SIMING_DISABLE_UPDATE"):
         return None
     manifest_url = (
-        os.environ.get("SIMING_UPDATE_MANIFEST_URL")
-        or os.environ.get("MOSHU_UPDATE_MANIFEST_URL")
-        or os.environ.get("NOVEL_AGENT_UPDATE_MANIFEST_URL")
-        or ""
+        get_compatible_env("SIMING_UPDATE_MANIFEST_URL")
     ).strip()
     repo = (
-        os.environ.get("SIMING_UPDATE_REPO")
-        or os.environ.get("MOSHU_UPDATE_REPO")
-        or os.environ.get("NOVEL_AGENT_UPDATE_REPO")
-        or DEFAULT_UPDATE_REPO
+        get_compatible_env("SIMING_UPDATE_REPO", default=DEFAULT_UPDATE_REPO)
     ).strip()
+    selected_channel = resolve_update_channel(channel)
     try:
-        manifest = _manifest_from_url(manifest_url) if manifest_url else _manifest_from_github_release(repo)
+        manifest = (
+            _manifest_from_url(manifest_url)
+            if manifest_url
+            else _manifest_from_github_release(repo, selected_channel)
+        )
     except (OSError, urllib_error.URLError, urllib_error.HTTPError, json.JSONDecodeError):
         return None
     if not manifest or not manifest.get("download_url"):
         return None
+    manifest["channel"] = selected_channel
     return manifest if is_newer_version(str(manifest.get("version") or "")) else None
 
 
@@ -298,6 +397,7 @@ def _require_valid_signature(path: Path) -> dict[str, Any]:
 def _public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "version": str(manifest.get("version") or ""),
+        "channel": str(manifest.get("channel") or ""),
         "source": str(manifest.get("source") or ""),
         "download_url": str(manifest.get("download_url") or ""),
         "sha256_available": bool(re.fullmatch(r"[a-fA-F0-9]{64}", str(manifest.get("sha256") or ""))),
@@ -342,9 +442,13 @@ def _validate_staged_update(app_home: Path) -> dict[str, Any]:
     return staged
 
 
-def get_update_status(app_home: Path) -> dict[str, Any]:
+def get_update_status(
+    app_home: Path,
+    channel: str | None = None,
+) -> dict[str, Any]:
     """Check only metadata and surface any already verified staged update."""
-    manifest = find_latest_update()
+    selected_channel = resolve_update_channel(channel)
+    manifest = find_latest_update(selected_channel)
     staged = _read_staged_update(app_home)
     staged_payload = None
     if staged:
@@ -361,6 +465,7 @@ def get_update_status(app_home: Path) -> dict[str, Any]:
             staged_payload["error"] = str(exc)
     return {
         "current_version": APP_VERSION,
+        "update_channel": selected_channel,
         "update_available": bool(manifest),
         "update": _public_manifest(manifest) if manifest else None,
         "staged_update": staged_payload,
@@ -368,11 +473,15 @@ def get_update_status(app_home: Path) -> dict[str, Any]:
     }
 
 
-def download_and_stage_update(app_home: Path) -> dict[str, Any]:
+def download_and_stage_update(
+    app_home: Path,
+    channel: str | None = None,
+) -> dict[str, Any]:
     """Download a user-confirmed update and require both hash and signature checks."""
-    manifest = find_latest_update()
+    selected_channel = resolve_update_channel(channel)
+    manifest = find_latest_update(selected_channel)
     if not manifest:
-        return get_update_status(app_home)
+        return get_update_status(app_home, selected_channel)
     expected_sha256 = _expected_sha256(manifest)
     updates_dir = _updates_dir(app_home)
     updates_dir.mkdir(parents=True, exist_ok=True)
@@ -406,7 +515,7 @@ def download_and_stage_update(app_home: Path) -> dict[str, Any]:
     }
     _write_staged_update(app_home, staged)
     return {
-        **get_update_status(app_home),
+        **get_update_status(app_home, selected_channel),
         "downloaded": True,
         "staged_update": {
             "version": version,

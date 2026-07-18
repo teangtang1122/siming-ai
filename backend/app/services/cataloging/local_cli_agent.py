@@ -19,43 +19,44 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.ai.local_cli_adapter import (
-    CLIStalledError,
-    CLIQuotaLimitError,
-    CLILaunch,
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
     OPENCODE_FAMILY_PROVIDERS,
+    CLILaunch,
+    CLIQuotaLimitError,
+    CLIStalledError,
     communicate_with_cli_quota_detection,
     detect_cli_quota_error,
-    ensure_opencode_logging_args,
     effective_local_cli_model,
+    ensure_opencode_logging_args,
     hidden_subprocess_kwargs,
     parse_cli_launch,
 )
+from app.architecture.uow import commit_session
+from app.core.legacy_env import set_compatible_env
 from app.database.models import (
-    APIConfig,
     AgentRun,
     AgentRunEvent,
+    APIConfig,
     CatalogingChapterRun,
     CatalogingJob,
     Chapter,
     Project,
 )
 from app.database.session import SessionLocal
+from app.modules.story.application.content_sync import ensure_chapter_mirror
 from app.prompts.cataloging_source import get_external_cataloging_system_prompt
-from app.services.content_store import ensure_project_folder, sync_chapter_to_file
-from app.services.external_agent.run_service import add_event, create_run, update_run_status
+from app.services.cataloging import orchestrator as cataloging_orchestrator
 from app.services.cataloging.candidate_io import candidate_to_dict
 from app.services.cataloging.fact_store import fact_to_dict
 from app.services.cataloging.orchestrator import job_to_dict, run_to_dict, sse_event
-from app.services.cataloging import orchestrator as cataloging_orchestrator
+from app.services.external_agent.run_service import add_event, create_run, update_run_status
 from app.services.operation_runtime import (
     finish_operation,
     record_operation_signal,
     register_operation_actions,
     unregister_operation_actions,
 )
-
 
 _COORDINATORS: dict[str, asyncio.Task] = {}
 _PROCESSES: dict[str, asyncio.subprocess.Process] = {}
@@ -149,7 +150,7 @@ def _active_agent_run(db: Session, job: CatalogingJob, provider: str) -> AgentRu
         run.status = "running"
         run.current_step = "准备处理下一章"
         run.updated_at = datetime.utcnow()
-        db.commit()
+        commit_session(db)
         return run
 
     run = create_run(
@@ -162,7 +163,7 @@ def _active_agent_run(db: Session, job: CatalogingJob, provider: str) -> AgentRu
     )
     job.agent_run_id = run.id
     job.updated_at = datetime.utcnow()
-    db.commit()
+    commit_session(db)
     return run
 
 
@@ -182,7 +183,7 @@ def ensure_local_cli_cataloging_worker(
     job.execution_backend = "local_cli_agent"
     if job.status not in _TERMINAL_JOBS and job.status != "waiting_confirmation":
         job.status = "running"
-    db.commit()
+    commit_session(db)
 
     current = _COORDINATORS.get(job.id)
     if not current or current.done():
@@ -227,7 +228,7 @@ def cancel_local_cli_cataloging_worker(job_id: str, *, terminal: bool = False) -
                 run.current_step = "任务已取消" if terminal else "任务已暂停"
                 run.completed_at = datetime.utcnow() if terminal else None
                 run.updated_at = datetime.utcnow()
-                db.commit()
+                commit_session(db)
     finally:
         db.close()
 
@@ -242,7 +243,7 @@ async def _pause_cataloging_operation(job_id: str) -> None:
             return
         pause_job(job)
         refresh_job_progress(db, job)
-        db.commit()
+        commit_session(db)
     finally:
         db.close()
     cancel_local_cli_cataloging_worker(job_id, terminal=False)
@@ -258,7 +259,7 @@ async def _continue_cataloging_operation(job_id: str, provider: str) -> None:
             return
         resume_job(job)
         refresh_job_progress(db, job)
-        db.commit()
+        commit_session(db)
         ensure_local_cli_cataloging_worker(db, job, provider=provider)
     finally:
         db.close()
@@ -274,7 +275,7 @@ async def _cancel_cataloging_operation(job_id: str) -> None:
             return
         cancel_job(job)
         refresh_job_progress(db, job)
-        db.commit()
+        commit_session(db)
     finally:
         db.close()
     cancel_local_cli_cataloging_worker(job_id, terminal=True)
@@ -296,7 +297,7 @@ async def _retry_cataloging_operation(job_id: str, provider: str) -> None:
             job.status = "running"
             job.error = None
             refresh_job_progress(db, job)
-        db.commit()
+        commit_session(db)
         ensure_local_cli_cataloging_worker(db, job, provider=provider)
     finally:
         db.close()
@@ -498,13 +499,13 @@ def _ensure_chapter_file(
     chapter: Chapter,
     chapter_order: int,
 ) -> tuple[Path, Path]:
-    folder = ensure_project_folder(db, project)
-    path = folder / chapter.content_file_path if chapter.content_file_path else None
-    if not path or not path.exists():
-        sync_chapter_to_file(db, project, chapter, index=chapter_order + 1)
-        path = folder / chapter.content_file_path
-        db.commit()
-    return folder, path.resolve()
+    return ensure_chapter_mirror(
+        db,
+        project,
+        chapter,
+        index=chapter_order + 1,
+        source="local_cli_cataloging",
+    )
 
 
 def _turn_stage(run: CatalogingChapterRun, mode: str) -> str:
@@ -762,7 +763,7 @@ async def _run_direct_jsonl_cataloging_fallback(
             "stderr_tail": stderr_tail[-1500:],
         }, ensure_ascii=False),
     )
-    db.commit()
+    commit_session(db)
     try:
         if stage in {"full", "merged", "candidates"}:
             await _consume_cataloging_events(cataloging_orchestrator._extract_run(db, job, run))
@@ -794,7 +795,7 @@ async def _run_direct_jsonl_cataloging_fallback(
                 "chapter_status": run.status,
             }, ensure_ascii=False),
         )
-        db.commit()
+        commit_session(db)
         return True, ""
     except Exception as exc:
         db.rollback()
@@ -871,8 +872,7 @@ async def _run_cli_turn(
         "MANAGED_CATALOGING_STAGE": stage,
     }
     for suffix, value in managed_env.items():
-        env[f"SIMING_{suffix}"] = value
-        env[f"MOSHU_{suffix}"] = value
+        set_compatible_env(f"SIMING_{suffix}", value, target=env)
     process = await asyncio.create_subprocess_exec(
         resolved,
         *launch.args,
@@ -951,7 +951,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job.current_chapter_id = None
                     job.blocked_chapter_id = None
                     job.completed_at = datetime.utcnow()
-                    db.commit()
+                    commit_session(db)
                     update_run_status(db, agent_run.id, "completed", summary="作品建档完成")
                     if job.operation_id:
                         completed = int(job.completed_chapters or job.total_chapters or 0)
@@ -972,7 +972,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                 if run.status == "failed":
                     job.status = "paused_on_failure"
                     job.blocked_chapter_id = run.chapter_id
-                    db.commit()
+                    commit_session(db)
                     update_run_status(db, agent_run.id, "failed", summary=run.error or "当前章节建档失败")
                     return
                 if run.status == "awaiting_confirmation" and job.execution_mode == "manual":
@@ -980,7 +980,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job.blocked_chapter_id = run.chapter_id
                     agent_run.status = "waiting_confirmation"
                     agent_run.current_step = f"等待确认：第 {run.chapter_order + 1} 章"
-                    db.commit()
+                    commit_session(db)
                     return
                 project = db.query(Project).filter(Project.id == job.project_id).first()
                 chapter = db.query(Chapter).filter(Chapter.id == run.chapter_id).first()
@@ -993,7 +993,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                 job.blocked_chapter_id = None
                 agent_run.status = "running"
                 agent_run.current_step = f"第 {run.chapter_order + 1} 章：{stage}"
-                db.commit()
+                commit_session(db)
                 if job.operation_id:
                     record_operation_signal(
                         job.operation_id,
@@ -1074,7 +1074,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                                 "stage": stage,
                             }, ensure_ascii=False),
                         )
-                        db.commit()
+                        commit_session(db)
                         update_run_status(db, agent_run_id, "failed", summary=run.error)
                         if job.operation_id:
                             record_operation_signal(
@@ -1141,7 +1141,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                                 "stderr_tail": stderr[-1500:],
                             }, ensure_ascii=False),
                         )
-                        db.commit()
+                        commit_session(db)
                         continue
                 if returncode != 0:
                     run.status = "failed"
@@ -1158,7 +1158,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     )
                     if ok:
                         no_save_attempts.pop(run.id, None)
-                        db.commit()
+                        commit_session(db)
                         continue
                     run.status = "failed"
                     run.error = f"本机 CLI 未通过 MCP 保存本章事实或候选；直连 JSONL 兜底也失败：{fallback_error}"
@@ -1169,7 +1169,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     job.blocked_chapter_id = run.chapter_id
                     job.error = run.error
                     refresh_job_progress(db, job)
-                    db.commit()
+                    commit_session(db)
                     update_run_status(db, agent_run_id, "failed", summary=run.error)
                     if job.operation_id:
                         record_operation_signal(
@@ -1187,9 +1187,9 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                     if agent_run:
                         agent_run.status = "waiting_confirmation"
                         agent_run.current_step = f"等待确认：第 {run.chapter_order + 1} 章"
-                    db.commit()
+                    commit_session(db)
                     return
-                db.commit()
+                commit_session(db)
                 if job.operation_id and run.status in _TERMINAL_RUNS:
                     record_operation_signal(
                         job.operation_id,
@@ -1213,7 +1213,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
             if job and job.status not in _TERMINAL_JOBS:
                 job.status = "paused_on_failure"
                 job.error = str(exc)
-                db.commit()
+                commit_session(db)
                 if job.agent_run_id:
                     add_event(db, job.agent_run_id, "error", status="error", message=str(exc))
         finally:

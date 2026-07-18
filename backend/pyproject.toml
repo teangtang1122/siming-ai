@@ -1,0 +1,11 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "SIM", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["E501"]
+"app/prompts/workspace_contract.py" = ["SIM905"]
+"tests/*.py" = ["E501"]

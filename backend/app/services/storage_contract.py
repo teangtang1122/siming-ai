@@ -83,9 +83,13 @@ def find_orphan_chapter_files(
 
 
 def storage_health(db: Session, project: Project, *, since: datetime | None = None) -> dict[str, Any]:
+    from app.modules.story.application.content_sync import content_sync_health
+
     orphan_chapter_files = find_orphan_chapter_files(db, project, since=since)
+    sync_queue = content_sync_health(db, project.id)
     return {
         "storage_target": "database_authoritative",
+        "sync_queue": sync_queue,
         "orphan_chapter_files": orphan_chapter_files,
         "orphan_chapter_file_count": len(orphan_chapter_files),
         "next_action": (
@@ -96,5 +100,8 @@ def storage_health(db: Session, project: Project, *, since: datetime | None = No
             "Detected chapter mirror files that are not in the database. "
             "The frontend only shows database chapters; import explicitly or recreate through create_chapter."
             if orphan_chapter_files else None
+        ) or (
+            "The database update succeeded, but one or more mirror updates need retrying."
+            if sync_queue["failed_count"] else None
         ),
     }

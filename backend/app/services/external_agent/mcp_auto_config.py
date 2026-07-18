@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from app.ai.local_cli_adapter import hidden_subprocess_kwargs
+from app.architecture.uow import commit_session
+from app.core.legacy_env import compatible_env_enabled
 from app.services.external_agent.extended_clients import (
     configure_hermes,
     configure_kilocode,
@@ -26,7 +28,6 @@ from app.services.external_agent.extended_clients import (
     cursor_command,
     hermes_command,
 )
-
 
 LOCAL_MCP_PROVIDERS = {
     "claude_cli",
@@ -68,7 +69,7 @@ def auto_configure_mcp_for_provider(
     model provider must continue even if Claude/Codex is not installed.
     """
 
-    if os.environ.get("SIMING_DISABLE_AUTO_MCP_SETUP") == "1" or os.environ.get("MOSHU_DISABLE_AUTO_MCP_SETUP") == "1":
+    if compatible_env_enabled("SIMING_DISABLE_AUTO_MCP_SETUP"):
         return {
             "enabled": False,
             "provider": provider,
@@ -133,7 +134,7 @@ def auto_configure_detected_mcp_clients(
     releases, while preserving unrelated user configuration.
     """
 
-    if os.environ.get("SIMING_DISABLE_AUTO_MCP_SETUP") == "1" or os.environ.get("MOSHU_DISABLE_AUTO_MCP_SETUP") == "1":
+    if compatible_env_enabled("SIMING_DISABLE_AUTO_MCP_SETUP"):
         return {
             "enabled": False,
             "status": "skipped",
@@ -235,7 +236,7 @@ def ensure_detected_local_cli_model_configs(db) -> list[str]:
         ))
         created.append(provider)
     if created or changed:
-        db.commit()
+        commit_session(db)
     return created
 
 
@@ -278,7 +279,7 @@ def migrate_legacy_external_agent_defaults(db) -> bool:
         settings.mcp_permission_source = "global_settings"
         changed = True
     if changed:
-        db.commit()
+        commit_session(db)
     return changed
 
 

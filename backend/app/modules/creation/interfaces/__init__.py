@@ -1,0 +1,1 @@
+"""Novel-creation delivery adapters."""

@@ -35,5 +35,18 @@ if ($ExpectedVersion -and $Manifest.version -ne $ExpectedVersion) {
 if (-not $Manifest.version -or -not $Manifest.download_url) {
   throw "update.json must contain version and download_url."
 }
+$IsPrerelease = $Manifest.version.Contains("-")
+$ExpectedChannel = if ($IsPrerelease) { "preview" } else { "stable" }
+if ($Manifest.channel -ne $ExpectedChannel) {
+  throw "update.json channel '$($Manifest.channel)' does not match expected '$ExpectedChannel'."
+}
+if ($IsPrerelease) {
+  $ExpectedTagPath = "/releases/download/v$($Manifest.version)/$AppName.exe"
+  if (-not $Manifest.download_url.EndsWith($ExpectedTagPath)) {
+    throw "Prerelease download_url must target its exact tag: $ExpectedTagPath"
+  }
+} elseif (-not $Manifest.download_url.EndsWith("/releases/latest/download/$AppName.exe")) {
+  throw "Stable download_url must target releases/latest."
+}
 
 Write-Host "Release assets verified: $AppName.exe version=$($Manifest.version) sha256=$ActualSha" -ForegroundColor Green

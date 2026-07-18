@@ -3,21 +3,16 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import (
-    Chapter,
-    Character,
-    CharacterAlias,
-    CharacterChangeLog,
-    CharacterRelationship,
-    CharacterVersion,
-)
 from ..database.session import get_db
+from ..modules.story.application.commands import StoryCommandContext
+from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ..modules.story.interfaces.dependencies import get_story_command
+from ..modules.story.interfaces.character_dependencies import character_workspace
 from ..schemas.character import (
     CharacterAIConfigUpdate,
     CharacterCreate,
@@ -36,11 +31,6 @@ from ..services.character_service import (
     snapshot_character,
     sync_character_aliases,
 )
-from ..services.content_store import (
-    delete_project_file,
-    sync_character_to_file,
-    sync_relationships_to_file,
-)
 from ..services.character_merge_service import (
     build_character_merge_preview,
     find_duplicate_character_candidates,
@@ -54,39 +44,21 @@ router = APIRouter(tags=["characters"])
 def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depends(get_db)):
     """Get project character list."""
     get_project_or_404(db, project_id)
-    query = (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .filter(or_(Character.role_type.is_(None), Character.role_type != "merged_alias"))
-    )
-    if q:
-        keyword = f"%{q}%"
-        alias_ids = [
-            row.character_id
-            for row in db.query(CharacterAlias.character_id)
-            .filter(CharacterAlias.project_id == project_id, CharacterAlias.alias.like(keyword))
-            .all()
-        ]
-        query = query.filter(
-            or_(
-                Character.name.like(keyword),
-                Character.appearance.like(keyword),
-                Character.personality.like(keyword),
-                Character.background.like(keyword),
-                Character.role_type.like(keyword),
-                Character.id.in_(alias_ids) if alias_ids else False,
-            )
-        )
-    characters = query.order_by(Character.updated_at.desc()).all()
+    characters = character_workspace(db).list_characters(project_id, q)
     items = [character_to_dict(character) for character in characters]
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
 
 @router.post("/projects/{project_id}/characters")
-def create_character(project_id: str, payload: CharacterCreate, db: Session = Depends(get_db)):
+def create_character(
+    project_id: str,
+    payload: CharacterCreate,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Create a character."""
-    project = get_project_or_404(db, project_id)
-    character = Character(
+    db = command.session
+    get_project_or_404(db, project_id)
+    character = character_workspace(db).create_character(
         project_id=project_id,
         name=payload.name,
         appearance=payload.appearance,
@@ -107,13 +79,16 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
         profile_json=payload.profile,
         is_evolution_tracked=payload.is_evolution_tracked,
     )
-    db.add(character)
     db.flush()
     sync_character_aliases(db, character, payload.aliases)
-    db.commit()
-    db.refresh(character)
-    sync_character_to_file(db, project, character)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER,
+            entity_id=character.id,
+        ),
+    )
+    command.finish()
     db.refresh(character)
     return ApiResponse.success(data=character_to_dict(character), message="角色创建成功")
 
@@ -122,19 +97,8 @@ def create_character(project_id: str, payload: CharacterCreate, db: Session = De
 def get_relationship_network(project_id: str, db: Session = Depends(get_db)):
     """Get all character relationship network data for a project."""
     get_project_or_404(db, project_id)
-    characters = (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .filter(or_(Character.role_type.is_(None), Character.role_type != "merged_alias"))
-        .all()
-    )
+    characters, relationships = character_workspace(db).relationship_network(project_id)
     visible_ids = {character.id for character in characters}
-    relationships = (
-        db.query(CharacterRelationship)
-        .filter(CharacterRelationship.project_id == project_id)
-        .order_by(CharacterRelationship.created_at.asc())
-        .all()
-    )
     nodes = [
         {
             "id": character.id,
@@ -191,9 +155,10 @@ def preview_character_merge(
 def merge_duplicate_characters(
     project_id: str,
     payload: CharacterMergeRequest,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Merge a duplicate character into a primary character card."""
+    db = command.session
     get_project_or_404(db, project_id)
     try:
         result = merge_characters(
@@ -205,7 +170,21 @@ def merge_duplicate_characters(
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    db.commit()
+    for character_id in (payload.primary_id, payload.secondary_id):
+        command.queue(
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER,
+                entity_id=character_id,
+            ),
+        )
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+        ),
+    )
+    command.finish()
     return ApiResponse.success(data=result, message="角色已合并")
 
 
@@ -224,10 +203,11 @@ def update_character(
     project_id: str,
     character_id: str,
     payload: CharacterUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Update character fields and create a version snapshot."""
-    project = get_project_or_404(db, project_id)
+    db = command.session
+    get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     update_data = payload.model_dump(exclude_unset=True)
     change_summary = update_data.pop("change_summary", None)
@@ -246,38 +226,56 @@ def update_character(
 
     character.current_version = (character.current_version or 1) + 1
     db.flush()
-    snapshot = CharacterVersion(
+    character_workspace(db).create_version(
         character_id=character.id,
         version_number=character.current_version,
         snapshot_data=json.dumps(snapshot_character(character), ensure_ascii=False),
         change_summary=change_summary or "手动更新角色档案",
     )
-    db.add(snapshot)
-    db.commit()
-    db.refresh(character)
-    sync_character_to_file(db, project, character)
-    db.commit()
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER,
+            entity_id=character.id,
+        ),
+    )
+    command.finish()
     db.refresh(character)
     return ApiResponse.success(data=character_to_dict(character), message="角色更新成功")
 
 
 @router.delete("/projects/{project_id}/characters/{character_id}")
-def delete_character(project_id: str, character_id: str, db: Session = Depends(get_db)):
+def delete_character(
+    project_id: str,
+    character_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Delete a character and its relationships."""
+    db = command.session
     project = get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     content_file_path = character.content_file_path
-    db.query(CharacterRelationship).filter(
-        CharacterRelationship.project_id == project_id,
-        or_(
-            CharacterRelationship.character_a_id == character.id,
-            CharacterRelationship.character_b_id == character.id,
+    workspace = character_workspace(db)
+    workspace.delete_relationships(project_id, character.id)
+    workspace.delete(character)
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.FILE_DELETE,
+            entity_id=character_id,
+            payload={
+                "folder_path": project.folder_path,
+                "relative_path": content_file_path,
+            },
         ),
-    ).delete(synchronize_session=False)
-    db.delete(character)
-    delete_project_file(project, content_file_path)
-    sync_relationships_to_file(db, project)
-    db.commit()
+    )
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+        ),
+    )
+    command.finish()
     return ApiResponse.success(message="角色已删除")
 
 
@@ -286,12 +284,7 @@ def list_character_versions(project_id: str, character_id: str, db: Session = De
     """Get character version history."""
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    versions = (
-        db.query(CharacterVersion)
-        .filter(CharacterVersion.character_id == character.id)
-        .order_by(CharacterVersion.version_number.desc())
-        .all()
-    )
+    versions = character_workspace(db).versions(character.id)
     items = [
         CharacterVersionItem.model_validate(version).model_dump(mode="json")
         for version in versions
@@ -309,11 +302,7 @@ def get_character_version(
     """Get a historical character version detail."""
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    version = (
-        db.query(CharacterVersion)
-        .filter(CharacterVersion.id == version_id, CharacterVersion.character_id == character.id)
-        .first()
-    )
+    version = character_workspace(db).version(character.id, version_id)
     if not version:
         raise NotFoundError("角色版本不存在")
     data = CharacterVersionItem.model_validate(version).model_dump(mode="json")
@@ -326,9 +315,10 @@ def update_character_relationships(
     project_id: str,
     character_id: str,
     payload: RelationshipUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Replace all relationships connected to the current character."""
+    db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     target_ids = {item.target_character_id for item in payload.relationships}
@@ -336,47 +326,38 @@ def update_character_relationships(
         raise ValidationError("角色不能与自身建立关系")
 
     if target_ids:
-        existing_count = (
-            db.query(Character)
-            .filter(Character.project_id == project_id, Character.id.in_(target_ids))
-            .count()
-        )
-        if existing_count != len(target_ids):
+        if not character_workspace(db).targets_exist(project_id, target_ids):
             raise ValidationError("关系目标角色必须属于当前作品")
 
-    db.query(CharacterRelationship).filter(
-        CharacterRelationship.project_id == project_id,
-        or_(
-            CharacterRelationship.character_a_id == character.id,
-            CharacterRelationship.character_b_id == character.id,
-        ),
-    ).delete(synchronize_session=False)
+    character_workspace(db).replace_relationships(
+        project_id,
+        character.id,
+        payload.relationships,
+    )
 
-    for item in payload.relationships:
-        relationship = CharacterRelationship(
+    command.queue(
+        ContentSyncIntent(
             project_id=project_id,
-            character_a_id=character.id,
-            character_b_id=item.target_character_id,
-            relationship_type=item.relationship_type,
-            description=item.description,
-        )
-        db.add(relationship)
-
-    db.commit()
+            target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+        ),
+    )
+    command.finish()
     return get_relationship_network(project_id, db)
 
 
 @router.get("/projects/{project_id}/characters/{character_id}/ai-config")
-def get_character_ai_config(project_id: str, character_id: str, db: Session = Depends(get_db)):
+def get_character_ai_config(
+    project_id: str,
+    character_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Get a character's AI dialogue configuration."""
+    db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    config = character.ai_config
-    if not config:
-        from ..database.models import CharacterAIConfig
-        config = CharacterAIConfig(character_id=character.id)
-        db.add(config)
-        db.commit()
+    config = character_workspace(db).ensure_ai_config(character)
+    if config.id is None:
+        command.finish()
         db.refresh(config)
     return ApiResponse.success(data={
         "id": config.id,
@@ -397,16 +378,14 @@ def update_character_ai_config(
     project_id: str,
     character_id: str,
     payload: CharacterAIConfigUpdate,
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Update a character's AI dialogue configuration."""
+    db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    from ..database.models import CharacterAIConfig
-    config = character.ai_config
-    if not config:
-        config = CharacterAIConfig(character_id=character.id)
-        db.add(config)
+    config = character_workspace(db).ensure_ai_config(character)
+    if config.id is None:
         db.flush()
 
     update_data = payload.model_dump(exclude_unset=True)
@@ -415,7 +394,7 @@ def update_character_ai_config(
     for field, value in update_data.items():
         setattr(config, field, value)
 
-    db.commit()
+    command.finish()
     db.refresh(config)
     return ApiResponse.success(data={
         "id": config.id,
@@ -443,57 +422,36 @@ def list_change_logs(
 ):
     """List character change logs, filterable by chapter/character/confirmed status."""
     get_project_or_404(db, project_id)
-    query = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(Character.project_id == project_id)
+    workspace = character_workspace(db)
+    logs = workspace.change_logs(
+        project_id,
+        chapter_id=chapter_id,
+        character_id=character_id,
+        confirmed=confirmed,
+        limit=200,
     )
-    if chapter_id:
-        query = query.filter(CharacterChangeLog.chapter_id == chapter_id)
-    if character_id:
-        query = query.filter(CharacterChangeLog.character_id == character_id)
-    if confirmed is not None:
-        query = query.filter(CharacterChangeLog.confirmed == confirmed)
-
-    logs = query.order_by(CharacterChangeLog.created_at.desc()).limit(200).all()
-
-    items = []
-    for log in logs:
-        character = db.query(Character).filter(Character.id == log.character_id).first()
-        chapter = db.query(Chapter).filter(Chapter.id == log.chapter_id).first()
-        items.append({
-            "id": log.id,
-            "character_id": log.character_id,
-            "character_name": character.name if character else "未知",
-            "chapter_id": log.chapter_id,
-            "chapter_title": chapter.title if chapter else "未知",
-            "change_type": log.change_type,
-            "field_name": log.field_name,
-            "old_value": log.old_value,
-            "new_value": log.new_value,
-            "confirmed": log.confirmed,
-            "created_at": log.created_at.isoformat() if log.created_at else None,
-        })
+    items = workspace.serialize_change_logs(logs)
 
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
 
 @router.put("/projects/{project_id}/characters/change-logs/{log_id}/confirm")
-def confirm_change_log(project_id: str, log_id: str, db: Session = Depends(get_db)):
+def confirm_change_log(
+    project_id: str,
+    log_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Confirm a detected character change and apply it to the character."""
+    db = command.session
     get_project_or_404(db, project_id)
-    log = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(CharacterChangeLog.id == log_id, Character.project_id == project_id)
-        .first()
-    )
+    workspace = character_workspace(db)
+    log = workspace.change_log(project_id, log_id)
     if not log:
         raise NotFoundError("变更记录不存在")
     if log.confirmed:
         raise ValidationError("该变更已确认")
 
-    character = db.query(Character).filter(Character.id == log.character_id).first()
+    character = workspace.character(log.character_id)
     if not character:
         raise NotFoundError("角色不存在")
 
@@ -505,28 +463,36 @@ def confirm_change_log(project_id: str, log_id: str, db: Session = Depends(get_d
             f"确认角色变化：{log.change_type}",
             source_chapter_id=log.chapter_id,
         )
+        command.queue(
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER,
+                entity_id=character.id,
+            ),
+        )
 
-    db.commit()
+    command.finish()
     return ApiResponse.success(message="变更已确认并应用")
 
 
 @router.delete("/projects/{project_id}/characters/change-logs/{log_id}")
-def reject_change_log(project_id: str, log_id: str, db: Session = Depends(get_db)):
+def reject_change_log(
+    project_id: str,
+    log_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
     """Reject (delete) a detected character change."""
+    db = command.session
     get_project_or_404(db, project_id)
-    log = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(CharacterChangeLog.id == log_id, Character.project_id == project_id)
-        .first()
-    )
+    workspace = character_workspace(db)
+    log = workspace.change_log(project_id, log_id)
     if not log:
         raise NotFoundError("变更记录不存在")
     if log.confirmed:
         raise ValidationError("已确认的变更不可删除，请通过角色编辑撤销")
 
-    db.delete(log)
-    db.commit()
+    workspace.delete(log)
+    command.finish()
     return ApiResponse.success(message="变更已拒绝")
 
 
@@ -536,29 +502,27 @@ def batch_confirm_change_logs(
     chapter_id: Optional[str] = None,
     character_id: Optional[str] = None,
     action: str = Query("confirm", description="confirm or reject"),
-    db: Session = Depends(get_db),
+    command: StoryCommandContext = Depends(get_story_command),
 ):
     """Batch confirm or reject all unconfirmed change logs matching the filters."""
+    db = command.session
     get_project_or_404(db, project_id)
     if action not in ("confirm", "reject"):
         raise ValidationError("action must be 'confirm' or 'reject'")
 
-    query = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(Character.project_id == project_id, CharacterChangeLog.confirmed == False)
+    workspace = character_workspace(db)
+    logs = workspace.pending_change_logs(
+        project_id,
+        chapter_id=chapter_id,
+        character_id=character_id,
     )
-    if chapter_id:
-        query = query.filter(CharacterChangeLog.chapter_id == chapter_id)
-    if character_id:
-        query = query.filter(CharacterChangeLog.character_id == character_id)
-
-    logs = query.all()
+    changed_character_ids: set[str] = set()
     if action == "confirm":
         for log in logs:
             log.confirmed = True
-            character = db.query(Character).filter(Character.id == log.character_id).first()
+            character = workspace.character(log.character_id)
             if character and apply_change_log_to_character(character, log):
+                changed_character_ids.add(character.id)
                 create_character_version(
                     db,
                     character,
@@ -566,5 +530,13 @@ def batch_confirm_change_logs(
                     source_chapter_id=log.chapter_id,
                 )
 
-    db.commit()
+    for changed_character_id in changed_character_ids:
+        command.queue(
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER,
+                entity_id=changed_character_id,
+            ),
+        )
+    command.finish()
     return ApiResponse.success(message=f"已{ '确认' if action == 'confirm' else '拒绝' } {len(logs)} 条变更记录")

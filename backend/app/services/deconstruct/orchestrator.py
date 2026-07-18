@@ -1,4 +1,6 @@
 """SSE streaming orchestrators for the deconstruct map-reduce pipeline."""
+
+from app.architecture.uow import commit_session
 import asyncio
 import json
 import traceback
@@ -105,7 +107,7 @@ async def stream_deconstruct(
             report_data=json.dumps(report_data_init, ensure_ascii=False),
         )
         db.add(report)
-        db.commit()
+        commit_session(db)
         db.refresh(report)
 
         yield sse_event("init", {
@@ -221,7 +223,7 @@ async def stream_deconstruct(
                 msg = f"{msg}：{result.get('_error')}"
             append_log(progress_data, msg, level)
             report.report_data = json.dumps(progress_data, ensure_ascii=False)
-            db.commit()
+            commit_session(db)
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -300,7 +302,7 @@ async def stream_deconstruct(
 
         report.status = "completed"
         report.report_data = json.dumps(result, ensure_ascii=False)
-        db.commit()
+        commit_session(db)
 
     except asyncio.CancelledError:
         if report:
@@ -310,7 +312,7 @@ async def stream_deconstruct(
                 progress_data["phase"] = "cancelled"
                 append_log(progress_data, "客户端断开连接，任务中断")
                 report.report_data = json.dumps(progress_data, ensure_ascii=False)
-                db.commit()
+                commit_session(db)
             except Exception:
                 pass
     except Exception as exc:
@@ -323,7 +325,7 @@ async def stream_deconstruct(
                 append_log(progress_data, f"拆书任务失败：{exc}", "error")
                 report.status = "failed"
                 report.report_data = json.dumps(progress_data, ensure_ascii=False)
-                db.commit()
+                commit_session(db)
             except Exception:
                 pass
     finally:
@@ -398,7 +400,7 @@ async def stream_rerun_failed_chunks(
         append_log(data, f"开始重跑 {len(failed_indexes)} 个失败分块，并发 {map_concurrency}")
         report.status = "processing"
         report.report_data = json.dumps(data, ensure_ascii=False)
-        db.commit()
+        commit_session(db)
 
         yield sse_event("init", {
             "report_id": report.id,
@@ -504,7 +506,7 @@ async def stream_rerun_failed_chunks(
             level = "warning" if result.get("_error") else "info"
             append_log(data, f"重跑第 {index + 1}/{len(chunks)} 块完成", level)
             report.report_data = json.dumps(data, ensure_ascii=False)
-            db.commit()
+            commit_session(db)
 
         await asyncio.gather(*tasks, return_exceptions=True)
         failed = sum(1 for result in map_results if isinstance(result, dict) and result.get("_error"))
@@ -578,7 +580,7 @@ async def stream_rerun_failed_chunks(
         yield sse_event("done", {})
         report.status = "completed"
         report.report_data = json.dumps(result, ensure_ascii=False)
-        db.commit()
+        commit_session(db)
     except Exception as exc:
         traceback.print_exc()
         yield sse_event("error", {"message": str(exc)})
@@ -629,7 +631,7 @@ async def run_deconstruct_job(
         append_log(progress_data, f"开始分块拆书分析，并发 {map_concurrency}；按真实活动监测，不设总时限")
         report.status = "processing"
         report.report_data = json.dumps(progress_data, ensure_ascii=False)
-        db.commit()
+        commit_session(db)
 
         semaphore = asyncio.Semaphore(map_concurrency)
 
@@ -705,7 +707,7 @@ async def run_deconstruct_job(
                 message = f"{message}：{result.get('_error')}"
             append_log(progress_data, message, level)
             report.report_data = json.dumps(progress_data, ensure_ascii=False)
-            db.commit()
+            commit_session(db)
             db.refresh(report)
             if operation_id:
                 record_operation_signal(
@@ -736,7 +738,7 @@ async def run_deconstruct_job(
         })
         append_log(progress_data, "分块分析完成，开始自动合并拆书结果")
         report.report_data = json.dumps(progress_data, ensure_ascii=False)
-        db.commit()
+        commit_session(db)
         db.refresh(report)
 
         if operation_id:
@@ -757,7 +759,7 @@ async def run_deconstruct_job(
             progress_data = load_report_data(report)
             append_log(progress_data, f"自动合并输出异常：{reduce_data.get('_error')}", "warning")
             report.report_data = json.dumps(progress_data, ensure_ascii=False)
-            db.commit()
+            commit_session(db)
             db.refresh(report)
 
         result = {
@@ -797,7 +799,7 @@ async def run_deconstruct_job(
         append_log(result, "自动合并完成，拆书报告已生成")
         report.status = "completed"
         report.report_data = json.dumps(result, ensure_ascii=False)
-        db.commit()
+        commit_session(db)
         finish_operation(operation_id, message=f"拆书分析完成，共处理 {completed_chunks} 个分块")
     except asyncio.CancelledError:
         if report_id:
@@ -808,7 +810,7 @@ async def run_deconstruct_job(
                 append_log(cancelled, "任务已由用户取消，已完成的分块仍保留", "warning")
                 report.status = "cancelled"
                 report.report_data = json.dumps(cancelled, ensure_ascii=False)
-                db.commit()
+                commit_session(db)
             except Exception:
                 pass
         finish_operation(operation_id, message="拆书任务已取消，已完成分块已保留", status="cancelled")
@@ -825,7 +827,7 @@ async def run_deconstruct_job(
             append_log(failed, f"拆书任务失败：{exc}", "error")
             report.status = "failed"
             report.report_data = json.dumps(failed, ensure_ascii=False)
-            db.commit()
+            commit_session(db)
         except Exception:
             pass
         fail_operation(operation_id, exc, next_action="可从拆书页面重新开始，或重跑失败分块")

@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import CharacterRelationship, Project
-from ....services.content_store import sync_relationships_to_file
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ..utils import find_character_by_name_or_id
 
 
@@ -21,7 +22,7 @@ async def create_relationship(
     if not source or not target or source.id == target.id:
         return {"tool": "create_relationship", "status": "skipped", "detail": "关系角色无效"}
 
-    from ..run_recovery import generate_idempotency_key, check_idempotency
+    from ..idempotency import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_relationship", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)
@@ -38,8 +39,14 @@ async def create_relationship(
     db.flush()
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        sync_relationships_to_file(db, project)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "create_relationship",
         "status": "ok",
@@ -73,8 +80,14 @@ async def update_relationship(
         rel.description = str(args.get("description") or "")[:4000]
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        sync_relationships_to_file(db, project)
-        db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "update_relationship",
         "status": "ok",
@@ -105,9 +118,14 @@ async def delete_relationship(
     db.delete(rel)
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
-        db.flush()
-        sync_relationships_to_file(db, project)
-    db.flush()
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHARACTER_RELATIONSHIPS,
+                source="workspace_tool",
+            ),
+        )
     return {
         "tool": "delete_relationship",
         "status": "ok",

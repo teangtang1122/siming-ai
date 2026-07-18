@@ -1,0 +1,48 @@
+[importlinter]
+root_package = app
+include_external_packages = False
+
+[importlinter:contract:architecture-is-independent]
+name = Architecture contracts do not depend on legacy services
+type = forbidden
+source_modules =
+    app.architecture
+forbidden_modules =
+    app.ai
+    app.mcp
+    app.routers
+    app.services
+
+[importlinter:contract:module-applications-avoid-legacy-runtime]
+name = Module application layers do not depend on legacy runtime
+type = forbidden
+source_modules =
+    app.modules.story.application
+    app.modules.creation.application
+    app.modules.continuity.application
+    app.modules.assistant.application
+    app.modules.operations.application
+    app.modules.model_runtime.application
+    app.modules.context.application
+    app.modules.integrations.application
+forbidden_modules =
+    app.ai
+    app.mcp
+    app.routers
+    app.services
+
+[importlinter:contract:gateway-does-not-build-context]
+name = Model gateway does not import the context orchestrator
+type = forbidden
+source_modules =
+    app.ai
+forbidden_modules =
+    app.services.context_orchestrator
+
+[importlinter:contract:prompts-do-not-load-workspace-runtime]
+name = Prompt declarations do not import the workspace runtime
+type = forbidden
+source_modules =
+    app.prompts
+forbidden_modules =
+    app.services.workspace

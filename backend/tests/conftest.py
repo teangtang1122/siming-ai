@@ -65,3 +65,11 @@ _MOCK_MODULES = _make_mock_modules()
 for name, mock in _MOCK_MODULES.items():
     if name not in sys.modules:
         sys.modules[name] = mock
+
+
+def pytest_configure():
+    """Compose the same application ports used by the production app factory."""
+
+    from app.bootstrap.composition import configure_application_services
+
+    configure_application_services()

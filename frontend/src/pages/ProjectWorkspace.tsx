@@ -1,7 +1,7 @@
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { Button, Layout, Menu, Spin, Tooltip } from 'antd'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
-import { useAppStore } from '../stores'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { useProject } from '../features/projects'
 import {
   AuditOutlined,
   BarChartOutlined,
@@ -30,6 +30,7 @@ import { AiPanelProvider, useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { usePanelResize } from '../hooks/usePanelResize'
 import ThemeSwitcher from '../themes/ThemeSwitcher'
+import { QueryStateNotice } from '../shared/ui/runtime'
 import './ProjectWorkspace.css'
 
 const { Sider, Content } = Layout
@@ -135,7 +136,7 @@ function ProjectWorkspace() {
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState('sidebar_collapsed', false)
   const [aiCollapsed, setAiCollapsed] = usePersistedState('ai_panel_collapsed', true)
   const navigate = useNavigate()
-  const { projects, getProject } = useAppStore()
+  const projectQuery = useProject(projectId)
   const requestedView = searchParams.get('view') as MenuKey | null
   const activeKey: MenuKey = requestedView && requestedView in PAGE_TITLES ? requestedView : 'writer'
 
@@ -150,18 +151,7 @@ function ProjectWorkspace() {
     if (window.innerWidth < 900) setSidebarCollapsed(true)
   }, [setSidebarCollapsed])
 
-  const projectTitle = useMemo(() => {
-    if (!projectId) return ''
-    const cached = projects.find((p) => p.id === projectId)
-    if (cached) return cached.title
-    return ''
-  }, [projectId, projects])
-
-  useEffect(() => {
-    if (projectId && !projectTitle) {
-      getProject(projectId)
-    }
-  }, [projectId, projectTitle, getProject])
+  const projectTitle = projectQuery.data?.title || ''
 
   const menuItems = [
     { key: 'writer', icon: <BookOutlined />, label: '写作' },
@@ -315,6 +305,13 @@ function ProjectWorkspace() {
           </header>
           <div className="project-workspace-main">
             <Content className="project-workspace-content">
+              {projectQuery.isError && (
+                <QueryStateNotice
+                  error={projectQuery.error}
+                  title="作品信息暂时无法读取"
+                  onRetry={() => { void projectQuery.refetch() }}
+                />
+              )}
               {tabRenderers && (
                 <Suspense fallback={<div className="project-workspace-loading" role="status"><Spin /><span>正在打开{PAGE_TITLES[activeKey]}...</span></div>}>
                   <TabCache activeKey={activeKey} tabs={tabRenderers} />

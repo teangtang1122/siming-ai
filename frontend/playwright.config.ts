@@ -17,7 +17,7 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER ? undefined : {
-    command: `npm run dev -- --host 127.0.0.1 --port ${e2ePort}`,
+    command: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${e2ePort}`,
     url: e2eBaseUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

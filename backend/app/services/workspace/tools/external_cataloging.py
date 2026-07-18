@@ -13,10 +13,25 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.architecture.uow import commit_session
+from app.core.legacy_env import compatible_env_prefixes
+from app.database.models import (
+    CatalogingCandidate,
+    CatalogingChapterRun,
+    CatalogingFact,
+    CatalogingJob,
+    Chapter,
+    Character,
+    CharacterRelationship,
+    OutlineNode,
+    Project,
+    PublicPromptPack,
+    WorldbuildingEntry,
+)
+from app.modules.story.application.content_sync import ensure_chapter_mirror
 from app.prompts.cataloging_source import get_outline_granularity_rules
 from app.services.cataloging.constants import VALID_ITEM_TYPES
 from app.services.cataloging.jsonl import normalize_candidate
-
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +65,7 @@ CANONICAL_FACT_TYPES = {
 
 def _managed_cataloging_bindings() -> list[dict[str, str]]:
     bindings: list[dict[str, str]] = []
-    for prefix in ("SIMING", "MOSHU"):
+    for prefix in compatible_env_prefixes():
         managed_kind = os.environ.get(f"{prefix}_MANAGED_AGENT_KIND", "")
         if managed_kind.strip().lower() != "cataloging":
             continue
@@ -278,8 +293,6 @@ def _run_summary(run: Any | None) -> dict[str, Any] | None:
 
 
 def _earliest_unfinished_run(db: Session, job_id: str) -> Any | None:
-    from app.database.models import CatalogingChapterRun
-
     return (
         db.query(CatalogingChapterRun)
         .filter(CatalogingChapterRun.job_id == job_id)
@@ -290,8 +303,6 @@ def _earliest_unfinished_run(db: Session, job_id: str) -> Any | None:
 
 
 def _previous_unfinished_run(db: Session, run: Any) -> Any | None:
-    from app.database.models import CatalogingChapterRun
-
     return (
         db.query(CatalogingChapterRun)
         .filter(CatalogingChapterRun.job_id == run.job_id)
@@ -386,8 +397,6 @@ async def start_external_cataloging_job(
     API-free: creates a CatalogingJob and CatalogingChapterRun per chapter.
     Does not call LLMGateway.
     """
-    from app.database.models import CatalogingJob, CatalogingChapterRun, Chapter
-
     if not str(project_id or "").strip():
         return {
             "tool": "start_external_cataloging_job",
@@ -439,7 +448,7 @@ async def start_external_cataloging_job(
         )
         db.add(run)
 
-    db.commit()
+    commit_session(db)
     db.refresh(job)
 
     return {
@@ -471,11 +480,6 @@ async def get_next_external_cataloging_chapter(
 
     API-free: returns chapter text, context, and prompt pack.
     """
-    from app.database.models import (
-        CatalogingJob, CatalogingChapterRun, Chapter,
-        Character, WorldbuildingEntry, OutlineNode,
-        PublicPromptPack,
-    )
     from app.services.prompt_packs.seed import ensure_builtin_packs
 
     ensure_builtin_packs(db)
@@ -858,24 +862,21 @@ async def get_next_external_cataloging_chapter(
     # experimental single-stage cataloging turn.
     if phase in {"facts", "merged"}:
         chapter_run.status = "in_progress"
-        db.commit()
-
-    from app.database.models import Project
-    from app.services.content_store import ensure_project_folder, sync_chapter_to_file
+        commit_session(db)
 
     project = db.query(Project).filter(Project.id == effective_project_id).first()
     project_folder = ""
     content_file_path = ""
     if project:
-        folder = ensure_project_folder(db, project)
-        file_path = folder / chapter.content_file_path if chapter.content_file_path else None
-        if not file_path or not file_path.exists():
-            sync_chapter_to_file(db, project, chapter, index=chapter_run.chapter_order + 1)
-            file_path = folder / chapter.content_file_path if chapter.content_file_path else None
+        folder, file_path = ensure_chapter_mirror(
+            db,
+            project,
+            chapter,
+            index=chapter_run.chapter_order + 1,
+            source="external_cataloging",
+        )
         project_folder = str(folder)
-        if file_path and file_path.exists():
-            content_file_path = str(file_path.resolve())
-        db.commit()
+        content_file_path = str(file_path)
 
     return {
         "tool": "get_next_external_cataloging_chapter",
@@ -921,8 +922,6 @@ async def save_external_cataloging_facts(
 
     API-free: stores facts in CatalogingFact table.
     """
-    from app.database.models import CatalogingJob, CatalogingChapterRun, CatalogingFact
-
     job_id = str(args.get("job_id") or "").strip()
     chapter_id = str(args.get("chapter_id") or "").strip()
     facts = args.get("facts", [])
@@ -1017,7 +1016,7 @@ async def save_external_cataloging_facts(
     chapter_run.status = "facts_saved"
     if job.status == "waiting_confirmation":
         job.status = "running"
-    db.commit()
+    commit_session(db)
 
     allowed, blocking_run, gate_note = _candidate_gate(db, chapter_run)
     if allowed:
@@ -1067,7 +1066,6 @@ async def save_external_cataloging_candidates(
 
     API-free: stores candidates in CatalogingCandidate table.
     """
-    from app.database.models import CatalogingJob, CatalogingChapterRun, CatalogingCandidate
     from app.services.cataloging.candidate_store import create_candidate_from_raw
     from app.services.cataloging.candidate_validation import inspect_candidate_coverage
 
@@ -1243,7 +1241,7 @@ async def save_external_cataloging_candidates(
             "The candidate set is incomplete. Add the missing required items for this same "
             "chapter before calling apply_pending_cataloging."
         )
-    db.commit()
+    commit_session(db)
 
     result = {
         "tool": "save_external_cataloging_candidates",
@@ -1285,12 +1283,6 @@ async def verify_external_cataloging_progress(
 
     API-free: reads from database.
     """
-    from app.database.models import (
-        CatalogingJob, CatalogingChapterRun, CatalogingCandidate,
-        Chapter, Character, WorldbuildingEntry, OutlineNode,
-        CharacterRelationship,
-    )
-
     job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         return {

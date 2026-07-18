@@ -1,6 +1,8 @@
 """Memory tools — persistent remember / recall / forget / list_memories for the workspace assistant."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import re
 from typing import Any
 
@@ -75,7 +77,7 @@ async def remember(
         existing.importance = importance
         existing.source = source
         refresh_source_index(db, project_id, "assistant_memory", existing.id)
-        db.commit()
+        commit_session(db)
         return {
             "tool": "remember",
             "status": "ok",
@@ -94,7 +96,7 @@ async def remember(
     db.add(memory)
     db.flush()
     refresh_source_index(db, project_id, "assistant_memory", memory.id)
-    db.commit()
+    commit_session(db)
     return {
         "tool": "remember",
         "status": "ok",
@@ -168,7 +170,7 @@ async def forget(
         delete_source_index(db, project_id, "assistant_memory", memory.id)
         key_deleted = memory.key
         db.delete(memory)
-        db.commit()
+        commit_session(db)
         return {"tool": "forget", "status": "ok", "detail": f"已删除记忆「{key_deleted}」", "data": {"id": memory_id, "key": key_deleted}}
 
     if key:
@@ -183,7 +185,7 @@ async def forget(
         for m in targets:
             delete_source_index(db, project_id, "assistant_memory", m.id)
             db.delete(m)
-        db.commit()
+        commit_session(db)
         if targets:
             return {"tool": "forget", "status": "ok", "detail": f"已删除 {len(targets)} 条匹配「{key}」的记忆", "data": {"key": key, "deleted_count": len(targets)}}
         return {"tool": "forget", "status": "ok", "detail": f"没有匹配「{key}」的记忆", "data": {"key": key, "deleted_count": 0}}

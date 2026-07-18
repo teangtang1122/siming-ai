@@ -9,6 +9,7 @@ from app.prompts.cataloging_source import (
     get_language_rules,
 )
 from app.prompts.prompt_source import get_naming_resolution_rules, get_time_tracking_rules
+from app.modules.assistant.infrastructure.runtime import render_prompt
 
 FACT_EXTRACTION_SYSTEM_PROMPT = "\n\n".join([
     "你是“作品建档”的第一阶段事实抽取器。",
@@ -25,19 +26,7 @@ CATALOGING_RESOLUTION_SYSTEM_PROMPT = "\n\n".join([
     get_cataloging_candidate_schema(),
 ])
 
-CATALOGING_MERGED_SYSTEM_PROMPT = "\n\n".join([
-    "你是“作品建档”的单阶段实验决策器。",
-    "你会收到当前章节正文，以及已有角色、世界观、大纲和近期章节摘要。你的任务不是先保存事实卡片，而是直接输出可写入数据库的候选 JSONL。",
-    "信息关注范围必须等同第一阶段事实抽取：只采集会影响大纲、角色、关系、世界观或后续写作连续性的内容；不要复述普通动作流水账。",
-    "只输出 JSONL；每一行是一个完整 JSON 对象；不要输出 Markdown、解释、代码块或 JSON 数组。",
-    "必须至少输出 1 条 chapter_summary 和 1 条 node_type=\"chapter\" 的 outline_create；有多个重要场景时额外输出 section 级 outline_create。",
-    "不要输出 chapter_overview、character_fact、worldbuilding_fact、outline_fact 或 relationship_fact；这些是两阶段流程的中间事实类型，本实验流程禁止使用。",
-    get_language_rules(),
-    get_cataloging_candidate_rules(),
-    get_time_tracking_rules(),
-    get_naming_resolution_rules(),
-    get_cataloging_candidate_schema(),
-])
+CATALOGING_MERGED_SYSTEM_PROMPT = render_prompt("continuity.cataloging.merged")
 
 
 def build_fact_extraction_prompt(chapter_title: str, chapter_content: str) -> str:

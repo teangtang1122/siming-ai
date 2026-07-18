@@ -1,4 +1,6 @@
 """Business logic for importing deconstruct report results into project entities."""
+
+from app.architecture.uow import commit_session
 import json
 
 from sqlalchemy.orm import Session
@@ -485,7 +487,7 @@ def import_deconstruct_report(
                 "title": world_entry.title,
             })
 
-    db.commit()
+    commit_session(db)
     return {
         "outline_nodes": imported_outline,
         "characters": imported_characters,

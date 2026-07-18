@@ -14,7 +14,7 @@ from copy import deepcopy
 from typing import Any
 
 from app.services.workspace.registry import ToolDef, registry
-from app.mcp.schemas import McpTool, McpToolResult, tool_def_to_mcp_tool, make_json_result, make_text_result
+from app.mcp.schemas import McpTool, McpToolResult, make_json_result, make_text_result
 from app.mcp.permissions import filter_tools, is_allowed
 
 logger = logging.getLogger(__name__)
@@ -112,11 +112,13 @@ def list_mcp_tools(
 
     result: list[McpTool] = []
     for td in allowed_defs:
-        result.append(_add_project_id_argument(tool_def_to_mcp_tool(
+        spec = registry.get_spec(td.name)
+        if spec is None:
+            continue
+        result.append(_add_project_id_argument(McpTool(
             name=td.name,
             description=td.description,
-            input_schema=td.input_schema,
-            required=td.required or None,
+            input_schema=spec.parameters_schema(),
         ), required=_requires_project_id(td)))
     return result
 

@@ -6,7 +6,7 @@ require a configured model API: when no external agent fills the blueprint, the
 tool can produce a conservative template blueprint from the user's brief.
 """
 from __future__ import annotations
-
+from app.architecture.uow import commit_session
 import asyncio
 import json
 import logging
@@ -18,8 +18,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from ....ai.gateway import LLMGateway
 from ....ai.local_cli_adapter import is_local_cli_provider
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....core.json_repair import parse_json_object
 from ...operation_runtime import current_operation_id, record_operation_signal
 from ...novel_creation_interview import (
@@ -2619,7 +2619,7 @@ async def _run_dynamic_interview(
             model=model,
             reason="用户要求跳过采访并直接生成方案。",
         )
-        db.commit()
+        commit_session(db)
         return None, merged_feedback, True
     if feedback:
         return None, feedback, skip_questions
@@ -2642,7 +2642,7 @@ async def _run_dynamic_interview(
             model=model,
             error=exc,
         )
-        db.commit()
+        commit_session(db)
         return _interview_failure_result(session_id, exc, qa_history), feedback, False
 
     if evaluation.get("action") == "ask_more" and evaluation.get("questions"):
@@ -2655,7 +2655,7 @@ async def _run_dynamic_interview(
             model=model,
             reason=_clean_text(evaluation.get("reason")),
         )
-        db.commit()
+        commit_session(db)
         return {
             "tool": "draft_novel_blueprint",
             "status": "need_clarification",
@@ -2678,7 +2678,7 @@ async def _run_dynamic_interview(
         model=model,
         reason=_clean_text(evaluation.get("reason"), "模型判断信息已足够。"),
     )
-    db.commit()
+    commit_session(db)
     return None, merged_feedback, True
 
 
@@ -4513,7 +4513,7 @@ async def start_novel_creation_session(
     )
     db.add(session)
     initialize_session_draft(session, args)
-    db.commit()
+    commit_session(db)
     db.refresh(session)
 
     pack = db.query(PublicPromptPack).filter(
@@ -4701,7 +4701,7 @@ async def draft_novel_blueprint(
                     if feedback_for_content and revision_mode == "regenerate"
                     else base_brief
                 )
-            db.commit()
+            commit_session(db)
             recommendation = (
                 "模型没有产出可用的原创新书方案。为避免多个用户拿到相同模板内容，本次未生成模板兜底方案；"
                 "请切换可用的云端/CLI 模型、选择 external_agent 模式，或明确使用 template 模式做结构草稿。"
@@ -4740,7 +4740,7 @@ async def draft_novel_blueprint(
                 else base_brief
             )
         session.status = "reviewing"
-        db.commit()
+        commit_session(db)
         # Determine if LLM enhancement actually succeeded
         llm_succeeded = any(
             (bp.get("creation_engine") or "").startswith("llm") or (bp.get("creation_engine") or "").startswith("template_llm")
@@ -4936,7 +4936,7 @@ async def review_novel_blueprint(
             session.blueprint_json = blueprint_json.get("blueprints")
         else:
             session.blueprint_json = blueprint_json
-        db.commit()
+        commit_session(db)
 
     if execution_mode in {"template", "local_template", "auto"}:
         blueprints = session.blueprint_json or []
@@ -4961,7 +4961,7 @@ async def review_novel_blueprint(
             }
         session.review_json = review
         session.status = "reviewing"
-        db.commit()
+        commit_session(db)
         return {
             "tool": "review_novel_blueprint",
             "status": "ok",
@@ -5027,7 +5027,7 @@ async def apply_novel_blueprint(
         WorldbuildingRelation,
         NovelCreationSession,
     )
-    from app.services.content_store import sync_project_to_files
+    from app.modules.story.application.content_sync import enqueue_project_sync
     from app.services.novel_creation_workspace import build_apply_blueprint
 
     session_id = _clean_text(args.get("session_id"))
@@ -5322,17 +5322,17 @@ async def apply_novel_blueprint(
         session.status = "completed"
         session.completed_at = datetime.utcnow()
 
-        db.commit()
-
+        sync_job = enqueue_project_sync(db, project.id, source="novel_creation")
+        commit_session(db)
         if _is_real_session(db):
-            try:
-                sync_project_to_files(db, project.id)
-                db.commit()
-            except Exception as sync_exc:
-                db.rollback()
-                created_items["warnings"].append(
-                    f"作品已成功入库，但文件镜像同步失败：{sync_exc}。请在作品设置中执行“同步项目文件”。"
+            db.refresh(sync_job)
+            if sync_job.status != "completed":
+                warning = (
+                    f"作品已入库，但文件镜像同步失败：{sync_job.last_error or '未知错误'}。请在作品设置中重试。"
+                    if sync_job.status == "failed"
+                    else "作品已入库，文件镜像仍在后台排队；司命会自动重试。"
                 )
+                created_items["warnings"].append(warning)
 
         return {
             "tool": "apply_novel_blueprint",
@@ -5349,7 +5349,7 @@ async def apply_novel_blueprint(
     except Exception as exc:
         db.rollback()
         session.status = "failed"
-        db.commit()
+        commit_session(db)
         return {
             "tool": "apply_novel_blueprint",
             "status": "error",

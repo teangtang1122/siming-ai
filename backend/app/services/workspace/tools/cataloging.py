@@ -7,11 +7,19 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
-from ....services.content_store import sync_project_to_files
+from ....ai.local_cli_adapter import is_local_cli_provider
+from ....core.legacy_env import compatible_env_prefixes
+from ....database.models import (
+    CatalogingCandidate,
+    CatalogingChapterRun,
+    CatalogingFact,
+    CatalogingJob,
+)
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ....services.cataloging.applier import apply_candidates_for_run
-from ....services.cataloging.candidate_validation import inspect_candidate_coverage
 from ....services.cataloging.candidate_io import candidate_to_dict
+from ....services.cataloging.candidate_validation import inspect_candidate_coverage
 from ....services.cataloging.fact_store import fact_to_dict, load_facts_for_run
 from ....services.cataloging.job_control import (
     cancel_job,
@@ -22,13 +30,17 @@ from ....services.cataloging.job_control import (
     reset_run_for_retry,
     resume_job,
 )
-from ....services.cataloging.model_selection import cataloging_model_selection
-from ....services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
 from ....services.cataloging.local_cli_agent import (
     cancel_local_cli_cataloging_worker,
     ensure_local_cli_cataloging_worker,
 )
-from ....ai.local_cli_adapter import is_local_cli_provider
+from ....services.cataloging.model_selection import cataloging_model_selection
+from ....services.cataloging.orchestrator import (
+    create_cataloging_job,
+    job_to_dict,
+    run_to_dict,
+    stream_cataloging_job,
+)
 
 
 async def _consume_cataloging_stream(project_id: str, job_id: str) -> None:
@@ -50,7 +62,7 @@ def _get_job(db: Session, project_id: str, args: dict[str, Any]) -> CatalogingJo
 
 def _managed_cataloging_bindings() -> list[dict[str, str]]:
     bindings: list[dict[str, str]] = []
-    for prefix in ("SIMING", "MOSHU"):
+    for prefix in compatible_env_prefixes():
         managed_kind = os.environ.get(f"{prefix}_MANAGED_AGENT_KIND", "")
         if managed_kind.strip().lower() != "cataloging":
             continue
@@ -264,8 +276,14 @@ async def apply_pending_cataloging(db: Session, project_id: str, args: dict[str,
     job.status = "running"
     job.blocked_chapter_id = None
     refresh_job_progress(db, job)
-    sync_project_to_files(db, job.project_id)
-    db.flush()
+    queue_content_sync(
+        db,
+        ContentSyncIntent(
+            project_id=job.project_id,
+            target=ContentSyncTarget.PROJECT,
+            source="cataloging_workspace_tool",
+        ),
+    )
     if job.execution_mode == "auto" and job.execution_backend != "local_cli_agent":
         asyncio.create_task(_consume_cataloging_stream(job.project_id, job.id))
     data: dict[str, Any] = {"job": job_to_dict(job), "run": run_to_dict(run), "events": events}

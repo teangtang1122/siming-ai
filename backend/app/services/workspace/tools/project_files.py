@@ -7,9 +7,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import Project
+from ....modules.story.application.content_sync import queue_content_sync
+from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ....services.content_store import (
     ensure_project_folder,
-    sync_project_to_files,
     refresh_project_from_files,
 )
 from ....services.storage_contract import storage_health
@@ -222,7 +223,14 @@ async def sync_project_files(db: Session, project_id: str, args: dict[str, Any])
         return {"tool": "sync_project_files", "status": "skipped", "detail": "未找到作品"}
     direction = str(args.get("direction") or "db_to_files").strip()
     if direction in {"db_to_files", "export"}:
-        sync_project_to_files(db, project.id)
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project.id,
+                target=ContentSyncTarget.PROJECT,
+                source="explicit_storage_repair",
+            ),
+        )
     elif direction in {"both"}:
         if not bool(args.get("confirm_import_from_files")):
             return {
@@ -231,7 +239,14 @@ async def sync_project_files(db: Session, project_id: str, args: dict[str, Any])
                 "detail": "2.1 默认禁止从文件镜像反向覆盖数据库；如确需修复导入，请传 confirm_import_from_files=true",
             }
         refresh_project_from_files(db, project.id)
-        sync_project_to_files(db, project.id)
+        queue_content_sync(
+            db,
+            ContentSyncIntent(
+                project_id=project.id,
+                target=ContentSyncTarget.PROJECT,
+                source="explicit_storage_repair",
+            ),
+        )
     elif direction in {"files_to_db", "import"}:
         if not bool(args.get("confirm_import_from_files")):
             return {

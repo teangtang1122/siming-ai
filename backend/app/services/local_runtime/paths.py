@@ -4,9 +4,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ...core.legacy_env import get_compatible_env
 
-def moshu_home() -> Path:
-    configured = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+
+def siming_home() -> Path:
+    configured = get_compatible_env("SIMING_HOME")
     if configured:
         return Path(configured).expanduser().resolve()
     local_app_data = os.environ.get("LOCALAPPDATA")
@@ -16,25 +18,29 @@ def moshu_home() -> Path:
 
 
 def model_root() -> Path:
-    configured = os.environ.get("SIMING_MODEL_ROOT") or os.environ.get("MOSHU_MODEL_ROOT")
-    path = Path(configured).expanduser() if configured else moshu_home() / "models"
+    configured = get_compatible_env("SIMING_MODEL_ROOT")
+    path = Path(configured).expanduser() if configured else siming_home() / "models"
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
 
 
 def runtime_root() -> Path:
-    path = moshu_home() / "runtimes"
+    path = siming_home() / "runtimes"
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
 
 
 def training_root() -> Path:
-    path = moshu_home() / "training"
+    path = siming_home() / "training"
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
 
 
 def downloads_root() -> Path:
-    path = moshu_home() / "downloads"
+    path = siming_home() / "downloads"
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+# Compatibility export for older internal extensions.
+moshu_home = siming_home

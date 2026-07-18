@@ -1,0 +1,40 @@
+module.exports = {
+  forbidden: [
+    {
+      name: 'no-circular-dependencies',
+      severity: 'error',
+      from: { path: '^src' },
+      to: { circular: true },
+    },
+    {
+      name: 'legacy-shared-does-not-depend-on-features-or-pages',
+      severity: 'error',
+      from: {
+        path: '^src/(api|components|contexts|hooks|stores|styles|themes|types|utils)/',
+      },
+      to: { path: '^src/(features|pages)/' },
+    },
+    {
+      name: 'shared-does-not-depend-on-app-features-or-pages',
+      severity: 'error',
+      from: { path: '^src/shared/' },
+      to: { path: '^src/(app|features|pages)/' },
+    },
+    {
+      name: 'features-do-not-depend-on-app-or-pages',
+      severity: 'error',
+      from: { path: '^src/features/' },
+      to: { path: '^src/(app|pages)/' },
+    },
+  ],
+  options: {
+    doNotFollow: { path: 'node_modules' },
+    exclude: { path: '(^|/)(dist|node_modules|coverage)/' },
+    tsConfig: { fileName: 'tsconfig.json' },
+    tsPreCompilationDeps: true,
+    enhancedResolveOptions: {
+      conditionNames: ['import', 'require', 'node', 'default'],
+      exportsFields: ['exports'],
+    },
+  },
+}

@@ -61,6 +61,10 @@ class PromptContributionApiTest(unittest.TestCase):
         detail = detail_resp.json()["data"]
         self.assertEqual(detail["pack_id"], "chapter_writing_quality")
         self.assertIn("system_prompt", detail)
+        self.assertEqual(
+            detail["prompt_spec"]["prompt_spec_id"],
+            "assistant.chapter.quality",
+        )
 
         edited = detail["system_prompt"] + "\n\n【投稿测试】请更重视角色阶段性目标。"
         export_resp = self.client.post(
@@ -86,5 +90,10 @@ class PromptContributionApiTest(unittest.TestCase):
         package = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(package["schema_version"], "siming.prompt_contribution.v1")
         self.assertEqual(package["base_pack"]["pack_id"], "chapter_writing_quality")
+        self.assertEqual(
+            package["base_pack"]["prompt_spec_id"],
+            "assistant.chapter.quality",
+        )
+        self.assertEqual(len(package["base_pack"]["base_hash"]), 64)
         self.assertIn("角色阶段性目标", package["after_prompt"])
         self.assertGreaterEqual(package["diff_stats"]["added_lines"], 1)

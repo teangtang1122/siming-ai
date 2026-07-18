@@ -1,6 +1,8 @@
 """Skill business logic — CRUD, scoring, prompt building, validation, built-in seeding."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 import logging
 import re
@@ -12,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ...database.models import Skill, SkillVersion
 from ...schemas.skill import SkillResponse
+from .tool_catalog import get_tool_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -253,22 +256,7 @@ def list_skill_templates() -> list[dict]:
 
 def list_skill_tools() -> list[dict]:
     """Return workspace tool metadata for the skill editor."""
-    from ..workspace.registry import registry
-
-    tools = []
-    for name in sorted(registry.all_names()):
-        td = registry.get(name)
-        if not td:
-            continue
-        tools.append({
-            "name": td.name,
-            "description": td.description,
-            "tool_type": td.tool_type,
-            "estimated_cost": td.estimated_cost,
-            "idempotent": td.idempotent,
-            "requires_confirmation": td.requires_confirmation,
-        })
-    return tools
+    return sorted(get_tool_catalog(), key=lambda item: str(item.get("name") or ""))
 
 
 # ── Prompt Injection Protection ────────────────────────────────────────
@@ -448,7 +436,7 @@ def create_skill(db: Session, project_id: str, data: dict) -> dict:
     )
     db.add(skill)
     try:
-        db.commit()
+        commit_session(db)
     except Exception:
         db.rollback()
         raise ValidationError("同名技能已存在，请使用不同的名称")
@@ -459,7 +447,7 @@ def create_skill(db: Session, project_id: str, data: dict) -> dict:
         title="创建技能",
         change_summary="初始技能配置",
     )
-    db.commit()
+    commit_session(db)
     return skill_to_dict(skill)
 
 
@@ -493,7 +481,7 @@ def update_skill(db: Session, project_id: str, skill_id: str, data: dict) -> dic
     if "enabled" in data and data["enabled"] is not None:
         skill.enabled = data["enabled"]
 
-    db.commit()
+    commit_session(db)
     db.refresh(skill)
     after_snapshot = _snapshot_skill(skill)
     changed_fields = [
@@ -518,7 +506,7 @@ def update_skill(db: Session, project_id: str, skill_id: str, data: dict) -> dic
             title="更新技能：" + "、".join(changed_fields[:4]),
             change_summary="变更字段：" + "、".join(changed_fields),
         )
-        db.commit()
+        commit_session(db)
     return skill_to_dict(skill)
 
 
@@ -528,7 +516,7 @@ def delete_skill(db: Session, project_id: str, skill_id: str) -> None:
     if skill.is_builtin:
         raise ValidationError("内置技能不可删除，只能禁用")
     db.delete(skill)
-    db.commit()
+    commit_session(db)
 
 
 def reset_skill_to_builtin(db: Session, project_id: str, skill_id: str) -> dict:
@@ -558,7 +546,7 @@ def reset_skill_to_builtin(db: Session, project_id: str, skill_id: str) -> dict:
     skill.scope = builtin["scope"]
     skill.priority = builtin["priority"]
 
-    db.commit()
+    commit_session(db)
     db.refresh(skill)
 
     after_snapshot = _snapshot_skill(skill)
@@ -582,7 +570,7 @@ def reset_skill_to_builtin(db: Session, project_id: str, skill_id: str) -> dict:
             title="恢复内置技能默认值",
             change_summary="重置字段：" + "、".join(changed_fields),
         )
-        db.commit()
+        commit_session(db)
 
     return skill_to_dict(skill)
 
@@ -946,5 +934,5 @@ def ensure_builtin_skills(db: Session, project_id: str) -> None:
             change_summary="首次初始化内置技能",
         )
 
-    db.commit()
+    commit_session(db)
     logger.info("Ensured built-in skills for project %s", project_id)

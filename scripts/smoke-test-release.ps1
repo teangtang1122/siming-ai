@@ -30,6 +30,17 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
+$smokeHome = if ($env:SIMING_SMOKE_HOME) {
+    [System.IO.Path]::GetFullPath($env:SIMING_SMOKE_HOME)
+} elseif ($env:SIMING_HOME) {
+    [System.IO.Path]::GetFullPath($env:SIMING_HOME)
+} else {
+    Join-Path $projectRoot ".build\release-smoke-$([guid]::NewGuid().ToString('N'))"
+}
+New-Item -ItemType Directory -Force -Path $smokeHome | Out-Null
+$env:SIMING_HOME = $smokeHome
+$env:MOSHU_HOME = $smokeHome
+$env:NOVEL_AGENT_HOME = $smokeHome
 
 Write-Host "=== Siming Release Smoke Test ===" -ForegroundColor Cyan
 Write-Host ""
@@ -39,9 +50,22 @@ function Invoke-LocalJsonGet {
         [Parameter(Mandatory=$true)][string]$Url,
         [int]$TimeoutMs = 3000
     )
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if (-not $curl) {
+        throw "curl.exe is required for the release smoke test."
+    }
     $timeoutSeconds = [Math]::Max(1, [Math]::Ceiling($TimeoutMs / 1000))
-    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $timeoutSeconds
-    return $response.Content
+    $output = & $curl.Source `
+        --silent `
+        --show-error `
+        --fail `
+        --noproxy "*" `
+        --max-time $timeoutSeconds `
+        $Url 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Local HTTP probe failed for $Url (curl exit $LASTEXITCODE)."
+    }
+    return ($output -join [Environment]::NewLine)
 }
 
 function Stop-ReleaseSimingProcesses {
@@ -105,7 +129,7 @@ if (Test-Path $setupScript) {
 
 # Step 4: Start Siming.exe
 Write-Host "[4/6] Starting Siming.exe..." -ForegroundColor Yellow
-$simingProcess = Start-Process -FilePath $exePath -PassThru -WindowStyle Hidden
+$simingProcess = Start-Process -FilePath $exePath -ArgumentList "--browser" -PassThru -WindowStyle Hidden
 Write-Host "  Siming.exe started (PID: $($simingProcess.Id))" -ForegroundColor Green
 
 # Wait for server to start
@@ -114,20 +138,29 @@ $maxWait = 90
 $waited = 0
 $serverReady = $false
 $serverBaseUrl = $null
+$detectedPort = $null
+$launcherLogPath = Join-Path $smokeHome "logs\launcher.log"
 while ($waited -lt $maxWait) {
     Start-Sleep -Seconds 1
     $waited++
-    foreach ($port in 8765..8815) {
+    if (-not $detectedPort -and (Test-Path -LiteralPath $launcherLogPath)) {
+        $logText = Get-Content -LiteralPath $launcherLogPath -Raw -ErrorAction SilentlyContinue
+        $portMatches = [regex]::Matches($logText, "Port:\s*(\d+)")
+        if ($portMatches.Count -gt 0) {
+            $detectedPort = [int]$portMatches[$portMatches.Count - 1].Groups[1].Value
+            Write-Host "  Detected application port: $detectedPort" -ForegroundColor Gray
+        }
+    }
+    if ($detectedPort) {
         try {
-            $baseUrl = "http://127.0.0.1:$port"
+            $baseUrl = "http://127.0.0.1:$detectedPort"
             $projectsJson = Invoke-LocalJsonGet -Url "$baseUrl/api/v1/projects" -TimeoutMs 1000
             if ($projectsJson) {
                 $serverReady = $true
                 $serverBaseUrl = $baseUrl
-                break
             }
         } catch {
-            # Server not ready on this port yet
+            # The selected port is known, but startup may still be in progress.
         }
     }
     if ($serverReady) {

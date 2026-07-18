@@ -716,7 +716,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
         calls = []
 
-        async def fake_stream(cls, messages, **kwargs):
+        async def fake_stream(messages, **kwargs):
             calls.append(messages[0]["content"])
             if len(calls) == 1:
                 body = "\n".join([
@@ -765,7 +765,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             db.commit()
             job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
             run = job.chapter_runs[0]
-            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
 
             async def collect():
                 return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
@@ -787,7 +787,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
         calls = []
 
-        async def fake_stream(cls, messages, **kwargs):
+        async def fake_stream(messages, **kwargs):
             calls.append(messages)
             body = "\n".join([
                 json.dumps({
@@ -814,7 +814,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             db.commit()
             job = create_cataloging_job(db, project.id, "manual", "deepseek:test", [])
             run = job.chapter_runs[0]
-            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
 
             async def collect():
                 return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
@@ -837,7 +837,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
         calls = []
 
-        async def fake_stream(cls, messages, **kwargs):
+        async def fake_stream(messages, **kwargs):
             calls.append((messages, kwargs))
             if len(calls) == 1:
                 body = json.dumps({
@@ -869,7 +869,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
                 [],
             )
             run = job.chapter_runs[0]
-            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
 
             async def collect():
                 return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
@@ -894,7 +894,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
         calls = []
 
-        async def fake_stream(cls, messages, **kwargs):
+        async def fake_stream(messages, **kwargs):
             calls.append(messages[0]["content"])
             if len(calls) == 1:
                 body = json.dumps({
@@ -924,7 +924,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             db.commit()
             job = create_cataloging_job(db, project.id, "manual", None, [])
             run = job.chapter_runs[0]
-            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
 
             async def collect():
                 return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
@@ -946,7 +946,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
         calls = []
 
-        async def fake_stream(cls, messages, **kwargs):
+        async def fake_stream(messages, **kwargs):
             calls.append(messages[0]["content"])
             if len(calls) == 1:
                 body = json.dumps({
@@ -983,7 +983,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             db.commit()
             job = create_cataloging_job(db, project.id, "manual", None, [])
             run = job.chapter_runs[0]
-            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
 
             async def collect():
                 return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
@@ -1019,7 +1019,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
         calls = []
 
-        async def fake_stream(cls, messages, **kwargs):
+        async def fake_stream(messages, **kwargs):
             calls.append(messages[0]["content"])
             if len(calls) <= 3:
                 yield "我无法抽取。"
@@ -1039,7 +1039,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             db.commit()
             job = create_cataloging_job(db, project.id, "manual", "local_llama_cpp:qwen3-4b-q4", [])
             run = job.chapter_runs[0]
-            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
 
             async def collect():
                 return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]
@@ -1060,7 +1060,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
         original_stream = cataloging_orchestrator.LLMGateway.stream_chat_completion
         calls = []
 
-        async def fake_stream(cls, messages, **kwargs):
+        async def fake_stream(messages, **kwargs):
             calls.append(messages[0]["content"])
             if len(calls) == 1:
                 body = json.dumps({
@@ -1080,7 +1080,7 @@ class CatalogingServiceTestCase(unittest.TestCase):
             db.commit()
             job = create_cataloging_job(db, project.id, "manual", "local_llama_cpp:qwen3-4b-q4", [])
             run = job.chapter_runs[0]
-            cataloging_orchestrator.LLMGateway.stream_chat_completion = classmethod(fake_stream)
+            cataloging_orchestrator.LLMGateway.stream_chat_completion = fake_stream
 
             async def collect():
                 return [event async for event in cataloging_orchestrator._extract_run(db, job, run)]

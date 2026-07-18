@@ -1,6 +1,8 @@
 """Project cataloging endpoints."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 from datetime import datetime
 
@@ -11,8 +13,8 @@ from sqlalchemy.orm import Session
 from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
 from ..database.session import SessionLocal, get_db
+from ..modules.continuity.interfaces.cataloging_dependencies import cataloging_queries
 from ..schemas.cataloging import (
     CatalogingCandidateBulkUpdate,
     CatalogingCandidateCreate,
@@ -48,19 +50,15 @@ from ..services.character_merge_service import build_character_merge_preview
 router = APIRouter(tags=["cataloging"])
 
 
-def _get_job_or_404(db: Session, project_id: str, job_id: str) -> CatalogingJob:
-    job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id, CatalogingJob.project_id == project_id).first()
+def _get_job_or_404(db: Session, project_id: str, job_id: str):
+    job = cataloging_queries(db).get_job(project_id, job_id)
     if not job:
         raise NotFoundError("作品建档任务不存在")
     return job
 
 
-def _get_candidate_or_404(db: Session, project_id: str, candidate_id: str) -> CatalogingCandidate:
-    candidate = (
-        db.query(CatalogingCandidate)
-        .filter(CatalogingCandidate.id == candidate_id, CatalogingCandidate.project_id == project_id)
-        .first()
-    )
+def _get_candidate_or_404(db: Session, project_id: str, candidate_id: str):
+    candidate = cataloging_queries(db).get_candidate(project_id, candidate_id)
     if not candidate:
         raise NotFoundError("候选项不存在")
     return candidate
@@ -94,7 +92,7 @@ async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db:
         except Exception as exc:
             job.status = "paused_on_failure"
             job.error = str(exc)
-            db.commit()
+            commit_session(db)
             raise ValidationError(str(exc)) from exc
     return ApiResponse.success(data=job_to_dict(job), message="作品建档任务已创建")
 
@@ -102,13 +100,7 @@ async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db:
 @router.get("/projects/{project_id}/cataloging/jobs")
 def list_cataloging_jobs(project_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
-    jobs = (
-        db.query(CatalogingJob)
-        .filter(CatalogingJob.project_id == project_id)
-        .order_by(CatalogingJob.created_at.desc())
-        .limit(20)
-        .all()
-    )
+    jobs = cataloging_queries(db).list_jobs(project_id, limit=20)
     return ApiResponse.success(data={"items": [job_to_dict(job) for job in jobs], "total": len(jobs)})
 
 
@@ -116,12 +108,7 @@ def list_cataloging_jobs(project_id: str, db: Session = Depends(get_db)):
 def get_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    runs = (
-        db.query(CatalogingChapterRun)
-        .filter(CatalogingChapterRun.job_id == job.id)
-        .order_by(CatalogingChapterRun.chapter_order.asc())
-        .all()
-    )
+    runs = cataloging_queries(db).list_runs(job.id)
     return ApiResponse.success(data={"job": job_to_dict(job), "runs": [run_to_dict(run) for run in runs]})
 
 
@@ -158,7 +145,7 @@ def update_cataloging_mode(project_id: str, job_id: str, payload: CatalogingMode
     if should_resume and job.execution_backend == "local_cli_agent":
         job.status = "running"
         job.blocked_chapter_id = None
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"job": job_to_dict(job), "should_resume": should_resume})
 
 
@@ -173,14 +160,12 @@ def list_cataloging_candidates(
 ):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    query = db.query(CatalogingCandidate).filter(CatalogingCandidate.job_id == job.id)
-    if chapter_run_id:
-        query = query.filter(CatalogingCandidate.chapter_run_id == chapter_run_id)
-    if status:
-        query = query.filter(CatalogingCandidate.status == status)
-    if item_type:
-        query = query.filter(CatalogingCandidate.item_type == item_type)
-    candidates = query.order_by(CatalogingCandidate.created_at.asc()).all()
+    candidates = cataloging_queries(db).list_candidates(
+        job.id,
+        chapter_run_id=chapter_run_id,
+        status=status,
+        item_type=item_type,
+    )
     return ApiResponse.success(data={"items": [candidate_to_dict(item) for item in candidates], "total": len(candidates)})
 
 
@@ -194,12 +179,11 @@ def list_cataloging_facts(
 ):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    query = db.query(CatalogingFact).filter(CatalogingFact.job_id == job.id)
-    if chapter_run_id:
-        query = query.filter(CatalogingFact.chapter_run_id == chapter_run_id)
-    if fact_type:
-        query = query.filter(CatalogingFact.fact_type == fact_type)
-    facts = query.order_by(CatalogingFact.sort_order.asc(), CatalogingFact.created_at.asc()).all()
+    facts = cataloging_queries(db).list_facts(
+        job.id,
+        chapter_run_id=chapter_run_id,
+        fact_type=fact_type,
+    )
     return ApiResponse.success(data={"items": [fact_to_dict(item) for item in facts], "total": len(facts)})
 
 
@@ -245,7 +229,7 @@ def update_cataloging_candidate(
     if payload.status is not None:
         candidate.status = payload.status
     candidate.updated_at = datetime.utcnow()
-    db.commit()
+    commit_session(db)
     db.refresh(candidate)
     return ApiResponse.success(data=candidate_to_dict(candidate), message="候选项已更新")
 
@@ -260,11 +244,7 @@ def create_cataloging_candidate(
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
     if payload.chapter_run_id:
-        run = (
-            db.query(CatalogingChapterRun)
-            .filter(CatalogingChapterRun.id == payload.chapter_run_id, CatalogingChapterRun.job_id == job.id)
-            .first()
-        )
+        run = cataloging_queries(db).get_run(job.id, payload.chapter_run_id)
     else:
         run = first_blocking_run(db, job)
     if not run:
@@ -283,7 +263,7 @@ def create_cataloging_candidate(
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    db.commit()
+    commit_session(db)
     db.refresh(candidate)
     return ApiResponse.success(data=candidate_to_dict(candidate), message="候选项已新增")
 
@@ -297,16 +277,16 @@ def bulk_update_cataloging_candidates(
 ):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    query = db.query(CatalogingCandidate).filter(CatalogingCandidate.job_id == job.id)
-    if payload.candidate_ids:
-        query = query.filter(CatalogingCandidate.id.in_(payload.candidate_ids))
-    candidates = query.all()
+    candidates = cataloging_queries(db).list_candidates(
+        job.id,
+        candidate_ids=payload.candidate_ids,
+    )
     for candidate in candidates:
         if candidate.status in {"applying", "applied"}:
             continue
         candidate.status = payload.status
         candidate.updated_at = datetime.utcnow()
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(
         data={"items": [candidate_to_dict(item) for item in candidates], "total": len(candidates)},
         message="候选项已批量更新",
@@ -317,12 +297,7 @@ def bulk_update_cataloging_candidates(
 def apply_pending_cataloging(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    run = (
-        db.query(CatalogingChapterRun)
-        .filter(CatalogingChapterRun.job_id == job.id, CatalogingChapterRun.status == "awaiting_confirmation")
-        .order_by(CatalogingChapterRun.chapter_order.asc())
-        .first()
-    )
+    run = cataloging_queries(db).first_awaiting_confirmation(job.id)
     if not run:
         raise ValidationError("当前没有等待确认的章节")
     events = apply_candidates_for_run(db, job, run)
@@ -334,7 +309,7 @@ def apply_pending_cataloging(project_id: str, job_id: str, db: Session = Depends
     job.blocked_chapter_id = None
     job.error = None
     refresh_job_progress(db, job)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run), "events": events}, message="候选项已写入")
 
 
@@ -346,7 +321,7 @@ def skip_current_cataloging_chapter(project_id: str, job_id: str, db: Session = 
     if not run:
         raise ValidationError("当前没有可跳过的章节")
     mark_run_skipped(db, job, run)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已显式跳过")
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/retry-current")
@@ -357,7 +332,7 @@ def retry_current_cataloging_chapter(project_id: str, job_id: str, db: Session =
     if not run:
         raise ValidationError("当前没有可重试的章节")
     reset_run_for_retry(db, job, run)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已重置，准备重试")
 
 
@@ -367,19 +342,13 @@ def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Sessio
     job = _get_job_or_404(db, project_id, job_id)
     run = first_blocking_run(db, job)
     if not run:
-        run = (
-            db.query(CatalogingChapterRun)
-            .filter(CatalogingChapterRun.job_id == job.id)
-            .filter(CatalogingChapterRun.status.in_(["extracting", "facts_saved", "awaiting_confirmation", "failed"]))
-            .order_by(CatalogingChapterRun.chapter_order.asc())
-            .first()
-        )
+        run = cataloging_queries(db).first_resolution_candidate(job.id)
     if not run:
         raise ValidationError("当前没有可重跑第二阶段的章节")
     if not load_facts_for_run(db, run):
         raise ValidationError("当前章节没有已保存事实，请使用完整重试")
     reset_run_for_resolution_retry(db, job, run)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="已保留事实并重置第二阶段")
 
 
@@ -393,7 +362,7 @@ def recover_current_cataloging_chapter(project_id: str, job_id: str, db: Session
     if not has_usable_chapter_summary(db, run):
         raise ValidationError("当前章节缺少 chapter_summary，请先手动新增章节摘要候选项")
     recover_failed_run_for_review(db, job, run)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已转入人工确认")
 
 
@@ -403,7 +372,7 @@ def pause_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get
     job = _get_job_or_404(db, project_id, job_id)
     if job.status not in {"completed", "cancelled", "failed"}:
         pause_job(job)
-        db.commit()
+        commit_session(db)
         if job.execution_backend == "local_cli_agent":
             cancel_local_cli_cataloging_worker(job.id)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已暂停")
@@ -415,7 +384,7 @@ def resume_cataloging_job(project_id: str, job_id: str, db: Session = Depends(ge
     job = _get_job_or_404(db, project_id, job_id)
     if job.status == "paused":
         resume_job(job)
-        db.commit()
+        commit_session(db)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已继续")
 
 
@@ -426,7 +395,7 @@ def cancel_cataloging_job(project_id: str, job_id: str, db: Session = Depends(ge
     if job.status in {"completed", "cancelled"}:
         return ApiResponse.success(data={"job": job_to_dict(job)}, message="任务已结束")
     cancel_job(job)
-    db.commit()
+    commit_session(db)
     if job.execution_backend == "local_cli_agent":
         cancel_local_cli_cataloging_worker(job.id, terminal=True)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已取消")

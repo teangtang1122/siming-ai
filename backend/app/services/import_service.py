@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..core.utils import count_words
 
-from ..ai.gateway import LLMGateway
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..core.exceptions import ValidationError
 from ..core.utils import count_words
 from ..database.models import Chapter

@@ -6,8 +6,9 @@ wire contract explicit without requiring a schema migration.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
+
+from ...modules.operations.domain.failures import classify_failure
 
 
 RUN_EVENT_META_FIELDS = (
@@ -18,33 +19,6 @@ RUN_EVENT_META_FIELDS = (
     "storage_target",
     "next_action",
 )
-
-
-def classify_failure(message: str | None) -> str | None:
-    """Classify common failures so the UI can show a concrete next step."""
-    text = str(message or "").strip()
-    if not text:
-        return None
-    lower = text.lower()
-    if re.search(r"free\s+usage\s+exceeded|quota|rate\s*limit|too many requests|429|402", lower):
-        return "quota_or_rate_limit"
-    if re.search(r"invalidtoken|invalid[_\s-]*token|expired[_\s-]*token|401|unauthori[sz]ed|login|required", lower):
-        return "auth"
-    if "timeout" in lower or "超时" in text or "请求超时" in text:
-        return "timeout"
-    if re.search(r"cannot connect|connection (?:failed|refused|reset)|network error|网络连接|无法连接", lower + " " + text):
-        return "network"
-    if re.search(r"unavailable|not available|executable.*not found|command.*not found", lower):
-        return "unavailable"
-    if "没有收到模型的文字回复" in text or "empty response" in lower or "no text" in lower:
-        return "empty_response"
-    if re.search(r"invalid\s+(?:json|response)|json.*(?:parse|format)|cannot parse", lower) or "格式无法解析" in text:
-        return "invalid_response"
-    if "only `read` tool" in lower or "工具均未注册" in text or "tool" in lower and "not registered" in lower:
-        return "tool_unavailable"
-    if "未入库" in text or "orphan" in lower or "mirror" in lower and "database" in lower:
-        return "storage_contract"
-    return "unknown"
 
 
 def parse_payload_json(payload_json: str | None) -> dict[str, Any]:

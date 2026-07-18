@@ -118,17 +118,18 @@ def main() -> None:
 
     # ── Database setup ───────────────────────────────────────────────────
     _prepare_data_environment()
-    from app.database.backup import backup_sqlite_database
-    from app.database.migrations import ensure_runtime_schema, runtime_schema_needs_sync
-    from app.database.models import Base
+    from app.database.bootstrap import bootstrap_database
     from app.database.session import SessionLocal, engine
 
-    if runtime_schema_needs_sync(engine):
-        from app.core.config import get_settings
+    bootstrap = bootstrap_database(engine)
+    if bootstrap.read_only:
+        raise RuntimeError(
+            "MCP cannot start while the database is in read-only recovery mode: "
+            + bootstrap.message
+        )
+    from app.bootstrap.composition import configure_application_services
 
-        backup_sqlite_database(get_settings().database_url, reason="pre-mcp-schema-sync")
-    Base.metadata.create_all(bind=engine)
-    ensure_runtime_schema(engine)
+    configure_application_services()
     db = SessionLocal()
 
     # ── MCP server ───────────────────────────────────────────────────────
@@ -142,6 +143,9 @@ def main() -> None:
         )
     finally:
         db.close()
+        from app.services.local_runtime import get_runtime_manager
+
+        get_runtime_manager().stop()
 
 
 if __name__ == "__main__":

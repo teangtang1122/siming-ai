@@ -71,3 +71,10 @@ class ProjectListItem(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ProjectListData(BaseModel):
+    """Typed payload returned by the project collection endpoint."""
+
+    items: list[ProjectListItem]
+    total: int

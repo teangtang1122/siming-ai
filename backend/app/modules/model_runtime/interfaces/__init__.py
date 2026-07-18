@@ -1,0 +1,1 @@
+"""Model-runtime delivery adapters."""

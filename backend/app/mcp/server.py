@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from typing import Any, TextIO
 
-from app.mcp.adapter import list_mcp_tools, is_tool_allowed, get_tool_def, execute_tool
+from app.architecture.uow import commit_session
+from app.core.legacy_env import get_compatible_env
+from app.mcp.adapter import execute_tool, list_mcp_tools
 from app.mcp.prompts import list_prompts, render_prompt
-from app.mcp.schemas import McpToolResult, make_text_result, make_json_result
+from app.mcp.schemas import McpToolResult, make_text_result
 from app.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ def _handle_prompts_get(msg_id: Any, params: dict, db: Any) -> str:
     # Governed prompt rendering can prepare a persisted baseline manifest.
     # Commit it before handing the ID to an MCP client so a later evidence or
     # formal-write call can validate the exact same sources.
-    db.commit()
+    commit_session(db)
     return _jsonrpc_result(msg_id, {
         "description": f"Siming prompt: {name}",
         "messages": [
@@ -300,10 +301,7 @@ def serve_stdio(
 
     # Resolve "auto" permission pack from settings
     resolved_pack = permission_pack
-    managed_agent_kind = (
-        os.environ.get("SIMING_MANAGED_AGENT_KIND")
-        or os.environ.get("MOSHU_MANAGED_AGENT_KIND", "")
-    ).strip().lower()
+    managed_agent_kind = get_compatible_env("SIMING_MANAGED_AGENT_KIND").strip().lower()
     if managed_agent_kind == "cataloging":
         resolved_pack = "cataloging_worker"
         logger.info("Managed cataloging Agent: using compact MCP permission pack")

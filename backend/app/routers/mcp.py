@@ -6,10 +6,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ..core.response import ApiResponse
 from ..core.db_helpers import get_project_or_404
+from ..core.response import ApiResponse
 from ..database.session import get_db
-from ..database.models import McpServerConfig
+from ..modules.integrations.application.mcp_servers import get_mcp_server_configuration
 from ..schemas.mcp import (
     McpServerConfigCreate,
     McpServerConfigRead,
@@ -19,7 +19,10 @@ from ..schemas.mcp import (
 router = APIRouter(prefix="/projects/{project_id}/mcp-servers", tags=["mcp"])
 
 
-def _config_to_read(config: McpServerConfig) -> McpServerConfigRead:
+def _config_to_read(config: dict | Any) -> McpServerConfigRead:
+    """Compatibility projection without coupling the router to an ORM class."""
+    if isinstance(config, dict):
+        return McpServerConfigRead(**config)
     return McpServerConfigRead(
         id=config.id,
         project_id=config.project_id,
@@ -42,14 +45,9 @@ def list_mcp_servers(
 ):
     """List all MCP server configs for a project."""
     get_project_or_404(db, project_id)
-    configs = (
-        db.query(McpServerConfig)
-        .filter(McpServerConfig.project_id == project_id)
-        .order_by(McpServerConfig.created_at.desc())
-        .all()
-    )
+    configs = get_mcp_server_configuration().list(db, project_id)
     return ApiResponse.success(data={
-        "items": [_config_to_read(c).model_dump() for c in configs],
+        "items": [_config_to_read(config).model_dump() for config in configs],
         "total": len(configs),
     })
 
@@ -63,17 +61,11 @@ def create_mcp_server(
     """Create a new MCP server config."""
     get_project_or_404(db, project_id)
 
-    config = McpServerConfig(
-        project_id=project_id,
-        name=body.name,
-        transport=body.transport,
-        command=body.command,
-        url=body.url,
-        enabled=body.enabled,
+    config = get_mcp_server_configuration().create(
+        db,
+        project_id,
+        body.model_dump(),
     )
-    db.add(config)
-    db.commit()
-    db.refresh(config)
     return ApiResponse.success(data=_config_to_read(config).model_dump(), message="MCP server config created")
 
 
@@ -85,12 +77,9 @@ def get_mcp_server(
 ):
     """Get a single MCP server config."""
     get_project_or_404(db, project_id)
-    config = db.query(McpServerConfig).filter(
-        McpServerConfig.project_id == project_id,
-        McpServerConfig.id == config_id,
-    ).first()
+    config = get_mcp_server_configuration().get(db, project_id, config_id)
     if not config:
-        raise HTTPException(status_code=404, message="MCP server config not found")
+        raise HTTPException(status_code=404, detail="MCP server config not found")
     return ApiResponse.success(data=_config_to_read(config).model_dump())
 
 
@@ -103,18 +92,14 @@ def update_mcp_server(
 ):
     """Update an MCP server config."""
     get_project_or_404(db, project_id)
-    config = db.query(McpServerConfig).filter(
-        McpServerConfig.project_id == project_id,
-        McpServerConfig.id == config_id,
-    ).first()
+    config = get_mcp_server_configuration().update(
+        db,
+        project_id,
+        config_id,
+        body.model_dump(exclude_unset=True),
+    )
     if not config:
-        raise HTTPException(status_code=404, message="MCP server config not found")
-
-    update_data = body.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(config, field, value)
-    db.commit()
-    db.refresh(config)
+        raise HTTPException(status_code=404, detail="MCP server config not found")
     return ApiResponse.success(data=_config_to_read(config).model_dump(), message="MCP server config updated")
 
 
@@ -126,15 +111,8 @@ def delete_mcp_server(
 ):
     """Delete an MCP server config."""
     get_project_or_404(db, project_id)
-    config = db.query(McpServerConfig).filter(
-        McpServerConfig.project_id == project_id,
-        McpServerConfig.id == config_id,
-    ).first()
-    if not config:
-        raise HTTPException(status_code=404, message="MCP server config not found")
-
-    db.delete(config)
-    db.commit()
+    if not get_mcp_server_configuration().delete(db, project_id, config_id):
+        raise HTTPException(status_code=404, detail="MCP server config not found")
     return ApiResponse.success(message="MCP server config deleted")
 
 
@@ -146,15 +124,12 @@ def test_mcp_server_connection(
 ):
     """Test connection to an MCP server."""
     get_project_or_404(db, project_id)
-    config = db.query(McpServerConfig).filter(
-        McpServerConfig.project_id == project_id,
-        McpServerConfig.id == config_id,
-    ).first()
+    config = get_mcp_server_configuration().get(db, project_id, config_id)
     if not config:
-        raise HTTPException(status_code=404, message="MCP server config not found")
+        raise HTTPException(status_code=404, detail="MCP server config not found")
 
     # Connection test is deferred to Phase 5 implementation
     return ApiResponse.success(data={
-        "status": config.status,
+        "status": config["status"],
         "message": "Connection test not yet implemented",
     })

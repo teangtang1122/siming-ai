@@ -7,6 +7,8 @@ Siming MCP tools. Progress is visible through AgentRun events.
 """
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import asyncio
 import os
 from pathlib import Path
@@ -236,7 +238,7 @@ async def _run_cli_process(
             run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
             if run:
                 run.summary = quota_error[:1000]
-                db.commit()
+                commit_session(db)
             return
         if proc.returncode == 0:
             add_event(
@@ -377,7 +379,7 @@ def start_local_cli_agent_worker(
         provider=provider,
         context_manifest_id=manifest.id if manifest else None,
     )
-    db.commit()
+    commit_session(db)
 
     launch = parse_cli_launch(cfg.cli_args, provider, _task_prompt(task_file), model)
     args = list(launch.args)

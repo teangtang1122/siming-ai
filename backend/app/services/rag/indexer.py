@@ -1,6 +1,8 @@
 """RAG indexer: chunking, FTS5 indexing, and dirty detection."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import hashlib
 import json
 from datetime import datetime
@@ -37,7 +39,7 @@ def detect_fts5_available(db: Session) -> bool:
     try:
         db.execute(text("CREATE VIRTUAL TABLE temp.__fts5_test USING fts5(content)"))
         db.execute(text("DROP TABLE temp.__fts5_test"))
-        db.commit()
+        commit_session(db)
         _fts5_available = True
     except Exception:
         db.rollback()
@@ -745,8 +747,8 @@ def _get_source_content_hash(db: Session, source_type: str, source_id: str) -> s
 def _extract_chapter_number(title: str) -> int | None:
     """Extract chapter number from title."""
     import re
-    from ...services.context_builders import _chinese_number_to_int
+    from ...core.numbers import chinese_number_to_int
     match = re.search(r"第\s*([0-9一二两三四五六七八九十百千万零〇]+)\s*章", title or "")
     if not match:
         match = re.search(r"([0-9]+)", title or "")
-    return _chinese_number_to_int(match.group(1)) if match else None
+    return chinese_number_to_int(match.group(1)) if match else None

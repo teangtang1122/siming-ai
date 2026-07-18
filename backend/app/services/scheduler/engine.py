@@ -1,16 +1,18 @@
 """Background scheduler engine for timed tasks."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import logging
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Any
 
 from sqlalchemy.orm import Session
 
 from ...database.models import ScheduledTask
 from ...database.session import SessionLocal
+from .ports import run_scheduled_task
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +57,9 @@ def _execute_task(task_id: str) -> None:
 
         task.last_run_at = datetime.utcnow()
         task.last_run_status = "running"
-        db.commit()
+        commit_session(db)
 
         try:
-            # Import here to avoid circular imports
-            from ..workspace.executor import execute_workspace_action
-
-            # Build a simple prompt that the workspace assistant can handle
             result = _run_task_prompt(db, task)
             task.last_run_status = "completed"
             task.last_run_output = result[:10000] if result else "完成"
@@ -73,7 +71,7 @@ def _execute_task(task_id: str) -> None:
         # Compute next run time
         task.next_run_at = _compute_next_run(task)
         task.updated_at = datetime.utcnow()
-        db.commit()
+        commit_session(db)
     finally:
         db.close()
         with _active_lock:
@@ -81,101 +79,8 @@ def _execute_task(task_id: str) -> None:
 
 
 def _run_task_prompt(db: Session, task: ScheduledTask) -> str:
-    """Run a task through the agent tool chain.
-
-    Uses the LLM with tool-calling support so the agent can search project
-    data, call analysis tools, and persist results — not just a single LLM call.
-    """
-    import asyncio
-    from ...ai.gateway import LLMGateway
-    from ...services.workspace.executor import execute_workspace_action
-    from ...services.workspace.registry import registry
-
-    # Build system prompt with tool policy
-    system_parts = ["你是一个定时任务执行助手。请根据用户的提示完成任务。"]
-    if task.tool_policy:
-        system_parts.append(f"可用工具：{', '.join(task.tool_policy)}")
-
-    messages = [
-        {"role": "system", "content": "\n".join(system_parts)},
-        {"role": "user", "content": task.prompt},
-    ]
-
-    # Determine allowed tools
-    tool_policy_set = set(task.tool_policy) if task.tool_policy else None
-    tool_schemas = registry.get_schemas()
-    if tool_policy_set:
-        tool_schemas = [
-            t for t in tool_schemas
-            if t["function"]["name"] in tool_policy_set
-        ]
-
-    tool_logs: list[dict[str, Any]] = []
-
-    async def _run_agent_loop() -> str:
-        """Execute the agent loop with tool calling."""
-        max_turns = 10
-        final_content = ""
-
-        for turn in range(max_turns):
-            result = await LLMGateway.stream_chat_completion_with_tools(
-                messages=messages,
-                tools=tool_schemas,
-                model=None,
-                temperature=0.3,
-                max_tokens=4000,
-                timeout=120,
-            )
-
-            content = result.get("content", "")
-            tool_calls = result.get("tool_calls", [])
-
-            if not tool_calls:
-                final_content = content
-                break
-
-            # Append assistant message with tool calls
-            messages.append({
-                "role": "assistant",
-                "content": content,
-                "tool_calls": tool_calls,
-            })
-
-            # Execute each tool call
-            for tc in tool_calls:
-                tool_name = tc.get("function", {}).get("name", "")
-                import json
-                try:
-                    args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                except json.JSONDecodeError:
-                    args = {}
-
-                # Execute through workspace executor
-                tool_result = await execute_workspace_action(
-                    db, task.project_id,
-                    {"tool": tool_name, "arguments": args},
-                )
-
-                # Log the tool call
-                tool_logs.append({
-                    "tool": tool_name,
-                    "args_summary": str(args)[:200],
-                    "status": tool_result.get("status", "unknown"),
-                })
-
-                # Append tool result to messages
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(tool_result, ensure_ascii=False)[:4000],
-                })
-
-        return final_content or "任务执行完成"
-
-    try:
-        return asyncio.run(_run_agent_loop())
-    except Exception as exc:
-        raise RuntimeError(f"Agent execution failed: {exc}") from exc
+    """Run a task through the application-provided workspace implementation."""
+    return run_scheduled_task(db, task)
 
 
 def check_and_run_tasks() -> None:

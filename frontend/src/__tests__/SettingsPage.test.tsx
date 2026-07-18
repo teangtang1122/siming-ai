@@ -8,16 +8,17 @@ const api = vi.hoisted(() => ({
   delete: vi.fn(),
 }))
 
-const fetchProjects = vi.fn()
+const invalidateQueries = vi.fn()
 
 vi.mock('../api/client', () => ({ apiClient: api }))
-vi.mock('../stores', () => ({ useAppStore: () => ({ fetchProjects }) }))
+vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }))
 vi.mock('../components/ContextGovernanceSettingsPanel', () => ({ default: () => null }))
 
 import SettingsPage from '../pages/SettingsPage'
 
 const launcherSettings = {
   launch_mode: 'desktop' as const,
+  update_channel: 'stable' as const,
   restart_required: true,
   browser_mode_description: 'Use the default browser.',
 }
@@ -41,12 +42,15 @@ describe('SettingsPage startup and update controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockInitialLoads()
-    api.put.mockResolvedValue({ data: { data: { ...launcherSettings, launch_mode: 'browser' } } })
+    api.put.mockImplementation((_url: string, payload: object) => Promise.resolve({
+      data: { data: { ...launcherSettings, ...payload } },
+    }))
     api.post.mockResolvedValue({ data: { data: {
       current_version: '2.8.0',
+      update_channel: 'stable',
       automatic_updates: false,
       update_available: true,
-      update: { version: '2.8.0', source: 'https://example.test/release', download_url: 'https://example.test/Siming.exe', sha256_available: true },
+      update: { version: '2.8.0', channel: 'stable', source: 'https://example.test/release', download_url: 'https://example.test/Siming.exe', sha256_available: true },
       staged_update: null,
     } } })
   })
@@ -83,6 +87,18 @@ describe('SettingsPage startup and update controls', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/update/check'))
     expect(await screen.findByRole('button', { name: '下载并校验 2.8.0' })).toBeInTheDocument()
     expect(screen.getByText('发布页提供，下载后会复核')).toBeInTheDocument()
+  })
+
+  it('saves the preview channel explicitly', async () => {
+    render(<SettingsPage embedded />)
+
+    fireEvent.click(await screen.findByRole('tab', { name: '应用与数据' }))
+    fireEvent.click(await screen.findByLabelText(/预览通道/))
+    fireEvent.click(screen.getByRole('button', { name: '保存更新通道' }))
+
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/config/launcher', {
+      update_channel: 'preview',
+    }))
   })
 
   it('tests a custom Responses endpoint with the configured model instead of listing models', async () => {

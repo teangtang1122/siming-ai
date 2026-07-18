@@ -1,17 +1,28 @@
 """Narrative governance API."""
+
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
+
+from app.architecture.uow import commit_session
 
 from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import CausalEdge, Chapter, Foreshadowing, NarrativeDebt
 from ..database.session import get_db
-from ..schemas.narrative_governance import CheckpointCreate, GovernanceCandidateBatch, GovernanceItemPayload, GovernanceStatusUpdate
+from ..modules.continuity.application.governance import get_narrative_governance_commands
+from ..modules.story.application.chapters import ChapterWorkspace
+from ..modules.story.interfaces.chapter_dependencies import get_chapter_workspace
+from ..schemas.narrative_governance import (
+    CheckpointCreate,
+    GovernanceCandidateBatch,
+    GovernanceItemPayload,
+    GovernanceStatusUpdate,
+)
 from ..services.narrative_governance import (
     apply_governance_candidates,
     checkpoint_diff,
-    create_narrative_checkpoint,
     governance_context,
     governance_dashboard,
     record_character_state,
@@ -23,15 +34,6 @@ from ..services.narrative_governance import (
 )
 
 router = APIRouter(prefix="/projects/{project_id}/narrative-governance", tags=["narrative-governance"])
-
-
-def _chapter(db: Session, project_id: str, chapter_id: str | None) -> Chapter | None:
-    if not chapter_id:
-        return None
-    row = db.query(Chapter).filter(Chapter.project_id == project_id, Chapter.id == chapter_id).first()
-    if not row:
-        raise NotFoundError("章节不存在")
-    return row
 
 
 @router.get("")
@@ -66,7 +68,7 @@ def create_item(project_id: str, payload: GovernanceItemPayload, db: Session = D
             raise ValidationError("不支持的治理对象类型")
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    db.commit()
+    commit_session(db)
     db.refresh(row)
     return ApiResponse.success(data={column.name: getattr(row, column.name) for column in row.__table__.columns}, message="治理项已保存")
 
@@ -74,16 +76,18 @@ def create_item(project_id: str, payload: GovernanceItemPayload, db: Session = D
 @router.patch("/items/{item_type}/{item_id}")
 def update_status(project_id: str, item_type: str, item_id: str, payload: GovernanceStatusUpdate, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
-    model = {"foreshadowings": Foreshadowing, "causal-edges": CausalEdge, "narrative-debts": NarrativeDebt}.get(item_type)
-    if not model:
+    try:
+        updated = get_narrative_governance_commands().update_status(
+            db,
+            project_id,
+            item_type,
+            item_id,
+            payload.model_dump(exclude_unset=True),
+        )
+    except ValueError:
         raise ValidationError("不支持的治理对象类型")
-    row = db.query(model).filter(model.project_id == project_id, model.id == item_id).first()
-    if not row:
+    if not updated:
         raise NotFoundError("治理项不存在")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        if hasattr(row, key):
-            setattr(row, key, value)
-    db.commit()
     return ApiResponse.success(message="状态已更新")
 
 
@@ -96,16 +100,25 @@ def candidates(project_id: str, payload: GovernanceCandidateBatch, db: Session =
         items = apply_governance_candidates(db, project_id, payload.candidates, chapter_id=payload.chapter_id)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"items": items, "total": len(items), "applied": True})
 
 
 @router.post("/checkpoints")
-def create_checkpoint(project_id: str, payload: CheckpointCreate, db: Session = Depends(get_db)):
+def create_checkpoint(
+    project_id: str,
+    payload: CheckpointCreate,
+    chapter_workspace: Annotated[ChapterWorkspace, Depends(get_chapter_workspace)],
+    db: Session = Depends(get_db),
+):
     get_project_or_404(db, project_id)
-    row = create_narrative_checkpoint(db, project_id, chapter=_chapter(db, project_id, payload.chapter_id), label=payload.label or "", trigger_type=payload.trigger_type)
-    db.commit()
-    return ApiResponse.success(data={"id": row.id, "sequence": row.sequence, "label": row.label, "chapter_snapshot_id": row.chapter_snapshot_id})
+    data = chapter_workspace.create_narrative_checkpoint(
+        project_id,
+        chapter_id=payload.chapter_id,
+        label=payload.label or "",
+        trigger_type=payload.trigger_type,
+    )
+    return ApiResponse.success(data=data)
 
 
 @router.get("/checkpoints/{checkpoint_id}/diff")
@@ -126,5 +139,5 @@ def restore_checkpoint(project_id: str, checkpoint_id: str, db: Session = Depend
     except ValueError as exc:
         db.rollback()
         raise NotFoundError(str(exc)) from exc
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"id": row.id, "sequence": row.sequence, "label": row.label}, message="叙事状态已回滚")

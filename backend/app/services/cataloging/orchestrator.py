@@ -1,6 +1,8 @@
 """Sequential SSE orchestrator for project cataloging."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import asyncio
 import json
 import os
@@ -11,11 +13,14 @@ from typing import Any, AsyncGenerator
 
 from sqlalchemy.orm import Session
 
-from ...ai.gateway import LLMGateway
 from ...ai.local_cli_adapter import is_local_cli_provider
+from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter, Project
 from ...database.session import SessionLocal
-from ..content_store import ensure_project_folder, sync_chapter_to_file, sync_project_to_files
+from ...modules.story.application.content_sync import (
+    enqueue_project_sync,
+    ensure_chapter_mirror,
+)
 from .applier import apply_candidates_for_run, candidate_to_dict
 from .candidate_store import try_create_candidate
 from .constants import (
@@ -298,7 +303,7 @@ def create_cataloging_job(
             status="pending",
             chapter_order=index,
         ))
-    db.commit()
+    commit_session(db)
     db.refresh(job)
     return job
 
@@ -328,7 +333,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 job.status = "completed"
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
-                db.commit()
+                commit_session(db)
                 completed = int(job.completed_chapters or job.total_chapters or 0)
                 finish_operation(
                     operation_id,
@@ -351,7 +356,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                     job.status = "waiting_confirmation"
                     job.blocked_chapter_id = run.chapter_id
                     refresh_job_progress(db, job)
-                    db.commit()
+                    commit_session(db)
                     yield sse_event({"type": "waiting_confirmation", "job": job_to_dict(job), "run": run_to_dict(run)})
                     yield "data: [DONE]\n\n"
                     return
@@ -364,7 +369,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 job.blocked_chapter_id = run.chapter_id
                 job.error = run.error
                 refresh_job_progress(db, job)
-                db.commit()
+                commit_session(db)
                 yield sse_event({"type": "paused_on_failure", "job": job_to_dict(job), "run": run_to_dict(run), "error": run.error})
                 yield "data: [DONE]\n\n"
                 return
@@ -385,7 +390,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
                 job.status = "waiting_confirmation"
                 job.blocked_chapter_id = run.chapter_id
                 refresh_job_progress(db, job)
-                db.commit()
+                commit_session(db)
                 yield sse_event({"type": "waiting_confirmation", "job": job_to_dict(job), "run": run_to_dict(run)})
                 yield "data: [DONE]\n\n"
                 return
@@ -404,7 +409,7 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
     if not chapter:
         run.status = "failed"
         run.error = "章节不存在"
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
         return
 
@@ -412,15 +417,9 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
     project_folder = ""
     chapter_file = ""
     if project:
-        folder = ensure_project_folder(db, project)
-        path = folder / chapter.content_file_path if chapter.content_file_path else None
-        if not path or not path.exists():
-            sync_chapter_to_file(db, project, chapter, index=run.chapter_order + 1)
-            path = folder / chapter.content_file_path if chapter.content_file_path else None
+        folder, path = ensure_chapter_mirror(db, project, chapter, index=run.chapter_order + 1, source="cataloging")
         project_folder = str(folder)
-        if path and path.exists():
-            chapter_file = str(path.resolve())
-        db.commit()
+        chapter_file = str(path)
 
     chapter_text = chapter.content or ""
     if not chapter_text and chapter_file:
@@ -434,12 +433,12 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
     job.status = "running"
     job.current_chapter_id = chapter.id
     job.blocked_chapter_id = None
-    db.commit()
+    commit_session(db)
     yield sse_event({"type": "chapter_started", "job": job_to_dict(job), "run": run_to_dict(run)})
 
     clear_candidates_for_run(db, run)
     clear_facts_for_run(db, run)
-    db.commit()
+    commit_session(db)
 
     provider = _model_provider(job.model)
     use_file_references = bool(chapter_file and is_local_cli_provider(provider))
@@ -522,7 +521,7 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
                         if candidate:
                             candidate_count += 1
                             has_summary = has_summary or candidate.item_type == "chapter_summary"
-                            db.commit()
+                            commit_session(db)
                             yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
                 tail = clean_jsonl_text(candidate_buffer)
                 if tail:
@@ -541,7 +540,7 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
                         candidate = created["candidate"]
                         candidate_count += 1
                         has_summary = has_summary or candidate.item_type == "chapter_summary"
-                        db.commit()
+                        commit_session(db)
                         yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
 
                 retry_reason = ""
@@ -554,7 +553,7 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                     break
                 clear_candidates_for_run(db, run)
-                db.commit()
+                commit_session(db)
                 candidate_count = 0
                 has_summary = False
                 yield sse_event({
@@ -570,7 +569,7 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                     raise
                 clear_candidates_for_run(db, run)
-                db.commit()
+                commit_session(db)
                 candidate_count = 0
                 has_summary = False
                 candidate_buffer = ""
@@ -592,7 +591,7 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
         job.status = "paused_on_failure"
         job.blocked_chapter_id = run.chapter_id
         job.error = run.error
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
         return
 
@@ -603,7 +602,7 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
         job.status = "paused_on_failure"
         job.blocked_chapter_id = run.chapter_id
         job.error = run.error
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error, "bad_lines": bad_lines[:5]})
         return
     if not has_summary:
@@ -612,14 +611,14 @@ async def _extract_run_merged(db: Session, job: CatalogingJob, run: CatalogingCh
         job.status = "paused_on_failure"
         job.blocked_chapter_id = run.chapter_id
         job.error = run.error
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
         return
 
     run.status = "awaiting_confirmation"
     run.completed_at = datetime.utcnow()
     run.error = None
-    db.commit()
+    commit_session(db)
     yield sse_event({"type": "chapter_extracted", "run": run_to_dict(run), "candidate_count": candidate_count})
 
 
@@ -634,22 +633,16 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
     if not chapter:
         run.status = "failed"
         run.error = "章节不存在"
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
         return
     project = db.query(Project).filter(Project.id == job.project_id).first()
     project_folder = ""
     chapter_file = ""
     if project:
-        folder = ensure_project_folder(db, project)
-        path = folder / chapter.content_file_path if chapter.content_file_path else None
-        if not path or not path.exists():
-            sync_chapter_to_file(db, project, chapter, index=run.chapter_order + 1)
-            path = folder / chapter.content_file_path if chapter.content_file_path else None
+        folder, path = ensure_chapter_mirror(db, project, chapter, index=run.chapter_order + 1, source="cataloging")
         project_folder = str(folder)
-        if path and path.exists():
-            chapter_file = str(path.resolve())
-        db.commit()
+        chapter_file = str(path)
     chapter_text = chapter.content or ""
     if not chapter_text and chapter_file:
         try:
@@ -662,7 +655,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
     job.status = "running"
     job.current_chapter_id = chapter.id
     job.blocked_chapter_id = None
-    db.commit()
+    commit_session(db)
     yield sse_event({"type": "chapter_started", "job": job_to_dict(job), "run": run_to_dict(run)})
 
     raw_fact_parts: list[str] = []
@@ -731,7 +724,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                             if fact:
                                 facts.append(fact)
                                 create_fact(db, job, run, fact, len(facts) - 1)
-                                db.commit()
+                                commit_session(db)
                                 yield sse_event({
                                     "type": "fact_extracted",
                                     "message": f"已抽取事实: {fact.get('fact_type')}",
@@ -746,13 +739,13 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         if parsed.get("fact"):
                             facts.append(parsed["fact"])
                             create_fact(db, job, run, parsed["fact"], len(facts) - 1)
-                            db.commit()
+                            commit_session(db)
                     if not facts:
                         salvaged = _salvage_facts_from_text("".join(attempt_fact_parts))
                         for fact in salvaged:
                             facts.append(fact)
                             create_fact(db, job, run, fact, len(facts) - 1)
-                            db.commit()
+                            commit_session(db)
                             yield sse_event({
                                 "type": "fact_extracted",
                                 "message": f"已修复抽取事实: {fact.get('fact_type')}",
@@ -764,7 +757,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         for fact in fallback_facts:
                             facts.append(fact)
                             create_fact(db, job, run, fact, len(facts) - 1)
-                            db.commit()
+                            commit_session(db)
                             yield sse_event({
                                 "type": "fact_extracted",
                                 "message": f"已生成兜底事实: {fact.get('fact_type')}",
@@ -783,13 +776,13 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                 except Exception as exc:
                     if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS and local_runtime:
                         clear_facts_for_run(db, run)
-                        db.commit()
+                        commit_session(db)
                         facts = []
                         fallback_facts = _fallback_facts_from_chapter(chapter.title, chapter_text)
                         for fact in fallback_facts:
                             facts.append(fact)
                             create_fact(db, job, run, fact, len(facts) - 1)
-                            db.commit()
+                            commit_session(db)
                             yield sse_event({
                                 "type": "fact_extracted",
                                 "message": f"已生成兜底事实: {fact.get('fact_type')}",
@@ -806,7 +799,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                     if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                         raise
                     clear_facts_for_run(db, run)
-                    db.commit()
+                    commit_session(db)
                     facts = []
                     fact_buffer = ""
                     fact_bad_lines = []
@@ -891,7 +884,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         if candidate:
                             candidate_count += 1
                             has_summary = has_summary or candidate.item_type == "chapter_summary"
-                            db.commit()
+                            commit_session(db)
                             yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
                 tail = clean_jsonl_text(candidate_buffer)
                 if tail:
@@ -910,7 +903,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         candidate = created["candidate"]
                         candidate_count += 1
                         has_summary = has_summary or candidate.item_type == "chapter_summary"
-                        db.commit()
+                        commit_session(db)
                         yield sse_event({"type": "candidate_created", "candidate": candidate_to_dict(candidate), "run": run_to_dict(run)})
                 retry_reason = ""
                 if bad_lines:
@@ -929,7 +922,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                         })
                     break
                 clear_candidates_for_run(db, run)
-                db.commit()
+                commit_session(db)
                 candidate_count = 0
                 has_summary = False
                 yield sse_event({
@@ -953,7 +946,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
                 if attempt >= CATALOGING_STAGE_MAX_ATTEMPTS:
                     raise
                 clear_candidates_for_run(db, run)
-                db.commit()
+                commit_session(db)
                 candidate_count = 0
                 has_summary = False
                 candidate_buffer = ""
@@ -975,7 +968,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         job.status = "paused_on_failure"
         job.blocked_chapter_id = run.chapter_id
         job.error = run.error
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
         return
 
@@ -992,7 +985,7 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         job.status = "paused_on_failure"
         job.blocked_chapter_id = run.chapter_id
         job.error = run.error
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error, "bad_lines": bad_lines[:5]})
         return
     if not has_summary:
@@ -1001,14 +994,14 @@ async def _extract_run(db: Session, job: CatalogingJob, run: CatalogingChapterRu
         job.status = "paused_on_failure"
         job.blocked_chapter_id = run.chapter_id
         job.error = run.error
-        db.commit()
+        commit_session(db)
         yield sse_event({"type": "chapter_failed", "run": run_to_dict(run), "error": run.error})
         return
 
     run.status = "awaiting_confirmation"
     run.completed_at = datetime.utcnow()
     run.error = None
-    db.commit()
+    commit_session(db)
     yield sse_event({"type": "chapter_extracted", "run": run_to_dict(run), "candidate_count": candidate_count})
 
 
@@ -1169,12 +1162,12 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
 async def _apply_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun) -> AsyncGenerator[str, None]:
     run.status = "applying"
     job.status = "running"
-    db.commit()
+    commit_session(db)
     yield sse_event({"type": "chapter_applying", "job": job_to_dict(job), "run": run_to_dict(run)})
     events = apply_candidates_for_run(db, job, run)
     has_failed = any(event["type"] == "candidate_apply_failed" for event in events)
     for event in events:
-        db.commit()
+        commit_session(db)
         yield sse_event(event)
     run.status = "completed_with_warnings" if has_failed else "completed"
     run.completed_at = datetime.utcnow()
@@ -1183,8 +1176,8 @@ async def _apply_run(db: Session, job: CatalogingJob, run: CatalogingChapterRun)
     job.blocked_chapter_id = None
     job.error = None
     refresh_job_progress(db, job)
-    sync_project_to_files(db, job.project_id)
-    db.commit()
+    enqueue_project_sync(db, job.project_id, source="cataloging")
+    commit_session(db)
     yield sse_event({"type": "chapter_completed", "job": job_to_dict(job), "run": run_to_dict(run), "warnings": has_failed})
 
 

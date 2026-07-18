@@ -1,99 +1,69 @@
-"""API router for global external Agent settings (no project_id required)."""
+"""API router for global External Agent settings."""
 from __future__ import annotations
 
-from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
 
 from ..core.response import ApiResponse
-from ..database.session import get_db
-from ..schemas.external_agent_settings import (
-    ExternalAgentGlobalSettingsUpdate,
-    DEFAULT_ENABLED_PACKS,
-    DEFAULT_TRUSTED_LOCAL_ENABLED,
-    DEFAULT_TRUSTED_LOCAL_CLIENTS,
-    DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-    DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
+from ..modules.integrations.application.external_agent_settings import (
+    ExternalAgentSettingsStore,
 )
+from ..modules.integrations.interfaces.external_agent_dependencies import (
+    get_external_agent_settings_store,
+)
+from ..schemas.external_agent_settings import ExternalAgentGlobalSettingsUpdate
 
 router = APIRouter(prefix="/external-agent", tags=["external-agent-global"])
 
 
 @router.get("/settings")
-def get_global_settings(db: Session = Depends(get_db)):
-    """Get global external Agent permission settings."""
-    from ..database.models import ExternalAgentGlobalSettings
-
-    settings = db.query(ExternalAgentGlobalSettings).first()
-    if not settings:
-        return ApiResponse.success(data={
-            "enabled_packs": DEFAULT_ENABLED_PACKS,
-            "trusted_local_enabled": DEFAULT_TRUSTED_LOCAL_ENABLED,
-            "trusted_local_clients": DEFAULT_TRUSTED_LOCAL_CLIENTS,
-            "require_confirmation_for_writes": DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-            "require_confirmation_for_destructive": DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-            "mcp_permission_source": "global_settings",
-        })
-
-    return ApiResponse.success(data={
-        "id": settings.id,
-        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
-        "trusted_local_enabled": settings.trusted_local_enabled if settings.trusted_local_enabled is not None else DEFAULT_TRUSTED_LOCAL_ENABLED,
-        "trusted_local_clients": settings.trusted_local_clients or DEFAULT_TRUSTED_LOCAL_CLIENTS,
-        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-        "mcp_permission_source": settings.mcp_permission_source or "global_settings",
-    })
+def get_global_settings(
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
+):
+    return ApiResponse.success(data=settings.get_global())
 
 
 @router.put("/settings")
 def update_global_settings(
     body: ExternalAgentGlobalSettingsUpdate,
-    db: Session = Depends(get_db),
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
 ):
-    """Update global external Agent permission settings."""
-    from ..database.models import ExternalAgentGlobalSettings
-
-    settings = db.query(ExternalAgentGlobalSettings).first()
-    if not settings:
-        settings = ExternalAgentGlobalSettings()
-        db.add(settings)
-
-    if body.enabled_packs is not None:
-        settings.enabled_packs = body.enabled_packs
-    if body.trusted_local_enabled is not None:
-        settings.trusted_local_enabled = body.trusted_local_enabled
-    if body.trusted_local_clients is not None:
-        settings.trusted_local_clients = body.trusted_local_clients
-    if body.require_confirmation_for_writes is not None:
-        settings.require_confirmation_for_writes = body.require_confirmation_for_writes
-    if body.require_confirmation_for_destructive is not None:
-        settings.require_confirmation_for_destructive = body.require_confirmation_for_destructive
-
-    settings.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(settings)
-
-    return ApiResponse.success(data={
-        "id": settings.id,
-        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
-        "trusted_local_enabled": settings.trusted_local_enabled if settings.trusted_local_enabled is not None else DEFAULT_TRUSTED_LOCAL_ENABLED,
-        "trusted_local_clients": settings.trusted_local_clients or DEFAULT_TRUSTED_LOCAL_CLIENTS,
-        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-        "mcp_permission_source": settings.mcp_permission_source or "global_settings",
-    }, message="Global settings updated")
+    return ApiResponse.success(
+        data=settings.update_global(body.model_dump(exclude_unset=True)),
+        message="Global settings updated",
+    )
 
 
 @router.get("/effective-permissions")
 def get_effective_permissions(
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
     project_id: str | None = None,
-    db: Session = Depends(get_db),
 ):
-    """Get effective permissions (global + optional project override)."""
-    from ..database.models import ExternalAgentGlobalSettings, ExternalAgentSettings
-    from ..services.external_agent.permissions import resolve_effective_pack
+    result = settings.effective_permissions(project_id)
+    return ApiResponse.success(
+        data={
+            "effective_pack": result["effective_pack"],
+            "source": result["source"],
+            "cli_override": result["cli_override"],
+            "enabled_packs": result["enabled_packs"],
+            "warnings": result["warnings"],
+        }
+    )
 
-    result = resolve_effective_pack(db, project_id=project_id)
-    return ApiResponse.success(data=result)
+
+__all__ = [
+    "get_effective_permissions",
+    "get_global_settings",
+    "router",
+    "update_global_settings",
+]

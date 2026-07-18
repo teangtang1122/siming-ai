@@ -8,31 +8,29 @@ contract instead of three unrelated prompt assemblers.
 """
 from __future__ import annotations
 
-from array import array
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
-import os
+from array import array
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from sqlalchemy import event, or_
 from sqlalchemy.orm import Session
 
+from ..core.legacy_env import get_compatible_env
 from ..database.models import (
     AssistantMemory,
+    CausalEdge,
     Chapter,
-    ChapterCharacter,
+    ChapterQualityMetric,
     ChapterSummary,
     Character,
     CharacterNarrativeState,
     CharacterTimeline,
-    ChapterQualityMetric,
-    CausalEdge,
     ContextManifest,
     ContextManifestItem,
     ContextRebuildJob,
@@ -47,10 +45,19 @@ from ..database.models import (
     RagChunkEmbedding,
     WorldbuildingEntry,
 )
+from ..modules.context.application.runtime import (
+    ActiveContextManifest as ActiveContextManifest,
+)
+from ..modules.context.application.runtime import (
+    activate_context_manifest as activate_context_manifest,
+)
+from ..modules.context.application.runtime import (
+    active_context_manifest as active_context_manifest,
+)
+from ..modules.model_runtime.application.runtime import resolve_model_identity
 from .rag.context_packer import ContextBudget, estimate_tokens
 from .rag.indexer import _get_source_content_hash, reindex_project
 from .rag.retriever import search_chunks
-
 
 CONTEXT_POLICY_VERSION = 1
 CONTEXT_INDEX_VERSION = 1
@@ -68,41 +75,6 @@ MANIFEST_STATUSES = {
 
 _MANIFEST_INVALIDATION_KEY = "siming_context_manifest_source_changes"
 _MANIFEST_INVALIDATION_GUARD = "siming_context_manifest_invalidation_running"
-
-
-@dataclass(frozen=True)
-class ActiveContextManifest:
-    """Request-local manifest rendered once for a gateway execution."""
-
-    manifest_id: str
-    rendered_context: str
-    output_reserve_tokens: int
-
-
-_ACTIVE_CONTEXT_MANIFEST: ContextVar[ActiveContextManifest | None] = ContextVar(
-    "siming_active_context_manifest",
-    default=None,
-)
-
-
-@contextmanager
-def activate_context_manifest(manifest: ContextManifest):
-    """Bind a manifest to nested internal gateway calls for one task."""
-    active = ActiveContextManifest(
-        manifest_id=manifest.id,
-        rendered_context=manifest.rendered_context or "",
-        output_reserve_tokens=manifest.output_reserve_tokens,
-    )
-    token = _ACTIVE_CONTEXT_MANIFEST.set(active)
-    try:
-        yield active
-    finally:
-        _ACTIVE_CONTEXT_MANIFEST.reset(token)
-
-
-def active_context_manifest() -> ActiveContextManifest | None:
-    """Return the request-local manifest selected by the workspace executor."""
-    return _ACTIVE_CONTEXT_MANIFEST.get()
 
 
 def _sha256(value: str) -> str:
@@ -431,8 +403,8 @@ def _source_recency(db: Session, source_type: str, source_id: str | None) -> flo
     if not updated:
         return 0.25
     if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=timezone.utc)
-    age_days = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds() / 86_400)
+        updated = updated.replace(tzinfo=UTC)
+    age_days = max(0.0, (datetime.now(UTC) - updated).total_seconds() / 86_400)
     return max(0.05, min(1.0, 1.0 / (1.0 + age_days / 180)))
 
 
@@ -592,9 +564,7 @@ class ContextOrchestrator:
             # Keep this resolution database-free. The gateway may have no
             # configured default while a caller is only previewing context.
             try:
-                from ..ai.gateway import LLMGateway
-
-                provider, model_name = LLMGateway.model_identity(raw)
+                provider, model_name = resolve_model_identity(raw)
             except Exception:
                 provider = "unknown"
         profile = (
@@ -629,10 +599,6 @@ class ContextOrchestrator:
         ratio_limit = int(profile.context_window_tokens * contract.output_ratio)
         configured_limit = profile.max_output_tokens or ratio_limit
         output_reserve = max(2048, min(configured_limit, ratio_limit))
-        input_budget = max(
-            0,
-            profile.context_window_tokens - output_reserve - profile.safety_margin_tokens,
-        )
         return ContextBudget.from_token_window(
             context_window_tokens=profile.context_window_tokens,
             output_reserve_tokens=output_reserve,
@@ -727,9 +693,7 @@ class ContextOrchestrator:
                 safe[key] = _clean_text(value, 1200)
             elif isinstance(value, list):
                 safe[key] = value[:30]
-            elif isinstance(value, dict):
-                safe[key] = value
-            elif value is not None:
+            elif isinstance(value, dict) or value is not None:
                 safe[key] = value
         return safe
 
@@ -1710,7 +1674,13 @@ class ContextOrchestrator:
         if not vectors or not vectors[0]:
             return
         project = self.db.query(Project).filter(Project.id == project_id).first()
-        root = Path(project.folder_path) if project and project.folder_path else Path(os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or ".") / "siming-projects" / project_id
+        root = (
+            Path(project.folder_path)
+            if project and project.folder_path
+            else Path(get_compatible_env("SIMING_HOME", default="."))
+            / "siming-projects"
+            / project_id
+        )
         directory = root / ".siming" / "indexes"
         directory.mkdir(parents=True, exist_ok=True)
         index = hnswlib.Index(space="cosine", dim=len(vectors[0]))
@@ -1886,7 +1856,7 @@ class ContextOrchestrator:
         job.status = "running"
         job.started_at = job.started_at or datetime.utcnow()
         self._sync_rebuild_operation(job, message="正在准备上下文索引重建")
-        self.db.commit()
+        self.db.flush()
         rows = (
             self.db.query(ContextRebuildProject)
             .filter(ContextRebuildProject.job_id == job.id)
@@ -1903,7 +1873,7 @@ class ContextOrchestrator:
             try:
                 row.current_source_type = "lexical"
                 self._sync_rebuild_operation(job, message=f"正在重建作品 {row.project_id} 的关键词索引")
-                self.db.commit()
+                self.db.flush()
                 lexical = reindex_project(self.db, row.project_id)
                 row.indexed_chunks = int(lexical.get("total_chunks") or 0)
                 row.current_source_type = "semantic"
@@ -1935,7 +1905,7 @@ class ContextOrchestrator:
                         payload={"project_id": row.project_id, "status": row.status},
                         checkpoint=True,
                     )
-            self.db.commit()
+            self.db.flush()
         remaining = self.db.query(ContextRebuildProject).filter(
             ContextRebuildProject.job_id == job.id,
             ContextRebuildProject.status.in_(["queued", "running"]),
@@ -1947,7 +1917,7 @@ class ContextOrchestrator:
             job,
             message="上下文索引重建完成" if job.status == "completed" else "部分作品的上下文索引重建失败",
         )
-        self.db.commit()
+        self.db.flush()
         return job
 
     def retry_rebuild_job(self, job: ContextRebuildJob) -> ContextRebuildJob:
@@ -2048,24 +2018,6 @@ def run_context_rebuild_job(job_id: str) -> None:
     request session that created a job, so this helper owns a short-lived
     session and leaves the job state resumable after a process restart.
     """
-    from ..database.session import SessionLocal
+    from ..modules.context.application.rebuild import run_context_rebuild
 
-    db = SessionLocal()
-    try:
-        job = db.query(ContextRebuildJob).filter(ContextRebuildJob.id == job_id).first()
-        if not job:
-            return
-        ContextOrchestrator(db).run_rebuild_job(job)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        job = db.query(ContextRebuildJob).filter(ContextRebuildJob.id == job_id).first()
-        if job:
-            job.status = "failed"
-            job.error = str(exc)[:8000]
-            job.completed_at = datetime.utcnow()
-            ContextOrchestrator(db)._sync_rebuild_operation(job, message=f"上下文索引重建失败：{exc}")
-            db.commit()
-        raise
-    finally:
-        db.close()
+    run_context_rebuild(job_id)
