@@ -89,6 +89,9 @@ jobs:
           python scripts/run_quality.py
           python ../scripts/run-backend-tests-isolated.py tests
 
+      - name: Validate performance baseline
+        run: python scripts/run-performance-baseline.py --output .build/performance.json
+
       - name: Validate generated API types
         working-directory: frontend
         run: npm run api:check

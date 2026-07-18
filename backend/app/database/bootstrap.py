@@ -1,4 +1,5 @@
 """Versioned database bootstrap and recovery-mode classification."""
+
 from __future__ import annotations
 
 import logging
@@ -41,10 +42,7 @@ class DatabaseBootstrapResult:
 
 def migration_root() -> Path:
     if getattr(sys, "frozen", False):
-        return (
-            Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-            / "alembic"
-        )
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "alembic"
     return Path(__file__).resolve().parents[2] / "alembic"
 
 
@@ -72,6 +70,10 @@ def _head_revision(config: Config) -> str:
 
 
 def _classify_unversioned_schema(target_engine: Engine) -> tuple[str, str]:
+    # Schema recognition must not depend on which routers or services happened
+    # to be imported before bootstrap runs.
+    from . import models as _models  # noqa: F401
+
     inspector = inspect(target_engine)
     tables = set(inspector.get_table_names())
     application_tables = set(Base.metadata.tables)
@@ -93,16 +95,12 @@ def _classify_unversioned_schema(target_engine: Engine) -> tuple[str, str]:
     for table_name, required_columns in KNOWN_CORE_COLUMNS.items():
         if table_name not in user_tables:
             continue
-        columns = {
-            column["name"]
-            for column in inspector.get_columns(table_name)
-        }
+        columns = {column["name"] for column in inspector.get_columns(table_name)}
         missing = required_columns - columns
         if missing:
             return (
                 "unknown",
-                f"Table {table_name} is missing identity columns: "
-                + ", ".join(sorted(missing)),
+                f"Table {table_name} is missing identity columns: " + ", ".join(sorted(missing)),
             )
     return "legacy", "A recognized pre-3.0 Siming schema was found."
 
@@ -140,6 +138,7 @@ def bootstrap_database(
     settings = get_settings()
     url = database_url or settings.database_url
     config = alembic_config(url)
+    backup_path: Path | None = None
     try:
         head = _head_revision(config)
         current = _current_revision(target_engine)
@@ -170,9 +169,7 @@ def bootstrap_database(
             command.upgrade(config, "head")
         revision = _current_revision(target_engine)
         if revision != head:
-            raise RuntimeError(
-                f"Schema upgrade ended at {revision!r}, expected {head!r}."
-            )
+            raise RuntimeError(f"Schema upgrade ended at {revision!r}, expected {head!r}.")
         _record_schema_epoch(target_engine, head)
         return DatabaseBootstrapResult(
             mode="initialized" if mode == "fresh" else "migrated",
@@ -195,4 +192,5 @@ def bootstrap_database(
             schema_revision=failed_revision,
             message=f"Database migration failed: {exc}",
             read_only=True,
+            backup_path=str(backup_path) if backup_path else None,
         )

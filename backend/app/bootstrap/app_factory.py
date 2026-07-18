@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..core.config import get_settings
 from ..core.exceptions import (
@@ -21,6 +22,7 @@ from ..core.exceptions import (
 )
 from ..version import APP_VERSION
 from .composition import configure_application_services
+from .http_security import LocalOriginGuardMiddleware, SecurityHeadersMiddleware
 from .lifecycle import RuntimeBootstrapStatus, application_lifespan
 
 
@@ -43,6 +45,18 @@ def find_frontend_dist() -> Path | None:
         if (candidate / "index.html").exists():
             return candidate
     return None
+
+
+def resolve_frontend_file(frontend_dist: Path, requested_path: str) -> Path | None:
+    """Resolve a bundled frontend file without allowing directory escape."""
+
+    root = frontend_dist.resolve()
+    target = (root / requested_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return None
+    return target if target.is_file() else None
 
 
 def _register_routers(app: FastAPI) -> None:
@@ -175,10 +189,13 @@ def _register_frontend(app: FastAPI, frontend_dist: Path | None) -> None:
     async def serve_frontend(full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
-        target = frontend_dist / full_path
-        if target.exists() and target.is_file():
+        root = frontend_dist.resolve()
+        target = resolve_frontend_file(root, full_path)
+        if target is None and ".." in Path(full_path).parts:
+            raise HTTPException(status_code=404, detail="Not Found") from None
+        if target is not None:
             return FileResponse(target)
-        return FileResponse(frontend_dist / "index.html")
+        return FileResponse(root / "index.html")
 
 
 @asynccontextmanager
@@ -215,6 +232,15 @@ def create_app(*, run_startup: bool = True) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(
+        LocalOriginGuardMiddleware,
+        allowed_origins=settings.get_cors_origins(),
+    )
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["127.0.0.1", "localhost", "testserver"],
+    )
+    app.add_middleware(SecurityHeadersMiddleware)
 
     _register_routers(app)
     _register_recovery_guard(app)

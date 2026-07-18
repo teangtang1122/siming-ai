@@ -197,6 +197,14 @@ Remove-Item -LiteralPath (Join-Path $BuildDir "release-assets") -Recurse -Force 
 $PyInstallerMode = if ($OneDir) { "--onedir" } else { "--onefile" }
 $Separator = ":"
 $FrontendDist = Join-Path $FrontendDir "dist"
+$BackendPathForPython = $BackendDir.Replace("\", "\\")
+$DynamicWorkspaceModules = @(
+  & $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.services.workspace.dynamic_modules import LEGACY_HANDLER_MODULES; print(*LEGACY_HANDLER_MODULES, sep='\n')"
+)
+if ($LASTEXITCODE -ne 0 -or $DynamicWorkspaceModules.Count -eq 0) {
+  throw "Unable to resolve dynamic workspace modules for packaging."
+}
+$DynamicWorkspaceModules = @($DynamicWorkspaceModules | Where-Object { $_ })
 
 Write-Step "Creating Windows executable..."
 $IconPath = Join-Path $BackendDir "Siming.ico"
@@ -220,6 +228,7 @@ try {
     "--add-data", "$(Join-Path $BackendDir 'alembic')${Separator}alembic",
     "--add-data", "$(Join-Path $BackendDir 'prompt_specs')${Separator}prompt_specs",
     "--collect-submodules", "app",
+    "--collect-submodules", "app.services.workspace.tools",
     "--collect-submodules", "uvicorn",
     "--collect-submodules", "httptools",
     "--collect-submodules", "watchfiles",
@@ -232,6 +241,12 @@ try {
     "--hidden-import", "pythonnet",
     (Join-Path $BackendDir "launcher.py")
   )
+  $EntryPointIndex = $PyInstallerArgs.Count - 1
+  foreach ($ModuleName in $DynamicWorkspaceModules) {
+    $PyInstallerArgs.Insert($EntryPointIndex, "--hidden-import")
+    $PyInstallerArgs.Insert($EntryPointIndex + 1, [string]$ModuleName)
+    $EntryPointIndex += 2
+  }
   if (Test-Path -LiteralPath $IconPath) {
     Write-Step "Using icon: $IconPath"
     # Insert before the last element (the entry-point .py script)
@@ -250,7 +265,6 @@ $ExePath = if ($OneDir) {
 } else {
   Join-Path $DistDir "$AppName.exe"
 }
-$BackendPathForPython = $BackendDir.Replace("\", "\\")
 $Version = (& $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.version import APP_VERSION; print(APP_VERSION)").Trim()
 $Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
 $IsPrerelease = $Version.Contains("-")

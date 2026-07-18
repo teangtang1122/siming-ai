@@ -38,14 +38,20 @@ def test_builtin_prompt_catalog_compiles_against_workspace_tools():
 
     assert set(compiled) == {
         "shared.execution-contract",
+        "assistant.workspace.fast",
         "assistant.workspace.quality",
+        "assistant.chapter.fast",
+        "assistant.chapter.fast.public",
         "assistant.chapter.quality",
+        "assistant.chapter.quality.public",
         "creation.novel.stage",
         "continuity.cataloging.merged",
         "continuity.cataloging.external",
     }
     assert len(compiled["assistant.workspace.quality"].template) < 2_000
     assert len(compiled["assistant.chapter.quality"].template) < 1_500
+    assert len(compiled["assistant.chapter.fast"].template) < 1_500
+    assert compiled["assistant.workspace.fast"].template == compiled["assistant.workspace.quality"].template
 
 
 def test_compiler_rejects_undeclared_placeholders():

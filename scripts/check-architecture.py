@@ -150,6 +150,51 @@ def _commit_calls(module: ParsedModule) -> int:
     )
 
 
+def _router_boundary_counts(modules: dict[str, ParsedModule]) -> dict[str, int]:
+    """Count persistence and model-runtime details leaking into HTTP routers."""
+
+    query_calls = 0
+    orm_imports = 0
+    model_adapter_imports = 0
+    adapter_names = {
+        "LLMGateway",
+        "OpenAIAdapter",
+        "AnthropicAdapter",
+        "LocalCLIAdapter",
+        "AsyncOpenAI",
+    }
+    for module in modules.values():
+        if not module.name.startswith("app.routers."):
+            continue
+        for node in ast.walk(module.tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "query"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "db"
+            ):
+                query_calls += 1
+            elif isinstance(node, ast.ImportFrom):
+                target = _resolve_import(module, node)
+                if target == "app.database.models":
+                    orm_imports += 1
+                model_adapter_imports += sum(
+                    1 for alias in node.names if alias.name in adapter_names
+                )
+            elif isinstance(node, ast.Import):
+                model_adapter_imports += sum(
+                    1
+                    for alias in node.names
+                    if alias.name.rpartition(".")[2] in adapter_names
+                )
+    return {
+        "db_query_calls": query_calls,
+        "orm_imports": orm_imports,
+        "model_adapter_imports": model_adapter_imports,
+    }
+
+
 class _FunctionSizes(ast.NodeVisitor):
     def __init__(self, path: str) -> None:
         self.path = path
@@ -184,6 +229,7 @@ def _is_strict_path(path: Path) -> bool:
         in {
             "database/bootstrap.py",
             "database/schema_models.py",
+            "core/legacy_env.py",
             "core/numbers.py",
             "prompts/workspace_contract.py",
             "services/scheduler/ports.py",
@@ -263,8 +309,35 @@ def main() -> int:
             "lower the baseline in the same change."
         )
 
+    router_counts = _router_boundary_counts(modules)
+    router_baselines = {
+        "db_query_calls": int(baseline["legacy_router_db_query_calls"]),
+        "orm_imports": int(baseline["legacy_router_orm_imports"]),
+        "model_adapter_imports": int(
+            baseline["legacy_router_model_adapter_imports"]
+        ),
+    }
+    for name, count in router_counts.items():
+        expected = router_baselines[name]
+        if count > expected:
+            errors.append(
+                f"Router {name} increased from {expected} to {count}; "
+                "move persistence/model access behind an application port"
+            )
+        elif count < expected:
+            warnings.append(
+                f"Router {name} improved from {expected} to {count}; "
+                "lower the baseline in the same change."
+            )
+
     for module in modules.values():
         relative = _relative(module.path)
+        if relative != "backend/app/core/legacy_env.py" and (
+            "MOSHU_" in module.text or "NOVEL_AGENT_" in module.text
+        ):
+            errors.append(
+                f"{relative} contains a pre-3.0 environment name outside core/legacy_env.py"
+            )
         commits = _commit_calls(module)
         if (
             commits
@@ -312,7 +385,11 @@ def main() -> int:
     print(
         "Architecture summary: "
         f"modules={len(modules)} cycles={len(cycles)} "
-        f"direct_commits={total_commits} errors={len(set(errors))}"
+        f"direct_commits={total_commits} "
+        f"router_queries={router_counts['db_query_calls']} "
+        f"router_orm_imports={router_counts['orm_imports']} "
+        f"router_model_adapters={router_counts['model_adapter_imports']} "
+        f"errors={len(set(errors))}"
     )
     return 1 if errors else 0
 

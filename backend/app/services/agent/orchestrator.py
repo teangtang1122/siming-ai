@@ -7,13 +7,14 @@ from typing import Any, AsyncGenerator
 
 from sqlalchemy.orm import Session
 
+from app.architecture.uow import commit_session
+
 from ...database.models import AgentPlan, AgentPlanStep
 from ..workspace.executor import execute_workspace_action
 from ..workspace.idempotency import check_idempotency, generate_idempotency_key
 from ..workspace.registry import registry
 from .plan_graph import PlanGraph, StepDef
 from .step_args import resolve_step_args
-
 
 _EXECUTABLE_STATUSES = {"pending", "blocked", "error"}
 _SKIP_STATUSES = {"running", "ok", "skipped"}
@@ -175,7 +176,7 @@ class PlanOrchestrator:
             )
             self.db.add(step)
 
-        self.db.commit()
+        commit_session(self.db)
         self.db.refresh(plan)
         return plan
 
@@ -190,7 +191,7 @@ class PlanOrchestrator:
 
         plan.status = "running"
         plan.updated_at = datetime.utcnow()
-        self.db.commit()
+        commit_session(self.db)
 
         yield {"type": "plan_start", "plan_id": plan.id, "name": plan.name, "status": "running"}
 
@@ -215,7 +216,7 @@ class PlanOrchestrator:
                     step_row.status = "blocked"
                     step_row.detail = f"等待依赖步骤: {', '.join(d for d in deps if d not in completed_keys)}"
                     step_row.updated_at = datetime.utcnow()
-                self.db.commit()
+                commit_session(self.db)
                 yield {"type": "step_blocked", "step_key": step_key, "tool": step_row.tool, "detail": step_row.detail}
                 continue
 
@@ -244,7 +245,7 @@ class PlanOrchestrator:
         now = datetime.utcnow()
         plan.updated_at = now
         plan.completed_at = now
-        self.db.commit()
+        commit_session(self.db)
 
         yield {"type": "plan_end", "plan_id": plan.id, "status": plan.status, "error": plan.error}
 
@@ -260,7 +261,7 @@ class PlanOrchestrator:
         plan.status = "running"
         plan.error = None
         plan.updated_at = datetime.utcnow()
-        self.db.commit()
+        commit_session(self.db)
 
         # Reset blocked steps to pending
         blocked_steps = (
@@ -271,7 +272,7 @@ class PlanOrchestrator:
         for s in blocked_steps:
             s.status = "pending"
             s.updated_at = datetime.utcnow()
-        self.db.commit()
+        commit_session(self.db)
 
         yield {"type": "plan_start", "plan_id": plan.id, "name": plan.name, "status": "running"}
 
@@ -294,7 +295,7 @@ class PlanOrchestrator:
                 step_row.status = "blocked"
                 step_row.detail = f"等待依赖步骤: {', '.join(d for d in deps if d not in completed_keys)}"
                 step_row.updated_at = datetime.utcnow()
-                self.db.commit()
+                commit_session(self.db)
                 yield {"type": "step_blocked", "step_key": step_key, "tool": step_row.tool, "detail": step_row.detail}
                 continue
 
@@ -320,7 +321,7 @@ class PlanOrchestrator:
         now = datetime.utcnow()
         plan.updated_at = now
         plan.completed_at = now
-        self.db.commit()
+        commit_session(self.db)
 
         yield {"type": "plan_end", "plan_id": plan.id, "status": plan.status, "error": plan.error}
 
@@ -344,7 +345,7 @@ class PlanOrchestrator:
         plan.status = "running"
         plan.error = None
         plan.updated_at = datetime.utcnow()
-        self.db.commit()
+        commit_session(self.db)
 
         # Reset scope steps
         scope_steps = (
@@ -360,7 +361,7 @@ class PlanOrchestrator:
                 s.status = "pending"
                 s.error = None
                 s.updated_at = datetime.utcnow()
-        self.db.commit()
+        commit_session(self.db)
 
         yield {"type": "plan_start", "plan_id": plan.id, "name": plan.name, "status": "running"}
 
@@ -390,7 +391,7 @@ class PlanOrchestrator:
                 step_row.status = "blocked"
                 step_row.detail = f"等待依赖步骤: {', '.join(d for d in deps if d not in completed_keys)}"
                 step_row.updated_at = datetime.utcnow()
-                self.db.commit()
+                commit_session(self.db)
                 yield {"type": "step_blocked", "step_key": step_key_item, "tool": step_row.tool, "detail": step_row.detail}
                 continue
 
@@ -416,7 +417,7 @@ class PlanOrchestrator:
         now = datetime.utcnow()
         plan.updated_at = now
         plan.completed_at = now
-        self.db.commit()
+        commit_session(self.db)
 
         yield {"type": "plan_end", "plan_id": plan.id, "status": plan.status, "error": plan.error}
 
@@ -445,7 +446,7 @@ class PlanOrchestrator:
         step_row.error = None
         step_row.detail = None
         step_row.updated_at = datetime.utcnow()
-        self.db.commit()
+        commit_session(self.db)
 
         # Execute
         events = []
@@ -457,6 +458,10 @@ class PlanOrchestrator:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def get_plan(self, plan_id: str) -> AgentPlan:
+        """Return one project-owned plan for HTTP and other application callers."""
+        return self._get_plan(plan_id)
 
     def _get_plan(self, plan_id: str) -> AgentPlan:
         plan = self.db.query(AgentPlan).filter(
@@ -517,7 +522,7 @@ class PlanOrchestrator:
                 s.status = "pending"
                 s.detail = None
                 s.updated_at = datetime.utcnow()
-        self.db.commit()
+        commit_session(self.db)
 
     async def _execute_step(
         self,
@@ -539,7 +544,7 @@ class PlanOrchestrator:
             step_row.status = "running"
             step_row.started_at = now
             step_row.updated_at = now
-            self.db.commit()
+            commit_session(self.db)
             yield {
                 "type": "step_start",
                 "step_key": step_row.step_key,
@@ -570,7 +575,7 @@ class PlanOrchestrator:
                 step_row.detail = f"建档失败: {exc}"
             step_row.completed_at = datetime.utcnow()
             step_row.updated_at = datetime.utcnow()
-            self.db.commit()
+            commit_session(self.db)
             yield {
                 "type": "step_result",
                 "step_key": step_row.step_key,
@@ -586,7 +591,7 @@ class PlanOrchestrator:
         step_row.status = "running"
         step_row.started_at = now
         step_row.updated_at = now
-        self.db.commit()
+        commit_session(self.db)
 
         yield {
             "type": "step_start",
@@ -606,7 +611,7 @@ class PlanOrchestrator:
             idem_key = generate_idempotency_key(self.db, step_row.tool, self.project_id, resolved_args)
             if idem_key:
                 step_row.idempotency_key = idem_key
-                self.db.commit()
+                commit_session(self.db)
 
         if idem_key:
             existing = check_idempotency(self.db, self.project_id, idem_key)
@@ -617,7 +622,7 @@ class PlanOrchestrator:
                 step_row.detail = "已存在，跳过重复执行（幂等）"
                 step_row.completed_at = datetime.utcnow()
                 step_row.updated_at = datetime.utcnow()
-                self.db.commit()
+                commit_session(self.db)
 
                 collected_outputs[step_row.step_key] = existing
                 yield {
@@ -658,7 +663,7 @@ class PlanOrchestrator:
                     ds_step.status = "blocked"
                     ds_step.detail = f"上游步骤 {step_row.step_key} 失败"
                     ds_step.updated_at = datetime.utcnow()
-            self.db.commit()
+            commit_session(self.db)
 
             yield {
                 "type": "step_result",
@@ -670,7 +675,7 @@ class PlanOrchestrator:
             }
         else:
             step_row.status = "ok"
-            self.db.commit()
+            commit_session(self.db)
 
             # Store output for downstream arg resolution
             collected_outputs[step_row.step_key] = result

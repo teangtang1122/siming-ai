@@ -6,6 +6,7 @@ on:
       - "backend/**"
       - "frontend/**"
       - "scripts/check-architecture.py"
+      - "scripts/run-performance-baseline.py"
       - ".jscpd.json"
       - ".github/workflows/architecture-ci.yml"
   push:
@@ -54,6 +55,15 @@ jobs:
         working-directory: backend
         run: python scripts/run_quality.py
 
+      - name: Check deterministic performance baseline
+        run: python scripts/run-performance-baseline.py --output .build/performance.json
+
       - name: Validate frontend boundaries and generated API
         working-directory: frontend
         run: npm run quality
+
+      - name: Upload performance baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-performance-baseline
+          path: .build/performance.json

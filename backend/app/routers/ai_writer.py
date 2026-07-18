@@ -1,16 +1,16 @@
 """AI Writing Engine — narrator, character dialogue, dialogue battle, text ops, conflict, changes."""
+from app.architecture.uow import commit_session
 import json
 import asyncio
 import re
 import time
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, Optional
-
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from ..ai.gateway import LLMGateway
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
@@ -1057,7 +1057,7 @@ async def delete_assistant_conversation(
     """Delete an assistant conversation."""
     conversation = _get_assistant_conversation_or_404(db, project_id, conversation_id)
     db.delete(conversation)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(message="助手对话已删除")
 
 
@@ -1337,7 +1337,7 @@ async def workspace_assistant_stream(
             )
             db.add(user_msg_db)
             db.add(assistant_msg_db)
-            db.commit()
+            commit_session(db)
             db.refresh(conversation)
             db.refresh(user_msg_db)
             db.refresh(assistant_msg_db)
@@ -1363,7 +1363,7 @@ async def workspace_assistant_stream(
             # --- Phase 2: Build minimal initial messages ---
             project = get_project_or_404(db, project_id)
             project_folder = str(ensure_project_folder(db, project))
-            db.commit()
+            commit_session(db)
             local_cli_extra_body = LLMGateway.local_cli_extra_body(
                 payload.model,
                 cwd=project_folder,
@@ -2039,7 +2039,7 @@ async def workspace_assistant_stream(
                         "detail": action_result.get("detail") or "",
                     })
                     yield _sse_event({"type": "tool", **tool_logs[-1], "step_id": step.id if step else None})
-                db.commit()
+                commit_session(db)
 
                 # Auto-refresh search context so next turn sees fresh data
                 refresh_tools: dict[str, str] = {}
@@ -2141,7 +2141,7 @@ async def workspace_assistant_stream(
             assistant_msg_db.status = "completed"
             assistant_msg_db.updated_at = datetime.utcnow()
             conversation.updated_at = datetime.utcnow()
-            db.commit()
+            commit_session(db)
             mark_assistant_run(
                 db,
                 assistant_run,
@@ -2217,7 +2217,7 @@ async def workspace_assistant_stream(
                 db.refresh(assistant_run)
                 response_payload["run"] = run_payload(assistant_run)
                 assistant_msg_db.payload_json = json.dumps(response_payload, ensure_ascii=False)
-                db.commit()
+                commit_session(db)
             db.refresh(assistant_msg_db)
             db.refresh(conversation)
             response_payload["message"] = _assistant_message_to_dict(assistant_msg_db)
@@ -2236,7 +2236,7 @@ async def workspace_assistant_stream(
                     except Exception:
                         action_result = {"tool": tool, "status": "error", "detail": "后台执行失败"}
                     applied_actions.append(action_result)
-                db.commit()
+                commit_session(db)
             if assistant_msg_db:
                 reply = _build_workspace_final_reply(
                     final_reply or str(parsed_fallback.get("reply") or ""),
@@ -2267,7 +2267,7 @@ async def workspace_assistant_stream(
                 assistant_msg_db.updated_at = datetime.utcnow()
                 if conversation:
                     conversation.updated_at = datetime.utcnow()
-                db.commit()
+                commit_session(db)
             mark_assistant_run(
                 db,
                 assistant_run,
@@ -2286,7 +2286,7 @@ async def workspace_assistant_stream(
                 assistant_msg_db.content = str(exc)
                 assistant_msg_db.status = "error"
                 assistant_msg_db.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
-                db.commit()
+                commit_session(db)
             mark_assistant_run(db, assistant_run, status="error", phase="llm_error", error=str(exc))
             yield _sse_event({"type": "error", "message": str(exc)})
             yield _sse_event("[DONE]")
@@ -2295,7 +2295,7 @@ async def workspace_assistant_stream(
                 assistant_msg_db.content = f"服务器错误: {exc}"
                 assistant_msg_db.status = "error"
                 assistant_msg_db.payload_json = json.dumps({"tool_logs": tool_logs}, ensure_ascii=False)
-                db.commit()
+                commit_session(db)
             mark_assistant_run(db, assistant_run, status="error", phase="server_error", error=str(exc))
             yield _sse_event({"type": "error", "message": f"服务器错误: {exc}"})
             yield _sse_event("[DONE]")

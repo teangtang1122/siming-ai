@@ -1,6 +1,8 @@
 """Workspace tools for the resumable V2 novel creation workbench."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 import time
 from contextlib import nullcontext
@@ -9,7 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....ai.gateway import LLMGateway
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...operation_runtime import current_operation_id, record_operation_signal
 from ....core.json_repair import parse_json_object
 from ....database.models import NovelCreationSession, NovelCreationStageRun
@@ -432,15 +434,15 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
     governed_args = {**args, "context_manifest_id": manifest.id}
     if run is None:
         run = create_run(db, session, stage, governed_args)
-        db.commit()
+        commit_session(db)
     elif not run.context_manifest_id:
         run.context_manifest_id = manifest.id
-        db.commit()
+        commit_session(db)
     if not usable:
         run.status = manifest.status
         run.current_message = context_detail
         run.next_action = "Review or override the context manifest, then retry this stage."
-        db.commit()
+        commit_session(db)
         return {
             "tool": "generate_novel_creation_stage",
             "status": manifest.status,
@@ -460,7 +462,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 {"stage": "concepts", "model_source": model or "none", "storage_target": "session_draft"},
             )
             run.current_message = "正在生成三套轻量创意"
-            db.commit()
+            commit_session(db)
             if not use_model or not model:
                 raise ValueError("轻量创意需要选择可用模型后才能生成")
             def record_fallback(previous: str, following: str, reason: str) -> None:
@@ -476,7 +478,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                         "failure_class": classify_failure(reason),
                     },
                 )
-                db.commit()
+                commit_session(db)
 
             concepts = await _generate_compact_concepts_with_fallback(
                 session,
@@ -495,7 +497,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 "三套轻量创意已保存",
                 {"stage": "concepts", "storage_target": "session_draft"},
             )
-            db.commit()
+            commit_session(db)
         else:
             stages = [name for name in STAGE_ORDER if name not in {"constraints", "concepts", "final_review"}] if stage == "all" else [stage]
             for name in stages:
@@ -508,7 +510,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                     {"stage": name, "model_source": model or "contract", "storage_target": "session_draft"},
                 )
                 run.current_message = f"正在生成{STAGE_LABELS.get(name, name)}"
-                db.commit()
+                commit_session(db)
                 baseline = derive_stage(session, name, working_draft)
                 data = await _enhance_with_model(
                     session,
@@ -535,7 +537,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                     f"{STAGE_LABELS.get(name, name)}已保存",
                     {"stage": name, "storage_target": "session_draft"},
                 )
-                db.commit()
+                commit_session(db)
         if stage == "all":
             final = derive_stage(session, "final_review", working_draft)
             save_stage(session, "final_review", final, confirm=False, source="contract")
@@ -548,10 +550,10 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 "最终审阅已完成",
                 {"stage": "final_review", "ready": bool(final.get("ready")), "storage_target": "session_draft"},
             )
-            db.commit()
+            commit_session(db)
         complete_run(db, run, {"stages": generated})
         orchestrator.mark_consumed(manifest)
-        db.commit()
+        commit_session(db)
         db.refresh(run)
         return {
             "tool": "generate_novel_creation_stage",
@@ -565,7 +567,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
         run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run.id).first()
         if run and session:
             fail_run(db, run, exc)
-            db.commit()
+            commit_session(db)
             return {
                 "tool": "generate_novel_creation_stage",
                 "status": "error",
@@ -602,7 +604,7 @@ async def submit_novel_creation_stage(db: Session, project_id: str, args: dict[s
         data = _normalize_stage_data(stage, data)
         _validate_stage(stage, data)
         save_stage(session, stage, data, confirm=bool(args.get("confirm", True)), source=_text(args.get("source")) or "author")
-        db.commit()
+        commit_session(db)
         return {
             "tool": "submit_novel_creation_stage",
             "status": "ok",

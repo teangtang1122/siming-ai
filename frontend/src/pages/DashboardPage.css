@@ -137,7 +137,7 @@
 
 .dashboard-card-title {
   color: var(--ant-color-text);
-  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif;
+  font-family: 'Source Han Serif SC', 'Songti SC', STSong, SimSun, serif;
   font-size: 17px;
   font-weight: 600;
   overflow: hidden;

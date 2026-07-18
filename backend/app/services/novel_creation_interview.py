@@ -6,8 +6,8 @@ import re
 import time
 from typing import Any
 
-from app.ai.gateway import LLMGateway
 from app.ai.local_cli_adapter import is_local_cli_provider
+from app.modules.model_runtime.application.execution import model_executor as LLMGateway
 from app.core.json_repair import parse_json_object
 from app.services.observability.run_events import classify_failure
 

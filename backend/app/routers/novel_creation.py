@@ -1,6 +1,8 @@
 """REST API for API-free novel creation workflow."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import asyncio
 import json
 import re
@@ -13,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..ai.gateway import LLMGateway
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..ai.local_cli_adapter import is_local_cli_provider
 from ..core.response import ApiResponse
 from ..database.session import get_db
@@ -103,7 +105,7 @@ def _start_inline_operation(
         input_revision=input_revision,
         snapshot_hash=input_snapshot_hash(input_value),
     )
-    db.commit()
+    commit_session(db)
     return operation.id
 
 
@@ -352,7 +354,7 @@ async def update_creation_session(session_id: str, payload: NovelCreationSession
         )
     try:
         patch_session(session, payload.model_dump(exclude_none=True, exclude={"expected_revision"}))
-        db.commit()
+        commit_session(db)
         return ApiResponse.success(data=serialize_session(session), message="立项草稿已保存")
     except ValueError as exc:
         db.rollback()
@@ -367,7 +369,7 @@ async def delete_creation_session(session_id: str, db: Session = Depends(get_db)
     if session.created_project_id:
         raise HTTPException(status_code=409, detail="该立项已创建正式作品，不能删除会话记录")
     db.delete(session)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(data={"deleted": True})
 
 
@@ -388,7 +390,7 @@ async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, A
             run.status = "cancelled"
             run.current_message = "立项任务已取消，已保存内容不会丢失"
             run.completed_at = datetime.utcnow()
-            db.commit()
+            commit_session(db)
         raise
     finally:
         if heartbeat_task:
@@ -447,7 +449,7 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
         patch_session(session, payload.session_patch)
         request["session_patch"] = None
     run = create_run(db, session, payload.stage, request)
-    db.commit()
+    commit_session(db)
     run_id = run.id
     task = asyncio.create_task(_run_creation_stage(run_id, session_id, request))
     if run.operation_id:
@@ -553,7 +555,7 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
                     event_type="confirmed",
                     checkpoint=True,
                 )
-                db.commit()
+                commit_session(db)
     return _tool_response(result)
 
 

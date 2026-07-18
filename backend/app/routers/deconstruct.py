@@ -1,6 +1,7 @@
 """Deconstruct / book analysis — Map-Reduce pipeline for novel text analysis."""
 import asyncio
 import json
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -9,8 +10,11 @@ from sqlalchemy.orm import Session
 from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import ValidationError
 from ..core.response import ApiResponse
-from ..database.models import Chapter, DeconstructionReport
 from ..database.session import SessionLocal, get_db
+from ..modules.story.application.deconstruct import DeconstructionReader
+from ..modules.story.interfaces.deconstruct_dependencies import (
+    get_deconstruction_reader,
+)
 from ..schemas.deconstruct import DeconstructImportRequest, DeconstructRequest
 from ..services.deconstruct.import_service import import_deconstruct_report
 from ..services.deconstruct.model_selection import (
@@ -46,7 +50,7 @@ async def _cancel_deconstruct_task(report_id: str) -> None:
         task.cancel()
 
 
-def _launch_deconstruct_task(report: DeconstructionReport, coroutine) -> None:
+def _launch_deconstruct_task(report: Any, coroutine) -> None:
     task = asyncio.create_task(coroutine, name=f"deconstruct-{report.id}")
     _DECONSTRUCT_TASKS[report.id] = task
     if report.operation_id:
@@ -146,68 +150,21 @@ async def _stream_report_progress(project_id: str, report_id: str):
 
 
 @router.get("/projects/{project_id}/deconstruct/preview")
-def deconstruct_preview(project_id: str, db: Session = Depends(get_db)):
+def deconstruct_preview(
+    project_id: str,
+    reader: Annotated[DeconstructionReader, Depends(get_deconstruction_reader)],
+):
     """Get available source material for deconstruct analysis."""
-    get_project_or_404(db, project_id)
-
-    chapters = (
-        db.query(Chapter)
-        .filter(Chapter.project_id == project_id)
-        .order_by(Chapter.created_at.asc())
-        .all()
-    )
-    chapter_opts = [
-        {
-            "id": c.id,
-            "title": c.title,
-            "word_count": c.word_count or 0,
-            "preview": (c.content or "")[:200],
-        }
-        for c in chapters
-    ]
-
-    total_words = sum(c.word_count or 0 for c in chapters)
-    combined_text = "\n\n".join(
-        f"{'=' * 40}\n{c.title}\n{'=' * 40}\n\n{c.content or ''}"
-        for c in chapters
-    )
-
-    return ApiResponse.success(data={
-        "chapters": chapter_opts,
-        "total_chapters": len(chapters),
-        "total_words": total_words,
-        "can_deconstruct": total_words > 500,
-        "combined_text": combined_text if total_words <= 80000 else combined_text[:80000],
-    })
+    return ApiResponse.success(data=reader.preview(project_id))
 
 
 @router.get("/projects/{project_id}/deconstruct/reports")
-def list_deconstruct_reports(project_id: str, db: Session = Depends(get_db)):
+def list_deconstruct_reports(
+    project_id: str,
+    reader: Annotated[DeconstructionReader, Depends(get_deconstruction_reader)],
+):
     """List persisted deconstruct reports for this project."""
-    get_project_or_404(db, project_id)
-    reports = (
-        db.query(DeconstructionReport)
-        .filter(DeconstructionReport.project_id == project_id)
-        .order_by(DeconstructionReport.created_at.desc())
-        .limit(20)
-        .all()
-    )
-    items = []
-    for report in reports:
-        payload = report_payload(report)
-        items.append({
-            "id": report.id,
-            "title": payload.get("title") or report.source_filename,
-            "status": report.status,
-            "phase": payload.get("phase", report.status),
-            "total_chunks": payload.get("total_chunks", 0),
-            "completed_chunks": payload.get("completed_chunks", 0),
-            "failed_chunks": payload.get("failed_chunks", 0),
-            "total_words": payload.get("total_words", 0),
-            "created_at": report.created_at.isoformat() if report.created_at else None,
-            "completed_at": payload.get("completed_at"),
-        })
-    return ApiResponse.success(data={"items": items, "total": len(items)})
+    return ApiResponse.success(data=reader.reports(project_id))
 
 
 @router.get("/projects/{project_id}/deconstruct/{report_id}")

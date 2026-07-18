@@ -4,20 +4,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import shutil
 import time
-import random
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from ..ai.gateway import LLMGateway
+from app.architecture.uow import commit_session
+
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
 from ..core.exceptions import ValidationError
+from ..core.legacy_env import get_compatible_env, set_compatible_env
 from ..core.response import ApiResponse
 from ..database.models import (
     LocalModel,
@@ -30,8 +32,8 @@ from ..database.models import (
 )
 from ..database.session import get_db
 from ..schemas.local_model import (
-    AdapterUpdateRequest,
     AdapterCompareRequest,
+    AdapterUpdateRequest,
     BenchmarkRequest,
     DatasetCreateRequest,
     ModelInstallRequest,
@@ -54,7 +56,6 @@ from ..services.local_runtime.training import (
     create_training_job,
 )
 
-
 router = APIRouter(prefix="/local-models", tags=["local-models"])
 _ADAPTER_COMPARISONS: dict[str, dict] = {}
 
@@ -65,7 +66,7 @@ def _ensure_local_runtime_usage_enabled() -> None:
 
 
 def _launcher_settings_path() -> Path:
-    home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+    home = get_compatible_env("SIMING_HOME")
     if home:
         return Path(home) / "launcher-settings.json"
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Siming" / "launcher-settings.json"
@@ -174,9 +175,8 @@ def update_model_root(payload: ModelRootUpdateRequest, db: Session = Depends(get
             settings = {}
         settings["model_root"] = str(target)
         settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.environ["SIMING_MODEL_ROOT"] = str(target)
-        os.environ["MOSHU_MODEL_ROOT"] = str(target)
-        db.commit()
+        set_compatible_env("SIMING_MODEL_ROOT", str(target))
+        commit_session(db)
     return ApiResponse.success(data={"model_root": str(target)}, message="模型目录已更新")
 
 
@@ -261,7 +261,7 @@ def delete_model(model_key: str, db: Session = Depends(get_db)):
     model.file_size = None
     model.status = "available"
     model.installed_at = None
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(message="模型已删除")
 
 
@@ -301,7 +301,7 @@ def update_task_setting(task_type: str, payload: dict, db: Session = Depends(get
     if not model_key:
         if row:
             db.delete(row)
-            db.commit()
+            commit_session(db)
         return ApiResponse.success(message="任务模型设置已清除，将跟随全局默认模型")
     _ensure_local_runtime_usage_enabled()
     if not row:
@@ -311,7 +311,7 @@ def update_task_setting(task_type: str, payload: dict, db: Session = Depends(get
     row.adapter_ids = payload.get("adapter_ids") or []
     row.context_length = payload.get("context_length")
     row.allow_api_fallback = bool(payload.get("allow_api_fallback", False))
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(message="任务模型设置已保存")
 
 
@@ -320,7 +320,7 @@ def clear_task_setting(task_type: str, db: Session = Depends(get_db)):
     row = db.query(LocalModelTaskSetting).filter(LocalModelTaskSetting.task_type == task_type).first()
     if row:
         db.delete(row)
-        db.commit()
+        commit_session(db)
     return ApiResponse.success(message="任务模型设置已清除，将跟随全局默认模型")
 
 
@@ -356,7 +356,7 @@ def update_adapter(adapter_id: str, payload: AdapterUpdateRequest, db: Session =
         value = getattr(payload, field)
         if value is not None:
             setattr(item, field, value)
-    db.commit()
+    commit_session(db)
     get_runtime_manager().stop()
     return ApiResponse.success(message="适配器设置已更新")
 
@@ -418,7 +418,7 @@ def reveal_adapter_comparison(comparison_id: str):
 @router.post("/training/datasets")
 def create_dataset(payload: DatasetCreateRequest, db: Session = Depends(get_db)):
     dataset = build_training_dataset(db, **payload.model_dump())
-    db.commit()
+    commit_session(db)
     db.refresh(dataset)
     return ApiResponse.success(data={
         "id": dataset.id,

@@ -5,15 +5,12 @@ import json
 import os
 from pathlib import Path
 
+from ..core.legacy_env import get_compatible_env
 from ..updater import resolve_update_channel
 
 
 def app_home() -> Path:
-    configured = (
-        os.environ.get("SIMING_HOME")
-        or os.environ.get("MOSHU_HOME")
-        or os.environ.get("NOVEL_AGENT_HOME")
-    )
+    configured = get_compatible_env("SIMING_HOME")
     if configured:
         return Path(configured)
     local_app_data = os.environ.get("LOCALAPPDATA", "")

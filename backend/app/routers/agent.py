@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import AgentPlan, AgentPlanStep
 from ..database.session import get_db
 from ..services.agent.bridge import detect_and_stream_plan
 from ..services.agent.orchestrator import PlanOrchestrator, _serialize_step
@@ -43,7 +42,7 @@ class CreatePlanRequest(BaseModel):
     model: str | None = None
 
 
-def _plan_payload(plan: AgentPlan) -> dict[str, Any]:
+def _plan_payload(plan: Any) -> dict[str, Any]:
     steps = []
     for s in sorted(plan.steps, key=lambda x: x.created_at):
         steps.append(_serialize_step(s))
@@ -120,12 +119,9 @@ async def get_plan(
     """Get plan status and step details."""
     get_project_or_404(db, project_id)
 
-    plan = (
-        db.query(AgentPlan)
-        .filter(AgentPlan.id == plan_id, AgentPlan.project_id == project_id)
-        .first()
-    )
-    if not plan:
+    try:
+        plan = PlanOrchestrator(db, project_id).get_plan(plan_id)
+    except ValueError:
         raise NotFoundError("计划不存在")
 
     return ApiResponse.success(data=_plan_payload(plan))

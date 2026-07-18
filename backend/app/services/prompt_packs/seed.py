@@ -8,6 +8,8 @@ Edit that file to change behavior for BOTH internal assistant and external agent
 """
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import logging
 from typing import Any
 
@@ -676,7 +678,7 @@ def seed_builtin_packs(db: Session) -> int:
         created += 1
 
     if created:
-        db.commit()
+        commit_session(db)
         logger.info("Seeded %d built-in prompt packs", created)
 
     return created

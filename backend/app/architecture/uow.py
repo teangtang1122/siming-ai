@@ -89,3 +89,18 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
     def rollback(self) -> None:
         self.session.rollback()
+
+
+def commit_session(session: Session) -> None:
+    """Commit a request-owned legacy session through the UoW boundary.
+
+    This bridge keeps existing route and worker session lifetimes intact while
+    ensuring transaction completion has one implementation and rollback path.
+    New application commands should receive a UnitOfWork directly.
+    """
+
+    with SqlAlchemyUnitOfWork.from_session(session) as uow:
+        uow.commit()
+
+
+__all__ = ["SqlAlchemyUnitOfWork", "UnitOfWork", "commit_session"]

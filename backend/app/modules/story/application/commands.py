@@ -26,6 +26,9 @@ class StoryCommandContext:
     def queue(self, intent: ContentSyncIntent) -> str:
         return self.outbox.enqueue(intent)
 
+    def queue_all(self, intents: list[ContentSyncIntent]) -> list[str]:
+        return [self.queue(intent) for intent in intents]
+
     def flush(self) -> None:
         self.uow.flush()
 

@@ -1,0 +1,22 @@
+{
+  "source_tag": "v2.9.0",
+  "minimum_reduction_percent": 20.0,
+  "flows": {
+    "workspace_assistant": {
+      "baseline_chars": 5430,
+      "spec_id": "assistant.workspace.quality"
+    },
+    "chapter_writer": {
+      "baseline_chars": 18210,
+      "spec_id": "assistant.chapter.quality"
+    },
+    "cataloging": {
+      "baseline_chars": 6530,
+      "spec_id": "continuity.cataloging.merged"
+    },
+    "novel_creation": {
+      "baseline_chars": 359,
+      "spec_id": "creation.novel.stage"
+    }
+  }
+}

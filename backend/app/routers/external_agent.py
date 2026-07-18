@@ -3,47 +3,42 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..core.response import ApiResponse
 from ..core.db_helpers import get_project_or_404
+from ..core.response import ApiResponse
 from ..database.session import get_db
-from ..database.models import AgentRun, AgentRunEvent
+from ..modules.integrations.application.external_agent_settings import (
+    ExternalAgentSettingsStore,
+)
+from ..modules.integrations.interfaces.external_agent_dependencies import (
+    get_external_agent_settings_store,
+)
 from ..schemas.agent_run import (
     AgentRunCreate,
-    AgentRunRead,
     AgentRunEventCreate,
     AgentRunEventRead,
-    AgentRunListResponse,
-    AgentRunEventListResponse,
+    AgentRunRead,
 )
-from ..schemas.external_agent_settings import (
-    ExternalAgentSettingsUpdate,
-    DEFAULT_ENABLED_PACKS,
-    DEFAULT_TRUSTED_LOCAL_ENABLED,
-    DEFAULT_TRUSTED_LOCAL_CLIENTS,
-    DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-    DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-)
+from ..schemas.external_agent_settings import ExternalAgentSettingsUpdate
 from ..services.external_agent.run_service import (
+    add_event,
+    cancel_run,
     create_run,
+    get_events,
     get_run,
     list_runs,
-    add_event,
-    get_events,
-    cancel_run,
-    update_run_status,
 )
 
 router = APIRouter(prefix="/projects/{project_id}/agent-runs", tags=["external-agent"])
 
 
-def _run_to_read(run: AgentRun) -> AgentRunRead:
+def _run_to_read(run: Any) -> AgentRunRead:
     return AgentRunRead(
         id=run.id,
         project_id=run.project_id,
@@ -59,7 +54,7 @@ def _run_to_read(run: AgentRun) -> AgentRunRead:
     )
 
 
-def _event_to_read(event: AgentRunEvent) -> AgentRunEventRead:
+def _event_to_read(event: Any) -> AgentRunEventRead:
     return AgentRunEventRead(
         id=event.id,
         run_id=event.run_id,
@@ -109,79 +104,34 @@ def list_agent_runs(
 @router.get("/settings")
 def get_external_agent_settings(
     project_id: str,
-    db: Session = Depends(get_db),
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
 ):
     """Get external Agent permission settings for a project."""
-    # Don't require project to exist — return defaults if not found
-    from app.database.models import ExternalAgentSettings
-    settings = db.query(ExternalAgentSettings).filter(
-        ExternalAgentSettings.project_id == project_id
-    ).first()
-
-    if not settings:
-        return ApiResponse.success(data={
-            "project_id": project_id,
-            "enabled_packs": DEFAULT_ENABLED_PACKS,
-            "trusted_local_enabled": DEFAULT_TRUSTED_LOCAL_ENABLED,
-            "trusted_local_clients": DEFAULT_TRUSTED_LOCAL_CLIENTS,
-            "require_confirmation_for_writes": DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-            "require_confirmation_for_destructive": DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-        })
-
-    return ApiResponse.success(data={
-        "id": settings.id,
-        "project_id": settings.project_id,
-        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
-        "trusted_local_enabled": settings.trusted_local_enabled if settings.trusted_local_enabled is not None else DEFAULT_TRUSTED_LOCAL_ENABLED,
-        "trusted_local_clients": settings.trusted_local_clients or DEFAULT_TRUSTED_LOCAL_CLIENTS,
-        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-    })
+    return ApiResponse.success(data=settings.get_project(project_id))
 
 
 @router.put("/settings")
 def update_external_agent_settings(
     project_id: str,
     body: ExternalAgentSettingsUpdate,
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
     db: Session = Depends(get_db),
 ):
     """Update external Agent permission settings for a project."""
     get_project_or_404(db, project_id)
-
-    from app.database.models import ExternalAgentSettings
-    settings = db.query(ExternalAgentSettings).filter(
-        ExternalAgentSettings.project_id == project_id
-    ).first()
-
-    if not settings:
-        settings = ExternalAgentSettings(project_id=project_id)
-        db.add(settings)
-
-    if body.enabled_packs is not None:
-        settings.enabled_packs = body.enabled_packs
-    if body.trusted_local_enabled is not None:
-        settings.trusted_local_enabled = body.trusted_local_enabled
-    if body.trusted_local_clients is not None:
-        settings.trusted_local_clients = body.trusted_local_clients
-    if body.require_confirmation_for_writes is not None:
-        settings.require_confirmation_for_writes = body.require_confirmation_for_writes
-    if body.require_confirmation_for_destructive is not None:
-        settings.require_confirmation_for_destructive = body.require_confirmation_for_destructive
-
-    from datetime import datetime
-    settings.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(settings)
-
-    return ApiResponse.success(data={
-        "id": settings.id,
-        "project_id": settings.project_id,
-        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
-        "trusted_local_enabled": settings.trusted_local_enabled if settings.trusted_local_enabled is not None else DEFAULT_TRUSTED_LOCAL_ENABLED,
-        "trusted_local_clients": settings.trusted_local_clients or DEFAULT_TRUSTED_LOCAL_CLIENTS,
-        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-    }, message="Settings updated")
+    return ApiResponse.success(
+        data=settings.update_project(
+            project_id,
+            body.model_dump(exclude_unset=True),
+        ),
+        message="Settings updated",
+    )
 
 
 @router.get("/{run_id}")
@@ -392,98 +342,44 @@ def reject_agent_write(
 # ── Global settings endpoints ────────────────────────────────────────────
 
 @router.get("/global-settings")
-def get_global_settings(db: Session = Depends(get_db)):
+def get_global_settings(
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
+):
     """Get global external Agent permission settings."""
-    from app.database.models import ExternalAgentGlobalSettings
-
-    settings = db.query(ExternalAgentGlobalSettings).first()
-    if not settings:
-        return ApiResponse.success(data={
-            "enabled_packs": DEFAULT_ENABLED_PACKS,
-            "trusted_local_enabled": DEFAULT_TRUSTED_LOCAL_ENABLED,
-            "trusted_local_clients": DEFAULT_TRUSTED_LOCAL_CLIENTS,
-            "require_confirmation_for_writes": DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-            "require_confirmation_for_destructive": DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-            "mcp_permission_source": "global_settings",
-        })
-
-    return ApiResponse.success(data={
-        "id": settings.id,
-        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
-        "trusted_local_enabled": settings.trusted_local_enabled if settings.trusted_local_enabled is not None else DEFAULT_TRUSTED_LOCAL_ENABLED,
-        "trusted_local_clients": settings.trusted_local_clients or DEFAULT_TRUSTED_LOCAL_CLIENTS,
-        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-        "mcp_permission_source": settings.mcp_permission_source or "global_settings",
-    })
+    return ApiResponse.success(data=settings.get_global())
 
 
 @router.put("/global-settings")
 def update_global_settings(
     body: ExternalAgentSettingsUpdate,
-    db: Session = Depends(get_db),
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
 ):
     """Update global external Agent permission settings."""
-    from app.database.models import ExternalAgentGlobalSettings
-
-    settings = db.query(ExternalAgentGlobalSettings).first()
-    if not settings:
-        settings = ExternalAgentGlobalSettings()
-        db.add(settings)
-
-    if body.enabled_packs is not None:
-        settings.enabled_packs = body.enabled_packs
-    if body.trusted_local_enabled is not None:
-        settings.trusted_local_enabled = body.trusted_local_enabled
-    if body.trusted_local_clients is not None:
-        settings.trusted_local_clients = body.trusted_local_clients
-    if body.require_confirmation_for_writes is not None:
-        settings.require_confirmation_for_writes = body.require_confirmation_for_writes
-    if body.require_confirmation_for_destructive is not None:
-        settings.require_confirmation_for_destructive = body.require_confirmation_for_destructive
-
-    from datetime import datetime
-    settings.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(settings)
-
-    return ApiResponse.success(data={
-        "id": settings.id,
-        "enabled_packs": settings.enabled_packs or DEFAULT_ENABLED_PACKS,
-        "trusted_local_enabled": settings.trusted_local_enabled if settings.trusted_local_enabled is not None else DEFAULT_TRUSTED_LOCAL_ENABLED,
-        "trusted_local_clients": settings.trusted_local_clients or DEFAULT_TRUSTED_LOCAL_CLIENTS,
-        "require_confirmation_for_writes": settings.require_confirmation_for_writes if settings.require_confirmation_for_writes is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_WRITES,
-        "require_confirmation_for_destructive": settings.require_confirmation_for_destructive if settings.require_confirmation_for_destructive is not None else DEFAULT_REQUIRE_CONFIRMATION_FOR_DESTRUCTIVE,
-        "mcp_permission_source": settings.mcp_permission_source or "global_settings",
-    }, message="Global settings updated")
+    return ApiResponse.success(
+        data=settings.update_global(body.model_dump(exclude_unset=True)),
+        message="Global settings updated",
+    )
 
 
 @router.get("/effective-permissions")
 def get_effective_permissions(
+    settings: Annotated[
+        ExternalAgentSettingsStore,
+        Depends(get_external_agent_settings_store),
+    ],
     project_id: str | None = None,
-    db: Session = Depends(get_db),
 ):
     """Get effective permissions for a project (global + project override)."""
-    from app.database.models import ExternalAgentGlobalSettings, ExternalAgentSettings
-
-    global_settings = db.query(ExternalAgentGlobalSettings).first()
-    global_packs = (global_settings.enabled_packs if global_settings and global_settings.enabled_packs else DEFAULT_ENABLED_PACKS)
-
-    project_packs = None
-    if project_id:
-        project_settings = db.query(ExternalAgentSettings).filter(
-            ExternalAgentSettings.project_id == project_id,
-        ).first()
-        if project_settings and project_settings.enabled_packs:
-            project_packs = project_settings.enabled_packs
-
-    from app.services.external_agent.permissions import resolve_effective_pack
-
-    result = resolve_effective_pack(db, project_id=project_id)
-
+    result = settings.effective_permissions(project_id)
     return ApiResponse.success(data={
-        "global_enabled_packs": global_packs,
-        "project_enabled_packs": project_packs,
+        "global_enabled_packs": result["global_enabled_packs"],
+        "project_enabled_packs": result["project_enabled_packs"],
         "effective_pack": result["effective_pack"],
         "source": result["source"],
         "cli_override": result["cli_override"],

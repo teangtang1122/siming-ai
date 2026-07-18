@@ -1,6 +1,8 @@
 """Regression tests for runtime database schema compatibility."""
 
+import sqlite3
 import unittest
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -8,7 +10,12 @@ from sqlalchemy import create_engine, inspect, text
 
 from app.database.backup import backup_sqlite_database, sqlite_database_path
 from app.database.migrations import ensure_runtime_schema, runtime_schema_needs_sync
-from app.database.models import AssistantRun, AgentPlan, AgentPlanStep, Base  # noqa: F401 - importing models populates metadata
+from app.database.models import (  # noqa: F401 - importing models populates metadata
+    AgentPlan,
+    AgentPlanStep,
+    AssistantRun,
+    Base,
+)
 from app.services.workspace.run_log import mark_interrupted_assistant_runs
 
 
@@ -16,26 +23,32 @@ class RuntimeMigrationTestCase(unittest.TestCase):
     def test_models_404_false_negative_is_reset_for_protocol_reverification(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:
-            conn.execute(text(
-                "CREATE TABLE api_configs ("
-                "id VARCHAR(36) PRIMARY KEY, provider VARCHAR(50), api_key_encrypted TEXT, "
-                "default_model VARCHAR(100), is_global_default INTEGER DEFAULT 0, "
-                "provider_type VARCHAR(20) DEFAULT 'api', readiness_status VARCHAR(30), readiness_json TEXT)"
-            ))
-            conn.execute(text(
-                "INSERT INTO api_configs "
-                "(id, provider, api_key_encrypted, default_model, provider_type, readiness_status, readiness_json) "
-                "VALUES ('custom', 'yls', 'encrypted', 'gpt-test', 'api', 'unavailable', "
-                "'{\"source\":\"manual_verify\",\"message\":\"HTTP 404 at /codex/models\"}')"
-            ))
+            conn.execute(
+                text(
+                    "CREATE TABLE api_configs ("
+                    "id VARCHAR(36) PRIMARY KEY, provider VARCHAR(50), api_key_encrypted TEXT, "
+                    "default_model VARCHAR(100), is_global_default INTEGER DEFAULT 0, "
+                    "provider_type VARCHAR(20) DEFAULT 'api', readiness_status VARCHAR(30), readiness_json TEXT)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO api_configs "
+                    "(id, provider, api_key_encrypted, default_model, provider_type, readiness_status, readiness_json) "
+                    "VALUES ('custom', 'yls', 'encrypted', 'gpt-test', 'api', 'unavailable', "
+                    '\'{"source":"manual_verify","message":"HTTP 404 at /codex/models"}\')'
+                )
+            )
 
         Base.metadata.create_all(bind=engine)
         ensure_runtime_schema(engine)
 
         with engine.connect() as conn:
-            row = conn.execute(text(
-                "SELECT api_protocol, readiness_status, readiness_json FROM api_configs WHERE provider = 'yls'"
-            )).one()
+            row = conn.execute(
+                text(
+                    "SELECT api_protocol, readiness_status, readiness_json FROM api_configs WHERE provider = 'yls'"
+                )
+            ).one()
         self.assertEqual(row.api_protocol, "auto")
         self.assertEqual(row.readiness_status, "unverified")
         self.assertIn("protocol_migration", row.readiness_json)
@@ -43,16 +56,20 @@ class RuntimeMigrationTestCase(unittest.TestCase):
     def test_legacy_model_configs_get_non_destructive_readiness_backfill(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:
-            conn.execute(text(
-                "CREATE TABLE api_configs ("
-                "id VARCHAR(36) PRIMARY KEY, provider VARCHAR(50), api_key_encrypted TEXT, "
-                "default_model VARCHAR(100), is_global_default INTEGER DEFAULT 0)"
-            ))
-            conn.execute(text(
-                "INSERT INTO api_configs (id, provider, api_key_encrypted, default_model, is_global_default) VALUES "
-                "('global', 'openai', 'encrypted', 'gpt-test', 1), "
-                "('secondary', 'claude_cli', 'encrypted', 'claude-code', 0)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE TABLE api_configs ("
+                    "id VARCHAR(36) PRIMARY KEY, provider VARCHAR(50), api_key_encrypted TEXT, "
+                    "default_model VARCHAR(100), is_global_default INTEGER DEFAULT 0)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO api_configs (id, provider, api_key_encrypted, default_model, is_global_default) VALUES "
+                    "('global', 'openai', 'encrypted', 'gpt-test', 1), "
+                    "('secondary', 'claude_cli', 'encrypted', 'claude-code', 0)"
+                )
+            )
 
         Base.metadata.create_all(bind=engine)
         ensure_runtime_schema(engine)
@@ -60,9 +77,9 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         with engine.connect() as conn:
             rows = {
                 row.provider: (row.readiness_status, row.readiness_json)
-                for row in conn.execute(text(
-                    "SELECT provider, readiness_status, readiness_json FROM api_configs"
-                ))
+                for row in conn.execute(
+                    text("SELECT provider, readiness_status, readiness_json FROM api_configs")
+                )
             }
         self.assertEqual(rows["openai"][0], "ready")
         self.assertIn("legacy_global", rows["openai"][1])
@@ -72,7 +89,9 @@ class RuntimeMigrationTestCase(unittest.TestCase):
     def test_runtime_schema_needs_sync_detects_missing_columns(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:
-            conn.execute(text("CREATE TABLE projects (id VARCHAR(36) PRIMARY KEY, title VARCHAR(200))"))
+            conn.execute(
+                text("CREATE TABLE projects (id VARCHAR(36) PRIMARY KEY, title VARCHAR(200))")
+            )
         self.assertTrue(runtime_schema_needs_sync(engine))
         Base.metadata.create_all(bind=engine)
         ensure_runtime_schema(engine)
@@ -81,16 +100,48 @@ class RuntimeMigrationTestCase(unittest.TestCase):
     def test_existing_legacy_sqlite_database_gets_new_cataloging_schema(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:
-            conn.execute(text("CREATE TABLE projects (id VARCHAR(36) PRIMARY KEY, title VARCHAR(200))"))
-            conn.execute(text("CREATE TABLE chapters (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), title VARCHAR(200), content TEXT)"))
-            conn.execute(text("CREATE TABLE characters (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), name VARCHAR(200))"))
-            conn.execute(text("CREATE TABLE outline_nodes (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), title VARCHAR(200))"))
-            conn.execute(text("CREATE TABLE worldbuilding_entries (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), title VARCHAR(200), content TEXT)"))
+            conn.execute(
+                text("CREATE TABLE projects (id VARCHAR(36) PRIMARY KEY, title VARCHAR(200))")
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE chapters (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), title VARCHAR(200), content TEXT)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE characters (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), name VARCHAR(200))"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE outline_nodes (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), title VARCHAR(200))"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE worldbuilding_entries (id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36), title VARCHAR(200), content TEXT)"
+                )
+            )
             conn.execute(text("INSERT INTO projects (id, title) VALUES ('p1', 'Legacy Project')"))
-            conn.execute(text("INSERT INTO chapters (id, project_id, title, content) VALUES ('c1', 'p1', 'Chapter 1', 'text')"))
-            conn.execute(text("INSERT INTO characters (id, project_id, name) VALUES ('ch1', 'p1', 'Hero')"))
-            conn.execute(text("INSERT INTO outline_nodes (id, project_id, title) VALUES ('o1', 'p1', 'Opening')"))
-            conn.execute(text("INSERT INTO worldbuilding_entries (id, project_id, title, content) VALUES ('w1', 'p1', 'World', 'old')"))
+            conn.execute(
+                text(
+                    "INSERT INTO chapters (id, project_id, title, content) VALUES ('c1', 'p1', 'Chapter 1', 'text')"
+                )
+            )
+            conn.execute(
+                text("INSERT INTO characters (id, project_id, name) VALUES ('ch1', 'p1', 'Hero')")
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO outline_nodes (id, project_id, title) VALUES ('o1', 'p1', 'Opening')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO worldbuilding_entries (id, project_id, title, content) VALUES ('w1', 'p1', 'World', 'old')"
+                )
+            )
 
         Base.metadata.create_all(bind=engine)
         ensure_runtime_schema(engine)
@@ -130,7 +181,9 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         self.assertIn("last_seen_chapter_id", character_columns)
         self.assertIn("profile_json", character_columns)
 
-        world_columns = {column["name"] for column in inspector.get_columns("worldbuilding_entries")}
+        world_columns = {
+            column["name"] for column in inspector.get_columns("worldbuilding_entries")
+        }
         self.assertIn("first_seen_chapter_id", world_columns)
         self.assertIn("confidence", world_columns)
 
@@ -139,12 +192,25 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         self.assertIn("actual_summary", outline_columns)
         self.assertIn("metadata_json", outline_columns)
 
-        creation_columns = {column["name"] for column in inspector.get_columns("novel_creation_sessions")}
-        for column_name in ("schema_version", "current_stage", "revision", "draft_json", "checkpoints_json", "last_error_json"):
+        creation_columns = {
+            column["name"] for column in inspector.get_columns("novel_creation_sessions")
+        }
+        for column_name in (
+            "schema_version",
+            "current_stage",
+            "revision",
+            "draft_json",
+            "checkpoints_json",
+            "last_error_json",
+        ):
             self.assertIn(column_name, creation_columns)
 
-        download_columns = {column["name"] for column in inspector.get_columns("model_download_tasks")}
-        rebuild_columns = {column["name"] for column in inspector.get_columns("context_rebuild_jobs")}
+        download_columns = {
+            column["name"] for column in inspector.get_columns("model_download_tasks")
+        }
+        rebuild_columns = {
+            column["name"] for column in inspector.get_columns("context_rebuild_jobs")
+        }
         operation_columns = {column["name"] for column in inspector.get_columns("operation_runs")}
         self.assertIn("operation_id", download_columns)
         self.assertIn("operation_id", rebuild_columns)
@@ -158,7 +224,10 @@ class RuntimeMigrationTestCase(unittest.TestCase):
     def test_sqlite_database_is_backed_up_before_runtime_migration(self):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "legacy.db"
-            db_path.write_bytes(b"legacy-data")
+            with closing(sqlite3.connect(db_path)) as connection:
+                connection.execute("CREATE TABLE legacy_data (value TEXT)")
+                connection.execute("INSERT INTO legacy_data VALUES ('preserved')")
+                connection.commit()
             url = f"sqlite:///{db_path}"
 
             self.assertEqual(sqlite_database_path(url), db_path.resolve())
@@ -166,8 +235,10 @@ class RuntimeMigrationTestCase(unittest.TestCase):
 
             self.assertIsNotNone(backup_path)
             self.assertTrue(backup_path.exists())
-            self.assertEqual(backup_path.read_bytes(), b"legacy-data")
             self.assertIn("pre-test", backup_path.name)
+            with closing(sqlite3.connect(backup_path)) as connection:
+                value = connection.execute("SELECT value FROM legacy_data").fetchone()[0]
+            self.assertEqual(value, "preserved")
 
     def test_agent_plan_tables_created_with_correct_schema(self):
         engine = create_engine("sqlite:///:memory:")
@@ -182,18 +253,48 @@ class RuntimeMigrationTestCase(unittest.TestCase):
 
         # Verify agent_plans columns
         plan_columns = {col["name"] for col in inspector.get_columns("agent_plans")}
-        for col in ("id", "project_id", "conversation_id", "assistant_run_id",
-                     "assistant_message_id", "name", "status", "graph_json",
-                     "model", "error", "created_at", "updated_at", "completed_at"):
+        for col in (
+            "id",
+            "project_id",
+            "conversation_id",
+            "assistant_run_id",
+            "assistant_message_id",
+            "name",
+            "status",
+            "graph_json",
+            "model",
+            "error",
+            "created_at",
+            "updated_at",
+            "completed_at",
+        ):
             self.assertIn(col, plan_columns, f"agent_plans missing column: {col}")
 
         # Verify agent_plan_steps columns
         step_columns = {col["name"] for col in inspector.get_columns("agent_plan_steps")}
-        for col in ("id", "plan_id", "project_id", "step_key", "tool", "args_json",
-                     "depends_on_json", "status", "retry_policy", "idempotency_key",
-                     "result_json", "output_refs", "detail", "error", "attempt_no",
-                     "retry_of_step_id", "resolved_step_id", "started_at",
-                     "completed_at", "created_at", "updated_at"):
+        for col in (
+            "id",
+            "plan_id",
+            "project_id",
+            "step_key",
+            "tool",
+            "args_json",
+            "depends_on_json",
+            "status",
+            "retry_policy",
+            "idempotency_key",
+            "result_json",
+            "output_refs",
+            "detail",
+            "error",
+            "attempt_no",
+            "retry_of_step_id",
+            "resolved_step_id",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ):
             self.assertIn(col, step_columns, f"agent_plan_steps missing column: {col}")
 
         # Verify indexes exist
@@ -246,7 +347,9 @@ class RuntimeMigrationTestCase(unittest.TestCase):
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
         if fts5_available:
-            self.assertIn("rag_chunks_fts", table_names, "rag_chunks_fts should exist when FTS5 is available")
+            self.assertIn(
+                "rag_chunks_fts", table_names, "rag_chunks_fts should exist when FTS5 is available"
+            )
         else:
             # FTS5 not available — no crash is the success criterion
             self.assertNotIn("rag_chunks_fts", table_names)

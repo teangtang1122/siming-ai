@@ -2,7 +2,7 @@
 import asyncio
 from typing import AsyncGenerator, Optional
 
-from ...ai.gateway import LLMGateway
+from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...prompts.deconstruct import (
     JSON_REPAIR_SYSTEM_PROMPT,
     MAP_JSON_TEMPLATE,

@@ -84,3 +84,11 @@ python scripts/compile_prompts.py
 - `3.0.0-beta.2`: frontend feature boundaries and generated API types.
 - `3.0.0-rc.1`: cleanup, migration rehearsals, security, recovery, performance.
 - `3.0.0`: stable release after RC validation.
+
+RC evidence is maintained in:
+
+- [Threat model](../security/threat-model-3.0.md)
+- [Security review](../security/review-3.0.md)
+- [Database recovery](../operations/database-recovery.md)
+- [Performance baseline](../performance/baseline-3.0.md)
+- [Prompt volume baseline](../performance/prompt-volume-3.0.md)

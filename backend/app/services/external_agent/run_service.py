@@ -1,6 +1,8 @@
 """Agent run service — CRUD for runs and events."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 import logging
 from datetime import datetime
@@ -92,7 +94,7 @@ def create_run(
             progress_mode="indeterminate",
         )
         run.operation_id = operation.id
-    db.commit()
+    commit_session(db)
     db.refresh(run)
     logger.info("Agent run created: %s (project=%s)", run.id, project_id)
     return run
@@ -142,7 +144,7 @@ def update_run_status(
     if status in _TERMINAL_STATES:
         run.completed_at = datetime.utcnow()
     run.updated_at = datetime.utcnow()
-    db.commit()
+    commit_session(db)
     db.refresh(run)
     status_map = {
         "created": "queued",
@@ -203,12 +205,12 @@ def update_run_status(
                     outcome="waiting_user",
                     event_type="waiting_user",
                 )
-                db.commit()
+                commit_session(db)
         else:
             operation = db.query(OperationRun).filter(OperationRun.id == run.operation_id).first()
             if operation:
                 update_operation(db, operation, attention={}, result={})
-                db.commit()
+                commit_session(db)
             record_operation_signal(
                 run.operation_id,
                 "phase",
@@ -293,7 +295,7 @@ def add_event(
         run.status = "running"
 
     run.updated_at = datetime.utcnow()
-    db.commit()
+    commit_session(db)
     db.refresh(event)
     if run.operation_id:
         if run.status == "completed":
@@ -361,7 +363,7 @@ def cancel_run(db: Session, run_id: str) -> AgentRun | None:
     add_event(db, run_id, "run_finished", status="ok", message="Run cancelled by user")
     run.status = "cancelled"
     run.completed_at = datetime.utcnow()
-    db.commit()
+    commit_session(db)
     db.refresh(run)
     finish_operation(run.operation_id, message="Agent 任务已取消", status="cancelled", db=db)
     return run

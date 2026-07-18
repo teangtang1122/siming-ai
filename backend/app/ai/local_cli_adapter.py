@@ -15,10 +15,10 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 try:
     import psutil
@@ -26,9 +26,9 @@ except ImportError:  # packaged builds install psutil; source fallbacks stay usa
     psutil = None
 
 from ..core.exceptions import LLMError
+from ..core.legacy_env import get_compatible_env
 from .base import BaseAdapter
 from .cli_process import hidden_subprocess_kwargs, terminate_cli_process_tree
-
 
 LOCAL_CLI_PROVIDERS = {
     "claude_cli",
@@ -273,9 +273,7 @@ def _model_options_from_cli_args(cli_args: str | None) -> list[dict]:
     for index, token in enumerate(tokens):
         if token in {"--model", "-m"} and index + 1 < len(tokens):
             values.append(tokens[index + 1])
-        elif token.startswith("--model="):
-            values.append(token.split("=", 1)[1])
-        elif token.startswith("-m="):
+        elif token.startswith("--model=") or token.startswith("-m="):
             values.append(token.split("=", 1)[1])
     return _model_options_from_values(values, "CLI 参数")
 
@@ -879,10 +877,10 @@ async def communicate_with_cli_quota_detection(
                 now_monotonic = time.monotonic()
                 remaining = deadline - now_monotonic if deadline is not None else None
                 if remaining is not None and remaining <= 0:
-                    raise asyncio.TimeoutError
+                    raise TimeoutError
                 wait_seconds = max(0.1, min(poll_seconds, remaining)) if remaining is not None else max(0.1, poll_seconds)
                 _name, chunk = await asyncio.wait_for(queue.get(), timeout=wait_seconds)
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 now_monotonic = time.monotonic()
                 if deadline is None or now_monotonic < deadline:
                     metrics = sample_cli_process_tree(process.pid)
@@ -907,7 +905,7 @@ async def communicate_with_cli_quota_detection(
                     if not metrics.get("alive") and process.returncode is None:
                         try:
                             await asyncio.wait_for(process.wait(), timeout=max(0.2, poll_seconds))
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             _report(
                                 "disconnected",
                                 {**metrics, "lifecycle_status": "interrupted"},
@@ -1002,7 +1000,7 @@ class LocalCLIAdapter(BaseAdapter):
         return parse_cli_launch(self.cli_args, self._provider, prompt, model)
 
     @staticmethod
-    def _runtime_cwd(extra_body: Optional[dict]) -> str:
+    def _runtime_cwd(extra_body: dict | None) -> str:
         if bool((extra_body or {}).get("local_cli_isolated")):
             # CLI-as-model execution never needs a project checkout. An empty
             # per-call directory prevents accidental repository/project scans.
@@ -1010,8 +1008,8 @@ class LocalCLIAdapter(BaseAdapter):
         requested = str((extra_body or {}).get("local_cli_cwd") or "").strip()
         candidates = [
             requested,
-            os.environ.get("SIMING_CONTENT_ROOT") or os.environ.get("MOSHU_CONTENT_ROOT") or "",
-            str(Path(os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or tempfile.gettempdir()) / "projects"),
+            get_compatible_env("SIMING_CONTENT_ROOT"),
+            str(Path(get_compatible_env("SIMING_HOME", default=tempfile.gettempdir())) / "projects"),
         ]
         for candidate in candidates:
             if not candidate:
@@ -1027,7 +1025,7 @@ class LocalCLIAdapter(BaseAdapter):
         return str(fallback.resolve())
 
     @staticmethod
-    def _runtime_attachments(extra_body: Optional[dict]) -> list[str]:
+    def _runtime_attachments(extra_body: dict | None) -> list[str]:
         if bool((extra_body or {}).get("local_cli_isolated")):
             return []
         raw = (extra_body or {}).get("local_cli_attachments") or []
@@ -1236,7 +1234,7 @@ class LocalCLIAdapter(BaseAdapter):
         return CLILaunch(args=args), prompt_file
 
     @staticmethod
-    def _timeout_seconds(extra_body: Optional[dict]) -> float | None:
+    def _timeout_seconds(extra_body: dict | None) -> float | None:
         body = extra_body or {}
         raw = body.get("local_cli_timeout_seconds", DEFAULT_LOCAL_CLI_TIMEOUT)
         if "local_cli_timeout_seconds" in body and raw in (None, 0, "0", "none", "unbounded"):
@@ -1251,7 +1249,7 @@ class LocalCLIAdapter(BaseAdapter):
         self,
         prompt: str,
         model: str,
-        extra_body: Optional[dict] = None,
+        extra_body: dict | None = None,
     ) -> str:
         command = self._command()
         prompt_file: str | None = None
@@ -1430,10 +1428,10 @@ class LocalCLIAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> dict:
         prompt = messages_to_prompt(messages)
         content = await self._run(prompt, model, extra_body)
@@ -1449,8 +1447,8 @@ class LocalCLIAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
     ) -> AsyncGenerator[str, None]:
         # Most CLIs buffer output until the model turn ends. Yield the final
         # text as one chunk so callers still use the streaming endpoint safely.
@@ -1463,10 +1461,10 @@ class LocalCLIAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> AsyncGenerator[dict, None]:
         result = await self.chat_completion(messages, model, temperature, max_tokens, extra_body)
         if result["content"]:

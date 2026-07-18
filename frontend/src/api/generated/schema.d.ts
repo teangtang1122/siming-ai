@@ -545,10 +545,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Effective Permissions
-         * @description Get effective permissions (global + optional project override).
-         */
+        /** Get Effective Permissions */
         get: operations["get_effective_permissions_api_v1_external_agent_effective_permissions_get"];
         put?: never;
         post?: never;
@@ -565,15 +562,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Global Settings
-         * @description Get global external Agent permission settings.
-         */
+        /** Get Global Settings */
         get: operations["get_global_settings_api_v1_external_agent_settings_get"];
-        /**
-         * Update Global Settings
-         * @description Update global external Agent permission settings.
-         */
+        /** Update Global Settings */
         put: operations["update_global_settings_api_v1_external_agent_settings_put"];
         post?: never;
         delete?: never;
@@ -1371,16 +1362,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Projects
-         * @description Get project list with optional search.
-         */
+        /** List Projects */
         get: operations["list_projects_api_v1_projects_get"];
         put?: never;
-        /**
-         * Create Project
-         * @description Create a new project and initialize its folder-backed content store.
-         */
+        /** Create Project */
         post: operations["create_project_api_v1_projects_post"];
         delete?: never;
         options?: never;
@@ -1395,21 +1380,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Project
-         * @description Get project details by ID.
-         */
+        /** Get Project */
         get: operations["get_project_api_v1_projects__project_id__get"];
-        /**
-         * Update Project
-         * @description Update project information and its project manifest.
-         */
+        /** Update Project */
         put: operations["update_project_api_v1_projects__project_id__put"];
         post?: never;
-        /**
-         * Delete Project
-         * @description Delete a project and all associated database state.
-         */
+        /** Delete Project */
         delete: operations["delete_project_api_v1_projects__project_id__delete"];
         options?: never;
         head?: never;
@@ -2312,16 +2288,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Chapters
-         * @description Get chapter list ordered by outline tree structure.
-         */
+        /** List Chapters */
         get: operations["list_chapters_api_v1_projects__project_id__chapters_get"];
         put?: never;
-        /**
-         * Create Chapter
-         * @description Create a chapter linked to an optional outline node.
-         */
+        /** Create Chapter */
         post: operations["create_chapter_api_v1_projects__project_id__chapters_post"];
         delete?: never;
         options?: never;
@@ -2336,21 +2306,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Chapter Detail
-         * @description Get chapter detail with full content.
-         */
+        /** Get Chapter Detail */
         get: operations["get_chapter_detail_api_v1_projects__project_id__chapters__chapter_id__get"];
-        /**
-         * Save Chapter
-         * @description Save chapter fields and create a version snapshot in the same transaction.
-         */
+        /** Save Chapter */
         put: operations["save_chapter_api_v1_projects__project_id__chapters__chapter_id__put"];
         post?: never;
-        /**
-         * Delete Chapter
-         * @description Delete a chapter and its snapshots.
-         */
+        /** Delete Chapter */
         delete: operations["delete_chapter_api_v1_projects__project_id__chapters__chapter_id__delete"];
         options?: never;
         head?: never;
@@ -2366,10 +2327,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Restore Chapter Snapshot
-         * @description Restore a chapter to a snapshot and create a new restore snapshot.
-         */
+        /** Restore Chapter Snapshot */
         post: operations["restore_chapter_snapshot_api_v1_projects__project_id__chapters__chapter_id__restore__snapshot_id__post"];
         delete?: never;
         options?: never;
@@ -2384,10 +2342,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Chapter Snapshots
-         * @description Get version snapshot history for a chapter.
-         */
+        /** List Chapter Snapshots */
         get: operations["list_chapter_snapshots_api_v1_projects__project_id__chapters__chapter_id__snapshots_get"];
         put?: never;
         post?: never;
@@ -2404,10 +2359,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Diff Chapter Snapshots
-         * @description Compare two snapshots and return line-based diff marks.
-         */
+        /** Diff Chapter Snapshots */
         get: operations["diff_chapter_snapshots_api_v1_projects__project_id__chapters__chapter_id__snapshots_diff_get"];
         put?: never;
         post?: never;
@@ -2424,10 +2376,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Chapter Snapshot Detail
-         * @description Get one chapter snapshot including its saved content.
-         */
+        /** Get Chapter Snapshot Detail */
         get: operations["get_chapter_snapshot_detail_api_v1_projects__project_id__chapters__chapter_id__snapshots__snapshot_id__get"];
         put?: never;
         post?: never;
@@ -3384,16 +3333,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Outline
-         * @description Get the full outline tree for a project.
-         */
+        /** Get Outline */
         get: operations["get_outline_api_v1_projects__project_id__outline_get"];
         put?: never;
-        /**
-         * Create Outline Node
-         * @description Create an outline node.
-         */
+        /** Create Outline Node */
         post: operations["create_outline_node_api_v1_projects__project_id__outline_post"];
         delete?: never;
         options?: never;
@@ -3409,10 +3352,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /**
-         * Reorder Outline
-         * @description Reorder outline nodes and optionally move them to a new parent.
-         */
+        /** Reorder Outline */
         put: operations["reorder_outline_api_v1_projects__project_id__outline_reorder_put"];
         post?: never;
         delete?: never;
@@ -3429,16 +3369,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /**
-         * Update Outline Node
-         * @description Update an outline node and its linked characters.
-         */
+        /** Update Outline Node */
         put: operations["update_outline_node_api_v1_projects__project_id__outline__node_id__put"];
         post?: never;
-        /**
-         * Delete Outline Node
-         * @description Delete an outline node and its descendants.
-         */
+        /** Delete Outline Node */
         delete: operations["delete_outline_node_api_v1_projects__project_id__outline__node_id__delete"];
         options?: never;
         head?: never;
@@ -3775,7 +3709,7 @@ export interface paths {
         get?: never;
         /**
          * Set Daily Goal
-         * @description Set the daily word count goal for a project.
+         * @description Set the daily word count goal in the request transaction.
          */
         put: operations["set_daily_goal_api_v1_projects__project_id__stats_goal_put"];
         post?: never;
@@ -3794,7 +3728,7 @@ export interface paths {
         };
         /**
          * Get Stats History
-         * @description Get historical daily writing statistics based on chapter creation dates.
+         * @description Get historical daily writing statistics.
          */
         get: operations["get_stats_history_api_v1_projects__project_id__stats_history_get"];
         put?: never;
@@ -3814,7 +3748,7 @@ export interface paths {
         };
         /**
          * Get Today Stats
-         * @description Get today's writing statistics based on chapter creation date.
+         * @description Get today's writing statistics.
          */
         get: operations["get_today_stats_api_v1_projects__project_id__stats_today_get"];
         put?: never;
@@ -3832,10 +3766,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Project Storage Health
-         * @description Inspect the database-authoritative project mirror for orphan files.
-         */
+        /** Get Project Storage Health */
         get: operations["get_project_storage_health_api_v1_projects__project_id__storage_health_get"];
         put?: never;
         post?: never;
@@ -3854,10 +3785,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Repair Project Storage
-         * @description Run an explicit repair path through the workspace tool contract.
-         */
+        /** Repair Project Storage */
         post: operations["repair_project_storage_api_v1_projects__project_id__storage_repair_post"];
         delete?: never;
         options?: never;
@@ -3895,16 +3823,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Worldbuilding Entries
-         * @description Get worldbuilding entries grouped by dimension.
-         */
+        /** List Worldbuilding Entries */
         get: operations["list_worldbuilding_entries_api_v1_projects__project_id__worldbuilding_get"];
         put?: never;
-        /**
-         * Create Worldbuilding Entry
-         * @description Create a worldbuilding entry.
-         */
+        /** Create Worldbuilding Entry */
         post: operations["create_worldbuilding_entry_api_v1_projects__project_id__worldbuilding_post"];
         delete?: never;
         options?: never;
@@ -3920,16 +3842,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /**
-         * Update Worldbuilding Entry
-         * @description Update a worldbuilding entry.
-         */
+        /** Update Worldbuilding Entry */
         put: operations["update_worldbuilding_entry_api_v1_projects__project_id__worldbuilding__entry_id__put"];
         post?: never;
-        /**
-         * Delete Worldbuilding Entry
-         * @description Delete a worldbuilding entry.
-         */
+        /** Delete Worldbuilding Entry */
         delete: operations["delete_worldbuilding_entry_api_v1_projects__project_id__worldbuilding__entry_id__delete"];
         options?: never;
         head?: never;
@@ -3943,10 +3859,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Worldbuilding Timeline
-         * @description Get worldbuilding timeline entries.
-         */
+        /** List Worldbuilding Timeline */
         get: operations["list_worldbuilding_timeline_api_v1_projects__project_id__worldbuilding__entry_id__timeline_get"];
         put?: never;
         post?: never;
@@ -3963,10 +3876,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Worldbuilding Versions
-         * @description Get worldbuilding version history.
-         */
+        /** List Worldbuilding Versions */
         get: operations["list_worldbuilding_versions_api_v1_projects__project_id__worldbuilding__entry_id__versions_get"];
         put?: never;
         post?: never;
@@ -6159,14 +6069,10 @@ export interface components {
             /** Writing Style */
             writing_style: string;
         };
-        /**
-         * ProjectStorageRepairRequest
-         * @description Explicit storage repair action for database-authoritative project mirrors.
-         */
+        /** ProjectStorageRepairRequest */
         ProjectStorageRepairRequest: {
             /**
              * Action
-             * @description import_orphans imports mirror files into DB; refresh_mirror rewrites files from DB
              * @enum {string}
              */
             action: "import_orphans" | "refresh_mirror";

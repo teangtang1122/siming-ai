@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 from datetime import datetime
@@ -18,18 +17,22 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.architecture.uow import commit_session
+
+from ..core.legacy_env import get_compatible_env
 from ..core.utils import count_words
 from ..database.models import (
     Chapter,
     Character,
     CharacterAIConfig,
     CharacterRelationship,
-    OutlineNodeCharacter,
     OutlineNode,
+    OutlineNodeCharacter,
     Project,
     WorldbuildingEntry,
     WorldbuildingRelation,
 )
+from .chapter_service import create_snapshot, ensure_current_snapshot
 from .character_service import (
     character_aliases,
     dumps_list,
@@ -37,9 +40,7 @@ from .character_service import (
     snapshot_character,
     sync_character_aliases,
 )
-from .chapter_service import create_snapshot, ensure_current_snapshot
 from .hot_cache import invalidate_project
-
 
 STORE_VERSION = 1
 MANIFEST_NAME = "moshu-project.json"
@@ -47,11 +48,11 @@ FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 
 def content_root() -> Path:
-    configured = os.environ.get("SIMING_CONTENT_ROOT") or os.environ.get("MOSHU_CONTENT_ROOT")
+    configured = get_compatible_env("SIMING_CONTENT_ROOT")
     if configured:
         root = Path(configured).expanduser()
     else:
-        home = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
+        home = get_compatible_env("SIMING_HOME")
         if home:
             root = Path(home).expanduser() / "projects"
         else:
@@ -673,7 +674,7 @@ def migrate_legacy_projects_to_files(db: Session) -> None:
         if project.storage_mode in {"folder", "db_mirror"} and project.folder_path and (Path(project.folder_path) / MANIFEST_NAME).exists():
             continue
         sync_project_to_files(db, project.id)
-    db.commit()
+    commit_session(db)
 
 
 def migrate_projects_to_content_root(

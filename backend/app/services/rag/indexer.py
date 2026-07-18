@@ -1,6 +1,8 @@
 """RAG indexer: chunking, FTS5 indexing, and dirty detection."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import hashlib
 import json
 from datetime import datetime
@@ -37,7 +39,7 @@ def detect_fts5_available(db: Session) -> bool:
     try:
         db.execute(text("CREATE VIRTUAL TABLE temp.__fts5_test USING fts5(content)"))
         db.execute(text("DROP TABLE temp.__fts5_test"))
-        db.commit()
+        commit_session(db)
         _fts5_available = True
     except Exception:
         db.rollback()

@@ -7,6 +7,8 @@ Provides three layers:
 """
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 from typing import Any
 
@@ -90,7 +92,7 @@ async def retry_step(
         new_step.attempt_no = attempt_no
         if idem_key:
             new_step.idempotency_key = idem_key
-        db.commit()
+        commit_session(db)
 
     finish_run_step(
         db,
@@ -104,7 +106,7 @@ async def retry_step(
     # Mark original as resolved if retry succeeded
     if result.get("status") != "error" and new_step:
         original.resolved_step_id = new_step.id
-        db.commit()
+        commit_session(db)
 
     # Promote run status if all errors resolved
     if result.get("status") != "error" and run.status == "error":

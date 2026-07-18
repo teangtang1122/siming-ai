@@ -1,10 +1,8 @@
-"""Workspace Fast compatibility pack.
-
-Fast mode is kept as a UI/workflow hint, but the controller prompt itself
-delegates to the quality pack so every entrypoint follows the same behavior.
-"""
+"""Workspace fast compatibility pack backed by PromptSpec."""
 from __future__ import annotations
 
+from ...modules.assistant.infrastructure.runtime import render_prompt
+from ..workspace_contract import SCOPE_LABELS
 from . import PromptPack
 from .workspace_quality import ALL_WORKSPACE_TOOL_NAMES
 
@@ -16,20 +14,20 @@ def _build_system(
     auto_apply: bool,
     tool_names: list[str] | set[str] | None = None,
 ) -> str:
-    """Compatibility wrapper: fast workspace control uses quality rules too."""
-    from .workspace_quality import PACK as WORKSPACE_QUALITY_PACK
-
-    return WORKSPACE_QUALITY_PACK.build_system_prompt(
-        scope=scope,
+    """Render the shared controller through the fast compatibility spec."""
+    available = set(tool_names) if tool_names is not None else ALL_WORKSPACE_TOOL_NAMES
+    return render_prompt(
+        "assistant.workspace.fast",
+        scope_label=SCOPE_LABELS.get(scope, "项目规划"),
         outline_batch_count=outline_batch_count,
-        auto_apply=auto_apply,
-        tool_names=tool_names,
+        auto_apply="是" if auto_apply else "否",
+        tool_names=", ".join(sorted(available)),
     )
 
 
 PACK = PromptPack(
     name="workspace_fast",
-    version="2.0",
+    version="3.0.0-rc.1",
     pack_type="workspace",
     description="Compatibility fast workspace assistant — delegates to quality controller rules",
     input_fields=["scope", "outline_batch_count", "auto_apply"],

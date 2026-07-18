@@ -5,8 +5,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....ai.gateway import LLMGateway
 from ....ai.local_cli_adapter import is_local_cli_provider
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....core.utils import count_words
 from ....database.models import (
     Character,

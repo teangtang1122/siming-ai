@@ -7,6 +7,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database.session import Base
+from app.modules.assistant.infrastructure.system_conversations import (
+    SqlAlchemySystemConversationStore,
+)
 from app.routers.system_assistant import (
     SystemConversationCreate,
     SystemTurnCreate,
@@ -25,9 +28,10 @@ def _db_session():
 
 def test_system_conversation_persists_messages_and_blueprint_state():
     db = _db_session()
+    conversations = SqlAlchemySystemConversationStore(db)
     created = asyncio.run(create_system_conversation(
         SystemConversationCreate(title="克苏鲁新书"),
-        db,
+        conversations,
     ))
     conversation_id = created.data["conversation"]["id"]
 
@@ -44,15 +48,15 @@ def test_system_conversation_persists_messages_and_blueprint_state():
             user_brief="克苏鲁+规则怪谈",
             blueprints=blueprints,
         ),
-        db,
+        conversations,
     ))
 
-    detail = asyncio.run(get_system_conversation(conversation_id, db))
+    detail = asyncio.run(get_system_conversation(conversation_id, conversations))
     assert detail.data["conversation"]["creation_session_id"] == "session-1"
     assert detail.data["conversation"]["blueprints"] == blueprints
     assert [item["role"] for item in detail.data["messages"]] == ["user", "assistant"]
     assert detail.data["messages"][1]["content"] == "已生成三个方案"
 
-    listing = asyncio.run(list_system_conversations(db))
+    listing = asyncio.run(list_system_conversations(conversations))
     assert listing.data["total"] == 1
     assert listing.data["items"][0]["message_count"] == 2

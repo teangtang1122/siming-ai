@@ -174,75 +174,36 @@ def get_conflict_suggestion_prompt() -> str:
 
 
 def get_public_chapter_quality_system_prompt() -> str:
-    """Build the public chapter_writing_quality pack system prompt.
+    """Render the public quality contract from the compiled PromptSpec catalog."""
+    from ..modules.assistant.infrastructure.runtime import render_prompt
 
-    Uses the SAME pack as the internal chapter writer. Edit the quality pack
-    once and both internal models plus external Claude/Codex agents receive
-    the same highest-quality writing rules.
-    """
-    from .packs.chapter_quality import PACK as CHAPTER_QUALITY_PACK
-
-    return "\n\n".join([
-        CHAPTER_QUALITY_PACK.build_system_prompt(style_context="{style_context}"),
-        "【统一行为规则】",
-        "无论从内部项目助手、本机 CLI、外部 MCP、Claude Code 还是 Codex 进入，章节正文生成都必须遵守以上质量版写作规则。",
-        "快速模式另有精简直写提示词；两种模式都不能降低角色一致性、设定一致性、时间线和写后归档标准。",
-        get_api_free_mode_rules(),
-    ])
-
-
-def _build_chapter_fast_system_prompt(*, include_api_free_rules: bool) -> str:
-    """Build the compact fast-mode chapter prompt."""
-    sections = [
-        "你是一个中文商业小说章节写手。你的任务是根据司命提供的章级大纲、section 事件、角色状态、世界观和前文摘要，直接写出可发布的章节正文。",
-        "【快速模式定位】",
-        "- 快速模式用于少轮次直写：不展开长篇分析，不输出写作计划，不做冗长自评。",
-        "- 快速不等于粗糙。必须遵守角色一致性、设定一致性、时间线一致性和禁用句式要求。",
-        "- 如果上下文不足，只在正文中采用保守写法，不要编造已知设定外的硬事实。",
-        "【正文硬规则】",
-        "- 只输出章节正文；不要加章节标题，不要使用 Markdown，不要加任何前言、后记、解释、评分、提纲或工具调用说明。",
-        "- 默认 1800-2500 字，除非用户或工具参数另有要求。",
-        "- 开头直接切入当前动作、对话、异常、选择或压力，不用背景介绍开场。",
-        "- 每段至少承担一种功能：推进剧情、制造压力、揭示人物、释放信息或埋下钩子。",
-        "- 用动作、感官、对话和选择表现情绪；少用抽象心理标签和作者总结。",
-        "- 避免高频套话和空泛词，例如：仿佛、不由得、心中暗想、不禁感叹、毫无疑问、显而易见。",
-        "- 对话必须符合角色身份和当前目标，不能让角色替作者解释设定。",
-        "- 结尾至少留下一个选择、发现、危机、关系变化或下一章悬念。",
-        "【对话核心规则】",
-        "- 每句对白都要有目的：试探、遮掩、施压、交换信息、暴露关系或推动选择。",
-        "- 不同角色的词汇、句长和语气要能区分；不要让所有人用同一种作者腔说话。",
-        "【去AI味】",
-        "- 禁止用总结腔收束段落，不要写“这一切都说明”“命运的齿轮”“值得注意的是”等元评论。",
-        "- 少用装饰性比喻和排比，优先写具体动作、物件、声音、气味、温度和阻碍。",
-        "【文学技法】",
-        "- 可少量使用伏笔、误导、反差、延迟揭示和意象回收；技法必须服务当前冲突，不要炫技。",
-        "【快速写作流程】",
-        "1. 先在心里确认本章核心冲突、2-6 个 section 事件、出场角色状态变化和章末钩子。",
-        "2. 按 section 顺序写正文，允许自然合并短场景，但不要跳过大纲中的关键事件。",
-        "3. 写完后在内部自检：是否违背前文、是否漏掉角色状态变化、是否出现空泛套话；只把修正后的正文输出。",
-        "【写后归档契约】",
-        "- 对外部 Agent 或本机 CLI：保存章节必须通过司命工具入库，不要只写 chapters/*.md。",
-        "- 保存正文后生成标准候选，并调用 archive_chapter_after_write 归档章节摘要、大纲实际摘要、section 事件、角色状态和世界观变化。",
-        "【风格设定】",
-        "{style_context}",
-    ]
-    if include_api_free_rules:
-        sections.append(get_api_free_mode_rules())
-    return "\n\n".join(sections)
+    return render_prompt(
+        "assistant.chapter.quality.public",
+        writing_directives="遵守本轮项目上下文与作者要求。",
+        style_context="{style_context}",
+    )
 
 
 def get_internal_chapter_fast_system_prompt() -> str:
-    """Build the internal chapter_writer fast prompt without external-agent instructions."""
-    return _build_chapter_fast_system_prompt(include_api_free_rules=False)
+    """Render the internal fast contract from the compiled PromptSpec catalog."""
+    from ..modules.assistant.infrastructure.runtime import render_prompt
+
+    return render_prompt(
+        "assistant.chapter.fast",
+        writing_directives="遵守本轮项目上下文与作者要求。",
+        style_context="{style_context}",
+    )
 
 
 def get_public_chapter_fast_system_prompt() -> str:
-    """Build the public chapter_writing_fast pack system prompt.
+    """Render the public fast contract from the compiled PromptSpec catalog."""
+    from ..modules.assistant.infrastructure.runtime import render_prompt
 
-    Fast mode keeps the same database/tool contract as quality mode, but uses a
-    shorter direct-writing prompt so prompt editors can tune it independently.
-    """
-    return _build_chapter_fast_system_prompt(include_api_free_rules=True)
+    return render_prompt(
+        "assistant.chapter.fast.public",
+        writing_directives="遵守本轮项目上下文与作者要求。",
+        style_context="{style_context}",
+    )
 
 
 def get_naming_resolution_rules() -> str:

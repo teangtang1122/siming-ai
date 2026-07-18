@@ -1,53 +1,56 @@
 """Model config CRUD, global default model, and compatibility chat endpoints."""
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
 import webbrowser
 from pathlib import Path
-from urllib.parse import urlsplit
 
-import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from openai import (
-    APIConnectionError as OpenAIConnectionError,
-    APIError as OpenAIAPIError,
-    APITimeoutError as OpenAITimeoutError,
-    AuthenticationError as OpenAIAuthError,
-    AsyncOpenAI,
-)
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..ai.gateway import LLMGateway
-from ..ai.anthropic_adapter import AnthropicAdapter
+from app.architecture.uow import commit_session
+
 from ..ai.local_cli_adapter import (
-    LocalCLIAdapter,
     DEFAULT_CLI_ARGS,
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
-    DEFAULT_LOCAL_CLI_TIMEOUT,
-    LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     is_local_cli_provider,
     local_cli_model_options,
 )
 from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
 from ..core.crypto import decrypt, encrypt
 from ..core.exceptions import AppException, LLMError, NotFoundError, ValidationError
+from ..core.legacy_env import set_compatible_env
 from ..core.model_limits import limits_payload
 from ..core.response import ApiResponse
 from ..database.models import APIConfig
 from ..database.session import get_db
-from ..schemas.config import APIConfigCreate, ConnectionTestRequest, GlobalModelSetting, ModelListRequest
-from ..services.content_store import content_root as resolve_content_root, migrate_projects_to_content_root
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
+from ..modules.model_runtime.application.verification import (
+    ModelProbeRequest,
+    get_model_verification,
+)
+from ..schemas.config import (
+    APIConfigCreate,
+    ConnectionTestRequest,
+    GlobalModelSetting,
+    ModelListRequest,
+)
 from ..services.application_settings import (
     app_home as _app_home,
+)
+from ..services.application_settings import (
     load_launcher_settings as _load_launcher_settings,
+)
+from ..services.application_settings import (
     save_launcher_settings as _save_launcher_settings,
 )
+from ..services.content_store import content_root as resolve_content_root
+from ..services.content_store import migrate_projects_to_content_root
 from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
 from ..services.model_readiness import (
     READINESS_READY,
@@ -168,12 +171,11 @@ def _apply_content_root(db: Session, raw_path: str) -> dict:
         raise ValidationError("小说数据目录必须是空文件夹，或已经是 Siming 小说数据目录")
     settings = _load_launcher_settings()
     previous = current
-    os.environ["SIMING_CONTENT_ROOT"] = str(target)
-    os.environ["MOSHU_CONTENT_ROOT"] = str(target)
+    set_compatible_env("SIMING_CONTENT_ROOT", str(target))
     settings["content_root"] = str(target)
     _save_launcher_settings(settings)
     migration = migrate_projects_to_content_root(db, target, previous_root=previous, cleanup_old=True)
-    db.commit()
+    commit_session(db)
     return _content_root_payload({"migration": migration})
 
 
@@ -305,114 +307,6 @@ def _protocol_label(protocol: str) -> str:
     return "Responses API" if protocol == API_PROTOCOL_RESPONSES else "Chat Completions"
 
 
-def _protocol_candidates(protocol: str) -> list[str]:
-    if protocol == API_PROTOCOL_CHAT:
-        return [API_PROTOCOL_CHAT]
-    if protocol == API_PROTOCOL_RESPONSES:
-        return [API_PROTOCOL_RESPONSES]
-    return [API_PROTOCOL_CHAT, API_PROTOCOL_RESPONSES]
-
-
-def _base_url_candidates(base_url: str, *, allow_v1_fallback: bool) -> list[str]:
-    normalized = base_url.rstrip("/")
-    candidates = [normalized]
-    path = urlsplit(normalized).path.rstrip("/").lower()
-    if allow_v1_fallback and not path.endswith(("/v1", "/v1beta/openai")):
-        candidates.append(f"{normalized}/v1")
-    return candidates
-
-
-def _openai_error_status(error: BaseException) -> int | None:
-    status = getattr(error, "status_code", None)
-    try:
-        return int(status) if status is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _probe_error_detail(error: BaseException) -> str:
-    status = _openai_error_status(error)
-    prefix = f"HTTP {status}: " if status else ""
-    return f"{prefix}{str(error)}"[:600]
-
-
-async def _probe_openai_protocol(
-    *,
-    provider: str,
-    api_key: str,
-    base_url: str,
-    model: str,
-    requested_protocol: str,
-) -> dict:
-    attempts: list[str] = []
-    for candidate_base in _base_url_candidates(
-        base_url,
-        allow_v1_fallback=_is_custom_api_provider(provider),
-    ):
-        for protocol in _protocol_candidates(requested_protocol):
-            client = AsyncOpenAI(api_key=api_key, base_url=candidate_base)
-            try:
-                if protocol == API_PROTOCOL_RESPONSES:
-                    response = await asyncio.wait_for(
-                        client.responses.create(
-                            model=model,
-                            input="Reply with exactly: OK",
-                            max_output_tokens=128,
-                            store=False,
-                        ),
-                        timeout=30,
-                    )
-                    reply = str(getattr(response, "output_text", "") or "").strip()
-                else:
-                    response = await asyncio.wait_for(
-                        client.chat.completions.create(
-                            model=model,
-                            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
-                            max_tokens=32,
-                        ),
-                        timeout=30,
-                    )
-                    reply = str(response.choices[0].message.content or "").strip()
-                if not reply:
-                    raise LLMError(f"{_protocol_label(protocol)} returned an empty response")
-                return {
-                    "model": model,
-                    "reply": reply[:200],
-                    "api_protocol": protocol,
-                    "base_url": candidate_base,
-                }
-            except OpenAIAuthError as exc:
-                raise LLMError(f"{_provider_label(provider)} API key is invalid") from exc
-            except OpenAIConnectionError as exc:
-                raise LLMError(f"Cannot connect to {_provider_label(provider)}") from exc
-            except (OpenAITimeoutError, asyncio.TimeoutError) as exc:
-                raise LLMError(f"{_provider_label(provider)} request timed out") from exc
-            except OpenAIAPIError as exc:
-                status = _openai_error_status(exc)
-                if status in {401, 403}:
-                    raise LLMError(f"{_provider_label(provider)} API key is invalid") from exc
-                if status == 429:
-                    raise LLMError(f"{_provider_label(provider)} quota or rate limit reached: {exc}") from exc
-                attempts.append(
-                    f"{_protocol_label(protocol)} @ {candidate_base}: {_probe_error_detail(exc)}"
-                )
-            except LLMError as exc:
-                attempts.append(f"{_protocol_label(protocol)} @ {candidate_base}: {exc}")
-            finally:
-                await client.close()
-
-    attempted = "; ".join(attempts[-4:]) or "no compatible endpoint responded"
-    raise LLMError(
-        f"{_provider_label(provider)} could not complete a real model response. "
-        f"Checked the configured model '{model}' with the selected API protocol(s). "
-        f"Attempts: {attempted}. Check the Base URL, model name, and API protocol."
-    )
-
-
-def _is_anthropic_provider(provider: str) -> bool:
-    return provider == "anthropic"
-
-
 def _normalize_model_for_provider(provider: str, model: str, *, strict: bool = True) -> str:
     if is_local_cli_provider(provider):
         return model or DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
@@ -433,9 +327,9 @@ def _normalize_model_list_for_provider(provider: str, models: list[dict]) -> lis
     if is_local_cli_provider(provider):
         return models or local_cli_model_options(provider)
     if provider == "local_llama_cpp":
-        from ..services.local_runtime.model_jobs import ensure_catalog_rows
-        from ..database.session import SessionLocal
         from ..database.models import LocalModel
+        from ..database.session import SessionLocal
+        from ..services.local_runtime.model_jobs import ensure_catalog_rows
 
         ensure_catalog_rows()
         with SessionLocal() as db:
@@ -583,7 +477,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         existing.deconstruct_input_char_limit = payload.deconstruct_input_char_limit
         existing.deconstruct_item_char_limit = payload.deconstruct_item_char_limit
         mark_model_unverified(existing, source="manual_edit")
-        db.commit()
+        commit_session(db)
         db.refresh(existing)
         return ApiResponse.success(
             data=_config_payload_with_mcp_setup(existing, is_cli=is_cli),
@@ -606,7 +500,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         deconstruct_item_char_limit=payload.deconstruct_item_char_limit,
     )
     db.add(config)
-    db.commit()
+    commit_session(db)
     db.refresh(config)
     return ApiResponse.success(
         data=_config_payload_with_mcp_setup(config, is_cli=is_cli),
@@ -624,82 +518,35 @@ def get_model_config_detail(provider: str, db: Session = Depends(get_db)):
     return ApiResponse.success(data=_config_payload(config, include_masked_key=True))
 
 
-async def _list_openai_compatible_models(api_key: str, base_url: str, provider: str) -> list[dict]:
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-    try:
-        result = await asyncio.wait_for(client.models.list(), timeout=20)
-        seen: set[str] = set()
-        models: list[dict] = []
-        for m in result.data:
-            if m.id not in seen:
-                seen.add(m.id)
-                models.append({"id": m.id, "display_name": m.id})
-        models.sort(key=lambda x: x["id"])
-        return models[:100]
-    except OpenAIAuthError:
-        raise LLMError(f"{_provider_label(provider)} API key is invalid")
-    except OpenAIConnectionError:
-        raise LLMError(f"Cannot connect to {_provider_label(provider)}")
-    except OpenAIAPIError as exc:
-        raise LLMError(f"{_provider_label(provider)} API error: {exc}")
-    except asyncio.TimeoutError:
-        raise LLMError("Request timed out")
-
-
-async def _list_anthropic_models(api_key: str, base_url: str) -> list[dict]:
-    url = f"{base_url}/v1/models"
-    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
-    try:
-        async with httpx.AsyncClient(timeout=20) as http:
-            resp = await http.get(url, headers=headers)
-        if resp.status_code == 401:
-            raise LLMError("Anthropic API key is invalid")
-        resp.raise_for_status()
-        data = resp.json()
-        models = [
-            {"id": m["id"], "display_name": m.get("display_name", m["id"])}
-            for m in data.get("data", [])
-        ]
-        models.sort(key=lambda x: x["id"])
-        return models[:100]
-    except httpx.ConnectError:
-        raise LLMError("Cannot connect to Anthropic")
-    except httpx.TimeoutException:
-        raise LLMError("Request timed out")
-    except httpx.HTTPStatusError as exc:
-        raise LLMError(f"Anthropic API error: HTTP {exc.response.status_code}")
-    except LLMError:
-        raise
-
-
 @router.post("/config/models/list")
 async def list_provider_models(payload: ModelListRequest):
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
     warning = None
     manual_entry_required = False
-    if is_local_cli_provider(payload.provider):
-        models = local_cli_model_options(payload.provider, payload.cli_command, payload.cli_args)
-    elif payload.provider == "local_llama_cpp":
-        models = []
-    else:
-        if not payload.api_key:
-            raise ValidationError("API Key is required")
+    if not is_local_cli_provider(payload.provider) and payload.provider != "local_llama_cpp" and not payload.api_key:
+        raise ValidationError("API Key is required")
+    base_url = ""
+    if payload.provider != "local_llama_cpp" and not is_local_cli_provider(payload.provider):
         base_url = _resolve_base_url(payload.provider, payload.base_url_override)
-        if _is_anthropic_provider(payload.provider):
-            models = await _list_anthropic_models(payload.api_key, base_url)
+    request = ModelProbeRequest(
+        provider=payload.provider,
+        api_key=payload.api_key or "",
+        base_url=base_url,
+        cli_command=payload.cli_command,
+        cli_args=payload.cli_args,
+    )
+    try:
+        models = await get_model_verification().list_models(request)
+    except LLMError as exc:
+        if _is_custom_api_provider(payload.provider) and any(
+            marker in str(exc).lower() for marker in ("404", "405", "not found", "method not allowed")
+        ):
+            models = []
+            manual_entry_required = True
+            warning = "该接口未提供模型列表，请手动填写服务商支持的模型名；这不代表模型不可用"
         else:
-            try:
-                models = await _list_openai_compatible_models(payload.api_key, base_url, payload.provider)
-            except LLMError as exc:
-                if _is_custom_api_provider(payload.provider) and any(
-                    marker in str(exc).lower() for marker in ("404", "405", "not found", "method not allowed")
-                ):
-                    models = []
-                    manual_entry_required = True
-                    warning = "该接口未提供模型列表，请手动填写服务商支持的模型名；这不代表模型不可用"
-                else:
-                    raise
+            raise
 
     models = _normalize_model_list_for_provider(payload.provider, models)
     return ApiResponse.success(
@@ -716,108 +563,40 @@ async def list_provider_models(payload: ModelListRequest):
 async def test_connection(payload: ConnectionTestRequest):
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
-    if is_local_cli_provider(payload.provider):
-        command = payload.cli_command or _default_cli_command(payload.provider)
+    is_cli = is_local_cli_provider(payload.provider)
+    is_runtime = payload.provider == "local_llama_cpp"
+    command = payload.cli_command or _default_cli_command(payload.provider) if is_cli else None
+    if is_cli:
         _validate_cli_command(command)
-        test_timeout = payload.timeout_seconds or DEFAULT_LOCAL_CLI_TIMEOUT
-        adapter = LocalCLIAdapter(
-            api_key="",
-            base_url=payload.provider,
-            cli_command=command,
-            cli_args=payload.cli_args or _default_cli_args(payload.provider),
-        )
-        model = payload.model or DEFAULT_CLI_MODELS.get(payload.provider, f"{payload.provider}-default")
-        expected_token = "连接成功"
-        try:
-            result = await asyncio.wait_for(
-                adapter.chat_completion(
-                    messages=[
-                        {"role": "system", "content": "你是连接测试执行器。"},
-                        {"role": "user", "content": "只回复：连接成功"},
-                    ],
-                    model=model,
-                    temperature=0,
-                    max_tokens=32,
-                    extra_body={
-                        "local_cli_cwd": str(resolve_content_root()),
-                        "local_cli_timeout_seconds": test_timeout,
-                    },
-                ),
-                timeout=test_timeout + LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
-            )
-        except asyncio.TimeoutError as exc:
-            raise LLMError(
-                f"{_provider_label(payload.provider)} 在 {test_timeout} 秒内未响应"
-            ) from exc
-        reply = (result.get("content") or "").strip()
-        if not reply:
-            raise LLMError(f"{_provider_label(payload.provider)} returned an empty response")
-        if expected_token not in reply:
-            raise LLMError(
-                f"{_provider_label(payload.provider)} returned an unexpected test reply: {reply[:200]}"
-            )
-        return ApiResponse.success(
-            data={"model": model, "reply": reply[:200]},
-            message=f"{_provider_label(payload.provider)} real conversation succeeded",
-        )
-    if payload.provider == "local_llama_cpp":
-        model = payload.model
-        if not model:
-            raise ValidationError("请选择已安装的本地模型")
-        result = await LLMGateway.chat_completion(
-            messages=[{"role": "user", "content": "只回复：连接成功"}],
-            model=f"local_llama_cpp:{model}",
-            temperature=0,
-            max_tokens=32,
-            retry=0,
-            timeout=180,
-        )
-        return ApiResponse.success(
-            data={"model": model, "reply": (result.get("content") or "")[:200]},
-            message="本地模型连接成功",
-        )
-
-    if not payload.api_key:
+    if not is_cli and not is_runtime and not payload.api_key:
         raise ValidationError("API Key is required")
     model = (payload.model or "").strip()
     if not model:
         raise ValidationError("请先填写要实际调用的模型名")
-    base_url = _resolve_base_url(payload.provider, payload.base_url_override)
-
-    if _is_anthropic_provider(payload.provider):
-        adapter = AnthropicAdapter(api_key=payload.api_key, base_url=base_url)
-        result = await asyncio.wait_for(
-            adapter.chat_completion(
-                messages=[{"role": "user", "content": "Reply with exactly: OK"}],
-                model=model,
-                temperature=0,
-                max_tokens=32,
-            ),
-            timeout=30,
-        )
-        reply = str(result.get("content") or "").strip()
-        if not reply:
-            raise LLMError("Anthropic returned an empty response")
-        test_data = {
-            "model": model,
-            "reply": reply[:200],
-            "api_protocol": API_PROTOCOL_CHAT,
-            "base_url": base_url,
-        }
-    else:
-        test_data = await _probe_openai_protocol(
+    base_url = "" if is_cli or is_runtime else _resolve_base_url(payload.provider, payload.base_url_override)
+    test_data = await get_model_verification().verify(
+        ModelProbeRequest(
             provider=payload.provider,
-            api_key=payload.api_key,
-            base_url=base_url,
             model=model,
-            requested_protocol=payload.api_protocol,
+            api_key=payload.api_key or "",
+            base_url=base_url,
+            api_protocol=payload.api_protocol,
+            cli_command=command,
+            cli_args=payload.cli_args or (_default_cli_args(payload.provider) if is_cli else None),
+            timeout_seconds=payload.timeout_seconds,
+            content_root=resolve_content_root(),
+        )
+    )
+    if is_cli or is_runtime:
+        message = f"{_provider_label(payload.provider)} real conversation succeeded"
+    else:
+        message = (
+            f"{_provider_label(payload.provider)} real conversation succeeded "
+            f"({_protocol_label(test_data['api_protocol'])})"
         )
     return ApiResponse.success(
         data=test_data,
-        message=(
-            f"{_provider_label(payload.provider)} real conversation succeeded "
-            f"({_protocol_label(test_data['api_protocol'])})"
-        ),
+        message=message,
     )
 
 
@@ -832,7 +611,7 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
         raise NotFoundError(f"Provider config '{provider}' not found")
 
     mark_model_testing(config)
-    db.commit()
+    commit_session(db)
     db.refresh(config)
 
     is_cli = is_local_cli_provider(provider)
@@ -851,7 +630,7 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
     except Exception as exc:
         if not mark_model_failure(config, exc, source="manual_verify"):
             mark_model_unavailable(config, exc, source="manual_verify")
-        db.commit()
+        commit_session(db)
         raise
 
     test_data = test_result.data or {}
@@ -873,7 +652,7 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
     if became_global:
         db.query(APIConfig).update({"is_global_default": False})
         config.is_global_default = True
-    db.commit()
+    commit_session(db)
     db.refresh(config)
     return ApiResponse.success(
         data={
@@ -931,7 +710,7 @@ def delete_model_config(provider: str, db: Session = Depends(get_db)):
     if not config:
         raise NotFoundError(f"Provider config '{provider}' not found")
     db.delete(config)
-    db.commit()
+    commit_session(db)
     return ApiResponse.success(message=f"{provider} 配置已删除")
 
 
@@ -960,7 +739,7 @@ def set_global_model(payload: GlobalModelSetting, db: Session = Depends(get_db))
     config.is_global_default = True
     if payload.model:
         config.default_model = _normalize_model_for_provider(payload.provider, payload.model)
-    db.commit()
+    commit_session(db)
     db.refresh(config)
     return ApiResponse.success(
         data={

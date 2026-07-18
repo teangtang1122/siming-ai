@@ -13,6 +13,8 @@ from pathlib import Path
 
 import httpx
 
+from app.architecture.uow import commit_session
+
 from ...database.models import (
     LocalModel,
     LocalModelTaskSetting,
@@ -21,8 +23,7 @@ from ...database.models import (
 )
 from ...database.session import SessionLocal
 from .hardware import detect_hardware
-from .paths import moshu_home
-
+from .paths import siming_home
 
 LOCAL_SERVER_PARALLEL_SLOTS = 1
 
@@ -176,7 +177,7 @@ class LocalRuntimeManager:
                             row = db.query(LocalModel).filter(LocalModel.id == model.id).first()
                             if row:
                                 row.last_used_at = datetime.utcnow()
-                                db.commit()
+                                commit_session(db)
                         return self.base_url or ""
                     if self._process.poll() is not None:
                         last_error = (
@@ -231,7 +232,7 @@ class LocalRuntimeManager:
                         runtime.port = None
                         runtime.pid = None
                         runtime.active_model_id = None
-                        db.commit()
+                        commit_session(db)
             except Exception:
                 pass
 
@@ -274,7 +275,7 @@ class LocalRuntimeManager:
     @staticmethod
     def _launch_log_paths(model_key: str, attempt: int) -> tuple[Path, Path]:
         safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", model_key)[:80] or "model"
-        log_dir = moshu_home() / "logs" / "local-runtime"
+        log_dir = siming_home() / "logs" / "local-runtime"
         log_dir.mkdir(parents=True, exist_ok=True)
         stem = f"llama-server-{safe_key}-attempt-{attempt + 1}"
         return log_dir / f"{stem}.out.log", log_dir / f"{stem}.err.log"
@@ -402,7 +403,7 @@ class LocalRuntimeManager:
         runtime.last_error = None
         with SessionLocal() as db:
             db.merge(runtime)
-            db.commit()
+            commit_session(db)
 
     @staticmethod
     def _mark_runtime_error(message: str) -> None:
@@ -415,7 +416,7 @@ class LocalRuntimeManager:
                 runtime.last_error = message
                 runtime.port = None
                 runtime.pid = None
-                db.commit()
+                commit_session(db)
 
     def _mark_runtime_running(self) -> None:
         with SessionLocal() as db:
@@ -427,7 +428,7 @@ class LocalRuntimeManager:
                 runtime.last_health_at = datetime.utcnow()
                 runtime.port = self._port
                 runtime.pid = self._process.pid if self._process else None
-                db.commit()
+                commit_session(db)
 
 
 _MANAGER = LocalRuntimeManager()

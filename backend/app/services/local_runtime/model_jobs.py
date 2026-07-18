@@ -1,6 +1,8 @@
 """Background model/runtime installation jobs."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import threading
 import hashlib
 from datetime import datetime
@@ -73,7 +75,7 @@ def ensure_catalog_rows() -> None:
             model_context = context_by_model.get(setting.model_key)
             if model_context and (not setting.context_length or setting.context_length < model_context):
                 setting.context_length = model_context
-        db.commit()
+        commit_session(db)
 
 
 def create_model_download(model_key: str) -> str:
@@ -118,7 +120,7 @@ def create_model_download(model_key: str) -> str:
             progress_mode="indeterminate",
         )
         task.operation_id = operation.id
-        db.commit()
+        commit_session(db)
         task_id = task.id
     _start_thread(task_id, _run_model_download, task_id, model_key)
     return task_id
@@ -162,7 +164,7 @@ def create_runtime_download() -> str:
             progress_mode="indeterminate",
         )
         task.operation_id = operation.id
-        db.commit()
+        commit_session(db)
         task_id = task.id
     _start_thread(task_id, _run_runtime_download, task_id)
     return task_id
@@ -195,7 +197,7 @@ def resume_incomplete_downloads() -> None:
                 progress_total=int(task.total_bytes) if task.total_bytes else None,
             )
             task.operation_id = operation.id
-        db.commit()
+        commit_session(db)
         pending = [(task.id, task.kind, task.target_key) for task in tasks]
     for task_id, kind, target_key in pending:
         if kind == "runtime":
@@ -255,7 +257,7 @@ def _set_task(task_id: str, **values) -> None:
                     failure_class="download_error" if lifecycle == "failed" else None,
                     next_action="返回模型中心检查下载源和磁盘空间" if lifecycle == "failed" else None,
                 )
-        db.commit()
+        commit_session(db)
 
 
 def _run_model_download(task_id: str, model_key: str) -> None:
@@ -293,7 +295,7 @@ def _run_model_download(task_id: str, model_key: str) -> None:
                     max_output_tokens=16384,
                     is_global_default=db.query(APIConfig).count() == 0,
                 ))
-            db.commit()
+            commit_session(db)
         _set_task(
             task_id,
             status="completed",
@@ -322,7 +324,7 @@ def _run_runtime_download(task_id: str) -> None:
             runtime.executable_path = result["executable_path"]
             runtime.status = "stopped"
             runtime.last_error = None
-            db.commit()
+            commit_session(db)
         _set_task(task_id, status="completed", completed_at=datetime.utcnow())
     except Exception as exc:
         _set_task(task_id, status="failed", error_message=str(exc))

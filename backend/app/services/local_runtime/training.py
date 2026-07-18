@@ -1,6 +1,8 @@
 """Persistent NVIDIA QLoRA training jobs."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 import os
 import subprocess
@@ -135,7 +137,7 @@ def create_training_job(
             config_json=config,
         )
         db.add(job)
-        db.commit()
+        commit_session(db)
         job_id = job.id
     start_training_job(job_id)
     return job_id
@@ -164,7 +166,7 @@ def control_training_job(job_id: str, action: str) -> None:
                 raise ValueError("训练任务不存在")
             job.status = "queued"
             job.error_message = None
-            db.commit()
+            commit_session(db)
         start_training_job(job_id)
         return
     control.parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +187,7 @@ def resume_incomplete_training_jobs() -> None:
                 _terminate_process_tree(job.pid)
             job.status = "queued"
             job.pid = None
-        db.commit()
+        commit_session(db)
     for job_id in ids:
         start_training_job(job_id)
 
@@ -210,7 +212,7 @@ def _run_job(job_id: str) -> None:
             model_id = TRAINING_MODEL_IDS[job.base_model_key]
             dataset_path = dataset.file_path
             job.status = "preparing"
-            db.commit()
+            commit_session(db)
 
         python = ensure_training_environment(lambda message: _log(job_id, message))
         job_dir = training_root() / "jobs" / job_id
@@ -236,7 +238,7 @@ def _run_job(job_id: str) -> None:
             job = db.query(TrainingJob).filter(TrainingJob.id == job_id).first()
             job.status = "running"
             job.log_path = str(job_dir / "training.log")
-            db.commit()
+            commit_session(db)
 
         kwargs = {
             "stdout": subprocess.PIPE,
@@ -252,7 +254,7 @@ def _run_job(job_id: str) -> None:
         with SessionLocal() as db:
             job = db.query(TrainingJob).filter(TrainingJob.id == job_id).first()
             job.pid = process.pid
-            db.commit()
+            commit_session(db)
         for line in process.stdout or []:
             text = line.rstrip()
             _log(job_id, text)
@@ -294,7 +296,7 @@ def _handle_event(job_id: str, text: str) -> None:
             job.progress = 0.98
             job.output_path = adapter_dir
             job.metrics_json = event.get("metrics") or {}
-        db.commit()
+        commit_session(db)
 
 
 def _set_status(job_id: str, status: str, error: str | None = None) -> None:
@@ -306,7 +308,7 @@ def _set_status(job_id: str, status: str, error: str | None = None) -> None:
             job.pid = None
             if status in {"failed", "cancelled"}:
                 job.completed_at = datetime.utcnow()
-            db.commit()
+            commit_session(db)
 
 
 def _latest_checkpoint(output: Path) -> str | None:
@@ -378,4 +380,4 @@ def _convert_and_register_adapter(job_id: str, python: Path, model_id: str, adap
         job.output_path = str(output)
         job.completed_at = datetime.utcnow()
         job.pid = None
-        db.commit()
+        commit_session(db)

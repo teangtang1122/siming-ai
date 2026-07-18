@@ -1,6 +1,8 @@
 """Durable execution log for workspace assistant runs."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import json
 from datetime import datetime
 from typing import Any
@@ -69,7 +71,7 @@ def create_assistant_run(
         progress_mode="indeterminate",
     )
     run.operation_id = operation.id
-    db.commit()
+    commit_session(db)
     db.refresh(run)
     return run
 
@@ -106,7 +108,7 @@ def start_run_step(
         updated_at=now,
     )
     db.add(step)
-    db.commit()
+    commit_session(db)
     db.refresh(step)
     record_operation_signal(
         run.operation_id,
@@ -135,7 +137,7 @@ def finish_run_step(
     step.error = error
     step.completed_at = now
     step.updated_at = now
-    db.commit()
+    commit_session(db)
     run = step.run
     if run and run.operation_id:
         record_operation_signal(
@@ -168,7 +170,7 @@ def mark_assistant_run(
     run.updated_at = now
     if status in {"completed", "error", "aborted", "cancelled"}:
         run.completed_at = now
-    db.commit()
+    commit_session(db)
     if status == "completed":
         normalized = outcome or ("completed_with_reply" if str(final_reply or "").strip() else "empty_response")
         messages = {

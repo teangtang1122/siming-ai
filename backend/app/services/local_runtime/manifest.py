@@ -5,17 +5,15 @@ it after signature verification is added by the release pipeline.
 """
 from __future__ import annotations
 
-from copy import deepcopy
 import base64
 import json
-import os
-from pathlib import Path
+from copy import deepcopy
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .paths import moshu_home
-
+from ...core.legacy_env import get_compatible_env
+from .paths import siming_home
 
 MODEL_CATALOG = [
     {
@@ -81,12 +79,11 @@ def model_spec(model_key: str) -> dict | None:
 
 def _load_verified_remote_manifest() -> dict | None:
     """Load an optional signed manifest without weakening the offline catalog."""
-    url = (os.environ.get("SIMING_MODEL_MANIFEST_URL") or os.environ.get("MOSHU_MODEL_MANIFEST_URL", "")).strip()
+    url = get_compatible_env("SIMING_MODEL_MANIFEST_URL").strip()
     public_key_b64 = (
-        os.environ.get("SIMING_MODEL_MANIFEST_PUBLIC_KEY")
-        or os.environ.get("MOSHU_MODEL_MANIFEST_PUBLIC_KEY", "")
+        get_compatible_env("SIMING_MODEL_MANIFEST_PUBLIC_KEY")
     ).strip()
-    cache = moshu_home() / "model-manifest.json"
+    cache = siming_home() / "model-manifest.json"
     if url and public_key_b64:
         try:
             response = httpx.get(url, timeout=10, follow_redirects=True)

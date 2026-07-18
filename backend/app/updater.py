@@ -17,8 +17,8 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .core.legacy_env import compatible_env_enabled, get_compatible_env
 from .version import APP_VERSION, DEFAULT_UPDATE_REPO
-
 
 USER_AGENT = f"Siming/{APP_VERSION}"
 EXE_NAME = "Siming.exe"
@@ -91,8 +91,7 @@ def default_update_channel(version: str = APP_VERSION) -> str:
 def resolve_update_channel(channel: str | None = None) -> str:
     selected = str(
         channel
-        or os.environ.get("SIMING_UPDATE_CHANNEL")
-        or os.environ.get("MOSHU_UPDATE_CHANNEL")
+        or get_compatible_env("SIMING_UPDATE_CHANNEL")
         or ""
     ).strip().lower()
     return selected if selected in UPDATE_CHANNELS else default_update_channel()
@@ -100,10 +99,7 @@ def resolve_update_channel(channel: str | None = None) -> str:
 
 def _github_token() -> str | None:
     return (
-        os.environ.get("SIMING_GITHUB_TOKEN")
-        or os.environ.get("MOSHU_GITHUB_TOKEN")
-        or os.environ.get("NOVEL_AGENT_GITHUB_TOKEN")
-        or os.environ.get("GITHUB_TOKEN")
+        get_compatible_env("SIMING_GITHUB_TOKEN", "GITHUB_TOKEN")
     )
 
 
@@ -226,23 +222,13 @@ def _manifest_from_github_release(
 
 def find_latest_update(channel: str | None = None) -> dict[str, Any] | None:
     """Return metadata only.  This function never downloads an update."""
-    if (
-        os.environ.get("SIMING_DISABLE_UPDATE") == "1"
-        or os.environ.get("MOSHU_DISABLE_UPDATE") == "1"
-        or os.environ.get("NOVEL_AGENT_DISABLE_UPDATE") == "1"
-    ):
+    if compatible_env_enabled("SIMING_DISABLE_UPDATE"):
         return None
     manifest_url = (
-        os.environ.get("SIMING_UPDATE_MANIFEST_URL")
-        or os.environ.get("MOSHU_UPDATE_MANIFEST_URL")
-        or os.environ.get("NOVEL_AGENT_UPDATE_MANIFEST_URL")
-        or ""
+        get_compatible_env("SIMING_UPDATE_MANIFEST_URL")
     ).strip()
     repo = (
-        os.environ.get("SIMING_UPDATE_REPO")
-        or os.environ.get("MOSHU_UPDATE_REPO")
-        or os.environ.get("NOVEL_AGENT_UPDATE_REPO")
-        or DEFAULT_UPDATE_REPO
+        get_compatible_env("SIMING_UPDATE_REPO", default=DEFAULT_UPDATE_REPO)
     ).strip()
     selected_channel = resolve_update_channel(channel)
     try:

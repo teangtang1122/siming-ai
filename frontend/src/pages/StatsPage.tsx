@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   Card,
   Col,
@@ -19,84 +19,36 @@ import {
   TrophyOutlined,
   FileTextOutlined,
 } from '@ant-design/icons'
-import { apiClient } from '../api/client'
+import {
+  type DailyStats,
+  useStatsHistory,
+  useTodayStats,
+  useUpdateDailyGoal,
+} from '../features/statistics'
 
 const { Title, Text } = Typography
-
-interface ApiResponse<T> {
-  code: number
-  message: string
-  data: T
-}
-
-interface TodayStats {
-  date: string
-  total_words: number
-  daily_goal: number
-  progress_percent: number
-  chapters_written: number
-}
-
-interface DailyItem {
-  date: string
-  total_words: number
-  daily_goal: number
-}
-
-interface HistoryStats {
-  items: DailyItem[]
-  total_days: number
-  total_words: number
-  average_words_per_day: number
-}
 
 interface StatsPageProps {
   projectId: string
 }
 
 function StatsPage({ projectId }: StatsPageProps) {
-  const [today, setToday] = useState<TodayStats | null>(null)
-  const [history, setHistory] = useState<HistoryStats | null>(null)
   const [historyDays, setHistoryDays] = useState(7)
-  const [loading, setLoading] = useState(false)
   const [goalEditing, setGoalEditing] = useState(false)
   const [goalValue, setGoalValue] = useState(6000)
-
-  const fetchToday = useCallback(async () => {
-    try {
-      const res = await apiClient.get<ApiResponse<TodayStats>>(`/projects/${projectId}/stats/today`)
-      setToday(res.data.data)
-      setGoalValue(res.data.data.daily_goal)
-    } catch (err: any) {
-      message.error(err.message || '获取今日统计失败')
-    }
-  }, [projectId])
-
-  const fetchHistory = useCallback(async (days: number) => {
-    setLoading(true)
-    try {
-      const res = await apiClient.get<ApiResponse<HistoryStats>>(`/projects/${projectId}/stats/history`, { days })
-      setHistory(res.data.data)
-    } catch (err: any) {
-      message.error(err.message || '获取历史统计失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [projectId])
-
-  useEffect(() => {
-    fetchToday()
-    fetchHistory(historyDays)
-  }, [fetchHistory, fetchToday, historyDays])
+  const todayQuery = useTodayStats(projectId)
+  const historyQuery = useStatsHistory(projectId, historyDays)
+  const goalMutation = useUpdateDailyGoal(projectId)
+  const today = todayQuery.data
+  const history = historyQuery.data
 
   const updateGoal = async () => {
     try {
-      await apiClient.put(`/projects/${projectId}/stats/goal`, { daily_word_goal: goalValue })
+      await goalMutation.mutateAsync(goalValue)
       message.success('每日目标已更新')
       setGoalEditing(false)
-      fetchToday()
-    } catch (err: any) {
-      message.error(err.message || '更新目标失败')
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '更新目标失败')
     }
   }
 
@@ -111,7 +63,7 @@ function StatsPage({ projectId }: StatsPageProps) {
       title: '字数',
       dataIndex: 'total_words',
       key: 'total_words',
-      render: (v: number, record: DailyItem) => (
+      render: (v: number, record: DailyStats) => (
         <Space>
           <Text strong>{v.toLocaleString()}</Text>
           <Text type="secondary">/ {record.daily_goal.toLocaleString()}</Text>
@@ -121,7 +73,7 @@ function StatsPage({ projectId }: StatsPageProps) {
     {
       title: '完成度',
       key: 'progress',
-      render: (_: unknown, record: DailyItem) => {
+      render: (_: unknown, record: DailyStats) => {
         const pct = record.daily_goal > 0 ? Math.min((record.total_words / record.daily_goal) * 100, 100) : 0
         return <Progress percent={Math.round(pct)} size="small" status={pct >= 100 ? 'success' : 'active'} style={{ width: 160 }} />
       },
@@ -206,7 +158,14 @@ function StatsPage({ projectId }: StatsPageProps) {
                 <Button size="small" onClick={() => setGoalEditing(false)}>取消</Button>
               </>
             ) : (
-              <Button icon={<EditOutlined />} size="small" onClick={() => setGoalEditing(true)}>修改</Button>
+              <Button
+                icon={<EditOutlined />}
+                size="small"
+                onClick={() => {
+                  setGoalValue(today?.daily_goal || 6000)
+                  setGoalEditing(true)
+                }}
+              >修改</Button>
             )}
           </Space>
         }
@@ -216,7 +175,7 @@ function StatsPage({ projectId }: StatsPageProps) {
       <Card
         title="历史统计"
         extra={
-          <Select value={historyDays} onChange={(v) => { setHistoryDays(v); fetchHistory(v) }} style={{ width: 140 }}>
+          <Select value={historyDays} onChange={setHistoryDays} style={{ width: 140 }}>
             <Select.Option value={7}>最近 7 天</Select.Option>
             <Select.Option value={30}>最近 30 天</Select.Option>
             <Select.Option value={90}>最近 90 天</Select.Option>
@@ -240,7 +199,7 @@ function StatsPage({ projectId }: StatsPageProps) {
           dataSource={history?.items || []}
           columns={historyColumns}
           rowKey="date"
-          loading={loading}
+          loading={historyQuery.isLoading || historyQuery.isFetching}
           pagination={false}
           size="small"
         />

@@ -6,8 +6,8 @@ import json
 
 from sqlalchemy.orm import Session
 
-from ...ai.gateway import LLMGateway
 from ...database.models import ScheduledTask
+from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 from . import executor as workspace_executor
 from .registry import registry
 

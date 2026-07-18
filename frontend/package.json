@@ -1,7 +1,7 @@
 {
   "name": "siming-frontend",
   "private": true,
-  "version": "3.0.0-beta.2",
+  "version": "3.0.0-rc.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "lint": "eslint . --ext ts,tsx",
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "playwright test",
-    "architecture": "depcruise --config .dependency-cruiser.cjs src",
+    "architecture": "depcruise --config .dependency-cruiser.cjs src && node scripts/check-feature-boundaries.mjs",
     "duplicates": "jscpd src ../backend/app --config ../.jscpd.json",
     "api:generate": "node scripts/openapi-types.mjs",
     "api:check": "node scripts/openapi-types.mjs --check",

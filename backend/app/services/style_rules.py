@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from ..ai.gateway import LLMGateway
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..database.models import Project
 from ..prompts.prompt_source import get_forbidden_patterns
 from ..prompts.style_prompts import build_style_repair_messages

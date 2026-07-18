@@ -5,7 +5,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from ..ai.gateway import LLMGateway
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..core.db_helpers import get_project_or_404
 from ..core.json_repair import parse_json_object
 from ..database.models import Character, OutlineNode, OutlineNodeCharacter

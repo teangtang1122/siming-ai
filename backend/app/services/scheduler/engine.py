@@ -1,6 +1,8 @@
 """Background scheduler engine for timed tasks."""
 from __future__ import annotations
 
+from app.architecture.uow import commit_session
+
 import logging
 import threading
 import time
@@ -55,7 +57,7 @@ def _execute_task(task_id: str) -> None:
 
         task.last_run_at = datetime.utcnow()
         task.last_run_status = "running"
-        db.commit()
+        commit_session(db)
 
         try:
             result = _run_task_prompt(db, task)
@@ -69,7 +71,7 @@ def _execute_task(task_id: str) -> None:
         # Compute next run time
         task.next_run_at = _compute_next_run(task)
         task.updated_at = datetime.utcnow()
-        db.commit()
+        commit_session(db)
     finally:
         db.close()
         with _active_lock:

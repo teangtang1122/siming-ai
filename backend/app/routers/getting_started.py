@@ -9,25 +9,20 @@ from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.orm import Session
 
 from ..ai.local_cli_adapter import DEFAULT_CLI_ARGS
-from ..ai.local_runtime_policy import local_runtime_disabled
-from ..core.crypto import encrypt
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import APIConfig
 from ..database.session import get_db
-from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
-from ..services.model_readiness import (
-    READINESS_READY,
-    is_model_config_usable,
-    mark_model_unverified,
+from ..modules.model_runtime.application.getting_started import (
+    get_getting_started_configuration,
 )
+from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
 from ..services.opencode_onboarding import (
     OPENCODE_INSTALL_DOCS_URL,
     OPENCODE_MODELS_DOCS_URL,
     OPENCODE_RELEASES_URL,
-    get_opencode_install_job,
     get_latest_opencode_activation_job,
     get_opencode_activation_job,
+    get_opencode_install_job,
     inspect_opencode,
     is_free_opencode_model,
     managed_opencode_command,
@@ -38,7 +33,6 @@ from ..services.opencode_onboarding import (
     start_opencode_install,
     submit_opencode_auth_credential,
 )
-
 
 router = APIRouter(tags=["getting-started"])
 
@@ -120,22 +114,10 @@ class GettingStartedStatus(BaseModel):
 
 
 def _getting_started_summary(db: Session) -> dict:
-    opencode_config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
-    global_config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
-    usable_configs = [
-        config
-        for config in db.query(APIConfig).filter(APIConfig.readiness_status == READINESS_READY).all()
-        if not local_runtime_disabled(config.provider)
-    ]
-    detected_configs = db.query(APIConfig).filter(APIConfig.readiness_status == "detected").all()
-    usable_global = (
-        global_config
-        if is_model_config_usable(global_config) and not local_runtime_disabled(global_config.provider)
-        else None
-    )
+    state = get_getting_started_configuration().state(db)
     return {
-        "installed": bool(opencode_config and opencode_config.cli_command),
-        "command": opencode_config.cli_command if opencode_config else None,
+        "installed": bool(state.opencode_command),
+        "command": state.opencode_command,
         "version": None,
         "managed_by_siming": False,
         "models": [],
@@ -144,18 +126,18 @@ def _getting_started_summary(db: Session) -> dict:
         "recommended_model": None,
         "platform_supported": True,
         "install_location": str(managed_opencode_command()),
-        "configured": bool(opencode_config),
-        "configured_model": opencode_config.default_model if opencode_config else None,
-        "is_global_default": bool(opencode_config and opencode_config.is_global_default and is_model_config_usable(opencode_config)),
-        "has_any_model": bool(db.query(APIConfig.id).first()),
-        "has_detected_models": bool(detected_configs),
-        "has_usable_models": bool(usable_configs),
-        "needs_setup": usable_global is None,
-        "recommended_action": "start_writing" if usable_global else "verify_detected" if detected_configs else "activate_opencode",
+        "configured": state.configured,
+        "configured_model": state.configured_model,
+        "is_global_default": state.opencode_is_global,
+        "has_any_model": state.has_any_model,
+        "has_detected_models": state.has_detected_models,
+        "has_usable_models": state.has_usable_models,
+        "needs_setup": state.global_provider is None,
+        "recommended_action": "start_writing" if state.global_provider else "verify_detected" if state.has_detected_models else "activate_opencode",
         "global_model": {
-            "provider": usable_global.provider,
-            "model": usable_global.default_model,
-        } if usable_global else None,
+            "provider": state.global_provider,
+            "model": state.global_model,
+        } if state.global_provider else None,
         "activation_job": get_latest_opencode_activation_job(db),
         "official_links": {
             "releases": OPENCODE_RELEASES_URL,
@@ -166,18 +148,18 @@ def _getting_started_summary(db: Session) -> dict:
 
 
 def _getting_started_status(db: Session, *, refresh: bool = False) -> dict:
-    opencode_config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
+    state = get_getting_started_configuration().state(db)
     inspected = inspect_opencode(
-        opencode_config.cli_command if opencode_config else None,
+        state.opencode_command,
         refresh=refresh,
     )
     summary = _getting_started_summary(db)
     return {
         **summary,
         **inspected,
-        "configured": bool(opencode_config),
-        "configured_model": opencode_config.default_model if opencode_config else None,
-        "is_global_default": bool(opencode_config and opencode_config.is_global_default and is_model_config_usable(opencode_config)),
+        "configured": state.configured,
+        "configured_model": state.configured_model,
+        "is_global_default": state.opencode_is_global,
     }
 
 
@@ -274,35 +256,18 @@ def configure_opencode(payload: OpenCodeConfigureRequest, db: Session = Depends(
     if inspected["model_source"] == "cli" and model not in available:
         raise ValidationError("这个免费模型当前没有出现在 OpenCode 的模型列表中，请重新检测")
 
-    config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
-    if config:
-        config.api_key_encrypted = encrypt("__local_cli__")
-        config.default_model = model
-        config.provider_type = "local_cli"
-        config.cli_command = command
-        config.cli_args = json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False)
-        mark_model_unverified(config, source="getting_started_configure")
-    else:
-        config = APIConfig(
-            provider="opencode_cli",
-            api_key_encrypted=encrypt("__local_cli__"),
-            default_model=model,
-            is_global_default=False,
-            provider_type="local_cli",
-            cli_command=command,
-            cli_args=json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False),
-            readiness_status="unverified",
-            readiness_json='{"source":"getting_started_configure"}',
-        )
-        db.add(config)
-    db.commit()
-    db.refresh(config)
+    config = get_getting_started_configuration().configure_opencode(
+        db,
+        command=command,
+        model=model,
+        cli_args=json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False),
+    )
     mcp_setup = auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
     return ApiResponse.success(
         data={
             "provider": config.provider,
-            "model": config.default_model,
-            "command": config.cli_command,
+            "model": config.model,
+            "command": config.command,
             "cli_args": config.cli_args,
             "mcp_auto_setup": mcp_setup,
             "status": _getting_started_status(db),

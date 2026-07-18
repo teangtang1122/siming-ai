@@ -21,7 +21,7 @@
 }
 
 .project-workspace-brand > span {
-  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif;
+  font-family: 'Source Han Serif SC', 'Songti SC', STSong, SimSun, serif;
   font-size: 14px;
   font-weight: 600;
   overflow: hidden;
@@ -73,7 +73,7 @@
 }
 
 .project-workspace-title {
-  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif;
+  font-family: 'Source Han Serif SC', 'Songti SC', STSong, SimSun, serif;
   font-weight: 600;
   max-width: 240px;
   overflow: hidden;

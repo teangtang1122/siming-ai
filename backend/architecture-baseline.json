@@ -1,8 +1,10 @@
 {
-  "legacy_direct_commit_calls": 266,
+  "legacy_direct_commit_calls": 0,
+  "legacy_router_db_query_calls": 91,
+  "legacy_router_orm_imports": 10,
+  "legacy_router_model_adapter_imports": 0,
   "oversized_modules": {
     "backend/app/ai/local_cli_adapter.py": 1510,
-    "backend/app/database/models.py": 1876,
     "backend/app/routers/ai_writer.py": 2307,
     "backend/app/routers/config.py": 1069,
     "backend/app/services/context_orchestrator.py": 2039,
@@ -11,7 +13,6 @@
     "backend/app/services/agent/bridge.py": 1179,
     "backend/app/services/cataloging/local_cli_agent.py": 1222,
     "backend/app/services/cataloging/orchestrator.py": 1205,
-    "backend/app/services/workspace/registry.py": 2930,
     "backend/app/services/workspace/tools/external_cataloging.py": 1438,
     "backend/app/services/workspace/tools/novel_creation.py": 5728
   },
@@ -38,8 +39,6 @@
     "backend/app/services/deconstruct/orchestrator.py:stream_rerun_failed_chunks": 255,
     "backend/app/services/deconstruct/orchestrator.py:run_deconstruct_job": 247,
     "backend/app/services/deconstruct/pipeline.py:compact_map_result_for_reduce": 175,
-    "backend/app/services/workspace/registry.py:_register_all": 2513,
-    "backend/app/services/workspace/registry.py:_classify_all": 169,
     "backend/app/services/workspace/tools/analysis.py:detect_character_changes": 185,
     "backend/app/services/workspace/tools/chapter_writer.py:chapter_writer": 275,
     "backend/app/services/workspace/tools/context_preview.py:preview_writing_context": 165,

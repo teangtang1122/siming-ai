@@ -14,11 +14,12 @@ import threading
 import time
 import uuid
 import zipfile
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any
 from urllib.request import Request, urlopen
 
 from app.ai.local_cli_adapter import (
@@ -30,8 +31,13 @@ from app.ai.local_cli_adapter import (
     discover_local_cli_models,
     hidden_subprocess_kwargs,
 )
-from app.services.model_readiness import mark_model_failure, mark_model_ready, mark_model_unavailable
-
+from app.architecture.uow import commit_session
+from app.services.application_settings import app_home as _app_home
+from app.services.model_readiness import (
+    mark_model_failure,
+    mark_model_ready,
+    mark_model_unavailable,
+)
 
 OPENCODE_RELEASE_API = "https://api.github.com/repos/anomalyco/opencode/releases/latest"
 OPENCODE_RELEASES_URL = "https://github.com/anomalyco/opencode/releases/latest"
@@ -64,16 +70,6 @@ _AUTH_CREDENTIAL_PROMPT_RE = re.compile(
     r"(token|code|credential).{0,40}(paste|enter|input|provide)|"
     r"请输入.{0,20}(令牌|验证码|凭据)",
 )
-
-
-def _app_home() -> Path:
-    configured = os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or os.environ.get("NOVEL_AGENT_HOME")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        return (Path(local_app_data) / "Siming").resolve()
-    return (Path.home() / "Siming").resolve()
 
 
 def managed_opencode_root() -> Path:
@@ -259,7 +255,7 @@ def _set_job(job_id: str, **changes: Any) -> dict[str, Any]:
     with _jobs_lock:
         job = _jobs[job_id]
         job.update(changes)
-        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+        job["updated_at"] = datetime.now(UTC).isoformat()
         return dict(job)
 
 
@@ -406,7 +402,7 @@ def _install_worker(job_id: str) -> None:
             "sha256": expected_sha256,
             "source": download_url,
             "command": str(managed_opencode_command()),
-            "installed_at": datetime.now(timezone.utc).isoformat(),
+            "installed_at": datetime.now(UTC).isoformat(),
         }
         metadata_path = root / "install.json"
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -441,7 +437,7 @@ def start_opencode_install() -> dict[str, Any]:
         if running:
             return running
         job_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         _jobs[job_id] = {
             "id": job_id,
             "status": "pending",
@@ -510,7 +506,7 @@ def _update_activation(job_id: str, **changes: Any) -> dict[str, Any]:
         old_percent = int(job.percent or 0)
         for key, value in changes.items():
             setattr(job, key, value)
-        job.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        job.updated_at = datetime.now(UTC).replace(tzinfo=None)
         if job.operation_id:
             from app.database.models import OperationRun
             from app.services.operation_runtime import update_operation
@@ -554,7 +550,7 @@ def _update_activation(job_id: str, **changes: Any) -> dict[str, Any]:
                     next_action=job.next_action,
                     checkpoint=meaningful and int(job.percent or 0) > old_percent,
                 )
-        db.commit()
+        commit_session(db)
         db.refresh(job)
         return _activation_payload(job)
 
@@ -812,7 +808,7 @@ def _save_activation_readiness_failure(message: str, *, unavailable_fallback: bo
                     mark_model_unavailable(config, message, source="opencode_activation")
                     changed = True
                 if changed:
-                    db.commit()
+                    commit_session(db)
     except Exception:
         return
 
@@ -870,7 +866,7 @@ def _save_activated_config(command: str, model: str) -> None:
         mark_model_ready(config, source="opencode_activation")
         db.query(APIConfig).update({"is_global_default": False})
         config.is_global_default = True
-        db.commit()
+        commit_session(db)
 
 
 def _install_for_activation(job_id: str) -> tuple[str, str, str]:
@@ -926,7 +922,7 @@ def _install_for_activation(job_id: str) -> tuple[str, str, str]:
                     "sha256": expected_sha256,
                     "source": source_url,
                     "command": str(command),
-                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                    "installed_at": datetime.now(UTC).isoformat(),
                 }
                 (root / "install.json").write_text(
                     json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1006,7 +1002,9 @@ def _activation_worker(job_id: str) -> None:
                 asyncio.run(_test_opencode_model(command, model))
                 _save_activated_config(command, model)
                 try:
-                    from app.services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
+                    from app.services.external_agent.mcp_auto_config import (
+                        auto_configure_mcp_for_provider,
+                    )
                     auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
                 except Exception:
                     pass
@@ -1017,7 +1015,7 @@ def _activation_worker(job_id: str) -> None:
                     percent=100,
                     message="免费写作能力已经准备好",
                     selected_model=model,
-                    completed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    completed_at=datetime.now(UTC).replace(tzinfo=None),
                 )
                 return
             except Exception as exc:
@@ -1085,47 +1083,46 @@ def start_opencode_activation(*, preferred_model: str | None = None) -> dict[str
 
     if os.name != "nt":
         raise RuntimeError("当前自动安装仅支持 Windows")
-    with _activation_start_lock:
-        with SessionLocal() as db:
-            active = (
-                db.query(OpenCodeActivationJob)
-                .filter(OpenCodeActivationJob.status.in_(["pending", "running", "auth_required"]))
-                .order_by(OpenCodeActivationJob.created_at.desc())
-                .first()
-            )
-            if active:
-                return _activation_payload(active)
-            job = OpenCodeActivationJob(
-                status="pending",
-                phase="checking",
-                percent=0,
-                message="免费体验任务已创建",
-                preferred_model=preferred_model,
-            )
-            db.add(job)
-            db.flush()
-            from app.services.operation_runtime import ensure_operation
+    with _activation_start_lock, SessionLocal() as db:
+        active = (
+            db.query(OpenCodeActivationJob)
+            .filter(OpenCodeActivationJob.status.in_(["pending", "running", "auth_required"]))
+            .order_by(OpenCodeActivationJob.created_at.desc())
+            .first()
+        )
+        if active:
+            return _activation_payload(active)
+        job = OpenCodeActivationJob(
+            status="pending",
+            phase="checking",
+            percent=0,
+            message="免费体验任务已创建",
+            preferred_model=preferred_model,
+        )
+        db.add(job)
+        db.flush()
+        from app.services.operation_runtime import ensure_operation
 
-            operation = ensure_operation(
-                db,
-                source_kind="opencode_activation",
-                source_id=job.id,
-                title="准备免费写作 AI",
-                status="queued",
-                phase="checking",
-                message="正在检查这台电脑",
-                tool_mode="managed_opencode",
-                resume_url="/getting-started",
-                can_pause=False,
-                can_cancel=False,
-                can_retry=False,
-                progress_mode="indeterminate",
-            )
-            job.operation_id = operation.id
-            db.commit()
-            db.refresh(job)
-            payload = _activation_payload(job)
-            job_id = job.id
+        operation = ensure_operation(
+            db,
+            source_kind="opencode_activation",
+            source_id=job.id,
+            title="准备免费写作 AI",
+            status="queued",
+            phase="checking",
+            message="正在检查这台电脑",
+            tool_mode="managed_opencode",
+            resume_url="/getting-started",
+            can_pause=False,
+            can_cancel=False,
+            can_retry=False,
+            progress_mode="indeterminate",
+        )
+        job.operation_id = operation.id
+        commit_session(db)
+        db.refresh(job)
+        payload = _activation_payload(job)
+        job_id = job.id
     threading.Thread(
         target=_activation_worker,
         args=(job_id,),
@@ -1139,26 +1136,25 @@ def retry_opencode_activation(job_id: str) -> dict[str, Any]:
     from app.database.models import OpenCodeActivationJob
     from app.database.session import SessionLocal
 
-    with _activation_start_lock:
-        with SessionLocal() as db:
-            job = db.query(OpenCodeActivationJob).filter(OpenCodeActivationJob.id == job_id).first()
-            if not job:
-                raise RuntimeError("OpenCode 激活任务不存在")
-            if job.status in {"pending", "running"}:
-                return _activation_payload(job)
-            job.status = "pending"
-            job.phase = "checking"
-            job.percent = 0
-            job.error = None
-            job.failure_kind = None
-            job.next_action = None
-            job.auth_mode = None
-            job.auth_status = None
-            job.auth_prompt = None
-            job.auth_url = None
-            job.attempt_count = (job.attempt_count or 0) + 1
-            db.commit()
-            payload = _activation_payload(job)
+    with _activation_start_lock, SessionLocal() as db:
+        job = db.query(OpenCodeActivationJob).filter(OpenCodeActivationJob.id == job_id).first()
+        if not job:
+            raise RuntimeError("OpenCode 激活任务不存在")
+        if job.status in {"pending", "running"}:
+            return _activation_payload(job)
+        job.status = "pending"
+        job.phase = "checking"
+        job.percent = 0
+        job.error = None
+        job.failure_kind = None
+        job.next_action = None
+        job.auth_mode = None
+        job.auth_status = None
+        job.auth_prompt = None
+        job.auth_url = None
+        job.attempt_count = (job.attempt_count or 0) + 1
+        commit_session(db)
+        payload = _activation_payload(job)
     threading.Thread(
         target=_activation_worker,
         args=(job_id,),
@@ -1194,7 +1190,7 @@ def resume_incomplete_opencode_activations() -> int:
                 job.status = "pending"
                 job.message = "应用重新启动，正在恢复免费体验任务"
                 job_ids.append(job.id)
-        db.commit()
+        commit_session(db)
     for job_id in job_ids:
         threading.Thread(
             target=_activation_worker,

@@ -11,7 +11,7 @@ from ..modules.story.application.commands import StoryCommandContext
 from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.importer import ConfirmImportRequest, ImportSplitRequest
-from ..ai.gateway import LLMGateway
+from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..services import import_service as _import_service
 from ..services.import_service import (
     build_split_preview,

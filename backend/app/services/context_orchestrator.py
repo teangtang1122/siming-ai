@@ -8,35 +8,29 @@ contract instead of three unrelated prompt assemblers.
 """
 from __future__ import annotations
 
-from array import array
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
-import os
+from array import array
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from sqlalchemy import event, or_
 from sqlalchemy.orm import Session
 
-from ..modules.context.application.runtime import (
-    ActiveContextManifest,
-    activate_context_manifest,
-    active_context_manifest,
-)
-from ..modules.model_runtime.application.runtime import resolve_model_identity
+from ..core.legacy_env import get_compatible_env
 from ..database.models import (
     AssistantMemory,
+    CausalEdge,
     Chapter,
-    ChapterCharacter,
+    ChapterQualityMetric,
     ChapterSummary,
     Character,
     CharacterNarrativeState,
     CharacterTimeline,
-    ChapterQualityMetric,
-    CausalEdge,
     ContextManifest,
     ContextManifestItem,
     ContextRebuildJob,
@@ -51,10 +45,19 @@ from ..database.models import (
     RagChunkEmbedding,
     WorldbuildingEntry,
 )
+from ..modules.context.application.runtime import (
+    ActiveContextManifest as ActiveContextManifest,
+)
+from ..modules.context.application.runtime import (
+    activate_context_manifest as activate_context_manifest,
+)
+from ..modules.context.application.runtime import (
+    active_context_manifest as active_context_manifest,
+)
+from ..modules.model_runtime.application.runtime import resolve_model_identity
 from .rag.context_packer import ContextBudget, estimate_tokens
 from .rag.indexer import _get_source_content_hash, reindex_project
 from .rag.retriever import search_chunks
-
 
 CONTEXT_POLICY_VERSION = 1
 CONTEXT_INDEX_VERSION = 1
@@ -400,8 +403,8 @@ def _source_recency(db: Session, source_type: str, source_id: str | None) -> flo
     if not updated:
         return 0.25
     if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=timezone.utc)
-    age_days = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds() / 86_400)
+        updated = updated.replace(tzinfo=UTC)
+    age_days = max(0.0, (datetime.now(UTC) - updated).total_seconds() / 86_400)
     return max(0.05, min(1.0, 1.0 / (1.0 + age_days / 180)))
 
 
@@ -596,10 +599,6 @@ class ContextOrchestrator:
         ratio_limit = int(profile.context_window_tokens * contract.output_ratio)
         configured_limit = profile.max_output_tokens or ratio_limit
         output_reserve = max(2048, min(configured_limit, ratio_limit))
-        input_budget = max(
-            0,
-            profile.context_window_tokens - output_reserve - profile.safety_margin_tokens,
-        )
         return ContextBudget.from_token_window(
             context_window_tokens=profile.context_window_tokens,
             output_reserve_tokens=output_reserve,
@@ -694,9 +693,7 @@ class ContextOrchestrator:
                 safe[key] = _clean_text(value, 1200)
             elif isinstance(value, list):
                 safe[key] = value[:30]
-            elif isinstance(value, dict):
-                safe[key] = value
-            elif value is not None:
+            elif isinstance(value, dict) or value is not None:
                 safe[key] = value
         return safe
 
@@ -1677,7 +1674,13 @@ class ContextOrchestrator:
         if not vectors or not vectors[0]:
             return
         project = self.db.query(Project).filter(Project.id == project_id).first()
-        root = Path(project.folder_path) if project and project.folder_path else Path(os.environ.get("SIMING_HOME") or os.environ.get("MOSHU_HOME") or ".") / "siming-projects" / project_id
+        root = (
+            Path(project.folder_path)
+            if project and project.folder_path
+            else Path(get_compatible_env("SIMING_HOME", default="."))
+            / "siming-projects"
+            / project_id
+        )
         directory = root / ".siming" / "indexes"
         directory.mkdir(parents=True, exist_ok=True)
         index = hnswlib.Index(space="cosine", dim=len(vectors[0]))

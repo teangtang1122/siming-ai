@@ -1,8 +1,9 @@
 """Model selection for project cataloging."""
 from __future__ import annotations
 
-from ...ai.gateway import LLMGateway, TaskModelSelection
 from ...ai.local_cli_adapter import is_local_cli_provider
+from ...modules.model_runtime.application.execution import model_executor as LLMGateway
+from ...modules.model_runtime.domain.configuration import TaskModelSelection
 
 
 def cataloging_model_selection(model_override: str | None = None) -> TaskModelSelection:
