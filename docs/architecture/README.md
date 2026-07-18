@@ -50,6 +50,7 @@ duplicates.
 ## Enforced Rules
 
 - Import cycles are forbidden.
+- HTTP routers cannot import SQLAlchemy models or call `db.query(...)` directly.
 - New 3.0 modules cannot call `Session.commit()` directly.
 - `UnitOfWork` owns commit and rollback at command boundaries.
 - New modules over 1000 lines or functions over 150 lines fail CI.
@@ -83,7 +84,8 @@ python scripts/compile_prompts.py
   assistant/creation/continuity compatibility facades.
 - `3.0.0-beta.2`: frontend feature boundaries and generated API types.
 - `3.0.0-rc.1`: cleanup, migration rehearsals, security, recovery, performance.
-- `3.0.0`: stable release after RC validation.
+- `3.0.0`: route persistence boundaries reach zero direct ORM access; after RC
+  validation, the modular architecture ships on the stable update channel.
 
 RC evidence is maintained in:
 

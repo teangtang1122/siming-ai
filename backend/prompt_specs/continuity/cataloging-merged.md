@@ -1,6 +1,6 @@
 ---
 id: continuity.cataloging.merged
-version: 3.0.0-beta.1
+version: 3.0.0
 scope: continuity
 visibility: both
 inputs: []

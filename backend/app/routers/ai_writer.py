@@ -5,7 +5,7 @@ import asyncio
 import re
 import time
 from datetime import datetime, timedelta
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -14,25 +14,8 @@ from ..modules.model_runtime.application.execution import model_executor as LLMG
 from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError, LLMError
 from ..core.response import ApiResponse
-from ..database.models import (
-    AssistantMemory,
-    Chapter,
-    ChapterCharacter,
-    ChapterSnapshot,
-    ChapterSummary,
-    Character,
-    CharacterChangeLog,
-    CharacterRelationship,
-    CharacterTimeline,
-    AssistantConversation,
-    AssistantMessage,
-    AssistantRun,
-    AssistantRunStep,
-    OutlineNode,
-    OutlineNodeCharacter,
-    Project,
-)
 from ..database.session import get_db
+from ..modules.assistant.interfaces.workspace_dependencies import assistant_workspace
 from ..services.context_builders import (
     _build_chapter_detail_context,
     _build_character_ai_context,
@@ -295,53 +278,19 @@ def _resolve_assistant_characters(
     names: list[str],
     outline_node_id: Optional[str],
     limit: int = 4,
-) -> list[Character]:
-    resolved: list[Character] = []
-    seen: set[str] = set()
-    clean_names = {name.strip() for name in names if name.strip()}
-    if clean_names:
-        characters = (
-            db.query(Character)
-            .filter(Character.project_id == project_id, Character.name.in_(clean_names))
-            .all()
-        )
-        for character in characters:
-            resolved.append(character)
-            seen.add(character.id)
-    if outline_node_id and len(resolved) < limit:
-        links = (
-            db.query(OutlineNodeCharacter)
-            .join(OutlineNode, OutlineNode.id == OutlineNodeCharacter.outline_node_id)
-            .filter(OutlineNode.project_id == project_id, OutlineNodeCharacter.outline_node_id == outline_node_id)
-            .all()
-        )
-        for link in links:
-            if link.character and link.character.id not in seen:
-                resolved.append(link.character)
-                seen.add(link.character.id)
-            if len(resolved) >= limit:
-                break
-    if len(resolved) < limit:
-        extras = (
-            db.query(Character)
-            .filter(Character.project_id == project_id)
-            .order_by(Character.role_type.asc(), Character.updated_at.desc())
-            .limit(limit * 2)
-            .all()
-        )
-        for character in extras:
-            if character.id not in seen:
-                resolved.append(character)
-                seen.add(character.id)
-            if len(resolved) >= limit:
-                break
-    return resolved[:limit]
+) -> list[Any]:
+    return assistant_workspace(db).resolve_characters(
+        project_id,
+        names,
+        outline_node_id,
+        limit=limit,
+    )
 
 
 async def _assistant_character_roleplay(
     db: Session,
     project_id: str,
-    character: Character,
+    character: Any,
     user_message: str,
     outline_ctx: str,
     summaries: str,
@@ -395,13 +344,14 @@ def _create_assistant_chapter(
     summary_text: str,
     involved_character_names: list[str],
     model: Optional[str],
-) -> Optional[Chapter]:
+) -> Optional[Any]:
     title = (title or "").strip()[:200]
     content = (content or "").strip()
     if not title or not content:
         return None
     outline_node = _get_outline_node_or_404(db, project_id, outline_node_id)
-    chapter = Chapter(
+    workspace = assistant_workspace(db)
+    chapter = workspace.create_chapter(
         project_id=project_id,
         outline_node_id=outline_node.id if outline_node else None,
         title=title,
@@ -409,33 +359,28 @@ def _create_assistant_chapter(
         word_count=_count_words(content),
         current_version=1,
     )
-    db.add(chapter)
     db.flush()
-    db.add(ChapterSummary(
+    workspace.create_summary(
         chapter_id=chapter.id,
         summary_text=(summary_text or title)[:20000],
         key_events=None,
         token_count=len(summary_text or title),
         ai_model=model,
-    ))
+    )
     names = {name.strip() for name in involved_character_names if name and name.strip()}
     if names:
-        characters = (
-            db.query(Character)
-            .filter(Character.project_id == project_id, Character.name.in_(names))
-            .all()
-        )
+        characters = workspace.characters_by_names(project_id, names)
         for character in characters:
-            db.add(ChapterCharacter(
+            workspace.link_chapter_character(
                 chapter_id=chapter.id,
                 character_id=character.id,
                 appearance_type="AI助手识别",
                 description="由自动写作助手创建章节时关联",
-            ))
+            )
     return chapter
 
 
-def _chapter_brief(chapter: Chapter) -> dict:
+def _chapter_brief(chapter: Any) -> dict:
     return {
         "id": chapter.id,
         "title": chapter.title,
@@ -449,10 +394,10 @@ def _create_assistant_chapter_placeholder(
     project_id: str,
     title: str,
     outline_node_id: Optional[str],
-) -> Chapter:
+) -> Any:
     outline_node = _get_outline_node_or_404(db, project_id, outline_node_id)
     clean_title = (title or "AI生成章节").strip()[:200] or "AI生成章节"
-    chapter = Chapter(
+    chapter = assistant_workspace(db).create_chapter(
         project_id=project_id,
         outline_node_id=outline_node.id if outline_node else None,
         title=clean_title,
@@ -460,20 +405,19 @@ def _create_assistant_chapter_placeholder(
         word_count=0,
         current_version=1,
     )
-    db.add(chapter)
     db.flush()
     return chapter
 
 
 def _finalize_assistant_chapter(
     db: Session,
-    chapter: Chapter,
+    chapter: Any,
     title: str,
     content: str,
     summary_text: str,
     involved_character_names: list[str],
     model: Optional[str],
-) -> Chapter:
+) -> Any:
     clean_title = (title or chapter.title or "AI生成章节").strip()[:200] or "AI生成章节"
     clean_content = (content or "").strip()
     chapter.title = clean_title
@@ -481,13 +425,14 @@ def _finalize_assistant_chapter(
     chapter.word_count = _count_words(clean_content)
     chapter.current_version = max(1, chapter.current_version or 1) + 1
     chapter.updated_at = datetime.utcnow()
-    db.add(ChapterSnapshot(
+    workspace = assistant_workspace(db)
+    workspace.create_snapshot(
         chapter_id=chapter.id,
         version_number=chapter.current_version,
         content=clean_content,
         word_count=chapter.word_count,
         trigger_type="ai_insert",
-    ))
+    )
 
     if chapter.summary:
         chapter.summary.summary_text = (summary_text or clean_title)[:20000]
@@ -496,29 +441,25 @@ def _finalize_assistant_chapter(
         chapter.summary.ai_model = model
         chapter.summary.updated_at = datetime.utcnow()
     else:
-        db.add(ChapterSummary(
+        workspace.create_summary(
             chapter_id=chapter.id,
             summary_text=(summary_text or clean_title)[:20000],
             key_events=None,
             token_count=len(summary_text or clean_title),
             ai_model=model,
-        ))
+        )
 
     names = {name.strip() for name in involved_character_names if name and name.strip()}
     if names:
-        db.query(ChapterCharacter).filter(ChapterCharacter.chapter_id == chapter.id).delete()
-        characters = (
-            db.query(Character)
-            .filter(Character.project_id == chapter.project_id, Character.name.in_(names))
-            .all()
-        )
+        workspace.clear_chapter_characters(chapter.id)
+        characters = workspace.characters_by_names(chapter.project_id, names)
         for character in characters:
-            db.add(ChapterCharacter(
+            workspace.link_chapter_character(
                 chapter_id=chapter.id,
                 character_id=character.id,
                 appearance_type="AI助手识别",
                 description="由自动写作助手创建章节时关联",
-            ))
+            )
     return chapter
 
 
@@ -662,7 +603,7 @@ def _workspace_outcome(
     return "empty_response"
 
 
-def _assistant_conversation_to_dict(conversation: AssistantConversation, message_count: Optional[int] = None) -> dict:
+def _assistant_conversation_to_dict(conversation: Any, message_count: Optional[int] = None) -> dict:
     return {
         "id": conversation.id,
         "project_id": conversation.project_id,
@@ -677,7 +618,7 @@ def _assistant_conversation_to_dict(conversation: AssistantConversation, message
     }
 
 
-def _assistant_message_to_dict(message: AssistantMessage) -> dict:
+def _assistant_message_to_dict(message: Any) -> dict:
     payload = None
     if message.payload_json:
         try:
@@ -700,15 +641,8 @@ def _get_assistant_conversation_or_404(
     db: Session,
     project_id: str,
     conversation_id: str,
-) -> AssistantConversation:
-    conversation = (
-        db.query(AssistantConversation)
-        .filter(
-            AssistantConversation.id == conversation_id,
-            AssistantConversation.project_id == project_id,
-        )
-        .first()
-    )
+) -> Any:
+    conversation = assistant_workspace(db).conversation(project_id, conversation_id)
     if not conversation:
         raise NotFoundError("助手对话不存在")
     return conversation
@@ -720,17 +654,7 @@ def _assistant_history_from_messages(
     before_message_id: Optional[str] = None,
     limit: int = 8,
 ) -> str:
-    messages = (
-        db.query(AssistantMessage)
-        .filter(AssistantMessage.conversation_id == conversation_id)
-        .order_by(
-            AssistantMessage.created_at.asc(),
-            AssistantMessage.role.desc(),
-            AssistantMessage.updated_at.asc(),
-            AssistantMessage.id.asc(),
-        )
-        .all()
-    )
+    messages = assistant_workspace(db).conversation_messages(conversation_id)
     history: list[dict] = []
     for message in messages:
         if before_message_id and message.id == before_message_id:
@@ -747,16 +671,7 @@ def _previous_search_context_from_messages(
     before_message_id: Optional[str] = None,
 ) -> str:
     """Extract and merge persisted search results from ALL prior assistant messages in this conversation."""
-    messages = (
-        db.query(AssistantMessage)
-        .filter(
-            AssistantMessage.conversation_id == conversation_id,
-            AssistantMessage.role == "assistant",
-            AssistantMessage.status.in_({"completed", "running"}),
-        )
-        .order_by(AssistantMessage.created_at.desc())
-        .all()
-    )
+    messages = assistant_workspace(db).previous_assistant_messages(conversation_id)
     # Merge by tool, deduplicate data entries by id, keep most recent
     merged: dict[str, dict] = {}
     seen_ids: dict[str, set] = {}  # tool -> set of seen entry ids
@@ -926,7 +841,7 @@ def _chapter_action_needs_outline_confirmation(
 
 async def _sse_writer_stream(
     generator: AsyncGenerator[str, None],
-    project: Optional[Project] = None,
+    project: Optional[Any] = None,
     model: Optional[str] = None,
     max_tokens: Optional[int] = None,
 ) -> AsyncGenerator[str, None]:
@@ -1006,19 +921,9 @@ def _sse_event(payload) -> str:
 async def list_assistant_conversations(project_id: str, scope: str = "writer", db: Session = Depends(get_db)):
     """List persisted assistant conversations for a project."""
     get_project_or_404(db, project_id)
-    conversations = (
-        db.query(AssistantConversation)
-        .filter(AssistantConversation.project_id == project_id, AssistantConversation.scope == scope)
-        .order_by(AssistantConversation.updated_at.desc(), AssistantConversation.created_at.desc())
-        .all()
-    )
+    conversations = assistant_workspace(db).conversations_with_counts(project_id, scope)
     items = []
-    for conversation in conversations:
-        message_count = (
-            db.query(AssistantMessage)
-            .filter(AssistantMessage.conversation_id == conversation.id)
-            .count()
-        )
+    for conversation, message_count in conversations:
         items.append(_assistant_conversation_to_dict(conversation, message_count))
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
@@ -1031,17 +936,7 @@ async def get_assistant_conversation(
 ):
     """Get one persisted assistant conversation and all messages."""
     conversation = _get_assistant_conversation_or_404(db, project_id, conversation_id)
-    messages = (
-        db.query(AssistantMessage)
-        .filter(AssistantMessage.conversation_id == conversation.id)
-        .order_by(
-            AssistantMessage.created_at.asc(),
-            AssistantMessage.role.desc(),
-            AssistantMessage.updated_at.asc(),
-            AssistantMessage.id.asc(),
-        )
-        .all()
-    )
+    messages = assistant_workspace(db).conversation_messages(conversation.id)
     return ApiResponse.success(data={
         "conversation": _assistant_conversation_to_dict(conversation, len(messages)),
         "messages": [_assistant_message_to_dict(message) for message in messages],
@@ -1056,7 +951,7 @@ async def delete_assistant_conversation(
 ):
     """Delete an assistant conversation."""
     conversation = _get_assistant_conversation_or_404(db, project_id, conversation_id)
-    db.delete(conversation)
+    assistant_workspace(db).delete(conversation)
     commit_session(db)
     return ApiResponse.success(message="助手对话已删除")
 
@@ -1080,10 +975,11 @@ async def list_assistant_runs(
     """List durable workspace-assistant execution runs."""
     get_project_or_404(db, project_id)
     limit = max(1, min(limit, 100))
-    query = db.query(AssistantRun).filter(AssistantRun.project_id == project_id)
-    if conversation_id:
-        query = query.filter(AssistantRun.conversation_id == conversation_id)
-    runs = query.order_by(AssistantRun.created_at.desc()).limit(limit).all()
+    runs = assistant_workspace(db).runs(
+        project_id,
+        conversation_id,
+        limit=limit,
+    )
     return ApiResponse.success(data={
         "items": [run_payload(run) for run in runs],
         "total": len(runs),
@@ -1097,19 +993,11 @@ async def get_assistant_run(
     db: Session = Depends(get_db),
 ):
     """Get one workspace-assistant execution run with all step records."""
-    run = (
-        db.query(AssistantRun)
-        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
-        .first()
-    )
+    workspace = assistant_workspace(db)
+    run = workspace.run(project_id, run_id)
     if not run:
         raise NotFoundError("助手任务不存在")
-    steps = (
-        db.query(AssistantRunStep)
-        .filter(AssistantRunStep.run_id == run.id)
-        .order_by(AssistantRunStep.created_at.asc(), AssistantRunStep.id.asc())
-        .all()
-    )
+    steps = workspace.run_steps(run.id)
     return ApiResponse.success(data={
         "run": run_payload(run),
         "steps": [
@@ -1132,11 +1020,7 @@ async def retry_assistant_run_step(
 ):
     """Retry a failed workspace assistant run step (preserves original)."""
     get_project_or_404(db, project_id)
-    run = (
-        db.query(AssistantRun)
-        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
-        .first()
-    )
+    run = assistant_workspace(db).run(project_id, run_id)
     if not run:
         raise NotFoundError("助手任务不存在")
     try:
@@ -1155,11 +1039,7 @@ async def resume_from_assistant_run_step(
 ):
     """Retry a step and continue with downstream failed steps."""
     get_project_or_404(db, project_id)
-    run = (
-        db.query(AssistantRun)
-        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
-        .first()
-    )
+    run = assistant_workspace(db).run(project_id, run_id)
     if not run:
         raise NotFoundError("助手任务不存在")
     try:
@@ -1177,11 +1057,7 @@ async def resume_assistant_run(
 ):
     """Retry all unresolved error steps in a run."""
     get_project_or_404(db, project_id)
-    run = (
-        db.query(AssistantRun)
-        .filter(AssistantRun.project_id == project_id, AssistantRun.id == run_id)
-        .first()
-    )
+    run = assistant_workspace(db).run(project_id, run_id)
     if not run:
         raise NotFoundError("助手任务不存在")
     try:
@@ -1306,19 +1182,19 @@ async def workspace_assistant_stream(
                 conversation = _get_assistant_conversation_or_404(db, project_id, payload.conversation_id)
                 conversation.scope = payload.scope
             else:
-                conversation = AssistantConversation(
+                conversation = assistant_workspace(db).create_conversation(
                     project_id=project_id,
                     title=_assistant_title_from_message(payload.message),
                     scope=payload.scope,
                 )
-                db.add(conversation)
                 db.flush()
             conversation.current_outline_node_id = selected_node.id if selected_node else None
             conversation.model = payload.model
             conversation.updated_at = datetime.utcnow()
 
             created_at = datetime.utcnow()
-            user_msg_db = AssistantMessage(
+            workspace = assistant_workspace(db)
+            user_msg_db = workspace.create_message(
                 conversation_id=conversation.id,
                 role="user",
                 content=payload.message,
@@ -1326,7 +1202,7 @@ async def workspace_assistant_stream(
                 created_at=created_at,
                 updated_at=created_at,
             )
-            assistant_msg_db = AssistantMessage(
+            assistant_msg_db = workspace.create_message(
                 conversation_id=conversation.id,
                 role="assistant",
                 content="正在分析需求...",
@@ -1335,8 +1211,6 @@ async def workspace_assistant_stream(
                 created_at=created_at + timedelta(microseconds=1),
                 updated_at=created_at + timedelta(microseconds=1),
             )
-            db.add(user_msg_db)
-            db.add(assistant_msg_db)
             commit_session(db)
             db.refresh(conversation)
             db.refresh(user_msg_db)
@@ -1380,7 +1254,10 @@ async def workspace_assistant_stream(
             if payload.selected_text and payload.selected_text.strip():
                 chapter_label = ""
                 if payload.selected_text_chapter_id:
-                    chapter = db.query(Chapter).filter(Chapter.id == payload.selected_text_chapter_id, Chapter.project_id == project_id).first()
+                    chapter = assistant_workspace(db).chapter(
+                        project_id,
+                        payload.selected_text_chapter_id,
+                    )
                     if chapter:
                         chapter_label = f"，来自章节「{chapter.title}」"
                 selected_context.append(f"用户选中了以下文本{chapter_label}：\n```\n{payload.selected_text.strip()}\n```")
@@ -1396,22 +1273,18 @@ async def workspace_assistant_stream(
             _FIXED_CATS = ["user_preference", "writing_style", "workflow_preference", "preference"]
             _RELATED_CATS = ["project_fact", "research_note", "fact", "search_result", "note"]
 
-            fixed_memories = (
-                db.query(AssistantMemory)
-                .filter(AssistantMemory.project_id == project_id, AssistantMemory.category.in_(_FIXED_CATS))
-                .order_by(AssistantMemory.importance.desc(), AssistantMemory.updated_at.desc())
-                .limit(10).all()
-            )
+            workspace = assistant_workspace(db)
+            fixed_memories = workspace.memories(project_id, _FIXED_CATS, limit=10)
 
             related_memories: list = []
             query_terms = re.findall(r"[一-鿿]{2,12}|[A-Za-z][A-Za-z0-9_-]{2,30}", payload.message or "")
             if query_terms:
-                rq = db.query(AssistantMemory).filter(
-                    AssistantMemory.project_id == project_id, AssistantMemory.category.in_(_RELATED_CATS)
+                related_memories = workspace.related_memories(
+                    project_id,
+                    _RELATED_CATS,
+                    query_terms[:5],
+                    limit=10,
                 )
-                for term in query_terms[:5]:
-                    rq = rq.filter(AssistantMemory.key.ilike(f"%{term}%") | AssistantMemory.value.ilike(f"%{term}%"))
-                related_memories = rq.order_by(AssistantMemory.importance.desc()).limit(10).all()
 
             seen_ids = {m.id for m in fixed_memories}
             all_mem = [

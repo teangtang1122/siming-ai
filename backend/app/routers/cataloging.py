@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from ..core.db_helpers import get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingFact, CatalogingJob
 from ..database.session import SessionLocal, get_db
+from ..modules.continuity.interfaces.cataloging_dependencies import cataloging_queries
 from ..schemas.cataloging import (
     CatalogingCandidateBulkUpdate,
     CatalogingCandidateCreate,
@@ -50,19 +50,15 @@ from ..services.character_merge_service import build_character_merge_preview
 router = APIRouter(tags=["cataloging"])
 
 
-def _get_job_or_404(db: Session, project_id: str, job_id: str) -> CatalogingJob:
-    job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id, CatalogingJob.project_id == project_id).first()
+def _get_job_or_404(db: Session, project_id: str, job_id: str):
+    job = cataloging_queries(db).get_job(project_id, job_id)
     if not job:
         raise NotFoundError("作品建档任务不存在")
     return job
 
 
-def _get_candidate_or_404(db: Session, project_id: str, candidate_id: str) -> CatalogingCandidate:
-    candidate = (
-        db.query(CatalogingCandidate)
-        .filter(CatalogingCandidate.id == candidate_id, CatalogingCandidate.project_id == project_id)
-        .first()
-    )
+def _get_candidate_or_404(db: Session, project_id: str, candidate_id: str):
+    candidate = cataloging_queries(db).get_candidate(project_id, candidate_id)
     if not candidate:
         raise NotFoundError("候选项不存在")
     return candidate
@@ -104,13 +100,7 @@ async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db:
 @router.get("/projects/{project_id}/cataloging/jobs")
 def list_cataloging_jobs(project_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
-    jobs = (
-        db.query(CatalogingJob)
-        .filter(CatalogingJob.project_id == project_id)
-        .order_by(CatalogingJob.created_at.desc())
-        .limit(20)
-        .all()
-    )
+    jobs = cataloging_queries(db).list_jobs(project_id, limit=20)
     return ApiResponse.success(data={"items": [job_to_dict(job) for job in jobs], "total": len(jobs)})
 
 
@@ -118,12 +108,7 @@ def list_cataloging_jobs(project_id: str, db: Session = Depends(get_db)):
 def get_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    runs = (
-        db.query(CatalogingChapterRun)
-        .filter(CatalogingChapterRun.job_id == job.id)
-        .order_by(CatalogingChapterRun.chapter_order.asc())
-        .all()
-    )
+    runs = cataloging_queries(db).list_runs(job.id)
     return ApiResponse.success(data={"job": job_to_dict(job), "runs": [run_to_dict(run) for run in runs]})
 
 
@@ -175,14 +160,12 @@ def list_cataloging_candidates(
 ):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    query = db.query(CatalogingCandidate).filter(CatalogingCandidate.job_id == job.id)
-    if chapter_run_id:
-        query = query.filter(CatalogingCandidate.chapter_run_id == chapter_run_id)
-    if status:
-        query = query.filter(CatalogingCandidate.status == status)
-    if item_type:
-        query = query.filter(CatalogingCandidate.item_type == item_type)
-    candidates = query.order_by(CatalogingCandidate.created_at.asc()).all()
+    candidates = cataloging_queries(db).list_candidates(
+        job.id,
+        chapter_run_id=chapter_run_id,
+        status=status,
+        item_type=item_type,
+    )
     return ApiResponse.success(data={"items": [candidate_to_dict(item) for item in candidates], "total": len(candidates)})
 
 
@@ -196,12 +179,11 @@ def list_cataloging_facts(
 ):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    query = db.query(CatalogingFact).filter(CatalogingFact.job_id == job.id)
-    if chapter_run_id:
-        query = query.filter(CatalogingFact.chapter_run_id == chapter_run_id)
-    if fact_type:
-        query = query.filter(CatalogingFact.fact_type == fact_type)
-    facts = query.order_by(CatalogingFact.sort_order.asc(), CatalogingFact.created_at.asc()).all()
+    facts = cataloging_queries(db).list_facts(
+        job.id,
+        chapter_run_id=chapter_run_id,
+        fact_type=fact_type,
+    )
     return ApiResponse.success(data={"items": [fact_to_dict(item) for item in facts], "total": len(facts)})
 
 
@@ -262,11 +244,7 @@ def create_cataloging_candidate(
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
     if payload.chapter_run_id:
-        run = (
-            db.query(CatalogingChapterRun)
-            .filter(CatalogingChapterRun.id == payload.chapter_run_id, CatalogingChapterRun.job_id == job.id)
-            .first()
-        )
+        run = cataloging_queries(db).get_run(job.id, payload.chapter_run_id)
     else:
         run = first_blocking_run(db, job)
     if not run:
@@ -299,10 +277,10 @@ def bulk_update_cataloging_candidates(
 ):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    query = db.query(CatalogingCandidate).filter(CatalogingCandidate.job_id == job.id)
-    if payload.candidate_ids:
-        query = query.filter(CatalogingCandidate.id.in_(payload.candidate_ids))
-    candidates = query.all()
+    candidates = cataloging_queries(db).list_candidates(
+        job.id,
+        candidate_ids=payload.candidate_ids,
+    )
     for candidate in candidates:
         if candidate.status in {"applying", "applied"}:
             continue
@@ -319,12 +297,7 @@ def bulk_update_cataloging_candidates(
 def apply_pending_cataloging(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    run = (
-        db.query(CatalogingChapterRun)
-        .filter(CatalogingChapterRun.job_id == job.id, CatalogingChapterRun.status == "awaiting_confirmation")
-        .order_by(CatalogingChapterRun.chapter_order.asc())
-        .first()
-    )
+    run = cataloging_queries(db).first_awaiting_confirmation(job.id)
     if not run:
         raise ValidationError("当前没有等待确认的章节")
     events = apply_candidates_for_run(db, job, run)
@@ -369,13 +342,7 @@ def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Sessio
     job = _get_job_or_404(db, project_id, job_id)
     run = first_blocking_run(db, job)
     if not run:
-        run = (
-            db.query(CatalogingChapterRun)
-            .filter(CatalogingChapterRun.job_id == job.id)
-            .filter(CatalogingChapterRun.status.in_(["extracting", "facts_saved", "awaiting_confirmation", "failed"]))
-            .order_by(CatalogingChapterRun.chapter_order.asc())
-            .first()
-        )
+        run = cataloging_queries(db).first_resolution_candidate(job.id)
     if not run:
         raise ValidationError("当前没有可重跑第二阶段的章节")
     if not load_facts_for_run(db, run):

@@ -1,6 +1,6 @@
 ---
 id: continuity.cataloging.external
-version: 3.0.0-beta.1
+version: 3.0.0
 scope: cataloging
 visibility: public
 inputs: []

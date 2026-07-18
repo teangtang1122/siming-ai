@@ -28,7 +28,7 @@ def _build_system(
 
 PACK = PromptPack(
     name="workspace_quality",
-    version="3.0.0-beta.1",
+    version="3.0.0",
     pack_type="workspace",
     description="Compiled workspace controller with truthful tool outcomes",
     input_fields=["scope", "outline_batch_count", "auto_apply"],

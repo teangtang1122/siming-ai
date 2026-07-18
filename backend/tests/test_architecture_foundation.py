@@ -1,6 +1,8 @@
 """Tests for contracts introduced by the 3.0 architecture foundation."""
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from unittest.mock import patch
 
 from pydantic import BaseModel
@@ -113,3 +115,24 @@ def test_prompt_tool_vocabulary_matches_legacy_registry():
     from app.services.workspace.tool_schemas import SEARCH_TOOL_NAMES, WRITE_TOOL_NAMES
 
     assert WORKSPACE_TOOL_NAMES == SEARCH_TOOL_NAMES | WRITE_TOOL_NAMES
+
+
+def test_http_routers_do_not_access_sqlalchemy_models_directly():
+    router_root = Path(__file__).resolve().parents[1] / "app" / "routers"
+    violations: list[str] = []
+    for path in sorted(router_root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module.endswith("database.models"):
+                    violations.append(f"{path.name}:{node.lineno}: ORM import")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "query"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "db"
+            ):
+                violations.append(f"{path.name}:{node.lineno}: db.query")
+    assert violations == []

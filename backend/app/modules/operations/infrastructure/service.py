@@ -37,6 +37,32 @@ class SqlAlchemyOperationService(OperationServicePort):
                 serialize_operation(operation, include_events=include_events) if operation else None
             )
 
+    def complete_author_confirmation(self, operation_id: str) -> bool:
+        with SqlAlchemyUnitOfWork(SessionLocal) as uow:
+            operation = uow.session.query(OperationRun).filter(
+                OperationRun.id == operation_id
+            ).first()
+            if not operation or operation.status != "waiting_user":
+                return False
+            update_operation(
+                uow.session,
+                operation,
+                status="completed",
+                message="阶段内容已由作者确认",
+                next_action="继续处理下一阶段",
+                attention={},
+                result={
+                    "summary": "阶段内容已生成并由作者确认",
+                    "completed": ["阶段生成", "作者确认"],
+                    "incomplete": [],
+                },
+                outcome="completed_with_tools",
+                event_type="confirmed",
+                checkpoint=True,
+            )
+            uow.commit()
+            return True
+
     async def stream(
         self,
         operation_id: str,

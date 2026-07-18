@@ -15,7 +15,7 @@ def _build_system(*, style_context: str, writing_directives: str = "") -> str:
 
 PACK = PromptPack(
     name="chapter_quality",
-    version="3.0.0-beta.1",
+    version="3.0.0",
     pack_type="chapter",
     description="Quality chapter writer — full craft rules, dialogue, hooks, literary techniques",
     input_fields=[

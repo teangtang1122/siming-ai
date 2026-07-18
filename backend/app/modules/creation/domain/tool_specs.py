@@ -78,7 +78,7 @@ def build_creation_tool_specs(definitions: Mapping[str, Any]) -> list[ToolSpec]:
             project_typed_tool_spec(
                 tool,
                 input_model=input_model,
-                version="3.0.0-beta.1",
+                version="3.0.0",
             )
         )
     return specs

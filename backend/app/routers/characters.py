@@ -3,24 +3,16 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..core.db_helpers import get_character_or_404, get_project_or_404
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.response import ApiResponse
-from ..database.models import (
-    Chapter,
-    Character,
-    CharacterAlias,
-    CharacterChangeLog,
-    CharacterRelationship,
-    CharacterVersion,
-)
 from ..database.session import get_db
 from ..modules.story.application.commands import StoryCommandContext
 from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ..modules.story.interfaces.dependencies import get_story_command
+from ..modules.story.interfaces.character_dependencies import character_workspace
 from ..schemas.character import (
     CharacterAIConfigUpdate,
     CharacterCreate,
@@ -52,30 +44,7 @@ router = APIRouter(tags=["characters"])
 def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depends(get_db)):
     """Get project character list."""
     get_project_or_404(db, project_id)
-    query = (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .filter(or_(Character.role_type.is_(None), Character.role_type != "merged_alias"))
-    )
-    if q:
-        keyword = f"%{q}%"
-        alias_ids = [
-            row.character_id
-            for row in db.query(CharacterAlias.character_id)
-            .filter(CharacterAlias.project_id == project_id, CharacterAlias.alias.like(keyword))
-            .all()
-        ]
-        query = query.filter(
-            or_(
-                Character.name.like(keyword),
-                Character.appearance.like(keyword),
-                Character.personality.like(keyword),
-                Character.background.like(keyword),
-                Character.role_type.like(keyword),
-                Character.id.in_(alias_ids) if alias_ids else False,
-            )
-        )
-    characters = query.order_by(Character.updated_at.desc()).all()
+    characters = character_workspace(db).list_characters(project_id, q)
     items = [character_to_dict(character) for character in characters]
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
@@ -89,7 +58,7 @@ def create_character(
     """Create a character."""
     db = command.session
     get_project_or_404(db, project_id)
-    character = Character(
+    character = character_workspace(db).create_character(
         project_id=project_id,
         name=payload.name,
         appearance=payload.appearance,
@@ -110,7 +79,6 @@ def create_character(
         profile_json=payload.profile,
         is_evolution_tracked=payload.is_evolution_tracked,
     )
-    db.add(character)
     db.flush()
     sync_character_aliases(db, character, payload.aliases)
     command.queue(
@@ -129,19 +97,8 @@ def create_character(
 def get_relationship_network(project_id: str, db: Session = Depends(get_db)):
     """Get all character relationship network data for a project."""
     get_project_or_404(db, project_id)
-    characters = (
-        db.query(Character)
-        .filter(Character.project_id == project_id)
-        .filter(or_(Character.role_type.is_(None), Character.role_type != "merged_alias"))
-        .all()
-    )
+    characters, relationships = character_workspace(db).relationship_network(project_id)
     visible_ids = {character.id for character in characters}
-    relationships = (
-        db.query(CharacterRelationship)
-        .filter(CharacterRelationship.project_id == project_id)
-        .order_by(CharacterRelationship.created_at.asc())
-        .all()
-    )
     nodes = [
         {
             "id": character.id,
@@ -269,13 +226,12 @@ def update_character(
 
     character.current_version = (character.current_version or 1) + 1
     db.flush()
-    snapshot = CharacterVersion(
+    character_workspace(db).create_version(
         character_id=character.id,
         version_number=character.current_version,
         snapshot_data=json.dumps(snapshot_character(character), ensure_ascii=False),
         change_summary=change_summary or "手动更新角色档案",
     )
-    db.add(snapshot)
     command.queue(
         ContentSyncIntent(
             project_id=project_id,
@@ -299,14 +255,9 @@ def delete_character(
     project = get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     content_file_path = character.content_file_path
-    db.query(CharacterRelationship).filter(
-        CharacterRelationship.project_id == project_id,
-        or_(
-            CharacterRelationship.character_a_id == character.id,
-            CharacterRelationship.character_b_id == character.id,
-        ),
-    ).delete(synchronize_session=False)
-    db.delete(character)
+    workspace = character_workspace(db)
+    workspace.delete_relationships(project_id, character.id)
+    workspace.delete(character)
     command.queue(
         ContentSyncIntent(
             project_id=project_id,
@@ -333,12 +284,7 @@ def list_character_versions(project_id: str, character_id: str, db: Session = De
     """Get character version history."""
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    versions = (
-        db.query(CharacterVersion)
-        .filter(CharacterVersion.character_id == character.id)
-        .order_by(CharacterVersion.version_number.desc())
-        .all()
-    )
+    versions = character_workspace(db).versions(character.id)
     items = [
         CharacterVersionItem.model_validate(version).model_dump(mode="json")
         for version in versions
@@ -356,11 +302,7 @@ def get_character_version(
     """Get a historical character version detail."""
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    version = (
-        db.query(CharacterVersion)
-        .filter(CharacterVersion.id == version_id, CharacterVersion.character_id == character.id)
-        .first()
-    )
+    version = character_workspace(db).version(character.id, version_id)
     if not version:
         raise NotFoundError("角色版本不存在")
     data = CharacterVersionItem.model_validate(version).model_dump(mode="json")
@@ -384,31 +326,14 @@ def update_character_relationships(
         raise ValidationError("角色不能与自身建立关系")
 
     if target_ids:
-        existing_count = (
-            db.query(Character)
-            .filter(Character.project_id == project_id, Character.id.in_(target_ids))
-            .count()
-        )
-        if existing_count != len(target_ids):
+        if not character_workspace(db).targets_exist(project_id, target_ids):
             raise ValidationError("关系目标角色必须属于当前作品")
 
-    db.query(CharacterRelationship).filter(
-        CharacterRelationship.project_id == project_id,
-        or_(
-            CharacterRelationship.character_a_id == character.id,
-            CharacterRelationship.character_b_id == character.id,
-        ),
-    ).delete(synchronize_session=False)
-
-    for item in payload.relationships:
-        relationship = CharacterRelationship(
-            project_id=project_id,
-            character_a_id=character.id,
-            character_b_id=item.target_character_id,
-            relationship_type=item.relationship_type,
-            description=item.description,
-        )
-        db.add(relationship)
+    character_workspace(db).replace_relationships(
+        project_id,
+        character.id,
+        payload.relationships,
+    )
 
     command.queue(
         ContentSyncIntent(
@@ -430,11 +355,8 @@ def get_character_ai_config(
     db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    config = character.ai_config
-    if not config:
-        from ..database.models import CharacterAIConfig
-        config = CharacterAIConfig(character_id=character.id)
-        db.add(config)
+    config = character_workspace(db).ensure_ai_config(character)
+    if config.id is None:
         command.finish()
         db.refresh(config)
     return ApiResponse.success(data={
@@ -462,11 +384,8 @@ def update_character_ai_config(
     db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    from ..database.models import CharacterAIConfig
-    config = character.ai_config
-    if not config:
-        config = CharacterAIConfig(character_id=character.id)
-        db.add(config)
+    config = character_workspace(db).ensure_ai_config(character)
+    if config.id is None:
         db.flush()
 
     update_data = payload.model_dump(exclude_unset=True)
@@ -503,37 +422,15 @@ def list_change_logs(
 ):
     """List character change logs, filterable by chapter/character/confirmed status."""
     get_project_or_404(db, project_id)
-    query = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(Character.project_id == project_id)
+    workspace = character_workspace(db)
+    logs = workspace.change_logs(
+        project_id,
+        chapter_id=chapter_id,
+        character_id=character_id,
+        confirmed=confirmed,
+        limit=200,
     )
-    if chapter_id:
-        query = query.filter(CharacterChangeLog.chapter_id == chapter_id)
-    if character_id:
-        query = query.filter(CharacterChangeLog.character_id == character_id)
-    if confirmed is not None:
-        query = query.filter(CharacterChangeLog.confirmed == confirmed)
-
-    logs = query.order_by(CharacterChangeLog.created_at.desc()).limit(200).all()
-
-    items = []
-    for log in logs:
-        character = db.query(Character).filter(Character.id == log.character_id).first()
-        chapter = db.query(Chapter).filter(Chapter.id == log.chapter_id).first()
-        items.append({
-            "id": log.id,
-            "character_id": log.character_id,
-            "character_name": character.name if character else "未知",
-            "chapter_id": log.chapter_id,
-            "chapter_title": chapter.title if chapter else "未知",
-            "change_type": log.change_type,
-            "field_name": log.field_name,
-            "old_value": log.old_value,
-            "new_value": log.new_value,
-            "confirmed": log.confirmed,
-            "created_at": log.created_at.isoformat() if log.created_at else None,
-        })
+    items = workspace.serialize_change_logs(logs)
 
     return ApiResponse.success(data={"items": items, "total": len(items)})
 
@@ -547,18 +444,14 @@ def confirm_change_log(
     """Confirm a detected character change and apply it to the character."""
     db = command.session
     get_project_or_404(db, project_id)
-    log = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(CharacterChangeLog.id == log_id, Character.project_id == project_id)
-        .first()
-    )
+    workspace = character_workspace(db)
+    log = workspace.change_log(project_id, log_id)
     if not log:
         raise NotFoundError("变更记录不存在")
     if log.confirmed:
         raise ValidationError("该变更已确认")
 
-    character = db.query(Character).filter(Character.id == log.character_id).first()
+    character = workspace.character(log.character_id)
     if not character:
         raise NotFoundError("角色不存在")
 
@@ -591,18 +484,14 @@ def reject_change_log(
     """Reject (delete) a detected character change."""
     db = command.session
     get_project_or_404(db, project_id)
-    log = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(CharacterChangeLog.id == log_id, Character.project_id == project_id)
-        .first()
-    )
+    workspace = character_workspace(db)
+    log = workspace.change_log(project_id, log_id)
     if not log:
         raise NotFoundError("变更记录不存在")
     if log.confirmed:
         raise ValidationError("已确认的变更不可删除，请通过角色编辑撤销")
 
-    db.delete(log)
+    workspace.delete(log)
     command.finish()
     return ApiResponse.success(message="变更已拒绝")
 
@@ -621,22 +510,17 @@ def batch_confirm_change_logs(
     if action not in ("confirm", "reject"):
         raise ValidationError("action must be 'confirm' or 'reject'")
 
-    query = (
-        db.query(CharacterChangeLog)
-        .join(Character, CharacterChangeLog.character_id == Character.id)
-        .filter(Character.project_id == project_id, CharacterChangeLog.confirmed == False)
+    workspace = character_workspace(db)
+    logs = workspace.pending_change_logs(
+        project_id,
+        chapter_id=chapter_id,
+        character_id=character_id,
     )
-    if chapter_id:
-        query = query.filter(CharacterChangeLog.chapter_id == chapter_id)
-    if character_id:
-        query = query.filter(CharacterChangeLog.character_id == character_id)
-
-    logs = query.all()
     changed_character_ids: set[str] = set()
     if action == "confirm":
         for log in logs:
             log.confirmed = True
-            character = db.query(Character).filter(Character.id == log.character_id).first()
+            character = workspace.character(log.character_id)
             if character and apply_change_log_to_character(character, log):
                 changed_character_ids.add(character.id)
                 create_character_version(

@@ -1,6 +1,6 @@
 ---
 id: assistant.chapter.fast
-version: 3.0.0-rc.1
+version: 3.0.0
 scope: chapter_writing
 visibility: both
 inputs: [writing_directives, style_context]

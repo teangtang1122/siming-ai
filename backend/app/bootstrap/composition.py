@@ -3,6 +3,68 @@
 from __future__ import annotations
 
 
+def _configure_cataloging_queries() -> None:
+    from ..modules.continuity.infrastructure.cataloging_queries import (
+        SqlAlchemyCatalogingQueries,
+    )
+    from ..modules.continuity.interfaces.cataloging_dependencies import (
+        configure_cataloging_queries,
+    )
+
+    configure_cataloging_queries(SqlAlchemyCatalogingQueries)
+
+
+def _configure_model_config_crud() -> None:
+    from ..modules.model_runtime.infrastructure.config_crud import (
+        SqlAlchemyModelConfigCrud,
+    )
+    from ..modules.model_runtime.interfaces.config_dependencies import (
+        configure_model_config_crud,
+    )
+
+    configure_model_config_crud(SqlAlchemyModelConfigCrud)
+
+
+def _configure_local_model_store() -> None:
+    from ..modules.model_runtime.infrastructure.local_model_store import (
+        SqlAlchemyLocalModelStore,
+    )
+    from ..modules.model_runtime.interfaces.local_model_dependencies import (
+        configure_local_model_store,
+    )
+
+    configure_local_model_store(SqlAlchemyLocalModelStore)
+
+
+def _configure_novel_creation_session_store() -> None:
+    from ..modules.creation.infrastructure.session_store import (
+        SqlAlchemyNovelCreationSessionStore,
+    )
+    from ..modules.creation.interfaces.session_dependencies import (
+        configure_novel_creation_session_store,
+    )
+
+    configure_novel_creation_session_store(SqlAlchemyNovelCreationSessionStore)
+
+
+def _configure_character_workspace() -> None:
+    from ..modules.story.interfaces.character_dependencies import (
+        configure_character_workspace,
+    )
+    from ..services.persistence.character_workspace import SqlAlchemyCharacterWorkspace
+
+    configure_character_workspace(SqlAlchemyCharacterWorkspace)
+
+
+def _configure_assistant_workspace() -> None:
+    from ..modules.assistant.interfaces.workspace_dependencies import (
+        configure_assistant_workspace,
+    )
+    from ..services.persistence.assistant_workspace import SqlAlchemyAssistantWorkspace
+
+    configure_assistant_workspace(SqlAlchemyAssistantWorkspace)
+
+
 def configure_application_services() -> None:
     """Connect application ports to infrastructure implementations."""
     from ..modules.assistant.application.prompt_compiler import PromptCompiler
@@ -121,10 +183,16 @@ def configure_application_services() -> None:
     configure_external_agent_dependencies(SqlAlchemyExternalAgentSettingsStore)
     configure_mcp_server_configuration(SqlAlchemyMcpServerConfiguration())
     configure_continuity_prompt_service(ContinuityPromptService(prompt_compiler))
+    _configure_cataloging_queries()
     configure_narrative_governance_commands(SqlAlchemyNarrativeGovernanceCommands())
     configure_task_runner(run_workspace_scheduled_task)
     configure_tool_catalog(registry.list_for_frontend)
     configure_model_runtime(ModelRuntime(SqlAlchemyModelConfiguration()))
+    _configure_model_config_crud()
+    _configure_local_model_store()
+    _configure_novel_creation_session_store()
+    _configure_character_workspace()
+    _configure_assistant_workspace()
     configure_model_executor(GatewayModelExecutor())
     configure_getting_started_configuration(SqlAlchemyGettingStartedConfiguration())
     configure_model_verification(ProviderModelVerification())

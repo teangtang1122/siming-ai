@@ -1,6 +1,6 @@
 ---
 id: assistant.chapter.quality.public
-version: 3.0.0-rc.1
+version: 3.0.0
 scope: chapter_writing
 visibility: public
 inputs: [writing_directives, style_context]

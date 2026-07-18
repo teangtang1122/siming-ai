@@ -19,8 +19,9 @@ from ..modules.model_runtime.application.execution import model_executor as LLMG
 from ..ai.local_cli_adapter import is_local_cli_provider
 from ..core.response import ApiResponse
 from ..database.session import get_db
-from ..database.models import NovelCreationSession, NovelCreationStageRun
 from ..database.session import SessionLocal
+from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
+from ..modules.operations.interfaces.dependencies import get_operation_service
 from ..services.novel_creation_workspace import (
     STAGE_ORDER,
     create_run,
@@ -234,7 +235,7 @@ async def advance_creation_interview(
     payload: NovelCreationInterviewNextRequest,
     db: Session = Depends(get_db),
 ):
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    session = novel_creation_session_store(db).session(session_id)
     operation_id = _start_inline_operation(
         db,
         source_kind="novel_interview",
@@ -323,16 +324,16 @@ async def novel_creation_presets():
 
 @router.get("/novel-creation/sessions")
 async def list_creation_sessions(include_completed: bool = False, db: Session = Depends(get_db)):
-    query = db.query(NovelCreationSession)
-    if not include_completed:
-        query = query.filter(NovelCreationSession.status.in_(["drafting", "reviewing", "failed"]))
-    sessions = query.order_by(NovelCreationSession.updated_at.desc(), NovelCreationSession.created_at.desc()).limit(30).all()
+    sessions = novel_creation_session_store(db).sessions(
+        include_completed=include_completed,
+        limit=30,
+    )
     return ApiResponse.success(data={"sessions": [serialize_session(item, include_runs=False) for item in sessions]})
 
 
 @router.get("/novel-creation/sessions/{session_id}")
 async def get_creation_session(session_id: str, db: Session = Depends(get_db)):
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    session = novel_creation_session_store(db).session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     return ApiResponse.success(data=serialize_session(session))
@@ -340,7 +341,7 @@ async def get_creation_session(session_id: str, db: Session = Depends(get_db)):
 
 @router.patch("/novel-creation/sessions/{session_id}")
 async def update_creation_session(session_id: str, payload: NovelCreationSessionPatchRequest, db: Session = Depends(get_db)):
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    session = novel_creation_session_store(db).session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
@@ -363,12 +364,13 @@ async def update_creation_session(session_id: str, payload: NovelCreationSession
 
 @router.delete("/novel-creation/sessions/{session_id}")
 async def delete_creation_session(session_id: str, db: Session = Depends(get_db)):
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    store = novel_creation_session_store(db)
+    session = store.session(session_id)
     if not session:
         return ApiResponse.success(data={"deleted": False})
     if session.created_project_id:
         raise HTTPException(status_code=409, detail="该立项已创建正式作品，不能删除会话记录")
-    db.delete(session)
+    store.delete(session)
     commit_session(db)
     return ApiResponse.success(data={"deleted": True})
 
@@ -376,16 +378,16 @@ async def delete_creation_session(session_id: str, db: Session = Depends(get_db)
 async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, Any]) -> None:
     db = SessionLocal()
     heartbeat_task: asyncio.Task | None = None
-    run: NovelCreationStageRun | None = None
+    run: Any | None = None
     try:
-        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+        run = novel_creation_session_store(db).run(run_id)
         operation_id = run.operation_id if run else None
         if operation_id:
             heartbeat_task = asyncio.create_task(heartbeat_loop(operation_id))
         with activate_operation(operation_id):
             await generate_novel_creation_stage(db, "", {**request, "session_id": session_id, "_run_id": run_id})
     except asyncio.CancelledError:
-        run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+        run = novel_creation_session_store(db).run(run_id)
         if run and run.status == "running":
             run.status = "cancelled"
             run.current_message = "立项任务已取消，已保存内容不会丢失"
@@ -403,7 +405,8 @@ async def _run_creation_stage(run_id: str, session_id: str, request: dict[str, A
 
 @router.post("/novel-creation/sessions/{session_id}/runs")
 async def start_creation_stage_run(session_id: str, payload: NovelCreationStageRunRequest, db: Session = Depends(get_db)):
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    store = novel_creation_session_store(db)
+    session = store.session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if payload.stage not in {*STAGE_ORDER, "all"}:
@@ -429,16 +432,7 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
                 "next_action": f"返回“{blocked_by[0]['label']}”完成确认。",
             },
         )
-    existing = (
-        db.query(NovelCreationStageRun)
-        .filter(
-            NovelCreationStageRun.session_id == session_id,
-            NovelCreationStageRun.stage == payload.stage,
-            NovelCreationStageRun.status == "running",
-        )
-        .order_by(NovelCreationStageRun.created_at.desc())
-        .first()
-    )
+    existing = store.running_stage(session_id, payload.stage)
     if existing:
         return ApiResponse.success(
             data={"run": serialize_run(existing), "stream_url": f"/api/novel-creation/runs/{existing.id}/stream"},
@@ -459,7 +453,7 @@ async def start_creation_stage_run(session_id: str, payload: NovelCreationStageR
 
 @router.get("/novel-creation/runs/{run_id}")
 async def get_creation_stage_run(run_id: str, db: Session = Depends(get_db)):
-    run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+    run = novel_creation_session_store(db).run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="阶段任务不存在")
     return ApiResponse.success(data=serialize_run(run))
@@ -473,7 +467,7 @@ async def stream_creation_stage_run(run_id: str):
         while True:
             db = SessionLocal()
             try:
-                run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run_id).first()
+                run = novel_creation_session_store(db).run(run_id)
                 if not run:
                     yield "event: error\ndata: " + json.dumps({"message": "阶段任务不存在"}, ensure_ascii=False) + "\n\n"
                     return
@@ -502,7 +496,8 @@ async def stream_creation_stage_run(run_id: str):
 
 @router.post("/novel-creation/sessions/{session_id}/stages/{stage}/confirm")
 async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCreationStageConfirmRequest, db: Session = Depends(get_db)):
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    store = novel_creation_session_store(db)
+    session = store.session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if payload.expected_revision is not None and int(session.revision or 0) != payload.expected_revision:
@@ -523,45 +518,15 @@ async def confirm_creation_stage(session_id: str, stage: str, payload: NovelCrea
         "expected_revision": payload.expected_revision,
     })
     if payload.confirm:
-        from ..database.models import OperationRun
-        from ..services.operation_runtime import update_operation
-
-        latest_run = (
-            db.query(NovelCreationStageRun)
-            .filter(
-                NovelCreationStageRun.session_id == session_id,
-                NovelCreationStageRun.stage.in_([stage, "all"]),
-                NovelCreationStageRun.operation_id.isnot(None),
-            )
-            .order_by(NovelCreationStageRun.completed_at.desc(), NovelCreationStageRun.created_at.desc())
-            .first()
-        )
+        latest_run = store.latest_stage_operation(session_id, stage)
         if latest_run and latest_run.operation_id:
-            operation = db.query(OperationRun).filter(OperationRun.id == latest_run.operation_id).first()
-            if operation and operation.status == "waiting_user":
-                update_operation(
-                    db,
-                    operation,
-                    status="completed",
-                    message="阶段内容已由作者确认",
-                    next_action="继续处理下一阶段",
-                    attention={},
-                    result={
-                        "summary": "阶段内容已生成并由作者确认",
-                        "completed": ["阶段生成", "作者确认"],
-                        "incomplete": [],
-                    },
-                    outcome="completed_with_tools",
-                    event_type="confirmed",
-                    checkpoint=True,
-                )
-                commit_session(db)
+            get_operation_service().complete_author_confirmation(latest_run.operation_id)
     return _tool_response(result)
 
 
 @router.patch("/novel-creation/sessions/{session_id}/stages/{stage}")
 async def update_creation_stage(session_id: str, stage: str, payload: NovelCreationStagePatchRequest, db: Session = Depends(get_db)):
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == session_id).first()
+    session = novel_creation_session_store(db).session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="立项草稿不存在")
     if int(session.revision or 0) != payload.expected_revision:
@@ -596,7 +561,7 @@ class RefreshQuestionRequest(BaseModel):
 async def refresh_question(payload: RefreshQuestionRequest, db: Session = Depends(get_db)):
     from app.services.workspace.tools.novel_creation import refresh_question_options
 
-    session = db.query(NovelCreationSession).filter(NovelCreationSession.id == payload.session_id).first()
+    session = novel_creation_session_store(db).session(payload.session_id)
     operation_id = _start_inline_operation(
         db,
         source_kind="novel_interview_option",

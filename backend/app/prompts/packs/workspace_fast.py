@@ -27,7 +27,7 @@ def _build_system(
 
 PACK = PromptPack(
     name="workspace_fast",
-    version="3.0.0-rc.1",
+    version="3.0.0",
     pack_type="workspace",
     description="Compatibility fast workspace assistant — delegates to quality controller rules",
     input_fields=["scope", "outline_batch_count", "auto_apply"],

@@ -1,6 +1,6 @@
 ---
 id: assistant.workspace.fast
-version: 3.0.0-rc.1
+version: 3.0.0
 scope: assistant
 visibility: internal
 inputs: [scope_label, outline_batch_count, auto_apply, tool_names]

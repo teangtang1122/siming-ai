@@ -1,6 +1,6 @@
 ---
 id: creation.novel.stage
-version: 3.0.0-beta.1
+version: 3.0.0
 scope: creation
 visibility: both
 inputs: [task_kind, task_rules]

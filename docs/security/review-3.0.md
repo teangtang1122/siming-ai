@@ -1,6 +1,6 @@
 # Siming 3.0 Security Review
 
-Reviewed for `3.0.0-rc.1`. This review covers repository code and deterministic tests; it is not a third-party penetration test.
+Reviewed for `3.0.0`. This review covers repository code and deterministic tests; it is not a third-party penetration test.
 
 ## Closed Findings
 

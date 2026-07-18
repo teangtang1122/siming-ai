@@ -16,7 +16,7 @@ def _build_system(*, style_context: str, writing_directives: str = "") -> str:
 
 PACK = PromptPack(
     name="chapter_fast",
-    version="3.0.0-rc.1",
+    version="3.0.0",
     pack_type="chapter",
     description="Fast chapter writer with compact direct-writing rules",
     input_fields=[

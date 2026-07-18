@@ -17,7 +17,7 @@ def _openai_parameters(name: str) -> dict:
 def test_creation_tool_schema_has_one_typed_source():
     spec = registry.get_spec("generate_novel_creation_stage")
     assert spec is not None
-    assert spec.version == "3.0.0-beta.1"
+    assert spec.version == "3.0.0"
     assert _openai_parameters(spec.name) == spec.parameters_schema()
     assert spec.mcp_schema()["inputSchema"] == spec.parameters_schema()
     assert spec.frontend_metadata()["version"] == spec.version
@@ -48,5 +48,5 @@ def test_frontend_catalog_comes_from_tool_specs():
     metadata = {
         item["name"]: item for item in registry.list_for_frontend()
     }["inspect_story_granularity"]
-    assert metadata["version"] == "3.0.0-beta.1"
+    assert metadata["version"] == "3.0.0"
     assert metadata["writes_project_data"] is False

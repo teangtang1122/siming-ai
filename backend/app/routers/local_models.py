@@ -9,6 +9,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -21,16 +22,8 @@ from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disa
 from ..core.exceptions import ValidationError
 from ..core.legacy_env import get_compatible_env, set_compatible_env
 from ..core.response import ApiResponse
-from ..database.models import (
-    LocalModel,
-    LocalModelTaskSetting,
-    LocalRuntimeInstallation,
-    ModelAdapter,
-    ModelDownloadTask,
-    TrainingDataset,
-    TrainingJob,
-)
 from ..database.session import get_db
+from ..modules.model_runtime.interfaces.local_model_dependencies import local_model_store
 from ..schemas.local_model import (
     AdapterCompareRequest,
     AdapterUpdateRequest,
@@ -72,7 +65,7 @@ def _launcher_settings_path() -> Path:
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Siming" / "launcher-settings.json"
 
 
-def _model_payload(model: LocalModel) -> dict:
+def _model_payload(model: Any) -> dict:
     return {
         "id": model.id,
         "model_key": model.model_key,
@@ -94,7 +87,7 @@ def _model_payload(model: LocalModel) -> dict:
     }
 
 
-def _task_payload(task: ModelDownloadTask) -> dict:
+def _task_payload(task: Any) -> dict:
     return {
         "id": task.id,
         "operation_id": task.operation_id,
@@ -119,11 +112,10 @@ def hardware_profile():
 @router.get("/catalog")
 def catalog(db: Session = Depends(get_db)):
     ensure_catalog_rows()
-    rows = db.query(LocalModel).order_by(LocalModel.recommended_vram_gb.asc()).all()
-    runtime = db.query(LocalRuntimeInstallation).filter(
-        LocalRuntimeInstallation.runtime_key == "llama_cpp"
-    ).first()
-    settings = db.query(LocalModelTaskSetting).all()
+    store = local_model_store(db)
+    rows = store.catalog_models()
+    runtime = store.runtime_installation("llama_cpp")
+    settings = store.task_settings()
     usage_enabled = not local_runtime_disabled("local_llama_cpp")
     return ApiResponse.success(data={
         "usage_enabled": usage_enabled,
@@ -156,7 +148,7 @@ def update_model_root(payload: ModelRootUpdateRequest, db: Session = Depends(get
     target.mkdir(parents=True, exist_ok=True)
     current = model_root()
     if target != current:
-        for model in db.query(LocalModel).filter(LocalModel.status == "installed").all():
+        for model in local_model_store(db).installed_models():
             if not model.file_path:
                 continue
             source = Path(model.file_path)
@@ -199,7 +191,7 @@ def install_model(payload: ModelInstallRequest):
 
 @router.get("/downloads")
 def downloads(db: Session = Depends(get_db)):
-    tasks = db.query(ModelDownloadTask).order_by(ModelDownloadTask.created_at.desc()).limit(100).all()
+    tasks = local_model_store(db).download_tasks(limit=100)
     return ApiResponse.success(data={"items": [_task_payload(task) for task in tasks]})
 
 
@@ -211,7 +203,7 @@ async def download_events(task_id: str):
             from ..database.session import SessionLocal
 
             with SessionLocal() as db:
-                task = db.query(ModelDownloadTask).filter(ModelDownloadTask.id == task_id).first()
+                task = local_model_store(db).download_task(task_id)
                 if not task:
                     yield f"data: {json.dumps({'status': 'missing'}, ensure_ascii=False)}\n\n"
                     return
@@ -248,7 +240,7 @@ def stop_runtime():
 
 @router.delete("/{model_key}")
 def delete_model(model_key: str, db: Session = Depends(get_db)):
-    model = db.query(LocalModel).filter(LocalModel.model_key == model_key).first()
+    model = local_model_store(db).model(model_key)
     if not model:
         return ApiResponse.success()
     if get_runtime_manager().status().get("model_key") == model_key:
@@ -297,16 +289,16 @@ async def benchmark(payload: BenchmarkRequest):
 @router.put("/task-settings/{task_type}")
 def update_task_setting(task_type: str, payload: dict, db: Session = Depends(get_db)):
     model_key = str(payload.get("model_key") or "").strip()
-    row = db.query(LocalModelTaskSetting).filter(LocalModelTaskSetting.task_type == task_type).first()
+    store = local_model_store(db)
+    row = store.task_setting(task_type)
     if not model_key:
         if row:
-            db.delete(row)
+            store.delete(row)
             commit_session(db)
         return ApiResponse.success(message="任务模型设置已清除，将跟随全局默认模型")
     _ensure_local_runtime_usage_enabled()
     if not row:
-        row = LocalModelTaskSetting(task_type=task_type, model_key=model_key)
-        db.add(row)
+        row = store.create_task_setting(task_type, model_key)
     row.model_key = model_key
     row.adapter_ids = payload.get("adapter_ids") or []
     row.context_length = payload.get("context_length")
@@ -317,19 +309,17 @@ def update_task_setting(task_type: str, payload: dict, db: Session = Depends(get
 
 @router.delete("/task-settings/{task_type}")
 def clear_task_setting(task_type: str, db: Session = Depends(get_db)):
-    row = db.query(LocalModelTaskSetting).filter(LocalModelTaskSetting.task_type == task_type).first()
+    store = local_model_store(db)
+    row = store.task_setting(task_type)
     if row:
-        db.delete(row)
+        store.delete(row)
         commit_session(db)
     return ApiResponse.success(message="任务模型设置已清除，将跟随全局默认模型")
 
 
 @router.get("/adapters")
 def list_adapters(project_id: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(ModelAdapter)
-    if project_id:
-        query = query.filter((ModelAdapter.project_id == project_id) | (ModelAdapter.project_id.is_(None)))
-    items = query.order_by(ModelAdapter.created_at.desc()).all()
+    items = local_model_store(db).adapters(project_id)
     return ApiResponse.success(data={"items": [{
         "id": item.id,
         "project_id": item.project_id,
@@ -346,10 +336,11 @@ def list_adapters(project_id: str | None = None, db: Session = Depends(get_db)):
 
 @router.patch("/adapters/{adapter_id}")
 def update_adapter(adapter_id: str, payload: AdapterUpdateRequest, db: Session = Depends(get_db)):
-    item = db.query(ModelAdapter).filter(ModelAdapter.id == adapter_id).first()
+    store = local_model_store(db)
+    item = store.adapter(adapter_id)
     if not item:
         raise ValueError("适配器不存在")
-    model = db.query(LocalModel).filter(LocalModel.model_key == item.base_model_key).first()
+    model = store.model(item.base_model_key)
     if payload.enabled and item.base_model_sha256 and model and model.sha256 != item.base_model_sha256:
         raise ValueError("适配器与当前基座模型哈希不兼容")
     for field in ("enabled", "weight", "is_default_for_writing"):
@@ -365,16 +356,7 @@ def update_adapter(adapter_id: str, payload: AdapterUpdateRequest, db: Session =
 async def compare_adapters(payload: AdapterCompareRequest, db: Session = Depends(get_db)):
     _ensure_local_runtime_usage_enabled()
     candidates: list[tuple[str, list[str]]] = [("基座模型", [])]
-    adapters = (
-        db.query(ModelAdapter)
-        .filter(
-            ModelAdapter.id.in_(payload.adapter_ids),
-            ModelAdapter.base_model_key == payload.model_key,
-        )
-        .all()
-        if payload.adapter_ids
-        else []
-    )
+    adapters = local_model_store(db).selected_adapters(payload.adapter_ids, payload.model_key)
     candidates.extend((adapter.name, [adapter.id]) for adapter in adapters)
     results: list[dict] = []
     for name, adapter_ids in candidates:
@@ -431,10 +413,7 @@ def create_dataset(payload: DatasetCreateRequest, db: Session = Depends(get_db))
 
 @router.get("/training/datasets")
 def list_datasets(project_id: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(TrainingDataset)
-    if project_id:
-        query = query.filter(TrainingDataset.project_id == project_id)
-    rows = query.order_by(TrainingDataset.created_at.desc()).all()
+    rows = local_model_store(db).datasets(project_id)
     return ApiResponse.success(data={"items": [{
         "id": row.id,
         "project_id": row.project_id,
@@ -462,10 +441,7 @@ def create_training(payload: TrainingJobCreateRequest):
 
 @router.get("/training/jobs")
 def list_training_jobs(project_id: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(TrainingJob)
-    if project_id:
-        query = query.filter(TrainingJob.project_id == project_id)
-    rows = query.order_by(TrainingJob.created_at.desc()).all()
+    rows = local_model_store(db).training_jobs(project_id)
     return ApiResponse.success(data={"items": [_training_payload(row) for row in rows]})
 
 
@@ -483,7 +459,7 @@ async def training_events(job_id: str):
             from ..database.session import SessionLocal
 
             with SessionLocal() as db:
-                job = db.query(TrainingJob).filter(TrainingJob.id == job_id).first()
+                job = local_model_store(db).training_job(job_id)
                 if not job:
                     yield f"data: {json.dumps({'status': 'missing'}, ensure_ascii=False)}\n\n"
                     return
@@ -499,7 +475,7 @@ async def training_events(job_id: str):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-def _training_payload(job: TrainingJob) -> dict:
+def _training_payload(job: Any) -> dict:
     log_tail = ""
     if job.log_path and Path(job.log_path).exists():
         lines = Path(job.log_path).read_text(encoding="utf-8", errors="replace").splitlines()

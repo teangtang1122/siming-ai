@@ -6,6 +6,7 @@ import os
 import shutil
 import webbrowser
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -27,8 +28,8 @@ from ..core.exceptions import AppException, LLMError, NotFoundError, ValidationE
 from ..core.legacy_env import set_compatible_env
 from ..core.model_limits import limits_payload
 from ..core.response import ApiResponse
-from ..database.models import APIConfig
 from ..database.session import get_db
+from ..modules.model_runtime.interfaces.config_dependencies import model_config_crud
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..modules.model_runtime.application.verification import (
     ModelProbeRequest,
@@ -53,7 +54,6 @@ from ..services.content_store import content_root as resolve_content_root
 from ..services.content_store import migrate_projects_to_content_root
 from ..services.external_agent.mcp_auto_config import auto_configure_mcp_for_provider
 from ..services.model_readiness import (
-    READINESS_READY,
     is_model_config_usable,
     mark_model_failure,
     mark_model_ready,
@@ -323,20 +323,23 @@ def _normalize_model_for_provider(provider: str, model: str, *, strict: bool = T
     return normalized
 
 
-def _normalize_model_list_for_provider(provider: str, models: list[dict]) -> list[dict]:
+def _normalize_model_list_for_provider(
+    provider: str,
+    models: list[dict],
+    db: Session | None = None,
+) -> list[dict]:
     if is_local_cli_provider(provider):
         return models or local_cli_model_options(provider)
     if provider == "local_llama_cpp":
-        from ..database.models import LocalModel
-        from ..database.session import SessionLocal
         from ..services.local_runtime.model_jobs import ensure_catalog_rows
 
         ensure_catalog_rows()
-        with SessionLocal() as db:
-            return [
-                {"id": item.model_key, "display_name": item.display_name}
-                for item in db.query(LocalModel).order_by(LocalModel.recommended_vram_gb.asc()).all()
-            ]
+        if db is None:
+            raise RuntimeError("A request session is required for the local model catalog")
+        return [
+            {"id": item.model_key, "display_name": item.display_name}
+            for item in model_config_crud(db).list_local_models()
+        ]
     if provider == "gemini":
         normalized: dict[str, dict] = {}
         for model in models:
@@ -357,7 +360,7 @@ def _normalize_model_list_for_provider(provider: str, models: list[dict]) -> lis
     ]
 
 
-def _config_payload(cfg: APIConfig, include_masked_key: bool = False) -> dict:
+def _config_payload(cfg: Any, include_masked_key: bool = False) -> dict:
     default_model = _normalize_model_for_provider(cfg.provider, cfg.default_model, strict=False)
     data = {
         "id": cfg.id,
@@ -417,7 +420,7 @@ def _validate_cli_command(command: str | None) -> str:
 
 @router.get("/config/models")
 def list_model_configs(db: Session = Depends(get_db)):
-    configs = db.query(APIConfig).order_by(APIConfig.created_at.desc()).all()
+    configs = model_config_crud(db).list_configs()
     items = [
         _config_payload(cfg)
         for cfg in configs
@@ -462,7 +465,8 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         cli_args = None
 
     default_model = _normalize_model_for_provider(payload.provider, payload.default_model)
-    existing = db.query(APIConfig).filter(APIConfig.provider == payload.provider).first()
+    crud = model_config_crud(db)
+    existing = crud.get_provider(payload.provider)
     encrypted_key = encrypt(api_key)
 
     if existing:
@@ -484,7 +488,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
             message=f"{payload.provider} 配置已更新",
         )
 
-    config = APIConfig(
+    config = crud.create(
         provider=payload.provider,
         api_key_encrypted=encrypted_key,
         default_model=default_model,
@@ -499,7 +503,6 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         deconstruct_input_char_limit=payload.deconstruct_input_char_limit,
         deconstruct_item_char_limit=payload.deconstruct_item_char_limit,
     )
-    db.add(config)
     commit_session(db)
     db.refresh(config)
     return ApiResponse.success(
@@ -512,14 +515,14 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
 def get_model_config_detail(provider: str, db: Session = Depends(get_db)):
     if local_runtime_disabled(provider):
         raise ValidationError(local_runtime_disabled_message())
-    config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
+    config = model_config_crud(db).get_provider(provider)
     if not config:
         raise NotFoundError(f"Provider config '{provider}' not found")
     return ApiResponse.success(data=_config_payload(config, include_masked_key=True))
 
 
 @router.post("/config/models/list")
-async def list_provider_models(payload: ModelListRequest):
+async def list_provider_models(payload: ModelListRequest, db: Session = Depends(get_db)):
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
     warning = None
@@ -548,7 +551,7 @@ async def list_provider_models(payload: ModelListRequest):
         else:
             raise
 
-    models = _normalize_model_list_for_provider(payload.provider, models)
+    models = _normalize_model_list_for_provider(payload.provider, models, db)
     return ApiResponse.success(
         data={
             "models": models,
@@ -606,7 +609,8 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
 
     if local_runtime_disabled(provider):
         raise ValidationError(local_runtime_disabled_message())
-    config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
+    crud = model_config_crud(db)
+    config = crud.get_provider(provider)
     if not config:
         raise NotFoundError(f"Provider config '{provider}' not found")
 
@@ -644,13 +648,10 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
     if detected_protocol:
         ready_message = f"真实对话成功，使用 {_protocol_label(detected_protocol)}"
     mark_model_ready(config, source="manual_verify", message=ready_message)
-    usable_global = db.query(APIConfig).filter(
-        APIConfig.is_global_default == True,  # noqa: E712
-        APIConfig.readiness_status == READINESS_READY,
-    ).first()
+    usable_global = crud.get_ready_global()
     became_global = usable_global is None
     if became_global:
-        db.query(APIConfig).update({"is_global_default": False})
+        crud.clear_global()
         config.is_global_default = True
     commit_session(db)
     db.refresh(config)
@@ -706,17 +707,18 @@ async def chat_completion_stream(payload: ChatCompletionRequest):
 
 @router.delete("/config/models/{provider}")
 def delete_model_config(provider: str, db: Session = Depends(get_db)):
-    config = db.query(APIConfig).filter(APIConfig.provider == provider).first()
+    crud = model_config_crud(db)
+    config = crud.get_provider(provider)
     if not config:
         raise NotFoundError(f"Provider config '{provider}' not found")
-    db.delete(config)
+    crud.delete(config)
     commit_session(db)
     return ApiResponse.success(message=f"{provider} 配置已删除")
 
 
 @router.get("/config/global-model")
 def get_global_model(db: Session = Depends(get_db)):
-    config = db.query(APIConfig).filter(APIConfig.is_global_default == True).first()  # noqa: E712
+    config = model_config_crud(db).get_global()
     if not config or not is_model_config_usable(config) or local_runtime_disabled(config.provider):
         return ApiResponse.success(data={"provider": None, "model": None}, message="未设置全局默认模型")
     return ApiResponse.success(data={
@@ -729,13 +731,14 @@ def get_global_model(db: Session = Depends(get_db)):
 def set_global_model(payload: GlobalModelSetting, db: Session = Depends(get_db)):
     if local_runtime_disabled(payload.provider):
         raise ValidationError(local_runtime_disabled_message())
-    config = db.query(APIConfig).filter(APIConfig.provider == payload.provider).first()
+    crud = model_config_crud(db)
+    config = crud.get_provider(payload.provider)
     if not config:
         raise NotFoundError(f"未找到提供商 '{payload.provider}' 的配置，请先添加API配置")
     if not is_model_config_usable(config):
         raise ValidationError("这个模型尚未通过真实对话测试，请先点击“测试并启用”")
 
-    db.query(APIConfig).update({"is_global_default": False})
+    crud.clear_global()
     config.is_global_default = True
     if payload.model:
         config.default_model = _normalize_model_for_provider(payload.provider, payload.model)
