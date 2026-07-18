@@ -1,53 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Badge, Button, Drawer, Empty, Flex, Progress, Space, Spin, Tag, Tooltip, Typography, message } from 'antd'
+import { Badge, Button, Drawer, Empty, Flex, Progress, Space, Spin, Tooltip, Typography, message } from 'antd'
 import { CloseCircleOutlined, ClockCircleOutlined, PauseOutlined, PlayCircleOutlined, ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons'
-import { apiClient } from '../api/client'
-import { PersistentOutcome } from './interaction'
-import type { OperationAttention, OperationOutcome, OperationResult } from './interaction'
+import { PersistentOutcome } from '../../../components/interaction'
+import {
+  operationKeys,
+  toInteractionProjection,
+  updateOperationInCache,
+  useOperationAction,
+  useOperations,
+} from '..'
+import type { OperationRun } from '..'
+import { RuntimeStatusTags } from '../../../shared/ui/runtime'
 
 const { Paragraph, Text, Title } = Typography
 
-interface ApiResponse<T> { data: T }
-interface OperationProgress { mode: 'determinate' | 'indeterminate'; current?: number; total?: number; percent?: number }
-interface OperationRun {
-  id: string
-  source_kind: string
-  title: string
-  status: string
-  outcome?: OperationOutcome
-  attention?: OperationAttention
-  result?: OperationResult
-  result_summary?: string
-  health_status: 'active' | 'quiet' | 'suspected_stall' | 'stalled' | 'disconnected'
-  phase?: string
-  current_message?: string
-  progress: OperationProgress
-  model_source?: string
-  tool_mode?: string
-  next_action?: string
-  resume_url?: string
-  can_pause: boolean
-  can_cancel: boolean
-  can_retry: boolean
-  elapsed_seconds: number
-  last_activity_at?: string
-}
-
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'waiting_user', 'paused'])
-const healthMeta: Record<OperationRun['health_status'], { label: string; color: string }> = {
-  active: { label: '正在推进', color: 'success' },
-  quiet: { label: '模型仍在计算', color: 'processing' },
-  suspected_stall: { label: '疑似停滞', color: 'warning' },
-  stalled: { label: '已卡住', color: 'error' },
-  disconnected: { label: '运行连接中断', color: 'error' },
-}
-const statusLabels: Record<string, string> = {
-  draft: '草稿', queued: '等待开始', running: '运行中', waiting_user: '等待确认', paused: '已暂停',
-  completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断',
-}
-
 function elapsedLabel(seconds = 0) {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -73,16 +43,15 @@ function OperationItem({ operation, onAction, onOpen }: {
 }) {
   const active = ACTIVE_STATUSES.has(operation.status)
   const computing = operation.status === 'queued' || operation.status === 'running'
-  const health = healthMeta[operation.health_status] || healthMeta.active
   const progress = operation.progress || { mode: 'indeterminate' }
+  const interaction = toInteractionProjection(operation)
   return (
     <section className="operation-center-item" aria-label={operation.title}>
       <Flex justify="space-between" align="flex-start" gap={12}>
         <div className="operation-center-main">
           <Space size={6} wrap>
             <Text strong>{operation.title}</Text>
-            <Tag>{statusLabels[operation.status] || operation.status}</Tag>
-            {computing && <Tag color={health.color}>{health.label}</Tag>}
+            <RuntimeStatusTags operation={operation} />
           </Space>
           <Paragraph className="operation-center-message" ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}>
             {operation.current_message || '正在等待新的运行信息'}
@@ -111,16 +80,16 @@ function OperationItem({ operation, onAction, onOpen }: {
 
       <div className="operation-center-facts">
         <span><ClockCircleOutlined /> 已运行 {elapsedLabel(operation.elapsed_seconds)}</span>
-        <span>最近活动 {relativeActivity(operation.last_activity_at)}</span>
+        <span>最近活动 {relativeActivity(operation.last_activity_at || undefined)}</span>
         {operation.phase && <span>阶段 {operation.phase}</span>}
         {operation.model_source && <span>模型 {operation.model_source}</span>}
       </div>
-      {operation.outcome && (operation.status === 'waiting_user' || !active) && (
+      {interaction.outcome && (operation.status === 'waiting_user' || !active) && (
         <PersistentOutcome
           className="operation-center-outcome"
-          outcome={operation.outcome}
-          attention={operation.attention}
-          result={operation.result || { summary: operation.result_summary }}
+          outcome={interaction.outcome}
+          attention={interaction.attention}
+          result={interaction.result || { summary: operation.result_summary || undefined }}
           onAction={operation.attention?.action_url || operation.resume_url ? () => onOpen(operation) : undefined}
         />
       )}
@@ -140,13 +109,23 @@ function OperationItem({ operation, onAction, onOpen }: {
 export default function GlobalOperationCenter() {
   const navigate = useNavigate()
   const location = useLocation()
+  const queryClient = useQueryClient()
+  const {
+    data: operationItems,
+    isError: pollDisconnected,
+    refetch: refetchOperations,
+  } = useOperations(30)
+  const {
+    mutateAsync: runOperationAction,
+    isPending: actionPending,
+    variables: actionVariables,
+  } = useOperationAction(30)
   const [open, setOpen] = useState(false)
   const [navTarget, setNavTarget] = useState<HTMLElement | null>(null)
-  const [operations, setOperations] = useState<OperationRun[]>([])
-  const [pollDisconnected, setPollDisconnected] = useState(false)
   const [streamDisconnected, setStreamDisconnected] = useState(false)
-  const [actionId, setActionId] = useState<string>()
   const streamRef = useRef<EventSource | null>(null)
+  const operations = useMemo(() => operationItems || [], [operationItems])
+  const actionId = actionPending ? actionVariables?.operationId : undefined
 
   useEffect(() => {
     const attach = () => {
@@ -162,22 +141,6 @@ export default function GlobalOperationCenter() {
     return () => observer.disconnect()
   }, [location.pathname])
 
-  const refresh = useCallback(async () => {
-    try {
-      const response = await apiClient.get<ApiResponse<{ items: OperationRun[] }>>('/operations', { limit: 30 })
-      setOperations(response.data.data.items || [])
-      setPollDisconnected(false)
-    } catch {
-      setPollDisconnected(true)
-    }
-  }, [])
-
-  useEffect(() => {
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 3000)
-    return () => window.clearInterval(timer)
-  }, [refresh])
-
   const activeOperations = useMemo(() => operations.filter((item) => ACTIVE_STATUSES.has(item.status)), [operations])
   const recentOperations = useMemo(() => operations.filter((item) => !ACTIVE_STATUSES.has(item.status)).slice(0, 10), [operations])
   const primaryActiveId = activeOperations[0]?.id
@@ -190,32 +153,31 @@ export default function GlobalOperationCenter() {
     streamRef.current = source
     source.onopen = () => setStreamDisconnected(false)
     source.addEventListener('heartbeat', (event) => {
-      setStreamDisconnected(false)
+        setStreamDisconnected(false)
       try {
         const next = JSON.parse((event as MessageEvent).data) as OperationRun
-        setOperations((current) => current.map((item) => item.id === next.id ? next : item))
+        queryClient.setQueryData<OperationRun[]>(
+          operationKeys.list(30),
+          (current) => updateOperationInCache(current, next),
+        )
       } catch { /* polling remains authoritative */ }
     })
     source.addEventListener('done', () => {
       source.close()
       setStreamDisconnected(false)
-      void refresh()
+      void refetchOperations()
     })
     source.onerror = () => setStreamDisconnected(true)
     return () => source.close()
-  }, [open, primaryActiveId, refresh])
+  }, [open, primaryActiveId, queryClient, refetchOperations])
 
   const runAction = useCallback(async (operation: OperationRun, action: string) => {
-    setActionId(operation.id)
     try {
-      await apiClient.post(`/operations/${operation.id}/${action}`)
-      await refresh()
+      await runOperationAction({ operationId: operation.id, action })
     } catch (error) {
       message.error(error instanceof Error ? error.message : '任务操作失败')
-    } finally {
-      setActionId(undefined)
     }
-  }, [refresh])
+  }, [runOperationAction])
 
   const openResult = useCallback((operation: OperationRun) => {
     const target = operation.attention?.action_url || operation.resume_url

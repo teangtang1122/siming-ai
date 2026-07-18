@@ -1,11 +1,22 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { createSimingQueryClient } from '../shared/query/client'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('../api/client', () => ({ apiClient: api }))
 
-import GlobalOperationCenter from '../components/GlobalOperationCenter'
+import GlobalOperationCenter from '../features/operations/components/GlobalOperationCenter'
+
+function renderCenter() {
+  const client = createSimingQueryClient()
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter><GlobalOperationCenter /></MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
 
 class FakeEventSource {
   static last: FakeEventSource | undefined
@@ -58,7 +69,7 @@ describe('GlobalOperationCenter', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('shows real health and avoids a fabricated percentage for indeterminate work', async () => {
-    render(<MemoryRouter><GlobalOperationCenter /></MemoryRouter>)
+    renderCenter()
 
     const trigger = await screen.findByRole('button', { name: '全局任务中心，1 个任务正在进行或等待处理' })
     fireEvent.click(trigger)
@@ -73,7 +84,7 @@ describe('GlobalOperationCenter', () => {
   })
 
   it('treats an SSE break as reconnection while polling remains active', async () => {
-    render(<MemoryRouter><GlobalOperationCenter /></MemoryRouter>)
+    renderCenter()
     fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，1 个任务正在进行或等待处理' }))
     await waitFor(() => expect(FakeEventSource.last?.url).toBe('/api/v1/operations/operation-1/stream'))
 
@@ -112,7 +123,7 @@ describe('GlobalOperationCenter', () => {
       },
     })
 
-    render(<MemoryRouter><GlobalOperationCenter /></MemoryRouter>)
+    renderCenter()
     fireEvent.click(await screen.findByRole('button', { name: '全局任务中心，1 个任务正在进行或等待处理' }))
 
     expect(await screen.findByText('阶段内容等待确认')).toBeInTheDocument()

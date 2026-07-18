@@ -7,7 +7,7 @@ module.exports = {
       to: { circular: true },
     },
     {
-      name: 'shared-does-not-depend-on-features-or-pages',
+      name: 'legacy-shared-does-not-depend-on-features-or-pages',
       severity: 'error',
       from: {
         path: '^src/(api|components|contexts|hooks|stores|styles|themes|types|utils)/',
@@ -15,10 +15,16 @@ module.exports = {
       to: { path: '^src/(features|pages)/' },
     },
     {
-      name: 'features-do-not-depend-on-pages',
+      name: 'shared-does-not-depend-on-app-features-or-pages',
+      severity: 'error',
+      from: { path: '^src/shared/' },
+      to: { path: '^src/(app|features|pages)/' },
+    },
+    {
+      name: 'features-do-not-depend-on-app-or-pages',
       severity: 'error',
       from: { path: '^src/features/' },
-      to: { path: '^src/pages/' },
+      to: { path: '^src/(app|pages)/' },
     },
   ],
   options: {

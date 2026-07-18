@@ -1,11 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { createSimingQueryClient } from '../shared/query/client'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn() }))
 vi.mock('../api/client', () => ({ apiClient: api }))
 
 import { GettingStartedPanel } from '../pages/GettingStartedPage'
+
+function renderPanel() {
+  const client = createSimingQueryClient()
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter><GettingStartedPanel /></MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
 
 const baseStatus = {
   free_models: [],
@@ -29,7 +40,7 @@ describe('GettingStartedPanel', () => {
       message: '免费体验任务已创建', free_models: [],
     } } })
 
-    render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
+    renderPanel()
     expect(await screen.findByText('从一句故事想法开始')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /准备 AI 并开始构思/ }))
 
@@ -50,7 +61,7 @@ describe('GettingStartedPanel', () => {
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
     } } })
 
-    render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
+    renderPanel()
 
     expect(await screen.findByText('免费写作能力已经准备好')).toBeInTheDocument()
     expect(screen.getByLabelText('你想写什么故事？')).toBeInTheDocument()
@@ -68,7 +79,7 @@ describe('GettingStartedPanel', () => {
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
 
-    render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
+    renderPanel()
     fireEvent.change(await screen.findByLabelText('你想写什么故事？'), { target: { value: '午夜客栈里的修仙少女' } })
     fireEvent.click(screen.getByRole('button', { name: /生成三套小说创意/ }))
 
@@ -98,7 +109,7 @@ describe('GettingStartedPanel', () => {
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
 
-    render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
+    renderPanel()
     fireEvent.click(await screen.findByRole('button', { name: '开始官方登录' }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/authenticate'))
     expect(await screen.findByText('正在等待 OpenCode 官方登录')).toBeInTheDocument()
@@ -118,7 +129,7 @@ describe('GettingStartedPanel', () => {
       },
     } } })
 
-    render(<MemoryRouter><GettingStartedPanel /></MemoryRouter>)
+    renderPanel()
 
     expect(await screen.findByText('Windows 证书验证没有完成')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /重新验证连接/ })).toBeInTheDocument()

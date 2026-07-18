@@ -41,6 +41,12 @@ and continuity prompts now share versioned Markdown/YAML sources, deterministic
 golden checks, and source hashes. OpenAI, MCP, and frontend tool projections use
 the same catalog while unmigrated tools retain exact compatibility schemas.
 
+Beta.2 establishes `app`, `shared`, and `features` as frontend dependency
+boundaries. TanStack Query owns reusable server state, Zustand is limited to
+cross-page UI state, and core project, onboarding, and operation responses are
+generated from explicit FastAPI response contracts instead of handwritten
+duplicates.
+
 ## Enforced Rules
 
 - Import cycles are forbidden.
@@ -51,6 +57,9 @@ the same catalog while unmigrated tools retain exact compatibility schemas.
   baseline and cannot grow.
 - Prompt declarations cannot import the workspace runtime.
 - The model gateway cannot import the context orchestrator.
+- Frontend `shared` cannot import `app`, `features`, or `pages`; features cannot
+  import `app` or `pages`.
+- OpenAPI generated types must be current before frontend CI can pass.
 
 Run the checks with:
 

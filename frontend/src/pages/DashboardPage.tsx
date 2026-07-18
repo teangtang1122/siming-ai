@@ -29,7 +29,15 @@ import SystemNav from '../components/SystemNav'
 import PageWrapper from '../components/PageWrapper'
 import { AuthorEmptyState } from '../components/interaction'
 import { apiClient } from '../api/client'
-import { useAppStore } from '../stores'
+import {
+  useCreateProject,
+  useDeleteProject,
+  useProjects,
+  useUpdateProject,
+} from '../features/projects'
+import type { ProjectCreateDraft, ProjectUpdateInput } from '../features/projects'
+import { useGettingStartedSummary } from '../features/onboarding'
+import { QueryStateNotice } from '../shared/ui/runtime'
 import './DashboardPage.css'
 
 const { Text, Title } = Typography
@@ -60,13 +68,6 @@ interface ApiResponse<T> {
   code: number
   message: string
   data: T
-}
-
-interface GettingStartedSummary {
-  needs_setup: boolean
-  has_detected_models?: boolean
-  has_usable_models?: boolean
-  recommended_action?: string
 }
 
 interface UploadResult {
@@ -112,7 +113,7 @@ function tagsPayload(value?: string) {
   return tags.length ? tags : undefined
 }
 
-function tagsToFormValue(tagsStr?: string) {
+function tagsToFormValue(tagsStr?: string | null) {
   if (!tagsStr) return ''
   try {
     const tags = JSON.parse(tagsStr)
@@ -128,35 +129,29 @@ function titleFromFile(file: File) {
 
 function DashboardPage() {
   const navigate = useNavigate()
-  const {
-    projects,
-    loading,
-    fetchProjects,
-    createProject,
-    updateProject,
-    deleteProject,
-  } = useAppStore()
-
   const [searchKeyword, setSearchKeyword] = useState('')
+  const [appliedSearch, setAppliedSearch] = useState('')
+  const projectsQuery = useProjects(appliedSearch || undefined)
+  const createProjectMutation = useCreateProject()
+  const updateProjectMutation = useUpdateProject()
+  const deleteProjectMutation = useDeleteProject()
+  const setupQuery = useGettingStartedSummary()
+  const projects = projectsQuery.data?.items || []
+  const loading = projectsQuery.isLoading || projectsQuery.isFetching
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [importStatus, setImportStatus] = useState('')
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null)
   const [creationDrafts, setCreationDrafts] = useState<NovelCreationDraftSummary[]>([])
-  const [needsModelSetup, setNeedsModelSetup] = useState(false)
   const [editingProject, setEditingProject] = useState<{
     id: string
     title: string
-    description?: string
-    tags?: string
+    description?: string | null
+    tags?: string | null
   } | null>(null)
   const [form] = Form.useForm<ProjectFormValues>()
   const [editForm] = Form.useForm<ProjectFormValues>()
-
-  useEffect(() => {
-    fetchProjects()
-  }, [fetchProjects])
 
   useEffect(() => {
     const loadCreationDrafts = async () => {
@@ -170,17 +165,7 @@ function DashboardPage() {
     void loadCreationDrafts()
   }, [])
 
-  useEffect(() => {
-    const checkModelSetup = async () => {
-      try {
-        const response = await apiClient.get<ApiResponse<GettingStartedSummary>>('/config/getting-started', { summary: true })
-        setNeedsModelSetup(Boolean(response.data.data.needs_setup))
-      } catch {
-        setNeedsModelSetup(false)
-      }
-    }
-    void checkModelSetup()
-  }, [])
+  const needsModelSetup = Boolean(setupQuery.data?.needs_setup)
 
   const pendingUploadList = useMemo<UploadFile[]>(() => {
     if (!pendingImportFile) return []
@@ -193,7 +178,7 @@ function DashboardPage() {
 
   const handleSearch = (value: string) => {
     setSearchKeyword(value)
-    fetchProjects(value)
+    setAppliedSearch(value.trim())
   }
 
   const closeCreateModal = () => {
@@ -274,7 +259,7 @@ function DashboardPage() {
   }
 
   const handleCreate = async (values: ProjectFormValues) => {
-    const payload: Record<string, unknown> = {
+    const payload: ProjectCreateDraft = {
       title: values.title,
       description: values.description || '',
       tags: tagsPayload(values.tags),
@@ -284,8 +269,7 @@ function DashboardPage() {
     setImportStatus(pendingImportFile ? '正在创建作品...' : '')
     let createdProjectId: string | null = null
     try {
-      const project = await createProject(payload)
-      if (!project) return
+      const project = await createProjectMutation.mutateAsync(payload)
       createdProjectId = project.id
 
       if (pendingImportFile) {
@@ -300,12 +284,13 @@ function DashboardPage() {
         message.success('作品创建成功')
       }
 
-      await fetchProjects(searchKeyword || undefined)
       setIsCreateModalOpen(false)
       setPendingImportFile(null)
       setImportStatus('')
       form.resetFields()
       navigate(`/project/${project.id}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '创建作品失败')
     } finally {
       setCreating(false)
       if (!createdProjectId) setImportStatus('')
@@ -314,28 +299,35 @@ function DashboardPage() {
 
   const handleEdit = async (values: ProjectFormValues) => {
     if (!editingProject) return
-    const payload: Record<string, unknown> = {
+    const payload: ProjectUpdateInput = {
       title: values.title,
       description: values.description || '',
       tags: tagsPayload(values.tags),
     }
-    const project = await updateProject(editingProject.id, payload)
-    if (project) {
+    try {
+      await updateProjectMutation.mutateAsync({ projectId: editingProject.id, payload })
       message.success('作品已更新')
       setIsEditModalOpen(false)
       setEditingProject(null)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '更新作品失败')
     }
   }
 
   const handleDelete = async (id: string) => {
-    if (await deleteProject(id)) message.success('作品已删除')
+    try {
+      await deleteProjectMutation.mutateAsync(id)
+      message.success('作品已删除')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '删除作品失败')
+    }
   }
 
   const openEditModal = (project: {
     id: string
     title: string
-    description?: string
-    tags?: string
+    description?: string | null
+    tags?: string | null
   }) => {
     setEditingProject(project)
     editForm.setFieldsValue({
@@ -346,7 +338,7 @@ function DashboardPage() {
     setIsEditModalOpen(true)
   }
 
-  const renderTags = (tagsStr?: string) => {
+  const renderTags = (tagsStr?: string | null) => {
     const tags = tagsToFormValue(tagsStr).split('，').filter(Boolean)
     if (!tags.length) return null
     return (
@@ -409,6 +401,14 @@ function DashboardPage() {
         />
         <Text type="secondary">{projects.length} 部作品{creationDrafts.length > 0 ? ` · ${creationDrafts.length} 个待续立项` : ''}</Text>
       </div>
+
+      {projectsQuery.isError && (
+        <QueryStateNotice
+          error={projectsQuery.error}
+          title="作品列表暂时无法加载"
+          onRetry={() => { void projectsQuery.refetch() }}
+        />
+      )}
 
       {creationDrafts.length > 0 && (
         <section className="dashboard-creation-drafts" aria-labelledby="creation-drafts-title">

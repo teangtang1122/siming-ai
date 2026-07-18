@@ -4252,6 +4252,91 @@ export interface components {
              */
             message: string;
         };
+        /** ApiResponse[GettingStartedStatus] */
+        ApiResponse_GettingStartedStatus_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["GettingStartedStatus"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[NoneType] */
+        ApiResponse_NoneType_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            /** Data */
+            data?: null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[OperationListData] */
+        ApiResponse_OperationListData_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["OperationListData"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[OperationResponse] */
+        ApiResponse_OperationResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["OperationResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[ProjectListData] */
+        ApiResponse_ProjectListData_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["ProjectListData"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
+        /** ApiResponse[ProjectResponse] */
+        ApiResponse_ProjectResponse_: {
+            /**
+             * Code
+             * @default 0
+             */
+            code: number;
+            data?: components["schemas"]["ProjectResponse"] | null;
+            /**
+             * Message
+             * @default success
+             */
+            message: string;
+        };
         /** BenchmarkRequest */
         BenchmarkRequest: {
             /**
@@ -5008,6 +5093,96 @@ export interface components {
              */
             trusted_local_enabled?: boolean | null;
         };
+        /** FreeModelOption */
+        FreeModelOption: {
+            /** Display Name */
+            display_name: string;
+            /** Id */
+            id: string;
+            /**
+             * Recommended
+             * @default false
+             */
+            recommended: boolean;
+        };
+        /**
+         * GettingStartedStatus
+         * @description Stable first-run projection shared by the GUI and generated OpenAPI types.
+         */
+        GettingStartedStatus: {
+            activation_job?: components["schemas"]["OpenCodeActivationStatus"] | null;
+            /** Command */
+            command?: string | null;
+            /**
+             * Configured
+             * @default false
+             */
+            configured: boolean;
+            /** Configured Model */
+            configured_model?: string | null;
+            /** Free Models */
+            free_models?: components["schemas"]["FreeModelOption"][];
+            /** Global Model */
+            global_model?: {
+                [key: string]: string | null;
+            } | null;
+            /**
+             * Has Any Model
+             * @default false
+             */
+            has_any_model: boolean;
+            /**
+             * Has Detected Models
+             * @default false
+             */
+            has_detected_models: boolean;
+            /**
+             * Has Usable Models
+             * @default false
+             */
+            has_usable_models: boolean;
+            /** Install Location */
+            install_location: string;
+            /** Installed */
+            installed: boolean;
+            /**
+             * Is Global Default
+             * @default false
+             */
+            is_global_default: boolean;
+            /**
+             * Managed By Siming
+             * @default false
+             */
+            managed_by_siming: boolean;
+            /**
+             * Model Source
+             * @default none
+             */
+            model_source: string;
+            /** Models */
+            models?: Record<string, never>[];
+            /**
+             * Needs Setup
+             * @default true
+             */
+            needs_setup: boolean;
+            /** Official Links */
+            official_links?: {
+                [key: string]: string;
+            };
+            /**
+             * Platform Supported
+             * @default true
+             */
+            platform_supported: boolean;
+            /** Recommended Action */
+            recommended_action: string;
+            /** Recommended Model */
+            recommended_model?: string | null;
+            /** Version */
+            version?: string | null;
+        };
         /**
          * GlobalModelSetting
          * @description Schema for global default model setting.
@@ -5477,6 +5652,76 @@ export interface components {
             /** Preferred Model */
             preferred_model?: string | null;
         };
+        /** OpenCodeActivationStatus */
+        OpenCodeActivationStatus: {
+            /**
+             * Attempt Count
+             * @default 0
+             */
+            attempt_count: number;
+            /** Auth Mode */
+            auth_mode?: string | null;
+            /** Auth Prompt */
+            auth_prompt?: string | null;
+            /** Auth Status */
+            auth_status?: string | null;
+            /** Auth Url */
+            auth_url?: string | null;
+            /**
+             * Bytes Downloaded
+             * @default 0
+             */
+            bytes_downloaded: number;
+            /**
+             * Bytes Total
+             * @default 0
+             */
+            bytes_total: number;
+            /** Command */
+            command?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Download Url */
+            download_url?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Estimated Seconds Remaining */
+            estimated_seconds_remaining?: number | null;
+            /** Failure Kind */
+            failure_kind?: string | null;
+            /** Free Models */
+            free_models?: components["schemas"]["FreeModelOption"][];
+            /** Id */
+            id: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Next Action */
+            next_action?: string | null;
+            /** Operation Id */
+            operation_id?: string | null;
+            /**
+             * Percent
+             * @default 0
+             */
+            percent: number;
+            /** Phase */
+            phase: string;
+            /** Preferred Model */
+            preferred_model?: string | null;
+            /** Selected Model */
+            selected_model?: string | null;
+            /** Sha256 */
+            sha256?: string | null;
+            /** Status */
+            status: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Version */
+            version?: string | null;
+        };
         /** OpenCodeConfigureRequest */
         OpenCodeConfigureRequest: {
             /** Command */
@@ -5491,6 +5736,159 @@ export interface components {
              * Format: password
              */
             credential: string;
+        };
+        /** OperationAttentionResponse */
+        OperationAttentionResponse: {
+            /** Action Label */
+            action_label?: string | null;
+            /** Action Url */
+            action_url?: string | null;
+            /** Blocking */
+            blocking?: boolean | null;
+            /** Kind */
+            kind?: string | null;
+            /** Message */
+            message?: string | null;
+            /** Title */
+            title?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OperationEventResponse */
+        OperationEventResponse: {
+            /** Created At */
+            created_at?: string | null;
+            /** Event Type */
+            event_type: string;
+            /** Message */
+            message?: string | null;
+            /** Payload */
+            payload?: Record<string, never> | null;
+            /** Sequence */
+            sequence: number;
+            /** Status */
+            status: string;
+        };
+        /** OperationListData */
+        OperationListData: {
+            /** Items */
+            items: components["schemas"]["OperationResponse"][];
+        };
+        /** OperationProgressResponse */
+        OperationProgressResponse: {
+            /** Current */
+            current?: number | null;
+            /**
+             * Mode
+             * @default indeterminate
+             * @enum {string}
+             */
+            mode: "determinate" | "indeterminate";
+            /** Percent */
+            percent?: number | null;
+            /** Total */
+            total?: number | null;
+        };
+        /** OperationResponse */
+        OperationResponse: {
+            attention?: components["schemas"]["OperationAttentionResponse"] | null;
+            /**
+             * Can Cancel
+             * @default false
+             */
+            can_cancel: boolean;
+            /**
+             * Can Pause
+             * @default false
+             */
+            can_pause: boolean;
+            /**
+             * Can Retry
+             * @default false
+             */
+            can_retry: boolean;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Current Message */
+            current_message?: string | null;
+            /**
+             * Elapsed Seconds
+             * @default 0
+             */
+            elapsed_seconds: number;
+            /** Events */
+            events?: components["schemas"]["OperationEventResponse"][] | null;
+            /** Failure Class */
+            failure_class?: string | null;
+            /**
+             * Health Status
+             * @enum {string}
+             */
+            health_status: "active" | "quiet" | "suspected_stall" | "stalled" | "disconnected";
+            /** Heartbeat At */
+            heartbeat_at?: string | null;
+            /** Id */
+            id: string;
+            /** Input Revision */
+            input_revision?: number | null;
+            /** Input Snapshot Hash */
+            input_snapshot_hash?: string | null;
+            /** Last Activity At */
+            last_activity_at?: string | null;
+            /** Last Checkpoint At */
+            last_checkpoint_at?: string | null;
+            /** Last Output At */
+            last_output_at?: string | null;
+            /** Model Source */
+            model_source?: string | null;
+            /** Next Action */
+            next_action?: string | null;
+            /** Outcome */
+            outcome?: ("completed_with_reply" | "completed_with_tools" | "partial_success" | "empty_response" | "skipped_preflight" | "waiting_user" | "blocked" | "failed" | "cancelled" | "interrupted") | null;
+            /** Phase */
+            phase?: string | null;
+            /** Process Metrics */
+            process_metrics?: Record<string, never> | null;
+            progress: components["schemas"]["OperationProgressResponse"];
+            /** Project Id */
+            project_id?: string | null;
+            result?: components["schemas"]["OperationResultResponse"] | null;
+            /** Result Summary */
+            result_summary?: string | null;
+            /** Resume Url */
+            resume_url?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Kind */
+            source_kind: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "draft" | "queued" | "running" | "waiting_user" | "paused" | "completed" | "failed" | "cancelled" | "interrupted";
+            /** Title */
+            title: string;
+            /** Tool Mode */
+            tool_mode?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** OperationResultResponse */
+        OperationResultResponse: {
+            /** Completed */
+            completed?: string[];
+            /** Incomplete */
+            incomplete?: string[];
+            /** Outcome */
+            outcome?: ("completed_with_reply" | "completed_with_tools" | "partial_success" | "empty_response" | "skipped_preflight" | "waiting_user" | "blocked" | "failed" | "cancelled" | "interrupted") | null;
+            /** Summary */
+            summary?: string | null;
+            /** Warnings */
+            warnings?: string[];
+        } & {
+            [key: string]: unknown;
         };
         /**
          * OutlineCharacterLinkInput
@@ -5678,6 +6076,88 @@ export interface components {
              * @default natural
              */
             writing_style: string | null;
+        };
+        /**
+         * ProjectListData
+         * @description Typed payload returned by the project collection endpoint.
+         */
+        ProjectListData: {
+            /** Items */
+            items: components["schemas"]["ProjectListItem"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * ProjectListItem
+         * @description Schema for project list item.
+         */
+        ProjectListItem: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string | null;
+            /** Folder Path */
+            folder_path?: string | null;
+            /** Id */
+            id: string;
+            /** Storage Mode */
+            storage_mode?: string | null;
+            /** Tags */
+            tags: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ProjectResponse
+         * @description Schema for project response.
+         */
+        ProjectResponse: {
+            /** Content Migrated At */
+            content_migrated_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Custom Style Prompt */
+            custom_style_prompt: string | null;
+            /** Daily Word Goal */
+            daily_word_goal: number;
+            /** Description */
+            description: string | null;
+            /** Folder Path */
+            folder_path?: string | null;
+            /** Forbidden Sentence Patterns */
+            forbidden_sentence_patterns: string | null;
+            /** Id */
+            id: string;
+            /** Narrative Perspective */
+            narrative_perspective: string;
+            /** Rhetoric Guidelines */
+            rhetoric_guidelines: string | null;
+            /** Short Sentences */
+            short_sentences: boolean;
+            /** Storage Mode */
+            storage_mode?: string | null;
+            /** Tags */
+            tags: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Writing Style */
+            writing_style: string;
         };
         /**
          * ProjectStorageRepairRequest
@@ -6480,7 +6960,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_GettingStartedStatus_"];
                 };
             };
             /** @description Validation Error */
@@ -8682,7 +9162,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_OperationListData_"];
                 };
             };
             /** @description Validation Error */
@@ -8713,7 +9193,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_OperationResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -8902,7 +9382,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_ProjectListData_"];
                 };
             };
             /** @description Validation Error */
@@ -8935,7 +9415,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_ProjectResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -8966,7 +9446,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_ProjectResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -9001,7 +9481,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_ProjectResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -9032,7 +9512,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
                 };
             };
             /** @description Validation Error */

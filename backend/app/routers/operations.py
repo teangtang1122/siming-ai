@@ -7,13 +7,14 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ..core.response import ApiResponse
+from ..modules.operations.interfaces.contracts import OperationListData, OperationResponse
 from ..modules.operations.interfaces.dependencies import get_operation_service
 
 
 router = APIRouter(tags=["operations"])
 
 
-@router.get("/operations")
+@router.get("/operations", response_model=ApiResponse[OperationListData])
 def list_operations(
     active_only: bool = False,
     limit: int = Query(30, ge=1, le=100),
@@ -22,7 +23,7 @@ def list_operations(
     return ApiResponse.success(data={"items": items})
 
 
-@router.get("/operations/{operation_id}")
+@router.get("/operations/{operation_id}", response_model=ApiResponse[OperationResponse])
 def get_operation(operation_id: str):
     operation = get_operation_service().get(operation_id, include_events=True)
     if not operation:

@@ -25,8 +25,9 @@ try:
 except ImportError:  # packaged builds install psutil; source fallbacks stay usable
     psutil = None
 
-from .base import BaseAdapter
 from ..core.exceptions import LLMError
+from .base import BaseAdapter
+from .cli_process import hidden_subprocess_kwargs, terminate_cli_process_tree
 
 
 LOCAL_CLI_PROVIDERS = {
@@ -456,14 +457,6 @@ def local_cli_model_options(
     )
 
 
-def hidden_subprocess_kwargs() -> dict:
-    """Hide transient CLI windows when Siming launches model CLIs on Windows."""
-    if os.name != "nt":
-        return {}
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return {"creationflags": creationflags} if creationflags else {}
-
-
 def ensure_opencode_logging_args(provider: str, args: list[str]) -> None:
     """Make opencode surface provider retry/quota errors on stderr."""
     if provider != "opencode_cli":
@@ -790,35 +783,6 @@ def detect_cli_auth_error(*texts: str) -> str:
             break
     suffix = f"：{detail}" if detail else ""
     return f"本机 CLI 登录凭据无效或已过期{suffix}"
-
-
-async def terminate_cli_process_tree(process: asyncio.subprocess.Process) -> None:
-    """Best-effort termination for CLIs that spawn child retry processes."""
-    if process.returncode is not None:
-        return
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/F", "/T"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-                **hidden_subprocess_kwargs(),
-            )
-        except Exception:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-    else:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-    try:
-        await asyncio.wait_for(process.wait(), timeout=10)
-    except Exception:
-        pass
 
 
 async def communicate_with_cli_quota_detection(

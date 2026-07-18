@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, SecretStr
@@ -53,6 +54,69 @@ class OpenCodeActivateRequest(BaseModel):
 
 class OpenCodeCredentialRequest(BaseModel):
     credential: SecretStr = Field(..., min_length=1, max_length=4096)
+
+
+class FreeModelOption(BaseModel):
+    id: str
+    display_name: str
+    recommended: bool = False
+
+
+class OpenCodeActivationStatus(BaseModel):
+    id: str
+    operation_id: str | None = None
+    status: str
+    phase: str
+    percent: int = 0
+    message: str = ""
+    error: str | None = None
+    failure_kind: str | None = None
+    next_action: str | None = None
+    auth_mode: str | None = None
+    auth_status: str | None = None
+    auth_prompt: str | None = None
+    auth_url: str | None = None
+    command: str | None = None
+    version: str | None = None
+    selected_model: str | None = None
+    preferred_model: str | None = None
+    free_models: list[FreeModelOption] = Field(default_factory=list)
+    download_url: str | None = None
+    sha256: str | None = None
+    bytes_downloaded: int = 0
+    bytes_total: int = 0
+    estimated_seconds_remaining: int | None = None
+    attempt_count: int = 0
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class GettingStartedStatus(BaseModel):
+    """Stable first-run projection shared by the GUI and generated OpenAPI types."""
+
+    installed: bool
+    command: str | None = None
+    version: str | None = None
+    managed_by_siming: bool = False
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    model_source: str = "none"
+    free_models: list[FreeModelOption] = Field(default_factory=list)
+    recommended_model: str | None = None
+    platform_supported: bool = True
+    install_location: str
+    configured: bool = False
+    configured_model: str | None = None
+    is_global_default: bool = False
+    has_any_model: bool = False
+    has_detected_models: bool = False
+    has_usable_models: bool = False
+    needs_setup: bool = True
+    recommended_action: str
+    global_model: dict[str, str | None] | None = None
+    activation_job: OpenCodeActivationStatus | None = None
+    official_links: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"protected_namespaces": ()}
 
 
 def _getting_started_summary(db: Session) -> dict:
@@ -117,7 +181,10 @@ def _getting_started_status(db: Session, *, refresh: bool = False) -> dict:
     }
 
 
-@router.get("/config/getting-started")
+@router.get(
+    "/config/getting-started",
+    response_model=ApiResponse[GettingStartedStatus],
+)
 def get_getting_started_status(
     summary: bool = False,
     refresh: bool = False,

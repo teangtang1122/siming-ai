@@ -16,7 +16,13 @@ from ..database.session import get_db
 from ..modules.story.application.commands import StoryCommandContext
 from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ..modules.story.interfaces.dependencies import get_story_command
-from ..schemas.project import ProjectCreate, ProjectListItem, ProjectResponse, ProjectUpdate
+from ..schemas.project import (
+    ProjectCreate,
+    ProjectListData,
+    ProjectListItem,
+    ProjectResponse,
+    ProjectUpdate,
+)
 from ..services.storage_contract import storage_health
 from ..services.workspace import execute_workspace_action
 
@@ -32,7 +38,7 @@ class ProjectStorageRepairRequest(BaseModel):
     )
 
 
-@router.get("/projects")
+@router.get("/projects", response_model=ApiResponse[ProjectListData])
 def list_projects(
     q: Optional[str] = Query(None, description="Search keyword for title or description"),
     db: Session = Depends(get_db),
@@ -47,7 +53,7 @@ def list_projects(
     return ApiResponse.success(data={"items": [item.model_dump() for item in items], "total": len(items)})
 
 
-@router.post("/projects")
+@router.post("/projects", response_model=ApiResponse[ProjectResponse])
 def create_project(
     payload: ProjectCreate,
     command: StoryCommandContext = Depends(get_story_command),
@@ -76,7 +82,7 @@ def create_project(
     )
 
 
-@router.get("/projects/{project_id}")
+@router.get("/projects/{project_id}", response_model=ApiResponse[ProjectResponse])
 def get_project(project_id: str, db: Session = Depends(get_db)):
     """Get project details by ID."""
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -85,7 +91,7 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
     return ApiResponse.success(data=ProjectResponse.model_validate(project).model_dump())
 
 
-@router.put("/projects/{project_id}")
+@router.put("/projects/{project_id}", response_model=ApiResponse[ProjectResponse])
 def update_project(
     project_id: str,
     payload: ProjectUpdate,
@@ -168,7 +174,7 @@ async def repair_project_storage(
     return ApiResponse.success(data=data, message=str(result.get("detail") or "success"))
 
 
-@router.delete("/projects/{project_id}")
+@router.delete("/projects/{project_id}", response_model=ApiResponse[None])
 def delete_project(
     project_id: str,
     command: StoryCommandContext = Depends(get_story_command),

@@ -8,10 +8,10 @@ const api = vi.hoisted(() => ({
   delete: vi.fn(),
 }))
 
-const fetchProjects = vi.fn()
+const invalidateQueries = vi.fn()
 
 vi.mock('../api/client', () => ({ apiClient: api }))
-vi.mock('../stores', () => ({ useAppStore: () => ({ fetchProjects }) }))
+vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }))
 vi.mock('../components/ContextGovernanceSettingsPanel', () => ({ default: () => null }))
 
 import SettingsPage from '../pages/SettingsPage'

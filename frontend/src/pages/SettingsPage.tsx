@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Card,
   Collapse,
@@ -35,7 +36,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
-import { useAppStore } from '../stores'
+import { projectKeys } from '../features/projects'
 import SystemNav from '../components/SystemNav'
 import { AdaptiveHelp } from '../components/interaction'
 import ContextGovernanceSettingsPanel from '../components/ContextGovernanceSettingsPanel'
@@ -385,7 +386,7 @@ interface SettingsPageProps {
 }
 
 function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
-  const { fetchProjects } = useAppStore()
+  const queryClient = useQueryClient()
   const [configs, setConfigs] = useState<ModelConfig[]>([])
   const [globalModel, setGlobalModel] = useState<GlobalModel>({ provider: null, model: null })
   const [loading, setLoading] = useState(false)
@@ -465,8 +466,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     fetchGlobalModel()
     fetchContentRoot()
     fetchLauncherSettings()
-    fetchProjects()
-  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchLauncherSettings, fetchProjects])
+  }, [fetchConfigs, fetchGlobalModel, fetchContentRoot, fetchLauncherSettings])
 
   const saveLaunchMode = async () => {
     setLauncherLoading(true)
@@ -567,7 +567,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     } else {
       message.success(successText)
     }
-    fetchProjects()
+    void queryClient.invalidateQueries({ queryKey: projectKeys.all })
   }
 
   const saveContentRoot = async () => {
