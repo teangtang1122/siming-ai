@@ -118,6 +118,35 @@ def test_opening_outline_has_fifteen_chapters_and_two_to_six_sections_each():
     assert all(2 <= count <= 6 for count in counts.values())
 
 
+def test_final_review_uses_actual_chapter_ids_and_self_heals_stale_contract_results():
+    db = _db()
+    session = _ready_session(db)
+    draft = deepcopy(session.draft_json)
+    opening = draft["stages"]["opening_outline"]["data"]
+    id_map = {
+        chapter["client_id"]: f"model-chapter-{index}"
+        for index, chapter in enumerate(opening["chapters"], start=1)
+    }
+    for chapter in opening["chapters"]:
+        chapter["client_id"] = id_map[chapter["client_id"]]
+    for section in opening["sections"]:
+        section["parent_client_id"] = id_map[section["parent_client_id"]]
+    draft["stages"]["final_review"] = {
+        "status": "generated",
+        "data": {"ready": False, "blocking": ["每章必须包含2至6个 section 场景事件"]},
+        "source": "contract",
+    }
+    session.draft_json = draft
+
+    final = derive_stage(session, "final_review", draft)
+    assert final["ready"] is True
+    assert final["blocking"] == []
+
+    serialized = serialize_session(session)
+    assert serialized["draft"]["stages"]["final_review"]["data"]["ready"] is True
+    assert build_apply_blueprint(session)["outline"]
+
+
 def test_stage_edit_keeps_three_checkpoints_and_invalidates_downstream():
     db = _db()
     session = _ready_session(db)

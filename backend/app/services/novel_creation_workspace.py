@@ -449,6 +449,12 @@ def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, An
 
 def serialize_session(session: NovelCreationSession, include_runs: bool = True) -> dict[str, Any]:
     projected_draft = project_legacy_draft(_dict(session.draft_json), STAGE_ORDER)
+    projected_stages = _dict(projected_draft.get("stages"))
+    projected_final = _dict(projected_stages.get("final_review"))
+    if projected_final.get("data") is not None and projected_final.get("status") in {"generated", "confirmed"}:
+        projected_final["data"] = derive_stage(session, "final_review", projected_draft)
+        projected_stages["final_review"] = projected_final
+        projected_draft["stages"] = projected_stages
     data = {
         "id": session.id,
         "source_project_id": session.source_project_id,
@@ -739,8 +745,13 @@ def derive_stage(
     for section in opening.get("sections", []):
         parent = _text(section.get("parent_client_id"))
         section_counts[parent] = section_counts.get(parent, 0) + 1
-    if any(section_counts.get(f"chapter-{number:02d}", 0) not in range(2, 7) for number in range(1, 16)):
-        blocking.append("每章必须包含2至6个 section 场景事件")
+    chapter_ids = [
+        _text(chapter.get("client_id"))
+        for chapter in opening.get("chapters", [])
+        if isinstance(chapter, dict)
+    ]
+    if any(not chapter_id or section_counts.get(chapter_id, 0) not in range(2, 7) for chapter_id in chapter_ids):
+        blocking.append("每章必须包含2至6个场景事件")
     if not characters.get("characters"):
         blocking.append("缺少角色档案")
     if not world.get("worldbuilding"):
@@ -819,9 +830,7 @@ def build_apply_blueprint(session: NovelCreationSession) -> dict[str, Any]:
     ]
     if unconfirmed:
         raise ValueError("以下阶段尚未确认或已失效：" + "、".join(unconfirmed))
-    final = _dict(stages.get("final_review", {}).get("data"))
-    if not final:
-        final = derive_stage(session, "final_review")
+    final = derive_stage(session, "final_review", draft)
     if not final.get("ready"):
         raise ValueError("最终审阅未通过：" + "；".join(final.get("blocking", [])))
     characters = _dict(stages.get("characters", {}).get("data")) or derive_stage(session, "characters")
