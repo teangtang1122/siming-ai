@@ -28,6 +28,7 @@ from app.services.novel_creation_workspace import (
     initialize_session_draft,
     patch_session,
     save_stage,
+    serialize_session,
 )
 from app.services.workspace.registry import registry
 from app.services.workspace.tools.novel_creation import apply_novel_blueprint
@@ -177,6 +178,27 @@ def test_generation_blockers_require_confirmed_upstream_stages():
 
     assert [item["stage"] for item in blockers] == ["world_style"]
     assert generation_blockers(session, "concepts") == []
+
+
+def test_legacy_lifecycle_stage_is_projected_as_stale_and_blocks_downstream():
+    db = _db()
+    session = _ready_session(db)
+    session.draft_json["stages"]["macro_outline"] = {
+        "status": "confirmed",
+        "source": "model",
+        "data": {"type": "step_start", "part": {"type": "step-start"}},
+    }
+
+    serialized = serialize_session(session)
+
+    macro = serialized["draft"]["stages"]["macro_outline"]
+    assert macro["status"] == "stale"
+    assert macro["data"] is None
+    assert "重新生成" in macro["stale_reason"]
+    assert serialized["stage_flow"]["recommended_stage"] == "macro_outline"
+    assert [item["stage"] for item in generation_blockers(session, "opening_outline")] == ["macro_outline"]
+    with pytest.raises(ValueError, match="全书主线与卷纲"):
+        build_apply_blueprint(session)
 
 
 def test_stage_submission_rejects_a_stale_expected_revision():

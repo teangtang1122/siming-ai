@@ -48,7 +48,7 @@ const presets = {
   platforms: ['暂不确定'], audiences: ['成年大众'],
   length_options: [{ id: 'long', label: '长篇', words: 600000, chapters: 240 }],
   stage_order: ['constraints', 'concepts', 'world_style'],
-  stage_labels: { world_style: '文风与世界观' },
+  stage_labels: { world_style: '文风与世界观', opening_outline: '前15章细纲' },
 }
 
 function renderPage(path = '/novel-creation') {
@@ -185,15 +185,15 @@ describe('NovelCreationWizardPage', () => {
     })
   })
 
-  it('retries the failed stage recorded by the backend instead of the visible stage', async () => {
+  it('retries the failed run stage for legacy errors instead of the visible stage', async () => {
     const session = {
       id: 'session-1', status: 'reviewing', revision: 8, current_stage: 'macro_outline',
+      runs: [{ id: 'run-opening', stage: 'opening_outline', status: 'failed' }],
       last_error: {
         failure_class: 'invalid_response',
         message: '开篇细纲结构不完整',
         next_action: '草稿已保留，请重试“前15章细纲”',
-        failed_stage: 'opening_outline',
-        failed_stage_label: '前15章细纲',
+        run_id: 'run-opening',
       },
       draft: {
         form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
@@ -222,6 +222,46 @@ describe('NovelCreationWizardPage', () => {
         expected_revision: 8,
       }))
     })
+  })
+
+  it('guides legacy errors to repair an upstream blocker before retrying', async () => {
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 8, current_stage: 'macro_outline',
+      runs: [{ id: 'run-opening', stage: 'opening_outline', status: 'failed' }],
+      last_error: {
+        failure_class: 'invalid_response',
+        message: '开篇细纲结构不完整',
+        next_action: '草稿已保留，请重试“前15章细纲”',
+        run_id: 'run-opening',
+      },
+      stage_flow: {
+        attention_stage: 'macro_outline', recommended_stage: 'macro_outline', pending_confirmations: [],
+        items: {
+          macro_outline: { stage: 'macro_outline', label: '全书主线与卷纲', status: 'stale', can_view: true, can_generate: true, can_confirm: false, blocked_by: [], actions: ['generate'] },
+          opening_outline: { stage: 'opening_outline', label: '前15章细纲', status: 'pending', can_view: false, can_generate: false, can_confirm: false, blocked_by: [{ stage: 'macro_outline', label: '全书主线与卷纲', reason: '需要重新生成' }], actions: [] },
+        },
+      },
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [],
+        stages: { macro_outline: { status: 'stale', data: null, stale_reason: '历史模型只返回了运行状态，请重新生成本阶段' } },
+      },
+    }
+    vi.stubGlobal('EventSource', vi.fn().mockImplementation(function EventSourceStub() {
+      return { addEventListener: vi.fn(), close: vi.fn(), onerror: null }
+    }))
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    const user = userEvent.setup()
+    renderPage('/novel-creation?session=session-1&stage=macro_outline')
+    await user.click(await screen.findByRole('button', { name: '先修复“全书主线与卷纲”' }))
+
+    expect(mockPost).not.toHaveBeenCalled()
   })
 
   it('starts only the first stage when the author chooses the guided track', async () => {

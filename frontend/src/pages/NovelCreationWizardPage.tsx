@@ -158,6 +158,7 @@ interface CreationSession {
     failure_class?: string
     message?: string
     next_action?: string
+    run_id?: string
     failed_stage?: string
     failed_stage_label?: string
   }
@@ -1308,8 +1309,10 @@ function NovelCreationWizardPage() {
 
         {session?.last_error && !busy && (() => {
           const failedStage = session.last_error.failed_stage
+            || session.runs?.find((run) => run.id === session.last_error?.run_id)?.stage
           const retryStage = failedStage && [...CORE_STAGES, 'concepts'].includes(failedStage) ? failedStage : currentStage
           const retryLabel = session.last_error.failed_stage_label || stageLabels[retryStage] || retryStage
+          const retryBlocker = session.stage_flow?.items?.[retryStage]?.blocked_by?.[0]
           return (
             <Alert
               className="creation-error-band"
@@ -1317,7 +1320,9 @@ function NovelCreationWizardPage() {
               showIcon
               message={session.last_error.message || '阶段运行失败'}
               description={session.last_error.next_action}
-              action={<Button onClick={() => retryStage === 'concepts' ? void generateConcepts() : void startStageRun(retryStage)}>重试“{retryLabel}”</Button>}
+              action={retryBlocker
+                ? <Button onClick={() => viewStage(retryBlocker.stage)}>先修复“{retryBlocker.label}”</Button>
+                : <Button onClick={() => retryStage === 'concepts' ? void generateConcepts() : void startStageRun(retryStage)}>重试“{retryLabel}”</Button>}
             />
           )
         })()}

@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.database.models import NovelCreationSession, NovelCreationStageEvent, NovelCreationStageRun
+from app.services.novel_creation_compatibility import project_legacy_draft, projected_generation_blockers
 from app.services.novel_creation_failures import build_stage_failure, clear_stage_failure
 from app.services.observability.run_events import classify_failure
 
@@ -366,34 +367,15 @@ def save_compact_concepts(session: NovelCreationSession, concepts: list[dict[str
     return draft["stages"]["concepts"]
 
 
-def generation_blockers(session: NovelCreationSession, stage: str) -> list[dict[str, str]]:
+def generation_blockers(session: NovelCreationSession, stage: str, draft_override: dict[str, Any] | None = None) -> list[dict[str, str]]:
     """Return confirmed-stage prerequisites that prevent a generation run."""
-    if stage not in {*STAGE_ORDER, "all"}:
-        return [{"stage": stage, "label": stage, "reason": "unknown_stage"}]
-    if stage in {"constraints", "concepts"}:
-        return []
-
-    draft = _dict(session.draft_json)
-    stages = _dict(draft.get("stages"))
-    if stage == "all":
-        required = ("constraints", "concepts")
-    else:
-        required = STAGE_ORDER[:STAGE_ORDER.index(stage)]
-    blockers = []
-    for required_stage in required:
-        status = _dict(stages.get(required_stage)).get("status") or "pending"
-        if status != "confirmed":
-            blockers.append({
-                "stage": required_stage,
-                "label": STAGE_LABELS[required_stage],
-                "reason": "stale" if status == "stale" else "not_confirmed",
-            })
-    return blockers
+    draft = project_legacy_draft(_dict(draft_override) if draft_override is not None else _dict(session.draft_json), STAGE_ORDER)
+    return projected_generation_blockers(draft, stage, STAGE_ORDER, STAGE_LABELS)
 
 
-def build_stage_flow(session: NovelCreationSession) -> dict[str, Any]:
+def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, Any] | None = None) -> dict[str, Any]:
     """Project stored stage data into an author-facing, recoverable workflow."""
-    draft = _dict(session.draft_json)
+    draft = project_legacy_draft(_dict(draft_override) if draft_override is not None else _dict(session.draft_json), STAGE_ORDER)
     stages = _dict(draft.get("stages"))
     items: dict[str, dict[str, Any]] = {}
 
@@ -401,7 +383,7 @@ def build_stage_flow(session: NovelCreationSession) -> dict[str, Any]:
     for stage in STAGE_ORDER:
         state = _dict(stages.get(stage))
         status = _text(state.get("status"), "pending")
-        if attention_stage is None and status in {"generated", "stale"} and state.get("data") is not None:
+        if attention_stage is None and (status == "stale" or (status == "generated" and state.get("data") is not None)):
             attention_stage = stage
 
     legacy_stage = session.current_stage if session.current_stage in STAGE_ORDER else None
@@ -428,7 +410,7 @@ def build_stage_flow(session: NovelCreationSession) -> dict[str, Any]:
     for index, stage in enumerate(STAGE_ORDER):
         state = _dict(stages.get(stage))
         status = _text(state.get("status"), "pending")
-        blockers = generation_blockers(session, stage)
+        blockers = generation_blockers(session, stage, draft)
         has_data = state.get("data") is not None
         can_generate = stage not in {"constraints", "concepts"} and not blockers
         can_confirm = has_data and status in {"generated", "stale"} and not blockers
@@ -466,6 +448,7 @@ def build_stage_flow(session: NovelCreationSession) -> dict[str, Any]:
 
 
 def serialize_session(session: NovelCreationSession, include_runs: bool = True) -> dict[str, Any]:
+    projected_draft = project_legacy_draft(_dict(session.draft_json), STAGE_ORDER)
     data = {
         "id": session.id,
         "source_project_id": session.source_project_id,
@@ -479,14 +462,14 @@ def serialize_session(session: NovelCreationSession, include_runs: bool = True) 
         "target_audience": session.target_audience,
         "genre": session.genre,
         "platform": session.platform,
-        "draft": deepcopy(session.draft_json),
+        "draft": projected_draft,
         "checkpoints": deepcopy(session.checkpoints_json),
         "last_error": deepcopy(session.last_error_json),
         "created_at": session.created_at.isoformat() if session.created_at else None,
         "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
     }
-    data["stage_flow"] = build_stage_flow(session)
+    data["stage_flow"] = build_stage_flow(session, projected_draft)
     if include_runs:
         data["runs"] = [serialize_run(run, include_events=False) for run in list(session.stage_runs or [])[-10:]]
     return data
@@ -827,7 +810,7 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
 
 def build_apply_blueprint(session: NovelCreationSession) -> dict[str, Any]:
     blueprint = _selected_blueprint(session)
-    draft = initialize_session_draft(session)
+    draft = project_legacy_draft(initialize_session_draft(session), STAGE_ORDER)
     stages = draft.get("stages", {})
     unconfirmed = [
         STAGE_LABELS[name]
