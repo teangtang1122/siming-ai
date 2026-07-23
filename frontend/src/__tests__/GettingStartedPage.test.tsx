@@ -171,4 +171,25 @@ describe('GettingStartedPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '登录后验证个人免费额度' }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-quota/authenticate'))
   })
+
+  it('keeps a download limit separate from free-model quota', async () => {
+    api.get.mockResolvedValue({ data: { data: {
+      ...baseStatus,
+      activation_job: {
+        id: 'job-download', status: 'failed', phase: 'failed', percent: 5,
+        message: '免费写作能力暂时没有准备完成',
+        failure_kind: 'download_rate_limit',
+        next_action: 'OpenCode 官方下载服务返回 403/429 限流；下载进度已保留。',
+        error: 'HTTP Error 403: rate limit exceeded',
+        free_models: [],
+      },
+    } } })
+
+    renderPanel()
+
+    expect(await screen.findByText('OpenCode 下载服务暂时限流')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /稍后继续下载/ })).toBeInTheDocument()
+    expect(screen.queryByText('OpenCode 免费服务已限流（不是网络故障）')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '登录后验证个人免费额度' })).not.toBeInTheDocument()
+  })
 })

@@ -44,8 +44,8 @@ from app.services.opencode_activation import (
 from app.services.opencode_activation import (
     test_model as _activation_test_model,
 )
+from app.services.opencode_release_catalog import managed_windows_release
 
-OPENCODE_RELEASE_API = "https://api.github.com/repos/anomalyco/opencode/releases/latest"
 OPENCODE_RELEASES_URL = "https://github.com/anomalyco/opencode/releases/latest"
 OPENCODE_INSTALL_DOCS_URL = "https://opencode.ai/docs/#install"
 OPENCODE_MODELS_DOCS_URL = "https://opencode.ai/docs/zen"
@@ -226,39 +226,8 @@ def inspect_opencode(
     return result
 
 
-def _release_asset_name() -> str:
-    machine = platform.machine().lower()
-    if machine in {"arm64", "aarch64"}:
-        return "opencode-windows-arm64.zip"
-    if machine in {"amd64", "x86_64"}:
-        return "opencode-windows-x64.zip"
-    raise RuntimeError(f"暂不支持当前 Windows 架构：{platform.machine() or 'unknown'}")
-
-
-def _load_json(url: str) -> dict[str, Any]:
-    request = Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Siming-OpenCode-Onboarding",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
 def _latest_release_asset() -> tuple[str, dict[str, Any]]:
-    release = _load_json(OPENCODE_RELEASE_API)
-    version = str(release.get("tag_name") or "").strip()
-    asset_name = _release_asset_name()
-    asset = next((item for item in release.get("assets", []) if item.get("name") == asset_name), None)
-    if not version or not asset:
-        raise RuntimeError("OpenCode 官方发行页暂时没有可用的 Windows CLI 安装包")
-    digest = str(asset.get("digest") or "")
-    if not digest.startswith("sha256:"):
-        raise RuntimeError("OpenCode 官方安装包缺少 SHA256 摘要，司命已停止自动安装")
-    return version, asset
+    return managed_windows_release()
 
 
 def _set_job(job_id: str, **changes: Any) -> dict[str, Any]:
@@ -779,6 +748,13 @@ def submit_opencode_auth_credential(job_id: str, credential: str) -> dict[str, A
 
 def _install_for_activation(job_id: str) -> tuple[str, str, str]:
     root = managed_opencode_root()
+    _update_activation(
+        job_id,
+        status="running",
+        phase="checking_release",
+        percent=2,
+        message="正在选择经过校验的 OpenCode 官方稳定版",
+    )
     version, asset = _latest_release_asset()
     expected_sha256 = str(asset["digest"]).removeprefix("sha256:")
     official_url = str(asset.get("browser_download_url") or "")
@@ -796,7 +772,7 @@ def _install_for_activation(job_id: str) -> tuple[str, str, str]:
                     status="running",
                     phase="downloading",
                     percent=5,
-                    message="正在下载写作引擎，请保持网络连接",
+                    message=f"正在从 OpenCode 官方发行页下载 {version}",
                     download_url=source_url,
                     sha256=expected_sha256,
                 )

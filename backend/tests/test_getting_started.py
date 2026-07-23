@@ -21,7 +21,7 @@ from app.routers.getting_started import (
     get_getting_started_status,
 )
 from app.schemas.config import ConnectionTestRequest
-from app.services import opencode_onboarding
+from app.services import opencode_onboarding, opencode_release_catalog
 
 
 def test_free_model_detection_covers_current_opencode_labels():
@@ -169,6 +169,27 @@ def test_mirror_candidates_keep_official_first_and_require_https(monkeypatch):
     ]
 
 
+def test_managed_release_catalog_selects_verified_windows_binary():
+    version, standard = opencode_release_catalog.managed_windows_release(
+        machine="AMD64",
+        avx2_supported=True,
+    )
+    _, baseline = opencode_release_catalog.managed_windows_release(
+        machine="AMD64",
+        avx2_supported=False,
+    )
+    _, arm64 = opencode_release_catalog.managed_windows_release(machine="ARM64")
+
+    assert version == "v1.18.4"
+    assert standard["name"] == "opencode-windows-x64.zip"
+    assert baseline["name"] == "opencode-windows-x64-baseline.zip"
+    assert arm64["name"] == "opencode-windows-arm64.zip"
+    for asset in (standard, baseline, arm64):
+        assert f"/releases/download/{version}/{asset['name']}" in asset["browser_download_url"]
+        assert asset["digest"].startswith("sha256:")
+        assert len(asset["digest"].removeprefix("sha256:")) == 64
+
+
 def test_resumable_download_reuses_a_complete_verified_partial_file():
     content = b"already downloaded and verified"
     expected = hashlib.sha256(content).hexdigest()
@@ -186,6 +207,66 @@ def test_resumable_download_reuses_a_complete_verified_partial_file():
 
     open_url.assert_not_called()
     assert progress == [(len(content), len(content))]
+
+
+def test_download_403_is_not_misreported_as_free_model_quota():
+    state = {
+        "id": "job-download-limit",
+        "command": None,
+        "preferred_model": None,
+        "sha256": None,
+        "phase": "checking",
+    }
+    updates = []
+
+    def get_job(_job_id):
+        return dict(state)
+
+    def update_job(_job_id, **changes):
+        state.update(changes)
+        updates.append(dict(state))
+        return dict(state)
+
+    version, asset = opencode_release_catalog.managed_windows_release(
+        machine="AMD64",
+        avx2_supported=True,
+    )
+    with TemporaryDirectory() as temporary_dir, patch.object(
+        opencode_onboarding,
+        "get_opencode_activation_job",
+        side_effect=get_job,
+    ), patch.object(
+        opencode_onboarding,
+        "_update_activation",
+        side_effect=update_job,
+    ), patch.object(
+        opencode_onboarding,
+        "resolve_opencode_command",
+        return_value=None,
+    ), patch.object(
+        opencode_onboarding,
+        "inspect_opencode",
+        return_value={"installed": False},
+    ), patch.object(
+        opencode_onboarding,
+        "managed_opencode_root",
+        return_value=Path(temporary_dir),
+    ), patch.object(
+        opencode_onboarding,
+        "_latest_release_asset",
+        return_value=(version, asset),
+    ), patch.object(
+        opencode_onboarding,
+        "_download_asset_resumable",
+        side_effect=RuntimeError("HTTP Error 403: rate limit exceeded"),
+    ), patch.object(opencode_onboarding, "_save_activation_readiness_failure"):
+        opencode_onboarding._activation_worker(state["id"])
+
+    assert any(item.get("phase") == "checking_release" for item in updates)
+    assert any(item.get("phase") == "downloading" for item in updates)
+    assert state["failure_kind"] == "download_rate_limit"
+    assert state["message"] == "免费写作能力暂时没有准备完成"
+    assert "下载进度已保留" in state["next_action"]
 
 
 def test_concurrent_activation_requests_share_one_persistent_job():

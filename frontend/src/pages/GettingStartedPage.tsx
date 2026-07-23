@@ -52,7 +52,7 @@ interface FreeModelOption {
 }
 
 type ActivationStatus = 'pending' | 'running' | 'auth_required' | 'ready' | 'failed'
-type ActivationPhase = 'checking' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
+type ActivationPhase = 'checking' | 'checking_release' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
 
 interface ActivationJob {
   id: string
