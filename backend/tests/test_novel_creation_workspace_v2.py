@@ -5,6 +5,7 @@ import asyncio
 from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -31,6 +32,8 @@ from app.services.novel_creation_workspace import (
 from app.services.workspace.registry import registry
 from app.services.workspace.tools.novel_creation import apply_novel_blueprint
 from app.services.workspace.tools.novel_creation_v2 import (
+    _normalize_stage_data,
+    _validate_stage,
     generate_novel_creation_stage,
     submit_novel_creation_stage,
 )
@@ -326,6 +329,38 @@ def test_quick_stage_run_streams_each_stage_and_keeps_final_review_unapplied():
     assert final["data"]["ready"] is True
 
 
+def test_quick_run_uses_an_explicit_safe_fallback_for_empty_model_events():
+    db = _db()
+    session = _ready_session(db)
+
+    def empty_stream(**_kwargs):
+        async def generate():
+            if False:
+                yield ""
+
+        return generate()
+
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=MagicMock(side_effect=empty_stream),
+    ):
+        result = asyncio.run(generate_novel_creation_stage(db, "", {
+            "session_id": session.id,
+            "stage": "all",
+            "model": "opencode_cli:test-free",
+            "use_model": True,
+            "auto_confirm": True,
+        }))
+
+    assert result["status"] == "ok"
+    repairs = [item for item in result["data"]["run"]["events"] if item["event_type"] == "stage_repaired"]
+    assert len(repairs) == 5
+    assert all(item["payload"]["failure_class"] == "empty_response" for item in repairs)
+    macro = result["data"]["session"]["draft"]["stages"]["macro_outline"]
+    assert macro["source"] == "contract_fallback"
+    assert macro["data"]["volumes"]
+
+
 def test_stage_run_classifies_invalid_token_with_actionable_next_step():
     db = _db()
     session = _ready_session(db)
@@ -350,3 +385,109 @@ def test_stage_run_classifies_invalid_token_with_actionable_next_step():
     assert result["status"] == "error"
     assert result["data"]["run"]["failure_class"] == "auth"
     assert "凭据" in result["data"]["run"]["next_action"]
+    assert session.last_error_json["failed_stage"] == "world_style"
+    assert session.last_error_json["failed_stage_label"] == "文风与世界观"
+
+    save_stage(session, "world_style", derive_stage(session, "world_style"), confirm=False)
+    assert session.last_error_json is None
+
+
+def test_lifecycle_metadata_cannot_replace_a_macro_outline():
+    db = _db()
+    session = _ready_session(db)
+    baseline = derive_stage(session, "macro_outline")
+
+    normalized = _normalize_stage_data(
+        "macro_outline",
+        {"type": "step_start", "part": {"type": "step-start"}},
+        baseline,
+    )
+
+    _validate_stage("macro_outline", normalized)
+    assert normalized["story_overview"] == baseline["story_overview"]
+    assert normalized["volumes"] == baseline["volumes"]
+    assert "type" not in normalized
+
+
+def test_stage_normalization_accepts_legacy_character_macro_and_location_shapes():
+    db = _db()
+    session = _ready_session(db)
+
+    characters = _normalize_stage_data("characters", {
+        "characters": {
+            "林七": {"profile": {"core_motivation": "找回被删除的母亲记忆"}},
+            "周渡": {"goal": "守住隔离线"},
+        },
+        "relationships": [],
+    }, derive_stage(session, "characters"))
+    assert [item["name"] for item in characters["characters"]] == ["林七", "周渡"]
+    assert characters["characters"][0]["role_type"] == "protagonist"
+    assert characters["characters"][0]["goal"] == "找回被删除的母亲记忆"
+    _validate_stage("characters", characters)
+
+    macro = _normalize_stage_data("macro_outline", {
+        "story_overview": "从失踪档案追到全城共同记忆。",
+        "core_conflict": "保存真相会加速主角遗忘。",
+        "ending_direction": "公开证据并承担代价。",
+        "volumes": [{"title": "第一卷", "chapters": "1-80", "core_function": "发现删忆机制"}],
+    }, {})
+    assert macro["volumes"][0]["start_chapter"] == 1
+    assert macro["volumes"][0]["end_chapter"] == 80
+    assert macro["volumes"][0]["summary"] == "发现删忆机制"
+    _validate_stage("macro_outline", macro)
+
+    duplicate = {"title": "灰港", "content": "唯一仍运转的港口"}
+    white_tower = {"title": "白塔", "content": "控制通行权限的机构"}
+    relation = {"source_title": "灰港", "target_title": "白塔", "relation_type": "封锁", "description": "限制通行"}
+    locations = _normalize_stage_data("locations", {
+        "entries": [duplicate, deepcopy(duplicate), white_tower],
+        "relations": [relation, deepcopy(relation)],
+    }, {})
+    assert len(locations["entries"]) == 2
+    assert len(locations["relations"]) == 1
+    _validate_stage("locations", locations)
+
+    with pytest.raises(ValueError, match="不存在的实体"):
+        _validate_stage("locations", {
+            "entries": [duplicate],
+            "relations": [{**relation, "target_title": "不存在的白塔"}],
+        })
+
+
+def test_opening_outline_flattens_nested_scenes_and_repairs_the_full_fifteen_chapters():
+    db = _db()
+    session = _ready_session(db)
+    baseline = derive_stage(session, "opening_outline")
+    source = {
+        "chapters": [{
+            "chapter_number": 1,
+            "title": "死亡通知",
+            "summary": "林七收到未来死亡通知。",
+            "sections": [
+                {"title": "档案室异响", "summary": "通知从停机终端吐出。"},
+                {"title": "三日倒计时", "summary": "她确认通知带着自己的签名。"},
+            ],
+        }],
+    }
+
+    normalized = _normalize_stage_data("opening_outline", source, baseline)
+
+    _validate_stage("opening_outline", normalized)
+    assert len(normalized["chapters"]) == 15
+    assert len([item for item in normalized["sections"] if item["parent_client_id"] == normalized["chapters"][0]["client_id"]]) == 2
+    assert all("sections" not in chapter for chapter in normalized["chapters"])
+    assert all(section["client_id"] and section["metadata"]["purpose"] for section in normalized["sections"])
+
+
+def test_opening_outline_validation_names_the_failed_chapters_in_chinese():
+    chapters = [
+        {"client_id": f"chapter-{number:02d}", "title": f"第{number}章 失真记录"}
+        for number in range(1, 16)
+    ]
+
+    with pytest.raises(ValueError) as error:
+        _validate_stage("opening_outline", {"chapters": chapters, "sections": []})
+
+    assert "第1章 失真记录" in str(error.value)
+    assert "场景数量" in str(error.value)
+    assert "section" not in str(error.value)

@@ -28,6 +28,7 @@ except ImportError:  # packaged builds install psutil; source fallbacks stay usa
 from ..core.exceptions import LLMError
 from ..core.legacy_env import get_compatible_env
 from .base import BaseAdapter
+from .local_cli_output import normalize_cli_output
 from .cli_process import hidden_subprocess_kwargs, terminate_cli_process_tree
 
 LOCAL_CLI_PROVIDERS = {
@@ -1402,26 +1403,7 @@ class LocalCLIAdapter(BaseAdapter):
         return result
 
     def _normalize_output(self, text: str) -> str:
-        if not text:
-            return ""
-        lines = text.splitlines()
-        parsed_parts: list[str] = []
-        json_lines = 0
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                data = json.loads(stripped)
-            except Exception:
-                continue
-            json_lines += 1
-            extracted = _extract_text_from_json_event(data)
-            if extracted:
-                parsed_parts.append(extracted)
-        if json_lines and parsed_parts:
-            return "".join(parsed_parts).strip()
-        return text.strip()
+        return normalize_cli_output(text, _extract_text_from_json_event)
 
     async def chat_completion(
         self,

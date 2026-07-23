@@ -154,7 +154,13 @@ interface CreationSession {
   revision: number
   stage_flow?: StageFlow
   updated_at?: string
-  last_error?: { failure_class?: string; message?: string; next_action?: string }
+  last_error?: {
+    failure_class?: string
+    message?: string
+    next_action?: string
+    failed_stage?: string
+    failed_stage_label?: string
+  }
   runs?: StageRun[]
   draft?: {
     form: CreationFormValues
@@ -177,6 +183,12 @@ interface StageRun {
   input_revision?: number
   input_snapshot_hash?: string
   model_source?: string
+  events?: Array<{
+    event_type: string
+    status?: string
+    message?: string
+    payload?: Record<string, unknown>
+  }>
 }
 
 const CORE_STAGES = ['world_style', 'characters', 'locations', 'macro_outline', 'opening_outline', 'final_review']
@@ -227,6 +239,39 @@ function fieldLabel(key: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function recordRows(value: unknown, nameField = 'title'): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.filter(isRecord)
+  if (!isRecord(value)) return []
+  return Object.entries(value).flatMap(([name, child]) => {
+    if (!isRecord(child)) return []
+    return [{ ...child, [nameField]: child[nameField] || name }]
+  })
+}
+
+function uniqueRows(rows: Array<Record<string, unknown>>, keyBuilder: (item: Record<string, unknown>) => string) {
+  const seen = new Set<string>()
+  return rows.filter((item) => {
+    const key = keyBuilder(item)
+    if (!key || !seen.has(key)) {
+      if (key) seen.add(key)
+      return true
+    }
+    return false
+  })
+}
+
+function roleTypeLabel(value: unknown, index: number) {
+  const role = String(value || (index === 0 ? 'protagonist' : 'supporting'))
+  return ({ protagonist: '主角', supporting: '配角', antagonist: '对手' } as Record<string, string>)[role] || role
+}
+
+function volumeRange(item: Record<string, unknown>) {
+  if (item.start_chapter && item.end_chapter) return `${String(item.start_chapter)} - ${String(item.end_chapter)} 章`
+  const numbers = String(item.chapters || '').match(/\d+/g)
+  if (numbers && numbers.length >= 2) return `${numbers[0]} - ${numbers[1]} 章`
+  return '章节范围待确认'
 }
 
 function collectionItemLabel(value: unknown, index: number) {
@@ -330,7 +375,7 @@ function StagePreview({ stage, data }: { stage: string; data?: Record<string, un
   if (!data) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本阶段尚未生成" />
 
   if (stage === 'world_style') {
-    const world = Array.isArray(data.worldbuilding) ? data.worldbuilding as Array<Record<string, unknown>> : []
+    const world = recordRows(data.worldbuilding)
     return (
       <div className="creation-stage-preview">
         <Descriptions column={{ xs: 1, sm: 1, md: 2, lg: 2, xl: 2, xxl: 2 }} size="small" bordered>
@@ -353,16 +398,16 @@ function StagePreview({ stage, data }: { stage: string; data?: Record<string, un
   }
 
   if (stage === 'characters') {
-    const characters = Array.isArray(data.characters) ? data.characters as Array<Record<string, unknown>> : []
+    const characters = recordRows(data.characters, 'name')
     return (
       <div className="creation-item-grid creation-character-grid">
         {characters.map((item, index) => {
           const profile = (item.profile || {}) as Record<string, unknown>
           return (
-            <Card key={`${String(item.name)}-${index}`} size="small" title={String(item.name || `角色 ${index + 1}`)} extra={<Tag>{String(item.role_type || 'supporting')}</Tag>}>
+            <Card key={`${String(item.name)}-${index}`} size="small" title={String(item.name || `角色 ${index + 1}`)} extra={<Tag>{roleTypeLabel(item.role_type, index)}</Tag>}>
               <Paragraph>{String(item.background || item.personality || '')}</Paragraph>
               <Descriptions column={1} size="small">
-                <Descriptions.Item label="当前目标">{String(item.goal || item.current_goal || '')}</Descriptions.Item>
+                <Descriptions.Item label="当前目标">{String(item.goal || item.current_goal || profile.core_motivation || '待补充')}</Descriptions.Item>
                 <Descriptions.Item label="核心动机">{String(profile.core_motivation || '')}</Descriptions.Item>
                 <Descriptions.Item label="内在缺口">{String(profile.inner_lack || '')}</Descriptions.Item>
                 <Descriptions.Item label="声线">{String(profile.voice || '')}</Descriptions.Item>
@@ -375,8 +420,8 @@ function StagePreview({ stage, data }: { stage: string; data?: Record<string, un
   }
 
   if (stage === 'locations') {
-    const entries = Array.isArray(data.entries) ? data.entries as Array<Record<string, unknown>> : []
-    const relations = Array.isArray(data.relations) ? data.relations as Array<Record<string, unknown>> : []
+    const entries = uniqueRows(recordRows(data.entries), (item) => String(item.title || '').trim().toLocaleLowerCase())
+    const relations = uniqueRows(recordRows(data.relations), (item) => [item.source_title, item.target_title, item.relation_type].map((value) => String(value || '').trim().toLocaleLowerCase()).join('|'))
     return (
       <div className="creation-stage-preview">
         <div className="creation-item-grid">
@@ -389,12 +434,12 @@ function StagePreview({ stage, data }: { stage: string; data?: Record<string, un
   }
 
   if (stage === 'macro_outline') {
-    const volumes = Array.isArray(data.volumes) ? data.volumes as Array<Record<string, unknown>> : []
+    const volumes = recordRows(data.volumes)
     return (
       <div className="creation-stage-preview">
         <Alert type="info" showIcon message={String(data.core_conflict || '')} description={String(data.story_overview || '')} />
         <Timeline className="creation-volume-timeline" items={volumes.map((item) => ({
-          children: <div><Text strong>{String(item.title || '')}</Text><Tag style={{ marginLeft: 8 }}>{String(item.start_chapter || '?')} - {String(item.end_chapter || '?')} 章</Tag><Paragraph>{String(item.summary || '')}</Paragraph></div>,
+          children: <div><Text strong>{String(item.title || '')}</Text><Tag style={{ marginLeft: 8 }}>{volumeRange(item)}</Tag><Paragraph>{String(item.summary || item.core_function || item.focus || '')}</Paragraph></div>,
         }))} />
       </div>
     )
@@ -750,10 +795,15 @@ function NovelCreationWizardPage() {
           const completed = payload.event_type === 'stage_completed'
           setRunProgress(Math.round(((stageIndex + (completed ? 1 : 0.25)) / CORE_STAGES.length) * 100))
         }
+        if (payload.event_type === 'stage_completed') {
+          const targetSessionId = requestedSessionId || session?.id
+          if (targetSessionId) void loadSession(targetSessionId).catch(() => undefined)
+        }
       } catch { /* keep the last readable status */ }
     }
     source.addEventListener('started', handleEvent as EventListener)
     source.addEventListener('stage_progress', handleEvent as EventListener)
+    source.addEventListener('stage_repaired', handleEvent as EventListener)
     source.addEventListener('stage_completed', handleEvent as EventListener)
     source.addEventListener('completed', handleEvent as EventListener)
     source.addEventListener('failed', handleEvent as EventListener)
@@ -774,7 +824,13 @@ function NovelCreationWizardPage() {
       const targetSessionId = finished?.session_id || requestedSessionId || session?.id
       if (finished?.input_revision != null) {
         const suffix = editedDuringRunRef.current ? '；运行期间的新修改已保存为下一版，不会被旧结果覆盖' : ''
-        setResultRevisionNotice(`本次结果基于草稿 v${finished.input_revision}${suffix}`)
+        const repairedStages = (finished.events || [])
+          .filter((item) => item.event_type === 'stage_repaired')
+          .map((item) => String(item.payload?.stage || '未知阶段'))
+        const repairNotice = repairedStages.length > 0
+          ? `；${repairedStages.length} 个阶段的模型回复不可用，已采用安全结构并保留供你审阅`
+          : ''
+        setResultRevisionNotice(`本次结果基于草稿 v${finished.input_revision}${suffix}${repairNotice}`)
       }
       if (targetSessionId) {
         void loadSession(targetSessionId).then(() => focusStageHeading())
@@ -1183,6 +1239,14 @@ function NovelCreationWizardPage() {
                 onViewStage={viewStage}
                 onRetryNext={() => void continueFromConfirmedStage()}
               />
+              {currentStageState?.source === 'contract_fallback' && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="本阶段已采用安全结构继续"
+                  description="模型回复为空或格式不可用。内容没有丢失，你可以直接检查、编辑，或选择其他模型重新生成本阶段。"
+                />
+              )}
               <StagePreview stage={currentStage} data={currentStageState?.data} />
               <StageActionBar
                 currentStage={currentStage}
@@ -1242,9 +1306,21 @@ function NovelCreationWizardPage() {
           />
         )}
 
-        {session?.last_error && !busy && (
-          <Alert className="creation-error-band" type="error" showIcon message={session.last_error.message || '阶段运行失败'} description={session.last_error.next_action} action={<Button onClick={() => void startStageRun(currentStage)}>重试本阶段</Button>} />
-        )}
+        {session?.last_error && !busy && (() => {
+          const failedStage = session.last_error.failed_stage
+          const retryStage = failedStage && [...CORE_STAGES, 'concepts'].includes(failedStage) ? failedStage : currentStage
+          const retryLabel = session.last_error.failed_stage_label || stageLabels[retryStage] || retryStage
+          return (
+            <Alert
+              className="creation-error-band"
+              type="error"
+              showIcon
+              message={session.last_error.message || '阶段运行失败'}
+              description={session.last_error.next_action}
+              action={<Button onClick={() => retryStage === 'concepts' ? void generateConcepts() : void startStageRun(retryStage)}>重试“{retryLabel}”</Button>}
+            />
+          )
+        })()}
       </div>
 
       <Modal title={`编辑：${stageLabels[currentStage] || currentStage}`} open={editorOpen} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okText="保存修改" width={960}>

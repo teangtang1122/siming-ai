@@ -13,8 +13,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.database.models import NovelCreationSession, NovelCreationStageEvent, NovelCreationStageRun
+from app.services.novel_creation_failures import build_stage_failure, clear_stage_failure
 from app.services.observability.run_events import classify_failure
-
 
 SCHEMA_VERSION = 2
 STAGE_ORDER = (
@@ -821,6 +821,7 @@ def save_stage(session: NovelCreationSession, stage: str, data: dict[str, Any], 
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1
     session.status = "reviewing"
+    session.last_error_json = clear_stage_failure(session.last_error_json, stage)
     return draft["stages"][stage]
 
 
@@ -1009,23 +1010,22 @@ def complete_run(db: Session, run: NovelCreationStageRun, result: dict[str, Any]
             operation.can_retry = False
 
 
-def fail_run(db: Session, run: NovelCreationStageRun, exc: Exception) -> None:
+def fail_run(db: Session, run: NovelCreationStageRun, exc: Exception, *, failed_stage: str | None = None) -> None:
     message = _text(exc, "阶段生成失败")
     failure_class = classify_failure(message) or "unknown"
-    advice = {
-        "quota_or_rate_limit": "切换可用模型或等待额度恢复后重试本阶段",
-        "auth": "在系统设置中重新填写凭据并测试连接",
-        "timeout": "重试本阶段，或切换响应更快的模型",
-        "empty_response": "重试本阶段；若持续发生，请测试模型的结构化输出",
-        "tool_unavailable": "改用已启用司命工具的 CLI，或切换 API 模型",
-    }.get(failure_class, "保留当前草稿，检查模型后重试本阶段")
+    retry_stage = failed_stage or run.stage
+    retry_label = STAGE_LABELS.get(retry_stage, retry_stage)
+    advice, failure_payload = build_stage_failure(
+        failure_class=failure_class, message=message, run_id=run.id,
+        failed_stage=retry_stage, failed_stage_label=retry_label,
+    )
     run.status = "failed"
     run.failure_class = failure_class
     run.current_message = message[:1000]
     run.next_action = advice
     run.completed_at = datetime.utcnow()
-    run.session.last_error_json = {"failure_class": failure_class, "message": message, "next_action": advice, "run_id": run.id}
-    add_run_event(db, run, "failed", "error", message, {"failure_class": failure_class, "next_action": advice})
+    run.session.last_error_json = failure_payload
+    add_run_event(db, run, "failed", "error", message, failure_payload)
     if run.operation_id:
         from ..database.models import OperationRun
         from .operation_runtime import update_operation

@@ -248,6 +248,24 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         )
         self.assertEqual(text, "你好，世界")
 
+    def test_normalize_opencode_lifecycle_only_output_is_empty(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        text = adapter._normalize_output(
+            '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}\n'
+            '{"type":"step_finish","sessionID":"session-1","part":{"type":"step-finish"}}\n'
+        )
+        self.assertEqual(text, "")
+
+    def test_normalize_opencode_preserves_direct_structured_json_payload(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        payload = '{"data":{"story_overview":"一场记忆追踪","volumes":[]}}'
+        text = adapter._normalize_output(
+            '{"type":"step_start","part":{"type":"step-start"}}\n'
+            + payload
+            + '\n{"type":"step_finish","part":{"type":"step-finish"}}\n'
+        )
+        self.assertEqual(text, payload)
+
     def test_json_error_event_is_detected_even_with_zero_exit_code(self):
         error = extract_cli_error(
             '{"type":"error","error":{"data":{"message":"Please sign in"}}}\n'

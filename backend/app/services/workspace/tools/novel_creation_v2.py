@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.architecture.uow import commit_session
 
 import json
+import re
 import time
 from contextlib import nullcontext
 from copy import deepcopy
@@ -16,6 +17,7 @@ from ...operation_runtime import current_operation_id, record_operation_signal
 from ....core.json_repair import parse_json_object
 from ....database.models import NovelCreationSession, NovelCreationStageRun
 from ....services.context_orchestrator import ContextOrchestrator, activate_context_manifest
+from ....services.novel_creation_stage_runtime import stage_data_with_fallback, stage_tool_result
 from ....services.observability.run_events import classify_failure
 from ...novel_creation_workspace import (
     STAGE_LABELS,
@@ -88,11 +90,287 @@ def _author_text(value: Any) -> str:
     return _text(value)
 
 
-def _normalize_stage_data(stage: str, data: dict[str, Any]) -> dict[str, Any]:
-    normalized = deepcopy(data)
+def _dict_rows(value: Any, *, name_field: str = "name") -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [deepcopy(item) for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        rows: list[dict[str, Any]] = []
+        for key, child in value.items():
+            if not isinstance(child, dict):
+                continue
+            item = deepcopy(child)
+            item.setdefault(name_field, _text(key))
+            rows.append(item)
+        return rows
+    return []
+
+
+def _dedupe_dicts(rows: list[dict[str, Any]], key_builder: Any) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: dict[Any, int] = {}
+    for row in rows:
+        key = key_builder(row)
+        if not key:
+            unique.append(deepcopy(row))
+            continue
+        if key in seen:
+            existing = unique[seen[key]]
+            for field, value in row.items():
+                if existing.get(field) in (None, "", [], {}):
+                    existing[field] = deepcopy(value)
+            continue
+        seen[key] = len(unique)
+        unique.append(deepcopy(row))
+    return unique
+
+
+def _looks_like_cli_metadata(data: dict[str, Any]) -> bool:
+    event_type = _text(data.get("type")).lower().replace("-", "_")
+    part = data.get("part") if isinstance(data.get("part"), dict) else {}
+    part_type = _text(part.get("type")).lower().replace("-", "_")
+    metadata_types = {"step_start", "step_finish", "message_start", "message_finish", "tool_start", "tool_finish"}
+    return event_type in metadata_types or part_type in metadata_types
+
+
+def _normalize_worldbuilding(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [deepcopy(item) for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for key, child in value.items():
+        if isinstance(child, dict):
+            item = deepcopy(child)
+            item.setdefault("title", _text(key))
+            item.setdefault("dimension", _text(key))
+            if not _text(item.get("content")):
+                item["content"] = _author_text(item.get("summary") or item.get("description") or child)
+        else:
+            item = {"title": _text(key), "dimension": _text(key), "content": _author_text(child)}
+        rows.append(item)
+    return rows
+
+
+def _normalize_characters(data: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    source_rows = _dict_rows(data.get("characters"))
+    base_rows = _dict_rows(baseline.get("characters"))
+    if not source_rows:
+        source_rows = deepcopy(base_rows)
+    base_by_name = {_text(row.get("name")): row for row in base_rows if _text(row.get("name"))}
+    characters: list[dict[str, Any]] = []
+    for index, source in enumerate(source_rows):
+        name = _text(source.get("name"))
+        base = base_by_name.get(name) or (base_rows[index] if index < len(base_rows) else {})
+        item = {**deepcopy(base), **deepcopy(source)}
+        item["name"] = name or _text(base.get("name")) or f"角色{index + 1}"
+        profile = {**deepcopy(base.get("profile") if isinstance(base.get("profile"), dict) else {}), **deepcopy(item.get("profile") if isinstance(item.get("profile"), dict) else {})}
+        source_profile = source.get("profile") if isinstance(source.get("profile"), dict) else {}
+        role_type = _text(source.get("role_type") or source.get("role") or base.get("role_type"))
+        if not role_type:
+            role_type = "protagonist" if index == 0 else "supporting"
+        goal = _text(
+            source.get("goal")
+            or source.get("current_goal")
+            or source_profile.get("core_motivation")
+            or base.get("goal")
+            or profile.get("core_motivation")
+        )
+        item["role_type"] = role_type
+        item["goal"] = goal
+        item["current_goal"] = goal
+        item["background"] = _text(item.get("background") or item.get("position") or item.get("status"))
+        if not _text(profile.get("core_motivation")):
+            profile["core_motivation"] = goal
+        item["profile"] = profile
+        characters.append(item)
+    characters = _dedupe_dicts(characters, lambda item: _text(item.get("name")).casefold())
+    relationships = _dict_rows(data.get("relationships"), name_field="id") or _dict_rows(baseline.get("relationships"), name_field="id")
+    relationships = _dedupe_dicts(
+        relationships,
+        lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, default=str),
+    )
+    return {**deepcopy(baseline), **deepcopy(data), "characters": characters, "relationships": relationships}
+
+
+def _normalize_locations(data: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    entries = (
+        _dict_rows(data.get("entries"), name_field="title")
+        + _dict_rows(baseline.get("entries"), name_field="title")
+    )
+    entries = _dedupe_dicts(entries, lambda item: _text(item.get("title")).casefold())
+    relations = (
+        _dict_rows(data.get("relations"), name_field="id")
+        + _dict_rows(baseline.get("relations"), name_field="id")
+    )
+    relations = _dedupe_dicts(
+        relations,
+        lambda item: (
+            _text(item.get("source_title")).casefold(),
+            _text(item.get("target_title")).casefold(),
+            _text(item.get("relation_type")).casefold(),
+        ),
+    )
+    return {**deepcopy(baseline), **deepcopy(data), "entries": entries, "relations": relations}
+
+
+def _chapter_range(value: Any) -> tuple[int | None, int | None]:
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            return None, None
+    numbers = re.findall(r"\d+", _text(value))
+    if len(numbers) >= 2:
+        return int(numbers[0]), int(numbers[1])
+    return None, None
+
+
+def _normalize_macro_outline(data: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    normalized = {**deepcopy(baseline), **deepcopy(data)}
+    source_volumes = _dict_rows(data.get("volumes"), name_field="title")
+    base_volumes = _dict_rows(baseline.get("volumes"), name_field="title")
+    if not source_volumes:
+        source_volumes = deepcopy(base_volumes)
+    volumes: list[dict[str, Any]] = []
+    for index, source in enumerate(source_volumes):
+        base = base_volumes[index] if index < len(base_volumes) else {}
+        item = {**deepcopy(base), **deepcopy(source)}
+        parsed_start, parsed_end = _chapter_range(item.get("chapters") or item.get("range"))
+        start = item.get("start_chapter") or parsed_start or base.get("start_chapter")
+        end = item.get("end_chapter") or parsed_end or base.get("end_chapter")
+        try:
+            item["start_chapter"] = int(start)
+            item["end_chapter"] = int(end)
+        except (TypeError, ValueError):
+            item["start_chapter"] = 0
+            item["end_chapter"] = 0
+        item["summary"] = _text(item.get("summary") or item.get("core_function") or item.get("focus") or item.get("climax") or base.get("summary"))
+        item["title"] = _text(item.get("title")) or f"第{index + 1}卷"
+        volumes.append(item)
+    normalized["volumes"] = volumes
+    normalized["stage_plan"] = _dict_rows(normalized.get("stage_plan"), name_field="name") or [
+        {
+            "name": item["title"],
+            "range": [item["start_chapter"], item["end_chapter"]],
+            "promise": item["summary"],
+        }
+        for item in volumes
+    ]
+    return normalized
+
+
+def _chapter_number(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        numbers = re.findall(r"\d+", _text(value))
+        return int(numbers[0]) if numbers else fallback
+
+
+def _normalize_section(
+    section: dict[str, Any],
+    base: dict[str, Any],
+    *,
+    chapter_id: str,
+    chapter_number: int,
+    scene_number: int,
+) -> dict[str, Any]:
+    item = {**deepcopy(base), **deepcopy(section)}
+    item["client_id"] = _text(item.get("client_id")) or f"{chapter_id}-section-{scene_number}"
+    item["parent_client_id"] = chapter_id
+    item["node_type"] = "section"
+    item["sort_order"] = _chapter_number(item.get("sort_order"), scene_number)
+    item["title"] = _text(item.get("title")) or f"第{chapter_number}章 · 场景{scene_number}"
+    item["summary"] = _text(item.get("summary") or item.get("planned_summary") or item.get("purpose"))
+    item["planned_summary"] = _text(item.get("planned_summary") or item.get("summary"))
+    base_metadata = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
+    source_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    metadata = {**deepcopy(base_metadata), **deepcopy(source_metadata)}
+    metadata["scene_number"] = _chapter_number(metadata.get("scene_number"), scene_number)
+    metadata["purpose"] = _text(metadata.get("purpose") or item.get("purpose") or item.get("summary")) or "推进本章目标"
+    metadata["location"] = _text(metadata.get("location")) or "地点待定"
+    metadata["timeline"] = _text(metadata.get("timeline")) or f"第{chapter_number}章第{scene_number}场"
+    metadata["pov_character"] = _text(metadata.get("pov_character")) or "主角"
+    metadata["characters"] = metadata.get("characters") if isinstance(metadata.get("characters"), list) else [metadata["pov_character"]]
+    metadata["entry_state"] = _text(metadata.get("entry_state")) or "承接上一场景"
+    metadata["exit_state"] = _text(metadata.get("exit_state")) or "产生新的行动压力"
+    metadata["emotional_residue"] = _text(metadata.get("emotional_residue")) or "情绪推动下一场景"
+    metadata["unresolved_actions"] = metadata.get("unresolved_actions") if isinstance(metadata.get("unresolved_actions"), list) else ["追踪本场景产生的新问题"]
+    item["metadata"] = metadata
+    return item
+
+
+def _normalize_opening_outline(data: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    source_chapters = _dict_rows(data.get("chapters"), name_field="title")
+    base_chapters = _dict_rows(baseline.get("chapters"), name_field="title")
+    if base_chapters:
+        source_chapters = (source_chapters + [{} for _ in range(len(base_chapters))])[:len(base_chapters)]
+    chapters: list[dict[str, Any]] = []
+    sections: list[dict[str, Any]] = []
+    top_sections = _dict_rows(data.get("sections"), name_field="title")
+    base_sections = _dict_rows(baseline.get("sections"), name_field="title")
+    for index, source in enumerate(source_chapters):
+        base = base_chapters[index] if index < len(base_chapters) else {}
+        original_id = _text(source.get("client_id"))
+        chapter_number = _chapter_number(source.get("chapter_number") or source.get("chapter") or source.get("number"), index + 1)
+        chapter_id = original_id or _text(base.get("client_id")) or f"chapter-{chapter_number:02d}"
+        chapter = {**deepcopy(base), **deepcopy(source)}
+        nested_sections = _dict_rows(chapter.pop("sections", None), name_field="title")
+        chapter["client_id"] = chapter_id
+        chapter["chapter_number"] = chapter_number
+        chapter["node_type"] = "chapter"
+        chapter["sort_order"] = _chapter_number(chapter.get("sort_order"), chapter_number)
+        chapter["title"] = _text(chapter.get("title")) or f"第{chapter_number}章 未命名事件"
+        chapter["summary"] = _text(chapter.get("summary") or chapter.get("planned_summary") or chapter.get("beat"))
+        chapter["planned_summary"] = _text(chapter.get("planned_summary") or chapter.get("summary"))
+        chapters.append(chapter)
+
+        chapter_aliases = {chapter_id, str(chapter_number), f"chapter-{chapter_number:02d}"}
+        if original_id:
+            chapter_aliases.add(original_id)
+        matching = nested_sections or [
+            item for item in top_sections
+            if _text(item.get("parent_client_id")) in chapter_aliases
+        ]
+        base_chapter_id = _text(base.get("client_id")) or chapter_id
+        fallback_sections = [item for item in base_sections if _text(item.get("parent_client_id")) == base_chapter_id]
+        if len(matching) not in range(2, 7) and fallback_sections:
+            matching = fallback_sections
+        for scene_index, raw_section in enumerate(matching[:6], start=1):
+            base_section = fallback_sections[scene_index - 1] if scene_index <= len(fallback_sections) else {}
+            sections.append(_normalize_section(
+                raw_section,
+                base_section,
+                chapter_id=chapter_id,
+                chapter_number=chapter_number,
+                scene_number=scene_index,
+            ))
+    return {
+        **deepcopy(baseline),
+        **deepcopy(data),
+        "opening_chapter_count": len(chapters),
+        "chapters": chapters,
+        "sections": sections,
+        "section_rule": "每章2至6个场景事件",
+    }
+
+
+def _normalize_stage_data(stage: str, data: dict[str, Any], baseline: dict[str, Any] | None = None) -> dict[str, Any]:
+    base = deepcopy(baseline) if isinstance(baseline, dict) else {}
+    source = {} if _looks_like_cli_metadata(data) else deepcopy(data)
+    normalized = {**base, **source}
     if stage == "world_style":
         for field in _WORLD_STYLE_TEXT_FIELDS:
             normalized[field] = _author_text(normalized.get(field))
+        normalized["worldbuilding"] = _normalize_worldbuilding(normalized.get("worldbuilding"))
+    elif stage == "characters":
+        normalized = _normalize_characters(source, base)
+    elif stage == "locations":
+        normalized = _normalize_locations(source, base)
+    elif stage == "macro_outline":
+        normalized = _normalize_macro_outline(source, base)
+    elif stage == "opening_outline":
+        normalized = _normalize_opening_outline(source, base)
     return normalized
 
 
@@ -188,10 +466,10 @@ async def _generate_compact_concepts_with_fallback(
 def _stage_contract(stage: str) -> str:
     contracts = {
         "world_style": "保留 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups 字段；writing_style、world_tone、story_structure、pacing 必须各自是非空字符串，不得返回对象或数组；worldbuilding 使用司命六维分类。",
-        "characters": "返回 characters 和 relationships。每个角色保留年龄、外貌、位置、状态，并包含 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。",
-        "locations": "返回 entries 和 relations。关系必须含 source_title、target_title、relation_type、description、metadata。",
-        "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；只做全书宏观结构，不展开全部章节。",
-        "opening_outline": "恰好返回前15章 chapters；每章返回2至6个 sections。section 必须含 parent_client_id 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions。",
+        "characters": "返回 characters 数组和 relationships 数组。每个角色必须含 name、role_type（主角固定为 protagonist，其余为 supporting）和 goal；并保留年龄、外貌、位置、状态，以及 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。不得把 characters 改成以人名为键的对象。",
+        "locations": "返回 entries 数组和 relations 数组，不得重复实体或关系。关系必须含 source_title、target_title、relation_type、description、metadata。",
+        "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；每卷必须含 title、start_chapter、end_chapter、summary；只做全书宏观结构，不展开全部章节。",
+        "opening_outline": "顶层恰好返回 chapters 数组和 sections 数组：chapters 恰好15章且每章保留 client_id；每章对应2至6个 sections，所有 section 只能放在顶层 sections 数组并通过 parent_client_id 关联章节，不得嵌套在 chapter 内。section 必须含 client_id、parent_client_id 及 metadata.scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions。",
         "final_review": "返回 ready、blocking、warnings、counts。只根据证据审阅，不擅自删改上游内容。",
     }
     return contracts.get(stage, "保持输入结构，只提高具体性、一致性和可执行性。")
@@ -200,6 +478,8 @@ def _stage_contract(stage: str) -> str:
 def _validate_stage(stage: str, data: dict[str, Any]) -> None:
     if not isinstance(data, dict) or not data:
         raise ValueError("模型没有返回可用的阶段对象")
+    if _looks_like_cli_metadata(data):
+        raise ValueError("模型只返回了运行状态，没有返回可用的阶段正文")
     if stage == "world_style":
         invalid = [
             _AUTHOR_FIELD_LABELS[field]
@@ -208,6 +488,58 @@ def _validate_stage(stage: str, data: dict[str, Any]) -> None:
         ]
         if invalid:
             raise ValueError("文风与世界观缺少可读文本：" + "、".join(invalid))
+        if not isinstance(data.get("worldbuilding"), list) or not data["worldbuilding"]:
+            raise ValueError("文风与世界观缺少可用的世界设定条目")
+    if stage == "characters":
+        characters = data.get("characters") if isinstance(data.get("characters"), list) else []
+        if not characters:
+            raise ValueError("角色与关系阶段没有返回角色数组")
+        invalid = [
+            _text(item.get("name")) or f"第{index + 1}个角色"
+            for index, item in enumerate(characters)
+            if not isinstance(item, dict) or not _text(item.get("role_type")) or not _text(item.get("goal") or item.get("current_goal"))
+        ]
+        if invalid:
+            raise ValueError("以下角色缺少角色类型或当前目标：" + "、".join(invalid[:5]))
+    if stage == "locations":
+        entries = data.get("entries") if isinstance(data.get("entries"), list) else []
+        relations = data.get("relations") if isinstance(data.get("relations"), list) else []
+        if not entries:
+            raise ValueError("地点与势力阶段没有返回实体数组")
+        titles = {_text(item.get("title")).casefold() for item in entries if isinstance(item, dict) and _text(item.get("title"))}
+        invalid_relations = [
+            f"{_text(item.get('source_title')) or '未知起点'} → {_text(item.get('target_title')) or '未知终点'}"
+            for item in relations
+            if (
+                not isinstance(item, dict)
+                or not _text(item.get("source_title"))
+                or not _text(item.get("target_title"))
+                or not _text(item.get("relation_type"))
+                or _text(item.get("source_title")).casefold() not in titles
+                or _text(item.get("target_title")).casefold() not in titles
+            )
+        ]
+        if invalid_relations:
+            raise ValueError("以下地点关系缺少端点、类型或引用了不存在的实体：" + "、".join(invalid_relations[:5]))
+    if stage == "macro_outline":
+        missing = [field for field in ("story_overview", "core_conflict", "ending_direction") if not _text(data.get(field))]
+        volumes = data.get("volumes") if isinstance(data.get("volumes"), list) else []
+        if missing:
+            raise ValueError("全书主线与卷纲缺少：" + "、".join(missing))
+        if not volumes:
+            raise ValueError("全书主线与卷纲没有返回分卷规划")
+        invalid_volumes = [
+            _text(item.get("title")) or f"第{index + 1}卷"
+            for index, item in enumerate(volumes)
+            if (
+                not isinstance(item, dict)
+                or not _text(item.get("summary"))
+                or int(item.get("start_chapter") or 0) <= 0
+                or int(item.get("end_chapter") or 0) < int(item.get("start_chapter") or 0)
+            )
+        ]
+        if invalid_volumes:
+            raise ValueError("以下分卷缺少有效章节范围或摘要：" + "、".join(invalid_volumes[:5]))
     if stage == "opening_outline":
         chapters = data.get("chapters") if isinstance(data.get("chapters"), list) else []
         sections = data.get("sections") if isinstance(data.get("sections"), list) else []
@@ -218,9 +550,30 @@ def _validate_stage(stage: str, data: dict[str, Any]) -> None:
             if isinstance(section, dict):
                 parent = _text(section.get("parent_client_id"))
                 counts[parent] = counts.get(parent, 0) + 1
-        invalid = [chapter.get("client_id") for chapter in chapters if counts.get(_text(chapter.get("client_id")), 0) not in range(2, 7)]
+        invalid = [
+            _text(chapter.get("title") or chapter.get("chapter_number") or chapter.get("client_id"))
+            or f"第{index + 1}章"
+            for index, chapter in enumerate(chapters)
+            if counts.get(_text(chapter.get("client_id")), 0) not in range(2, 7)
+        ]
         if invalid:
-            raise ValueError("以下章节的 section 数量不在2至6之间：" + "、".join(_text(item) for item in invalid[:5]))
+            raise ValueError("以下章节的场景数量不在2至6个之间：" + "、".join(invalid[:5]))
+        required_metadata = {
+            "scene_number", "purpose", "location", "timeline", "pov_character",
+            "characters", "entry_state", "exit_state", "emotional_residue", "unresolved_actions",
+        }
+        invalid_sections = [
+            _text(section.get("title") or section.get("client_id")) or f"第{index + 1}个场景"
+            for index, section in enumerate(sections)
+            if (
+                not isinstance(section, dict)
+                or not _text(section.get("client_id"))
+                or not _text(section.get("parent_client_id"))
+                or not required_metadata.issubset(set(section.get("metadata") or {}))
+            )
+        ]
+        if invalid_sections:
+            raise ValueError("以下场景缺少结构化信息：" + "、".join(invalid_sections[:5]))
 
 
 def _validate_compact_concepts(concepts: Any) -> list[dict[str, Any]]:
@@ -373,7 +726,7 @@ async def _enhance_with_model(
     if not isinstance(parsed, dict):
         raise RuntimeError("模型返回的阶段 JSON 格式不合法")
     data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
-    data = _normalize_stage_data(stage, data)
+    data = _normalize_stage_data(stage, data, baseline)
     _validate_stage(stage, data)
     return data
 
@@ -450,6 +803,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
             "data": {"run": serialize_run(run), "session": serialize_session(session)},
         }
 
+    active_stage = stage
     try:
         generated: dict[str, Any] = {}
         if stage == "concepts":
@@ -501,6 +855,7 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
         else:
             stages = [name for name in STAGE_ORDER if name not in {"constraints", "concepts", "final_review"}] if stage == "all" else [stage]
             for name in stages:
+                active_stage = name
                 add_run_event(
                     db,
                     run,
@@ -512,21 +867,26 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
                 run.current_message = f"正在生成{STAGE_LABELS.get(name, name)}"
                 commit_session(db)
                 baseline = derive_stage(session, name, working_draft)
-                data = await _enhance_with_model(
+                data, source = await stage_data_with_fallback(
+                    db,
+                    run,
                     session,
-                    name,
-                    baseline,
-                    model,
-                    context_manifest=manifest,
-                    input_snapshot=working_draft,
-                ) if use_model and model and name != "final_review" else baseline
-                data = _normalize_stage_data(name, data)
+                    stage=name,
+                    baseline=baseline,
+                    model=model,
+                    use_model=use_model,
+                    quick_run=stage == "all",
+                    manifest=manifest,
+                    working_draft=working_draft,
+                    enhance=_enhance_with_model,
+                )
+                data = _normalize_stage_data(name, data, baseline)
                 _validate_stage(name, data)
-                save_stage(session, name, data, confirm=auto_confirm, source="model" if use_model and model else "contract")
+                save_stage(session, name, data, confirm=auto_confirm, source=source)
                 working_draft.setdefault("stages", {})[name] = {
                     "status": "confirmed" if auto_confirm else "generated",
                     "data": deepcopy(data),
-                    "source": "model" if use_model and model else "contract",
+                    "source": source,
                 }
                 generated[name] = deepcopy(data)
                 add_run_event(
@@ -555,25 +915,15 @@ async def generate_novel_creation_stage(db: Session, project_id: str, args: dict
         orchestrator.mark_consumed(manifest)
         commit_session(db)
         db.refresh(run)
-        return {
-            "tool": "generate_novel_creation_stage",
-            "status": "ok",
-            "detail": "Novel creation stage generated",
-            "data": {"run": serialize_run(run), "session": serialize_session(session)},
-        }
+        return stage_tool_result("ok", "Novel creation stage generated", run, session)
     except Exception as exc:
         db.rollback()
         session = _session(db, session_id)
         run = db.query(NovelCreationStageRun).filter(NovelCreationStageRun.id == run.id).first()
         if run and session:
-            fail_run(db, run, exc)
+            fail_run(db, run, exc, failed_stage=active_stage)
             commit_session(db)
-            return {
-                "tool": "generate_novel_creation_stage",
-                "status": "error",
-                "detail": str(exc),
-                "data": {"run": serialize_run(run), "session": serialize_session(session)},
-            }
+            return stage_tool_result("error", str(exc), run, session)
         return {"tool": "generate_novel_creation_stage", "status": "error", "detail": str(exc), "data": None}
 
 

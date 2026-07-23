@@ -31,6 +31,7 @@ def classify_failure(message: str | None) -> str | None:
     if (
         re.search(r"invalid\s+(?:json|response)|json.*(?:parse|format)|cannot parse", lower)
         or "格式无法解析" in text
+        or ("json" in lower and "格式" in text)
     ):
         return "invalid_response"
     if (

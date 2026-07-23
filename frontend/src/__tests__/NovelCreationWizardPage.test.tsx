@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -145,6 +145,83 @@ describe('NovelCreationWizardPage', () => {
       expect(eventSource).toHaveBeenCalledWith('/api/v1/novel-creation/runs/run-1/stream')
     })
     expect(screen.getByText('正在生成三套轻量创意')).toBeInTheDocument()
+  })
+
+  it('refreshes the workbench after every completed quick-generation stage', async () => {
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 2, current_stage: 'world_style',
+      runs: [{ id: 'run-all', stage: 'all', status: 'running', current_message: '正在生成完整立项档案' }],
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [], stages: {},
+      },
+    }
+    const listeners = new Map<string, (event: MessageEvent) => void>()
+    vi.stubGlobal('EventSource', vi.fn().mockImplementation(function EventSourceStub() {
+      return {
+        addEventListener: vi.fn((name: string, listener: (event: MessageEvent) => void) => listeners.set(name, listener)),
+        close: vi.fn(),
+        onerror: null,
+      }
+    }))
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    renderPage('/novel-creation?session=session-1&run=run-all&model=openai%3Atest')
+    await waitFor(() => expect(listeners.has('stage_completed')).toBe(true))
+    const before = mockGet.mock.calls.filter(([url]) => url === '/novel-creation/sessions/session-1').length
+
+    act(() => listeners.get('stage_completed')?.(new MessageEvent('stage_completed', {
+      data: JSON.stringify({ event_type: 'stage_completed', payload: { stage: 'characters' } }),
+    })))
+
+    await waitFor(() => {
+      const after = mockGet.mock.calls.filter(([url]) => url === '/novel-creation/sessions/session-1').length
+      expect(after).toBeGreaterThan(before)
+    })
+  })
+
+  it('retries the failed stage recorded by the backend instead of the visible stage', async () => {
+    const session = {
+      id: 'session-1', status: 'reviewing', revision: 8, current_stage: 'macro_outline',
+      last_error: {
+        failure_class: 'invalid_response',
+        message: '开篇细纲结构不完整',
+        next_action: '草稿已保留，请重试“前15章细纲”',
+        failed_stage: 'opening_outline',
+        failed_stage_label: '前15章细纲',
+      },
+      draft: {
+        form: { brief: '记忆病毒', preset_id: 'suspense', genre: '悬疑推理', target_audience: '成年大众', platform: '暂不确定', target_words: 600000, target_chapters: 240, world_tone: '信息公平', story_structure: '三层谜团', pacing: '证据推进', writing_style: '精确克制', special_requirements: [], avoid: [] },
+        concepts: [],
+        stages: { macro_outline: { status: 'generated', data: { story_overview: '追查共同记忆', core_conflict: '保存真相会遗忘', volumes: [] } } },
+      },
+    }
+    vi.stubGlobal('EventSource', vi.fn().mockImplementation(function EventSourceStub() {
+      return { addEventListener: vi.fn(), close: vi.fn(), onerror: null }
+    }))
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/novel-creation/presets') return Promise.resolve({ data: { data: presets } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [session] } } })
+      if (url === '/novel-creation/sessions/session-1') return Promise.resolve({ data: { data: session } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    mockPost.mockResolvedValue({ data: { data: { run: { id: 'run-opening', stage: 'opening_outline', status: 'running' } } } })
+
+    const user = userEvent.setup()
+    renderPage('/novel-creation?session=session-1&stage=macro_outline')
+    await user.click(await screen.findByRole('button', { name: '重试“前15章细纲”' }))
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
+        stage: 'opening_outline',
+        expected_revision: 8,
+      }))
+    })
   })
 
   it('starts only the first stage when the author chooses the guided track', async () => {
