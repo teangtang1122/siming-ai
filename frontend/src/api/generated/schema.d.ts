@@ -5020,6 +5020,8 @@ export interface components {
         FreeModelOption: {
             /** Display Name */
             display_name: string;
+            /** Failure Kind */
+            failure_kind?: string | null;
             /** Id */
             id: string;
             /**
@@ -5027,6 +5029,11 @@ export interface components {
              * @default false
              */
             recommended: boolean;
+            /**
+             * Test Status
+             * @default untested
+             */
+            test_status: string;
         };
         /**
          * GettingStartedStatus

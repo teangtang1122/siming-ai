@@ -54,6 +54,8 @@ class FreeModelOption(BaseModel):
     id: str
     display_name: str
     recommended: bool = False
+    test_status: str = "untested"
+    failure_kind: str | None = None
 
 
 class OpenCodeActivationStatus(BaseModel):

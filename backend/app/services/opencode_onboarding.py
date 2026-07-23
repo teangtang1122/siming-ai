@@ -1,7 +1,6 @@
 """Managed OpenCode installation and discovery for first-time Siming users."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -23,30 +22,41 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from app.ai.local_cli_adapter import (
-    DEFAULT_CLI_ARGS,
-    LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     OPENCODE_DEFAULT_MODEL,
     OPENCODE_MODELS,
-    LocalCLIAdapter,
     discover_local_cli_models,
     hidden_subprocess_kwargs,
 )
 from app.architecture.uow import commit_session
 from app.services.application_settings import app_home as _app_home
-from app.services.model_readiness import (
-    mark_model_failure,
-    mark_model_ready,
-    mark_model_unavailable,
+from app.services.opencode_activation import (
+    activation_failure_kind as _activation_failure_kind,
+)
+from app.services.opencode_activation import (
+    probe_free_models as _probe_free_models,
+)
+from app.services.opencode_activation import (
+    save_activated_config as _save_activated_config,
+)
+from app.services.opencode_activation import (
+    save_readiness_failure as _save_activation_readiness_failure,
+)
+from app.services.opencode_activation import (
+    test_model as _activation_test_model,
 )
 
 OPENCODE_RELEASE_API = "https://api.github.com/repos/anomalyco/opencode/releases/latest"
 OPENCODE_RELEASES_URL = "https://github.com/anomalyco/opencode/releases/latest"
 OPENCODE_INSTALL_DOCS_URL = "https://opencode.ai/docs/#install"
-OPENCODE_MODELS_DOCS_URL = "https://opencode.ai/docs/providers/#opencode-zen"
+OPENCODE_MODELS_DOCS_URL = "https://opencode.ai/docs/zen"
 OPENCODE_AUTH_URL = "https://opencode.ai/auth"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 INSPECTION_CACHE_SECONDS = 30
 ACTIVATION_TEST_TIMEOUT = 60
+
+
+async def _test_opencode_model(command: str, model: str) -> None:
+    await _activation_test_model(command, model, timeout_seconds=ACTIVATION_TEST_TIMEOUT)
 
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
@@ -767,108 +777,6 @@ def submit_opencode_auth_credential(job_id: str, credential: str) -> dict[str, A
     )
 
 
-def _activation_failure_kind(message: str) -> str:
-    value = message.lower()
-    if any(
-        token in value
-        for token in (
-            "certificate_verify_failed",
-            "certificate verify failed",
-            "unable to get local issuer certificate",
-            "self-signed certificate",
-            "self signed certificate",
-            "证书验证失败",
-            "证书链",
-        )
-    ):
-        return "certificate_verification"
-    if any(token in value for token in ("auth", "login", "unauthorized", "登录", "凭据")):
-        return "authentication_required"
-    if any(token in value for token in ("quota", "rate limit", "free usage", "额度", "限流")):
-        return "quota_or_rate_limit"
-    if any(token in value for token in ("disk", "space", "磁盘", "空间不足")):
-        return "disk_space"
-    if any(token in value for token in ("permission", "access is denied", "权限", "拒绝访问")):
-        return "permission_or_antivirus"
-    if any(token in value for token in ("timed out", "timeout", "network", "urlopen", "http error", "网络")):
-        return "network"
-    return "runtime"
-
-
-def _save_activation_readiness_failure(message: str, *, unavailable_fallback: bool = False) -> None:
-    from app.database.models import APIConfig
-    from app.database.session import SessionLocal
-
-    try:
-        with SessionLocal() as db:
-            config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
-            if config:
-                changed = mark_model_failure(config, message, source="opencode_activation")
-                if not changed and unavailable_fallback:
-                    mark_model_unavailable(config, message, source="opencode_activation")
-                    changed = True
-                if changed:
-                    commit_session(db)
-    except Exception:
-        return
-
-
-async def _test_opencode_model(command: str, model: str) -> None:
-    from app.services.content_store import content_root
-
-    adapter = LocalCLIAdapter(
-        api_key="",
-        base_url="opencode_cli",
-        cli_command=command,
-        cli_args=json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False),
-    )
-    result = await asyncio.wait_for(
-        adapter.chat_completion(
-            messages=[
-                {"role": "system", "content": "你是连接测试执行器。"},
-                {"role": "user", "content": "只回复：连接成功"},
-            ],
-            model=model,
-            temperature=0,
-            max_tokens=32,
-            extra_body={
-                "local_cli_cwd": str(content_root()),
-                "local_cli_timeout_seconds": ACTIVATION_TEST_TIMEOUT,
-            },
-        ),
-        timeout=ACTIVATION_TEST_TIMEOUT + LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
-    )
-    reply = str(result.get("content") or "").strip()
-    if "连接成功" not in reply:
-        raise RuntimeError(f"模型返回了无法识别的测试结果：{reply[:160] or '空响应'}")
-
-
-def _save_activated_config(command: str, model: str) -> None:
-    from app.core.crypto import encrypt
-    from app.database.models import APIConfig
-    from app.database.session import SessionLocal
-
-    with SessionLocal() as db:
-        config = db.query(APIConfig).filter(APIConfig.provider == "opencode_cli").first()
-        if not config:
-            config = APIConfig(
-                provider="opencode_cli",
-                api_key_encrypted=encrypt("__local_cli__"),
-                default_model=model,
-                provider_type="local_cli",
-            )
-            db.add(config)
-        config.api_key_encrypted = encrypt("__local_cli__")
-        config.default_model = model
-        config.provider_type = "local_cli"
-        config.cli_command = command
-        config.cli_args = json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False)
-        mark_model_ready(config, source="opencode_activation")
-        db.query(APIConfig).update({"is_global_default": False})
-        config.is_global_default = True
-        commit_session(db)
-
-
 def _install_for_activation(job_id: str) -> tuple[str, str, str]:
     root = managed_opencode_root()
     version, asset = _latest_release_asset()
@@ -981,60 +889,53 @@ def _activation_worker(job_id: str) -> None:
             command=command,
             version=version,
             sha256=sha256 or current.get("sha256"),
-            free_models_json=ordered,
+            free_models_json=[{**item, "test_status": "untested"} for item in ordered],
         )
 
-        failures: list[tuple[str, str, str]] = []
-        for index, option in enumerate(ordered):
-            model = str(option.get("id") or "")
-            previous_failure = failures[-1] if failures else None
-            testing_message = f"正在测试免费模型：{model}"
-            if previous_failure:
-                testing_message = f"{previous_failure[0]} 当前不可用（{previous_failure[1]}），已切换测试：{model}"
+        probe = _probe_free_models(
+            job_id=job_id,
+            command=command,
+            ordered=ordered,
+            update_activation=_update_activation,
+            test_model_call=_test_opencode_model,
+        )
+        failures = probe.failures
+        model_results = probe.model_results
+        if probe.selected_model:
+            _save_activated_config(command, probe.selected_model)
+            try:
+                from app.services.external_agent.mcp_auto_config import (
+                    auto_configure_mcp_for_provider,
+                )
+                auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
+            except Exception:
+                pass
             _update_activation(
                 job_id,
-                phase="testing",
-                percent=min(98, 90 + index * 2),
-                message=testing_message,
-                selected_model=model,
+                status="ready",
+                phase="ready",
+                percent=100,
+                message="免费写作能力已经准备好",
+                selected_model=probe.selected_model,
+                free_models_json=deepcopy(model_results),
+                completed_at=datetime.now(UTC).replace(tzinfo=None),
             )
-            try:
-                asyncio.run(_test_opencode_model(command, model))
-                _save_activated_config(command, model)
-                try:
-                    from app.services.external_agent.mcp_auto_config import (
-                        auto_configure_mcp_for_provider,
-                    )
-                    auto_configure_mcp_for_provider("opencode_cli", cli_command=command)
-                except Exception:
-                    pass
-                _update_activation(
-                    job_id,
-                    status="ready",
-                    phase="ready",
-                    percent=100,
-                    message="免费写作能力已经准备好",
-                    selected_model=model,
-                    completed_at=datetime.now(UTC).replace(tzinfo=None),
-                )
-                return
-            except Exception as exc:
-                message = str(getattr(exc, "message", None) or exc)
-                kind = _activation_failure_kind(message)
-                failures.append((model, kind, message))
-                if kind == "authentication_required":
-                    _save_activation_readiness_failure(message)
-                    _update_activation(
-                        job_id,
-                        status="auth_required",
-                        phase="auth_required",
-                        percent=90,
-                        message="需要完成一次免费的官方登录",
-                        error=message,
-                        failure_kind=kind,
-                        next_action="点击登录按钮，在官方页面完成登录后返回重试。",
-                    )
-                    return
+            return
+
+        authentication_failure = next((item for item in failures if item[1] == "authentication_required"), None)
+        if authentication_failure:
+            _save_activation_readiness_failure(authentication_failure[2])
+            _update_activation(
+                job_id,
+                status="auth_required",
+                phase="auth_required",
+                percent=90,
+                message="需要完成一次免费的官方登录",
+                error=authentication_failure[2],
+                failure_kind=authentication_failure[1],
+                next_action="点击登录按钮，在官方页面完成登录后返回重试。",
+            )
+            return
 
         kinds = {item[1] for item in failures}
         if kinds == {"quota_or_rate_limit"}:
@@ -1044,10 +945,15 @@ def _activation_worker(job_id: str) -> None:
                 status="failed",
                 phase="failed",
                 percent=98,
-                message="当前免费额度暂时不可用",
+                message="OpenCode 免费服务已限流",
                 error=failures[-1][2],
                 failure_kind="quota_or_rate_limit",
-                next_action="免费模型可能稍后恢复，也可以展开高级选项后重新尝试。",
+                next_action=(
+                    f"司命已实际测试 {len(failures)} 个免费模型，第三方均返回 403/429 或额度限制；"
+                    "这不是网络故障。可以等待额度恢复后重新检测，或先完成 OpenCode 官方登录，"
+                    "再验证个人免费额度。"
+                ),
+                free_models_json=deepcopy(model_results),
             )
             return
         raise RuntimeError(
@@ -1056,7 +962,13 @@ def _activation_worker(job_id: str) -> None:
         )
     except Exception as exc:
         message = str(exc)
-        kind = _activation_failure_kind(message)
+        latest = get_opencode_activation_job(job_id) or {}
+        failure_context = (
+            "download"
+            if latest.get("phase") in {"checking_release", "downloading"}
+            else None
+        )
+        kind = _activation_failure_kind(message, context=failure_context)
         _save_activation_readiness_failure(message, unavailable_fallback=True)
         _update_activation(
             job_id,
@@ -1069,9 +981,13 @@ def _activation_worker(job_id: str) -> None:
                 "请确认 Windows 日期和时间正确，并完成 Windows 更新后重试。司命会使用系统受信任证书，且不会关闭 HTTPS 校验。"
                 if kind == "certificate_verification"
                 else (
-                    "请检查网络后点击重试，司命会从上次下载进度继续。"
-                    if kind == "network"
-                    else "点击重试；如果仍然失败，可导出诊断信息反馈给项目维护者。"
+                    "OpenCode 官方下载服务返回 403/429 限流；这不是本机断网。下载进度已保留，请稍后继续下载。"
+                    if kind == "download_rate_limit"
+                    else (
+                        "请检查网络后点击重试，司命会从上次下载进度继续。"
+                        if kind == "network"
+                        else "点击重试；如果仍然失败，可导出诊断信息反馈给项目维护者。"
+                    )
                 )
             ),
         )

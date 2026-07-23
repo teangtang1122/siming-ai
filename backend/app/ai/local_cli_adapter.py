@@ -141,8 +141,8 @@ OPENCODE_DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
 OPENCODE_MODELS = [
     OPENCODE_DEFAULT_MODEL,
     "opencode/mimo-v2.5-free",
+    "opencode/laguna-s-2.1-free", "opencode/north-mini-code-free",
     "opencode/nemotron-3-ultra-free",
-    "opencode/north-mini-code-free",
     "opencode/big-pickle",
 ]
 MODEL_CONFIG_KEYS = {"model", "default_model", "model_name", "modelName", "defaultModel"}

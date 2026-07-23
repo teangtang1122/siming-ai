@@ -26,6 +26,7 @@ from app.services import opencode_onboarding
 
 def test_free_model_detection_covers_current_opencode_labels():
     assert opencode_onboarding.is_free_opencode_model("opencode/deepseek-v4-flash-free")
+    assert opencode_onboarding.is_free_opencode_model("opencode/laguna-s-2.1-free")
     assert opencode_onboarding.is_free_opencode_model("opencode/big-pickle")
     assert not opencode_onboarding.is_free_opencode_model("opencode/minimax-m2.7")
 
@@ -137,6 +138,19 @@ def test_certificate_chain_failure_has_a_distinct_actionable_classification():
     )
 
     assert opencode_onboarding._activation_failure_kind(message) == "certificate_verification"
+
+
+def test_bare_http_rate_limit_is_classified_by_activation_context():
+    message = "HTTP Error 403"
+
+    assert opencode_onboarding._activation_failure_kind(message, context="model") == "quota_or_rate_limit"
+    assert opencode_onboarding._activation_failure_kind(message, context="download") == "download_rate_limit"
+
+
+def test_http_429_is_not_reported_as_a_generic_network_failure():
+    message = "request failed with status code 429"
+
+    assert opencode_onboarding._activation_failure_kind(message, context="model") == "quota_or_rate_limit"
 
 
 def test_mirror_candidates_keep_official_first_and_require_https(monkeypatch):
@@ -261,6 +275,44 @@ def test_activation_falls_back_to_next_free_model_before_saving_config():
     ]
     save_config.assert_called_once_with(job["command"], "opencode/second-free")
     assert any(item.kwargs.get("status") == "ready" for item in update.call_args_list)
+
+
+def test_activation_reports_all_tested_models_when_the_free_pool_is_rate_limited():
+    job = {
+        "id": "job-quota",
+        "command": r"C:\managed\opencode.exe",
+        "preferred_model": None,
+        "sha256": None,
+    }
+    inspected = {
+        "installed": True,
+        "command": job["command"],
+        "version": "1.17.20",
+        "free_models": [
+            {"id": "opencode/first-free", "display_name": "First Free", "recommended": True},
+            {"id": "opencode/second-free", "display_name": "Second Free", "recommended": False},
+        ],
+    }
+    with patch.object(opencode_onboarding, "get_opencode_activation_job", return_value=job), patch.object(
+        opencode_onboarding, "_update_activation"
+    ) as update, patch.object(opencode_onboarding, "resolve_opencode_command", return_value=job["command"]), patch.object(
+        opencode_onboarding, "inspect_opencode", return_value=inspected
+    ), patch.object(
+        opencode_onboarding,
+        "_test_opencode_model",
+        new=AsyncMock(side_effect=RuntimeError("HTTP Error 403: rate limit exceeded")),
+    ), patch.object(opencode_onboarding, "_save_activated_config") as save_config, patch.object(
+        opencode_onboarding, "_save_activation_readiness_failure"
+    ):
+        opencode_onboarding._activation_worker("job-quota")
+
+    save_config.assert_not_called()
+    failed_updates = [item.kwargs for item in update.call_args_list if item.kwargs.get("status") == "failed"]
+    assert failed_updates
+    final = failed_updates[-1]
+    assert final["failure_kind"] == "quota_or_rate_limit"
+    assert "不是网络故障" in final["next_action"]
+    assert [item["test_status"] for item in final["free_models_json"]] == ["rate_limited", "rate_limited"]
 
 
 def test_activation_pauses_for_official_auth_without_changing_config():

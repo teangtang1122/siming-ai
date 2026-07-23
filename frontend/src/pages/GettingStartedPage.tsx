@@ -11,6 +11,7 @@ import {
   Space,
   Spin,
   Steps,
+  Tag,
   Typography,
   message,
 } from 'antd'
@@ -46,6 +47,8 @@ interface FreeModelOption {
   id: string
   display_name: string
   recommended: boolean
+  test_status?: 'untested' | 'testing' | 'ready' | 'rate_limited' | 'failed'
+  failure_kind?: string | null
 }
 
 type ActivationStatus = 'pending' | 'running' | 'auth_required' | 'ready' | 'failed'
@@ -85,6 +88,7 @@ interface GettingStartedStatus {
   recommended_action?: string
   global_model?: { provider: string; model: string } | null
   activation_job?: ActivationJob | null
+  official_links?: { model_docs?: string }
 }
 
 interface ApiEnvelope<T> {
@@ -275,6 +279,8 @@ export function GettingStartedPanel() {
     : null
   const retryLabel = job?.failure_kind === 'network'
     ? '继续下载'
+    : job?.failure_kind === 'download_rate_limit'
+      ? '稍后继续下载'
     : job?.failure_kind === 'certificate_verification'
       ? '重新验证连接'
       : job?.failure_kind === 'disk_space'
@@ -282,8 +288,17 @@ export function GettingStartedPanel() {
         : job?.failure_kind === 'permission_or_antivirus'
           ? '允许后重试'
           : job?.failure_kind === 'quota_or_rate_limit'
-            ? '重新检查免费额度'
+            ? '重新检测免费模型'
             : '重试'
+  const quotaLimited = job?.failure_kind === 'quota_or_rate_limit'
+  const modelTestResults = job?.free_models?.filter((model) => model.test_status && model.test_status !== 'untested') || []
+  const modelStatusLabel = (model: FreeModelOption) => {
+    if (model.test_status === 'ready') return '可用'
+    if (model.test_status === 'testing') return '正在测试'
+    if (model.test_status === 'rate_limited') return '第三方限流'
+    if (model.test_status === 'failed') return '不可用'
+    return '未测试'
+  }
   const credentialRequired = job?.auth_status === 'credential_required' || job?.phase === 'credential_required'
   const authenticationActive = ['running', 'submitted'].includes(job?.auth_status || '')
 
@@ -363,16 +378,43 @@ export function GettingStartedPanel() {
           {(job?.status === 'failed' || setupError) && (
             <Alert
               className="getting-started-alert"
-              type="error"
+              type={quotaLimited ? 'warning' : 'error'}
               showIcon
-              message={job?.failure_kind === 'quota_or_rate_limit'
-                ? '当前免费额度暂时不可用'
+              message={quotaLimited
+                ? 'OpenCode 免费服务已限流（不是网络故障）'
+                : job?.failure_kind === 'download_rate_limit'
+                  ? 'OpenCode 下载服务暂时限流'
                 : job?.failure_kind === 'certificate_verification'
                   ? 'Windows 证书验证没有完成'
                   : '这次没有准备完成'}
               description={job?.next_action || '司命会保留下载进度，可以直接重试。'}
-              action={<Button icon={<ReloadOutlined />} onClick={() => void retryActivation()}>{retryLabel}</Button>}
+              action={quotaLimited ? (
+                <Space wrap>
+                  <Button type="primary" onClick={() => void openAuthentication()}>登录后验证个人免费额度</Button>
+                  <Button icon={<ReloadOutlined />} onClick={() => void retryActivation()}>{retryLabel}</Button>
+                  {status.official_links?.model_docs && <Button href={status.official_links.model_docs} target="_blank">查看官方免费模型说明</Button>}
+                </Space>
+              ) : <Button icon={<ReloadOutlined />} onClick={() => void retryActivation()}>{retryLabel}</Button>}
             />
+          )}
+
+          {modelTestResults.length > 0 && (
+            <Collapse ghost items={[{
+              key: 'model-tests',
+              label: `免费模型检测结果（${modelTestResults.length}/${job?.free_models.length || 0}）`,
+              children: (
+                <Space wrap>
+                  {modelTestResults.map((model) => (
+                    <Tag
+                      key={model.id}
+                      color={model.test_status === 'ready' ? 'success' : model.test_status === 'testing' ? 'processing' : model.test_status === 'rate_limited' ? 'warning' : 'error'}
+                    >
+                      {model.display_name}：{modelStatusLabel(model)}
+                    </Tag>
+                  ))}
+                </Space>
+              ),
+            }]} />
           )}
 
           {(job?.error || setupError) && (
@@ -386,7 +428,7 @@ export function GettingStartedPanel() {
         type="info"
         showIcon
         message="关于当前可免费使用的模型"
-        description="免费方案使用 OpenCode 提供的免费开源模型 DeepSeek V4 Flash。更多高质量模型仍需前往相应模型官网自行订阅。免费模型、额度和数据政策可能调整；小说内容会发送给所选云端模型处理，请勿提交私密或敏感内容。"
+        description="司命会读取 OpenCode 当前公开的免费模型池并逐个真实测试，不再只依赖单一模型。免费模型、额度和数据政策可能调整；小说内容会发送给所选云端模型处理，请勿提交私密或敏感内容。"
       />
 
       <Collapse ghost className="getting-started-alternatives" items={[{
