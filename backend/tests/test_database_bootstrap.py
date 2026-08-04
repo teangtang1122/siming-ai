@@ -36,7 +36,7 @@ def test_fresh_database_is_initialized_and_versioned():
                 ).scalar_one()
             assert result.mode == "initialized"
             assert result.read_only is False
-            assert result.schema_revision == revision == "300a10_creation_run_diagnostics"
+            assert result.schema_revision == revision == "300a11_operation_attention_read"
             assert epoch == SCHEMA_EPOCH
             assert {
                 "projects",
@@ -79,7 +79,7 @@ def test_recognized_legacy_database_is_backed_up_and_preserved():
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             assert title == "Legacy Story"
-            assert revision == "300a10_creation_run_diagnostics"
+            assert revision == "300a11_operation_attention_read"
         finally:
             engine.dispose()
 
@@ -224,7 +224,7 @@ def test_alpha1_database_upgrades_through_gateway_sync():
             result = bootstrap_database(engine, database_url=url)
 
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a10_creation_run_diagnostics"
+            assert result.schema_revision == "300a11_operation_attention_read"
             assert {"content_sync_jobs", "gateway_devices", "sync_changes"} <= set(
                 inspect(engine).get_table_names()
             )
