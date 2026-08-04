@@ -145,40 +145,30 @@ async def _complete_tool_turn(**kwargs: Any) -> dict[str, Any]:
     return {"content": "".join(content), "tool_calls": tool_calls}
 
 
-async def run_creation_agent(
-    db: Session,
-    *,
+def _prepare_agent_request(
     session: Any,
     message: str,
     model: str | None,
-    history: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
+    history: list[dict[str, str]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, dict[str, Any] | None, bool]:
     native_tool_calls = LLMGateway.supports_tool_calling(model)
     try:
         provider = LLMGateway.provider_for_model(model)
     except Exception:
         provider = ""
     local_cli_mcp = is_local_cli_provider(provider)
-    if native_tool_calls:
-        system_prompt = _system_prompt(session.id)
-    elif local_cli_mcp:
-        system_prompt = _cli_mcp_system_prompt(session.id)
-    else:
-        system_prompt = _text_only_system_prompt()
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    prompt = (
+        _system_prompt(session.id)
+        if native_tool_calls
+        else _cli_mcp_system_prompt(session.id) if local_cli_mcp else _text_only_system_prompt()
+    )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     for item in (history or [])[-12:]:
         role = item.get("role")
         content = str(item.get("content") or "").strip()
         if role in {"user", "assistant"} and content:
             messages.append({"role": role, "content": content[:80_000]})
     messages.append({"role": "user", "content": message})
-
-    tool_results: list[dict[str, Any]] = []
-    write_results: list[dict[str, Any]] = []
-    seen_calls: set[str] = set()
-    final_reply = ""
-    schemas = _tool_schemas() if native_tool_calls else []
-    baseline_revision = int(session.revision or 0)
     extra_body = None
     if local_cli_mcp:
         from app.services.content_store import content_root
@@ -192,6 +182,51 @@ async def run_creation_agent(
                 "local_cli_timeout_seconds": CREATION_AGENT_CLI_TIMEOUT_SECONDS,
             },
         )
+    schemas = _tool_schemas() if native_tool_calls else []
+    return messages, schemas, int(session.revision or 0), extra_body, local_cli_mcp
+
+
+def _record_verified_mcp_write(
+    db: Session,
+    session: Any,
+    baseline_revision: int,
+    tool_results: list[dict[str, Any]],
+    write_results: list[dict[str, Any]],
+) -> None:
+    db.expire_all()
+    refreshed_session = db.get(type(session), session.id)
+    current_revision = int(getattr(refreshed_session, "revision", baseline_revision) or 0)
+    if current_revision <= baseline_revision:
+        return
+    verified_write = {
+        "tool": "mcp_verified_write",
+        "status": "ok",
+        "detail": f"MCP 写入已验证，立项 revision {baseline_revision}→{current_revision}",
+        "data": {
+            "session_id": session.id,
+            "revision_before": baseline_revision,
+            "revision_after": current_revision,
+        },
+    }
+    tool_results.append(verified_write)
+    write_results.append(verified_write)
+
+
+async def run_creation_agent(
+    db: Session,
+    *,
+    session: Any,
+    message: str,
+    model: str | None,
+    history: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    messages, schemas, baseline_revision, extra_body, local_cli_mcp = _prepare_agent_request(
+        session, message, model, history,
+    )
+    tool_results: list[dict[str, Any]] = []
+    write_results: list[dict[str, Any]] = []
+    seen_calls: set[str] = set()
+    final_reply = ""
     for _iteration in range(6):
         result = await _complete_tool_turn(
             messages=messages,
@@ -274,22 +309,7 @@ async def run_creation_agent(
         # MCP runs in a sibling process with its own SQLAlchemy session. Expire
         # this request's identity map before checking whether the CLI truly
         # committed a write; model prose alone is never accepted as evidence.
-        db.expire_all()
-        refreshed_session = db.get(type(session), session.id)
-        current_revision = int(getattr(refreshed_session, "revision", baseline_revision) or 0)
-        if current_revision > baseline_revision:
-            verified_write = {
-                "tool": "mcp_verified_write",
-                "status": "ok",
-                "detail": f"MCP 写入已验证，立项 revision {baseline_revision}→{current_revision}",
-                "data": {
-                    "session_id": session.id,
-                    "revision_before": baseline_revision,
-                    "revision_after": current_revision,
-                },
-            }
-            tool_results.append(verified_write)
-            write_results.append(verified_write)
+        _record_verified_mcp_write(db, session, baseline_revision, tool_results, write_results)
 
     if not write_results and final_reply and _WRITE_CLAIM_RE.search(final_reply):
         failures = [
