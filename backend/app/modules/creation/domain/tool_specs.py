@@ -80,7 +80,9 @@ class CreationPatchOperation(CompatibleInput):
             "add 到对象字段会转换为 set。action 与 op 二选一。"
         ),
     )
-    path: str = Field(description="目标 JSON Pointer，例如 /special_requirements 或 /volumes/0/title")
+    path: str = Field(
+        description="目标 JSON Pointer，例如 /special_requirements 或 /volumes/0/title"
+    )
     value: Any = Field(default=None, description="set、replace、append 或 add 写入的值")
     target_count: int | None = Field(default=None, ge=0, description="resize 的目标数组长度")
     fill_value: Any = Field(default=None, description="resize 扩展数组时使用的填充值")
