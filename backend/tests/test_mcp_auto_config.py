@@ -163,6 +163,10 @@ class McpAutoConfigTest(unittest.TestCase):
             self.assertEqual(config["permission"], "allow")
             self.assertIn("siming", config["mcp"])
             self.assertIn("--permission-pack", config["mcp"]["siming"]["command"])
+            self.assertEqual(
+                config["mcp"]["siming"]["timeout"],
+                mcp_auto_config.OPENCODE_MCP_TIMEOUT_MS,
+            )
 
     def test_opencode_config_preserves_existing_servers(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -192,6 +196,10 @@ class McpAutoConfigTest(unittest.TestCase):
             self.assertEqual(config["mcp"]["other-server"]["command"], ["other", "--flag"])
             # Siming added
             self.assertIn("siming", config["mcp"])
+            self.assertEqual(
+                config["mcp"]["siming"]["timeout"],
+                mcp_auto_config.OPENCODE_MCP_TIMEOUT_MS,
+            )
             # Other settings preserved
             self.assertEqual(config["theme"], "dark")
             self.assertEqual(config["permission"], "allow")

@@ -55,9 +55,35 @@ class MCPNovelCreationToolsTest(unittest.TestCase):
     def test_creation_session_tools_do_not_require_project_id(self):
         tools = list_mcp_tools(permission_pack="project_management")
         by_name = {tool.name: tool for tool in tools}
-        for name in ("generate_novel_creation_stage", "submit_novel_creation_stage"):
+        session_tools = {
+            "patch_creation_session",
+            "patch_creation_artifact",
+            "patch_creation_entity",
+            "confirm_creation_artifact",
+            "generate_creation_artifact",
+            "refine_creation_artifact",
+            "regenerate_creation_artifact",
+            "finalize_creation_session",
+            "apply_creation_import",
+        }
+        for name in session_tools:
+            self.assertIn(name, by_name)
             required = by_name[name].input_schema.get("required", [])
             self.assertNotIn("project_id", required)
+
+    def test_creation_patch_schema_documents_actions_and_standard_json_patch(self):
+        tools = list_mcp_tools(permission_pack="project_management")
+        patch_tool = next(tool for tool in tools if tool.name == "patch_creation_artifact")
+        operation = patch_tool.input_schema["properties"]["changes"]["items"]
+        if "$ref" in operation:
+            operation = patch_tool.input_schema["$defs"][operation["$ref"].rsplit("/", 1)[-1]]
+        properties = operation["properties"]
+        self.assertEqual(
+            properties["action"]["anyOf"][0]["enum"],
+            ["set", "replace", "append", "remove", "resize"],
+        )
+        self.assertEqual(properties["op"]["anyOf"][0]["enum"], ["add", "replace", "remove"])
+        self.assertIn("JSON Pointer", properties["path"]["description"])
 
     def test_apply_not_in_readonly(self):
         tools = list_mcp_tools(permission_pack="readonly_collaboration")

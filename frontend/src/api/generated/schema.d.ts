@@ -6251,6 +6251,8 @@ export interface components {
              * @default false
              */
             include_worldbuilding: boolean;
+            /** Output Directory */
+            output_directory?: string | null;
             /**
              * Scope
              * @description chapters/outline/characters/worldbuilding/all/single/selected

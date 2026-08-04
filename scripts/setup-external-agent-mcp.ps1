@@ -322,6 +322,7 @@ function Configure-OpenCodeFamily {
     type = "local"
     command = @($Server.Command) + @($Server.Args)
     enabled = $true
+    timeout = 43200000
   }
   if ($config.mcp.PSObject.Properties["moshu"]) {
     $config.mcp.PSObject.Properties.Remove("moshu")

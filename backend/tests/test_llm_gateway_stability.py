@@ -3,6 +3,7 @@
 import asyncio
 import os
 import unittest
+from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, patch
 
@@ -16,6 +17,7 @@ from app.core.exceptions import LLMError
 from app.database.models import APIConfig
 from app.database.migrations import ensure_runtime_schema
 from app.database.session import Base, SessionLocal, engine
+from app.modules.model_runtime.infrastructure.gateway import _apply_active_context_manifest
 
 
 class FakeAdapter(BaseAdapter):
@@ -176,6 +178,30 @@ class GatewayStabilityTestCase(unittest.TestCase):
 
         self.assertIs(updated_body, body)
         self.assertEqual(wait_timeout, 30)
+
+    def test_governed_context_keeps_a_single_leading_system_message(self):
+        active = SimpleNamespace(
+            manifest_id="manifest-1",
+            output_reserve_tokens=0,
+            rendered_context="selected project evidence",
+        )
+        with patch(
+            "app.modules.model_runtime.infrastructure.gateway.active_context_manifest",
+            return_value=active,
+        ):
+            messages, body, _ = _apply_active_context_manifest(
+                [
+                    {"role": "system", "content": "base instructions"},
+                    {"role": "user", "content": "continue"},
+                ],
+                None,
+                None,
+            )
+
+        self.assertEqual([message["role"] for message in messages], ["system", "user"])
+        self.assertIn("base instructions", messages[0]["content"])
+        self.assertIn("selected project evidence", messages[0]["content"])
+        self.assertTrue(body["moshu_context_manifest_rendered"])
 
 
 if __name__ == "__main__":

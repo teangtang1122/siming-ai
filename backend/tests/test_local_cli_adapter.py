@@ -459,6 +459,16 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         self.assertIn("不要调用 Siming MCP", instruction)
         self.assertIn(r"D:\novels\reference.txt", instruction)
 
+    def test_file_prompt_instruction_allows_verified_mcp_writes_when_requested(self):
+        instruction = LocalCLIAdapter._file_prompt_instruction(
+            r"D:\novels\siming-task.md",
+            [],
+            allow_mcp=True,
+        )
+        self.assertIn("允许使用已配置的 Siming MCP", instruction)
+        self.assertIn("写入后再次读取验证", instruction)
+        self.assertNotIn("不要调用 Siming MCP", instruction)
+
     def test_normalize_plain_output_is_preserved(self):
         adapter = LocalCLIAdapter(api_key="", base_url="claude_cli", cli_command="claude")
         self.assertEqual(adapter._normalize_output("plain answer\n"), "plain answer")

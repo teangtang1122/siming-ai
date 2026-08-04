@@ -730,6 +730,15 @@ def patch_creation_artifact(
     for change in changes:
         path = _text(change.get("path"))
         action = _text(change.get("action"))
+        standard_op = _text(change.get("op"))
+        if not action and standard_op:
+            if standard_op == "add" and path.endswith("/-"):
+                path = path[:-2] or "/"
+                action = "append"
+            elif standard_op == "add":
+                action = "set"
+            elif standard_op in {"replace", "remove"}:
+                action = standard_op
         if action not in {"set", "replace", "append", "remove", "resize"}:
             raise ValueError(f"unsupported patch action: {action}")
         if _path_is_locked(path, locked_paths):

@@ -522,7 +522,35 @@ def _build_pdf_stream(lines: list[str], margin: float, y_start: float, font_size
     return b"".join(parts)
 
 
-def _store_export_file(project_id: str, filename: str, data: bytes, media_type: str, export_format: str) -> dict:
+def _write_export_destination(output_directory: str, filename: str, data: bytes) -> Path:
+    destination_dir = Path(output_directory).expanduser()
+    if not destination_dir.exists() or not destination_dir.is_dir():
+        raise ValidationError("导出目录不存在或不是文件夹")
+
+    destination = destination_dir / filename
+    if destination.exists():
+        stem = destination.stem
+        suffix = destination.suffix
+        index = 2
+        while destination.exists():
+            destination = destination_dir / f"{stem}_{index}{suffix}"
+            index += 1
+
+    try:
+        destination.write_bytes(data)
+    except OSError as exc:
+        raise ValidationError(f"无法写入导出目录: {exc}") from exc
+    return destination.resolve()
+
+
+def _store_export_file(
+    project_id: str,
+    filename: str,
+    data: bytes,
+    media_type: str,
+    export_format: str,
+    output_directory: str | None = None,
+) -> dict:
     file_id = str(uuid.uuid4())
     project_dir = EXPORT_ROOT / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -530,6 +558,10 @@ def _store_export_file(project_id: str, filename: str, data: bytes, media_type: 
     suffix = Path(filename).suffix or f".{export_format}"
     stored_filename = f"{file_id}{suffix}"
     (project_dir / stored_filename).write_bytes(data)
+
+    saved_path = None
+    if output_directory:
+        saved_path = str(_write_export_destination(output_directory, filename, data))
 
     metadata = {
         "file_id": file_id,
@@ -541,6 +573,7 @@ def _store_export_file(project_id: str, filename: str, data: bytes, media_type: 
         "size": len(data),
         "created_at": datetime.now().isoformat(),
         "download_url": f"/api/v1/projects/{project_id}/export/download/{file_id}",
+        "saved_path": saved_path,
     }
     (project_dir / f"{file_id}.json").write_text(
         json_module.dumps(metadata, ensure_ascii=False),

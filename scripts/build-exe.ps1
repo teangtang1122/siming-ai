@@ -265,6 +265,10 @@ $ExePath = if ($OneDir) {
 } else {
   Join-Path $DistDir "$AppName.exe"
 }
+
+Write-Step "Verifying packaged MCP stdio and critical write tools..."
+Invoke-Native $VenvPython @((Join-Path $ScriptDir "smoke-packaged-mcp.py"), $ExePath)
+
 $Version = (& $VenvPython -c "import sys; sys.path.insert(0, '$BackendPathForPython'); from app.version import APP_VERSION; print(APP_VERSION)").Trim()
 $Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
 $IsPrerelease = $Version.Contains("-")

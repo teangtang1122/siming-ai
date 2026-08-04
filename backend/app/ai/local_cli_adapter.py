@@ -1119,19 +1119,32 @@ class LocalCLIAdapter(BaseAdapter):
             return handle.name
 
     @staticmethod
-    def _file_prompt_instruction(prompt_file: str, attachments: list[str]) -> str:
+    def _file_prompt_instruction(
+        prompt_file: str,
+        attachments: list[str],
+        *,
+        allow_mcp: bool = False,
+    ) -> str:
         attachment_note = ""
         if attachments:
             attachment_note = (
                 "\n任务可能引用以下只读资料文件：\n"
                 + "\n".join(f"- {path}" for path in attachments)
             )
+        tool_rule = (
+            "本任务明确允许使用已配置的 Siming MCP 工具。需要读取或修改司命结构化数据时，"
+            "必须通过 Siming MCP 执行，并在写入后再次读取验证；不得仅用文字声称已经保存。"
+            if allow_mcp
+            else (
+                "除读取该任务文件和其中明确引用的资料外，不要扫描代码仓库，"
+                "不要修改文件，不要调用 Siming MCP 或其他外部工具。"
+            )
+        )
         return (
             "你是司命内部的文本生成执行器，不是代码助手。"
             f"请读取 UTF-8 任务文件：{prompt_file}\n"
             "严格按文件中的 SYSTEM/USER 指令完成任务。"
-            "除读取该任务文件和其中明确引用的资料外，不要扫描代码仓库，"
-            "不要修改文件，不要调用 Siming MCP 或其他外部工具。"
+            f"{tool_rule}"
             "最终只输出任务要求的正文或结构化结果，不要回复 Ready。"
             f"{attachment_note}"
         )
@@ -1250,12 +1263,13 @@ class LocalCLIAdapter(BaseAdapter):
         model: str,
         cwd: str,
         attachments: list[str],
+        allow_mcp: bool = False,
     ) -> tuple[CLILaunch, str]:
         execution_model = effective_local_cli_model(self._provider, model)
         prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
 
         launch = self._launch(
-            self._file_prompt_instruction(prompt_file, attachments),
+            self._file_prompt_instruction(prompt_file, attachments, allow_mcp=allow_mcp),
             execution_model,
         )
         args = list(launch.args)
@@ -1299,6 +1313,7 @@ class LocalCLIAdapter(BaseAdapter):
         cwd = self._runtime_cwd(extra_body)
         isolated = bool((extra_body or {}).get("local_cli_isolated"))
         attachments = self._runtime_attachments(extra_body)
+        allow_mcp = bool((extra_body or {}).get("local_cli_allow_mcp"))
         env = self._isolated_environment(os.environ.copy(), isolated)
         if self._provider in OPENCODE_FAMILY_PROVIDERS:
             launch, prompt_file = self._opencode_family_launch(
@@ -1306,9 +1321,14 @@ class LocalCLIAdapter(BaseAdapter):
                 model=model,
                 cwd=cwd,
                 attachments=attachments,
+                allow_mcp=allow_mcp,
             )
             if self._provider == "opencode_cli":
-                env = self._isolated_environment(self._opencode_env(), isolated)
+                env = (
+                    self._isolated_environment(os.environ.copy(), isolated)
+                    if allow_mcp
+                    else self._isolated_environment(self._opencode_env(), isolated)
+                )
         elif self._provider == "codex_cli":
             launch = self._launch(launch_prompt, model)
             args = list(launch.args)
@@ -1317,7 +1337,11 @@ class LocalCLIAdapter(BaseAdapter):
             launch = CLILaunch(args=args, stdin_text=launch.stdin_text)
         elif self._provider in AGENT_FILE_PROMPT_PROVIDERS:
             prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
-            launch_prompt = self._file_prompt_instruction(prompt_file, attachments)
+            launch_prompt = self._file_prompt_instruction(
+                prompt_file,
+                attachments,
+                allow_mcp=allow_mcp,
+            )
             launch = self._launch(launch_prompt, model)
             args = list(launch.args)
             self._apply_provider_runtime_options(args, model=model, cwd=cwd)
