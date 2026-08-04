@@ -7,10 +7,13 @@ $Root = Split-Path -Parent $ScriptDir
 $BackendDir = Join-Path $Root "backend"
 $FrontendDir = Join-Path $Root "frontend"
 $LogDir = Join-Path $Root "artifacts\logs"
-$BackendPort = 8000
-$FrontendPort = 5173
+$BackendPort = 8521
+$FrontendPort = 5371
 $BackendUrl = "http://127.0.0.1:$BackendPort"
 $FrontendUrl = "http://127.0.0.1:$FrontendPort"
+
+# 加载 Python 环境设置模块
+. (Join-Path $ScriptDir "setup-python-env.ps1")
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
@@ -93,18 +96,30 @@ function Require-Command {
 
 function Resolve-BackendPython {
   $VenvPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+  
+  # 如果虚拟环境不存在，自动初始化
+  if (-not (Test-Path $VenvPython)) {
+    Write-Step "Python virtual environment not found. Setting up..."
+    try {
+      $VenvPython = Initialize-PythonEnvironment -BackendDir $BackendDir
+    } catch {
+      Write-Host ""
+      Write-Host "============================================" -ForegroundColor Red
+      Write-Host "Failed to set up Python environment!" -ForegroundColor Red
+      Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+      Write-Host ""
+      Write-Host "Please check your network connection and try again." -ForegroundColor Red
+      Write-Host "============================================" -ForegroundColor Red
+      throw
+    }
+  }
+  
+  # 确认虚拟环境 Python 存在
   if (Test-Path $VenvPython) {
     return $VenvPython
   }
-  $Python = Get-Command "python" -ErrorAction SilentlyContinue
-  if ($Python) {
-    return $Python.Source
-  }
-  $Py = Get-Command "py" -ErrorAction SilentlyContinue
-  if ($Py) {
-    return $Py.Source
-  }
-  throw "Python was not found. Install Python or create backend\.venv and try again."
+  
+  throw "Python virtual environment was not created properly at: $VenvPython"
 }
 
 function Test-TcpPort {

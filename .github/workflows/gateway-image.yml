@@ -103,7 +103,7 @@ jobs:
             test "$(docker image inspect --format '{{.Architecture}}' "$image")" = "$arch"
             docker run -d --rm --platform "linux/${arch}" --name "$container" \
               -e SIMING_GATEWAY_BOOTSTRAP_KEY=ci-bootstrap-key-12345 \
-              -p "${port}:8000" "$image"
+              -p "${port}:8521" "$image"
             containers+=("$container")
             for attempt in {1..30}; do
               if curl --fail --silent "http://127.0.0.1:${port}/health" >/dev/null; then break; fi

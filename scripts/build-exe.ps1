@@ -20,6 +20,9 @@ $DistDir = if ($OutputDirectory) {
 $AppName = "Siming"
 $DefaultUpdateRepo = "teangtang1122/siming-ai"
 
+# 加载 Python 环境设置模块
+. (Join-Path $ScriptDir "setup-python-env.ps1")
+
 function Write-Step {
   param([string]$Message)
   Write-Host "[package] $Message" -ForegroundColor Cyan
@@ -75,11 +78,32 @@ function Resolve-BuildPython {
   if ($Py -and (Test-PackagingPython -PythonPath $Py.Source)) {
     return $Py.Source
   }
-  $BackendPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
-  if ((Test-Path $BackendPython) -and (Test-PackagingPython -PythonPath $BackendPython)) {
-    return $BackendPython
+  
+  # 确保 backend .venv 存在（用于后端运行）
+  $BackendVenvPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+  if (-not (Test-Path $BackendVenvPython)) {
+    Write-Step "Backend virtual environment not found. Setting up..."
+    try {
+      Initialize-PythonEnvironment -BackendDir $BackendDir
+    } catch {
+      Write-Host "Warning: Failed to setup backend virtual environment: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
   }
-  throw "A Windows Python runtime with Tk and PyInstaller support is required on the packaging machine."
+  
+  # 检查 backend .venv 是否支持 Tkinter（可用于打包）
+  if ((Test-Path $BackendVenvPython) -and (Test-PackagingPython -PythonPath $BackendVenvPython)) {
+    Write-Step "Using backend virtual environment for packaging (supports Tk)."
+    return $BackendVenvPython
+  }
+  
+  # 如果 backend .venv 不支持 Tk（基于嵌入式 Python），但存在，则仍返回它（PyInstaller 可能可用）
+  if (Test-Path $BackendVenvPython) {
+    Write-Step "Using backend virtual environment for packaging (may have limited Tk support)."
+    return $BackendVenvPython
+  }
+  
+  throw "A Windows Python runtime with Tk and PyInstaller support is required on the packaging machine.`n" +
+        "Install Python from python.org (with Tcl/Tk support) or set SIMING_BUILD_PYTHON environment variable."
 }
 
 function Get-PythonRuntimeIdentity {
