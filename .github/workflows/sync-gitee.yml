@@ -11,13 +11,18 @@ on:
   schedule:
     - cron: "17 */6 * * *"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Specific release tag to mirror (empty means all releases)
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
   group: sync-gitee
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   GITEE_OWNER: teangtang13
@@ -103,12 +108,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install release sync dependency
-        run: python -m pip install --disable-pip-version-check "requests>=2.32,<3"
+        run: >-
+          python -m pip install --disable-pip-version-check
+          "requests>=2.32,<3"
+          "requests-toolbelt>=1,<2"
 
       - name: Mirror GitHub Releases and assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          PYTHONUNBUFFERED: "1"
+          SYNC_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'push' && 'latest' || '' }}
         run: python .github/scripts/sync_gitee_releases.py
 
       - name: Remove SSH credentials
