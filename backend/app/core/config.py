@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     
     database_url: str = "sqlite:///./novel_agent.db"
     secret_key: str = "change-me-in-production"
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = "http://localhost:5371"
     runtime_profile: Literal["desktop-standalone", "gateway"] = Field(
         default="desktop-standalone",
         validation_alias=AliasChoices("SIMING_RUNTIME_PROFILE", "RUNTIME_PROFILE"),
