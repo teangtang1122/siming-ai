@@ -238,6 +238,20 @@ def test_artifact_patch_is_atomic_and_reports_downstream_impact():
     assert session.draft_json == saved
 
 
+def test_artifact_patch_accepts_standard_json_patch_add_to_array():
+    db = _db()
+    session = _ready_session(db)
+    before_revision = int(session.revision or 0)
+
+    result = patch_creation_artifact(session, "constraints", [
+        {"op": "add", "path": "/special_requirements/-", "value": "MCP write probe"},
+    ], source="external_agent")
+
+    assert result["artifact"]["data"]["special_requirements"][-1] == "MCP write probe"
+    assert result["changes"] == [{"path": "/special_requirements", "action": "append"}]
+    assert int(session.revision or 0) == before_revision + 1
+
+
 def test_artifact_locks_block_parent_and_child_patch_paths():
     db = _db()
     session = _ready_session(db)

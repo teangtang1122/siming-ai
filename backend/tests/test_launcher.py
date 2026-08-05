@@ -1,6 +1,7 @@
 """Tests for packaged launcher data-directory compatibility."""
 
 import os
+import io
 import tempfile
 import types
 import unittest
@@ -12,6 +13,41 @@ from app.routers import config
 
 
 class LauncherDataDirectoryTestCase(unittest.TestCase):
+    def test_mcp_stdio_replaces_windowed_streams_with_inherited_pipes(self):
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch.object(launcher.os, "name", "nt"), patch.object(
+            launcher, "_open_inherited_windows_stream", side_effect=[stdin, stdout, stderr]
+        ) as open_stream, patch.object(launcher, "_configure_stdio_utf8"):
+            with patch.object(launcher.sys, "stdin", None), patch.object(
+                launcher.sys, "stdout", None
+            ), patch.object(launcher.sys, "stderr", None):
+                launcher._ensure_mcp_stdio()
+
+                self.assertIs(launcher.sys.stdin, stdin)
+                self.assertIs(launcher.sys.stdout, stdout)
+                self.assertIs(launcher.sys.stderr, stderr)
+
+        self.assertEqual(
+            [call.args for call in open_stream.call_args_list],
+            [(-10, "r"), (-11, "w"), (-12, "w")],
+        )
+
+    def test_desktop_api_returns_selected_export_directory(self):
+        class FakeWindow:
+            def create_file_dialog(self, dialog_type, allow_multiple=False):
+                self.call = (dialog_type, allow_multiple)
+                return (r"C:\exports",)
+
+        window = FakeWindow()
+        api = launcher.DesktopApi()
+        api.bind(window, "folder")
+
+        self.assertEqual(api.select_export_directory(), r"C:\exports")
+        self.assertEqual(window.call, ("folder", False))
+
     def test_uses_legacy_data_directory_when_current_database_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)

@@ -107,7 +107,12 @@ def _apply_active_context_manifest(
         + active.rendered_context,
     }
     if messages and messages[0].get("role") == "system":
-        rendered_messages = [messages[0], context_message, *messages[1:]]
+        first_message = dict(messages[0])
+        first_message["content"] = (
+            f"{str(first_message.get('content') or '').rstrip()}\n\n"
+            f"{context_message['content']}"
+        )
+        rendered_messages = [first_message, *messages[1:]]
     else:
         rendered_messages = [context_message, *messages]
     body["moshu_context_manifest_rendered"] = True

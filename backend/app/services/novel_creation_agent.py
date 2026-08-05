@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import inspect
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.ai.local_cli_adapter import is_local_cli_provider
 from app.core.json_repair import parse_json_object
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
 from app.services.workspace.executor import execute_workspace_action
@@ -60,6 +62,12 @@ _WRITE_TOOLS = {
     "resume_creation_operation", "retry_creation_operation",
     "finalize_creation_session", "apply_creation_import",
 }
+CREATION_AGENT_CLI_TIMEOUT_SECONDS = 600
+
+_WRITE_CLAIM_RE = re.compile(
+    r"(?:已|已经|实际|成功).{0,24}(?:写入|保存|修改|更新)|"
+    r"(?:写入|保存|修改|更新).{0,12}(?:成功|完成)"
+)
 
 
 def _tool_schemas() -> list[dict[str, Any]]:
@@ -67,58 +75,6 @@ def _tool_schemas() -> list[dict[str, Any]]:
         schema for schema in registry.get_schemas()
         if schema.get("function", {}).get("name") in CREATION_AGENT_TOOLS
     ]
-
-
-def _cli_tool_bridge_prompt(schemas: list[dict[str, Any]]) -> str:
-    """Expose Siming tools to text-only CLIs through a strict JSON bridge."""
-    catalog = []
-    for schema in schemas:
-        function = schema.get("function") if isinstance(schema, dict) else None
-        if not isinstance(function, dict):
-            continue
-        catalog.append({
-            "name": function.get("name"),
-            "description": function.get("description"),
-            "parameters": function.get("parameters") or {"type": "object"},
-        })
-    return (
-        "当前运行环境是文本型 CLI，但司命提供了一个由应用代为执行的立项工具桥。"
-        "你不需要也不得直接修改数据库或项目文件。每次回复必须只输出一个 JSON 对象，格式为："
-        '{"reply":"给用户的简短中文说明或追问","actions":[{"tool":"工具名","arguments":{}}]}。'
-        "需要读取或写入时把调用放入 actions；司命会校验权限、自动绑定当前 session_id、补充 expected_revision，"
-        "执行后把真实结果交回给你。拿到结果后可以继续调用，也可以返回 actions=[] 并在 reply 中总结。"
-        "不得声称未成功的写入已经保存。可用工具如下：\n"
-        + json.dumps(catalog, ensure_ascii=False, separators=(",", ":"))
-    )
-
-
-def _parse_cli_tool_bridge(content: str) -> tuple[bool, str, list[dict[str, Any]]]:
-    """Convert the CLI bridge JSON into the same calls used by native tools."""
-    payload = parse_json_object(content)
-    if not isinstance(payload, dict) or "actions" not in payload:
-        return False, content.strip(), []
-    reply = str(payload.get("reply") or "").strip()
-    raw_actions = payload.get("actions")
-    calls: list[dict[str, Any]] = []
-    if isinstance(raw_actions, list):
-        for index, action in enumerate(raw_actions[:12]):
-            if not isinstance(action, dict):
-                continue
-            name = str(action.get("tool") or action.get("name") or "").strip()
-            if not name:
-                continue
-            arguments = action.get("arguments")
-            if not isinstance(arguments, dict):
-                arguments = {}
-            calls.append({
-                "id": f"cli-creation-tool-{index}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(arguments, ensure_ascii=False),
-                },
-            })
-    return True, reply, calls
 
 
 def _system_prompt(session_id: str) -> str:
@@ -135,6 +91,23 @@ def _system_prompt(session_id: str) -> str:
 只有用户明确要求创建正式作品时才调用 finalize_creation_session。
 工具返回 running 表示后台任务已经可靠创建，不要重复调用；告诉用户任务已开始即可。
 完成工具调用后，用简洁中文说明读取了什么、修改/启动了什么、保留了什么以及可能受影响的数据。"""
+
+
+def _text_only_system_prompt() -> str:
+    return """你是司命的创作立项顾问。
+根据用户提供的信息帮助梳理世界观、角色、地点、势力、大纲和创作约束，并提出最有价值的后续问题。
+当前通道仅提供文本建议，不能读取或写入结构化项目数据，也不能启动任务。
+只输出自然语言建议，不要声称任何内容已经保存、修改或开始生成。请用简洁中文回复。"""
+
+
+def _cli_mcp_system_prompt(session_id: str) -> str:
+    return _system_prompt(session_id) + f"""
+
+你当前运行在本机 Agent CLI 中，不接收 OpenAI function-calling schema。司命的数据工具由 CLI 自己通过已连接的 Siming MCP 获取。
+MCP 工具在 CLI 中通常带 siming_ 前缀。当前立项会话是 {session_id}；所有立项工具都必须传入这个 session_id，不要创建另一个会话。
+每轮先调用 siming_get_creation_session 或 siming_get_creation_snapshot 获取当前 revision。用户要求写入时，必须调用合适的 siming_patch_creation_artifact、siming_patch_creation_session 或 entity 工具落库。
+写入返回成功后必须再次调用读取工具，确认 revision 已增加且目标字段能读到，才能向用户说“已写入”。如果 MCP 调用失败、超时或写后读取不一致，明确报告失败，不得用自然语言冒充成功。
+不要直接修改数据库文件或小说镜像文件；结构化数据只能通过 Siming MCP 写入。"""
 
 
 async def _complete_tool_turn(**kwargs: Any) -> dict[str, Any]:
@@ -172,6 +145,73 @@ async def _complete_tool_turn(**kwargs: Any) -> dict[str, Any]:
     return {"content": "".join(content), "tool_calls": tool_calls}
 
 
+def _prepare_agent_request(
+    session: Any,
+    message: str,
+    model: str | None,
+    history: list[dict[str, str]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, dict[str, Any] | None, bool]:
+    native_tool_calls = LLMGateway.supports_tool_calling(model)
+    try:
+        provider = LLMGateway.provider_for_model(model)
+    except Exception:
+        provider = ""
+    local_cli_mcp = is_local_cli_provider(provider)
+    prompt = (
+        _system_prompt(session.id)
+        if native_tool_calls
+        else _cli_mcp_system_prompt(session.id) if local_cli_mcp else _text_only_system_prompt()
+    )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
+    for item in (history or [])[-12:]:
+        role = item.get("role")
+        content = str(item.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content[:80_000]})
+    messages.append({"role": "user", "content": message})
+    extra_body = None
+    if local_cli_mcp:
+        from app.services.content_store import content_root
+
+        extra_body = LLMGateway.local_cli_extra_body(
+            model,
+            cwd=str(content_root()),
+            base={
+                "moshu_task_type": "planning",
+                "local_cli_allow_mcp": True,
+                "local_cli_timeout_seconds": CREATION_AGENT_CLI_TIMEOUT_SECONDS,
+            },
+        )
+    schemas = _tool_schemas() if native_tool_calls else []
+    return messages, schemas, int(session.revision or 0), extra_body, local_cli_mcp
+
+
+def _record_verified_mcp_write(
+    db: Session,
+    session: Any,
+    baseline_revision: int,
+    tool_results: list[dict[str, Any]],
+    write_results: list[dict[str, Any]],
+) -> None:
+    db.expire_all()
+    refreshed_session = db.get(type(session), session.id)
+    current_revision = int(getattr(refreshed_session, "revision", baseline_revision) or 0)
+    if current_revision <= baseline_revision:
+        return
+    verified_write = {
+        "tool": "mcp_verified_write",
+        "status": "ok",
+        "detail": f"MCP 写入已验证，立项 revision {baseline_revision}→{current_revision}",
+        "data": {
+            "session_id": session.id,
+            "revision_before": baseline_revision,
+            "revision_after": current_revision,
+        },
+    }
+    tool_results.append(verified_write)
+    write_results.append(verified_write)
+
+
 async def run_creation_agent(
     db: Session,
     *,
@@ -180,52 +220,27 @@ async def run_creation_agent(
     model: str | None,
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    messages: list[dict[str, Any]] = [{"role": "system", "content": _system_prompt(session.id)}]
-    for item in (history or [])[-12:]:
-        role = item.get("role")
-        content = str(item.get("content") or "").strip()
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content[:80_000]})
-    messages.append({"role": "user", "content": message})
-
+    messages, schemas, baseline_revision, extra_body, local_cli_mcp = _prepare_agent_request(
+        session, message, model, history,
+    )
     tool_results: list[dict[str, Any]] = []
     write_results: list[dict[str, Any]] = []
     seen_calls: set[str] = set()
     final_reply = ""
-    schemas = _tool_schemas()
-    native_tool_calls = LLMGateway.supports_tool_calling(model)
-    if not native_tool_calls:
-        messages.insert(1, {"role": "system", "content": _cli_tool_bridge_prompt(schemas)})
-    cli_protocol_retries = 0
     for _iteration in range(6):
         result = await _complete_tool_turn(
             messages=messages,
-            tools=schemas if native_tool_calls else [],
+            tools=schemas,
             model=model,
             temperature=0.25,
             # Do not impose a second fixed cap here. The selected provider and
             # configured model capability remain the source of truth.
             max_tokens=None,
             timeout=0,
+            extra_body=extra_body,
         )
         content = str(result.get("content") or "")
         calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
-        if not native_tool_calls:
-            recognized, bridged_reply, bridged_calls = _parse_cli_tool_bridge(content)
-            if recognized:
-                content = bridged_reply
-                calls = bridged_calls
-            elif cli_protocol_retries < 1:
-                cli_protocol_retries += 1
-                messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "上一条回复没有使用司命 CLI 工具桥协议，因此任何内容都尚未写入。"
-                        "请立即按系统给出的 JSON 格式返回；需要修改立项数据时必须在 actions 中调用对应写入工具。"
-                    ),
-                })
-                continue
         if not calls:
             final_reply = content.strip()
             break
@@ -290,7 +305,13 @@ async def run_creation_agent(
         except Exception:
             final_reply = ""
 
-    if not write_results and final_reply and any(word in final_reply for word in ("已保存", "已写入", "已修改", "已更新")):
+    if local_cli_mcp:
+        # MCP runs in a sibling process with its own SQLAlchemy session. Expire
+        # this request's identity map before checking whether the CLI truly
+        # committed a write; model prose alone is never accepted as evidence.
+        _record_verified_mcp_write(db, session, baseline_revision, tool_results, write_results)
+
+    if not write_results and final_reply and _WRITE_CLAIM_RE.search(final_reply):
         failures = [
             str(item.get("detail") or "工具未完成写入")
             for item in tool_results

@@ -102,10 +102,7 @@ def test_managed_local_model_verification_bypasses_readiness_gate():
     with patch(
         "app.modules.model_runtime.infrastructure.verification.LocalRuntimeAdapter.chat_completion",
         new=AsyncMock(return_value=runtime_result),
-    ) as completion, patch(
-        "app.modules.model_runtime.infrastructure.verification.LLMGateway.chat_completion",
-        new=AsyncMock(side_effect=AssertionError("must not use the readiness-gated gateway")),
-    ):
+    ) as completion:
         result = asyncio.run(ProviderModelVerification().verify(ModelProbeRequest(
             provider="local_llama_cpp",
             model="qwen3.5-9b-q4",

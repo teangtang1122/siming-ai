@@ -65,13 +65,36 @@ class CreationArtifactInput(CompatibleInput):
     artifact: str
 
 
+class CreationPatchOperation(CompatibleInput):
+    action: Literal["set", "replace", "append", "remove", "resize"] | None = Field(
+        default=None,
+        description=(
+            "司命 Patch 动作。向数组末尾增加元素时使用 append，并把 path 指向数组本身；"
+            "也接受标准 JSON Patch 的 op 字段。"
+        ),
+    )
+    op: Literal["add", "replace", "remove"] | None = Field(
+        default=None,
+        description=(
+            "兼容标准 JSON Patch。add 到 /- 会自动转换为 append；"
+            "add 到对象字段会转换为 set。action 与 op 二选一。"
+        ),
+    )
+    path: str = Field(
+        description="目标 JSON Pointer，例如 /special_requirements 或 /volumes/0/title"
+    )
+    value: Any = Field(default=None, description="set、replace、append 或 add 写入的值")
+    target_count: int | None = Field(default=None, ge=0, description="resize 的目标数组长度")
+    fill_value: Any = Field(default=None, description="resize 扩展数组时使用的填充值")
+
+
 class ListCreationArtifactsInput(CompatibleInput):
     session_id: str
 
 
 class PatchCreationArtifactInput(CreationArtifactInput):
     expected_revision: int
-    changes: list[dict[str, Any]]
+    changes: list[CreationPatchOperation]
     source: str = "assistant"
 
 
@@ -97,7 +120,7 @@ class CreationEntityInput(CompatibleInput):
 
 class PatchCreationEntityInput(CreationEntityInput):
     expected_revision: int
-    changes: list[dict[str, Any]]
+    changes: list[CreationPatchOperation]
     source: str = "assistant"
 
 

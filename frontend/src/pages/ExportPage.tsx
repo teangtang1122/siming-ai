@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Button,
   Card,
+  Input,
   Radio,
   Space,
   Table,
@@ -17,6 +18,7 @@ import {
   FileWordOutlined,
   FilePdfOutlined,
   ExportOutlined,
+  FolderOpenOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 
@@ -47,6 +49,7 @@ interface ExportResult {
   format: string
   size: number
   download_url: string
+  saved_path?: string | null
 }
 
 interface ExportPageProps {
@@ -59,6 +62,24 @@ function ExportPage({ projectId }: ExportPageProps) {
   const [exporting, setExporting] = useState(false)
   const [report, setReport] = useState<WordCountReport | null>(null)
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([])
+  const [outputDirectory, setOutputDirectory] = useState('')
+
+  const selectOutputDirectory = async () => {
+    const desktopWindow = window as typeof window & {
+      pywebview?: { api?: { select_export_directory?: () => Promise<string> } }
+    }
+    const desktopApi = desktopWindow.pywebview?.api
+    if (!desktopApi?.select_export_directory) {
+      message.info('当前为浏览器模式，请直接输入本机导出目录')
+      return
+    }
+    try {
+      const selected = await desktopApi.select_export_directory()
+      if (selected) setOutputDirectory(selected)
+    } catch (err: any) {
+      message.error(err.message || '选择导出目录失败')
+    }
+  }
 
   const fetchReport = useCallback(async () => {
     try {
@@ -85,8 +106,13 @@ function ExportPage({ projectId }: ExportPageProps) {
         scope,
         format,
         chapter_ids: scope === 'selected' ? selectedChapterIds : [],
+        output_directory: outputDirectory.trim() || null,
       })
       const exportData = res.data.data
+      if (exportData.saved_path) {
+        message.success(`导出完成：${exportData.saved_path}`)
+        return
+      }
       const downloadRes = await fetch(exportData.download_url)
       if (!downloadRes.ok) throw new Error('下载导出文件失败')
       const blob = await downloadRes.blob()
@@ -177,6 +203,20 @@ function ExportPage({ projectId }: ExportPageProps) {
                 <FilePdfOutlined /> PDF
               </Radio.Button>
             </Radio.Group>
+          </div>
+
+          <div>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>导出目录</Text>
+            <Space.Compact style={{ width: '100%' }}>
+              <Input
+                value={outputDirectory}
+                onChange={(event) => setOutputDirectory(event.target.value)}
+                placeholder="未选择时使用浏览器下载；也可直接输入完整目录"
+              />
+              <Button icon={<FolderOpenOutlined />} onClick={selectOutputDirectory}>
+                选择目录
+              </Button>
+            </Space.Compact>
           </div>
 
           <Button

@@ -1,7 +1,9 @@
 """Regression tests for project export ordering."""
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
@@ -105,3 +107,39 @@ class ExportTestCase(unittest.TestCase):
         text = downloaded.content.decode("utf-8")
         self.assertIn("Selected Chapter", text)
         self.assertNotIn("Skipped Chapter", text)
+
+    def test_export_writes_to_selected_directory(self):
+        project_id = self.create_project()
+        self.create_chapter(project_id, "Saved Chapter")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            exported = self.client.post(
+                f"{API_PREFIX}/projects/{project_id}/export",
+                json={
+                    "scope": "chapters",
+                    "format": "txt",
+                    "output_directory": temp_dir,
+                },
+            )
+
+            self.assertEqual(exported.status_code, 200)
+            saved_path = Path(exported.json()["data"]["saved_path"])
+            self.assertEqual(saved_path.parent, Path(temp_dir).resolve())
+            self.assertTrue(saved_path.exists())
+            self.assertIn("Saved Chapter", saved_path.read_text(encoding="utf-8"))
+
+    def test_export_rejects_missing_output_directory(self):
+        project_id = self.create_project()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_dir = Path(temp_dir) / "missing"
+            exported = self.client.post(
+                f"{API_PREFIX}/projects/{project_id}/export",
+                json={
+                    "scope": "chapters",
+                    "format": "txt",
+                    "output_directory": str(missing_dir),
+                },
+            )
+
+        self.assertEqual(exported.status_code, 400)
+        self.assertIn("导出目录不存在", exported.json()["message"])

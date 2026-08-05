@@ -44,6 +44,10 @@ LOCAL_MCP_PROVIDERS = {
 DEFAULT_PERMISSION_PACK = "auto"
 MCP_SERVER_NAME = "siming"
 LEGACY_MCP_SERVER_NAMES = ("moshu",)
+# OpenCode 1.x applies this per-server timeout to MCP catalog and tool calls.
+# Novel planning and long-form write/archive operations can legitimately run
+# for much longer than the client's historical five-second default.
+OPENCODE_MCP_TIMEOUT_MS = 12 * 60 * 60 * 1000
 CLIENT_PROVIDER_MAP = {
     "claude_cli": "claude",
     "codex_cli": "codex",
@@ -570,6 +574,7 @@ def _write_local_mcp_json(
             "type": "local",
             "command": [server["command"], *server["args"]],
             "enabled": True,
+            "timeout": OPENCODE_MCP_TIMEOUT_MS,
         }
         new_text = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
         if new_text != old_text:

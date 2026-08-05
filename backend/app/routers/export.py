@@ -32,6 +32,7 @@ class ExportRequest(BaseModel):
     include_outline: bool = False
     include_characters: bool = False
     include_worldbuilding: bool = False
+    output_directory: str | None = None
 
 
 @router.post("/projects/{project_id}/export")
@@ -49,6 +50,11 @@ def export_project(
     include_outline = payload.include_outline if payload else False
     include_characters = payload.include_characters if payload else False
     include_worldbuilding = payload.include_worldbuilding if payload else False
+    output_directory = (
+        payload.output_directory.strip()
+        if payload and payload.output_directory
+        else None
+    )
 
     valid_scopes = {"chapters", "outline", "characters", "worldbuilding", "all", "single", "selected"}
     if requested_scope not in valid_scopes:
@@ -68,7 +74,14 @@ def export_project(
             include_characters=include_characters,
             include_worldbuilding=include_worldbuilding,
         )
-        metadata = _store_export_file(project_id, filename, buf.getvalue(), "application/pdf", requested_format)
+        metadata = _store_export_file(
+            project_id,
+            filename,
+            buf.getvalue(),
+            "application/pdf",
+            requested_format,
+            output_directory,
+        )
     elif requested_format == "docx":
         filename, buf = _generate_docx(
             db,
@@ -85,6 +98,7 @@ def export_project(
             buf.getvalue(),
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             requested_format,
+            output_directory,
         )
     else:
         filename, content = _generate_export_content(
@@ -102,6 +116,7 @@ def export_project(
             content.encode("utf-8"),
             "text/plain; charset=utf-8",
             requested_format,
+            output_directory,
         )
 
     return ApiResponse.success(data=metadata, message="导出文件已生成")

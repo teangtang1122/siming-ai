@@ -28,6 +28,11 @@ except ImportError:  # packaged builds install psutil; source fallbacks stay usa
 from ..core.exceptions import LLMError
 from ..core.legacy_env import get_compatible_env
 from .base import BaseAdapter
+from .local_cli_prompt import (
+    file_prompt_instruction,
+    prepare_long_prompt_launch,
+    prepare_opencode_launch,
+)
 from .local_cli_output import normalize_cli_output
 from .cli_process import hidden_subprocess_kwargs, terminate_cli_process_tree
 
@@ -1119,22 +1124,13 @@ class LocalCLIAdapter(BaseAdapter):
             return handle.name
 
     @staticmethod
-    def _file_prompt_instruction(prompt_file: str, attachments: list[str]) -> str:
-        attachment_note = ""
-        if attachments:
-            attachment_note = (
-                "\n任务可能引用以下只读资料文件：\n"
-                + "\n".join(f"- {path}" for path in attachments)
-            )
-        return (
-            "你是司命内部的文本生成执行器，不是代码助手。"
-            f"请读取 UTF-8 任务文件：{prompt_file}\n"
-            "严格按文件中的 SYSTEM/USER 指令完成任务。"
-            "除读取该任务文件和其中明确引用的资料外，不要扫描代码仓库，"
-            "不要修改文件，不要调用 Siming MCP 或其他外部工具。"
-            "最终只输出任务要求的正文或结构化结果，不要回复 Ready。"
-            f"{attachment_note}"
-        )
+    def _file_prompt_instruction(
+        prompt_file: str,
+        attachments: list[str],
+        *,
+        allow_mcp: bool = False,
+    ) -> str:
+        return file_prompt_instruction(prompt_file, attachments, allow_mcp=allow_mcp)
 
     @staticmethod
     def _opencode_env() -> dict[str, str]:
@@ -1250,12 +1246,13 @@ class LocalCLIAdapter(BaseAdapter):
         model: str,
         cwd: str,
         attachments: list[str],
+        allow_mcp: bool = False,
     ) -> tuple[CLILaunch, str]:
         execution_model = effective_local_cli_model(self._provider, model)
         prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
 
         launch = self._launch(
-            self._file_prompt_instruction(prompt_file, attachments),
+            self._file_prompt_instruction(prompt_file, attachments, allow_mcp=allow_mcp),
             execution_model,
         )
         args = list(launch.args)
@@ -1299,16 +1296,18 @@ class LocalCLIAdapter(BaseAdapter):
         cwd = self._runtime_cwd(extra_body)
         isolated = bool((extra_body or {}).get("local_cli_isolated"))
         attachments = self._runtime_attachments(extra_body)
+        allow_mcp = bool((extra_body or {}).get("local_cli_allow_mcp"))
         env = self._isolated_environment(os.environ.copy(), isolated)
         if self._provider in OPENCODE_FAMILY_PROVIDERS:
-            launch, prompt_file = self._opencode_family_launch(
+            launch, prompt_file, env = prepare_opencode_launch(
+                self,
                 prompt=prompt,
                 model=model,
                 cwd=cwd,
                 attachments=attachments,
+                allow_mcp=allow_mcp,
+                isolated=isolated,
             )
-            if self._provider == "opencode_cli":
-                env = self._isolated_environment(self._opencode_env(), isolated)
         elif self._provider == "codex_cli":
             launch = self._launch(launch_prompt, model)
             args = list(launch.args)
@@ -1317,26 +1316,17 @@ class LocalCLIAdapter(BaseAdapter):
             launch = CLILaunch(args=args, stdin_text=launch.stdin_text)
         elif self._provider in AGENT_FILE_PROMPT_PROVIDERS:
             prompt_file = self._write_prompt_file(prompt, cwd, self._provider)
-            launch_prompt = self._file_prompt_instruction(prompt_file, attachments)
+            launch_prompt = self._file_prompt_instruction(
+                prompt_file,
+                attachments,
+                allow_mcp=allow_mcp,
+            )
             launch = self._launch(launch_prompt, model)
             args = list(launch.args)
             self._apply_provider_runtime_options(args, model=model, cwd=cwd)
             launch = CLILaunch(args=args, stdin_text=launch.stdin_text)
         elif len(prompt) > WINDOWS_SAFE_ARG_CHARS and self._provider not in STDIN_PROMPT_PROVIDERS:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                suffix=".md",
-                prefix="siming-cli-prompt-",
-                delete=False,
-            ) as handle:
-                handle.write(prompt)
-                prompt_file = handle.name
-            launch_prompt = (
-                "Read the complete UTF-8 task prompt from this local file and follow it exactly: "
-                f"{prompt_file}"
-            )
-            launch = self._launch(launch_prompt, model)
+            launch, prompt_file = prepare_long_prompt_launch(self, prompt, model)
         else:
             launch = self._launch(launch_prompt, model)
         try:

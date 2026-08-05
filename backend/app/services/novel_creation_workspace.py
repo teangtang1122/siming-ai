@@ -24,6 +24,7 @@ from app.services.novel_creation_contract import (
 from app.services.novel_creation_compatibility import project_legacy_draft, projected_generation_blockers
 from app.services.novel_creation_failures import clear_stage_failure
 from app.services.novel_creation_conflicts import artifact_conflict_projection
+from app.services.novel_creation_patch import normalize_patch_operation
 from app.services.novel_creation_values import requested_volume_count as _requested_volume_count
 from app.services.novel_creation_runs import add_run_event, complete_run, confirm_run, create_run, fail_run, serialize_run
 
@@ -728,8 +729,7 @@ def patch_creation_artifact(
     locked_paths = [str(item) for item in artifact.get("locked_paths") or []]
     summary: list[dict[str, Any]] = []
     for change in changes:
-        path = _text(change.get("path"))
-        action = _text(change.get("action"))
+        path, action = normalize_patch_operation(change)
         if action not in {"set", "replace", "append", "remove", "resize"}:
             raise ValueError(f"unsupported patch action: {action}")
         if _path_is_locked(path, locked_paths):

@@ -27,6 +27,32 @@ APP_NAME = "Siming"
 LEGACY_APP_NAMES = ("Moshu", "NovelWritingAgent")
 DEFAULT_PORT = 8765
 _STDIO_LOG_HANDLES = []
+_MCP_STDIO_HANDLES = []
+
+
+class DesktopApi:
+    """Small native bridge exposed only to the embedded desktop window."""
+
+    def __init__(self) -> None:
+        self._window = None
+        self._folder_dialog_type = None
+
+    def bind(self, window, folder_dialog_type) -> None:
+        self._window = window
+        self._folder_dialog_type = folder_dialog_type
+
+    def select_export_directory(self) -> str:
+        if self._window is None or self._folder_dialog_type is None:
+            return ""
+        selected = self._window.create_file_dialog(
+            self._folder_dialog_type,
+            allow_multiple=False,
+        )
+        if not selected:
+            return ""
+        if isinstance(selected, (list, tuple)):
+            return str(selected[0]) if selected else ""
+        return str(selected)
 
 
 def _launcher_log_path() -> Path:
@@ -94,6 +120,94 @@ def _configure_stdio_utf8() -> None:
                 reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
+
+
+def _open_inherited_windows_stream(std_handle: int, mode: str):
+    """Rebuild a Python text stream from an inherited Windows stdio pipe.
+
+    PyInstaller's windowed bootloader deliberately does not initialize Python's
+    standard streams. MCP clients still start the same executable with real
+    stdin/stdout pipes, so recover those OS handles before serving JSON-RPC.
+    The handle is duplicated because replacing ``sys.stdout`` must not let the
+    discarded PyInstaller wrapper close the pipe behind the new stream.
+    """
+
+    import msvcrt
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetStdHandle.argtypes = [ctypes.c_ulong]
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.DuplicateHandle.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_ulong,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    kernel32.DuplicateHandle.restype = ctypes.c_int
+
+    source = kernel32.GetStdHandle(ctypes.c_ulong(std_handle).value)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if source in (None, 0, invalid_handle):
+        raise RuntimeError(f"MCP stdio handle {std_handle} is unavailable")
+
+    process = kernel32.GetCurrentProcess()
+    duplicate = ctypes.c_void_p()
+    duplicate_same_access = 0x00000002
+    if not kernel32.DuplicateHandle(
+        process,
+        source,
+        process,
+        ctypes.byref(duplicate),
+        0,
+        True,
+        duplicate_same_access,
+    ):
+        raise ctypes.WinError()
+
+    flags = os.O_RDONLY if "r" in mode else os.O_WRONLY
+    try:
+        fd = msvcrt.open_osfhandle(int(duplicate.value), flags)
+    except Exception:
+        kernel32.CloseHandle(duplicate)
+        raise
+    return os.fdopen(
+        fd,
+        mode,
+        buffering=1,
+        encoding="utf-8",
+        errors="replace",
+        newline="",
+    )
+
+
+def _ensure_mcp_stdio() -> None:
+    """Make the packaged windowed executable usable as an stdio MCP server."""
+
+    if os.name != "nt":
+        if sys.stdin is None or sys.stdout is None:
+            raise RuntimeError("MCP requires inherited stdin and stdout pipes")
+        _configure_stdio_utf8()
+        return
+
+    stdin = _open_inherited_windows_stream(-10, "r")
+    stdout = _open_inherited_windows_stream(-11, "w")
+    try:
+        stderr = _open_inherited_windows_stream(-12, "w")
+    except (OSError, RuntimeError):
+        stderr = None
+
+    # Keep explicit references for the lifetime of the process. They own
+    # duplicated OS handles and must remain open until the MCP client exits.
+    _MCP_STDIO_HANDLES.extend(stream for stream in (stdin, stdout, stderr) if stream is not None)
+    sys.stdin = stdin
+    sys.stdout = stdout
+    if stderr is not None:
+        sys.stderr = stderr
+    _configure_stdio_utf8()
 
 
 def _app_home() -> Path:
@@ -424,6 +538,7 @@ SPLASH_HTML = """<!DOCTYPE html>
 
 def _run_mcp_server() -> None:
     """Run the MCP server over stdio."""
+    _ensure_mcp_stdio()
     import argparse
     parser = argparse.ArgumentParser(prog="mcp-server")
     parser.add_argument("--mcp-server", action="store_true", help="Run MCP server over stdio")
@@ -436,7 +551,6 @@ def _run_mcp_server() -> None:
                  "cataloging_worker"],
     )
     args, _ = parser.parse_known_args()
-    _configure_stdio_utf8()
     _prepare_data_environment()
     from app.database.bootstrap import bootstrap_database
     from app.database.session import SessionLocal, engine
@@ -551,6 +665,7 @@ def main() -> None:
         return
 
     # Create window — this returns immediately, window is visible
+    desktop_api = DesktopApi()
     window = webview.create_window(
         title=f"{APP_NAME}",
         html=SPLASH_HTML,
@@ -558,7 +673,9 @@ def main() -> None:
         height=900,
         min_size=(800, 600),
         text_select=True,
+        js_api=desktop_api,
     )
+    desktop_api.bind(window, webview.FileDialog.FOLDER)
 
     def _boot():
         """Run application startup in the background after the window is visible."""
