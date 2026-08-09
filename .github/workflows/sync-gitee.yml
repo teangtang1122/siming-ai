@@ -3,17 +3,15 @@ name: Sync mirror to Gitee
 on:
   push:
     branches:
-      - "**"
-    tags:
-      - "**"
+      - main
   release:
-    types: [published, edited, prereleased, released]
+    types: [published]
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       tag:
-        description: Specific release tag to mirror (empty means all releases)
+        description: Specific retained release tag to mirror (empty means the newest three)
         required: false
         type: string
 
@@ -27,6 +25,7 @@ concurrency:
 env:
   GITEE_OWNER: teangtang13
   GITEE_REPO: siming-ai
+  GITEE_RELEASE_RETENTION_COUNT: "3"
 
 jobs:
   sync:

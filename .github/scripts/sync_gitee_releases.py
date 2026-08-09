@@ -27,12 +27,24 @@ def required_env(name: str) -> str:
     return value
 
 
+def positive_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
 github_repository = required_env("GITHUB_REPOSITORY")
 github_token = required_env("GITHUB_TOKEN")
 gitee_token = required_env("GITEE_TOKEN")
 gitee_owner = required_env("GITEE_OWNER")
 gitee_repo = required_env("GITEE_REPO")
 sync_release_tag = os.environ.get("SYNC_RELEASE_TAG", "").strip()
+release_retention_count = positive_int_env("GITEE_RELEASE_RETENTION_COUNT", 3)
 
 github = requests.Session()
 github.headers.update(
@@ -90,6 +102,66 @@ def github_releases() -> list[dict]:
         page += 1
 
 
+def gitee_releases() -> list[dict]:
+    releases: list[dict] = []
+    page = 1
+    base_path = f"/repos/{gitee_owner}/{gitee_repo}/releases"
+    while True:
+        batch = gitee_request(
+            "GET", base_path, params={"per_page": 100, "page": page}
+        ).json()
+        releases.extend(batch)
+        if len(batch) < 100:
+            return releases
+        page += 1
+
+
+def has_uploaded_assets(release: dict) -> bool:
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        # Query the attachment endpoint when the release listing omits asset details.
+        return True
+    return any(
+        "/releases/download/" in str(asset.get("browser_download_url") or "")
+        for asset in assets
+    )
+
+
+def prune_gitee_release_assets(retained_tags: set[str]) -> None:
+    deleted_assets = 0
+    reclaimed_bytes = 0
+    cleaned_releases = 0
+
+    for release in gitee_releases():
+        tag_name = str(release.get("tag_name") or "")
+        if tag_name in retained_tags or not has_uploaded_assets(release):
+            continue
+
+        base_path = (
+            f"/repos/{gitee_owner}/{gitee_repo}/releases/{release['id']}/attach_files"
+        )
+        attachments = gitee_request("GET", base_path).json()
+        if not attachments:
+            continue
+
+        cleaned_releases += 1
+        for attachment in attachments:
+            size = int(attachment.get("size", 0))
+            print(
+                f"Removing expired Gitee asset: {tag_name}/"
+                f"{attachment['name']} ({size} bytes)"
+            )
+            gitee_request("DELETE", f"{base_path}/{attachment['id']}")
+            deleted_assets += 1
+            reclaimed_bytes += size
+
+    print(
+        f"Gitee retention cleanup: kept {len(retained_tags)} releases, "
+        f"cleaned {cleaned_releases} releases, removed {deleted_assets} assets "
+        f"({reclaimed_bytes} bytes)"
+    )
+
+
 def find_gitee_release(tag_name: str) -> dict | None:
     response = gitee.get(
         f"{GITEE_API}/repos/{gitee_owner}/{gitee_repo}/releases/tags/{quote(tag_name, safe='')}",
@@ -135,7 +207,9 @@ def sync_assets(github_release: dict, gitee_release: dict) -> None:
     for asset in github_release.get("assets", []):
         existing = existing_assets.get(asset["name"])
         if existing and int(existing.get("size", -1)) == int(asset["size"]):
-            print(f"Asset already current: {github_release['tag_name']}/{asset['name']}")
+            print(
+                f"Asset already current: {github_release['tag_name']}/{asset['name']}"
+            )
             continue
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -259,18 +333,34 @@ def sync_assets(github_release: dict, gitee_release: dict) -> None:
 def main() -> None:
     releases = github_releases()
     published = [release for release in releases if not release["draft"]]
+    if not published:
+        raise RuntimeError("No published GitHub releases found")
+
+    retained = published[:release_retention_count]
+    retained_tag_names = [release["tag_name"] for release in retained]
+    retained_tags = set(retained_tag_names)
+    print(
+        f"Found {len(published)} published GitHub releases; retaining assets for "
+        f"the newest {len(retained)}: {', '.join(retained_tag_names)}"
+    )
+    prune_gitee_release_assets(retained_tags)
+
     if sync_release_tag == "latest":
-        published = published[:1]
+        selected = retained[:1]
     elif sync_release_tag:
-        published = [
-            release for release in published if release["tag_name"] == sync_release_tag
+        selected = [
+            release for release in retained if release["tag_name"] == sync_release_tag
         ]
-        if not published:
+        if not selected:
             raise RuntimeError(
-                f"Published GitHub release not found for tag: {sync_release_tag}"
+                f"Release tag is not within the newest {release_retention_count} "
+                f"published releases: {sync_release_tag}"
             )
-    print(f"Found {len(published)} published GitHub releases")
-    for release in reversed(published):
+    else:
+        selected = retained
+
+    print(f"Mirroring {len(selected)} retained GitHub releases")
+    for release in selected:
         gitee_release = upsert_gitee_release(release)
         sync_assets(release, gitee_release)
 
