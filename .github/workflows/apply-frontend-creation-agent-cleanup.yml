@@ -1,0 +1,56 @@
+name: Apply frontend Creation Agent cleanup
+
+on:
+  push:
+    branches: ["codex/creation-agent-mobile-parity-3.2.1"]
+    paths:
+      - ".github/workflows/apply-frontend-creation-agent-cleanup.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/creation-agent-mobile-parity-3.2.1
+          fetch-depth: 0
+
+      - name: Remove legacy frontend interview flow
+        run: python scripts/remove-legacy-creation-interview-frontend.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test -- --run
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Guard legacy interview frontend
+        run: |
+          if grep -RInE "useNovelCreationInterviewController|novelInterview\.|NOVEL_INTERVIEW_|refresh-question|/interview/next|submitQuestionAnswer|renderQuestions" frontend/src; then
+            echo "Legacy interview frontend still referenced" >&2; exit 1
+          fi
+
+      - name: Commit verified frontend cleanup
+        run: |
+          git config user.name "特昂糖糖糖"
+          git config user.email "126449209+teangtang1122@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Remove legacy desktop creation interview flow"
+          git push origin HEAD:codex/creation-agent-mobile-parity-3.2.1
