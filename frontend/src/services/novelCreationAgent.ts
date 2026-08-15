@@ -26,6 +26,27 @@ export interface NovelCreationSessionResult {
   raw: unknown
 }
 
+export interface NovelCreationRunSummary {
+  id: string
+  session_id?: string
+  stage: string
+  status: string
+  current_message?: string
+  failure_class?: string
+  next_action?: string
+  operation_id?: string
+  input_revision?: number
+  input_snapshot_hash?: string
+  model_source?: string
+  attempt?: number
+  result_mode?: 'model' | 'repaired' | 'deterministic_fallback'
+  warning?: string
+}
+
+interface ConceptRunData {
+  run: NovelCreationRunSummary
+}
+
 export interface CreationAgentTurnData {
   reply: string
   run?: Record<string, unknown> | null
@@ -64,10 +85,32 @@ export async function runCreationAgentTurn(
   return response.data.data
 }
 
-/** Full structured editor remains available as a secondary view, not the conversation control plane. */
-export function workbenchUrl(sessionId: string, stage?: string, model?: string) {
+/** Structured stage generation remains available to the full editor and Agent tools. */
+export async function startNovelCreationConceptRun(
+  sessionId: string,
+  model?: string,
+  expectedRevision?: number,
+  operation: 'generate' | 'regenerate' | 'refine' = 'generate',
+  instruction?: string,
+) {
+  const response = await apiClient.post<ApiResponse<ConceptRunData>>(`/novel-creation/sessions/${sessionId}/runs`, {
+    stage: 'concepts',
+    model,
+    use_model: true,
+    operation,
+    ...(instruction ? { instruction } : {}),
+    ...(expectedRevision != null ? { expected_revision: expectedRevision } : {}),
+  })
+  return response.data.data.run
+}
+
+/** Full structured editor remains a secondary view, not the conversation control plane. */
+export function workbenchUrl(sessionId: string, runIdOrStage?: string, model?: string) {
   const params = new URLSearchParams({ session: sessionId })
-  if (stage) params.set('stage', stage)
+  if (runIdOrStage) {
+    if (runIdOrStage.startsWith('run-') || runIdOrStage.length > 20) params.set('run', runIdOrStage)
+    else params.set('stage', runIdOrStage)
+  }
   if (model) params.set('model', model)
   return `/novel-creation?${params.toString()}`
 }
