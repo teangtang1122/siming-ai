@@ -1,0 +1,19 @@
+name: Diagnose creation agent migration
+on:
+  push:
+    branches: ["codex/creation-agent-mobile-parity-3.2.1"]
+    paths: [".github/workflows/diagnose-creation-agent-migration.yml"]
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Legacy frontend references
+        run: |
+          rg -n "novelInterview|activeQuestion|questionHistory|selectedOption|showOtherInput|showQAEditor|editingAnswers|submitQuestionAnswer|refresh-question|NOVEL_INTERVIEW|useNovelCreationInterviewController|startNovelCreationConceptRun|workbenchUrl" frontend/src/components/GuiAssistantChat.tsx frontend/src/pages/GettingStartedPage.tsx frontend/src/pages/NovelCreationWizardPage.tsx frontend/src || true
+      - name: Legacy backend references
+        run: |
+          rg -n "advance_novel_creation_interview|NovelCreationInterviewNextRequest|interview/next|refresh_question_options|NOVEL_INTERVIEW_|novel_creation_interview" backend || true
+      - name: Legacy Android references
+        run: |
+          rg -n "advanceCreationInterview|answerCreationInterview|InterviewCard|generateCreationStage|confirmCreationStage|interviewMaxTurns|interviewMessages|MobileCreationInterviewReliability|novelCreationInterview" mobile/android || true
