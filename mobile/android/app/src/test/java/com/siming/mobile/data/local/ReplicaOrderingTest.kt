@@ -32,6 +32,35 @@ class ReplicaOrderingTest {
         )
     }
 
+    @Test
+    fun legacyChineseChapterTitlesFallBackToSemanticNumber() {
+        val records = listOf(
+            chapter("thirty-four", "第34章 新朋友·壹（小七）", null, 4_000),
+            chapter("eleven", "第十一章 日常", null, 3_000),
+            chapter("four", "第四章 暗流", null, 2_000),
+            chapter("three", "第三章 打回去", null, 1_000),
+        )
+
+        assertEquals(
+            listOf("three", "four", "eleven", "thirty-four"),
+            orderReplicaEntities("chapter", records).map(ReplicaEntity::entityId),
+        )
+    }
+
+    @Test
+    fun chapterNumberFallbackAcceptsFullWidthAndPositionalChineseDigits() {
+        val records = listOf(
+            chapter("one-hundred-three", "第一〇三章", null, 3_000),
+            chapter("twenty-five", "二十五章", null, 2_000),
+            chapter("seven", "第 〇 七 章", null, 1_000),
+        )
+
+        assertEquals(
+            listOf("seven", "twenty-five", "one-hundred-three"),
+            orderReplicaEntities("chapter", records).map(ReplicaEntity::entityId),
+        )
+    }
+
     private fun chapter(id: String, title: String, createdAt: String?, localModifiedAt: Long): ReplicaEntity {
         val createdAtField = createdAt?.let { "\"created_at\":\"$it\"," } ?: ""
         return ReplicaEntity(
