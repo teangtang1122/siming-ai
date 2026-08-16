@@ -47,7 +47,7 @@ import {
   startNovelCreationConceptRun,
   startNovelCreationSession,
   workbenchUrl,
-} from '../hooks/useNovelCreationInterviewController'
+} from '../services/novelCreationAgent'
 import { RunStatusPanels } from '../features/novelCreation/RunStatusPanels'
 import { StagePreview } from '../features/novelCreation/StageContent'
 import { useNovelCreationRun } from '../features/novelCreation/useNovelCreationRun'

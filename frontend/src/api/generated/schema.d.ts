@@ -1543,23 +1543,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/novel-creation/refresh-question": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Refresh Question */
-        post: operations["refresh_question_api_v1_novel_creation_refresh_question_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/novel-creation/review": {
         parameters: {
             query?: never;
@@ -1854,23 +1837,6 @@ export interface paths {
         put?: never;
         /** Create Material Import */
         post: operations["create_material_import_api_v1_novel_creation_sessions__session_id__imports_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/novel-creation/sessions/{session_id}/interview/next": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Advance Creation Interview */
-        post: operations["advance_creation_interview_api_v1_novel_creation_sessions__session_id__interview_next_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6400,8 +6366,15 @@ export interface components {
             local_cli_read_permission_grant: "none" | "read_once";
             /** Message */
             message: string;
+            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Route
+             * @default pc
+             * @enum {string}
+             */
+            model_route: "pc" | "mobile";
             /** Session Id */
             session_id: string;
         };
@@ -7304,32 +7277,6 @@ export interface components {
             }[];
             /** Expected Revision */
             expected_revision: number;
-        };
-        /** NovelCreationInterviewNextRequest */
-        NovelCreationInterviewNextRequest: {
-            mobile_provider?: components["schemas"]["MobileProviderEnvelope"] | null;
-            /** Model */
-            model?: string | null;
-            /**
-             * Model Route
-             * @default pc
-             * @enum {string}
-             */
-            model_route: "pc" | "mobile";
-            /** Qa History */
-            qa_history?: {
-                [key: string]: string;
-            }[];
-            /**
-             * Skip Questions
-             * @default false
-             */
-            skip_questions: boolean;
-            /**
-             * User Brief
-             * @default
-             */
-            user_brief: string;
         };
         /** NovelCreationReviewRequest */
         NovelCreationReviewRequest: {
@@ -8374,25 +8321,6 @@ export interface components {
             context_length?: number | null;
             /** Model Key */
             model_key: string;
-        };
-        /** RefreshQuestionRequest */
-        RefreshQuestionRequest: {
-            /**
-             * Existing Options
-             * @default []
-             */
-            existing_options: string[];
-            /** Model */
-            model?: string | null;
-            /** Question */
-            question: string;
-            /** Session Id */
-            session_id: string;
-            /**
-             * User Brief
-             * @default
-             */
-            user_brief: string;
         };
         /** RefreshTokenRequest */
         RefreshTokenRequest: {
@@ -12255,39 +12183,6 @@ export interface operations {
             };
         };
     };
-    refresh_question_api_v1_novel_creation_refresh_question_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RefreshQuestionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     review_blueprint_api_v1_novel_creation_review_post: {
         parameters: {
             query?: never;
@@ -13003,41 +12898,6 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": components["schemas"]["Body_create_material_import_api_v1_novel_creation_sessions__session_id__imports_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    advance_creation_interview_api_v1_novel_creation_sessions__session_id__interview_next_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NovelCreationInterviewNextRequest"];
             };
         };
         responses: {

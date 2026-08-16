@@ -54,21 +54,13 @@ import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
 import { apiDateTimeMs } from '../utils/dateTime'
 import { AssistantMessageTime } from './assistant/MessageTime'
+import { startNovelCreationSession } from '../services/novelCreationAgent'
 import {
-  defaultInterviewRuntime,
-  startNovelCreationSession,
-  type InterviewRuntime,
-  type InterviewQuestion,
-  type InterviewQuestionAnswer,
-  useNovelCreationInterviewController,
-} from '../hooks/useNovelCreationInterviewController'
-import {
-  extractNovelInterviewErrorDetail,
+  defaultCreationAgentRuntime,
+  extractCreationAgentErrorDetail,
   formatSystemAssistantError,
-  formatNovelInterviewError,
-  isNovelInterviewRetryIntent,
-  NOVEL_INTERVIEW_THINKING,
-} from '../utils/novelInterview'
+  type CreationAgentRuntime,
+} from '../utils/creationAgent'
 import './GuiAssistantChat.css'
 import './assistant/MessageTime.css'
 
@@ -130,8 +122,7 @@ interface PersistedMessage {
   created_at?: string
 }
 
-type ChatQuestion = InterviewQuestion
-type QuestionAnswer = InterviewQuestionAnswer
+interface ChatQuestion { question: string; purpose?: string; options?: string[]; type?: 'single_select' | 'multi_select' | 'text' }
 
 interface ChatMessage {
   id?: string
@@ -333,15 +324,6 @@ interface NovelBlueprint {
   quality_self_check?: { score?: number; pass?: boolean; issues?: string[]; suggestions?: string[] }
 }
 
-interface NovelDraftData {
-  blueprints: NovelBlueprint[]
-  recommendation?: string
-  enhancement_mode?: 'instant_template' | 'template_llm_hybrid' | 'template_fallback' | 'llm_required'
-  questions?: Array<{ question: string; purpose?: string; options?: string[] }>
-  original_brief?: string
-  hint?: string
-}
-
 const PROJECT_STORAGE_KEY = 'siming.gui.assistant.projectId'
 const LEGACY_PROJECT_STORAGE_KEY = 'moshu.gui.assistant.projectId'
 const SIDEBAR_STORAGE_KEY = 'siming.gui.assistant.sidebarCollapsed'
@@ -442,11 +424,6 @@ function GuiAssistantChat() {
   const [systemBlueprints, setSystemBlueprints] = useState<NovelBlueprint[]>([])
   const [runningStartTime, setRunningStartTime] = useState<number | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const [selectedOption, setSelectedOption] = useState<string | null>(null)
-  const [showOtherInput, setShowOtherInput] = useState(false)
-  const [otherText, setOtherText] = useState('')
-  const [showQAEditor, setShowQAEditor] = useState(false)
-  const [editingAnswers, setEditingAnswers] = useState<Record<string, string>>({})
   const [pendingFiles, setPendingFiles] = useState<PendingMaterialFile[]>([])
   const [pendingInputClarification, setPendingInputClarification] = useState<PendingInputClarification | null>(null)
   const [activeMaterialImport, setActiveMaterialImport] = useState<MaterialImportSummary | null>(null)
@@ -479,7 +456,7 @@ function GuiAssistantChat() {
   const [artifactEditorSaving, setArtifactEditorSaving] = useState(false)
   const [artifactEditorError, setArtifactEditorError] = useState<string | null>(null)
   const [artifactEditorSavedAt, setArtifactEditorSavedAt] = useState<string | null>(null)
-  const [agentRuntimeOverride, setAgentRuntimeOverride] = useState<Partial<InterviewRuntime>>({})
+  const [agentRuntimeOverride, setAgentRuntimeOverride] = useState<Partial<CreationAgentRuntime>>({})
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -505,31 +482,23 @@ function GuiAssistantChat() {
   const isLocalCliModel = selectedProvider.endsWith('_cli')
   const supportsTransientCreationMcp = selectedProvider === 'opencode_cli'
   const [nextLocalCliGrant, setNextLocalCliGrant] = useState(false)
-  const interviewModelSource = selectedModelOverride
+  const creationAgentModelSource = selectedModelOverride
     ? 'conversation_override'
     : selectedModel ? 'global_default' : 'unconfigured'
 
   useEffect(() => {
     setNextLocalCliGrant(false)
   }, [selectedModel])
-  const novelInterview = useNovelCreationInterviewController({
-    model: selectedModel,
-    modelSource: interviewModelSource,
-    navigate,
-  })
-  const adoptNovelInterviewSession = novelInterview.adoptSession
-  const resetNovelInterview = novelInterview.reset
-  const systemSessionId = novelInterview.state.sessionId
-  const systemBrief = novelInterview.state.userBrief
-  const activeQuestion = novelInterview.state.activeQuestion as ChatQuestion | null | undefined
-  const questionHistory = novelInterview.state.questionHistory as QuestionAnswer[]
-  const setQuestionHistory = novelInterview.replaceHistory
-  const setActiveQuestion = (update: ChatQuestion | null | ((current: ChatQuestion | null) => ChatQuestion | null)) => {
-    const nextQuestion = typeof update === 'function'
-      ? update(activeQuestion || null)
-      : update
-    novelInterview.replaceQuestion(nextQuestion)
-  }
+  const [systemSessionId, setSystemSessionId] = useState<string>()
+  const [systemBrief, setSystemBrief] = useState('')
+  const adoptCreationSession = useCallback((sessionId: string, brief = '') => {
+    setSystemSessionId(sessionId)
+    if (brief) setSystemBrief(brief)
+  }, [])
+  const resetCreationSession = useCallback(() => {
+    setSystemSessionId(undefined)
+    setSystemBrief('')
+  }, [])
 
   useEffect(() => {
     systemConversationIdRef.current = systemConversationId
@@ -550,7 +519,7 @@ function GuiAssistantChat() {
     const resumedSessionId = params.get('creationSession') || ''
     const resumedImportId = params.get('import') || ''
     if (resumedSessionId && resumedSessionId !== systemSessionId) {
-      adoptNovelInterviewSession(resumedSessionId)
+      adoptCreationSession(resumedSessionId)
     }
     if (resumedImportId) {
       void apiClient.get<ApiResponse<MaterialImportSummary>>(`/novel-creation/imports/${resumedImportId}`)
@@ -563,7 +532,7 @@ function GuiAssistantChat() {
         })
         .catch(() => message.error('无法恢复资料导入状态，请从任务中心重试'))
     }
-  }, [adoptNovelInterviewSession, location.search, systemSessionId])
+  }, [adoptCreationSession, location.search, systemSessionId])
 
   const openArtifactEditor = useCallback(async (artifact: CreationArtifactSummary, sessionIdOverride?: string) => {
     const targetSessionId = sessionIdOverride || systemSessionId || activeCreationRun?.session_id
@@ -580,7 +549,7 @@ function GuiAssistantChat() {
     setArtifactEditorDirty(false)
     setArtifactEditorSavedAt(null)
     setCreationPanelOpen(true)
-    if (targetSessionId !== systemSessionId) adoptNovelInterviewSession(targetSessionId)
+    if (targetSessionId !== systemSessionId) adoptCreationSession(targetSessionId)
     try {
       const response = await apiClient.get<ApiResponse<CreationArtifactDetail>>(
         `/novel-creation/sessions/${targetSessionId}/artifacts/${artifact.artifact}`,
@@ -595,7 +564,7 @@ function GuiAssistantChat() {
     } finally {
       setArtifactDetailLoading(false)
     }
-  }, [activeCreationRun?.session_id, adoptNovelInterviewSession, systemSessionId])
+  }, [activeCreationRun?.session_id, adoptCreationSession, systemSessionId])
 
   const saveExpandedArtifact = useCallback(async () => {
     const targetSessionId = expandedArtifactSessionId || systemSessionId
@@ -750,15 +719,14 @@ function GuiAssistantChat() {
       window.clearInterval(timer)
     }
   }, [activeMaterialImport?.id, activeMaterialImport?.status])
-  const interviewRuntime = {
-    ...defaultInterviewRuntime(selectedModel, interviewModelSource),
-    ...novelInterview.state.runtime,
+  const creationAgentRuntime = {
+    ...defaultCreationAgentRuntime(selectedModel, creationAgentModelSource),
     ...agentRuntimeOverride,
   }
   const recordAgentRuntimeError = (error: unknown) => {
-    const detail = extractNovelInterviewErrorDetail(error)
+    const detail = extractCreationAgentErrorDetail(error)
     const runtime = detail.runtime && typeof detail.runtime === 'object'
-      ? detail.runtime as Partial<InterviewRuntime>
+      ? detail.runtime as Partial<CreationAgentRuntime>
       : {}
     const failureClass = String(detail.failure_class || runtime.failure_class || '')
     setAgentRuntimeOverride({
@@ -767,7 +735,7 @@ function GuiAssistantChat() {
         ? 'exhausted_or_limited'
         : runtime.quota_status,
       failure_class: failureClass || undefined,
-      next_action: detail.next_action || runtime.next_action,
+      next_action: String(detail.next_action || runtime.next_action || '') || undefined,
     })
   }
   const runtimeSourceLabel: Record<string, string> = {
@@ -778,12 +746,12 @@ function GuiAssistantChat() {
     unconfigured: '未配置',
     unknown: '待确认',
   }
-  const runtimeQuotaLabel = interviewRuntime.quota_status === 'exhausted_or_limited'
+  const runtimeQuotaLabel = creationAgentRuntime.quota_status === 'exhausted_or_limited'
     ? '额度：已耗尽或限流'
     : '额度：未检测'
-  const runtimeToolModeLabel = interviewRuntime.tool_mode === 'local_cli_text_json'
-    ? '工具模式：本机 CLI 文本 / JSON'
-    : '工具模式：动态采访 JSON（无工具调用）'
+  const runtimeToolModeLabel = isLocalCliModel
+    ? '工具模式：受控本机 Agent 工具桥'
+    : '工具模式：Creation Agent 原生工具调用'
   // Creative slots editor state
   const [slotEditorOpen, setSlotEditorOpen] = useState(false)
   const [slotBlueprintIndex, setSlotBlueprintIndex] = useState<number | null>(null)
@@ -1060,9 +1028,9 @@ function GuiAssistantChat() {
       if (!activeProjectId) {
         const conversation = res.data.data.conversation
         if (conversation.creation_session_id) {
-          adoptNovelInterviewSession(conversation.creation_session_id, conversation.user_brief || '')
+          adoptCreationSession(conversation.creation_session_id, conversation.user_brief || '')
         } else {
-          resetNovelInterview()
+          resetCreationSession()
         }
         setSystemBlueprints(conversation.blueprints || [])
       }
@@ -1071,7 +1039,7 @@ function GuiAssistantChat() {
     } finally {
       setLoading(false)
     }
-  }, [activeProjectId, adoptNovelInterviewSession, resetNovelInterview])
+  }, [activeProjectId, adoptCreationSession, resetCreationSession])
 
   useEffect(() => {
     fetchProjects()
@@ -1089,7 +1057,7 @@ function GuiAssistantChat() {
       localStorage.removeItem(LEGACY_PROJECT_STORAGE_KEY)
       const pendingCreationSession = pendingCreationContextRef.current
       if (pendingCreationSession) {
-        adoptNovelInterviewSession(pendingCreationSession)
+        adoptCreationSession(pendingCreationSession)
       }
       fetchConversations(undefined).then((items) => {
         const requested = items.find((item) => item.id === requestedConversationId)
@@ -1110,16 +1078,16 @@ function GuiAssistantChat() {
       `/projects/${activeProjectId}/creation-brief/ensure`,
     ).then((response) => {
       const linked = response.data.data.session
-      if (linked) adoptNovelInterviewSession(linked.id, linked.user_brief || '')
-      else resetNovelInterview()
+      if (linked) adoptCreationSession(linked.id, linked.user_brief || '')
+      else resetCreationSession()
     }).catch(() => {
-      resetNovelInterview()
+      resetCreationSession()
       message.warning('作品已打开，但立项资料暂未能同步；可稍后重试')
     })
     fetchConversations(activeProjectId).then((items) => {
       if (items[0]) fetchMessages(items[0].id)
     })
-  }, [activeProjectId, adoptNovelInterviewSession, fetchConversations, fetchMessages, projectsLoading, requestedConversationId, requestedCreationSession, resetNovelInterview])
+  }, [activeProjectId, adoptCreationSession, fetchConversations, fetchMessages, projectsLoading, requestedConversationId, requestedCreationSession, resetCreationSession])
 
   const startNewConversation = () => {
     abortRef.current?.abort()
@@ -1138,7 +1106,7 @@ function GuiAssistantChat() {
     startNewConversation()
     if (!value) {
       setActiveProjectId(undefined)
-      resetNovelInterview()
+      resetCreationSession()
       return
     }
     const [kind, id] = value.split(':', 2)
@@ -1153,7 +1121,7 @@ function GuiAssistantChat() {
         return
       }
       const session = creationSessions.find((item) => item.id === id)
-      adoptNovelInterviewSession(id, session?.user_brief || '')
+      adoptCreationSession(id, session?.user_brief || '')
       const items = await fetchConversations(undefined)
       const existing = items.find((item) => item.creation_session_id === id)
       if (existing) await fetchMessages(existing.id)
@@ -1423,7 +1391,7 @@ function GuiAssistantChat() {
     if (forceFreshCreation) {
       abortRef.current?.abort()
       setActiveProjectId(undefined)
-      resetNovelInterview()
+      resetCreationSession()
       persistedSessionId = undefined
       persistedBrief = ''
       persistedBlueprints = []
@@ -1452,7 +1420,7 @@ function GuiAssistantChat() {
         })
         persistedSessionId = created.id
         persistedBrief = displayText
-        adoptNovelInterviewSession(created.id, displayText)
+        adoptCreationSession(created.id, displayText)
         await fetchCreationSessions()
       } catch (error: unknown) {
         finish(error instanceof Error ? error.message : '新建立项数据失败，请重试。', 'error')
@@ -1564,106 +1532,6 @@ function GuiAssistantChat() {
         return
       }
 
-      if (!skipAutomaticCreation && shouldUseNovelCreation(displayText, Boolean(activeProjectId))) {
-        setLastAssistantMessage('正在让当前模型根据你的想法决定第一个问题...', 'running')
-        const transition = await novelInterview.start({
-          mode: 'template',
-          userBrief: displayText,
-          form: { genre: '', target_audience: '', platform: '' },
-        })
-        persistedSessionId = transition.state.sessionId
-        persistedBrief = transition.state.userBrief
-        if (transition.kind === 'error') {
-          finish(transition.error || formatNovelInterviewError(new Error('动态采访失败。')), 'error')
-          return
-        }
-
-        if (transition.kind === 'question' && transition.state.activeQuestion) {
-          const firstQ = transition.state.activeQuestion
-          finalReply = firstQ.question
-          finalStatus = 'completed'
-          durablePayload = { question: firstQ }
-          setCurrentOptions(firstQ.options || [])
-          setSelectedOption(null)
-          setShowOtherInput(false)
-          setOtherText('')
-          setRunningStartTime(null)
-          setMessages((prev) => {
-            const next = [...prev]
-            const last = next[next.length - 1]
-            if (last?.role === 'assistant' && last.status === 'running') {
-              last.content = ''
-              last.questions = [firstQ]
-              last.status = 'completed'
-            }
-            return [...next]
-          })
-          return
-        }
-
-        const run = await novelInterview.startConceptRun(transition.state.sessionId)
-        setActiveCreationRun(run)
-        finish('采访已完成，正在生成创意方向。你可以留在这里继续交流。', 'running', { run })
-        return
-      }
-
-      // Handle answers to clarifying questions (session exists but no blueprints yet)
-      if (systemSessionId && systemBlueprints.length === 0 && !/作品|项目|列表|有哪些|查看/.test(text)) {
-        const isSkip = /跳过|不用了|直接生成|skip/i.test(text)
-        if (isSkip) {
-          // Skip questions — generate directly
-          setLastAssistantMessage('收到，正在准备创意方向并进入立项工作台...', 'running')
-          setSelectedOption(null)
-          setShowOtherInput(false)
-          setOtherText('')
-          const transition = await novelInterview.skip()
-          if (transition.kind === 'error') {
-            finish(transition.error || formatNovelInterviewError(new Error('动态采访失败。')), 'error')
-            return
-          }
-          const run = await novelInterview.startConceptRun(transition.state.sessionId)
-          setActiveCreationRun(run)
-          finish('采访已结束，正在生成创意方向。你可以留在这里继续交流。', 'running', { run })
-          return
-        } else if (activeQuestion) {
-          // User typed an answer while a question is active — use submitQuestionAnswer
-          await submitQuestionAnswer(text)
-        } else {
-          // No active question but session exists — treat as brief supplement
-          setRunningStartTime(Date.now())
-          setLastAssistantMessage(NOVEL_INTERVIEW_THINKING, 'running')
-          const transition = isNovelInterviewRetryIntent(text)
-            ? await novelInterview.rerunWithHistory()
-            : await novelInterview.supplement(text)
-          if (transition.kind === 'error') {
-            setRunningStartTime(null)
-            finish(transition.error || formatNovelInterviewError(new Error('动态采访失败。')), 'error')
-            return
-          }
-          if (transition.kind === 'question' && transition.state.activeQuestion) {
-            const nextQ = transition.state.activeQuestion
-            finalReply = nextQ.question
-            finalStatus = 'completed'
-            durablePayload = { question: nextQ }
-            setRunningStartTime(null)
-            setMessages((prev) => [
-              ...prev,
-              { role: 'assistant', content: '', questions: [nextQ], status: 'completed' },
-            ])
-          } else {
-            const run = await novelInterview.startConceptRun(transition.state.sessionId)
-            setActiveCreationRun(run)
-            finish('采访已完成，正在生成创意方向。你可以留在这里继续交流。', 'running', { run })
-            return
-          }
-        }
-        return
-      }
-
-      if (systemBlueprints.length > 0 && systemSessionId && !/作品|项目|列表|有哪些|查看/.test(text)) {
-        finish('立项会话仍在当前对话中。请直接告诉我要调整哪个部分；需要完整表单时可使用任务卡片中的“打开完整编辑器”。')
-        return
-      }
       if (/作品|项目|列表|有哪些|查看/.test(text)) {
         const res = await apiClient.get<ApiResponse<{ items: Project[]; total: number }>>('/projects')
         const items = res.data?.data?.items || []
@@ -1787,7 +1655,7 @@ function GuiAssistantChat() {
           authorBrief: creationSeed,
         })
         sessionId = created.id
-        adoptNovelInterviewSession(created.id, creationSeed)
+        adoptCreationSession(created.id, creationSeed)
       }
       try {
         durableTurn = await startSystemTurn(displayText, {
@@ -2623,468 +2491,6 @@ function GuiAssistantChat() {
     }
   }
 
-  // ── Single-question interactive flow ──
-  const submitQuestionAnswer = async (answer: string) => {
-    if (!activeQuestion || !systemSessionId) return
-    let durableTurn: { conversationId: string; assistantMessageId?: string } | null = null
-
-    try {
-      durableTurn = await startSystemTurn(answer, {
-        creationSessionId: systemSessionId,
-        userBrief: systemBrief,
-        messageType: 'question',
-      })
-    } catch {
-      message.warning('本次回答暂未保存到对话历史，仍会继续处理。')
-    }
-
-    // Add user's answer to chat
-    setMessages((prev) => [...prev, { role: 'user', content: answer }])
-
-    // Update history
-    const newHistory = [...questionHistory, { question: activeQuestion.question, answer }]
-    setQuestionHistory(newHistory)
-
-    // Clear current question state
-    setActiveQuestion(null)
-    setSelectedOption(null)
-    setShowOtherInput(false)
-    setOtherText('')
-    setCurrentOptions([])
-
-    // Show thinking indicator with timer
-    setRunningStartTime(Date.now())
-    setMessages((prev) => [
-      ...prev,
-      { role: 'assistant', content: NOVEL_INTERVIEW_THINKING, status: 'running' },
-    ])
-
-    try {
-      const interview = await novelInterview.rerunWithHistory(newHistory)
-      if (interview.kind === 'error') throw new Error(interview.error || '动态采访失败。')
-      const nextQuestion = interview.kind === 'question' ? interview.state.activeQuestion : null
-      const draftData: NovelDraftData = {
-        blueprints: [],
-        questions: nextQuestion ? [nextQuestion] : [],
-      }
-
-      if (draftData.questions && draftData.questions.length > 0) {
-        // More questions — replace thinking message with question card
-        const nextQ = draftData.questions[0]
-        setActiveQuestion(nextQ)
-        setCurrentOptions(nextQ.options || [])
-        setSelectedOption(null)
-        setShowOtherInput(false)
-        setOtherText('')
-        setRunningStartTime(null)
-        setMessages((prev) => {
-          const next = [...prev]
-          // Update the last "thinking" message to show the question
-          const last = next[next.length - 1]
-          if (last?.role === 'assistant' && last?.status === 'running') {
-            last.content = ''
-            last.questions = [nextQ]
-            last.status = 'completed'
-          }
-          return [...next]
-        })
-        if (durableTurn) {
-          await finishSystemTurn(
-            durableTurn.conversationId,
-            durableTurn.assistantMessageId,
-            nextQ.question,
-            'completed',
-            {
-              creationSessionId: systemSessionId,
-              userBrief: systemBrief,
-              messageType: 'question',
-              question: nextQ,
-            },
-          )
-        }
-      } else {
-        setActiveQuestion(null)
-        setRunningStartTime(null)
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (last?.role === 'assistant' && last?.status === 'running') {
-            last.content = '采访已完成，正在生成一套可持续调整的创意方向。'
-            last.questions = undefined
-            last.status = 'completed'
-          }
-          return [...next]
-        })
-        const run = await novelInterview.startConceptRun(interview.state.sessionId)
-        setActiveCreationRun(run)
-        if (durableTurn) {
-          await finishSystemTurn(
-            durableTurn.conversationId,
-            durableTurn.assistantMessageId,
-            run.current_message || '正在生成创意方向',
-            'running',
-            {
-              creationSessionId: systemSessionId,
-              userBrief: systemBrief,
-              messageType: 'operation',
-              run,
-            },
-          )
-          if (durableTurn.assistantMessageId) {
-            creationRunMessageRef.current = {
-              conversationId: durableTurn.conversationId,
-              assistantMessageId: durableTurn.assistantMessageId,
-            }
-          }
-        }
-      }
-    } catch (err: unknown) {
-      setActiveQuestion(null)
-      setRunningStartTime(null)
-      setMessages((prev) => {
-        const next = [...prev]
-        const last = next[next.length - 1]
-        if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = formatNovelInterviewError(err)
-          last.status = 'error'
-        }
-        return [...next]
-      })
-      if (durableTurn) {
-        await finishSystemTurn(
-          durableTurn.conversationId,
-          durableTurn.assistantMessageId,
-          formatNovelInterviewError(err),
-          'error',
-          { creationSessionId: systemSessionId, userBrief: systemBrief },
-        ).catch(() => undefined)
-      }
-    }
-  }
-
-  const handleQuestionSkip = async () => {
-    if (!systemSessionId) return
-    let durableTurn: { conversationId: string; assistantMessageId?: string } | null = null
-    try {
-      durableTurn = await startSystemTurn('跳过并生成创意方向', {
-        creationSessionId: systemSessionId,
-        userBrief: systemBrief,
-        messageType: 'operation',
-      })
-    } catch {
-      message.warning('跳过操作暂未保存到对话历史，仍会继续处理。')
-    }
-    setRunningStartTime(Date.now())
-    setLastAssistantMessage('收到，正在准备创意方向并进入立项工作台...', 'running')
-    setActiveQuestion(null)
-    setSelectedOption(null)
-    setShowOtherInput(false)
-    setOtherText('')
-
-    try {
-      const transition = await novelInterview.skip()
-      if (transition.kind === 'error') throw new Error(transition.error || '动态采访失败。')
-      setRunningStartTime(null)
-      setLastAssistantMessage('采访已结束，正在生成一套可持续调整的创意方向。', 'completed')
-      const run = await novelInterview.startConceptRun(transition.state.sessionId)
-      setActiveCreationRun(run)
-      if (durableTurn) {
-        await finishSystemTurn(
-          durableTurn.conversationId,
-          durableTurn.assistantMessageId,
-          run.current_message || '正在生成创意方向',
-          'running',
-          {
-            creationSessionId: systemSessionId,
-            userBrief: systemBrief,
-            messageType: 'operation',
-            run,
-          },
-        )
-        if (durableTurn.assistantMessageId) {
-          creationRunMessageRef.current = {
-            conversationId: durableTurn.conversationId,
-            assistantMessageId: durableTurn.assistantMessageId,
-          }
-        }
-      }
-    } catch (err: unknown) {
-      setRunningStartTime(null)
-      setLastAssistantMessage(formatNovelInterviewError(err), 'error')
-      if (durableTurn) {
-        await finishSystemTurn(
-          durableTurn.conversationId,
-          durableTurn.assistantMessageId,
-          formatNovelInterviewError(err),
-          'error',
-          { creationSessionId: systemSessionId, userBrief: systemBrief },
-        ).catch(() => undefined)
-      }
-    }
-  }
-
-  const [currentOptions, setCurrentOptions] = useState<string[]>([])
-  const [isRefreshing, setIsRefreshing] = useState(false)
-
-  const handleReplaceOption = async (optionToReplace: string) => {
-    if (!activeQuestion || !systemSessionId) return
-    setIsRefreshing(true)
-    try {
-      const res = await apiClient.post<ApiResponse<{ question: string; options: string[] }>>(
-        '/novel-creation/refresh-question',
-        {
-          session_id: systemSessionId,
-          question: activeQuestion.question,
-          existing_options: currentOptions,
-          user_brief: systemBrief,
-          model: selectedModel,
-        },
-        { timeout: 0 },
-      )
-      const newOptions = res.data?.data?.options || []
-      if (newOptions.length > 0) {
-        // Replace the selected option with the new one
-        setCurrentOptions((prev) => prev.map((o) => o === optionToReplace ? newOptions[0] : o))
-        setActiveQuestion((prev) => prev ? {
-          ...prev,
-          options: (prev.options || []).map((o) => o === optionToReplace ? newOptions[0] : o),
-        } : null)
-        setSelectedOption(newOptions[0])
-      }
-    } catch (err) {
-      setLastAssistantMessage(err instanceof Error ? err.message : '生成新选项失败，请重试。', 'error')
-    } finally {
-      setIsRefreshing(false)
-    }
-  }
-
-  const renderQuestions = (questions: ChatQuestion[]) => {
-    // Only render the first question (single-question flow)
-    const q = questions[0]
-    if (!q) return null
-
-    const displayOptions = currentOptions.length > 0 ? currentOptions : (q.options || [])
-
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '8px 0' }}>
-        <div style={{ background: 'var(--ant-color-fill-quaternary)', borderRadius: 8, padding: 12 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
-            <span style={{ fontWeight: 600, color: 'var(--ant-color-primary)' }}>Q</span>
-            <span>{q.question}</span>
-            {q.purpose && <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)' }}>{q.purpose}</span>}
-          </div>
-          {q.type === 'text' ? (
-            <div>
-              <Input.TextArea
-                placeholder="请输入你的回答..."
-                autoSize={{ minRows: 1, maxRows: 3 }}
-                value={otherText}
-                onChange={(e) => setOtherText(e.target.value)}
-                onPressEnter={(e) => {
-                  if (!e.shiftKey && otherText.trim()) {
-                    e.preventDefault()
-                    submitQuestionAnswer(otherText.trim())
-                  }
-                }}
-              />
-              <Button
-                type="primary"
-                size="small"
-                style={{ marginTop: 8 }}
-                disabled={!otherText.trim()}
-                onClick={() => submitQuestionAnswer(otherText.trim())}
-              >
-                确认回答
-              </Button>
-            </div>
-          ) : (
-            <div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-                {displayOptions.map((opt, oi) => (
-                  <Button
-                    key={oi}
-                    type={selectedOption === opt ? 'primary' : 'default'}
-                    size="small"
-                    onClick={() => {
-                      setSelectedOption(opt)
-                      setShowOtherInput(false)
-                      setOtherText('')
-                    }}
-                  >
-                    {opt}
-                  </Button>
-                ))}
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <Button
-                  type={showOtherInput ? 'primary' : 'dashed'}
-                  size="small"
-                  block
-                  onClick={() => {
-                    setShowOtherInput(true)
-                    setSelectedOption(null)
-                  }}
-                >
-                  其他...
-                </Button>
-              </div>
-              {/* Action buttons — show when an option is selected */}
-              {selectedOption && !showOtherInput && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                  <Button
-                    type="primary"
-                    size="small"
-                    onClick={() => submitQuestionAnswer(selectedOption)}
-                  >
-                    确认回答
-                  </Button>
-                  <Button
-                    size="small"
-                    loading={isRefreshing}
-                    onClick={() => handleReplaceOption(selectedOption)}
-                  >
-                    替换该选项
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
-          {showOtherInput && q.type !== 'text' && (
-            <div style={{ marginTop: 8 }}>
-              <Input.TextArea
-                placeholder="请输入你的回答..."
-                autoSize={{ minRows: 1, maxRows: 3 }}
-                value={otherText}
-                onChange={(e) => setOtherText(e.target.value)}
-                onPressEnter={(e) => {
-                  if (!e.shiftKey && otherText.trim()) {
-                    e.preventDefault()
-                    submitQuestionAnswer(otherText.trim())
-                  }
-                }}
-              />
-              <Button
-                type="primary"
-                size="small"
-                style={{ marginTop: 4 }}
-                disabled={!otherText.trim()}
-                onClick={() => submitQuestionAnswer(otherText.trim())}
-              >
-                确认回答
-              </Button>
-            </div>
-          )}
-        </div>
-        <Button type="link" onClick={handleQuestionSkip} style={{ alignSelf: 'flex-start' }}>
-          跳过并生成创意方向
-        </Button>
-      </div>
-    )
-  }
-
-  // ── Regenerate with current Q&A history ──
-  const handleRegenerateWithAnswers = async (updatedHistory?: QuestionAnswer[]) => {
-    if (!systemSessionId) return
-    const history = updatedHistory || questionHistory
-    if (history.length === 0) {
-      await handleSystemAssistantMessage('重新开始立项采访')
-      return
-    }
-
-    setRunningStartTime(Date.now())
-    setSystemBlueprints([])
-    setShowQAEditor(false)
-    setMessages((prev) => [
-      ...prev,
-      { role: 'assistant', content: NOVEL_INTERVIEW_THINKING, status: 'running' },
-    ])
-
-    try {
-      novelInterview.replaceHistory(history)
-      const transition = await novelInterview.rerunWithHistory(history)
-      if (transition.kind === 'error') throw new Error(transition.error || '动态采访失败。')
-
-      if (transition.kind === 'question' && transition.state.activeQuestion) {
-        const nextQ = transition.state.activeQuestion
-        setCurrentOptions(nextQ.options || [])
-        setRunningStartTime(null)
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (last?.role === 'assistant' && last?.status === 'running') {
-            last.content = ''
-            last.questions = [nextQ]
-            last.status = 'completed'
-          }
-          return [...next]
-        })
-        return
-      }
-
-      setRunningStartTime(null)
-      setMessages((prev) => {
-        const next = [...prev]
-        const last = next[next.length - 1]
-        if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = '采访已完成，正在生成一套可持续调整的创意方向。'
-          last.status = 'completed'
-        }
-        return [...next]
-      })
-      const run = await novelInterview.startConceptRun(transition.state.sessionId)
-      setActiveCreationRun(run)
-    } catch (error: unknown) {
-      setRunningStartTime(null)
-      setMessages((prev) => {
-        const next = [...prev]
-        const last = next[next.length - 1]
-        if (last?.role === 'assistant' && last?.status === 'running') {
-          last.content = error instanceof Error ? error.message : formatNovelInterviewError(error)
-          last.status = 'error'
-        }
-        return [...next]
-      })
-    }
-  }
-  const renderQAEditor = () => {
-    if (!showQAEditor || questionHistory.length === 0) return null
-    return (
-      <div style={{ background: 'var(--ant-color-fill-quaternary)', borderRadius: 8, padding: 12, marginBottom: 8 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>修改你的回答：</div>
-        {questionHistory.map((qa, i) => (
-          <div key={i} style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)', marginBottom: 4 }}>{qa.question}</div>
-            <Input
-              size="small"
-              value={editingAnswers[String(i)] ?? qa.answer}
-              onChange={(e) => setEditingAnswers((prev) => ({ ...prev, [String(i)]: e.target.value }))}
-            />
-          </div>
-        ))}
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <Button
-            type="primary"
-            size="small"
-            onClick={() => {
-              // Apply edits and regenerate
-              const updatedHistory = questionHistory.map((qa, i) => ({
-                question: qa.question,
-                answer: editingAnswers[String(i)] ?? qa.answer,
-              }))
-              setQuestionHistory(updatedHistory)
-              handleRegenerateWithAnswers(updatedHistory)
-            }}
-          >
-            修改后重新生成
-          </Button>
-          <Button size="small" onClick={() => setShowQAEditor(false)}>
-            取消
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
   // ── Creative Slots Editor ──
   const openSlotEditor = (index: number) => {
     const bp = systemBlueprints[index]
@@ -3184,28 +2590,13 @@ function GuiAssistantChat() {
     if (!systemBlueprints.length) return null
     return (
       <div className="gui-chat-blueprints">
-        {renderQAEditor()}
         <div className="gui-chat-blueprints-head">
           <div>
             <Text strong>新书方案</Text>
             <Text type="secondary">  ·  可继续对话微调，也可以直接创建</Text>
           </div>
           <Space size={8}>
-            {questionHistory.length > 0 && (
-              <Button size="small" onClick={() => {
-                setEditingAnswers({})
-                setShowQAEditor(!showQAEditor)
-              }}>
-                修改回答
-              </Button>
-            )}
-            <Button size="small" onClick={() => {
-              if (questionHistory.length > 0) {
-                handleRegenerateWithAnswers()
-              } else {
-                handleSystemAssistantMessage('全部重新生成')
-              }
-            }} disabled={streaming}>
+            <Button size="small" onClick={() => handleSystemAssistantMessage('全部重新生成')} disabled={streaming}>
               重新生成
             </Button>
             <Button size="small" onClick={() => handleSystemAssistantMessage('强化书名、主角动机和前三章钩子')} disabled={streaming}>
@@ -3855,7 +3246,7 @@ function GuiAssistantChat() {
     )
   }
 
-  const runtimeHasProblem = interviewRuntime.quota_status === 'exhausted_or_limited'
+  const runtimeHasProblem = creationAgentRuntime.quota_status === 'exhausted_or_limited'
   const runtimePanel = (
     <div className="gui-chat-runtime-panel" aria-label="当前模型运行状态">
       <div className="gui-chat-runtime-panel-head">
@@ -3876,13 +3267,13 @@ function GuiAssistantChat() {
         title={selectedModel || '未配置模型'}
       />
       <dl className="gui-chat-runtime-list">
-        <div><dt>提供商</dt><dd>{interviewRuntime.provider || '未配置'}</dd></div>
-        <div><dt>模型</dt><dd>{interviewRuntime.effective_model || '未配置'}</dd></div>
-        <div><dt>来源</dt><dd>{runtimeSourceLabel[interviewRuntime.model_source || 'unknown'] || '待确认'}</dd></div>
+        <div><dt>提供商</dt><dd>{creationAgentRuntime.provider || '未配置'}</dd></div>
+        <div><dt>模型</dt><dd>{creationAgentRuntime.effective_model || '未配置'}</dd></div>
+        <div><dt>来源</dt><dd>{runtimeSourceLabel[creationAgentRuntime.model_source || 'unknown'] || '待确认'}</dd></div>
         <div><dt>工具模式</dt><dd>{runtimeToolModeLabel.replace('工具模式：', '')}</dd></div>
         <div>
           <dt>运行时限</dt>
-          <dd>{interviewRuntime.timeout_seconds ? `${interviewRuntime.timeout_seconds} 秒` : '不设总时限，按活动检测'}</dd>
+          <dd>{creationAgentRuntime.timeout_seconds ? `${creationAgentRuntime.timeout_seconds} 秒` : '不设总时限，按活动检测'}</dd>
         </div>
         <div><dt>额度</dt><dd>{runtimeQuotaLabel.replace('额度：', '')}</dd></div>
       </dl>
@@ -4008,7 +3399,7 @@ function GuiAssistantChat() {
                 danger={runtimeHasProblem}
               >
                 <span className={`siming-status-dot${runtimeHasProblem ? ' siming-status-dot-error' : ''}`} />
-                {interviewRuntime.provider || '配置模型'}
+                {creationAgentRuntime.provider || '配置模型'}
               </Button>
             </Popover>
             <Tooltip title="新对话">
@@ -4096,7 +3487,6 @@ function GuiAssistantChat() {
                         ⏱ {elapsedSeconds}s
                       </span>
                     )}
-                    {msg.questions && msg.questions.length > 0 && renderQuestions(msg.questions)}
                     {msg.status === 'error' && (
                       <div className="gui-chat-error-actions">
                         <Button

@@ -38,7 +38,7 @@ import {
   startNovelCreationConceptRun,
   startNovelCreationSession,
   workbenchUrl,
-} from '../hooks/useNovelCreationInterviewController'
+} from '../services/novelCreationAgent'
 import './GettingStartedPage.css'
 
 const { Paragraph, Text, Title } = Typography
