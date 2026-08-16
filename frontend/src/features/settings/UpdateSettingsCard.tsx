@@ -56,6 +56,7 @@ export interface UpdateStatus {
   automatic_updates: boolean
   installed_layout?: boolean
   downloaded?: boolean
+  signature_verification_required?: boolean
 }
 
 interface UpdateSettingsCardProps {
@@ -90,12 +91,13 @@ export function UpdateSettingsCard({
   const availableUpdate = updateStatus?.update
   const migrationAvailable = Boolean(availableUpdate?.migration)
   const stagedMigration = Boolean(updateStatus?.staged_update?.migration)
+  const signatureVerificationRequired = Boolean(updateStatus?.signature_verification_required)
 
   return (
     <Card className="settings-card" title={<span><SafetyCertificateOutlined /> 安全更新</span>}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Paragraph style={{ margin: 0 }}>
-          司命不会在启动时自动检查、下载或替换程序。只有你点击下方按钮后，才会检查版本；下载后必须通过 SHA256 和 Windows 代码签名校验，才能安装。
+          司命不会在启动时自动检查、下载或替换程序。只有你点击下方按钮后，才会检查版本；下载后必须通过 SHA256 完整性校验才能安装。当前阶段暂不要求 Windows 代码签名。
         </Paragraph>
         <Radio.Group
           value={updateChannel}
@@ -173,7 +175,9 @@ export function UpdateSettingsCard({
             <Descriptions.Item label="SHA256">
               {availableUpdate.sha256_available ? '发布页提供，下载后会复核' : '发布页未提供，司命不会下载或安装'}
             </Descriptions.Item>
-            <Descriptions.Item label="代码签名">下载后必须验证为可信签名</Descriptions.Item>
+            <Descriptions.Item label="代码签名">
+              {signatureVerificationRequired ? '下载后必须验证为可信签名' : '当前阶段暂不校验'}
+            </Descriptions.Item>
           </Descriptions>
         )}
         {updateStatus?.staged_update && (
