@@ -1,5 +1,6 @@
 """Tests for the installer-aware Windows update path."""
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,66 @@ class InstallerUpdaterTestCase(unittest.TestCase):
         )
         self.assertEqual(manifest["sha256"], "b" * 64)
 
+    def test_unsigned_installer_update_is_allowed_with_matching_sha256(self):
+        content = b"unsigned setup"
+        checksum = hashlib.sha256(content).hexdigest()
+        manifest = {
+            "version": "9.9.9",
+            "download_url": "https://example.test/Siming-Setup.exe",
+            "sha256": checksum,
+            "source": "https://example.test/release",
+            "asset_name": "Siming-Setup.exe",
+            "install_mode": "installer",
+            "migration": False,
+        }
+
+        def write_download(_url, target, timeout=120):
+            del timeout
+            Path(target).write_bytes(content)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            with patch(
+                "app.installer_updater.find_latest_update",
+                return_value=manifest,
+            ), patch(
+                "app.installer_updater.legacy._download_to_file",
+                side_effect=write_download,
+            ), patch(
+                "app.installer_updater.legacy._require_valid_signature",
+                side_effect=RuntimeError("signature should not be checked"),
+            ) as require_signature:
+                result = installer_updater.download_and_stage_update(home)
+
+            staged = installer_updater.legacy._read_staged_update(home)
+            self.assertTrue(result["downloaded"])
+            self.assertTrue(result["staged_update"]["ready_to_install"])
+            self.assertFalse(result["signature_verification_required"])
+            self.assertIsNone(result["staged_update"]["signature"])
+            self.assertEqual(staged["sha256"], checksum)
+            require_signature.assert_not_called()
+
+    def test_staged_installer_still_rejects_sha256_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            updates = home / "updates"
+            updates.mkdir()
+            setup = updates / "Siming-Setup-9.9.9.exe"
+            setup.write_bytes(b"tampered")
+            installer_updater.legacy._write_staged_update(
+                home,
+                {
+                    "version": "9.9.9",
+                    "path": str(setup),
+                    "sha256": hashlib.sha256(b"original").hexdigest(),
+                    "install_mode": "installer",
+                    "signature": None,
+                },
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+                installer_updater._validate_staged_update(home)
+
     def test_installed_layout_runs_setup_silently_in_same_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -54,14 +115,14 @@ class InstallerUpdaterTestCase(unittest.TestCase):
                 "version": "9.9.9",
                 "path": str(setup),
                 "sha256": "a" * 64,
-                "signature": {"valid": True, "status": "Valid"},
+                "signature": None,
                 "install_mode": "installer",
             }
             with patch(
                 "app.installer_updater.legacy._current_packaged_executable",
                 return_value=current,
             ), patch(
-                "app.installer_updater.legacy._validate_staged_update",
+                "app.installer_updater._validate_staged_update",
                 return_value=staged,
             ), patch("app.installer_updater.subprocess.Popen") as popen:
                 result = installer_updater.schedule_staged_update_install(root)
@@ -85,14 +146,14 @@ class InstallerUpdaterTestCase(unittest.TestCase):
                 "version": "9.9.9",
                 "path": str(setup),
                 "sha256": "a" * 64,
-                "signature": {"valid": True, "status": "Valid"},
+                "signature": None,
                 "install_mode": "installer",
             }
             with patch(
                 "app.installer_updater.legacy._current_packaged_executable",
                 return_value=current,
             ), patch(
-                "app.installer_updater.legacy._validate_staged_update",
+                "app.installer_updater._validate_staged_update",
                 return_value=staged,
             ), patch("app.installer_updater.subprocess.Popen") as popen:
                 result = installer_updater.schedule_staged_update_install(root)
