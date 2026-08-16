@@ -8,13 +8,13 @@ on:
       - "installer/**"
       - "scripts/build-exe.ps1"
       - "scripts/build-installer.ps1"
-      - "scripts/verify-release-assets.ps1"
       - "scripts/verify-windows-installer.ps1"
       - "backend/launcher.py"
       - "backend/app/installer_updater.py"
       - "backend/app/updater.py"
       - "backend/app/routers/application_updates.py"
       - "backend/tests/test_installer_updater.py"
+      - "backend/tests/test_release_packaging_contract.py"
       - "backend/tests/test_windows_installer_contract.py"
   workflow_dispatch:
 
@@ -63,17 +63,22 @@ jobs:
         working-directory: backend
         run: python -m pytest tests/test_updater.py tests/test_installer_updater.py tests/test_packaging_contract.py tests/test_release_packaging_contract.py tests/test_windows_installer_contract.py
 
-      - name: Build portable bridge and installer
+      - name: Build Windows installer
         shell: cmd
         run: build-installer.bat
 
-      - name: Verify unsigned PR artifacts
+      - name: Verify unsigned installer artifact
+        shell: pwsh
+        run: ./scripts/verify-windows-installer.ps1 -ReleaseDir release
+
+      - name: Reject stale legacy release assets
         shell: pwsh
         run: |
-          $version = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
-          ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
-          ./scripts/verify-windows-installer.ps1 -ReleaseDir release
-          ./scripts/smoke-test-release.ps1 -SkipBuild
+          $legacyAssets = @("release\Siming.exe", "release\update.json", "release\sha256.txt")
+          $found = @($legacyAssets | Where-Object { Test-Path -LiteralPath $_ })
+          if ($found.Count -gt 0) {
+            throw "Legacy Windows release assets must not be emitted: $($found -join ', ')"
+          }
 
       - name: Smoke install selectable-path package
         shell: pwsh
