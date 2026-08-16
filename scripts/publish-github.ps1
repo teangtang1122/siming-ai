@@ -15,17 +15,15 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $AppName = "Siming"
-$ExePath = Join-Path $Root "release\$AppName.exe"
-$ManifestPath = Join-Path $Root "release\update.json"
-$ShaPath = Join-Path $Root "release\sha256.txt"
 $InstallerPath = Join-Path $Root "release\$AppName-Setup.exe"
 $InstallerShaPath = Join-Path $Root "release\$AppName-Setup.sha256"
 $ApkPath = Join-Path $Root "release\$AppName.apk"
 $ApkShaPath = Join-Path $Root "release\$AppName-apk-sha256.txt"
-$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath, $InstallerPath, $InstallerShaPath)
+$ReleaseAssets = @($InstallerPath, $InstallerShaPath)
 if ($IncludeAndroid) {
   $ReleaseAssets += @($ApkPath, $ApkShaPath)
 }
+$ForbiddenWindowsAssets = @("Siming.exe", "update.json", "sha256.txt", "Moshu.exe", "NovelWritingAgent.exe")
 
 function Require-Command {
   param([string]$Name, [string]$Hint)
@@ -99,41 +97,15 @@ try {
     }
   }
 
-  if (Test-Path $ExePath) {
-    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
-    $version = $Tag.TrimStart("v")
-    $isPrerelease = $version.Contains("-")
-    $updateChannel = if ($isPrerelease) { "preview" } else { "stable" }
-    $downloadUrl = if ($isPrerelease) {
-      "https://github.com/$Repo/releases/download/$Tag/$AppName.exe"
+  if (-not $DryRun) {
+    if ($ManualDownloadOnly) {
+      & (Join-Path $Root "scripts\verify-windows-installer.ps1") -ReleaseDir (Split-Path -Parent $InstallerPath) -AllowUnsignedManualRelease
     } else {
-      "https://github.com/$Repo/releases/latest/download/$AppName.exe"
+      & (Join-Path $Root "scripts\verify-windows-installer.ps1") -ReleaseDir (Split-Path -Parent $InstallerPath) -RequireTrustedSignature
     }
-    $manifest = [ordered]@{
-      version = $version
-      channel = $updateChannel
-      download_url = $downloadUrl
-      sha256 = $sha
-      repo = $Repo
-    } | ConvertTo-Json -Depth 3
-    $shaLines = @("$sha  $AppName.exe")
-    if ($DryRun) {
-      Write-Host "[dry-run] SHA256 would be written: $sha" -ForegroundColor Cyan
-      Write-Host "[dry-run] Manifest version would be written: $version" -ForegroundColor Cyan
-    } else {
-      [System.IO.File]::WriteAllText($ManifestPath, $manifest + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
-      [System.IO.File]::WriteAllText($ShaPath, ($shaLines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
-      if ($ManualDownloadOnly) {
-        & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version -AllowUnsignedManualRelease
-        & (Join-Path $Root "scripts\verify-windows-installer.ps1") -ReleaseDir (Split-Path -Parent $InstallerPath) -AllowUnsignedManualRelease
-      } else {
-        & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version -RequireTrustedSignature
-        & (Join-Path $Root "scripts\verify-windows-installer.ps1") -ReleaseDir (Split-Path -Parent $InstallerPath) -RequireTrustedSignature
-      }
-      if ($IncludeAndroid) {
-        & (Join-Path $Root "scripts\verify-android-release.ps1") -ReleaseDir (Split-Path -Parent $ApkPath) -ExpectedVersion $version
-      }
-      & (Join-Path $Root "scripts\smoke-test-release.ps1") -SkipBuild
+    if ($IncludeAndroid) {
+      $version = $Tag.TrimStart("v")
+      & (Join-Path $Root "scripts\verify-android-release.ps1") -ReleaseDir (Split-Path -Parent $ApkPath) -ExpectedVersion $version
     }
   }
 
@@ -170,6 +142,7 @@ try {
     foreach ($Asset in $ReleaseAssets) {
       Write-Host "  $Asset exists=$(Test-Path -LiteralPath $Asset)"
     }
+    Write-Host "[dry-run] Legacy Windows assets are forbidden in Releases: $($ForbiddenWindowsAssets -join ', ')" -ForegroundColor Cyan
     return
   }
 
@@ -178,6 +151,7 @@ try {
   if (-not $CurrentBranch) {
     throw "Release publishing requires a named branch, not detached HEAD."
   }
+
   $PreviousErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   $ExistingTagCommit = git rev-list -n 1 $Tag 2>$null
@@ -188,6 +162,7 @@ try {
   } else {
     $ExistingTagCommit = ($ExistingTagCommit | Select-Object -First 1).Trim()
   }
+
   $HeadCommit = (git rev-parse HEAD).Trim()
   Assert-NativeSuccess "git rev-parse HEAD"
   if ($ExistingTagCommit -and $ExistingTagCommit -ne $HeadCommit) {
@@ -197,6 +172,7 @@ try {
     git tag -a $Tag -m "Siming $Tag"
     Assert-NativeSuccess "git tag $Tag"
   }
+
   git push -u origin $CurrentBranch
   Assert-NativeSuccess "git push branch $CurrentBranch"
   git push origin $Tag
@@ -207,6 +183,7 @@ try {
   gh release view $Tag -R $Repo *>$null
   $ReleaseExists = $LASTEXITCODE -eq 0
   $ErrorActionPreference = $PreviousErrorActionPreference
+
   $ReleaseWasDraft = $false
   if (-not $ReleaseExists) {
     $Version = $Tag.TrimStart("v")
@@ -237,15 +214,17 @@ try {
       Assert-NativeSuccess "mark release $Tag as prerelease"
     }
   }
+
   $ExistingRelease = gh release view $Tag -R $Repo --json assets | ConvertFrom-Json
   Assert-NativeSuccess "read release assets for $Tag"
   $ExistingAssetNames = @($ExistingRelease.assets | ForEach-Object { $_.name })
-  foreach ($LegacyAssetName in @("Moshu.exe", "NovelWritingAgent.exe")) {
+  foreach ($LegacyAssetName in $ForbiddenWindowsAssets) {
     if ($ExistingAssetNames -contains $LegacyAssetName) {
       gh release delete-asset $Tag $LegacyAssetName -R $Repo -y
       Assert-NativeSuccess "delete legacy release asset $LegacyAssetName"
     }
   }
+
   gh release upload $Tag -R $Repo @ReleaseAssets --clobber
   Assert-NativeSuccess "upload release assets for $Tag"
 
@@ -256,6 +235,10 @@ try {
   $MissingUploadedAssets = @($ExpectedAssetNames | Where-Object { $_ -notin $UploadedAssetNames })
   if ($MissingUploadedAssets.Count -gt 0) {
     throw "Release remains unpublished because uploaded assets are incomplete: $($MissingUploadedAssets -join ', ')."
+  }
+  $ForbiddenUploadedAssets = @($ForbiddenWindowsAssets | Where-Object { $_ -in $UploadedAssetNames })
+  if ($ForbiddenUploadedAssets.Count -gt 0) {
+    throw "Release remains unpublished because legacy Windows assets are still present: $($ForbiddenUploadedAssets -join ', ')."
   }
 
   if ($ReleaseWasDraft) {
