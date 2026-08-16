@@ -95,10 +95,12 @@ def test_release_workflow_publishes_signed_android_assets():
     workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(encoding="utf-8")
 
     assert "IncludeAndroid" in publisher
-    assert '$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath)' in publisher
+    assert '$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath, $InstallerPath, $InstallerShaPath)' in publisher
     assert "SIMING_ANDROID_KEYSTORE_BASE64" in workflow
     assert "Build signed Android APK" in workflow
     assert "verify-android-release.ps1" in workflow
+    assert "release/Siming-Setup.exe" in workflow
+    assert "release/Siming-Setup.sha256" in workflow
     assert "release/Siming.apk" in workflow
     assert "release/Siming-apk-sha256.txt" in workflow
 
