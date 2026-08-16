@@ -1,9 +1,9 @@
 """Installer-aware Windows update flow.
 
-New installed builds prefer the signed Inno Setup package so a complete onedir
-runtime can be replaced safely.  The legacy Siming.exe release asset remains a
-compatibility bridge for older clients whose updater only understands the
-single-file executable.
+New installed builds prefer the Inno Setup package so a complete onedir runtime
+can be replaced safely. Windows Authenticode verification is temporarily not
+required because the project does not currently have a code-signing certificate;
+SHA-256 verification remains mandatory for every downloaded update.
 """
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ INSTALLER_CHECKSUM_ASSET_NAMES = {
     "siming-setup.sha256",
     "siming-setup.exe.sha256",
 }
+# The project currently has no Windows Authenticode certificate. Keep the
+# verification implementation available in updater.py, but do not block
+# installer updates on it until a trusted signing certificate is configured.
+WINDOWS_SIGNATURE_VERIFICATION_REQUIRED = False
 
 
 def _valid_sha256(value: object) -> str:
@@ -245,6 +249,29 @@ def _public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _verify_signature_if_required(path: Path) -> dict[str, Any] | None:
+    if not WINDOWS_SIGNATURE_VERIFICATION_REQUIRED:
+        return None
+    return legacy._require_valid_signature(path)
+
+
+def _validate_staged_update(app_home: Path) -> dict[str, Any]:
+    """Revalidate a staged installer using SHA-256; signature is optional for now."""
+    staged = legacy._read_staged_update(app_home)
+    if not staged:
+        raise RuntimeError("No downloaded update is waiting to be installed.")
+    update_path = Path(str(staged.get("path") or "")).expanduser()
+    expected_sha256 = str(staged.get("sha256") or "").strip().lower()
+    if not update_path.is_file() or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+        raise RuntimeError("The downloaded update is incomplete. Please download it again.")
+    actual_sha256 = legacy._sha256_file(update_path)
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError("The downloaded update checksum no longer matches the verified SHA-256 value.")
+    staged["signature"] = _verify_signature_if_required(update_path)
+    staged["sha256"] = actual_sha256
+    return staged
+
+
 def get_update_status(
     app_home: Path,
     channel: str | None = None,
@@ -263,7 +290,7 @@ def get_update_status(
             "ready_to_install": False,
         }
         try:
-            legacy._validate_staged_update(app_home)
+            _validate_staged_update(app_home)
             staged_payload["ready_to_install"] = True
         except Exception as exc:
             staged_payload["error"] = str(exc)
@@ -275,6 +302,7 @@ def get_update_status(
         "staged_update": staged_payload,
         "automatic_updates": False,
         "installed_layout": _running_install_root() is not None,
+        "signature_verification_required": WINDOWS_SIGNATURE_VERIFICATION_REQUIRED,
     }
 
 
@@ -282,6 +310,7 @@ def download_and_stage_update(
     app_home: Path,
     channel: str | None = None,
 ) -> dict[str, Any]:
+    """Download a user-confirmed update and require a matching release SHA-256."""
     selected_channel = legacy.resolve_update_channel(channel)
     manifest = find_latest_update(selected_channel)
     if not manifest:
@@ -315,7 +344,7 @@ def download_and_stage_update(
             raise RuntimeError(
                 "Downloaded update checksum does not match the release manifest."
             )
-        signature = legacy._require_valid_signature(target)
+        signature = _verify_signature_if_required(target)
     except Exception:
         partial.unlink(missing_ok=True)
         target.unlink(missing_ok=True)
@@ -345,7 +374,7 @@ def download_and_stage_update(
 
 
 def schedule_staged_update_install(app_home: Path) -> dict[str, Any]:
-    staged = legacy._validate_staged_update(app_home)
+    staged = _validate_staged_update(app_home)
     if str(staged.get("install_mode") or "portable") != "installer":
         return legacy.schedule_staged_update_install(app_home)
 
