@@ -20,7 +20,7 @@ from ..services.application_settings import (
     normalize_gateway_allowed_hosts,
     save_launcher_settings,
 )
-from ..updater import (
+from ..installer_updater import (
     download_and_stage_update,
     get_update_status,
     schedule_staged_update_install,
