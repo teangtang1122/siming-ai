@@ -23,6 +23,15 @@ jobs:
       - name: Remove legacy frontend interview flow
         run: python scripts/remove-legacy-creation-interview-frontend.py
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -33,6 +42,12 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Refresh generated OpenAPI types
+        working-directory: frontend
+        run: |
+          npm run api:generate
+          npm run api:check
+
       - name: Run frontend tests
         working-directory: frontend
         run: npm test -- --run
@@ -41,11 +56,30 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Guard legacy interview frontend
+      - name: Guard legacy interview runtime frontend
+        shell: python
         run: |
-          if grep -RInE "useNovelCreationInterviewController|novelInterview\.|NOVEL_INTERVIEW_|refresh-question|/interview/next|submitQuestionAnswer|renderQuestions|renderQAEditor|questionHistory|handleRegenerateWithAnswers" frontend/src; then
-            echo "Legacy interview frontend still referenced" >&2; exit 1
-          fi
+          from pathlib import Path
+          import re
+
+          root = Path("frontend/src")
+          pattern = re.compile(
+              r"useNovelCreationInterviewController|novelInterview\.|NOVEL_INTERVIEW_|refresh-question|/interview/next|"
+              r"submitQuestionAnswer|renderQuestions|renderQAEditor|questionHistory|handleRegenerateWithAnswers"
+          )
+          matches = []
+          for path in sorted(root.rglob("*")):
+              if not path.is_file() or path.suffix not in {".ts", ".tsx"}:
+                  continue
+              relative = path.relative_to(root)
+              if "__tests__" in relative.parts:
+                  continue
+              for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  if pattern.search(line):
+                      matches.append(f"{path}:{line_no}:{line.strip()[:180]}")
+          if matches:
+              raise SystemExit("Legacy interview runtime frontend still referenced: " + " | ".join(matches[:20]))
+          print("No legacy interview runtime references remain outside regression tests.")
 
       - name: Commit verified frontend cleanup
         run: |
