@@ -28,17 +28,6 @@ def remove_between(text: str, start: str, end: str, label: str) -> str:
     return text[:a] + text[b:]
 
 
-def remove_top_level_const(text: str, name: str) -> str:
-    marker = f"  const {name} ="
-    a = text.find(marker)
-    if a < 0:
-        return text
-    b = text.find("\n  const ", a + len(marker))
-    if b < 0:
-        raise RuntimeError(f"next top-level const not found after {name}")
-    return text[:a] + text[b + 1:]
-
-
 rel = "frontend/src/components/GuiAssistantChat.tsx"
 text = read(rel)
 old_import = '''import {
@@ -70,6 +59,19 @@ text = text.replace(
     "type ChatQuestion = InterviewQuestion\ntype QuestionAnswer = InterviewQuestionAnswer\n",
     "interface ChatQuestion { question: string; purpose?: string; options?: string[]; type?: 'single_select' | 'multi_select' | 'text' }\n",
 )
+
+novel_draft_data = '''interface NovelDraftData {
+  blueprints: NovelBlueprint[]
+  recommendation?: string
+  enhancement_mode?: 'instant_template' | 'template_llm_hybrid' | 'template_fallback' | 'llm_required'
+  questions?: Array<{ question: string; purpose?: string; options?: string[] }>
+  original_brief?: string
+  hint?: string
+}
+
+'''
+text = replace_once(text, novel_draft_data, "", "obsolete NovelDraftData")
+
 for state_line in (
     "  const [selectedOption, setSelectedOption] = useState<string | null>(null)\n",
     "  const [showOtherInput, setShowOtherInput] = useState(false)\n",
@@ -154,15 +156,15 @@ text = text[:a] + new_runtime + text[b:]
 text = text.replace("interviewRuntime", "creationAgentRuntime")
 text = text.replace("interviewModelSource", "creationAgentModelSource")
 
-# Remove obsolete Q&A handlers and presentation code.
-for name in (
-    "submitQuestionAnswer",
-    "toggleQAEditor",
-    "saveEditedAnswersAndRegenerate",
-    "refreshQuestionOptions",
-    "renderQuestions",
-):
-    text = remove_top_level_const(text, name)
+# The old interview UI is one contiguous control plane. Remove it as a unit;
+# deleting only its state/imports leaves dangling handlers that pass Vitest but
+# fail TypeScript compilation.
+text = remove_between(
+    text,
+    "  // ── Single-question interactive flow ──\n",
+    "  // ── Creative Slots Editor ──\n",
+    "legacy single-question interview control plane",
+)
 
 # Remove the dead dynamic-interview fallback. A current creation session has
 # already returned through /agent-turn before this point.
@@ -182,8 +184,45 @@ for line in (
 ):
     text = text.replace(line, "")
 
-# Questions are historical compatibility payload only; no interactive interview
-# widgets remain in the current creation experience.
+# Blueprint cards remain useful, but their old Q&A editor/regeneration controls
+# belonged to the deleted interview state machine.
+text = replace_once(
+    text,
+    '      <div className="gui-chat-blueprints">\n        {renderQAEditor()}\n',
+    '      <div className="gui-chat-blueprints">\n',
+    "blueprint QA editor mount",
+)
+text = replace_once(
+    text,
+    '''            {questionHistory.length > 0 && (
+              <Button size="small" onClick={() => {
+                setEditingAnswers({})
+                setShowQAEditor(!showQAEditor)
+              }}>
+                修改回答
+              </Button>
+            )}
+''',
+    "",
+    "blueprint modify-answer button",
+)
+text = replace_once(
+    text,
+    '''            <Button size="small" onClick={() => {
+              if (questionHistory.length > 0) {
+                handleRegenerateWithAnswers()
+              } else {
+                handleSystemAssistantMessage('全部重新生成')
+              }
+            }} disabled={streaming}>
+''',
+    '''            <Button size="small" onClick={() => handleSystemAssistantMessage('全部重新生成')} disabled={streaming}>
+''',
+    "blueprint regenerate button",
+)
+
+# Questions may still exist in historical persisted payloads, but the current
+# creation experience no longer renders interactive interview widgets.
 text = re.sub(r"\n\s*\{msg\.questions && msg\.questions\.length > 0 && renderQuestions\(msg\.questions\)\}", "", text)
 write(rel, text)
 
@@ -202,7 +241,7 @@ for rel in (
     "frontend/src/__tests__/novelInterview.test.ts",
     "frontend/src/__tests__/useNovelCreationInterviewController.test.tsx",
 ):
-    p = path = ROOT / rel
+    p = ROOT / rel
     if p.exists():
         p.unlink()
 
