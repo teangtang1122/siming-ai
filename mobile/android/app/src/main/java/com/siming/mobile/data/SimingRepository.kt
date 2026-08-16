@@ -7,6 +7,7 @@ import com.siming.mobile.data.agent.MobileWorkspaceAgent
 import com.siming.mobile.data.creation.CreationExecutionRoute
 import com.siming.mobile.data.creation.CreationStartInput
 import com.siming.mobile.data.creation.MobileCreationAgent
+import com.siming.mobile.data.creation.MobileCreationConversationAgent
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.OutboxMutation
@@ -72,6 +73,19 @@ class SimingRepository(context: Context) {
         )
     }
     private val mobileCreationAgent by lazy { MobileCreationAgent(appContext, directApi) }
+    private val mobileCreationConversationAgent by lazy {
+        MobileCreationConversationAgent(
+            context = appContext,
+            stageAgent = mobileCreationAgent,
+            directApi = directApi,
+            persistSession = ::saveCreationSession,
+            finalizeSession = { session ->
+                saveCreationSession(session)
+                val projectId = archiveCreation(session.string("id")) {}
+                loadCreationSession(session.string("id")) to projectId
+            },
+        )
+    }
 
     val connection: Flow<GatewayConnection?> = dao.observeConnection()
     val projects: Flow<List<ReplicaEntity>> = dao.observeProjects()
@@ -816,204 +830,63 @@ class SimingRepository(context: Context) {
 
     suspend fun getCreationSession(sessionId: String): JsonObject = loadCreationSession(sessionId)
 
-    suspend fun advanceCreationInterview(
+    suspend fun runCreationAgentTurn(
         sessionId: String,
-        answer: String? = null,
-        skip: Boolean = false,
-    ): JsonObject {
-        val current = loadCreationSession(sessionId)
-        val route = creationRoute(current)
-        val gatewayExecution = creationHost(current) == CREATION_HOST_GATEWAY
-        val updated = when {
-            route == CreationExecutionRoute.Pc || gatewayExecution -> {
-                val connection = requireConnection()
-                val history = interviewHistoryWithAnswer(current, answer)
-                val mobileProvider = if (route == CreationExecutionRoute.MobileKey) {
-                    mobileProviderPayload(connection, sessionId)
-                } else {
-                    null
-                }
-                api.advanceNovelCreationInterview(
-                    connection,
-                    sessionId,
-                    buildJsonObject {
-                        put("user_brief", current.string("user_brief"))
-                        put("qa_history", history)
-                        put("skip_questions", skip)
-                        put("model_route", if (mobileProvider == null) "pc" else "mobile")
-                        mobileProvider?.let { put("mobile_provider", it) }
-                    },
-                )
-                tagCreationRoute(
-                    api.getNovelCreationSession(connection, sessionId),
-                    route,
-                    CREATION_HOST_GATEWAY,
-                )
-            }
-            else -> tagCreationRoute(
-                mobileCreationAgent.interview(
-                    current,
-                    answer,
-                    skip,
-                    resolvedDirectConfig(),
-                ),
-                route,
-                CREATION_HOST_DEVICE,
-            )
-        }
-        saveCreationSession(updated)
-        val interview = updated.draft().objectValue("interview")
-        if (interview.string("status") == "failed") {
-            error(
-                interview.string("error_message").ifBlank {
-                    "动态采访失败；回答已保留，请发送“继续”重试。"
-                },
-            )
-        }
-        return updated
-    }
-
-    suspend fun generateCreationStage(
-        sessionId: String,
-        stage: String,
-        instruction: String = "",
+        message: String,
         onProgress: suspend (String) -> Unit = {},
     ): JsonObject {
-        var current = loadCreationSession(sessionId)
+        require(message.isNotBlank()) { "请输入你想告诉 AI 的内容" }
+        val current = loadCreationSession(sessionId)
+        val history = creationAgentHistory(current)
+        val userHistory = history + agentHistoryMessage("user", message)
+        saveCreationSession(withCreationAgentHistory(current, userHistory))
         val route = creationRoute(current)
         val gatewayExecution = creationHost(current) == CREATION_HOST_GATEWAY
         val updated = when {
             route == CreationExecutionRoute.Pc || gatewayExecution -> {
                 val connection = requireConnection()
-                if (
-                    stage == "concepts" &&
-                    current.stageState("constraints").string("status") != "confirmed"
-                ) {
-                    onProgress("正在确认你提交的创作约束…")
-                    current = tagCreationRoute(
-                        api.confirmNovelCreationStage(
-                            connection,
-                            sessionId,
-                            "constraints",
-                            buildJsonObject {
-                                put("data", current.draft().objectValue("form"))
-                                put("confirm", true)
-                                put("source", "author")
-                                put("expected_revision", current.int("revision"))
-                            },
-                        ),
-                        route,
-                        CREATION_HOST_GATEWAY,
-                    )
-                }
                 val mobileProvider = if (route == CreationExecutionRoute.MobileKey) {
                     mobileProviderPayload(connection, sessionId)
-                } else {
-                    null
-                }
+                } else null
                 onProgress(
-                    if (mobileProvider == null) {
-                        "PC 线路正在生成${creationStageLabel(stage)}…"
-                    } else {
-                        "手机 Key 正在驱动 PC 同款立项引擎生成${creationStageLabel(stage)}…"
-                    },
+                    if (mobileProvider == null) "PC Creation Agent 正在读取并增量写入…"
+                    else "手机 Key 正在驱动 PC Creation Agent…"
                 )
-                val started = api.startNovelCreationRun(
+                val result = api.novelCreationAgentTurn(
                     connection,
-                    sessionId,
                     buildJsonObject {
-                        put("stage", stage)
-                        put("use_model", true)
-                        put("auto_confirm", false)
-                        put("operation", if (instruction.isBlank()) "generate" else "refine")
-                        if (instruction.isNotBlank()) put("instruction", instruction.trim())
-                        put("expected_revision", current.int("revision"))
+                        put("session_id", sessionId)
+                        put("message", message)
+                        put("history", JsonArray(history.takeLast(12)))
                         put("model_route", if (mobileProvider == null) "pc" else "mobile")
                         mobileProvider?.let { put("mobile_provider", it) }
                     },
                 )
-                val run = started["run"] as? JsonObject ?: error("PC 立项 API 没有返回阶段任务")
-                val runId = run.string("run_id").ifBlank { run.string("id") }
-                require(runId.isNotBlank()) { "PC 立项阶段任务缺少 run_id" }
-                var terminal = run
-                var polls = 0
-                while (
-                    terminal.string("status") !in CREATION_TERMINAL_RUN_STATUSES &&
-                    polls < 1_200
-                ) {
-                    delay(500)
-                    terminal = api.getNovelCreationRun(connection, runId)
-                    polls += 1
-                    onProgress(
-                        terminal.string("current_message").ifBlank {
-                            "AI 正在生成${creationStageLabel(stage)}…"
-                        },
-                    )
-                }
-                val status = terminal.string("status")
-                require(status in setOf("waiting_user", "completed")) {
-                    terminal.string("current_message").ifBlank { "${creationStageLabel(stage)}生成失败（$status）" }
-                }
-                tagCreationRoute(
+                val reply = result.string("reply").ifBlank { "已完成本轮立项工具调用" }
+                val fresh = tagCreationRoute(
                     api.getNovelCreationSession(connection, sessionId),
                     route,
                     CREATION_HOST_GATEWAY,
+                )
+                withCreationAgentHistory(
+                    fresh,
+                    userHistory + agentHistoryMessage("assistant", reply),
                 )
             }
             else -> {
-                onProgress("手机正在用 PC 同源提示词生成${creationStageLabel(stage)}…")
-                tagCreationRoute(
-                    mobileCreationAgent.generateStage(
-                        current,
-                        stage,
-                        instruction,
-                        resolvedDirectConfig(),
-                    ),
-                    route,
-                    CREATION_HOST_DEVICE,
+                onProgress("手机 Creation Agent 正在读取资料并执行工具…")
+                val result = mobileCreationConversationAgent.run(
+                    source = current,
+                    message = message,
+                    history = history,
+                    config = resolvedDirectConfig(),
+                    onProgress = onProgress,
+                )
+                withCreationAgentHistory(
+                    result.session,
+                    userHistory + agentHistoryMessage("assistant", result.reply),
                 )
             }
-        }
-        saveCreationSession(updated)
-        return updated
-    }
-
-    suspend fun confirmCreationStage(
-        sessionId: String,
-        stage: String,
-        editedData: JsonObject? = null,
-    ): JsonObject {
-        val current = loadCreationSession(sessionId)
-        val route = creationRoute(current)
-        val gatewayExecution = creationHost(current) == CREATION_HOST_GATEWAY
-        val updated = when {
-            route == CreationExecutionRoute.Pc || gatewayExecution -> {
-                val connection = requireConnection()
-                val currentData = editedData
-                    ?: current.stageState(stage)["data"] as? JsonObject
-                    ?: error("请先生成当前阶段")
-                val data = if (stage == "concepts") ensureSelectedConcept(currentData) else currentData
-                tagCreationRoute(
-                    api.confirmNovelCreationStage(
-                        connection,
-                        sessionId,
-                        stage,
-                        buildJsonObject {
-                            put("data", data)
-                            put("confirm", true)
-                            put("source", "author")
-                            put("expected_revision", current.int("revision"))
-                        },
-                    ),
-                    route,
-                    CREATION_HOST_GATEWAY,
-                )
-            }
-            else -> tagCreationRoute(
-                mobileCreationAgent.confirmStage(current, stage, editedData),
-                route,
-                CREATION_HOST_DEVICE,
-            )
         }
         saveCreationSession(updated)
         return updated
@@ -1086,17 +959,22 @@ class SimingRepository(context: Context) {
         put("locked_requirements", JsonArray(input.lockedRequirements.map(::JsonPrimitive)))
     }
 
-    private fun interviewHistoryWithAnswer(session: JsonObject, answer: String?): JsonArray {
-        val interview = session.draft().objectValue("interview")
-        val rows = (interview["history"] as? JsonArray).orEmpty().toMutableList()
-        val pending = interview["pending_question"] as? JsonObject
-        if (!answer.isNullOrBlank() && pending != null) {
-            rows += buildJsonObject {
-                put("question", pending.string("question"))
-                put("answer", answer.trim())
-            }
-        }
-        return JsonArray(rows)
+    private fun creationAgentHistory(session: JsonObject): List<JsonObject> =
+        (session.draft()["agent_history"] as? JsonArray)
+            .orEmpty()
+            .mapNotNull { it as? JsonObject }
+
+    private fun agentHistoryMessage(role: String, content: String): JsonObject = buildJsonObject {
+        put("id", UUID.randomUUID().toString())
+        put("role", role)
+        put("content", content)
+        put("created_at", Instant.now().toString())
+    }
+
+    private fun withCreationAgentHistory(session: JsonObject, history: List<JsonObject>): JsonObject {
+        val draft = session.draft().toMutableMap()
+        draft["agent_history"] = JsonArray(history.takeLast(40))
+        return JsonObject(session.toMutableMap().apply { put("draft", JsonObject(draft)) })
     }
 
     private suspend fun saveCreationSession(session: JsonObject) {

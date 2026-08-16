@@ -223,13 +223,12 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         PcApiPaths.novelCreationSession(sessionId),
     ).data
 
-    suspend fun advanceNovelCreationInterview(
+    suspend fun novelCreationAgentTurn(
         connection: GatewayConnection,
-        sessionId: String,
         payload: JsonObject,
     ): JsonObject = request<ApiEnvelope<JsonObject>>(
         connection.baseUrl,
-        PcApiPaths.novelCreationInterview(sessionId),
+        PcApiPaths.NOVEL_CREATION_AGENT_TURN,
         "POST",
         json.encodeToString(payload),
     ).data

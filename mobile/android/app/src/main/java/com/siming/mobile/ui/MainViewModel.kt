@@ -99,13 +99,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.entities(projectId, entityType)
 
     fun beginCreation(input: CreationStartInput, route: CreationExecutionRoute) {
-        launchCreation("正在建立 V3 立项草稿…") {
+        launchCreation("正在建立对话式立项会话…") {
             val started = repository.beginCreation(input, route)
             val sessionId = started["id"]?.jsonPrimitive?.contentOrNull
                 ?: error("立项草稿缺少 id")
             uiState.value = uiState.value.copy(activeCreationId = sessionId)
-            repository.advanceCreationInterview(sessionId)
-            "AI 已读完你的构想，可以开始一起立项了"
+            repository.runCreationAgentTurn(sessionId, input.brief) { activity ->
+                uiState.value = uiState.value.copy(creationActivity = activity)
+            }
+            "Creation Agent 已边聊边写入第一轮立项资料"
         }
     }
 
@@ -117,30 +119,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         uiState.value = uiState.value.copy(activeCreationId = null, creationActivity = "")
     }
 
-    fun answerCreationInterview(sessionId: String, answer: String, skip: Boolean = false) {
-        launchCreation(if (skip) "正在结束采访并整理上下文…" else "AI 正在理解你的回答并决定下一步…") {
-            repository.advanceCreationInterview(sessionId, answer.takeUnless { skip }, skip)
-            if (skip) "已保留现有回答，接下来可以生成创意方向" else "本轮回答已写入立项上下文"
-        }
-    }
-
-    fun generateCreationStage(sessionId: String, stage: String, instruction: String = "") {
-        launchCreation("正在准备结构化生成…") {
-            repository.generateCreationStage(sessionId, stage, instruction) { activity ->
+    fun sendCreationMessage(sessionId: String, message: String) {
+        if (message.isBlank()) return
+        launchCreation("Creation Agent 正在处理…") {
+            repository.runCreationAgentTurn(sessionId, message) { activity ->
                 uiState.value = uiState.value.copy(creationActivity = activity)
             }
-            "${creationStageLabel(stage)}已生成；先审阅，确认后再进入下一阶段"
-        }
-    }
-
-    fun confirmCreationStage(sessionId: String, stage: String, editedJson: String? = null) {
-        launchCreation("正在校验并确认${creationStageLabel(stage)}…") {
-            val edited = editedJson?.takeIf(String::isNotBlank)?.let { raw ->
-                json.parseToJsonElement(raw) as? JsonObject
-                    ?: error("结构化数据必须是一个 JSON 对象")
-            }
-            repository.confirmCreationStage(sessionId, stage, edited)
-            "${creationStageLabel(stage)}已确认；下游生成会把它作为不可随意改写的事实"
+            "本轮已完成；确定事实已立即写入结构化立项资料"
         }
     }
 

@@ -77,7 +77,8 @@ internal class MobileCreationConversationAgent(
         } else null
 
         var finalReply = ""
-        repeat(contract.maxIterations) { iteration ->
+        var iteration = 0
+        while (iteration < contract.maxIterations && finalReply.isBlank()) {
             onProgress(if (iteration == 0) "正在读取立项数据并理解这句话…" else "正在根据已写入的数据继续判断…")
             val turn = directApi.agentTurn(
                 config = config,
@@ -90,7 +91,7 @@ internal class MobileCreationConversationAgent(
             messages += turn.assistantMessage
             if (turn.toolCalls.isEmpty()) {
                 finalReply = turn.content.trim()
-                return@repeat
+                break
             }
 
             for (call in turn.toolCalls.take(12)) {
@@ -115,6 +116,7 @@ internal class MobileCreationConversationAgent(
                     put("content", execution.result.toString().take(120_000))
                 }
             }
+            iteration += 1
         }
 
         if (finalReply.isBlank() && toolResults.isNotEmpty()) {
@@ -219,7 +221,7 @@ internal class MobileCreationConversationAgent(
                 generateArtifact(source, tool, args, config)
             "finalize_creation_session" -> {
                 val validation = localValidation(source)
-                if (!(validation["ready"] as? JsonPrimitive)?.contentOrNull.toBoolean()) {
+                if ((validation["ready"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() != true) {
                     ToolExecution(source, result(tool, "error", "当前立项数据还没有达到正式建档条件", validation))
                 } else {
                     val (updated, projectId) = finalizeSession(source)
@@ -253,7 +255,7 @@ internal class MobileCreationConversationAgent(
         val changes = args["changes"] as? JsonObject ?: JsonObject(emptyMap())
         if (changes.isEmpty()) return ToolExecution(source, result("patch_creation_session", "skipped", "没有可写入的会话变化"))
         val draft = source.objectValue("draft").toMutableMap()
-        val form = draft.objectValue("form").toMutableMap()
+        val form = (draft["form"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         changes.forEach { (key, value) ->
             when (key) {
                 "creation_mode", "author_brief", "author_outline", "locked_requirements", "selected_concept_id", "quick_mode" -> draft[key] = value
@@ -263,7 +265,7 @@ internal class MobileCreationConversationAgent(
             }
         }
         draft["form"] = JsonObject(form)
-        val stages = draft.objectValue("stages").toMutableMap()
+        val stages = (draft["stages"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         val constraints = (stages["constraints"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         constraints["status"] = JsonPrimitive("generated")
         constraints["data"] = JsonObject(form)
@@ -403,7 +405,7 @@ internal class MobileCreationConversationAgent(
         val artifact = args.string("artifact")
         val paths = (args["paths"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
         val draft = source.objectValue("draft").toMutableMap()
-        val locks = draft.objectValue("artifact_locks").toMutableMap()
+        val locks = (draft["artifact_locks"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         val current = (locks[artifact] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toMutableSet()
         if (locked) current.addAll(paths) else current.removeAll(paths.toSet())
         locks[artifact] = JsonArray(current.sorted().map(::JsonPrimitive))

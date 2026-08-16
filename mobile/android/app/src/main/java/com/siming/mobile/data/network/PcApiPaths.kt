@@ -22,6 +22,7 @@ internal object PcApiPaths {
     const val NOVEL_CREATION_SESSIONS = "$NOVEL_CREATION/sessions"
     const val NOVEL_CREATION_START = "$NOVEL_CREATION/start"
     const val NOVEL_CREATION_APPLY = "$NOVEL_CREATION/apply"
+    const val NOVEL_CREATION_AGENT_TURN = "$NOVEL_CREATION/agent-turn"
 
     fun project(projectId: String): String = "$PROJECTS/${segment(projectId)}"
 
@@ -47,9 +48,6 @@ internal object PcApiPaths {
 
     fun novelCreationSession(sessionId: String): String =
         "$NOVEL_CREATION_SESSIONS/${segment(sessionId)}"
-
-    fun novelCreationInterview(sessionId: String): String =
-        "${novelCreationSession(sessionId)}/interview/next"
 
     fun novelCreationRuns(sessionId: String): String =
         "${novelCreationSession(sessionId)}/runs"

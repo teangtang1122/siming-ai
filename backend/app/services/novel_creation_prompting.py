@@ -5,33 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-NOVEL_INTERVIEW_SYSTEM_PROMPT = (
-    "你是与小说作者共同立项的资深策划编辑。你正在进行自然对话式采访。\n"
-    "禁止调用固定问题清单，禁止按预设维度或固定顺序盘问，也不要重复作者已经说过的内容。\n"
-    "请阅读完整上下文，尤其关注作者最新回答，自行判断此刻最值得追问的创作分岔。\n\n"
-    "决策规则：\n"
-    "1. 只有当一个额外答案会实质改变当前创意方向时，才继续提问。\n"
-    "2. 每次最多提出一个问题，措辞要像编辑与作者交谈，并明确承接最新回答。\n"
-    "3. 不要为了填满类型、主角、世界观、篇幅等表格而提问；"
-    "作者没提到的内容可以由后续方案合理创造。\n"
-    "4. 这个对话入口只接受自由文本回答：question.type 必须为 text，"
-    "question.options 必须为 []。不要输出选择题、题材预设或预先写好的答案。\n"
-    "5. 信息已经足以产生一套可继续对话调整的方案时，立即选择 generate。\n\n"
-    "只返回以下两种 JSON 之一：\n"
-    '{"action":"ask_more","reason":"为什么此刻要问",'
-    '"question":{"question":"一个动态问题","purpose":"答案会怎样改变方案",'
-    '"options":[],"type":"text"}}\n'
-    '{"action":"generate","reason":"为什么信息已经足够"}\n'
-    "不要输出 Markdown，不要解释 JSON 之外的内容。"
-)
-
-NOVEL_INTERVIEW_USER_TEMPLATE = (
-    "请根据以下实时立项对话决定下一步。\n"
-    "最新回答：{latest_answer}\n"
-    "完整上下文：{context_json}"
-)
-
-
 COMPACT_CONCEPT_SHAPE: dict[str, Any] = {
     "concepts": [{
         "title": "不超过20字的标题",
@@ -104,35 +77,6 @@ CREATION_REPAIR_USER_TEMPLATE = (
 )
 
 
-def build_novel_interview_messages(
-    *,
-    user_brief: str,
-    history: list[dict[str, str]],
-    genre_label: str = "",
-    target_audience: str = "",
-    platform: str = "",
-) -> list[dict[str, str]]:
-    """Build the exact dynamic-interview messages used by every runtime."""
-    context = {
-        "original_brief": str(user_brief or "").strip(),
-        "known_genre_label": str(genre_label or "").strip(),
-        "known_target_audience": str(target_audience or "").strip(),
-        "known_platform": str(platform or "").strip(),
-        "conversation": history,
-    }
-    latest_answer = history[-1]["answer"] if history else "（尚无回答）"
-    return [
-        {"role": "system", "content": NOVEL_INTERVIEW_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": NOVEL_INTERVIEW_USER_TEMPLATE.format(
-                latest_answer=latest_answer,
-                context_json=json.dumps(context, ensure_ascii=False),
-            ),
-        },
-    ]
-
-
 def build_compact_concept_messages(
     *,
     author_led: bool,
@@ -189,9 +133,6 @@ __all__ = [
     "CREATION_STAGE_USER_PREFIX",
     "CREATION_REPAIR_SYSTEM_PROMPT",
     "CREATION_REPAIR_USER_TEMPLATE",
-    "NOVEL_INTERVIEW_SYSTEM_PROMPT",
-    "NOVEL_INTERVIEW_USER_TEMPLATE",
     "build_compact_concept_messages",
     "build_creation_stage_messages",
-    "build_novel_interview_messages",
 ]

@@ -526,11 +526,11 @@ def migrate_android_repository() -> None:
 
 '''
     text = text[:start] + replacement + text[end:]
-    text = re.sub(
-        r"\n\s*private fun interviewHistoryWithAnswer\([\s\S]*?(?=\n\s*private fun |\n\s*suspend fun |\n\s*fun )",
-        "\n",
+    text = remove_between(
         text,
-        count=1,
+        "    private fun interviewHistoryWithAnswer(",
+        "    private suspend fun saveCreationSession(",
+        "interviewHistoryWithAnswer",
     )
     marker = "    private suspend fun saveCreationSession(session: JsonObject) {"
     helpers = '''    private fun creationAgentHistory(session: JsonObject): List<JsonObject> =

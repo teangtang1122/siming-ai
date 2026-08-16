@@ -56,8 +56,11 @@ from app.services.novel_creation_prompting import (  # noqa: E402
     CREATION_STAGE_USER_PREFIX,
     CREATION_REPAIR_SYSTEM_PROMPT,
     CREATION_REPAIR_USER_TEMPLATE,
-    NOVEL_INTERVIEW_SYSTEM_PROMPT,
-    NOVEL_INTERVIEW_USER_TEMPLATE,
+)
+from app.services.novel_creation_agent import (  # noqa: E402
+    CREATION_AGENT_TOOLS,
+    _system_prompt as creation_agent_system_prompt,
+    _tool_schemas as creation_agent_tool_schemas,
 )
 from app.services.workspace.tools.novel_creation_v2 import _normalize_stage_data  # noqa: E402
 
@@ -413,12 +416,15 @@ def build_contract() -> dict:
             "outline": OUTLINE_NODES_TOOL,
             "world": WORLDBUILDING_ENTRY_TOOL,
         },
+        "creation_agent": {
+            "system_template": creation_agent_system_prompt("{{session_id}}"),
+            "tool_names": sorted(CREATION_AGENT_TOOLS),
+            "tool_schemas": creation_agent_tool_schemas(),
+            "max_iterations": 6,
+        },
         "creation": {
             "schema_version": 3,
             "presets": get_presets(),
-            "interview_max_turns": 8,
-            "interview_system_prompt": NOVEL_INTERVIEW_SYSTEM_PROMPT,
-            "interview_user_template": NOVEL_INTERVIEW_USER_TEMPLATE,
             "stage_order": list(STAGE_ORDER),
             "stage_labels": STAGE_LABELS,
             "impact_dependencies": {

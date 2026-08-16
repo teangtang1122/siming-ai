@@ -143,6 +143,7 @@ class DirectApiClient(
         toolChoice: String? = null,
         maxOutputTokens: Int = 4_000,
         temperature: Double = 0.3,
+        extraBody: JsonObject? = null,
     ): DirectAgentTurn {
         validateConfig(config)
         val protocol = if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
@@ -159,9 +160,9 @@ class DirectApiClient(
         for (endpoint in endpointCandidates(config.baseUrl, path)) {
             try {
                 val payload = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
-                    responsesAgentPayload(config, messages, tools, toolChoice, maxOutputTokens, temperature)
+                    responsesAgentPayload(config, messages, tools, toolChoice, maxOutputTokens, temperature, extraBody)
                 } else {
-                    chatAgentPayload(config, messages, tools, toolChoice, maxOutputTokens, temperature)
+                    chatAgentPayload(config, messages, tools, toolChoice, maxOutputTokens, temperature, extraBody)
                 }
                 val response = executeWithRetry(endpoint, config.apiKey, json.encodeToString(payload))
                 if (response.statusCode in PATH_FALLBACK_STATUS_CODES) continue
@@ -228,6 +229,7 @@ class DirectApiClient(
         toolChoice: String?,
         maxOutputTokens: Int,
         temperature: Double,
+        extraBody: JsonObject?,
     ): JsonObject = buildJsonObject {
         put("model", config.model.trim())
         put("messages", JsonArray(messages))
@@ -236,6 +238,7 @@ class DirectApiClient(
         put("temperature", temperature)
         put("max_tokens", maxOutputTokens)
         put("stream", false)
+        extraBody?.forEach { (key, value) -> put(key, value) }
     }
 
     private fun responsesAgentPayload(
@@ -245,6 +248,7 @@ class DirectApiClient(
         toolChoice: String?,
         maxOutputTokens: Int,
         temperature: Double,
+        extraBody: JsonObject?,
     ): JsonObject {
         val system = messages.firstOrNull { it.string("role") == "system" }?.string("content").orEmpty()
         val input = buildJsonArray {
@@ -300,6 +304,7 @@ class DirectApiClient(
             put("temperature", temperature)
             put("max_output_tokens", maxOutputTokens)
             put("stream", false)
+            extraBody?.forEach { (key, value) -> put(key, value) }
         }
     }
 

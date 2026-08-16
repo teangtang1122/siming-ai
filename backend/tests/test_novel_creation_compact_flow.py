@@ -36,13 +36,12 @@ from app.services.novel_creation_workspace import (
     save_stage,
     serialize_creation_artifact,
 )
-from app.services.workspace.tools.novel_creation import advance_novel_creation_interview, apply_novel_blueprint
+from app.services.workspace.tools.novel_creation import apply_novel_blueprint
 from app.services.workspace.tools.novel_creation_v2 import (
     AuthorLockViolation,
     _validate_author_requirements,
     generate_novel_creation_stage,
 )
-from app.services.novel_creation_interview import INTERVIEW_CLI_TIMEOUT_SECONDS
 from app.services.operation_runtime import input_snapshot_hash
 
 
@@ -102,116 +101,6 @@ def _concepts():
         }
         for index in range(1, 2)
     ]
-
-
-def test_interview_ready_state_never_calls_full_blueprint_generation():
-    db = _db()
-    session = _session(db)
-    with patch(
-        "app.services.workspace.tools.novel_creation._evaluate_answers",
-        new=AsyncMock(return_value={"action": "generate", "reason": "enough context"}),
-    ):
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "user_brief": session.user_brief,
-            "qa_history": [{"question": "What should shock readers?", "answer": "A devastating reversal."}],
-            "model": "openai:test",
-        }))
-
-    assert result["status"] == "ok"
-    assert result["data"]["state"] == "ready"
-    assert session.blueprint_json is None
-    assert session.draft_json["interview"]["status"] == "completed"
-
-
-def test_skip_interview_preserves_history_without_model_call():
-    db = _db()
-    session = _session(db)
-    with patch("app.services.workspace.tools.novel_creation._evaluate_answers", new=AsyncMock()) as evaluate:
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "qa_history": [{"question": "What should shock readers?", "answer": "A devastating reversal."}],
-            "skip_questions": True,
-        }))
-
-    assert result["data"]["state"] == "ready"
-    assert result["data"]["skipped"] is True
-    assert session.draft_json["interview"]["history"]
-    evaluate.assert_not_awaited()
-
-
-def test_interview_runtime_reports_the_selected_model_and_cli_timeout():
-    db = _db()
-    session = _session(db)
-    selection = SimpleNamespace(
-        model="codex_cli:codex-cli",
-        provider="codex_cli",
-        source="explicit",
-    )
-    with patch(
-        "app.services.workspace.tools.novel_creation._run_dynamic_interview",
-        new=AsyncMock(return_value=(None, "", False)),
-    ), patch(
-        "app.services.workspace.tools.novel_creation.LLMGateway.select_model_for_task",
-        return_value=selection,
-    ), patch(
-        "app.services.workspace.tools.novel_creation.is_local_cli_provider",
-        return_value=True,
-    ):
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "model": "codex_cli:codex-cli",
-        }))
-
-    runtime = result["data"]["runtime"]
-    assert result["status"] == "ok"
-    assert runtime == {
-        "effective_model": "codex_cli:codex-cli",
-        "provider": "codex_cli",
-        "model_source": "conversation_override",
-        "tool_mode": "local_cli_text_json",
-        "timeout_seconds": INTERVIEW_CLI_TIMEOUT_SECONDS,
-        "quota_status": "unknown",
-    }
-
-
-def test_interview_runtime_marks_quota_failure_without_losing_recovery_guidance():
-    db = _db()
-    session = _session(db)
-    selection = SimpleNamespace(
-        model="opencode_cli:free-model",
-        provider="opencode_cli",
-        source="explicit",
-    )
-    failed_interview = {
-        "status": "interview_failed",
-        "detail": "Free usage exceeded, retrying in 9h",
-        "data": {
-            "failure_class": "quota_or_rate_limit",
-            "next_action": "切换有额度的模型后重试。",
-        },
-    }
-    with patch(
-        "app.services.workspace.tools.novel_creation._run_dynamic_interview",
-        new=AsyncMock(return_value=(failed_interview, "", False)),
-    ), patch(
-        "app.services.workspace.tools.novel_creation.LLMGateway.select_model_for_task",
-        return_value=selection,
-    ), patch(
-        "app.services.workspace.tools.novel_creation.is_local_cli_provider",
-        return_value=True,
-    ):
-        result = asyncio.run(advance_novel_creation_interview(db, "", {
-            "session_id": session.id,
-            "model": "opencode_cli:free-model",
-        }))
-
-    runtime = result["data"]["runtime"]
-    assert result["status"] == "error"
-    assert runtime["effective_model"] == "opencode_cli:free-model"
-    assert runtime["failure_class"] == "quota_or_rate_limit"
-    assert runtime["quota_status"] == "exhausted_or_limited"
-    assert runtime["next_action"] == "切换有额度的模型后重试。"
 
 
 def test_compact_concept_run_limits_output_and_keeps_legacy_blueprints_empty():

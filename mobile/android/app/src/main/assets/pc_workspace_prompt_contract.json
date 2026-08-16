@@ -1622,6 +1622,1278 @@
       }
     }
   },
+  "creation_agent": {
+    "system_template": "你是司命的对话式立项助手。当前 creation session_id={{session_id}}。\n所有世界观、角色、关系、地点、势力、分卷、章节细纲、场景细纲和创作约束都必须通过工具读取和修改。\n你可以按任意顺序工作；不要强迫用户走固定阶段。缺少软依赖时说明影响，但不要阻止用户。\n每轮先读取会话及相关 artifact/entity，结合当前数据缺口决定下一步，再自行调用零到多个工具。\n如果用户给出了新事实、偏好或回答，先把能确定的内容立即增量写入对应结构化数据，再提出一个最有价值的后续问题；不要把数据积攒到“采访结束”后才生成。\n用户对你上一轮问题的简短回答也是有效的新事实。只要含义足够明确，本轮必须至少调用一次 patch_creation_session、patch_creation_artifact、entity 写入或生成工具；不能只反复读取后声称已经保存。\n提问必须基于刚读取到的现有数据，避免重复询问已经存在的内容。用户可以随时跳到世界观、角色、地点、势力、分卷或章节细纲，不能在创意阶段结束后停止协作。\n用户要求新增对象时，把完整自然语言要求放入 instruction；对象数量由用户语义决定，不要假定固定数量。\n局部请求优先使用 entity 工具或带 entity_type/entity_id 的生成工具，不要重写整个 artifact。\n写入必须使用刚读取到的 revision；不得改动锁定字段，不得用旧结果覆盖人工新修改。\n只有用户明确要求创建正式作品时才调用 finalize_creation_session。\n工具返回 running 表示后台任务已经可靠创建，不要重复调用；告诉用户任务已开始即可。\n完成工具调用后，用简洁中文说明读取了什么、修改/启动了什么、保留了什么以及可能受影响的数据。",
+    "tool_names": [
+      "apply_creation_import",
+      "cancel_creation_operation",
+      "confirm_creation_artifact",
+      "delete_creation_entity",
+      "finalize_creation_session",
+      "generate_creation_artifact",
+      "get_creation_artifact",
+      "get_creation_artifact_diff",
+      "get_creation_dependencies",
+      "get_creation_dependency_graph",
+      "get_creation_entity",
+      "get_creation_operation",
+      "get_creation_session",
+      "get_creation_snapshot",
+      "list_creation_artifact_versions",
+      "list_creation_artifacts",
+      "list_creation_entities",
+      "lock_creation_fields",
+      "patch_creation_artifact",
+      "patch_creation_entity",
+      "patch_creation_session",
+      "pause_creation_operation",
+      "preview_creation_import",
+      "refine_creation_artifact",
+      "regenerate_creation_artifact",
+      "restore_creation_artifact_version",
+      "resume_creation_operation",
+      "retry_creation_operation",
+      "undo_creation_artifact",
+      "unlock_creation_fields",
+      "validate_creation_consistency",
+      "validate_creation_session"
+    ],
+    "tool_schemas": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_session",
+          "description": "Read the canonical creation session, including its scope, revision, workflow states, and provenance.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "GetNovelCreationSessionInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_snapshot",
+          "description": "Read an immutable revision-oriented snapshot of the session and all current artifact summaries.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "GetNovelCreationSessionInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_operation",
+          "description": "Read one durable creation Operation by operation ID or stage run ID, including progress and events.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "operation_id": {
+                "default": "",
+                "title": "Operation Id",
+                "type": "string"
+              },
+              "run_id": {
+                "default": "",
+                "title": "Run Id",
+                "type": "string"
+              }
+            },
+            "title": "GetCreationOperationInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_artifact",
+          "description": "Read one structured creation artifact with status, provenance, locks, and active operation.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact"
+            ],
+            "title": "CreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_creation_artifacts",
+          "description": "List all structured artifacts in a creation session with their current workflow state.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "ListCreationArtifactsInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_dependencies",
+          "description": "Inspect blockers and downstream artifacts that may become stale when one artifact changes.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact"
+            ],
+            "title": "CreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_dependency_graph",
+          "description": "Read the complete artifact and entity dependency graph for a creation session.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "ListCreationArtifactsInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "validate_creation_consistency",
+          "description": "Run deterministic referential and stale-data checks without changing the creation draft.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "ListCreationArtifactsInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "patch_creation_artifact",
+          "description": "Atomically apply lock-aware JSON Pointer changes to one creation artifact and return an impact summary.",
+          "parameters": {
+            "$defs": {
+              "CreationPatchOperation": {
+                "additionalProperties": true,
+                "properties": {
+                  "action": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "set",
+                          "replace",
+                          "append",
+                          "remove",
+                          "resize"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "司命 Patch 动作。向数组末尾增加元素时使用 append，并把 path 指向数组本身；也接受标准 JSON Patch 的 op 字段。",
+                    "title": "Action"
+                  },
+                  "op": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "add",
+                          "replace",
+                          "remove"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "兼容标准 JSON Patch。add 到 /- 会自动转换为 append；add 到对象字段会转换为 set。action 与 op 二选一。",
+                    "title": "Op"
+                  },
+                  "path": {
+                    "description": "目标 JSON Pointer，例如 /special_requirements 或 /volumes/0/title",
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "value": {
+                    "default": null,
+                    "description": "set、replace、append 或 add 写入的值",
+                    "title": "Value"
+                  },
+                  "target_count": {
+                    "anyOf": [
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "resize 的目标数组长度",
+                    "title": "Target Count"
+                  },
+                  "fill_value": {
+                    "default": null,
+                    "description": "resize 扩展数组时使用的填充值",
+                    "title": "Fill Value"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "CreationPatchOperation",
+                "type": "object"
+              }
+            },
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "changes": {
+                "items": {
+                  "$ref": "#/$defs/CreationPatchOperation"
+                },
+                "title": "Changes",
+                "type": "array"
+              },
+              "source": {
+                "default": "assistant",
+                "title": "Source",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision",
+              "changes"
+            ],
+            "title": "PatchCreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "patch_creation_session",
+          "description": "Atomically patch session-level form, interview, model, or selected-concept fields with revision protection.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "changes": {
+                "additionalProperties": true,
+                "title": "Changes",
+                "type": "object"
+              }
+            },
+            "required": [
+              "session_id",
+              "expected_revision",
+              "changes"
+            ],
+            "title": "PatchCreationSessionInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "lock_creation_fields",
+          "description": "Lock JSON Pointer paths in one creation artifact so later assistant patches cannot modify them.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "paths": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Paths",
+                "type": "array"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision",
+              "paths"
+            ],
+            "title": "CreationArtifactLockInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "unlock_creation_fields",
+          "description": "Remove selected JSON Pointer locks from one creation artifact.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "paths": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Paths",
+                "type": "array"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision",
+              "paths"
+            ],
+            "title": "CreationArtifactLockInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "undo_creation_artifact",
+          "description": "Undo the most recent saved change to one creation artifact using its durable checkpoint.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision"
+            ],
+            "title": "UndoCreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_creation_entities",
+          "description": "List independently addressable characters, relationships, locations, factions, volumes, chapters, and scenes in a creation session.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "default": "",
+                "title": "Artifact",
+                "type": "string"
+              },
+              "entity_type": {
+                "default": "",
+                "title": "Entity Type",
+                "type": "string"
+              },
+              "include_deleted": {
+                "default": false,
+                "title": "Include Deleted",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "ListCreationEntitiesInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_entity",
+          "description": "Read one objectized creation entity with provenance and revision metadata.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "entity_id": {
+                "title": "Entity Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "entity_id"
+            ],
+            "title": "CreationEntityInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "patch_creation_entity",
+          "description": "Atomically patch one creation entity while preserving the rest of its artifact and marking dependents stale.",
+          "parameters": {
+            "$defs": {
+              "CreationPatchOperation": {
+                "additionalProperties": true,
+                "properties": {
+                  "action": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "set",
+                          "replace",
+                          "append",
+                          "remove",
+                          "resize"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "司命 Patch 动作。向数组末尾增加元素时使用 append，并把 path 指向数组本身；也接受标准 JSON Patch 的 op 字段。",
+                    "title": "Action"
+                  },
+                  "op": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "add",
+                          "replace",
+                          "remove"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "兼容标准 JSON Patch。add 到 /- 会自动转换为 append；add 到对象字段会转换为 set。action 与 op 二选一。",
+                    "title": "Op"
+                  },
+                  "path": {
+                    "description": "目标 JSON Pointer，例如 /special_requirements 或 /volumes/0/title",
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "value": {
+                    "default": null,
+                    "description": "set、replace、append 或 add 写入的值",
+                    "title": "Value"
+                  },
+                  "target_count": {
+                    "anyOf": [
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "resize 的目标数组长度",
+                    "title": "Target Count"
+                  },
+                  "fill_value": {
+                    "default": null,
+                    "description": "resize 扩展数组时使用的填充值",
+                    "title": "Fill Value"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "title": "CreationPatchOperation",
+                "type": "object"
+              }
+            },
+            "additionalProperties": true,
+            "properties": {
+              "entity_id": {
+                "title": "Entity Id",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "changes": {
+                "items": {
+                  "$ref": "#/$defs/CreationPatchOperation"
+                },
+                "title": "Changes",
+                "type": "array"
+              },
+              "source": {
+                "default": "assistant",
+                "title": "Source",
+                "type": "string"
+              }
+            },
+            "required": [
+              "entity_id",
+              "expected_revision",
+              "changes"
+            ],
+            "title": "PatchCreationEntityInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "delete_creation_entity",
+          "description": "Soft-delete one creation entity and valid dependent relations; version history remains restorable.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "entity_id": {
+                "title": "Entity Id",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "source": {
+                "default": "assistant",
+                "title": "Source",
+                "type": "string"
+              }
+            },
+            "required": [
+              "entity_id",
+              "expected_revision"
+            ],
+            "title": "DeleteCreationEntityInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_creation_artifact_versions",
+          "description": "List the complete immutable history for one creation artifact.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "limit": {
+                "default": 100,
+                "title": "Limit",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact"
+            ],
+            "title": "ListArtifactVersionsInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_creation_artifact_diff",
+          "description": "Compare one artifact version with its parent or another version using deterministic JSON Pointer changes.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "version_id": {
+                "title": "Version Id",
+                "type": "string"
+              },
+              "against_version_id": {
+                "default": "",
+                "title": "Against Version Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "version_id"
+            ],
+            "title": "ArtifactVersionDiffInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "restore_creation_artifact_version",
+          "description": "Restore a validated historical artifact snapshot without deleting newer history.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "version_id": {
+                "title": "Version Id",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version_id",
+              "expected_revision"
+            ],
+            "title": "RestoreArtifactVersionInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "confirm_creation_artifact",
+          "description": "Confirm exactly one current artifact. This operation never generates the current or next artifact.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "data": {
+                "additionalProperties": true,
+                "title": "Data",
+                "type": "object"
+              },
+              "source": {
+                "default": "assistant",
+                "enum": [
+                  "author",
+                  "assistant",
+                  "external_agent"
+                ],
+                "title": "Source",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision"
+            ],
+            "title": "ConfirmCreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "generate_creation_artifact",
+          "description": "Generate one artifact or one new entity inside an artifact as a durable revision-protected run. When artifact is concepts or all, model must name an available Siming model; the external MCP client's own model is not inherited. To use the MCP client's current model, generate the structured artifact in the client and save it with patch_creation_artifact instead.",
+          "parameters": {
+            "additionalProperties": true,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "artifact": {
+                      "enum": [
+                        "all",
+                        "concepts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "artifact"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "model": {
+                      "minLength": 1
+                    },
+                    "use_model": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "model"
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "model": {
+                "default": "",
+                "description": "Required when stage or artifact is concepts or all; optional for other deterministic targets. Pass a model identity already configured and tested in Siming. The model used by the external MCP client is not inherited.",
+                "title": "Model",
+                "type": "string"
+              },
+              "use_model": {
+                "default": true,
+                "description": "Must be true when artifact is concepts or all.",
+                "title": "Use Model",
+                "type": "boolean"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "entity_type": {
+                "default": "",
+                "title": "Entity Type",
+                "type": "string"
+              },
+              "instruction": {
+                "default": "",
+                "title": "Instruction",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision"
+            ],
+            "title": "GenerateCreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "refine_creation_artifact",
+          "description": "Refine only the requested artifact or entity while preserving locks and unrelated structured data. When artifact is concepts or all, model must name an available Siming model; the external MCP client's own model is not inherited. To use the MCP client's current model, refine the structured artifact in the client and save it with patch_creation_artifact instead.",
+          "parameters": {
+            "additionalProperties": true,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "artifact": {
+                      "enum": [
+                        "all",
+                        "concepts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "artifact"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "model": {
+                      "minLength": 1
+                    },
+                    "use_model": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "model"
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "model": {
+                "default": "",
+                "description": "Required when stage or artifact is concepts or all; optional for other deterministic targets. Pass a model identity already configured and tested in Siming. The model used by the external MCP client is not inherited.",
+                "title": "Model",
+                "type": "string"
+              },
+              "use_model": {
+                "default": true,
+                "description": "Must be true when artifact is concepts or all.",
+                "title": "Use Model",
+                "type": "boolean"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "instruction": {
+                "title": "Instruction",
+                "type": "string"
+              },
+              "entity_id": {
+                "default": "",
+                "title": "Entity Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision",
+              "instruction"
+            ],
+            "title": "RefineCreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "regenerate_creation_artifact",
+          "description": "Regenerate only the selected artifact or entity using a new durable run and a new idempotency context. When artifact is concepts or all, model must name an available Siming model; the external MCP client's own model is not inherited. To use the MCP client's current model, regenerate the structured artifact in the client and save it with patch_creation_artifact instead.",
+          "parameters": {
+            "additionalProperties": true,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "artifact": {
+                      "enum": [
+                        "all",
+                        "concepts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "artifact"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "model": {
+                      "minLength": 1
+                    },
+                    "use_model": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "model"
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "artifact": {
+                "title": "Artifact",
+                "type": "string"
+              },
+              "model": {
+                "default": "",
+                "description": "Required when stage or artifact is concepts or all; optional for other deterministic targets. Pass a model identity already configured and tested in Siming. The model used by the external MCP client is not inherited.",
+                "title": "Model",
+                "type": "string"
+              },
+              "use_model": {
+                "default": true,
+                "description": "Must be true when artifact is concepts or all.",
+                "title": "Use Model",
+                "type": "boolean"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              },
+              "instruction": {
+                "default": "",
+                "title": "Instruction",
+                "type": "string"
+              },
+              "entity_id": {
+                "default": "",
+                "title": "Entity Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "artifact",
+              "expected_revision"
+            ],
+            "title": "RegenerateCreationArtifactInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "cancel_creation_operation",
+          "description": "Cancel a running creation operation and prevent unfinished data from being written.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "operation_id": {
+                "title": "Operation Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id"
+            ],
+            "title": "CreationOperationInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "pause_creation_operation",
+          "description": "Pause a creation operation at its supported checkpoint.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "operation_id": {
+                "title": "Operation Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id"
+            ],
+            "title": "CreationOperationInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "resume_creation_operation",
+          "description": "Resume a paused creation operation from its retained checkpoint.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "operation_id": {
+                "title": "Operation Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id"
+            ],
+            "title": "CreationOperationInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "retry_creation_operation",
+          "description": "Retry the current failed unit of a creation operation without replaying completed units.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "operation_id": {
+                "title": "Operation Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id"
+            ],
+            "title": "CreationOperationInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "validate_creation_session",
+          "description": "Run the canonical dependency, stale-data, and referential consistency validation before finalization.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "GetNovelCreationSessionInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "finalize_creation_session",
+          "description": "Validate and idempotently convert a confirmed creation session into a formal Siming project.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ],
+            "title": "GetNovelCreationSessionInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "preview_creation_import",
+          "description": "Read durable import progress, extracted candidates, conflicts, and provenance before any creation data is written.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "session_id": {
+                "title": "Session Id",
+                "type": "string"
+              },
+              "import_id": {
+                "title": "Import Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "import_id"
+            ],
+            "title": "PreviewCreationImportInput",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "apply_creation_import",
+          "description": "Atomically apply selected import candidates with revision, confirmation, and lock protection.",
+          "parameters": {
+            "additionalProperties": true,
+            "properties": {
+              "import_id": {
+                "title": "Import Id",
+                "type": "string"
+              },
+              "selected_artifacts": {
+                "items": {
+                  "enum": [
+                    "world_style",
+                    "characters",
+                    "locations",
+                    "macro_outline",
+                    "opening_outline"
+                  ],
+                  "type": "string"
+                },
+                "title": "Selected Artifacts",
+                "type": "array"
+              },
+              "strategy": {
+                "default": "merge",
+                "enum": [
+                  "merge",
+                  "overwrite_unconfirmed",
+                  "skip_conflicts"
+                ],
+                "title": "Strategy",
+                "type": "string"
+              },
+              "expected_revision": {
+                "title": "Expected Revision",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "import_id",
+              "selected_artifacts",
+              "expected_revision"
+            ],
+            "title": "ApplyCreationImportInput",
+            "type": "object"
+          }
+        }
+      }
+    ],
+    "max_iterations": 6
+  },
   "creation": {
     "schema_version": 3,
     "presets": {
@@ -2148,9 +3420,6 @@
         "final_review": "最终审阅"
       }
     },
-    "interview_max_turns": 8,
-    "interview_system_prompt": "你是与小说作者共同立项的资深策划编辑。你正在进行自然对话式采访。\n禁止调用固定问题清单，禁止按预设维度或固定顺序盘问，也不要重复作者已经说过的内容。\n请阅读完整上下文，尤其关注作者最新回答，自行判断此刻最值得追问的创作分岔。\n\n决策规则：\n1. 只有当一个额外答案会实质改变当前创意方向时，才继续提问。\n2. 每次最多提出一个问题，措辞要像编辑与作者交谈，并明确承接最新回答。\n3. 不要为了填满类型、主角、世界观、篇幅等表格而提问；作者没提到的内容可以由后续方案合理创造。\n4. 这个对话入口只接受自由文本回答：question.type 必须为 text，question.options 必须为 []。不要输出选择题、题材预设或预先写好的答案。\n5. 信息已经足以产生一套可继续对话调整的方案时，立即选择 generate。\n\n只返回以下两种 JSON 之一：\n{\"action\":\"ask_more\",\"reason\":\"为什么此刻要问\",\"question\":{\"question\":\"一个动态问题\",\"purpose\":\"答案会怎样改变方案\",\"options\":[],\"type\":\"text\"}}\n{\"action\":\"generate\",\"reason\":\"为什么信息已经足够\"}\n不要输出 Markdown，不要解释 JSON 之外的内容。",
-    "interview_user_template": "请根据以下实时立项对话决定下一步。\n最新回答：{latest_answer}\n完整上下文：{context_json}",
     "stage_order": [
       "constraints",
       "concepts",
@@ -3908,5 +5177,5 @@
       }
     }
   },
-  "source_sha256": "204951fccc40ebfeb8dccf34f3bf67c94c3c8e66988d07942a122852fbe04078"
+  "source_sha256": "fe140020e0f035be3bdcc79631b145a8b684616cc21b5b2eb1d8667981da43f4"
 }

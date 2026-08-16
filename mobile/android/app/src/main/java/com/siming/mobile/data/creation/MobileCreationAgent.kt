@@ -110,101 +110,6 @@ internal class MobileCreationAgent(
         }
     }
 
-    suspend fun interview(
-        source: JsonObject,
-        answer: String?,
-        skip: Boolean,
-        config: DirectApiConfig,
-    ): JsonObject {
-        val draft = source.objectValue("draft")
-        val existingInterview = draft.objectValue("interview")
-        val history = (existingInterview["history"] as? JsonArray).orEmpty().toMutableList()
-        val pending = existingInterview["pending_question"] as? JsonObject
-        if (!answer.isNullOrBlank() && pending != null) {
-            history += buildJsonObject {
-                put("question", pending.string("question"))
-                put("answer", answer.trim())
-            }
-        }
-        val historyArray = JsonArray(history)
-        if (skip || history.size >= contract.interviewMaxTurns) {
-            return withInterview(
-                source,
-                historyArray,
-                status = if (skip) "skipped" else "completed",
-                reason = if (skip) "用户要求跳过采访并直接生成方案。" else "动态采访已达到安全轮次上限，使用现有回答进入方案生成。",
-                model = config.model,
-            )
-        }
-
-        val (system, user) = contract.interviewMessages(source, historyArray)
-        val interviewExtraBody = if (config.isDeepSeek()) buildJsonObject {
-            put("thinking", buildJsonObject { put("type", "disabled") })
-        } else null
-        var raw = ""
-        val decision = try {
-            raw = directApi.complete(
-                config,
-                system,
-                user,
-                maxOutputTokens = 900,
-                temperature = 0.6,
-                extraBody = interviewExtraBody,
-            )
-            try {
-                MobileCreationInterviewReliability.parseDecision(raw, historyArray)
-            } catch (initialError: MobileInterviewDecisionException) {
-                if (!initialError.repairable) throw initialError
-                val retryUser = MobileCreationInterviewReliability.retryUserPrompt(
-                    user,
-                    raw,
-                    initialError.message.orEmpty(),
-                )
-                raw = directApi.complete(
-                    config,
-                    system,
-                    retryUser,
-                    maxOutputTokens = 900,
-                    temperature = 0.0,
-                    extraBody = interviewExtraBody,
-                )
-                MobileCreationInterviewReliability.parseDecision(raw, historyArray)
-            }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            val failure = MobileCreationInterviewReliability.failure(error, raw)
-            return withInterview(
-                source,
-                historyArray,
-                status = "failed",
-                reason = failure.message,
-                model = config.model,
-                failure = failure,
-            )
-        }
-
-        return when (decision.string("action")) {
-            "generate" -> withInterview(
-                source,
-                historyArray,
-                status = "completed",
-                reason = decision.string("reason").ifBlank { "模型判断信息已足够。" },
-                model = config.model,
-            )
-            "ask_more" -> withInterview(
-                source,
-                historyArray,
-                status = "awaiting_answer",
-                reason = decision.string("reason"),
-                model = config.model,
-                pendingQuestion = decision["question"] as? JsonObject
-                    ?: error("动态采访规范化结果缺少问题"),
-            )
-            else -> error("动态采访规范化结果缺少有效决策")
-        }
-    }
-
     suspend fun generateStage(
     source: JsonObject,
     stage: String,
@@ -391,6 +296,18 @@ private fun safeConceptCard(draft: JsonObject): JsonObject {
     }
 }
 
+    internal fun replaceArtifact(
+        source: JsonObject,
+        stage: String,
+        data: JsonObject,
+        sourceLabel: String = "assistant",
+    ): JsonObject {
+        require(stage in contract.stageOrder) { "未知立项阶段" }
+        validateStage(stage, data)
+        validateAuthorRequirements(stage, data, baseline(source, stage), source.objectValue("draft"))
+        return writeStage(source, stage, data, status = "generated", sourceLabel = sourceLabel)
+    }
+
     fun confirmStage(source: JsonObject, stage: String, editedData: JsonObject? = null): JsonObject {
         require(stage in contract.stageOrder) { "未知立项阶段" }
         val current = source.objectValue("draft").objectValue("stages").objectValue(stage)
@@ -417,34 +334,6 @@ private fun safeConceptCard(draft: JsonObject): JsonObject {
             put("updated_at", JsonPrimitive(Instant.now().toString()))
         },
     )
-
-    private fun withInterview(
-        source: JsonObject,
-        history: JsonArray,
-        status: String,
-        reason: String,
-        model: String,
-        pendingQuestion: JsonObject? = null,
-        failure: MobileInterviewFailure? = null,
-    ): JsonObject = updateDraft(source) { draft ->
-        draft["interview"] = buildJsonObject {
-            put("mode", "dynamic_model")
-            put("status", status)
-            put("history", history)
-            put("pending_question", pendingQuestion ?: JsonNull)
-            put("model", model)
-            put("reason", reason)
-            if (failure != null) {
-                put("failure_class", failure.failureClass)
-                put("next_action", failure.nextAction)
-                put("error_message", failure.message)
-                if (failure.rawResponsePreview.isNotBlank()) {
-                    put("raw_response_preview", failure.rawResponsePreview)
-                }
-            }
-            put("updated_at", Instant.now().toString())
-        }
-    }
 
     private fun writeStage(
         source: JsonObject,

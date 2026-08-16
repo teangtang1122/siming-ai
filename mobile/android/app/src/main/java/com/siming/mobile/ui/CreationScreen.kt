@@ -119,18 +119,16 @@ internal fun CreationScreen(
         ui.activeCreationId != null && active == null -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
-        active != null -> CreationWorkspace(
+        active != null -> CreationConversationWorkspace(
             modifier = modifier,
             session = active,
             stages = stages,
             running = ui.creationRunning,
             activity = ui.creationActivity,
             onBack = viewModel::closeCreation,
-            onAnswer = { answer, skip -> viewModel.answerCreationInterview(active.string("id"), answer, skip) },
-            onGenerate = { stage, instruction -> viewModel.generateCreationStage(active.string("id"), stage, instruction) },
-            onConfirm = { stage, edited -> viewModel.confirmCreationStage(active.string("id"), stage, edited) },
-            onArchive = { viewModel.archiveCreation(active.string("id"), onOpenProject) },
+            onSend = { message -> viewModel.sendCreationMessage(active.string("id"), message) },
             onDiscard = { viewModel.discardCreation(active.string("id")) },
+            onOpenProject = onOpenProject,
         )
         else -> CreationLanding(
             modifier = modifier,
@@ -222,7 +220,7 @@ private fun CreationLanding(
                 ChoiceCard(
                     selected = creationMode == "explore",
                     title = "帮我探索",
-                    detail = "AI 通过追问，与我一起找到可持续的创意",
+                    detail = "AI 边聊边写入资料，与我一起找到可持续的创意",
                     icon = Icons.Outlined.AutoAwesome,
                     modifier = Modifier.weight(1f),
                     onClick = { creationMode = "explore" },
@@ -358,7 +356,7 @@ private fun CreationLanding(
         item {
             Text("选择 AI 线路", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Text(
-                "有 Gateway 时可随时选电脑配置或手机 Key；两条线路使用同一套 V3 提示词和建档结构。",
+                "有 Gateway 时可随时选电脑配置或手机 Key；两条线路使用同一套对话式 Creation Agent 提示词、工具和建档结构。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -390,7 +388,7 @@ private fun CreationLanding(
                     badge = when {
                         directApi == null -> "去配置"
                         connection != null -> "PC 原生流程"
-                        else -> "PC 同源提示词"
+                        else -> "PC 同源 Agent"
                     },
                     onClick = {
                         if (directApi == null) onConfigureApi() else route = CreationExecutionRoute.MobileKey
@@ -433,7 +431,7 @@ private fun CreationLanding(
         }
         item {
             Text(
-                "接下来 AI 会动态采访 → 生成一套创意方向 → 搭建世界、角色、地点与卷纲 → 你可以先建档，也可以继续生成可选的前三章细纲。",
+                "接下来直接进入对话式立项：AI 每轮先读当前资料，把确定事实立即写入，再问最有价值的下一件事；角色、世界观和大纲不再有强制顺序。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -471,12 +469,12 @@ private fun CreationHero() {
                 }
                 Text("一句话，和 AI 一起立项", color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    "不是空白纸，也不是手写建档。司命会追问真正影响故事的分岔，再把结果变成可编辑、可确认、可正式入库的作品资料。",
+                    "不是空白纸，也不是手写建档。司命会像 PC 端一样边聊边读取和写入作品资料；你每确认一个事实，它就立即进入结构化草稿。",
                     color = Color.White.copy(alpha = 0.82f),
                     lineHeight = 22.sp,
                 )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    listOf("动态采访", "结构化生成", "逐步可撤回", "一键建档").forEach {
+                    listOf("即时写入", "按需追问", "任意顺序", "一键建档").forEach {
                         Surface(color = Color.White.copy(alpha = 0.1f), shape = RoundedCornerShape(12.dp)) {
                             Text(it, color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp))
                         }

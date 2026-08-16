@@ -36,7 +36,6 @@ internal class PcCreationPromptContract private constructor(
     internal constructor(contractJson: String) : this(parseCreation(contractJson))
 
     val schemaVersion: Int = creation.primitive("schema_version").toIntOrNull() ?: 3
-    val interviewMaxTurns: Int = creation.primitive("interview_max_turns").toIntOrNull() ?: 8
     val stageOrder: List<String> = (creation["stage_order"] as JsonArray)
         .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
     val stageLabels: Map<String, String> = (creation["stage_labels"] as JsonObject)
@@ -63,36 +62,17 @@ internal class PcCreationPromptContract private constructor(
                 )
             }
 
-    fun interviewMessages(session: JsonObject, history: JsonArray): Pair<String, String> {
-        val form = session.draft().objectValue("form")
-        val latestAnswer = (history.lastOrNull() as? JsonObject)?.string("answer")
-            ?.ifBlank { null } ?: "（尚无回答）"
-        val context = buildJsonObject {
-            put("original_brief", session.string("user_brief"))
-            put("known_genre_label", session.string("genre").ifBlank { form.string("genre") })
-            put("known_target_audience", session.string("target_audience").ifBlank { form.string("target_audience") })
-            put("known_platform", session.string("platform").ifBlank { form.string("platform") })
-            put("conversation", history)
-        }
-        return creation.string("interview_system_prompt") to
-            creation.string("interview_user_template").fill(
-                "latest_answer" to latestAnswer,
-                "context_json" to pythonJson(context),
-            )
-    }
-
     fun conceptMessages(session: JsonObject, instruction: String = ""): Pair<String, String> {
         val draft = session.draft()
         val mode = if (draft.string("creation_mode") == "author_led") "author_led" else "explore"
-        val interview = draft.objectValue("interview")
         val conceptState = draft.stages().objectValue("concepts")
         val context = buildJsonObject {
             put("brief", session.string("user_brief"))
             put("form", draft.objectValue("form"))
             put("author_source", authorSource(draft))
             put("current_stage_data", conceptState["data"] ?: JsonNull)
-            put("interview_history", interview["history"] ?: JsonArray(emptyList()))
-            put("interview_reason", interview.string("reason"))
+            put("interview_history", draft["agent_history"] ?: JsonArray(emptyList()))
+            put("interview_reason", "")
             put("refinement_instruction", instruction)
             put("entity_target", JsonNull)
         }
