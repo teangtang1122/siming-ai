@@ -114,7 +114,7 @@ def test_headless_model_executor_rejects_local_cli(monkeypatch):
 
 def _paired_owner(service: GatewayService):
     started = service.start_pairing(
-        gateway_url="http://192.168.1.20:8000",
+        gateway_url="http://192.168.1.20:8521",
         created_from="127.0.0.1",
     )
     request = PairingCompleteRequest(
