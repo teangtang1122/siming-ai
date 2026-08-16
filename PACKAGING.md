@@ -1,107 +1,160 @@
-# Windows 可执行程序打包
+# Windows 安装与发布
 
-## 生成 exe
+## 推荐分发方式
 
-在项目根目录运行：
+PC 正式版现在以 **Windows 安装包** 为主，构建入口：
 
 ```bat
-build-exe.bat
+build-installer.bat
 ```
 
-生成结果：
+生成的主要资产：
 
 ```text
+release\Siming-Setup.exe
+release\Siming-Setup.sha256
 release\Siming.exe
 release\update.json
 release\sha256.txt
 ```
 
-`Siming.exe` 是面向 Windows 10 x64 或更高版本的正式分发文件。Windows 7、Windows 8/8.1 和 32 位 Windows 不在支持范围内，不应将当前构建标记或分发为兼容这些系统。Android 使用独立的长期签名密钥构建；3.2.1 同时发布 APK。旧品牌数据目录仍然兼容，但旧 exe 名不再生成、不再上传。
+其中：
 
-## 给普通用户运行
+- `Siming-Setup.exe`：普通用户应下载的安装包。
+- `Siming-Setup.sha256`：安装包完整性校验文件。
+- `Siming.exe`：旧单文件版本的兼容升级桥，不再作为新用户的首选分发方式。
+- `update.json` / `sha256.txt`：继续服务旧单 EXE 更新器，使老版本仍能先升级到兼容桥，再迁移到安装版。
 
-**系统要求：Windows 10 x64 或更高版本。**
+**系统要求：Windows 10 x64 或更高版本。** Windows 7、Windows 8/8.1 和 32 位 Windows 不在支持范围内。
 
-新用户发送 `release\Siming.exe` 即可。用户双击后会：
+## 安装体验
 
-1. 自动启动本地后端服务。
-2. 自动打开浏览器页面。
-3. 使用本机数据目录保存数据库、密钥、模型和运行时配置。
+安装器使用 Inno Setup，默认安装到：
 
-默认数据目录：
+```text
+%LOCALAPPDATA%\Programs\Siming
+```
+
+安装向导会显示安装目录页，用户可以改到其他磁盘或目录。
+
+安装向导还会询问是否“在桌面创建快捷方式”。该选项默认勾选；用户可以主动取消。安装器同时创建开始菜单入口和卸载信息。
+
+安装器采用当前用户安装模式，不要求管理员权限即可安装到默认目录。用户若主动选择受保护的系统目录，则 Windows 权限规则仍然适用。
+
+程序数据与安装目录分离。默认数据目录仍然是：
 
 ```text
 %LOCALAPPDATA%\Siming
 ```
 
-如果用户已经用旧版产生过数据，新版启动时会自动检测：
+小说数据库、密钥、模型、日志、缓存与启动器配置不会随着覆盖安装而被删除。旧数据目录仍兼容：
 
 ```text
 %LOCALAPPDATA%\Moshu
 %LOCALAPPDATA%\NovelWritingAgent
 ```
 
-旧目录存在且新目录没有有效数据库时，司命会继续使用旧目录，避免用户丢数据。
+## 安装包内部结构
 
-## 重新指定数据目录
+安装包内部使用 PyInstaller `--onedir` 产物，而不是把全部运行时继续塞进一个自解压单文件：
 
-优先使用：
-
-```bat
-set SIMING_HOME=D:\SimingData
-release\Siming.exe
+```text
+<安装目录>\
+├── Siming.exe
+├── .siming-installed
+└── _internal\...
 ```
 
-旧变量 `MOSHU_HOME`、`NOVEL_AGENT_HOME` 仍然兼容。
+`.siming-installed` 是安装版标记，更新器用它区分“正式安装版”和“历史单 EXE 便携版”。
 
-## 打包机要求
+这样日常启动不再依赖 onefile 每次启动时的完整自解包流程；运行时文件也可以由安装器统一覆盖和维护。
 
-只有负责打包的电脑需要安装 Python、Node.js 和 npm。普通用户运行 `Siming.exe` 不需要安装这些工具。
+## 构建机要求
+
+负责打包的 Windows 机器需要：
+
+- Python（带 Tk，且可用于 PyInstaller）
+- Node.js / npm
+- Inno Setup（`ISCC.exe`）
+
+可以通过环境变量显式指定 Inno Setup 编译器：
+
+```powershell
+$env:SIMING_INNO_ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\scripts\build-installer.ps1
+```
+
+普通用户不需要安装 Python、Node.js 或 Inno Setup。
+
+如果只需要历史兼容的单 EXE，可以继续运行：
+
+```bat
+build-exe.bat
+```
+
+如果只需要检查 onedir 产物，可运行：
+
+```powershell
+.\scripts\build-exe.ps1 -OneDir
+```
 
 ## 自动更新
 
-桌面更新只接受同时满足以下条件的 `Siming.exe`：
+### 新安装版
 
-1. SHA-256 与 `update.json`、`sha256.txt` 完全一致。
+安装版优先查找 GitHub Release 中的：
+
+```text
+Siming-Setup.exe
+Siming-Setup.sha256
+```
+
+用户在设置页确认更新后，司命会：
+
+1. 下载新安装包到 `%LOCALAPPDATA%\Siming\updates`。
+2. 校验 SHA-256。
+3. 校验 Windows Authenticode 可信签名。
+4. 用户点击安装后，退出当前司命。
+5. 以静默模式运行新安装包，并强制使用当前安装目录。
+6. Inno Setup 覆盖程序文件并重新启动司命。
+
+升级时会沿用之前的安装目录和附加任务选择，因此用户第一次安装时如果取消了桌面快捷方式，后续更新不会擅自重新创建。
+
+### 从旧单 EXE 迁移
+
+旧客户端只认识 Release 中的 `Siming.exe`，所以发布阶段暂时继续保留它。
+
+旧版用户的迁移路径是：
+
+```text
+旧 Siming.exe
+  → 继续收到兼容 Siming.exe 更新
+  → 新更新器发现 Siming-Setup.exe
+  → 首次迁移时打开正常安装向导
+  → 用户选择安装位置和桌面快捷方式
+  → 后续版本使用安装包静默覆盖更新
+```
+
+首次迁移**不会**把用户原来随手放在“下载”目录里的 `Siming.exe` 所在目录当作安装目录。
+
+### 更新安全要求
+
+应用内更新只接受同时满足以下条件的 Windows 更新资产：
+
+1. SHA-256 与发布校验值一致。
 2. Windows Authenticode 签名可信。
 3. 签名包含可信时间戳。
 
-本地开发包可以不签名。正式自动更新包必须签名；没有证书时，只能显式使用 `-ManualDownloadOnly` 发布供用户主动下载并核对 SHA256 的手动安装包。签名必须在计算发布 SHA-256 **之前**完成，因为 Authenticode 会改变 exe 字节。
-
-默认更新仓库：
-
-```text
-teangtang1122/siming-ai
-```
-
-发布新版本时，在 GitHub Release 上传：
-
-```text
-Siming.exe
-sha256.txt
-update.json
-```
-
-`sha256.txt` 只包含：
-
-```text
-<sha256>  Siming.exe
-```
-
-更新器只下载 `Siming.exe`。Release 中不要上传旧 exe 名资产。
-
-### Windows 正式签名
-
-GitHub Actions 需要配置以下加密 Secrets：
+正式签名需要 GitHub Actions Secrets：
 
 ```text
 SIMING_WINDOWS_CODESIGN_PFX_BASE64
 SIMING_WINDOWS_CODESIGN_PASSWORD
 ```
 
-前者是受信任代码签名证书 PFX 的 Base64 内容，后者是 PFX 口令。证书、私钥和口令不得提交到仓库、构建日志或 Release 资产。
+证书、私钥和口令不得提交到仓库、日志或 Release 资产。
 
-本地发布机可在构建后运行：
+本地构建后可以分别签名单 EXE 兼容桥和安装包：
 
 ```powershell
 .\scripts\sign-windows-release.ps1 `
@@ -110,27 +163,67 @@ SIMING_WINDOWS_CODESIGN_PASSWORD
   -CertificatePassword $env:SIMING_CODESIGN_PASSWORD `
   -ExpectedVersion 3.2.1
 
+.\scripts\sign-windows-installer.ps1 `
+  -ReleaseDir release `
+  -CertificatePath C:\secure\siming-codesign.pfx `
+  -CertificatePassword $env:SIMING_CODESIGN_PASSWORD
+```
+
+然后验证：
+
+```powershell
 .\scripts\verify-release-assets.ps1 `
   -ReleaseDir release `
   -ExpectedVersion 3.2.1 `
   -RequireTrustedSignature
+
+.\scripts\verify-windows-installer.ps1 `
+  -ReleaseDir release `
+  -RequireTrustedSignature
 ```
 
-签名脚本会在可信时间戳校验通过后重新生成 `update.json` 与 `sha256.txt`。如果线上版本已经发布为未签名包，旧客户端会显示 `no_signature` 并停止安装；必须用签名后的同版本 exe 及重新计算的两个完整性文件一并替换，或者发布更高的签名版本。
+没有 Windows 代码签名证书时，只能发布供用户主动下载的手动安装资产；应用内更新器不会降低签名要求。
 
-没有 Windows 代码签名证书时，可发布仅供手动安装的 Windows 资产：
+## GitHub Release
 
-```powershell
-.\scripts\publish-github.ps1 -Tag v3.2.1 -SkipBuild -ManualDownloadOnly
+正式 Release 应包含：
+
+```text
+Siming-Setup.exe
+Siming-Setup.sha256
+Siming.exe
+update.json
+sha256.txt
+Siming.apk
+Siming-apk-sha256.txt
 ```
 
-该模式不会降低应用内更新器的签名要求，也不会包含 Android APK。
+GitHub Actions 的 Release Gate 会：
+
+1. 构建单 EXE 兼容桥。
+2. 构建 onedir 安装负载。
+3. 编译 `Siming-Setup.exe`。
+4. 执行后端、前端和发布契约测试。
+5. 对安装包执行无人值守安装冒烟测试。
+6. 有证书时分别签名 Windows 资产。
+7. 验证 SHA、签名、Android 资产和运行时版本。
+8. 全部通过后上传 Release。
+
+本地 `scripts\publish-github.ps1` 也会把安装包和安装包 SHA 一并纳入必需 Release 资产。
+
+## 重新指定数据目录
+
+程序数据目录和程序安装目录是两件不同的事。如果需要修改数据目录：
+
+```bat
+set SIMING_HOME=D:\SimingData
+```
+
+旧变量 `MOSHU_HOME`、`NOVEL_AGENT_HOME` 仍然兼容。
 
 ## Android APK
 
-3.2.1 恢复 Android 发布，并继续使用同一把长期保存的发布密钥。手动运行发布脚本时，必须显式使用 `-IncludeAndroid`，确保 APK 与校验文件一同上传。
-
-Android Release 必须使用同一把长期保存的发布密钥签名；丢失密钥后，已安装用户无法原位升级。密钥和口令不得写入仓库、构建日志或 Release 资产。
+Android 使用独立的长期签名密钥。手动发布时使用 `-IncludeAndroid`，确保 APK 与校验文件一同上传。
 
 本地构建机通过以下环境变量提供签名信息：
 
@@ -143,16 +236,14 @@ ANDROID_SDK_ROOT
 JAVA_HOME
 ```
 
-GitHub Actions 使用 `SIMING_ANDROID_KEYSTORE_BASE64` 保存同一密钥的 Base64 内容，并使用上述三个密码/别名 Secret；工作流只在临时目录还原密钥，构建结束后不保留该文件。
+GitHub Actions 使用 `SIMING_ANDROID_KEYSTORE_BASE64` 保存同一密钥的 Base64 内容。密钥与口令不得写入仓库、构建日志或 Release 资产。
 
-然后运行：
+构建和验证：
 
 ```powershell
 .\scripts\build-android-release.ps1
-.\scripts\verify-android-release.ps1 -ExpectedVersion 3.1.11
+.\scripts\verify-android-release.ps1 -ExpectedVersion 3.2.1
 ```
-
-验证脚本会检查 APK SHA-256、zip 对齐、签名证书、包名 `com.siming.mobile` 与版本号。GitHub Actions 使用同一发布密钥的加密 Secrets，不为每次构建临时生成新密钥。
 
 ## Gateway 容器
 
@@ -164,7 +255,7 @@ ghcr.io/teangtang1122/siming-ai-gateway:<major.minor>
 ghcr.io/teangtang1122/siming-ai-gateway:latest
 ```
 
-镜像必须包含 `linux/amd64` 与 `linux/arm64`，以 UID 10001 非 root 运行；`/data` 可写而 `/app` 不可写。发布前运行容器健康检查并验证 Docker Gateway 不暴露本地模型、CLI、MCP 与训练能力。
+镜像必须包含 `linux/amd64` 与 `linux/arm64`，以 UID 10001 非 root 运行；`/data` 可写而 `/app` 不可写。
 
 可用环境变量覆盖更新源：
 
@@ -178,24 +269,16 @@ set SIMING_DISABLE_UPDATE=1
 
 ## MCP Server
 
-打包后的 exe 包含 MCP Server 入口。推荐让程序自动检测和配置本机 Agent；手动排障时可以运行：
+安装后的 MCP 可直接指向安装目录中的：
+
+```text
+<安装目录>\Siming.exe
+```
+
+推荐让程序自动检测和配置本机 Agent；手动排障时可以运行：
 
 ```powershell
 powershell -NoProfile -File .\scripts\setup-external-agent-mcp.ps1
-```
-
-配置示例：
-
-```json
-{
-  "mcpServers": {
-    "siming": {
-      "command": "C:\\path\\to\\Siming.exe",
-      "args": ["--mcp-server", "--permission-pack", "project_management"],
-      "env": {}
-    }
-  }
-}
 ```
 
 如果从源码运行：
@@ -208,10 +291,10 @@ python scripts\moshu-mcp-server.py --permission-pack project_management
 
 ## Smoke Test
 
-打包后运行：
+单 EXE 运行时冒烟测试：
 
 ```powershell
 .\scripts\smoke-test-release.ps1
 ```
 
-测试会验证 `Siming.exe`、MCP 配置脚本、服务启动和核心 API。
+安装包本身另由 Release Gate 安装到临时目录，确认 `Siming.exe` 与 `.siming-installed` 均实际落盘后才允许发布。
