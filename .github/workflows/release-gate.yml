@@ -8,10 +8,9 @@ on:
       - ".github/workflows/release-gate.yml"
       - "build-installer.bat"
       - "installer/**"
+      - "scripts/build-exe.ps1"
       - "scripts/build-installer.ps1"
-      - "scripts/sign-windows-release.ps1"
       - "scripts/sign-windows-installer.ps1"
-      - "scripts/verify-release-assets.ps1"
       - "scripts/verify-windows-installer.ps1"
       - "scripts/publish-github.ps1"
       - "backend/app/installer_updater.py"
@@ -139,9 +138,18 @@ jobs:
         working-directory: frontend
         run: npm run api:check
 
-      - name: Build Windows distributions
+      - name: Build Windows installer
         shell: cmd
         run: build-installer.bat
+
+      - name: Reject stale legacy Windows release assets
+        shell: pwsh
+        run: |
+          $legacyAssets = @("release\Siming.exe", "release\update.json", "release\sha256.txt")
+          $found = @($legacyAssets | Where-Object { Test-Path -LiteralPath $_ })
+          if ($found.Count -gt 0) {
+            throw "Legacy Windows release assets must not be emitted: $($found -join ', ')"
+          }
 
       - name: Prepare Android signing key
         shell: pwsh
@@ -163,7 +171,7 @@ jobs:
         shell: pwsh
         run: ./scripts/build-android-release.ps1
 
-      - name: Sign Windows distributions when a trusted certificate is configured
+      - name: Sign Windows installer when a trusted certificate is configured
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
@@ -184,12 +192,6 @@ jobs:
           $certificatePath = Join-Path $env:RUNNER_TEMP "siming-windows-codesign.pfx"
           try {
             [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_BASE64))
-            $version = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
-            ./scripts/sign-windows-release.ps1 `
-              -ReleaseDir release `
-              -CertificatePath $certificatePath `
-              -CertificatePassword $env:WINDOWS_CODESIGN_PASSWORD `
-              -ExpectedVersion $version
             ./scripts/sign-windows-installer.ps1 `
               -ReleaseDir release `
               -CertificatePath $certificatePath `
@@ -201,23 +203,19 @@ jobs:
             }
           }
 
-      - name: Verify package assets and run smoke test
+      - name: Verify package assets
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $version = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
           if ($env:SIMING_WINDOWS_RELEASE_SIGNED -eq "1") {
-            ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version -RequireTrustedSignature
             ./scripts/verify-windows-installer.ps1 -ReleaseDir release -RequireTrustedSignature
           } elseif ("${{ github.ref_type }}" -eq "tag" -or "${{ github.event_name }}" -eq "workflow_dispatch") {
-            ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version -AllowUnsignedManualRelease
             ./scripts/verify-windows-installer.ps1 -ReleaseDir release -AllowUnsignedManualRelease
           } else {
-            ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
             ./scripts/verify-windows-installer.ps1 -ReleaseDir release
           }
           ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $version
-          ./scripts/smoke-test-release.ps1 -SkipBuild
 
       - name: Smoke install Windows package
         shell: pwsh
@@ -241,6 +239,10 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $installDir ".siming-installed") -PathType Leaf)) {
             throw "Installer smoke did not create the installed-layout marker."
           }
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+            throw "Installer smoke did not create an uninstaller."
+          }
 
       - name: Upload verified release assets
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
@@ -248,9 +250,6 @@ jobs:
         with:
           name: release-assets-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           path: |
-            release/Siming.exe
-            release/update.json
-            release/sha256.txt
             release/Siming-Setup.exe
             release/Siming-Setup.sha256
             release/Siming.apk
@@ -265,12 +264,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $version = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
-          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "v$version" }
+          $tag = "${{ github.ref_name }}"
           $notesPath = "docs/release-notes-$version.md"
           $assets = @(
-            "release/Siming.exe",
-            "release/update.json",
-            "release/sha256.txt",
             "release/Siming-Setup.exe",
             "release/Siming-Setup.sha256",
             "release/Siming.apk",
@@ -280,6 +276,14 @@ jobs:
           gh release view $tag -R "${{ github.repository }}" *> $null
           if ($LASTEXITCODE -eq 0) { $releaseExists = $true }
           if ($releaseExists) {
+            $existing = gh release view $tag -R "${{ github.repository }}" --json assets | ConvertFrom-Json
+            $existingNames = @($existing.assets | ForEach-Object { $_.name })
+            foreach ($legacyAsset in @("Siming.exe", "update.json", "sha256.txt", "Moshu.exe", "NovelWritingAgent.exe")) {
+              if ($existingNames -contains $legacyAsset) {
+                gh release delete-asset $tag $legacyAsset -R "${{ github.repository }}" -y
+                if ($LASTEXITCODE -ne 0) { throw "Failed to delete legacy release asset $legacyAsset." }
+              }
+            }
             gh release upload $tag @assets -R "${{ github.repository }}" --clobber
           } elseif (Test-Path -LiteralPath $notesPath) {
             gh release create $tag @assets -R "${{ github.repository }}" --title "司命 $version" --notes-file $notesPath
@@ -313,22 +317,26 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = "${{ github.event.release.tag_name }}"
           $version = $tag.TrimStart("v")
-          $expectedAssets = @("Siming.exe", "update.json", "sha256.txt", "Siming-Setup.exe", "Siming-Setup.sha256", "Siming.apk", "Siming-apk-sha256.txt")
+          $expectedAssets = @("Siming-Setup.exe", "Siming-Setup.sha256", "Siming.apk", "Siming-apk-sha256.txt")
+          $forbiddenAssets = @("Siming.exe", "update.json", "sha256.txt")
           $verified = $false
           New-Item -ItemType Directory -Force -Path release | Out-Null
           for ($attempt = 1; $attempt -le 18; $attempt++) {
             $release = gh release view $tag -R "${{ github.repository }}" --json assets | ConvertFrom-Json
             $availableAssets = @($release.assets | ForEach-Object { $_.name })
             $missingAssets = @($expectedAssets | Where-Object { $_ -notin $availableAssets })
+            $forbiddenFound = @($forbiddenAssets | Where-Object { $_ -in $availableAssets })
+            if ($forbiddenFound.Count -gt 0) {
+              throw "Published release contains legacy Windows assets: $($forbiddenFound -join ', ')"
+            }
             if ($missingAssets.Count -gt 0) {
               Write-Host "Waiting for published assets ($attempt/18): $($missingAssets -join ', ')"
               Start-Sleep -Seconds 10
               continue
             }
             try {
-              gh release download $tag -R "${{ github.repository }}" -p "Siming.exe" -p "update.json" -p "sha256.txt" -p "Siming-Setup.exe" -p "Siming-Setup.sha256" -p "Siming.apk" -p "Siming-apk-sha256.txt" -D release --clobber
+              gh release download $tag -R "${{ github.repository }}" -p "Siming-Setup.exe" -p "Siming-Setup.sha256" -p "Siming.apk" -p "Siming-apk-sha256.txt" -D release --clobber
               if ($LASTEXITCODE -ne 0) { throw "gh release download failed with exit code $LASTEXITCODE" }
-              ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version -AllowUnsignedManualRelease
               ./scripts/verify-windows-installer.ps1 -ReleaseDir release -AllowUnsignedManualRelease
               ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $version
               $verified = $true
