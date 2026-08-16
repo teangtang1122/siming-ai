@@ -5,6 +5,7 @@ on:
     branches: ["codex/creation-agent-mobile-parity-3.2.1"]
     paths:
       - ".github/workflows/apply-frontend-creation-agent-cleanup.yml"
+      - "scripts/remove-legacy-creation-interview-frontend.py"
 
 permissions:
   contents: write
@@ -42,7 +43,7 @@ jobs:
 
       - name: Guard legacy interview frontend
         run: |
-          if grep -RInE "useNovelCreationInterviewController|novelInterview\.|NOVEL_INTERVIEW_|refresh-question|/interview/next|submitQuestionAnswer|renderQuestions" frontend/src; then
+          if grep -RInE "useNovelCreationInterviewController|novelInterview\.|NOVEL_INTERVIEW_|refresh-question|/interview/next|submitQuestionAnswer|renderQuestions|renderQAEditor|questionHistory|handleRegenerateWithAnswers" frontend/src; then
             echo "Legacy interview frontend still referenced" >&2; exit 1
           fi
 
