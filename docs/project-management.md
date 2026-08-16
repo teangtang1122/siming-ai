@@ -98,13 +98,16 @@ AI/提示词变更：
 - [ ] README 顶部变更说明已同步。
 - [ ] 后端相关测试已运行。
 - [ ] 前端 `npm run build` 已运行。
-- [ ] 打包脚本已执行并生成 `Siming.exe`。
-- [ ] `update.json` 和 `sha256.txt` 已生成。
+- [ ] `build-installer.bat` 已执行并生成 `Siming-Setup.exe` 与 `Siming.exe` 兼容桥。
+- [ ] `Siming-Setup.sha256`、`update.json` 和 `sha256.txt` 已生成并与最终发布文件一致。
+- [ ] Windows 安装包已执行临时目录安装冒烟测试，确认 `Siming.exe`、`.siming-installed` 与卸载器实际落盘。
 - [ ] Release 说明包含重点变化、修复、兼容性、验证、已知问题。
 
 发布后：
 
-- [ ] 从 Release 下载包重新启动验证。
+- [ ] 从 Release 下载 `Siming-Setup.exe` 完成一次全新安装验证。
+- [ ] 从已安装旧版本执行一次应用内安装包升级验证。
+- [ ] 从旧单 `Siming.exe` 执行一次安装版迁移验证。
 - [ ] 验证新建作品、导入作品、建档、写作、保存。
 - [ ] 验证旧数据目录识别与迁移。
 - [ ] 验证至少一种 API 模型和一种本地/CLI 模型路径。
