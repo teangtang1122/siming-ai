@@ -17,6 +17,7 @@ import {
 const { Paragraph, Text } = Typography
 
 export type UpdateChannel = 'stable' | 'preview'
+type InstallMode = 'installer' | 'portable'
 
 interface UpdateSignature {
   valid: boolean
@@ -31,6 +32,9 @@ interface UpdateMetadata {
   source: string
   download_url: string
   sha256_available: boolean
+  asset_name?: string
+  install_mode?: InstallMode
+  migration?: boolean
 }
 
 interface StagedUpdate {
@@ -39,6 +43,8 @@ interface StagedUpdate {
   signature?: UpdateSignature | null
   ready_to_install: boolean
   error?: string
+  install_mode?: InstallMode
+  migration?: boolean
 }
 
 export interface UpdateStatus {
@@ -48,6 +54,7 @@ export interface UpdateStatus {
   update?: UpdateMetadata | null
   staged_update?: StagedUpdate | null
   automatic_updates: boolean
+  installed_layout?: boolean
   downloaded?: boolean
 }
 
@@ -80,6 +87,10 @@ export function UpdateSettingsCard({
   onDownload,
   onInstall,
 }: UpdateSettingsCardProps) {
+  const availableUpdate = updateStatus?.update
+  const migrationAvailable = Boolean(availableUpdate?.migration)
+  const stagedMigration = Boolean(updateStatus?.staged_update?.migration)
+
   return (
     <Card className="settings-card" title={<span><SafetyCertificateOutlined /> 安全更新</span>}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -116,27 +127,27 @@ export function UpdateSettingsCard({
           <Button aria-label="检查更新" icon={<ReloadOutlined />} loading={checkingUpdate} onClick={onCheck}>
             检查更新
           </Button>
-          {updateStatus?.update_available && updateStatus.update && (
+          {updateStatus?.update_available && availableUpdate && (
             <Button
               type="primary"
               icon={<DownloadOutlined />}
-              aria-label={`下载并校验 ${updateStatus.update.version}`}
+              aria-label={migrationAvailable ? '下载并迁移到安装版' : `下载并校验 ${availableUpdate.version}`}
               loading={downloadingUpdate}
-              disabled={!updateStatus.update.sha256_available}
+              disabled={!availableUpdate.sha256_available}
               onClick={onDownload}
             >
-              下载并校验 {updateStatus.update.version}
+              {migrationAvailable ? '下载安装包并迁移' : `下载并校验 ${availableUpdate.version}`}
             </Button>
           )}
           {updateStatus?.staged_update?.ready_to_install && (
             <Button
               type="primary"
               icon={<SafetyCertificateOutlined />}
-              aria-label="安装并重启"
+              aria-label={stagedMigration ? '迁移到安装版' : '安装并重启'}
               loading={installingUpdate}
               onClick={onInstall}
             >
-              安装并重启
+              {stagedMigration ? '迁移到安装版' : '安装并重启'}
             </Button>
           )}
         </Space>
@@ -146,14 +157,21 @@ export function UpdateSettingsCard({
         {updateStatus && !updateStatus.update_available && !updateStatus.staged_update && (
           <Text type="secondary">已检查：当前版本 {updateStatus.current_version} 暂无可验证更新。</Text>
         )}
-        {updateStatus?.update_available && updateStatus.update && (
+        {updateStatus?.update_available && availableUpdate && (
           <Descriptions size="small" column={1} bordered>
-            <Descriptions.Item label="可用版本">{updateStatus.update.version}</Descriptions.Item>
+            <Descriptions.Item label={migrationAvailable ? '迁移目标' : '可用版本'}>
+              {migrationAvailable ? `司命 ${availableUpdate.version} 安装版` : availableUpdate.version}
+            </Descriptions.Item>
             <Descriptions.Item label="更新通道">
-              {updateStatus.update.channel === 'preview' ? '预览通道' : '稳定通道'}
+              {availableUpdate.channel === 'preview' ? '预览通道' : '稳定通道'}
+            </Descriptions.Item>
+            <Descriptions.Item label="更新方式">
+              {availableUpdate.install_mode === 'installer'
+                ? (migrationAvailable ? '首次迁移将打开 Windows 安装向导' : 'Windows 安装包覆盖更新')
+                : '单 EXE 兼容更新'}
             </Descriptions.Item>
             <Descriptions.Item label="SHA256">
-              {updateStatus.update.sha256_available ? '发布页提供，下载后会复核' : '发布页未提供，司命不会下载或安装'}
+              {availableUpdate.sha256_available ? '发布页提供，下载后会复核' : '发布页未提供，司命不会下载或安装'}
             </Descriptions.Item>
             <Descriptions.Item label="代码签名">下载后必须验证为可信签名</Descriptions.Item>
           </Descriptions>
@@ -162,9 +180,13 @@ export function UpdateSettingsCard({
           <Alert
             showIcon
             type={updateStatus.staged_update.ready_to_install ? 'success' : 'warning'}
-            message={updateStatus.staged_update.ready_to_install ? '更新已验证，可以由你确认安装' : '已下载的更新需要重新校验'}
+            message={updateStatus.staged_update.ready_to_install
+              ? (stagedMigration ? '安装包已验证，可以迁移到安装版' : '更新已验证，可以由你确认安装')
+              : '已下载的更新需要重新校验'}
             description={updateStatus.staged_update.ready_to_install
-              ? `版本 ${updateStatus.staged_update.version}，SHA256：${updateStatus.staged_update.sha256}`
+              ? (stagedMigration
+                ? `版本 ${updateStatus.staged_update.version}。点击“迁移到安装版”后会打开安装向导，你可以选择安装目录和桌面快捷方式。`
+                : `版本 ${updateStatus.staged_update.version}，SHA256：${updateStatus.staged_update.sha256}`)
               : updateStatus.staged_update.error || '请重新下载更新。'}
           />
         )}
