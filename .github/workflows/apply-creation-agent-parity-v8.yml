@@ -39,13 +39,13 @@ jobs:
             val data = source.stageData(artifact)
             mappings.forEach { (field, type) ->
                 if (typeFilter.isNotBlank() && type != typeFilter) return@forEach
-'''
+          '''
           labelled = '''        ENTITY_FIELDS.forEach artifactLoop@ { (artifact, mappings) ->
             if (artifactFilter.isNotBlank() && artifact != artifactFilter) return@artifactLoop
             val data = source.stageData(artifact)
             mappings.forEach mappingLoop@ { (field, type) ->
                 if (typeFilter.isNotBlank() && type != typeFilter) return@mappingLoop
-'''
+          '''
           if ambiguous in s:
             s = s.replace(ambiguous, labelled, 1)
           p.write_text(s, encoding="utf-8")
@@ -83,7 +83,7 @@ jobs:
               java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
           ).firstOrNull { it.isFile } ?: error("pc_workspace_prompt_contract.json not found from ${System.getProperty("user.dir")}")
           val raw = contractFile.readText()
-'''
+          '''
           if old not in s:
             raise RuntimeError("generated contract test resource marker missing")
           p.write_text(s.replace(old, new, 1), encoding="utf-8")
