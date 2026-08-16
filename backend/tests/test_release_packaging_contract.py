@@ -85,7 +85,7 @@ def test_windows_release_is_signed_before_integrity_manifests_are_published():
     assert "SIMING_WINDOWS_CODESIGN_PASSWORD" in workflow
     assert "manual-download-only" in workflow
     assert "github.event_name == 'push' && github.ref_type == 'tag'" in workflow
-    assert workflow.index("Sign Windows executable") < workflow.index(
+    assert workflow.index("Sign Windows distributions") < workflow.index(
         "Verify package assets and run smoke test"
     )
 
