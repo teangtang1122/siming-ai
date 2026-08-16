@@ -34,6 +34,20 @@ jobs:
             if old not in s:
               raise RuntimeError(f"source marker missing: {old}")
             s = s.replace(old, new, 1)
+          ambiguous = '''        ENTITY_FIELDS.forEach { (artifact, mappings) ->
+            if (artifactFilter.isNotBlank() && artifact != artifactFilter) return@forEach
+            val data = source.stageData(artifact)
+            mappings.forEach { (field, type) ->
+                if (typeFilter.isNotBlank() && type != typeFilter) return@forEach
+'''
+          labelled = '''        ENTITY_FIELDS.forEach artifactLoop@ { (artifact, mappings) ->
+            if (artifactFilter.isNotBlank() && artifact != artifactFilter) return@artifactLoop
+            val data = source.stageData(artifact)
+            mappings.forEach mappingLoop@ { (field, type) ->
+                if (typeFilter.isNotBlank() && type != typeFilter) return@mappingLoop
+'''
+          if ambiguous in s:
+            s = s.replace(ambiguous, labelled, 1)
           p.write_text(s, encoding="utf-8")
 
           p = Path("scripts/migrate-creation-agent-parity.py")
@@ -56,6 +70,23 @@ jobs:
 
       - name: Apply migration
         run: python scripts/migrate-creation-agent-parity.py
+
+      - name: Fix generated PC contract unit test
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path("mobile/android/app/src/test/java/com/siming/mobile/data/creation/PcCreationAgentContractTest.kt")
+          s = p.read_text(encoding="utf-8")
+          old = '        val raw = javaClass.classLoader!!.getResource("pc_workspace_prompt_contract.json")!!.readText()\n'
+          new = '''        val contractFile = listOf(
+              java.io.File("app/src/main/assets/pc_workspace_prompt_contract.json"),
+              java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
+          ).firstOrNull { it.isFile } ?: error("pc_workspace_prompt_contract.json not found from ${System.getProperty("user.dir")}")
+          val raw = contractFile.readText()
+'''
+          if old not in s:
+            raise RuntimeError("generated contract test resource marker missing")
+          p.write_text(s.replace(old, new, 1), encoding="utf-8")
 
       - name: Rewrite canonical Android route test
         shell: python
