@@ -15,7 +15,6 @@ $ReleaseDir = if ($OutputDirectory) {
 }
 $PayloadDistDir = Join-Path $BuildDir "installer-payload"
 $InstallerScript = Join-Path $Root "installer\Siming.iss"
-$PortableExe = Join-Path $ReleaseDir "Siming.exe"
 $InstallerExe = Join-Path $ReleaseDir "Siming-Setup.exe"
 $InstallerShaPath = Join-Path $ReleaseDir "Siming-Setup.sha256"
 
@@ -73,25 +72,27 @@ function Read-AppVersion {
 Write-Step "Checking Inno Setup compiler..."
 $Iscc = Resolve-InnoCompiler
 $Version = Read-AppVersion
-Write-Step "Building Siming $Version portable bridge..."
-& (Join-Path $ScriptDir "build-exe.ps1") -PipIndexUrl $PipIndexUrl -OutputDirectory $ReleaseDir
-if ($LASTEXITCODE -ne 0) { throw "Portable bridge build failed." }
 
-Write-Step "Building installed onedir payload..."
+Write-Step "Removing stale legacy release assets..."
+New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+foreach ($LegacyAsset in @("Siming.exe", "update.json", "sha256.txt")) {
+  Remove-Item -LiteralPath (Join-Path $ReleaseDir $LegacyAsset) -Force -ErrorAction SilentlyContinue
+}
+
+Write-Step "Building installed onedir payload for Siming $Version..."
 Remove-Item -LiteralPath $PayloadDistDir -Recurse -Force -ErrorAction SilentlyContinue
 & (Join-Path $ScriptDir "build-exe.ps1") -OneDir -PipIndexUrl $PipIndexUrl -OutputDirectory $PayloadDistDir
 if ($LASTEXITCODE -ne 0) { throw "Installed payload build failed." }
 
 $PayloadAppDir = Join-Path $PayloadDistDir "Siming"
 $PayloadExe = Join-Path $PayloadAppDir "Siming.exe"
-foreach ($RequiredPath in @($PortableExe, $PayloadExe, $InstallerScript)) {
+foreach ($RequiredPath in @($PayloadExe, $InstallerScript)) {
   if (-not (Test-Path -LiteralPath $RequiredPath)) {
     throw "Installer input is missing: $RequiredPath"
   }
 }
 
 Write-Step "Compiling selectable-path installer..."
-New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 Remove-Item -LiteralPath $InstallerExe -Force -ErrorAction SilentlyContinue
 $IsccArgs = @(
   "/DMyAppVersion=$Version",
@@ -114,5 +115,4 @@ $InstallerSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerExe).Hash
 
 Write-Step "Done."
 Write-Host "Installer: $InstallerExe"
-Write-Host "Portable compatibility bridge: $PortableExe"
 Write-Host "Installer SHA256: $InstallerShaPath"
