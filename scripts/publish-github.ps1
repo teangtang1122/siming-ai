@@ -18,9 +18,11 @@ $AppName = "Siming"
 $ExePath = Join-Path $Root "release\$AppName.exe"
 $ManifestPath = Join-Path $Root "release\update.json"
 $ShaPath = Join-Path $Root "release\sha256.txt"
+$InstallerPath = Join-Path $Root "release\$AppName-Setup.exe"
+$InstallerShaPath = Join-Path $Root "release\$AppName-Setup.sha256"
 $ApkPath = Join-Path $Root "release\$AppName.apk"
 $ApkShaPath = Join-Path $Root "release\$AppName-apk-sha256.txt"
-$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath)
+$ReleaseAssets = @($ExePath, $ManifestPath, $ShaPath, $InstallerPath, $InstallerShaPath)
 if ($IncludeAndroid) {
   $ReleaseAssets += @($ApkPath, $ApkShaPath)
 }
@@ -84,7 +86,7 @@ try {
   }
 
   if (-not $SkipBuild -and -not $DryRun) {
-    & (Join-Path $Root "scripts\build-exe.ps1")
+    & (Join-Path $Root "scripts\build-installer.ps1")
   }
 
   $MissingReleaseAssets = @($ReleaseAssets | Where-Object { -not (Test-Path -LiteralPath $_) })
@@ -123,8 +125,10 @@ try {
       [System.IO.File]::WriteAllText($ShaPath, ($shaLines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
       if ($ManualDownloadOnly) {
         & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version -AllowUnsignedManualRelease
+        & (Join-Path $Root "scripts\verify-windows-installer.ps1") -ReleaseDir (Split-Path -Parent $InstallerPath) -AllowUnsignedManualRelease
       } else {
         & (Join-Path $Root "scripts\verify-release-assets.ps1") -ReleaseDir (Split-Path -Parent $ExePath) -AppName $AppName -ExpectedVersion $version -RequireTrustedSignature
+        & (Join-Path $Root "scripts\verify-windows-installer.ps1") -ReleaseDir (Split-Path -Parent $InstallerPath) -RequireTrustedSignature
       }
       if ($IncludeAndroid) {
         & (Join-Path $Root "scripts\verify-android-release.ps1") -ReleaseDir (Split-Path -Parent $ApkPath) -ExpectedVersion $version
