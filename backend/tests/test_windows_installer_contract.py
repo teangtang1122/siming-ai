@@ -20,14 +20,16 @@ def test_installer_allows_path_selection_and_defaults_desktop_shortcut_on():
     assert "UsePreviousTasks=yes" in script
 
 
-def test_installer_build_uses_onedir_payload_and_keeps_portable_bridge():
+def test_installer_build_uses_onedir_payload_without_portable_release_asset():
     script = (ROOT / "scripts" / "build-installer.ps1").read_text(encoding="utf-8")
 
     assert '"build-exe.ps1"' in script
     assert "-OneDir" in script
     assert '"Siming-Setup.exe"' in script
-    assert '"Siming.exe"' in script
     assert "ISCC.exe" in script
+    assert 'Remove-Item -LiteralPath (Join-Path $ReleaseDir $LegacyAsset)' in script
+    assert '@("Siming.exe", "update.json", "sha256.txt")' in script
+    assert "portable bridge" not in script.lower()
 
 
 def test_installer_update_is_signed_and_verified_separately():
