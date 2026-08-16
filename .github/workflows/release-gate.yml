@@ -6,9 +6,15 @@ on:
     tags: ["v*"]
     paths:
       - ".github/workflows/release-gate.yml"
+      - "build-installer.bat"
+      - "installer/**"
+      - "scripts/build-installer.ps1"
       - "scripts/sign-windows-release.ps1"
+      - "scripts/sign-windows-installer.ps1"
       - "scripts/verify-release-assets.ps1"
+      - "scripts/verify-windows-installer.ps1"
       - "scripts/publish-github.ps1"
+      - "backend/app/installer_updater.py"
       - "backend/app/version.py"
       - "frontend/package.json"
       - "mobile/android/app/build.gradle.kts"
@@ -70,6 +76,10 @@ jobs:
         shell: pwsh
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
       - name: Verify tag matches application version
         shell: pwsh
         run: |
@@ -120,7 +130,7 @@ jobs:
         working-directory: backend
         run: |
           python scripts/run_quality.py
-          python -m pytest tests/test_architecture_foundation.py tests/test_config_llm.py tests/test_novel_creation_workspace_v2.py tests/test_packaging_contract.py tests/test_release_packaging_contract.py
+          python -m pytest tests/test_architecture_foundation.py tests/test_config_llm.py tests/test_novel_creation_workspace_v2.py tests/test_packaging_contract.py tests/test_release_packaging_contract.py tests/test_installer_updater.py tests/test_windows_installer_contract.py
 
       - name: Validate performance baseline
         run: python scripts/run-performance-baseline.py --output .build/performance.json
@@ -129,9 +139,9 @@ jobs:
         working-directory: frontend
         run: npm run api:check
 
-      - name: Build distributable
+      - name: Build Windows distributions
         shell: cmd
-        run: build-exe.bat
+        run: build-installer.bat
 
       - name: Prepare Android signing key
         shell: pwsh
@@ -153,7 +163,7 @@ jobs:
         shell: pwsh
         run: ./scripts/build-android-release.ps1
 
-      - name: Sign Windows executable when a trusted certificate is configured
+      - name: Sign Windows distributions when a trusted certificate is configured
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
@@ -180,6 +190,10 @@ jobs:
               -CertificatePath $certificatePath `
               -CertificatePassword $env:WINDOWS_CODESIGN_PASSWORD `
               -ExpectedVersion $version
+            ./scripts/sign-windows-installer.ps1 `
+              -ReleaseDir release `
+              -CertificatePath $certificatePath `
+              -CertificatePassword $env:WINDOWS_CODESIGN_PASSWORD
             "SIMING_WINDOWS_RELEASE_SIGNED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } finally {
             if (Test-Path -LiteralPath $certificatePath) {
@@ -194,13 +208,39 @@ jobs:
           $version = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
           if ($env:SIMING_WINDOWS_RELEASE_SIGNED -eq "1") {
             ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version -RequireTrustedSignature
+            ./scripts/verify-windows-installer.ps1 -ReleaseDir release -RequireTrustedSignature
           } elseif ("${{ github.ref_type }}" -eq "tag" -or "${{ github.event_name }}" -eq "workflow_dispatch") {
             ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version -AllowUnsignedManualRelease
+            ./scripts/verify-windows-installer.ps1 -ReleaseDir release -AllowUnsignedManualRelease
           } else {
             ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version
+            ./scripts/verify-windows-installer.ps1 -ReleaseDir release
           }
           ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $version
           ./scripts/smoke-test-release.ps1 -SkipBuild
+
+      - name: Smoke install Windows package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installDir = Join-Path $env:RUNNER_TEMP "SimingInstallerSmoke"
+          Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath (Resolve-Path "release\Siming-Setup.exe") -ArgumentList @(
+            "/SP-",
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SIMINGNOLAUNCH=1",
+            "/MERGETASKS=!desktopicon",
+            "/DIR=$installDir"
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer smoke failed with exit code $($process.ExitCode)." }
+          if (-not (Test-Path -LiteralPath (Join-Path $installDir "Siming.exe") -PathType Leaf)) {
+            throw "Installer smoke did not create Siming.exe."
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $installDir ".siming-installed") -PathType Leaf)) {
+            throw "Installer smoke did not create the installed-layout marker."
+          }
 
       - name: Upload verified release assets
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
@@ -211,6 +251,8 @@ jobs:
             release/Siming.exe
             release/update.json
             release/sha256.txt
+            release/Siming-Setup.exe
+            release/Siming-Setup.sha256
             release/Siming.apk
             release/Siming-apk-sha256.txt
           if-no-files-found: error
@@ -229,6 +271,8 @@ jobs:
             "release/Siming.exe",
             "release/update.json",
             "release/sha256.txt",
+            "release/Siming-Setup.exe",
+            "release/Siming-Setup.sha256",
             "release/Siming.apk",
             "release/Siming-apk-sha256.txt"
           )
@@ -269,7 +313,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = "${{ github.event.release.tag_name }}"
           $version = $tag.TrimStart("v")
-          $expectedAssets = @("Siming.exe", "update.json", "sha256.txt", "Siming.apk", "Siming-apk-sha256.txt")
+          $expectedAssets = @("Siming.exe", "update.json", "sha256.txt", "Siming-Setup.exe", "Siming-Setup.sha256", "Siming.apk", "Siming-apk-sha256.txt")
           $verified = $false
           New-Item -ItemType Directory -Force -Path release | Out-Null
           for ($attempt = 1; $attempt -le 18; $attempt++) {
@@ -282,9 +326,10 @@ jobs:
               continue
             }
             try {
-              gh release download $tag -R "${{ github.repository }}" -p "Siming.exe" -p "update.json" -p "sha256.txt" -p "Siming.apk" -p "Siming-apk-sha256.txt" -D release --clobber
+              gh release download $tag -R "${{ github.repository }}" -p "Siming.exe" -p "update.json" -p "sha256.txt" -p "Siming-Setup.exe" -p "Siming-Setup.sha256" -p "Siming.apk" -p "Siming-apk-sha256.txt" -D release --clobber
               if ($LASTEXITCODE -ne 0) { throw "gh release download failed with exit code $LASTEXITCODE" }
               ./scripts/verify-release-assets.ps1 -ReleaseDir release -ExpectedVersion $version -AllowUnsignedManualRelease
+              ./scripts/verify-windows-installer.ps1 -ReleaseDir release -AllowUnsignedManualRelease
               ./scripts/verify-android-release.ps1 -ReleaseDir release -ExpectedVersion $version
               $verified = $true
               break
