@@ -184,42 +184,35 @@ for line in (
 ):
     text = text.replace(line, "")
 
-# Blueprint cards remain useful, but their old Q&A editor/regeneration controls
-# belonged to the deleted interview state machine.
+# Blueprint cards remain useful, but the old Q&A editor controls belong to the
+# deleted interview state machine. Rewrite the action group by structural
+# boundaries instead of matching each legacy button verbatim.
 text = replace_once(
     text,
     '      <div className="gui-chat-blueprints">\n        {renderQAEditor()}\n',
     '      <div className="gui-chat-blueprints">\n',
     "blueprint QA editor mount",
 )
-text = replace_once(
-    text,
-    '''            {questionHistory.length > 0 && (
-              <Button size="small" onClick={() => {
-                setEditingAnswers({})
-                setShowQAEditor(!showQAEditor)
-              }}>
-                修改回答
-              </Button>
-            )}
-''',
-    "",
-    "blueprint modify-answer button",
-)
-text = replace_once(
-    text,
-    '''            <Button size="small" onClick={() => {
-              if (questionHistory.length > 0) {
-                handleRegenerateWithAnswers()
-              } else {
-                handleSystemAssistantMessage('全部重新生成')
-              }
-            }} disabled={streaming}>
-''',
-    '''            <Button size="small" onClick={() => handleSystemAssistantMessage('全部重新生成')} disabled={streaming}>
-''',
-    "blueprint regenerate button",
-)
+blueprint_start = text.find("  const renderBlueprintCards = () => {\n")
+if blueprint_start < 0:
+    raise RuntimeError("renderBlueprintCards marker missing")
+a = text.find("          <Space size={8}>\n", blueprint_start)
+if a < 0:
+    raise RuntimeError("blueprint action group start missing")
+after_actions = "          </Space>\n        </div>\n        <div className={`gui-chat-blueprint-grid"
+b = text.find(after_actions, a)
+if b < 0:
+    raise RuntimeError("blueprint action group end missing")
+new_actions = '''          <Space size={8}>
+            <Button size="small" onClick={() => handleSystemAssistantMessage('全部重新生成')} disabled={streaming}>
+              重新生成
+            </Button>
+            <Button size="small" onClick={() => handleSystemAssistantMessage('强化书名、主角动机和前三章钩子')} disabled={streaming}>
+              强化方案
+            </Button>
+          </Space>
+'''
+text = text[:a] + new_actions + text[b + len("          </Space>\n"):]
 
 # Questions may still exist in historical persisted payloads, but the current
 # creation experience no longer renders interactive interview widgets.
