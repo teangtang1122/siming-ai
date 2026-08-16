@@ -101,3 +101,13 @@ jobs:
           if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
             throw "Installer smoke did not create an uninstaller."
           }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Siming-Windows-Installer
+          path: |
+            release/Siming-Setup.exe
+            release/Siming-Setup.sha256
+          if-no-files-found: error
+          retention-days: 14
