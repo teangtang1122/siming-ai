@@ -238,4 +238,21 @@ for rel in (
     if p.exists():
         p.unlink()
 
+# Fail fast with compact diagnostics before npm install/test/build. This is the
+# same semantic guard as CI, restricted to TypeScript source files so failures
+# identify the exact dead control-plane references that still need removal.
+forbidden = re.compile(
+    r"useNovelCreationInterviewController|novelInterview\.|NOVEL_INTERVIEW_|refresh-question|/interview/next|"
+    r"submitQuestionAnswer|renderQuestions|renderQAEditor|questionHistory|handleRegenerateWithAnswers"
+)
+matches = []
+for path in sorted((ROOT / "frontend/src").rglob("*")):
+    if not path.is_file() or path.suffix not in {".ts", ".tsx"}:
+        continue
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if forbidden.search(line):
+            matches.append(f"{path.relative_to(ROOT)}:{line_no}:{line.strip()[:180]}")
+if matches:
+    raise RuntimeError("legacy frontend references remain: " + " | ".join(matches[:20]))
+
 print("frontend legacy creation interview flow removed")
