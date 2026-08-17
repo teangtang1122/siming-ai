@@ -712,6 +712,53 @@ def _prepare_character_mutation_values(
     return values, aliases, change_summary
 
 
+def _prepare_domain_mutation_values(
+    spec: RecordSpec,
+    row: Any | None,
+    payload: dict[str, Any] | None,
+) -> tuple[
+    dict[str, Any],
+    list[str] | None,
+    str | None,
+    list[tuple[str, str | None]] | None,
+    dict[str, Any] | None,
+]:
+    values = dict(payload or {})
+    values.pop("_record_type", None)
+    character_aliases: list[str] | None = None
+    character_change_summary: str | None = None
+    outline_links: list[tuple[str, str | None]] | None = None
+    governance_status_values: dict[str, Any] | None = None
+    if spec.model in {Foreshadowing, NarrativeDebt}:
+        governance_status_values = {
+            key: values.pop(key)
+            for key in STATUS_UPDATE_FIELDS
+            if key in values
+        }
+    if spec.model is Project:
+        values = _canonical_project_values(values)
+    elif spec.model is Character:
+        values, character_aliases, character_change_summary = _prepare_character_mutation_values(
+            values,
+            row,
+        )
+    elif spec.model is CharacterRelationship:
+        values = _canonical_character_relation_values(values)
+    elif spec.model is CharacterAIConfig:
+        values = _canonical_character_ai_config_values(values)
+        if row is not None:
+            values.setdefault("character_id", row.character_id)
+    elif spec.model is OutlineNode:
+        values, outline_links = _canonical_outline_values(values)
+    return (
+        values,
+        character_aliases,
+        character_change_summary,
+        outline_links,
+        governance_status_values,
+    )
+
+
 def apply_domain_mutation(
     db: Session,
     *,
@@ -751,33 +798,13 @@ def apply_domain_mutation(
         db.flush()
         return
 
-    values = dict(payload or {})
-    values.pop("_record_type", None)
-    character_aliases: list[str] | None = None
-    character_change_summary: str | None = None
-    outline_links: list[tuple[str, str | None]] | None = None
-    governance_status_values: dict[str, Any] | None = None
-    if spec.model in {Foreshadowing, NarrativeDebt}:
-        governance_status_values = {
-            key: values.pop(key)
-            for key in STATUS_UPDATE_FIELDS
-            if key in values
-        }
-    if spec.model is Project:
-        values = _canonical_project_values(values)
-    if spec.model is Character:
-        values, character_aliases, character_change_summary = _prepare_character_mutation_values(
-            values,
-            row,
-        )
-    if spec.model is CharacterRelationship:
-        values = _canonical_character_relation_values(values)
-    if spec.model is CharacterAIConfig:
-        values = _canonical_character_ai_config_values(values)
-        if row is not None:
-            values.setdefault("character_id", row.character_id)
-    if spec.model is OutlineNode:
-        values, outline_links = _canonical_outline_values(values)
+    (
+        values,
+        character_aliases,
+        character_change_summary,
+        outline_links,
+        governance_status_values,
+    ) = _prepare_domain_mutation_values(spec, row, payload)
     payload_id = values.get("id")
     if payload_id is not None and str(payload_id) != entity_id:
         raise ValidationError("同步记录 ID 与实体 ID 不一致")
