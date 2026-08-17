@@ -1,5 +1,3 @@
-import axios from 'axios'
-
 export type CreationAgentModelSource = 'conversation_override' | 'global_default' | 'task_setting' | 'task_setting_fallback' | 'unconfigured' | 'unknown'
 
 export interface CreationAgentRuntime {
@@ -22,7 +20,6 @@ interface ErrorResponseLike {
 }
 
 function errorResponse(error: unknown): ErrorResponseLike | undefined {
-  if (axios.isAxiosError(error)) return error.response as ErrorResponseLike | undefined
   if (!error || typeof error !== 'object' || !('response' in error)) return undefined
   const response = (error as { response?: unknown }).response
   return response && typeof response === 'object' ? response as ErrorResponseLike : undefined
