@@ -1,0 +1,37 @@
+name: One-shot Gateway mutation preparation refactor
+
+on:
+  push:
+    branches:
+      - feat/android-pc-parity-3
+    paths:
+      - .github/workflows/refactor-gateway-mutation-preparation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/android-pc-parity-3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python .github/scripts/refactor_gateway_mutation_preparation.py
+      - run: |
+          python -m pip install 'ruff<1,>=0.11'
+          cd backend
+          python -m ruff check app/services/gateway_legacy_replication.py tests/test_gateway_auxiliary_authoring_contract.py --fix
+      - run: |
+          git rm \
+            .github/scripts/refactor_gateway_mutation_preparation.py \
+            .github/workflows/refactor-gateway-mutation-preparation.yml
+          git add backend/app/services/gateway_legacy_replication.py backend/tests/test_gateway_auxiliary_authoring_contract.py
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "refactor(gateway): isolate auxiliary mutation preparation"
+          git push origin HEAD:feat/android-pc-parity-3
