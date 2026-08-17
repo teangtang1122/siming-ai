@@ -44,4 +44,14 @@ new = '''    if spec.model is Character:
         values, character_aliases = _canonical_character_values(values)
 '''
 text = replace_once(text, old, new, "character role normalization")
+old = '''        return [item.strip() for line in normalized.split("\\n") for item in line.split(",") if item.strip()]
+'''
+new = '''        return [
+            item.strip()
+            for line in normalized.split("\\n")
+            for item in line.split(",")
+            if item.strip()
+        ]
+'''
+text = replace_once(text, old, new, "Ruff long list comprehension")
 path.write_text(text, encoding="utf-8")
