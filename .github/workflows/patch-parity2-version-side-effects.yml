@@ -1,0 +1,30 @@
+name: One-shot parity2 version side effects
+
+on:
+  push:
+    branches:
+      - feat/android-pc-contract-parity-2
+    paths:
+      - .github/workflows/patch-parity2-version-side-effects.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/android-pc-contract-parity-2
+      - run: python .github/scripts/patch_parity2_version_side_effects.py
+      - run: |
+          git rm \
+            .github/scripts/patch_parity2_version_side_effects.py \
+            .github/workflows/patch-parity2-version-side-effects.yml
+          git add backend/app/services/gateway_legacy_replication.py
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(gateway): preserve PC chapter and character version semantics"
+          git push origin HEAD:feat/android-pc-contract-parity-2
