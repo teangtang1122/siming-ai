@@ -83,11 +83,36 @@ internal object PcAuthoringContract {
             PcFieldSpec("is_evolution_tracked", PcFieldKind.Boolean),
             PcFieldSpec("change_summary", PcFieldKind.Multiline),
         ),
+        // Auxiliary structures are not generic authoring cards, but they are
+        // first-class writable sync contracts so offline work can later replay
+        // into the same PC domain instead of being dropped.
+        "character_relation" to listOf(
+            PcFieldSpec("from"),
+            PcFieldSpec("to"),
+            PcFieldSpec("relationship_type"),
+            PcFieldSpec("description", PcFieldKind.Multiline),
+        ),
+        "character_ai_config" to listOf(
+            PcFieldSpec("character_id"),
+            PcFieldSpec("tone_style", PcFieldKind.NullableText),
+            PcFieldSpec("catchphrases", PcFieldKind.StringArray),
+            PcFieldSpec("verbosity", PcFieldKind.NullableText),
+            PcFieldSpec("emotion_tendency", PcFieldKind.NullableText),
+            PcFieldSpec("model_override", PcFieldKind.NullableText),
+            PcFieldSpec("custom_system_prompt", PcFieldKind.Multiline),
+        ),
         "world" to listOf(
             PcFieldSpec("title"),
             PcFieldSpec("dimension"),
             PcFieldSpec("content", PcFieldKind.Multiline),
             PcFieldSpec("sort_order", PcFieldKind.Integer),
+        ),
+        "world_relation" to listOf(
+            PcFieldSpec("source_entry_id"),
+            PcFieldSpec("target_entry_id"),
+            PcFieldSpec("relation_type"),
+            PcFieldSpec("description", PcFieldKind.Multiline),
+            PcFieldSpec("metadata_json", PcFieldKind.JsonObject),
         ),
         "foreshadowing" to listOf(
             PcFieldSpec("title"),
