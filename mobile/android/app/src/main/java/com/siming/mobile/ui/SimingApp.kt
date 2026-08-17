@@ -926,7 +926,7 @@ private fun RecordEditorScreen(
                 StatusBanner(
                     Icons.Outlined.Person,
                     "先写清动机，再让 AI 接着写",
-                    "当前表单直接编辑 PC Character 字段；能力/别名保持数组结构，未展示的稳定写作 profile 会原样保留。",
+                    "当前表单直接编辑 PC Character 字段；能力/别名保持数组结构，profile 保持 JSON 对象结构，与 PC Character 契约一致。",
                 )
             }
             fields.forEach { field ->
