@@ -565,6 +565,26 @@ def _canonical_character_values(values: dict[str, Any]) -> tuple[dict[str, Any],
     return values, aliases
 
 
+def _prepare_character_mutation_values(
+    values: dict[str, Any],
+    row: Character | None,
+) -> tuple[dict[str, Any], list[str] | None, str | None]:
+    raw_summary = values.pop("change_summary", None)
+    change_summary = str(raw_summary or "").strip() or None
+    if "role_type" in values:
+        raw_role_type = values["role_type"]
+        values["background"] = append_character_role_description(
+            values.get("background", row.background if row is not None else None),
+            raw_role_type,
+        )
+        values["role_type"] = normalize_character_role_type(
+            raw_role_type,
+            default=(row.role_type or "other") if row is not None else "other",
+        )
+    values, aliases = _canonical_character_values(values)
+    return values, aliases, change_summary
+
+
 def apply_domain_mutation(
     db: Session,
     *,
@@ -617,19 +637,10 @@ def apply_domain_mutation(
     if spec.model is Project:
         values = _canonical_project_values(values)
     if spec.model is Character:
-        raw_summary = values.pop("change_summary", None)
-        character_change_summary = str(raw_summary or "").strip() or None
-        if "role_type" in values:
-            raw_role_type = values["role_type"]
-            values["background"] = append_character_role_description(
-                values.get("background", row.background if row is not None else None),
-                raw_role_type,
-            )
-            values["role_type"] = normalize_character_role_type(
-                raw_role_type,
-                default=(row.role_type or "other") if row is not None else "other",
-            )
-        values, character_aliases = _canonical_character_values(values)
+        values, character_aliases, character_change_summary = _prepare_character_mutation_values(
+            values,
+            row,
+        )
     if spec.model is OutlineNode:
         values, outline_links = _canonical_outline_values(values)
     payload_id = values.get("id")
