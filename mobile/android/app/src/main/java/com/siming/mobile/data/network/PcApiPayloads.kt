@@ -8,75 +8,23 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
 /**
- * Converts the local replica shape into the request schemas published by the
- * desktop API. Replica-only identifiers, derived fields, and database JSON
- * strings must never leak into canonical authoring requests.
+ * Converts rich local replicas into the request schemas published by the PC.
+ *
+ * A replica may contain read-only response fields, derived metrics, historical
+ * metadata, or compatibility aliases. None of those fields may leak into a PC
+ * write request or an offline sync mutation.
  */
 internal object PcApiPayloads {
-    private val fields = mapOf(
-        "project" to setOf(
-            "title",
-            "description",
-            "tags",
-            "narrative_perspective",
-            "writing_style",
-            "forbidden_sentence_patterns",
-            "rhetoric_guidelines",
-            "short_sentences",
-            "custom_style_prompt",
-            "daily_word_goal",
-        ),
-        "chapter" to setOf("title", "outline_node_id", "content", "context_manifest_id"),
-        "outline" to setOf(
-            "parent_id",
-            "node_type",
-            "title",
-            "summary",
-            "status",
-            "sort_order",
-            "character_ids",
-            "characters",
-            "metadata",
-        ),
-        "character" to setOf(
-            "name",
-            "appearance",
-            "role_type",
-            "personality",
-            "background",
-            "abilities",
-            "aliases",
-            "age",
-            "life_status",
-            "current_location",
-            "realm_or_level",
-            "physical_state",
-            "mental_state",
-            "current_goal",
-            "active_conflict",
-            "abilities_state",
-            "items_or_assets",
-            "profile",
-            "is_evolution_tracked",
-            "change_summary",
-        ),
-        "world" to setOf("dimension", "title", "content", "sort_order"),
-    )
+    private val coreAuthoringTypes = setOf("project", "chapter", "outline", "character", "world")
 
     fun authoring(entityType: String, source: JsonObject, create: Boolean): JsonObject {
-        val allowed = fields[entityType] ?: error("PC API 暂不支持资料类型：$entityType")
-        val values = linkedMapOf<String, JsonElement>()
-        allowed.forEach { key -> source[key]?.let { values[key] = it } }
-
-        if (entityType == "project") normalizeProject(values)
-        if (entityType == "character") normalizeCharacter(values)
-        if (entityType == "world") {
-            val dimension = (values["dimension"] as? JsonPrimitive)?.content.orEmpty()
-            if (dimension !in WORLD_DIMENSIONS) values["dimension"] = JsonPrimitive("culture")
-        }
+        require(entityType in coreAuthoringTypes) { "PC API 暂不支持资料类型：$entityType" }
+        val values = canonicalFields(entityType, source)
+        normalizeCore(entityType, source, values)
         if (!create && entityType == "chapter") {
             values["trigger_type"] = JsonPrimitive("manual_save")
         }
@@ -87,29 +35,99 @@ internal object PcApiPayloads {
         return JsonObject(values)
     }
 
-    fun governance(
+    /**
+     * POST body for the PC narrative-governance `/items` endpoint.
+     * Lifecycle status is deliberately excluded; explicit user transitions use
+     * the canonical PATCH endpoint instead of masquerading as an upsert.
+     */
+    fun governanceContent(
         entityType: String,
         source: JsonObject,
         entityId: String,
         create: Boolean,
     ): JsonObject {
-        val itemType = when (entityType) {
-            "foreshadowing" -> "foreshadowing"
-            "governance" -> "narrative_debt"
-            else -> error("PC 叙事治理 API 暂不支持资料类型：$entityType")
-        }
-        val allowed = if (entityType == "foreshadowing") {
-            setOf("title", "description", "status", "importance", "storyline", "dedupe_key", "source")
-        } else {
-            setOf("title", "description", "status", "priority", "dedupe_key", "source", "debt_type")
-        }
+        val allowed = governanceContentKeys(entityType)
         val data = buildJsonObject {
             allowed.forEach { key -> source[key]?.let { put(key, it) } }
             if (!create) put("item_id", entityId)
+            if (source["source"] == null) put("source", "manual")
+            if (source["dedupe_key"] == null) put("dedupe_key", "mobile-$entityId")
         }
         return buildJsonObject {
-            put("type", itemType)
+            put("type", governanceItemType(entityType))
             put("data", data)
+        }
+    }
+
+    /** Canonical user lifecycle PATCH payload, or null when no status exists. */
+    fun governanceStatus(entityType: String, source: JsonObject): JsonObject? {
+        governanceItemType(entityType)
+        val status = (source["status"] as? JsonPrimitive)?.contentOrNull.orEmpty().trim()
+        if (status.isBlank()) return null
+        return buildJsonObject {
+            GOVERNANCE_STATUS_KEYS.forEach { key -> source[key]?.let { put(key, it) } }
+        }
+    }
+
+    fun governanceItemType(entityType: String): String = when (entityType) {
+        "foreshadowing" -> "foreshadowing"
+        "governance" -> "narrative_debt"
+        else -> error("PC 叙事治理 API 暂不支持资料类型：$entityType")
+    }
+
+    /**
+     * Minimal public mutation used by the revisioned offline sync protocol.
+     * The Room replica remains rich; only PC-writable fields enter the outbox.
+     */
+    fun syncMutation(
+        entityType: String,
+        source: JsonObject,
+        projectId: String,
+        entityId: String,
+    ): JsonObject {
+        val values = if (entityType in coreAuthoringTypes) {
+            canonicalFields(entityType, source).also { normalizeCore(entityType, source, it) }
+        } else {
+            linkedMapOf<String, JsonElement>().apply {
+                PcAuthoringContract.writableKeys(entityType).forEach { key ->
+                    source[key]?.let { put(key, it) }
+                }
+            }
+        }
+        return buildJsonObject {
+            put("_record_type", recordType(entityType))
+            put("id", entityId)
+            if (entityType != "project") put("project_id", projectId)
+            values.forEach { (key, value) -> put(key, value) }
+            if (entityType in GOVERNANCE_TYPES) {
+                if (source["source"] == null) put("source", "manual")
+                if (source["dedupe_key"] == null) put("dedupe_key", "mobile-$entityId")
+            }
+        }
+    }
+
+    private fun canonicalFields(
+        entityType: String,
+        source: JsonObject,
+    ): LinkedHashMap<String, JsonElement> = linkedMapOf<String, JsonElement>().apply {
+        PcAuthoringContract.writableKeys(entityType).forEach { key ->
+            source[key]?.let { put(key, it) }
+        }
+    }
+
+    private fun normalizeCore(
+        entityType: String,
+        source: JsonObject,
+        values: MutableMap<String, JsonElement>,
+    ) {
+        when (entityType) {
+            "project" -> normalizeProject(values)
+            "outline" -> normalizeOutline(source, values)
+            "character" -> normalizeCharacter(values)
+            "world" -> {
+                val dimension = (values["dimension"] as? JsonPrimitive)?.content.orEmpty()
+                if (dimension !in WORLD_DIMENSIONS) values["dimension"] = JsonPrimitive("culture")
+            }
         }
     }
 
@@ -120,28 +138,51 @@ internal object PcApiPayloads {
             values["tags"] = runCatching { Json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
                 ?: stringArray(raw)
         }
+        val shortSentences = values["short_sentences"]
+        if (shortSentences is JsonPrimitive && shortSentences.booleanOrNull == null) {
+            values["short_sentences"] = JsonPrimitive(parseBoolean(shortSentences.content))
+        }
+    }
+
+    private fun normalizeOutline(
+        source: JsonObject,
+        values: MutableMap<String, JsonElement>,
+    ) {
+        if (values["metadata"] == null) {
+            source["metadata_json"]?.let { values["metadata"] = it }
+        }
+        if (values["characters"] == null) {
+            val linked = source["linked_characters"] as? JsonArray
+            if (linked != null) {
+                values["characters"] = JsonArray(
+                    linked.mapNotNull { element ->
+                        val item = element as? JsonObject ?: return@mapNotNull null
+                        val id = (item["character_id"] ?: item["id"] as? JsonElement)
+                            ?.let { it as? JsonPrimitive }
+                            ?.contentOrNull
+                            .orEmpty()
+                        if (id.isBlank()) return@mapNotNull null
+                        buildJsonObject {
+                            put("character_id", id)
+                            item["role_in_scene"]?.let { put("role_in_scene", it) }
+                        }
+                    },
+                )
+            }
+        }
+        values.normalizeJsonArray("characters", "大纲角色关联")
+        values.normalizeJsonObject("metadata", "大纲 metadata")
+        values.normalizeStringArray("character_ids")
     }
 
     private fun normalizeCharacter(values: MutableMap<String, JsonElement>) {
         values.normalizeStringArray("abilities")
         values.normalizeStringArray("aliases")
-
-        val profile = values["profile"]
-        if (profile is JsonPrimitive) {
-            val raw = profile.content.trim()
-            values["profile"] = if (raw.isBlank()) {
-                JsonObject(emptyMap())
-            } else {
-                runCatching { Json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
-                    ?: error("角色稳定写作档案必须是 JSON 对象")
-            }
-        }
+        values.normalizeJsonObject("profile", "角色稳定写作档案")
 
         val tracked = values["is_evolution_tracked"]
         if (tracked is JsonPrimitive && tracked.booleanOrNull == null) {
-            values["is_evolution_tracked"] = JsonPrimitive(
-                tracked.content.trim().lowercase() !in setOf("0", "false", "no", "off", "否"),
-            )
+            values["is_evolution_tracked"] = JsonPrimitive(parseBoolean(tracked.content))
         }
     }
 
@@ -158,6 +199,34 @@ internal object PcApiPayloads {
         }
     }
 
+    private fun MutableMap<String, JsonElement>.normalizeJsonObject(key: String, label: String) {
+        val value = get(key) ?: return
+        if (value is JsonNull || value is JsonObject) return
+        if (value is JsonPrimitive) {
+            val raw = value.content.trim()
+            put(
+                key,
+                if (raw.isBlank()) JsonObject(emptyMap())
+                else runCatching { Json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+                    ?: error("$label 必须是 JSON 对象"),
+            )
+        }
+    }
+
+    private fun MutableMap<String, JsonElement>.normalizeJsonArray(key: String, label: String) {
+        val value = get(key) ?: return
+        if (value is JsonNull || value is JsonArray) return
+        if (value is JsonPrimitive) {
+            val raw = value.content.trim()
+            put(
+                key,
+                if (raw.isBlank()) JsonArray(emptyList())
+                else runCatching { Json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
+                    ?: error("$label 必须是 JSON 数组"),
+            )
+        }
+    }
+
     private fun stringArray(raw: String): JsonArray = JsonArray(
         raw.split('\n', ',', '，', '、')
             .map(String::trim)
@@ -165,6 +234,36 @@ internal object PcApiPayloads {
             .distinct()
             .map(::JsonPrimitive),
     )
+
+    private fun parseBoolean(raw: String): Boolean =
+        raw.trim().lowercase() !in setOf("0", "false", "no", "off", "否")
+
+    private fun governanceContentKeys(entityType: String): Set<String> = when (entityType) {
+        "foreshadowing" -> setOf(
+            "title", "description", "importance", "storyline",
+            "source_chapter_id", "target_chapter_id", "target_chapter_number",
+            "resolved_chapter_id", "evidence", "resolution_note", "resolution_evidence",
+            "dedupe_key", "source",
+        )
+        "governance" -> setOf(
+            "debt_type", "title", "description", "priority",
+            "source_chapter_id", "target_chapter_id", "target_chapter_number",
+            "resolved_chapter_id", "linked_foreshadowing_id", "linked_causal_edge_id",
+            "evidence", "resolution_note", "resolution_evidence", "dedupe_key", "source",
+        )
+        else -> error("PC 叙事治理 API 暂不支持资料类型：$entityType")
+    }
+
+    private fun recordType(entityType: String): String = when (entityType) {
+        "project" -> "project"
+        "chapter" -> "chapter"
+        "outline" -> "outline_node"
+        "character" -> "character"
+        "world" -> "world_entry"
+        "foreshadowing" -> "foreshadowing"
+        "governance" -> "narrative_debt"
+        else -> error("暂不支持的资料类型：$entityType")
+    }
 
     private fun addCreateDefaults(entityType: String, values: MutableMap<String, JsonElement>) {
         when (entityType) {
@@ -184,6 +283,8 @@ internal object PcApiPayloads {
                 values.putIfAbsent("node_type", JsonPrimitive("chapter"))
                 values.putIfAbsent("status", JsonPrimitive("pending"))
                 values.putIfAbsent("sort_order", JsonPrimitive(0))
+                values.putIfAbsent("characters", JsonArray(emptyList()))
+                values.putIfAbsent("metadata", JsonObject(emptyMap()))
             }
             "character" -> {
                 values.ensureText("name", "未命名角色")
@@ -205,6 +306,18 @@ internal object PcApiPayloads {
         if (current.isBlank()) put(key, JsonPrimitive(fallback))
     }
 
+    private val GOVERNANCE_TYPES = setOf("foreshadowing", "governance")
+    private val GOVERNANCE_STATUS_KEYS = setOf(
+        "status",
+        "target_chapter_id",
+        "target_chapter_number",
+        "resolved_chapter_id",
+        "evidence",
+        "resolution_note",
+        "resolution_evidence",
+        "verification_note",
+        "closed_by",
+    )
     private val WORLD_DIMENSIONS = setOf(
         "geography",
         "history",
