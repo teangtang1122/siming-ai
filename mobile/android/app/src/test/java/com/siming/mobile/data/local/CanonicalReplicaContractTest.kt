@@ -45,13 +45,26 @@ class CanonicalReplicaContractTest {
     }
 
     @Test
-    fun legacyPrimaryReplicaWithoutRecordTypeRemainsVisible() {
+    fun legacyPrimaryReplicaWithoutRecordTypeRemainsVisibleWhenWellFormed() {
         val record = replica("foreshadowing", "legacy", null, "\"title\":\"旧伏笔\"")
 
         assertEquals(
             listOf("legacy"),
             orderReplicaEntities("foreshadowing", listOf(record)).map(ReplicaEntity::entityId),
         )
+    }
+
+    @Test
+    fun malformedLegacyRowsDoNotBecomeUnnamedCards() {
+        val records = listOf(
+            replica("character", "bad-character", null, "\"background\":\"旧结构\""),
+            replica("world", "bad-world", null, "\"content\":\"旧结构\""),
+            replica("foreshadowing", "bad-foreshadowing", null, "\"description\":\"旧结构\""),
+        )
+
+        assertEquals(emptyList(), orderReplicaEntities("character", records).map(ReplicaEntity::entityId))
+        assertEquals(emptyList(), orderReplicaEntities("world", records).map(ReplicaEntity::entityId))
+        assertEquals(emptyList(), orderReplicaEntities("foreshadowing", records).map(ReplicaEntity::entityId))
     }
 
     private fun replica(
