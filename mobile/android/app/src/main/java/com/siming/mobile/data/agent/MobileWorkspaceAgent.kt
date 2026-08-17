@@ -36,8 +36,11 @@ internal class MobileWorkspaceAgent(
     private val saveEntity: suspend (String, String, String, JsonObject) -> String,
 ) {
     private val contract = PcPromptContract(context.applicationContext)
+    private val contextPolicy = PcContextManifestPolicy(context.applicationContext).policy
+    private val contextEngine = MobileContextManifestEngine(contextPolicy)
     private val json = Json { ignoreUnknownKeys = true }
     private val chapterDrafts = LinkedHashMap<String, String>()
+    private val contextManifests = LinkedHashMap<String, MobileContextManifest>()
 
     suspend fun run(
         projectId: String,
@@ -123,7 +126,7 @@ internal class MobileWorkspaceAgent(
         "search_outline" -> searchOutline(projectId, args)
         "search_outline_tree" -> searchOutlineTree(projectId, args)
         "search_worldbuilding" -> searchWorldbuilding(projectId, args)
-        "preview_writing_context" -> previewWritingContext(projectId, args)
+        "preview_writing_context" -> previewWritingContext(projectId, args, config)
         "chapter_writer" -> chapterWriter(projectId, args, config)
         "character_writer" -> characterWriter(projectId, args, config)
         "outline_writer" -> outlineWriter(projectId, args, config)
@@ -302,64 +305,63 @@ internal class MobileWorkspaceAgent(
         )
     }
 
-    private suspend fun previewWritingContext(projectId: String, args: JsonObject): JsonObject {
+    private suspend fun previewWritingContext(
+        projectId: String,
+        args: JsonObject,
+        config: DirectApiConfig,
+    ): JsonObject {
         val all = records(projectId)
         val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
-        val outlineId = args.string("outline_node_id")
-        val involved = args.stringList("involved_characters").take(12)
-        val characterLimit = args.int("character_limit", 8).coerceIn(1, 16)
-        val recentLimit = args.int("recent_limit", 5).coerceIn(1, 12)
-        val chapters = orderedChapters(all)
+        val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
+            ?: return skipped("preview_writing_context", "项目不存在", JsonObject(emptyMap()))
+        val request = MobileContextRequest.fromArgs(args, contextPolicy)
+        val inputs = manifestInputs(projectId, config, request, project, all, rawPayloads)
+        val manifest = contextEngine.prepare(inputs)
+        cacheManifest(manifestKey(projectId, request), manifest)
+
         val resolved = resolvePcCharacters(
             rawPayloads,
-            outlineId.takeIf(String::isNotBlank),
-            involved,
-            characterLimit,
+            request.outlineNodeId.takeIf(String::isNotBlank),
+            request.involvedCharacters,
+            request.characterLimit,
         )
         val characters = resolved.characters.map(::clean)
         val relationships = pcRelationshipPayloads(rawPayloads, resolved.characters)
-        val governance = pcGovernanceContext(rawPayloads)
-        val recent = chapters.takeLast(recentLimit)
+        val recent = orderedChapters(all).takeLast(request.recentLimit)
             .map { select(it.payload, "id", "title", "outline_node_id", "word_count", "summary") }
-        val outline = outlineContext(all, outlineId)
-        val world = worldContext(all)
-        val matchedNames = resolved.characters.mapTo(mutableSetOf()) { it.string("name") } +
-            resolved.resolvedAliases.keys
-        val missingNames = involved.filterNot { it in matchedNames }
-        val warnings = buildJsonArray {
-            if (outlineId.isNotBlank() && all.none { it.entity.entityType == "outline" && it.entity.entityId == outlineId }) {
-                add(JsonPrimitive("未找到目标大纲节点，章节写作可能会偏离规划。"))
-            }
-            if (missingNames.isNotEmpty()) {
-                add(JsonPrimitive("部分指定角色未命中角色卡或别名：${missingNames.joinToString("、")}"))
-            }
-            if (characters.isEmpty()) add(JsonPrimitive("本次写作未命中任何角色当前状态。"))
-            if (world == "暂无世界观设定。") add(JsonPrimitive("本次写作没有可用世界观设定。"))
-        }
-        val usedChars = outline.length + world.length + governance.length
+        val outline = manifest.categoryText("target_outline", "暂无当前大纲节点。")
+        val worldItems = manifest.items.filter { it.sourceType == "worldbuilding" }
+        val world = worldItems.joinToString("\n\n") { it.content }.ifBlank { "暂无世界观设定。" }
+        val governance = manifest.categoryText(
+            "narrative_governance",
+            "Narrative governance: no due or high-risk items.",
+        )
+        val summaries = manifest.categoryText("previous_summary", "暂无前文摘要。")
         val data = buildJsonObject {
             put("outline_context", outline)
             put("recent_chapters", JsonArray(recent))
-            put("recent_summaries_text", recentSummaries(all, recentLimit))
+            put("recent_summaries_text", summaries)
             put("characters", JsonArray(characters))
             put("relationships", relationships)
             put("world_context", world)
             put("narrative_governance_context", governance)
-            put("warnings", warnings)
-            put("requirements_preview", args.string("requirements").take(1_000))
+            put("warnings", JsonArray(manifest.warnings.map(::JsonPrimitive)))
+            put("requirements_preview", request.requirements.take(1_000))
             put("resolved_aliases", jsonStringMap(resolved.resolvedAliases))
-            put("rag_sections", JsonArray(emptyList()))
-            put("total_used_chars", usedChars)
-            put("total_estimated_tokens", usedChars.coerceAtLeast(1) / 4)
-            put("rag_used", false)
+            put("rag_sections", JsonArray(worldItems.map { it.toJson(includeContent = false) }))
+            put("total_used_chars", manifest.estimatedInputChars)
+            put("total_estimated_tokens", manifest.estimatedInputTokens)
+            put("rag_used", worldItems.isNotEmpty())
             put("fts_available", false)
             put("auto_indexed", false)
+            put("context_manifest", manifest.toJson(includeContent = false))
         }
-        return ok(
-            "preview_writing_context",
-            "写作上下文预检：${characters.size} 个角色、${relationships.size} 条关系、${warnings.size} 条风险",
-            data,
-        )
+        val detail = if (manifest.status == "ready") {
+            "写作上下文预检通过：${characters.size} 个角色、${relationships.size} 条关系、${manifest.warnings.size} 条提示"
+        } else {
+            "写作上下文需要确认：必选大纲或文风锚点不完整"
+        }
+        return ok("preview_writing_context", detail, data)
     }
 
     private suspend fun chapterWriter(
@@ -371,26 +373,57 @@ internal class MobileWorkspaceAgent(
         val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
         val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
             ?: return skipped("chapter_writer", "项目不存在", JsonObject(emptyMap()))
-        val outlineId = args.string("outline_node_id")
-        val involved = args.stringList("involved_characters").take(12)
-        val resolved = resolvePcCharacters(
-            rawPayloads,
-            outlineId.takeIf(String::isNotBlank),
-            involved,
-            12,
+        val request = MobileContextRequest.fromArgs(args, contextPolicy)
+        val inputs = manifestInputs(projectId, config, request, project, all, rawPayloads)
+        val key = manifestKey(projectId, request)
+        val cached = contextManifests[key]
+        val manifest = if (cached == null) {
+            contextEngine.prepare(inputs).also { cacheManifest(key, it) }
+        } else {
+            val validation = contextEngine.validate(cached, inputs)
+            if (!validation.ready) {
+                return skipped(
+                    "chapter_writer",
+                    validation.detail,
+                    buildJsonObject {
+                        put("context_status", validation.status)
+                        put("context_manifest", validation.current.toJson(includeContent = false))
+                        put("requires_preview", true)
+                    },
+                )
+            }
+            validation.current.also { cacheManifest(key, it) }
+        }
+        if (manifest.status != "ready") {
+            return skipped(
+                "chapter_writer",
+                "写作上下文缺少必选锚点，请先完成预检并确认目标大纲。",
+                buildJsonObject {
+                    put("context_status", manifest.status)
+                    put("context_manifest", manifest.toJson(includeContent = false))
+                    put("requires_preview", true)
+                },
+            )
+        }
+
+        val governance = manifest.categoryText(
+            "narrative_governance",
+            "Narrative governance: no due or high-risk items.",
         )
-        val governance = pcGovernanceContext(rawPayloads)
-        val worldAndGovernance = listOf(worldContext(all), governance)
+        val world = manifest.items.filter { it.sourceType == "worldbuilding" }
+            .joinToString("\n\n") { it.content }
+            .ifBlank { "暂无世界观设定。" }
+        val worldAndGovernance = listOf(world, governance)
             .filter(String::isNotBlank)
             .joinToString("\n\n")
-        val requirements = args.string("requirements")
+        val requirements = manifest.categoryText("user_requirement", request.requirements)
         val messages = contract.chapterMessages(
             mode = args.string("mode").ifBlank { "quality" },
             project = project,
-            outlineContext = outlineContext(all, outlineId),
+            outlineContext = manifest.categoryText("target_outline", "暂无当前大纲节点。"),
             worldContext = worldAndGovernance,
-            characterProfiles = pcCharacterDetails(rawPayloads, resolved.characters),
-            recentSummaries = recentSummaries(all, 5),
+            characterProfiles = manifest.categoryText("scene_character", "未指定角色。"),
+            recentSummaries = manifest.categoryText("previous_summary", "暂无前文摘要。"),
             requirements = requirements,
         )
         val content = directApi.complete(
@@ -404,8 +437,15 @@ internal class MobileWorkspaceAgent(
         val draftId = UUID.randomUUID().toString()
         chapterDrafts[draftId] = content
         while (chapterDrafts.size > MAX_DRAFTS) chapterDrafts.remove(chapterDrafts.keys.first())
-        val outlineTitle = all.firstOrNull { it.entity.entityType == "outline" && it.entity.entityId == outlineId }
-            ?.payload?.string("title").orEmpty()
+        val outlineTitle = all.firstOrNull {
+            it.entity.entityType == "outline" && it.entity.entityId == request.outlineNodeId
+        }?.payload?.string("title").orEmpty()
+        val resolved = resolvePcCharacters(
+            rawPayloads,
+            request.outlineNodeId.takeIf(String::isNotBlank),
+            request.involvedCharacters,
+            request.characterLimit,
+        )
         val data = buildJsonObject {
             put("draft_id", draftId)
             put("content_ref", draftId)
@@ -413,13 +453,21 @@ internal class MobileWorkspaceAgent(
             put("word_count", countWords(content))
             put("model", config.model)
             put("context_snapshot", buildJsonObject {
-                put("outline_node_id", outlineId)
+                put("outline_node_id", request.outlineNodeId)
                 put("outline_title", outlineTitle)
-                put("involved_characters", JsonArray(involved.map(::JsonPrimitive)))
+                put("involved_characters", JsonArray(request.involvedCharacters.map(::JsonPrimitive)))
                 put("resolved_aliases", jsonStringMap(resolved.resolvedAliases))
                 put("relationship_count", pcRelationshipPayloads(rawPayloads, resolved.characters).size)
                 put("narrative_governance_used", governance.isNotBlank())
                 put("prompt_contract_sha256", contract.sourceHash)
+                put("context_manifest_id", manifest.id)
+                put("context_policy_version", manifest.policyVersion)
+                put("context_index_version", manifest.indexVersion)
+                put("context_policy_sha256", manifest.policySourceHash)
+                put("context_request_fingerprint", manifest.requestFingerprint)
+                put("context_selection_fingerprint", manifest.selectionFingerprint)
+                put("context_status", manifest.status)
+                put("context_estimated_input_tokens", manifest.estimatedInputTokens)
                 put("execution_route", "android_standalone")
             })
         }
@@ -722,6 +770,37 @@ internal class MobileWorkspaceAgent(
         saveEntity(projectId, "world", current.entity.entityId, payload)
         return ok("update_worldbuilding_entry", "已更新世界观：${payload.string("title")}", clean(payload))
     }
+
+    private fun manifestInputs(
+        projectId: String,
+        config: DirectApiConfig,
+        request: MobileContextRequest,
+        project: JsonObject,
+        all: List<LocalRecord>,
+        rawPayloads: List<JsonObject>,
+    ): MobileContextInputs = MobileContextInputs(
+        projectId = projectId,
+        model = config.model,
+        request = request,
+        project = project,
+        styleText = contract.styleContext(project),
+        primaryRecords = all.map(LocalRecord::payload),
+        rawRecords = rawPayloads,
+        orderedChapters = orderedChapters(all).map(LocalRecord::payload),
+    )
+
+    private fun manifestKey(projectId: String, request: MobileContextRequest): String =
+        "$projectId|${request.outlineNodeId.ifBlank { request.targetChapterId.ifBlank { "unscoped" } }}"
+
+    private fun cacheManifest(key: String, manifest: MobileContextManifest) {
+        contextManifests[key] = manifest
+        while (contextManifests.size > MAX_CONTEXT_MANIFESTS) {
+            contextManifests.remove(contextManifests.keys.first())
+        }
+    }
+
+    private fun MobileContextManifest.categoryText(category: String, fallback: String): String =
+        items.filter { it.category == category }.joinToString("\n\n") { it.content }.ifBlank { fallback }
 
     private suspend fun rawRecords(projectId: String): List<LocalRecord> =
         loadSnapshot(projectId)
@@ -1027,6 +1106,7 @@ internal class MobileWorkspaceAgent(
     companion object {
         private const val MAX_ITERATIONS = 30
         private const val MAX_DRAFTS = 20
+        private const val MAX_CONTEXT_MANIFESTS = 20
         private val WORLD_DIMENSIONS = setOf("geography", "history", "factions", "power_system", "races", "culture")
         private val LOCATOR_FIELDS = setOf(
             "id", "project_id", "chapter_id", "chapter_title", "outline_node_id", "node_id",

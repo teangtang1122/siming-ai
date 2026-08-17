@@ -45,9 +45,9 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 明确阻止：没有 Gateway 且未配置手机直连模型时不启动 Agent。
-- **Android 独立 Agent：** 明确降级实现：共享生成后的提示词与工具 schema，但工具执行、上下文选择和审计仍是 Android 本地实现。
+- **Android 独立 Agent：** 明确降级实现：提示词、工具 schema 与版本化上下文策略均由 PC 源生成；Android 仍使用本地工具适配器、会话级 ContextManifest 和确定性词法降级，不具备 PC 的持久运行审计与完整恢复语义。
 - **已知缺口：**
-  - 手机独立 Agent 尚未共享 PC 的 ContextManifest、运行日志和完整恢复语义。
+  - 手机独立 Agent 尚未持久化运行日志和 ContextManifest，应用重启后的恢复仍弱于 PC。
 
 ### `authoring.chapter` — 章节创建、读取、更新和删除
 
@@ -188,9 +188,9 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口：通过 PC workspace assistant 调用同一工具。
 - **Android 离线：** 明确阻止：没有模型执行路由时只保留资料缓存，不运行上下文预检。
-- **Android 独立 Agent：** 明确降级实现：角色、关系和治理优先级已复刻，但没有 PC RAG、FTS、ContextManifest、source hash 和预算覆盖判定。
+- **Android 独立 Agent：** 明确降级实现：已共享版本化策略、必选 coverage、全局 token 预算、source hash、选择指纹和 stale 校验；Android 独立模式仍以本地词法检索替代 PC FTS/向量检索，不支持 pinned chunks，且清单仅在会话内保存。
 - **已知缺口：**
-  - 手机独立预检仍是 Kotlin 近似实现，下一阶段应改为版本化 ContextManifest 契约。
+  - 手机独立预检尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计。
 
 ### `governance.items` — 伏笔、叙事债务及生命周期状态操作
 
@@ -275,9 +275,9 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 明确阻止：无模型执行路由时只编辑资料，不生成正文。
-- **Android 独立 Agent：** 明确降级实现：共享章节提示词并消费角色关系/治理锁，但未使用 ContextManifest、RAG、source hash、预算和 stale 校验。
+- **Android 独立 Agent：** 明确降级实现：写章前会创建或校验会话级 ContextManifest，并把必选锚点、预算、策略/请求/选择指纹写入草稿快照；检索仍为 Android 本地词法降级，清单和草稿审计尚未持久化到 PC 账本。
 - **已知缺口：**
-  - 手机独立写章是当前最大语义差距，下一阶段必须共享 ContextManifest 选择和审计契约。
+  - 手机独立写章已具备 ContextManifest 防漂移门禁，但仍缺 PC 级持久审计、语义检索和跨重启恢复。
 
 ### `writer.character` — 根据作品与世界观生成结构化角色卡
 

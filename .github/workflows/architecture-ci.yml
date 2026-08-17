@@ -11,6 +11,7 @@ on:
       - "scripts/check-architecture.py"
       - "scripts/check-mobile-pc-parity.py"
       - "scripts/export-mobile-prompt-contract.py"
+      - "scripts/export-mobile-context-policy.py"
       - "scripts/run-performance-baseline.py"
       - ".jscpd.json"
       - ".github/workflows/architecture-ci.yml"
@@ -25,6 +26,7 @@ on:
       - "scripts/check-architecture.py"
       - "scripts/check-mobile-pc-parity.py"
       - "scripts/export-mobile-prompt-contract.py"
+      - "scripts/export-mobile-context-policy.py"
       - ".jscpd.json"
       - ".github/workflows/architecture-ci.yml"
 
@@ -59,6 +61,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Validate generated Android context policy
+        run: python scripts/export-mobile-context-policy.py --check
 
       - name: Install frontend dependencies
         working-directory: frontend

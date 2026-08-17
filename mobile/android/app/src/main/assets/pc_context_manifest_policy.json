@@ -1,0 +1,148 @@
+{
+  "categories": {
+    "hybrid_retrieval": {
+      "content_limit_chars": 1800,
+      "max_items": 24,
+      "required": false,
+      "tier": 4
+    },
+    "memory": {
+      "content_limit_chars": 900,
+      "max_items": 6,
+      "required": false,
+      "source_type": "assistant_memory",
+      "tier": 5
+    },
+    "narrative_governance": {
+      "content_limit_chars": 5000,
+      "empty_ledger_text": "Narrative governance: no due or high-risk items.",
+      "max_items": 1,
+      "required": false,
+      "source_type": "narrative_governance",
+      "tier": 3
+    },
+    "previous_summary": {
+      "content_limit_chars": 1600,
+      "max_items": 3,
+      "required": false,
+      "source_type": "chapter_summary",
+      "tier": 3
+    },
+    "scene_character": {
+      "content_limit_chars": 12000,
+      "max_items": 12,
+      "required": false,
+      "source_type": "character",
+      "tier": 3
+    },
+    "style": {
+      "max_items": 1,
+      "required": true,
+      "source_type": "project_style",
+      "tier": 1
+    },
+    "target_outline": {
+      "field_limit_chars": 1200,
+      "max_items": 1,
+      "required": true,
+      "source_type": "outline",
+      "tier": 1
+    },
+    "user_requirement": {
+      "content_limit_chars": 4000,
+      "max_items": 1,
+      "required": false,
+      "source_type": "inline",
+      "tier": 2
+    }
+  },
+  "contract": {
+    "optional_categories": [
+      "user_requirement",
+      "previous_summary",
+      "scene_character",
+      "worldbuilding",
+      "narrative_governance",
+      "memory",
+      "skill",
+      "hybrid_retrieval"
+    ],
+    "required_categories": [
+      "target_outline",
+      "style"
+    ]
+  },
+  "hashing": {
+    "algorithm": "sha256",
+    "encoding": "utf-8",
+    "selected_content_hash": true,
+    "selection_fingerprint_fields": [
+      "category",
+      "source_type",
+      "source_id",
+      "chunk_id",
+      "source_hash"
+    ]
+  },
+  "index_version": 1,
+  "mobile_projection": {
+    "durable_manifest_audit_available": false,
+    "execution_route": "android_standalone",
+    "fts_available": false,
+    "manifest_persistence": "session_only",
+    "pinned_chunks_available": false,
+    "retrieval": "deterministic_local_lexical_fallback",
+    "semantic_embeddings_available": false,
+    "stale_on_model_change": true,
+    "stale_on_request_change": true,
+    "stale_on_selected_source_change": true,
+    "style_projection": "pc_prompt_contract_style_context"
+  },
+  "model_defaults": {
+    "context_window_tokens": 16384,
+    "minimum_output_reserve_tokens": 2048,
+    "output_ratio": 0.45,
+    "safety_margin_tokens": 512
+  },
+  "policy_version": 1,
+  "ranking": {
+    "hybrid": {
+      "lexical": 0.45,
+      "recency": 0.15,
+      "semantic": 0.35,
+      "structural": 0.05
+    },
+    "lexical_fallback": {
+      "lexical": 0.7,
+      "recency": 0.2,
+      "structural": 0.1
+    }
+  },
+  "schema_version": 1,
+  "selection": {
+    "dedupe_identity": [
+      "source_type",
+      "source_id",
+      "chunk_id"
+    ],
+    "ordering": [
+      "tier",
+      "required_first",
+      "score_desc",
+      "title"
+    ],
+    "required_over_budget_status": "needs_confirmation",
+    "unknown_model_uses_defaults": true
+  },
+  "source_sha256": "d0645d13f836ede14981a28b5b0d93c5a2890710c2404c9fe0d3304fcfd28b88",
+  "task_type": "writing",
+  "token_estimation": {
+    "cjk_ranges": [
+      "\\u4e00-\\u9fff",
+      "\\u3400-\\u4dbf"
+    ],
+    "cjk_tokens_per_character": 1,
+    "minimum_non_cjk_tokens_for_non_empty_text": 1,
+    "non_cjk_characters_per_token": 4
+  }
+}
