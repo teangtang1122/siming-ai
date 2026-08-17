@@ -1,0 +1,111 @@
+from pathlib import Path
+import re
+
+
+def sub_once(text: str, pattern: str, replacement: str, label: str, flags: int = 0) -> str:
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+    if count != 1:
+        raise RuntimeError(f"{label} anchor changed (matches={count})")
+    return updated
+
+
+vm_path = Path("mobile/android/app/src/main/java/com/siming/mobile/ui/MainViewModel.kt")
+vm = vm_path.read_text(encoding="utf-8")
+vm = sub_once(
+    vm,
+    r"import kotlinx\.serialization\.json\.JsonObject\n",
+    "import kotlinx.serialization.json.JsonElement\nimport kotlinx.serialization.json.JsonObject\n",
+    "MainViewModel JsonObject import",
+)
+vm = sub_once(
+    vm,
+    r"        is JsonPrimitive -> put\(key, value\)\n        else -> put\(key, value\.toString\(\)\)",
+    "        is JsonElement -> put(key, value)\n        else -> put(key, value.toString())",
+    "MainViewModel putAny",
+)
+vm_path.write_text(vm, encoding="utf-8")
+
+app_path = Path("mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt")
+app = app_path.read_text(encoding="utf-8")
+
+character_fields = '''    "character" -> listOf(
+        FormField("name", "角色名"),
+        FormField("aliases", "别名", "一行一个；与 PC 角色别名完全同步", true),
+        FormField("role_type", "角色定位", "protagonist / supporting / antagonist / mentor / other"),
+        FormField("age", "年龄"),
+        FormField("appearance", "外貌", multiline = true),
+        FormField("personality", "性格", "稳定行为方式、表达习惯与禁区", true),
+        FormField("background", "背景", multiline = true),
+        FormField("abilities", "能力", "一行一个；保存为 PC 的 abilities 数组", true),
+        FormField("life_status", "生命状态", "active / deceased / unknown"),
+        FormField("current_location", "当前位置"),
+        FormField("realm_or_level", "境界 / 等级"),
+        FormField("physical_state", "身体状态", multiline = true),
+        FormField("mental_state", "心理状态", multiline = true),
+        FormField("current_goal", "当前目标", multiline = true),
+        FormField("active_conflict", "当前冲突", multiline = true),
+        FormField("abilities_state", "能力状态", multiline = true),
+        FormField("items_or_assets", "持有物 / 资产", multiline = true),
+        FormField("is_evolution_tracked", "持续追踪角色变化", "true / false"),
+    )'''
+app = sub_once(
+    app,
+    r'    "character" -> listOf\(\n.*?\n    \)(?=\n    "world" -> listOf)',
+    character_fields,
+    "character field block",
+    re.S,
+)
+app = sub_once(
+    app,
+    r'fields\.forEach \{ field -> put\(field\.key, target\.record\?\.text\(field\.key\)\.orEmpty\(\)\) \}',
+    'fields.forEach { field -> put(field.key, target.record?.formText(field.key).orEmpty()) }',
+    "editor values",
+)
+app = sub_once(
+    app,
+    r'(                "world" -> \{\n\s+putIfAbsent\("dimension", "culture"\)\n\s+putIfAbsent\("sort_order", "0"\)\n\s+\}\n)(\s+"foreshadowing" -> \{)',
+    r'''\1                "character" -> {
+                    putIfAbsent("role_type", "supporting")
+                    putIfAbsent("life_status", "active")
+                    putIfAbsent("is_evolution_tracked", "true")
+                }
+\2''',
+    "character defaults",
+)
+app = sub_once(
+    app,
+    r'''val mapped = values\.mapValues \{ \(key, value\) ->\n\s+if \(fields\.firstOrNull \{ it\.key == key \}\?\.numeric == true\) value\.toIntOrNull\(\) \?: 0 else value\n\s+\}\.toMutableMap<String, Any\?>\(\)''',
+    '''val mapped = if (target.entityType == "character") {
+                            canonicalCharacterFormValues(values)
+                        } else {
+                            values.mapValues { (key, value) ->
+                                if (fields.firstOrNull { it.key == key }?.numeric == true) value.toIntOrNull() ?: 0 else value
+                            }.toMutableMap<String, Any?>()
+                        }''',
+    "mapped form",
+)
+app = sub_once(
+    app,
+    r'\s+"character" -> mapped\["is_evolution_tracked"\] = true\n',
+    "\n",
+    "forced character tracking",
+)
+app = sub_once(
+    app,
+    r'val summary = record\.text\(summaryKey\)',
+    'val summary = if (entityType == "character") canonicalCharacterSummary(record) else record.text(summaryKey)',
+    "character card summary",
+)
+app = sub_once(
+    app,
+    re.escape('"character" -> "角色动机、状态与冲突会随正文一起同步，帮助 AI 减少 OOC。"'),
+    '"character" -> "字段直接对应 PC 角色卡：别名、外貌、能力、位置、境界、身心状态、目标与冲突共享同一份数据。"',
+    "character description",
+)
+app = sub_once(
+    app,
+    re.escape('"角色目标、冲突、性格与口吻会作为独立资料同步，降低跨章节 OOC。",'),
+    '"当前表单直接编辑 PC Character 字段；能力/别名保持数组结构，未展示的稳定写作 profile 会原样保留。",',
+    "character banner",
+)
+app_path.write_text(app, encoding="utf-8")
