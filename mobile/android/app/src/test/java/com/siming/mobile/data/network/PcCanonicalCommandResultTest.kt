@@ -20,4 +20,14 @@ class PcCanonicalCommandResultTest {
         assertTrue(result.getValue(MOBILE_REFRESH_PENDING_FIELD).jsonPrimitive.content.toBoolean())
         assertEquals("网络暂时不可用", result.mobileRefreshWarning())
     }
+
+    @Test
+    fun `blank refresh failure still reports a stable pending message`() {
+        val result = buildJsonObject {
+            put("id", "chapter-1")
+        }.withMobileRefreshFailure("   ")
+
+        assertTrue(result.getValue(MOBILE_REFRESH_PENDING_FIELD).jsonPrimitive.content.toBoolean())
+        assertEquals("手机副本刷新失败", result.mobileRefreshWarning())
+    }
 }
