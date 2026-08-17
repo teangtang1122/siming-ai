@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -298,22 +299,53 @@ def _assert_parent_project(
         raise ValidationError("同步记录引用的父实体不属于当前作品")
 
 
+def _string_list(value: Any, *, field: str) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        normalized = raw.replace("，", ",").replace("、", ",").replace("\r", "\n")
+        return [item.strip() for line in normalized.split("\n") for item in line.split(",") if item.strip()]
+    raise ValidationError(f"角色 {field} 必须是字符串数组")
+
+
 def _canonical_character_values(values: dict[str, Any]) -> tuple[dict[str, Any], list[str] | None]:
     """Translate the public PC Character contract back to persistence fields."""
-    aliases = values.pop("aliases", None)
-    if aliases is not None and not isinstance(aliases, list):
-        raise ValidationError("角色 aliases 必须是字符串数组")
-    abilities = values.get("abilities")
-    if isinstance(abilities, list):
-        values["abilities"] = dumps_list([str(item) for item in abilities])
-    elif abilities is not None and not isinstance(abilities, str):
-        raise ValidationError("角色 abilities 必须是字符串数组")
+    aliases = _string_list(values.pop("aliases", None), field="aliases")
+    abilities = _string_list(values.get("abilities"), field="abilities")
+    if abilities is not None:
+        values["abilities"] = dumps_list(abilities)
     if "profile" in values:
         profile = values.pop("profile")
+        if isinstance(profile, str):
+            raw = profile.strip()
+            if not raw:
+                profile = {}
+            else:
+                try:
+                    profile = json.loads(raw)
+                except (TypeError, ValueError) as exc:
+                    raise ValidationError("角色 profile 必须是 JSON 对象") from exc
         if profile is not None and not isinstance(profile, dict):
             raise ValidationError("角色 profile 必须是对象")
         values["profile_json"] = profile
-    return values, [str(item) for item in aliases] if aliases is not None else None
+    tracked = values.get("is_evolution_tracked")
+    if isinstance(tracked, str):
+        values["is_evolution_tracked"] = tracked.strip().lower() not in {
+            "0", "false", "no", "off", "否"
+        }
+    return values, aliases
 
 
 def apply_domain_mutation(
