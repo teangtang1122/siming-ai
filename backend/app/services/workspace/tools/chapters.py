@@ -390,7 +390,6 @@ async def _persist_created_chapter(
             "status": "error",
             "detail": "章节标题或正文为空，本轮未创建章节",
         }
-
     candidates = _chapter_write_candidates(db, project_id, outline_node, title)
     existing_non_empty = next((item for item in candidates if str(item.content or "").strip()), None)
     existing_chapter = existing_non_empty or (candidates[0] if candidates else None)
@@ -414,7 +413,6 @@ async def _persist_created_chapter(
             raise RuntimeError("章节写作占用已失效，未写入重复内容")
         commit_session(db)
         return result
-
     reused_empty = existing_chapter is not None
     stale_count = 0
     if existing_chapter:

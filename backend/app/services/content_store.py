@@ -32,7 +32,6 @@ from ..database.models import (
     WorldbuildingEntry,
     WorldbuildingRelation,
 )
-from .chapter_ordering import CHAPTER_ORDER_STEP, next_chapter_sort_order
 from .chapter_service import create_snapshot, ensure_current_snapshot
 from .character_service import (
     character_aliases,
@@ -429,7 +428,6 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
         for chapter in chapters_by_id.values()
         if chapter.content_file_path
     }
-    next_sort_order = next_chapter_sort_order(db, project.id)
     for path in sorted((folder / "chapters").glob("*.md")):
         try:
             text = path.read_text(encoding="utf-8")
@@ -449,11 +447,6 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
                 content=content or "",
                 word_count=count_words(content or ""),
                 current_version=int(meta.get("current_version") or 1),
-                sort_order=(
-                    int(meta.get("sort_order") or 0)
-                    if int(meta.get("sort_order") or 0) > 0
-                    else next_sort_order
-                ),
             )
             if chapter_id:
                 chapter_data["id"] = chapter_id
@@ -466,10 +459,6 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
             db.flush()
             chapters_by_id[chapter.id] = chapter
             chapters_by_path[rel_path] = chapter
-            next_sort_order = max(
-                next_sort_order + CHAPTER_ORDER_STEP,
-                int(chapter.sort_order or 0) + CHAPTER_ORDER_STEP,
-            )
             continue
         changed = (
             chapter.title != str(meta.get("title") or chapter.title)[:200]
@@ -480,9 +469,6 @@ def refresh_project_from_files(db: Session, project_id: str) -> None:
             ensure_current_snapshot(db, chapter, "manual_save")
         chapter.title = str(meta.get("title") or chapter.title)[:200]
         chapter.outline_node_id = meta.get("outline_node_id") or chapter.outline_node_id
-        file_sort_order = int(meta.get("sort_order") or 0)
-        if file_sort_order > 0:
-            chapter.sort_order = file_sort_order
         chapter.content = content
         chapter.word_count = count_words(content)
         if changed:
