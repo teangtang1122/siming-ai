@@ -11,11 +11,17 @@ from sqlalchemy import Date, DateTime
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
+from app.core.db_helpers import get_outline_node_or_404
 from app.core.exceptions import ValidationError
 from app.core.utils import count_words
 from app.services.chapter_ordering import next_chapter_sort_order
-from app.services.chapter_service import chapter_to_detail
-from app.services.character_service import character_to_dict, dumps_list, sync_character_aliases
+from app.services.chapter_service import chapter_to_detail, create_snapshot
+from app.services.character_service import (
+    character_to_dict,
+    create_character_version,
+    dumps_list,
+    sync_character_aliases,
+)
 from app.services.outline_service import (
     ensure_no_cycle,
     load_outline_nodes,
@@ -43,6 +49,8 @@ from app.modules.continuity.infrastructure.models import (
     WorldbuildingVersion,
 )
 from app.modules.story.infrastructure.chapter_evidence import SqlAlchemyChapterEvidenceReader
+from app.modules.story.infrastructure.chapters import SqlAlchemyChapterWorkspace
+from app.services.narrative_governance import create_narrative_checkpoint
 from app.modules.story.infrastructure.entities import (
     Chapter,
     ChapterSnapshot,
@@ -572,6 +580,7 @@ def apply_domain_mutation(
     if spec.model not in MUTATION_COLUMNS_BY_MODEL:
         raise ValidationError("该同步记录由 PC 管理，移动端只读")
     row = db.get(spec.model, entity_id)
+    row_existed = row is not None
     if operation == "delete":
         if spec.model is Project:
             raise ValidationError("请在作品管理页确认删除，移动端不会直接删除整部作品")
@@ -587,6 +596,7 @@ def apply_domain_mutation(
     values = dict(payload or {})
     values.pop("_record_type", None)
     character_aliases: list[str] | None = None
+    character_change_summary: str | None = None
     outline_links: list[tuple[str, str | None]] | None = None
     governance_status_values: dict[str, Any] | None = None
     if spec.model in {Foreshadowing, NarrativeDebt}:
@@ -598,6 +608,8 @@ def apply_domain_mutation(
     if spec.model is Project:
         values = _canonical_project_values(values)
     if spec.model is Character:
+        raw_summary = values.pop("change_summary", None)
+        character_change_summary = str(raw_summary or "").strip() or None
         values, character_aliases = _canonical_character_values(values)
     if spec.model is OutlineNode:
         values, outline_links = _canonical_outline_values(values)
@@ -614,6 +626,17 @@ def apply_domain_mutation(
             raise ValidationError("不能把记录移动到其他作品")
         values["project_id"] = project_id
 
+    if spec.model is Chapter and row_existed:
+        chapter_values = {
+            key: value
+            for key, value in values.items()
+            if key in {"title", "outline_node_id", "content", "context_manifest_id"}
+        }
+        SqlAlchemyChapterWorkspace(db).save(project_id, entity_id, chapter_values)
+        return
+
+    if spec.model is Chapter and values.get("outline_node_id"):
+        get_outline_node_or_404(db, project_id, values.get("outline_node_id"))
     if spec.model is OutlineNode and "parent_id" in values:
         ensure_no_cycle(db, project_id, entity_id, values.get("parent_id"))
 
@@ -657,11 +680,28 @@ def apply_domain_mutation(
     if spec.model is Chapter and "content" in allowed:
         row.word_count = count_words(row.content or "")
         db.flush()
+    if spec.model is Chapter and not row_existed:
+        db.add(create_snapshot(row, "manual_save"))
+        create_narrative_checkpoint(
+            db,
+            project_id,
+            chapter=row,
+            label=f"{row.title} 创建",
+            trigger_type="chapter_create",
+        )
+        db.flush()
     if spec.model is OutlineNode and outline_links is not None:
         replace_character_links(db, project_id, row, outline_links)
         db.flush()
     if spec.model is Character and character_aliases is not None:
         sync_character_aliases(db, row, character_aliases)
+        db.flush()
+    if spec.model is Character and row_existed:
+        create_character_version(
+            db,
+            row,
+            character_change_summary or "手动更新角色档案",
+        )
         db.flush()
 
 
