@@ -92,7 +92,7 @@ internal object PcApiPayloads {
                 PcAuthoringContract.writableKeys(entityType).forEach { key ->
                     source[key]?.let { put(key, it) }
                 }
-            }
+            }.also { normalizeAuxiliary(entityType, source, it) }
         }
         return buildJsonObject {
             put("_record_type", recordType(entityType))
@@ -128,6 +128,21 @@ internal object PcApiPayloads {
                 val dimension = (values["dimension"] as? JsonPrimitive)?.content.orEmpty()
                 if (dimension !in WORLD_DIMENSIONS) values["dimension"] = JsonPrimitive("culture")
             }
+        }
+    }
+
+    private fun normalizeAuxiliary(
+        entityType: String,
+        source: JsonObject,
+        values: MutableMap<String, JsonElement>,
+    ) {
+        when (entityType) {
+            "character_relation" -> {
+                if (values["from"] == null) source["character_a_id"]?.let { values["from"] = it }
+                if (values["to"] == null) source["character_b_id"]?.let { values["to"] = it }
+            }
+            "character_ai_config" -> values.normalizeStringArray("catchphrases")
+            "world_relation" -> values.normalizeJsonObject("metadata_json", "世界观关系 metadata")
         }
     }
 
@@ -258,7 +273,10 @@ internal object PcApiPayloads {
         "chapter" -> "chapter"
         "outline" -> "outline_node"
         "character" -> "character"
+        "character_relation" -> "character_relationship"
+        "character_ai_config" -> "character_ai_config"
         "world" -> "world_entry"
+        "world_relation" -> "world_relationship"
         "foreshadowing" -> "foreshadowing"
         "governance" -> "narrative_debt"
         else -> error("暂不支持的资料类型：$entityType")
