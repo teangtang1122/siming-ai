@@ -1,0 +1,27 @@
+name: One-shot mobile bootstrap prune patch
+
+on:
+  push:
+    branches:
+      - fix/android-canonical-entity-contract
+    paths:
+      - .github/workflows/patch-mobile-bootstrap-prune.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/android-canonical-entity-contract
+      - run: python .github/scripts/patch_mobile_bootstrap_prune.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt
+          git diff --cached --check
+          git commit -m "fix(android): prune stale clean replicas on bootstrap"
+          git push origin HEAD:fix/android-canonical-entity-contract
