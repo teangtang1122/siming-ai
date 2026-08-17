@@ -25,8 +25,10 @@ def test_offline_governance_replay_uses_same_review_then_close_lifecycle_as_pc(t
     try:
         with Session() as db:
             project = Project(title="治理同步契约")
+            db.add(project)
+            db.flush()
             chapter = Chapter(project_id=project.id, title="第一百五十章", content="伏笔在这里兑现。")
-            db.add_all([project, chapter])
+            db.add(chapter)
             db.commit()
 
             apply_domain_mutation(
