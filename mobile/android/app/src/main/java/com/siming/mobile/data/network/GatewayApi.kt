@@ -191,6 +191,19 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         payload = payload,
     )
 
+    suspend fun updateGovernanceStatus(
+        connection: GatewayConnection,
+        projectId: String,
+        itemType: String,
+        itemId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.narrativeGovernanceStatus(projectId, itemType, itemId),
+        method = "PATCH",
+        payload = payload,
+    )
+
     suspend fun listNovelCreationSessions(connection: GatewayConnection): List<JsonObject> {
         val data = request<ApiEnvelope<JsonObject>>(
             connection.baseUrl,

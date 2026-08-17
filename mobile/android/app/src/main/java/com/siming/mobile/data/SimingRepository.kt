@@ -283,11 +283,25 @@ class SimingRepository(context: Context) {
             val create = entityType != "project" && current == null
             val response = try {
                 if (entityType in GOVERNANCE_ENTITY_TYPES) {
-                    api.saveGovernanceEntity(
+                    var saved = api.saveGovernanceEntity(
                         connection,
                         projectId,
-                        PcApiPayloads.governance(entityType, payload, entityId, create),
+                        PcApiPayloads.governanceContent(entityType, payload, entityId, create),
                     )
+                    val canonicalId = saved.requiredId()
+                    val statusPayload = PcApiPayloads.governanceStatus(entityType, payload)
+                    val desiredStatus = (statusPayload?.get("status") as? JsonPrimitive)?.content.orEmpty()
+                    val serverStatus = (saved["status"] as? JsonPrimitive)?.content.orEmpty()
+                    if (statusPayload != null && desiredStatus.isNotBlank() && desiredStatus != serverStatus) {
+                        saved = api.updateGovernanceStatus(
+                            connection,
+                            projectId,
+                            PcApiPayloads.governanceItemType(entityType),
+                            canonicalId,
+                            statusPayload,
+                        )
+                    }
+                    saved
                 } else {
                     api.saveAuthoringEntity(
                         connection = connection,
@@ -319,6 +333,8 @@ class SimingRepository(context: Context) {
     ): String {
         val key = ReplicaEntity.key(projectId, entityType, entityId)
         val encoded = json.encodeToString(payload)
+        val mutationEncoded = canonicalMutationJson(projectId, entityType, entityId, encoded)
+            ?: error("同步写入缺少 payload")
         val now = Instant.now().toString()
         database.withTransaction {
             val current = dao.entity(key)
@@ -346,10 +362,10 @@ class SimingRepository(context: Context) {
                     entityId = entityId,
                     operation = "upsert",
                     baseRevision = current?.revision ?: 0,
-                    payloadJson = encoded,
+                    payloadJson = mutationEncoded,
                     clientModifiedAt = now,
                 )).copy(
-                    payloadJson = encoded,
+                    payloadJson = mutationEncoded,
                     clientModifiedAt = now,
                     state = "pending",
                     lastError = null,
@@ -358,6 +374,20 @@ class SimingRepository(context: Context) {
         }
         if (dao.connection() != null) SyncScheduler.enqueue(appContext)
         return entityId
+    }
+
+    private fun canonicalMutationJson(
+        projectId: String,
+        entityType: String,
+        entityId: String,
+        rawPayload: String?,
+    ): String? {
+        if (rawPayload == null) return null
+        val source = json.parseToJsonElement(rawPayload) as? JsonObject
+            ?: error("本机资料 payload 不是 JSON 对象")
+        return json.encodeToString(
+            PcApiPayloads.syncMutation(entityType, source, projectId, entityId),
+        )
     }
 
     suspend fun deleteEntity(projectId: String, entityType: String, entityId: String) {
@@ -584,7 +614,17 @@ class SimingRepository(context: Context) {
                             val revision = result.revision ?: current?.revision ?: sent.baseRevision
                             dao.deleteMutation(sent.mutationId)
                             if (current != null) {
-                                val unchanged = sha256(current.payloadJson ?: "null") ==
+                                val currentMutation = if (current.operation == "delete") {
+                                    null
+                                } else {
+                                    canonicalMutationJson(
+                                        sent.projectId,
+                                        sent.entityType,
+                                        sent.entityId,
+                                        current.payloadJson,
+                                    )
+                                }
+                                val unchanged = sha256(currentMutation ?: "null") ==
                                     sha256(sent.payloadJson ?: "null") && current.operation == sent.operation
                                 dao.saveEntity(
                                     current.copy(
@@ -607,7 +647,7 @@ class SimingRepository(context: Context) {
                                             entityId = sent.entityId,
                                             operation = current.operation,
                                             baseRevision = revision,
-                                            payloadJson = current.payloadJson,
+                                            payloadJson = currentMutation,
                                             clientModifiedAt = Instant.now().toString(),
                                         ),
                                     )

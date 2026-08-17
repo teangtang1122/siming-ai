@@ -109,6 +109,8 @@ import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.AssistantModelRoute
 import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
+import com.siming.mobile.data.network.PcAuthoringContract
+import com.siming.mobile.data.network.PcFieldKind
 import com.siming.mobile.BuildConfig
 
 private enum class RootTab(val label: String, val icon: ImageVector) {
@@ -667,66 +669,153 @@ private data class FormField(
     val key: String,
     val label: String,
     val placeholder: String = "",
-    val multiline: Boolean = false,
-    val numeric: Boolean = false,
-)
-
-private fun fieldsFor(type: String): List<FormField> = when (type) {
-    "project" -> listOf(
-        FormField("title", "作品名"),
-        FormField("description", "作品简介", "题材、主线与二创目标", true),
-        FormField("custom_style_prompt", "自定义文风约束", "可填写角色口吻与禁忌，帮助减少 OOC", true),
-    )
-    "chapter" -> listOf(
-        FormField("title", "章节名"),
-        FormField("content", "正文", "在手机上继续写作…", true),
-    )
-    "outline" -> listOf(
-        FormField("title", "节点标题"),
-        FormField("summary", "计划内容", "本章目标、转折与章末钩子", true),
-        FormField("sort_order", "顺序", numeric = true),
-    )
-    "character" -> listOf(
-        FormField("name", "角色名"),
-        FormField("aliases", "别名", "一行一个；与 PC 角色别名完全同步", true),
-        FormField("role_type", "角色定位", "protagonist / supporting / antagonist / mentor / other"),
-        FormField("age", "年龄"),
-        FormField("appearance", "外貌", multiline = true),
-        FormField("personality", "性格", "稳定行为方式、表达习惯与禁区", true),
-        FormField("background", "背景", multiline = true),
-        FormField("abilities", "能力", "一行一个；保存为 PC 的 abilities 数组", true),
-        FormField("life_status", "生命状态", "active / deceased / unknown"),
-        FormField("current_location", "当前位置"),
-        FormField("realm_or_level", "境界 / 等级"),
-        FormField("physical_state", "身体状态", multiline = true),
-        FormField("mental_state", "心理状态", multiline = true),
-        FormField("current_goal", "当前目标", multiline = true),
-        FormField("active_conflict", "当前冲突", multiline = true),
-        FormField("abilities_state", "能力状态", multiline = true),
-        FormField("items_or_assets", "持有物 / 资产", multiline = true),
-        FormField("is_evolution_tracked", "持续追踪角色变化", "true / false"),
-    )
-    "world" -> listOf(
-        FormField("title", "设定标题"),
-        FormField("dimension", "维度", "geography / history / factions / power_system / races / culture"),
-        FormField("content", "规则与内容", multiline = true),
-        FormField("sort_order", "顺序", numeric = true),
-    )
-    "foreshadowing" -> listOf(
-        FormField("title", "伏笔标题"),
-        FormField("description", "埋设与回收计划", multiline = true),
-        FormField("status", "状态", "open / fulfilled / deferred / abandoned"),
-        FormField("importance", "重要度", "low / medium / high"),
-        FormField("storyline", "故事线"),
-    )
-    "governance" -> listOf(
-        FormField("title", "叙事承诺"),
-        FormField("description", "读者期待与兑现条件", multiline = true),
-        FormField("status", "状态", "open / fulfilled / deferred / abandoned"),
-        FormField("priority", "优先级", "low / medium / high"),
-    )
-    else -> emptyList()
+    val kind: PcFieldKind,
+) {
+    val multiline: Boolean
+        get() = kind in setOf(
+            PcFieldKind.Multiline,
+            PcFieldKind.StringArray,
+            PcFieldKind.JsonObject,
+            PcFieldKind.JsonArray,
+        )
 }
+
+private fun fieldsFor(type: String): List<FormField> =
+    PcAuthoringContract.mobileFields(type).map { spec ->
+        FormField(
+            key = spec.key,
+            label = fieldLabel(type, spec.key),
+            placeholder = fieldPlaceholder(type, spec.key),
+            kind = spec.kind,
+        )
+    }
+
+private fun fieldLabel(type: String, key: String): String = when (type) {
+    "project" -> when (key) {
+        "title" -> "作品名"
+        "description" -> "作品简介"
+        "tags" -> "标签"
+        "narrative_perspective" -> "叙事视角"
+        "writing_style" -> "写作文风"
+        "forbidden_sentence_patterns" -> "禁用句式"
+        "rhetoric_guidelines" -> "修辞规则"
+        "short_sentences" -> "短句模式"
+        "custom_style_prompt" -> "自定义文风约束"
+        "daily_word_goal" -> "每日字数目标"
+        else -> key
+    }
+    "chapter" -> when (key) {
+        "title" -> "章节名"
+        "outline_node_id" -> "关联大纲节点 ID"
+        "content" -> "正文"
+        else -> key
+    }
+    "outline" -> when (key) {
+        "title" -> "节点标题"
+        "node_type" -> "节点类型"
+        "parent_id" -> "父节点 ID"
+        "summary" -> "计划内容"
+        "status" -> "状态"
+        "sort_order" -> "同级顺序"
+        "characters" -> "角色与场景职责"
+        "metadata" -> "大纲元数据"
+        else -> key
+    }
+    "character" -> when (key) {
+        "name" -> "角色名"
+        "aliases" -> "别名"
+        "role_type" -> "角色定位"
+        "age" -> "年龄"
+        "appearance" -> "外貌"
+        "personality" -> "性格"
+        "background" -> "背景"
+        "abilities" -> "能力"
+        "life_status" -> "生命状态"
+        "current_location" -> "当前位置"
+        "realm_or_level" -> "境界 / 等级"
+        "physical_state" -> "身体状态"
+        "mental_state" -> "心理状态"
+        "current_goal" -> "当前目标"
+        "active_conflict" -> "当前冲突"
+        "abilities_state" -> "能力状态"
+        "items_or_assets" -> "持有物 / 资产"
+        "profile" -> "稳定写作锁"
+        "is_evolution_tracked" -> "持续追踪角色变化"
+        "change_summary" -> "本次变更摘要"
+        else -> key
+    }
+    "world" -> when (key) {
+        "title" -> "设定标题"
+        "dimension" -> "维度"
+        "content" -> "规则与内容"
+        "sort_order" -> "顺序"
+        else -> key
+    }
+    "foreshadowing" -> when (key) {
+        "title" -> "伏笔标题"
+        "description" -> "埋设与回收计划"
+        "status" -> "生命周期状态"
+        "importance" -> "重要度"
+        "storyline" -> "故事线"
+        "source_chapter_id" -> "来源章节 ID"
+        "target_chapter_id" -> "计划处理章节 ID"
+        "target_chapter_number" -> "计划处理章节号"
+        "resolved_chapter_id" -> "实际解决章节 ID"
+        "evidence" -> "发现证据"
+        "resolution_note" -> "解决说明"
+        "resolution_evidence" -> "解决证据"
+        "verification_note" -> "复检结论"
+        "closed_by" -> "关闭者"
+        else -> key
+    }
+    "governance" -> when (key) {
+        "title" -> "叙事债务标题"
+        "debt_type" -> "债务类型"
+        "description" -> "读者期待与兑现条件"
+        "status" -> "生命周期状态"
+        "priority" -> "优先级"
+        "source_chapter_id" -> "来源章节 ID"
+        "target_chapter_id" -> "计划处理章节 ID"
+        "target_chapter_number" -> "计划处理章节号"
+        "resolved_chapter_id" -> "实际解决章节 ID"
+        "linked_foreshadowing_id" -> "关联伏笔 ID"
+        "linked_causal_edge_id" -> "关联因果项 ID"
+        "evidence" -> "发现证据"
+        "resolution_note" -> "解决说明"
+        "resolution_evidence" -> "解决证据"
+        "verification_note" -> "复检结论"
+        "closed_by" -> "关闭者"
+        else -> key
+    }
+    else -> key
+}
+
+private fun fieldPlaceholder(type: String, key: String): String = when (type to key) {
+    "project" to "tags" -> "一行一个；保存为 PC tags 数组"
+    "project" to "narrative_perspective" -> "third_person / first_person"
+    "project" to "writing_style" -> "与 PC 项目设置一致"
+    "project" to "short_sentences" -> "true / false"
+    "chapter" to "outline_node_id" -> "留空表示不关联大纲节点"
+    "outline" to "node_type" -> "volume / chapter / section"
+    "outline" to "parent_id" -> "留空表示根节点"
+    "outline" to "status" -> "pending / in_progress / completed"
+    "outline" to "characters" -> "JSON 数组，例如 [{\"character_id\":\"...\",\"role_in_scene\":\"protagonist\"}]"
+    "outline" to "metadata" -> "JSON 对象，例如 {\"hook\":\"章末钩子\"}"
+    "character" to "aliases" -> "一行一个"
+    "character" to "role_type" -> "protagonist / supporting / antagonist / mentor / other"
+    "character" to "abilities" -> "一行一个"
+    "character" to "life_status" -> "active / deceased / unknown"
+    "character" to "profile" -> "JSON 对象；与 PC 稳定写作锁完全同步"
+    "character" to "is_evolution_tracked" -> "true / false"
+    "world" to "dimension" -> "geography / history / factions / power_system / races / culture"
+    "foreshadowing" to "status", "governance" to "status" -> "open / pending_review / deferred / fulfilled / abandoned"
+    "foreshadowing" to "importance" -> "low / medium / high / critical"
+    "governance" to "priority" -> "low / medium / high / critical"
+    "governance" to "debt_type" -> "promise / setup / obligation / question"
+    else -> ""
+}
+
+private fun requiredIdentityField(type: String): String = if (type == "character") "name" else "title"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -740,26 +829,41 @@ private fun RecordEditorScreen(
     val values = remember(target.record?.key, target.entityType) {
         mutableStateMapOf<String, String>().apply {
             fields.forEach { field -> put(field.key, target.record?.formText(field.key).orEmpty()) }
+            fun setDefault(key: String, value: String) {
+                if (this[key].isNullOrBlank()) this[key] = value
+            }
             when (target.entityType) {
+                "project" -> {
+                    setDefault("narrative_perspective", "third_person")
+                    setDefault("writing_style", "natural")
+                    setDefault("short_sentences", "false")
+                    setDefault("daily_word_goal", "6000")
+                }
                 "outline" -> {
-                    putIfAbsent("sort_order", "0")
+                    setDefault("node_type", "chapter")
+                    setDefault("status", "pending")
+                    setDefault("sort_order", "0")
+                    setDefault("characters", "[]")
+                    setDefault("metadata", "{}")
                 }
                 "world" -> {
-                    putIfAbsent("dimension", "culture")
-                    putIfAbsent("sort_order", "0")
+                    setDefault("dimension", "culture")
+                    setDefault("sort_order", "0")
                 }
                 "character" -> {
-                    putIfAbsent("role_type", "supporting")
-                    putIfAbsent("life_status", "active")
-                    putIfAbsent("is_evolution_tracked", "true")
+                    setDefault("role_type", "supporting")
+                    setDefault("life_status", "active")
+                    setDefault("profile", "{}")
+                    setDefault("is_evolution_tracked", "true")
                 }
                 "foreshadowing" -> {
-                    putIfAbsent("status", "open")
-                    putIfAbsent("importance", "medium")
+                    setDefault("status", "open")
+                    setDefault("importance", "medium")
                 }
                 "governance" -> {
-                    putIfAbsent("status", "open")
-                    putIfAbsent("priority", "medium")
+                    setDefault("status", "open")
+                    setDefault("priority", "medium")
+                    setDefault("debt_type", "promise")
                 }
             }
         }
@@ -789,24 +893,7 @@ private fun RecordEditorScreen(
             Surface(tonalElevation = 3.dp, color = SimingPaperWarm) {
                 Button(
                     onClick = {
-                        val mapped = if (target.entityType == "character") {
-                            canonicalCharacterFormValues(values)
-                        } else {
-                            values.mapValues { (key, value) ->
-                                if (fields.firstOrNull { it.key == key }?.numeric == true) value.toIntOrNull() ?: 0 else value
-                            }.toMutableMap<String, Any?>()
-                        }
-                        when (target.entityType) {
-                            "chapter" -> {
-                                mapped["word_count"] = values["content"].orEmpty().count { !it.isWhitespace() }
-                                mapped["current_version"] = target.record?.number("current_version")?.takeIf { it > 0 } ?: 1
-                            }
-                            "outline" -> {
-                                mapped["node_type"] = target.record?.text("node_type").orEmpty().ifBlank { "chapter" }
-                                mapped["status"] = target.record?.text("status").orEmpty().ifBlank { "pending" }
-                            }
-                            "world" -> mapped["status"] = target.record?.text("status").orEmpty().ifBlank { "active" }
-                        }
+                        val mapped = canonicalFormValues(target.entityType, values)
                         viewModel.saveRecord(
                             projectId,
                             target.entityType,
@@ -816,7 +903,7 @@ private fun RecordEditorScreen(
                             onBack,
                         )
                     },
-                    enabled = fields.firstOrNull()?.let { values[it.key].orEmpty().isNotBlank() } ?: false,
+                    enabled = values[requiredIdentityField(target.entityType)].orEmpty().isNotBlank(),
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(14.dp),
                 ) {
                     Icon(Icons.Outlined.Save, null)
