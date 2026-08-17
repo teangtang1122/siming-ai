@@ -25,7 +25,7 @@ internal fun ReplicaEntity.formText(name: String): String = when (val value = pa
 
 internal fun canonicalCharacterSummary(record: ReplicaEntity): String = listOf(
     record.text("role_type").takeIf(String::isNotBlank),
-    record.text("age").takeIf(String::isNotBlank)?.let { "$it岁" },
+    record.text("age").takeIf(String::isNotBlank),
     record.text("realm_or_level").takeIf(String::isNotBlank),
     record.text("current_location").takeIf(String::isNotBlank),
     record.text("current_goal").takeIf(String::isNotBlank),
