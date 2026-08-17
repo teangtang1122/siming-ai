@@ -8357,7 +8357,7 @@ export interface components {
         };
         /**
          * RelationshipInput
-         * @description Relationship from the current character to another character.
+         * @description One directed relationship connected to the character being edited.
          */
         RelationshipInput: {
             /**
@@ -8371,8 +8371,13 @@ export interface components {
              */
             relationship_type: string;
             /**
+             * Source Character Id
+             * @description 关系起点角色ID；省略时使用当前角色，以兼容旧客户端
+             */
+            source_character_id?: string | null;
+            /**
              * Target Character Id
-             * @description 目标角色ID
+             * @description 关系终点角色ID
              */
             target_character_id: string;
         };
