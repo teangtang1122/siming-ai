@@ -465,6 +465,8 @@ private fun ProjectScreen(
 ) {
     var section by rememberSaveable(project.projectId) { mutableStateOf("assistant") }
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
+    var advanced by remember { mutableStateOf<EditorTarget?>(null) }
+    var showChapterOrder by remember { mutableStateOf(false) }
     val currentSection = entitySections.firstOrNull { it.type == section }
     val records by viewModel.entities(project.projectId, section).collectAsStateWithLifecycle(initialValue = emptyList())
     val connection by viewModel.connection.collectAsStateWithLifecycle()
@@ -562,6 +564,47 @@ private fun ProjectScreen(
                     records = records,
                     online = connection != null,
                     onOpen = { editor = EditorTarget(section, it) },
+                    onAdvanced = if (section in setOf("chapter", "character")) {
+                        { record -> advanced = EditorTarget(section, record) }
+                    } else {
+                        null
+                    },
+                    onManageChapterOrder = if (section == "chapter") {
+                        { showChapterOrder = true }
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
+    }
+
+    if (showChapterOrder) {
+        ChapterOrderDialog(
+            projectId = project.projectId,
+            chapters = records,
+            online = connection != null,
+            viewModel = viewModel,
+            onDismiss = { showChapterOrder = false },
+        )
+    }
+    advanced?.let { target ->
+        val record = target.record
+        if (record != null) {
+            when (target.entityType) {
+                "chapter" -> ChapterHistoryDialog(
+                    projectId = project.projectId,
+                    chapter = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+                "character" -> CharacterAdvancedDialog(
+                    projectId = project.projectId,
+                    character = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
                 )
             }
         }
@@ -574,6 +617,8 @@ private fun RecordList(
     records: List<ReplicaEntity>,
     online: Boolean,
     onOpen: (ReplicaEntity) -> Unit,
+    onAdvanced: ((ReplicaEntity) -> Unit)?,
+    onManageChapterOrder: (() -> Unit)?,
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 96.dp),
@@ -581,10 +626,11 @@ private fun RecordList(
         modifier = Modifier.fillMaxSize(),
     ) {
         item {
-            ScreenHeading(
-                kicker = section.type.uppercase(),
-                title = section.label,
-                detail = when (section.type) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ScreenHeading(
+                    kicker = section.type.uppercase(),
+                    title = section.label,
+                    detail = when (section.type) {
                     "chapter" -> if (online) {
                         "在线保存调用 PC 端同一章节 API，快照、目录与校验逻辑完全复用。"
                     } else {
@@ -597,21 +643,42 @@ private fun RecordList(
                     } else {
                         "这里的修改支持离线保存与版本分岔保护。"
                     }
-                },
-            )
+                    },
+                )
+                if (onManageChapterOrder != null) {
+                    OutlinedButton(
+                        onClick = onManageChapterOrder,
+                        enabled = online && records.size > 1,
+                    ) {
+                        Text(if (online) "管理章节顺序" else "章节排序需要 PC Gateway")
+                    }
+                }
+            }
         }
         if (records.isEmpty()) {
             item { EmptyPanel(section.icon, section.emptyText, "点击右下角“＋”开始。") }
         } else {
             items(records, key = { it.key }) { record ->
-                RecordCard(section.type, record, onClick = { onOpen(record) })
+                RecordCard(
+                    section.type,
+                    record,
+                    onClick = { onOpen(record) },
+                    onAdvanced = onAdvanced?.let { callback -> { callback(record) } },
+                    advancedEnabled = online,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun RecordCard(entityType: String, record: ReplicaEntity, onClick: () -> Unit) {
+private fun RecordCard(
+    entityType: String,
+    record: ReplicaEntity,
+    onClick: () -> Unit,
+    onAdvanced: (() -> Unit)? = null,
+    advancedEnabled: Boolean = false,
+) {
     val titleKey = if (entityType == "character") "name" else "title"
     val summaryKey = when (entityType) {
         "chapter" -> "content"
@@ -661,6 +728,25 @@ private fun RecordCard(entityType: String, record: ReplicaEntity, onClick: () ->
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (onAdvanced != null) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(
+                        onClick = onAdvanced,
+                        enabled = advancedEnabled,
+                    ) {
+                        Text(
+                            when (entityType) {
+                                "chapter" -> if (advancedEnabled) "版本历史" else "版本需连接 PC"
+                                "character" -> if (advancedEnabled) "关系 / AI / 版本" else "高级资料需连接 PC"
+                                else -> "高级资料"
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }
