@@ -43,6 +43,36 @@ internal object PcApiPaths {
         else -> error("PC API 暂不支持资料类型：$entityType")
     }
 
+    fun chapterReorder(projectId: String): String =
+        "${authoringCollection(projectId, "chapter")}/reorder"
+
+    fun chapterSnapshots(projectId: String, chapterId: String): String =
+        "${authoringItem(projectId, "chapter", chapterId)}/snapshots"
+
+    fun chapterSnapshotDiff(projectId: String, chapterId: String): String =
+        "${chapterSnapshots(projectId, chapterId)}/diff"
+
+    fun chapterSnapshot(projectId: String, chapterId: String, snapshotId: String): String =
+        "${chapterSnapshots(projectId, chapterId)}/${segment(snapshotId)}"
+
+    fun chapterRestore(projectId: String, chapterId: String, snapshotId: String): String =
+        "${authoringItem(projectId, "chapter", chapterId)}/restore/${segment(snapshotId)}"
+
+    fun characterRelationshipNetwork(projectId: String): String =
+        "${authoringCollection(projectId, "character")}/relationships"
+
+    fun characterRelationships(projectId: String, characterId: String): String =
+        "${authoringItem(projectId, "character", characterId)}/relationships"
+
+    fun characterAiConfig(projectId: String, characterId: String): String =
+        "${authoringItem(projectId, "character", characterId)}/ai-config"
+
+    fun characterVersions(projectId: String, characterId: String): String =
+        "${authoringItem(projectId, "character", characterId)}/versions"
+
+    fun characterVersion(projectId: String, characterId: String, versionId: String): String =
+        "${characterVersions(projectId, characterId)}/${segment(versionId)}"
+
     fun assistantStream(projectId: String): String =
         "${project(projectId)}/ai/workspace-assistant/stream"
 
