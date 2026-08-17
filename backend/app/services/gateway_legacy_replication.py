@@ -23,6 +23,10 @@ from app.services.outline_service import (
     outline_sort_context,
     replace_character_links,
 )
+from app.modules.continuity.infrastructure.governance import (
+    STATUS_UPDATE_FIELDS,
+    apply_governance_status_update,
+)
 from app.modules.continuity.infrastructure.models import (
     CausalEdge,
     ChapterGovernanceReview,
@@ -38,6 +42,7 @@ from app.modules.continuity.infrastructure.models import (
     WorldbuildingTimeline,
     WorldbuildingVersion,
 )
+from app.modules.story.infrastructure.chapter_evidence import SqlAlchemyChapterEvidenceReader
 from app.modules.story.infrastructure.entities import (
     Chapter,
     ChapterSnapshot,
@@ -583,6 +588,13 @@ def apply_domain_mutation(
     values.pop("_record_type", None)
     character_aliases: list[str] | None = None
     outline_links: list[tuple[str, str | None]] | None = None
+    governance_status_values: dict[str, Any] | None = None
+    if spec.model in {Foreshadowing, NarrativeDebt}:
+        governance_status_values = {
+            key: values.pop(key)
+            for key in STATUS_UPDATE_FIELDS
+            if key in values
+        }
     if spec.model is Project:
         values = _canonical_project_values(values)
     if spec.model is Character:
@@ -629,6 +641,19 @@ def apply_domain_mutation(
             if key != "id":
                 setattr(row, key, value)
     db.flush()
+    if governance_status_values:
+        item_type = "foreshadowing" if spec.model is Foreshadowing else "narrative_debt"
+        updated = apply_governance_status_update(
+            db,
+            SqlAlchemyChapterEvidenceReader(),
+            project_id,
+            item_type,
+            row.id,
+            governance_status_values,
+            commit=False,
+        )
+        if updated is None:
+            raise ValidationError("治理项不存在")
     if spec.model is Chapter and "content" in allowed:
         row.word_count = count_words(row.content or "")
         db.flush()
