@@ -32,7 +32,8 @@ internal fun canonicalCharacterSummary(record: ReplicaEntity): String = listOf(
 ).filterNotNull().joinToString(" · ")
 
 internal fun canonicalCharacterFormValues(values: Map<String, String>): MutableMap<String, Any?> =
-    values.mapValuesTo(linkedMapOf()) { it.value }.apply {
+    linkedMapOf<String, Any?>().apply {
+        values.forEach { (key, value) -> this[key] = value }
         this["abilities"] = stringArray(values["abilities"].orEmpty())
         this["aliases"] = stringArray(values["aliases"].orEmpty())
         this["is_evolution_tracked"] = values["is_evolution_tracked"]
