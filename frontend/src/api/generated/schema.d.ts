@@ -3114,6 +3114,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/chapters/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Reorder Chapters */
+        put: operations["reorder_chapters_api_v1_projects__project_id__chapters_reorder_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/chapters/{chapter_id}": {
         parameters: {
             query?: never;
@@ -5905,6 +5922,17 @@ export interface components {
             model?: string | null;
             /** Title */
             title?: string | null;
+        };
+        /**
+         * ChapterReorderRequest
+         * @description Replace the reading order of all chapters in one project.
+         */
+        ChapterReorderRequest: {
+            /**
+             * Ids
+             * @description Chapter IDs in reading order
+             */
+            ids?: string[];
         };
         /**
          * ChapterUpdate
@@ -15488,6 +15516,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ChapterCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_chapters_api_v1_projects__project_id__chapters_reorder_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChapterReorderRequest"];
             };
         };
         responses: {
