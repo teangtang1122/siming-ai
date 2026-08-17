@@ -7,22 +7,23 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * Return unstructured chapter replicas in their canonical PC source order.
+ * Return chapter replicas in their semantic reading order.
  *
  * Room's local write time is a transport detail: a bootstrap can insert every
- * chapter in one transaction, so it cannot be used to reconstruct the source
- * order. Synced chapters use the immutable PC creation time. Legacy replicas
- * that do not carry that field fall back to a validated chapter number parsed
- * from Arabic, full-width, or Chinese-number titles before local timestamps.
+ * chapter in one transaction, so it cannot reconstruct the source order. For
+ * numbered titles, the validated chapter number is the cross-device reading
+ * order signal. Unnumbered titles fall back to immutable PC creation time, then
+ * local timestamps and entity IDs for deterministic legacy ordering.
  */
 fun orderReplicaEntities(entityType: String, records: List<ReplicaEntity>): List<ReplicaEntity> {
     if (entityType != "chapter" || records.size < 2) return records
     return records
         .map { record -> ChapterOrder(record, payload(record)) }
         .sortedWith(
-            compareBy<ChapterOrder> { it.createdAt == null }
-                .thenBy { it.createdAt.orEmpty() }
+            compareBy<ChapterOrder> { it.titleNumber == null }
                 .thenBy { it.titleNumber ?: Int.MAX_VALUE }
+                .thenBy { it.createdAt == null }
+                .thenBy { it.createdAt.orEmpty() }
                 .thenBy { it.record.localModifiedAt }
                 .thenBy { it.record.entityId },
         )
