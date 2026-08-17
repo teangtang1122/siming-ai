@@ -17,7 +17,7 @@ API_PREFIX = "/api/v1"
 
 
 class ExportTestCase(unittest.TestCase):
-    """Exports should follow the same outline order as the chapter workspace."""
+    """Exports should follow canonical chapter reading order, not outline order."""
 
     @classmethod
     def setUpClass(cls):
@@ -63,13 +63,37 @@ class ExportTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()["data"]["id"]
 
-    def test_export_uses_outline_order_instead_of_creation_order(self):
+    def test_export_uses_chapter_reading_order_independent_from_outline(self):
         project_id = self.create_project()
         second_outline = self.create_outline_node(project_id, "Second Outline", 1)
         first_outline = self.create_outline_node(project_id, "First Outline", 0)
-        self.create_chapter(project_id, "Second Chapter", second_outline)
-        self.create_chapter(project_id, "Unlinked Chapter")
-        self.create_chapter(project_id, "First Chapter", first_outline)
+        second_id = self.create_chapter(project_id, "Second Chapter", second_outline)
+        unlinked_id = self.create_chapter(project_id, "Unlinked Chapter")
+        first_id = self.create_chapter(project_id, "First Chapter", first_outline)
+
+        report = self.client.get(f"{API_PREFIX}/projects/{project_id}/export/word-count")
+        self.assertEqual(report.status_code, 200)
+        titles = [item["title"] for item in report.json()["data"]["chapters"]]
+        self.assertEqual(titles, ["Second Chapter", "Unlinked Chapter", "First Chapter"])
+
+        reordered = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/chapters/reorder",
+            json={"ids": [first_id, second_id, unlinked_id]},
+        )
+        self.assertEqual(reordered.status_code, 200, reordered.text)
+
+        # Deliberately move the linked outline nodes in the opposite direction.
+        # Export order must remain the正文 reading order established above.
+        first_update = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/outline/{first_outline}",
+            json={"sort_order": 9},
+        )
+        second_update = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/outline/{second_outline}",
+            json={"sort_order": 0},
+        )
+        self.assertEqual(first_update.status_code, 200, first_update.text)
+        self.assertEqual(second_update.status_code, 200, second_update.text)
 
         report = self.client.get(f"{API_PREFIX}/projects/{project_id}/export/word-count")
         self.assertEqual(report.status_code, 200)
