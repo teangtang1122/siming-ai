@@ -33,6 +33,8 @@ def test_offline_existing_chapter_save_reuses_pc_snapshot_and_checkpoint_semanti
     try:
         with Session() as db:
             project = Project(title="章节副作用契约")
+            db.add(project)
+            db.flush()
             chapter = Chapter(
                 project_id=project.id,
                 title="第一章",
@@ -41,7 +43,7 @@ def test_offline_existing_chapter_save_reuses_pc_snapshot_and_checkpoint_semanti
                 current_version=1,
                 sort_order=1000,
             )
-            db.add_all([project, chapter])
+            db.add(chapter)
             db.commit()
 
             apply_domain_mutation(
@@ -94,13 +96,15 @@ def test_offline_existing_character_save_reuses_pc_character_version_semantics(t
     try:
         with Session() as db:
             project = Project(title="角色副作用契约")
+            db.add(project)
+            db.flush()
             character = Character(
                 project_id=project.id,
                 name="陆糖",
                 abilities=json.dumps(["推演"], ensure_ascii=False),
                 current_version=1,
             )
-            db.add_all([project, character])
+            db.add(character)
             db.commit()
 
             apply_domain_mutation(
