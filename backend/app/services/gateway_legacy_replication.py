@@ -14,21 +14,6 @@ from sqlalchemy.orm import Session
 from app.core.db_helpers import get_outline_node_or_404
 from app.core.exceptions import ValidationError
 from app.core.utils import count_words
-from app.services.chapter_ordering import next_chapter_sort_order
-from app.services.chapter_service import chapter_to_detail, create_snapshot
-from app.services.character_service import (
-    character_to_dict,
-    create_character_version,
-    dumps_list,
-    sync_character_aliases,
-)
-from app.services.outline_service import (
-    ensure_no_cycle,
-    load_outline_nodes,
-    node_to_dict,
-    outline_sort_context,
-    replace_character_links,
-)
 from app.modules.continuity.infrastructure.governance import (
     STATUS_UPDATE_FIELDS,
     apply_governance_status_update,
@@ -50,7 +35,6 @@ from app.modules.continuity.infrastructure.models import (
 )
 from app.modules.story.infrastructure.chapter_evidence import SqlAlchemyChapterEvidenceReader
 from app.modules.story.infrastructure.chapters import SqlAlchemyChapterWorkspace
-from app.services.narrative_governance import create_narrative_checkpoint
 from app.modules.story.infrastructure.entities import (
     Chapter,
     ChapterSnapshot,
@@ -62,6 +46,26 @@ from app.modules.story.infrastructure.entities import (
     Project,
     WorldbuildingEntry,
     WorldbuildingRelation,
+)
+from app.services.chapter_ordering import next_chapter_sort_order
+from app.services.chapter_service import chapter_to_detail, create_snapshot
+from app.services.character_role_types import (
+    append_character_role_description,
+    normalize_character_role_type,
+)
+from app.services.character_service import (
+    character_to_dict,
+    create_character_version,
+    dumps_list,
+    sync_character_aliases,
+)
+from app.services.narrative_governance import create_narrative_checkpoint
+from app.services.outline_service import (
+    ensure_no_cycle,
+    load_outline_nodes,
+    node_to_dict,
+    outline_sort_context,
+    replace_character_links,
 )
 
 LOCAL_ONLY_COLUMNS = frozenset(
@@ -475,7 +479,12 @@ def _string_list(value: Any, *, field: str) -> list[str] | None:
             if isinstance(parsed, list):
                 return [str(item).strip() for item in parsed if str(item).strip()]
         normalized = raw.replace("，", ",").replace("、", ",").replace("\r", "\n")
-        return [item.strip() for line in normalized.split("\n") for item in line.split(",") if item.strip()]
+        return [
+            item.strip()
+            for line in normalized.split("\n")
+            for item in line.split(",")
+            if item.strip()
+        ]
     raise ValidationError(f"角色 {field} 必须是字符串数组")
 
 
@@ -610,6 +619,16 @@ def apply_domain_mutation(
     if spec.model is Character:
         raw_summary = values.pop("change_summary", None)
         character_change_summary = str(raw_summary or "").strip() or None
+        if "role_type" in values:
+            raw_role_type = values["role_type"]
+            values["background"] = append_character_role_description(
+                values.get("background", row.background if row is not None else None),
+                raw_role_type,
+            )
+            values["role_type"] = normalize_character_role_type(
+                raw_role_type,
+                default=(row.role_type or "other") if row is not None else "other",
+            )
         values, character_aliases = _canonical_character_values(values)
     if spec.model is OutlineNode:
         values, outline_links = _canonical_outline_values(values)
