@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "300a17_chapter_sort_order"
 down_revision = "300a16_character_role_type_enum"
@@ -22,11 +22,18 @@ def _time_key(value):
 
 
 def upgrade() -> None:
-    op.add_column(
-        "chapters",
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="1000000000"),
-    )
     bind = op.get_bind()
+    # The 3.0 baseline reconciler uses current SQLAlchemy metadata when it sees
+    # an unversioned/fresh database. In that path the new column may already
+    # exist before this explicit revision runs; versioned 300a16 databases still
+    # need the normal ALTER TABLE.
+    chapter_columns = {column["name"] for column in sa.inspect(bind).get_columns("chapters")}
+    if "sort_order" not in chapter_columns:
+        op.add_column(
+            "chapters",
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="1000000000"),
+        )
+
     chapters = sa.table(
         "chapters",
         sa.column("id", sa.String()),
