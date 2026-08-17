@@ -15,6 +15,7 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -203,6 +204,127 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         method = "PATCH",
         payload = payload,
     )
+
+    suspend fun reorderChapters(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterIds: List<String>,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.chapterReorder(projectId),
+        method = "PUT",
+        payload = buildJsonObject {
+            put("ids", JsonArray(chapterIds.map(::JsonPrimitive)))
+        },
+    )
+
+    suspend fun listChapterSnapshots(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.chapterSnapshots(projectId, chapterId),
+    ).data
+
+    suspend fun getChapterSnapshot(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.chapterSnapshot(projectId, chapterId, snapshotId),
+    ).data
+
+    suspend fun diffChapterSnapshots(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        fromSnapshotId: String,
+        toSnapshotId: String,
+    ): JsonObject {
+        val url = (connection.baseUrl + PcApiPaths.chapterSnapshotDiff(projectId, chapterId))
+            .toHttpUrl()
+            .newBuilder()
+            .addQueryParameter("from_snapshot_id", fromSnapshotId)
+            .addQueryParameter("to_snapshot_id", toSnapshotId)
+            .build()
+            .toString()
+        return request<ApiEnvelope<JsonObject>>("", url, absolutePath = true).data
+    }
+
+    suspend fun restoreChapterSnapshot(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.chapterRestore(projectId, chapterId, snapshotId),
+        "POST",
+        json.encodeToString(JsonObject(emptyMap())),
+    ).data
+
+    suspend fun getCharacterRelationshipNetwork(
+        connection: GatewayConnection,
+        projectId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterRelationshipNetwork(projectId),
+    ).data
+
+    suspend fun replaceCharacterRelationships(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.characterRelationships(projectId, characterId),
+        method = "PUT",
+        payload = payload,
+    )
+
+    suspend fun getCharacterAiConfig(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterAiConfig(projectId, characterId),
+    ).data
+
+    suspend fun updateCharacterAiConfig(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.characterAiConfig(projectId, characterId),
+        method = "PUT",
+        payload = payload,
+    )
+
+    suspend fun listCharacterVersions(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterVersions(projectId, characterId),
+    ).data
+
+    suspend fun getCharacterVersion(
+        connection: GatewayConnection,
+        projectId: String,
+        characterId: String,
+        versionId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.characterVersion(projectId, characterId, versionId),
+    ).data
 
     suspend fun listNovelCreationSessions(connection: GatewayConnection): List<JsonObject> {
         val data = request<ApiEnvelope<JsonObject>>(
