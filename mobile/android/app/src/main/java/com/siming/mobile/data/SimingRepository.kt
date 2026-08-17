@@ -191,6 +191,13 @@ class SimingRepository(context: Context) {
         }
         val response = api.bootstrap(connection, projectIds)
         database.withTransaction {
+            // bootstrap is a full authoritative snapshot for enabled projects.
+            // Remove only clean/non-conflicted replicas first so stale rows
+            // from older mobile schemas disappear, while offline edits and
+            // conflict branches remain available for upload/resolution.
+            projectIds.forEach { projectId ->
+                dao.deleteCleanProjectReplicas(projectId)
+            }
             for (snapshot in response.entities) {
                 val key = ReplicaEntity.key(
                     snapshot.projectId,
