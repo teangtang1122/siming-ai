@@ -105,9 +105,13 @@ class CharacterVersionItem(BaseModel):
 
 
 class RelationshipInput(BaseModel):
-    """Relationship from the current character to another character."""
+    """One directed relationship connected to the character being edited."""
 
-    target_character_id: str = Field(..., description="目标角色ID")
+    source_character_id: Optional[str] = Field(
+        None,
+        description="关系起点角色ID；省略时使用当前角色，以兼容旧客户端",
+    )
+    target_character_id: str = Field(..., description="关系终点角色ID")
     relationship_type: str = Field(..., min_length=1, max_length=100, description="关系类型")
     description: Optional[str] = Field(None, description="关系描述")
 

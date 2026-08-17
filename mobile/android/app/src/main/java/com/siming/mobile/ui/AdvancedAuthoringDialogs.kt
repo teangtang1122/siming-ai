@@ -34,6 +34,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.network.PcEditableRelationship
+import com.siming.mobile.data.network.pcEditableRelationships
+import com.siming.mobile.data.network.pcNewRelationship
+import com.siming.mobile.data.network.pcRelationshipMutationPayload
+import com.siming.mobile.data.network.mobileRefreshWarning
 import com.siming.mobile.data.toUserFacingMessage
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
@@ -116,8 +121,13 @@ internal fun ChapterOrderDialog(
                     scope.launch {
                         saving = true
                         try {
-                            viewModel.reorderChapters(projectId, ordered.map(ReplicaEntity::entityId))
-                            viewModel.reportNotice("章节顺序已由 PC 端统一更新")
+                            val result = viewModel.reorderChapters(
+                                projectId,
+                                ordered.map(ReplicaEntity::entityId),
+                            )
+                            viewModel.reportNotice(
+                                canonicalWriteNotice("章节顺序已由 PC 端统一更新", result),
+                            )
                             onDismiss()
                         } catch (error: Exception) {
                             viewModel.reportError(error.toUserFacingMessage())
@@ -149,6 +159,7 @@ internal fun ChapterHistoryDialog(
     var detail by remember { mutableStateOf<JsonObject?>(null) }
     var diff by remember { mutableStateOf<JsonObject?>(null) }
     var restoreCandidate by remember { mutableStateOf<JsonObject?>(null) }
+    var restoring by remember { mutableStateOf(false) }
 
     fun reload() {
         if (!online) return
@@ -168,7 +179,7 @@ internal fun ChapterHistoryDialog(
     LaunchedEffect(chapter.entityId, online) { reload() }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!restoring) onDismiss() },
         title = { Text("${chapter.text("title").ifBlank { "章节" }} · 版本历史") },
         text = {
             Column(
@@ -199,41 +210,54 @@ internal fun ChapterHistoryDialog(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        loading = true
-                                        try {
-                                            detail = viewModel.chapterSnapshot(projectId, chapter.entityId, snapshotId)
-                                            diff = null
-                                        } catch (error: Exception) {
-                                            viewModel.reportError(error.toUserFacingMessage())
-                                        } finally {
-                                            loading = false
-                                        }
-                                    }
-                                }) { Text("查看") }
-                                if (index < snapshots.lastIndex) {
-                                    TextButton(onClick = {
-                                        val olderId = snapshots[index + 1].string("id")
+                                TextButton(
+                                    enabled = !restoring,
+                                    onClick = {
                                         scope.launch {
                                             loading = true
                                             try {
-                                                diff = viewModel.chapterSnapshotDiff(
+                                                detail = viewModel.chapterSnapshot(
                                                     projectId,
                                                     chapter.entityId,
-                                                    olderId,
                                                     snapshotId,
                                                 )
-                                                detail = null
+                                                diff = null
                                             } catch (error: Exception) {
                                                 viewModel.reportError(error.toUserFacingMessage())
                                             } finally {
                                                 loading = false
                                             }
                                         }
-                                    }) { Text("与上一版对比") }
+                                    },
+                                ) { Text("查看") }
+                                if (index < snapshots.lastIndex) {
+                                    TextButton(
+                                        enabled = !restoring,
+                                        onClick = {
+                                            val olderId = snapshots[index + 1].string("id")
+                                            scope.launch {
+                                                loading = true
+                                                try {
+                                                    diff = viewModel.chapterSnapshotDiff(
+                                                        projectId,
+                                                        chapter.entityId,
+                                                        olderId,
+                                                        snapshotId,
+                                                    )
+                                                    detail = null
+                                                } catch (error: Exception) {
+                                                    viewModel.reportError(error.toUserFacingMessage())
+                                                } finally {
+                                                    loading = false
+                                                }
+                                            }
+                                        },
+                                    ) { Text("与上一版对比") }
                                 }
-                                TextButton(onClick = { restoreCandidate = snapshot }) { Text("恢复") }
+                                TextButton(
+                                    onClick = { restoreCandidate = snapshot },
+                                    enabled = !restoring,
+                                ) { Text("恢复") }
                             }
                         }
                     }
@@ -265,51 +289,68 @@ internal fun ChapterHistoryDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        confirmButton = {
+            TextButton(onClick = onDismiss, enabled = !restoring) { Text("关闭") }
+        },
     )
 
     restoreCandidate?.let { snapshot ->
         AlertDialog(
-            onDismissRequest = { restoreCandidate = null },
+            onDismissRequest = { if (!restoring) restoreCandidate = null },
             title = { Text("恢复到 v${snapshot.int("version_number")}") },
             text = {
                 Text("PC 会创建新的 restore 版本、恢复对应 ledger checkpoint，并把受影响的旧治理结论标记为需要复检。")
             },
             confirmButton = {
                 Button(
+                    enabled = !restoring,
                     onClick = {
+                        if (restoring) return@Button
+                        restoring = true
+                        loading = true
                         val snapshotId = snapshot.string("id")
                         scope.launch {
-                            loading = true
                             try {
-                                viewModel.restoreChapterSnapshot(projectId, chapter.entityId, snapshotId)
+                                val result = viewModel.restoreChapterSnapshot(
+                                    projectId,
+                                    chapter.entityId,
+                                    snapshotId,
+                                )
                                 restoreCandidate = null
                                 detail = null
                                 diff = null
-                                reload()
-                                viewModel.reportNotice("章节已通过 PC 版本系统恢复，并同步最新副本")
+                                if (result.mobileRefreshWarning().isBlank()) reload()
+                                viewModel.reportNotice(
+                                    canonicalWriteNotice(
+                                        "章节已通过 PC 版本系统恢复，并同步最新副本",
+                                        result,
+                                    ),
+                                )
                             } catch (error: Exception) {
                                 viewModel.reportError(error.toUserFacingMessage())
                             } finally {
+                                restoring = false
                                 loading = false
                             }
                         }
                     },
-                ) { Text("确认恢复") }
+                ) {
+                    if (restoring) {
+                        CircularProgressIndicator(Modifier.height(18.dp).width(18.dp))
+                    } else {
+                        Text("确认恢复")
+                    }
+                }
             },
             dismissButton = {
-                TextButton(onClick = { restoreCandidate = null }) { Text("取消") }
+                TextButton(
+                    onClick = { restoreCandidate = null },
+                    enabled = !restoring,
+                ) { Text("取消") }
             },
         )
     }
 }
-
-private data class EditableRelation(
-    val targetId: String,
-    val targetName: String,
-    val relationshipType: String,
-    val description: String,
-)
 
 private enum class CharacterAdvancedTab(val label: String) {
     Relationships("关系"),
@@ -329,7 +370,7 @@ internal fun CharacterAdvancedDialog(
     var tab by remember { mutableStateOf(CharacterAdvancedTab.Relationships) }
     var loading by remember { mutableStateOf(false) }
     var nodes by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
-    var relations by remember { mutableStateOf<List<EditableRelation>>(emptyList()) }
+    var relations by remember { mutableStateOf<List<PcEditableRelationship>>(emptyList()) }
     var aiConfig by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var versions by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var versionDetail by remember { mutableStateOf<JsonObject?>(null) }
@@ -341,7 +382,7 @@ internal fun CharacterAdvancedDialog(
             try {
                 val network = viewModel.characterRelationshipNetwork(projectId)
                 nodes = network.arrayObjects("nodes")
-                relations = relationEditorRows(network, character.entityId)
+                relations = pcEditableRelationships(network, character.entityId)
                 aiConfig = aiConfigFields(viewModel.characterAiConfig(projectId, character.entityId))
                 versions = viewModel.characterVersions(projectId, character.entityId).arrayObjects("items")
             } catch (error: Exception) {
@@ -380,6 +421,7 @@ internal fun CharacterAdvancedDialog(
                 when (tab) {
                     CharacterAdvancedTab.Relationships -> RelationshipEditor(
                         currentCharacterId = character.entityId,
+                        currentCharacterName = character.text("name").ifBlank { "当前角色" },
                         nodes = nodes,
                         relations = relations,
                         onRelationsChanged = { relations = it },
@@ -387,14 +429,19 @@ internal fun CharacterAdvancedDialog(
                             scope.launch {
                                 loading = true
                                 try {
-                                    val payload = JsonArray(relations.map(::relationPayload))
-                                    viewModel.replaceCharacterRelationships(
+                                    val payload = JsonArray(relations.map(::pcRelationshipMutationPayload))
+                                    val result = viewModel.replaceCharacterRelationships(
                                         projectId,
                                         character.entityId,
                                         payload,
                                     )
-                                    viewModel.reportNotice("角色关系已由 PC 关系网接口统一保存")
-                                    loadAll()
+                                    viewModel.reportNotice(
+                                        canonicalWriteNotice(
+                                            "角色关系已由 PC 关系网接口统一保存",
+                                            result,
+                                        ),
+                                    )
+                                    if (result.mobileRefreshWarning().isBlank()) loadAll()
                                 } catch (error: Exception) {
                                     viewModel.reportError(error.toUserFacingMessage())
                                 } finally {
@@ -410,13 +457,18 @@ internal fun CharacterAdvancedDialog(
                             scope.launch {
                                 loading = true
                                 try {
-                                    viewModel.updateCharacterAiConfig(
+                                    val result = viewModel.updateCharacterAiConfig(
                                         projectId,
                                         character.entityId,
                                         aiConfigPayload(aiConfig),
                                     )
-                                    viewModel.reportNotice("角色 AI 配置已通过 PC 专用接口保存")
-                                    loadAll()
+                                    viewModel.reportNotice(
+                                        canonicalWriteNotice(
+                                            "角色 AI 配置已通过 PC 专用接口保存",
+                                            result,
+                                        ),
+                                    )
+                                    if (result.mobileRefreshWarning().isBlank()) loadAll()
                                 } catch (error: Exception) {
                                     viewModel.reportError(error.toUserFacingMessage())
                                 } finally {
@@ -553,17 +605,20 @@ internal fun WorldAdvancedDialog(
 @Composable
 private fun RelationshipEditor(
     currentCharacterId: String,
+    currentCharacterName: String,
     nodes: List<JsonObject>,
-    relations: List<EditableRelation>,
-    onRelationsChanged: (List<EditableRelation>) -> Unit,
+    relations: List<PcEditableRelationship>,
+    onRelationsChanged: (List<PcEditableRelationship>) -> Unit,
     onSave: () -> Unit,
 ) {
-    val existingTargets = relations.mapTo(mutableSetOf()) { it.targetId }
+    val existingCounterparts = relations.mapTo(mutableSetOf()) {
+        it.counterpartId(currentCharacterId)
+    }
     val available = nodes.filter {
-        it.string("id") != currentCharacterId && it.string("id") !in existingTargets
+        it.string("id") != currentCharacterId && it.string("id") !in existingCounterparts
     }
     Text(
-        "PC 的关系更新是“替换当前角色的全部关系”，保存时会一次提交完整列表。",
+        "PC 的关系更新是“替换当前角色的全部关系”。手机会保留每条边的原始方向，避免从终点角色保存时反转语义。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -573,11 +628,10 @@ private fun RelationshipEditor(
             AssistChip(
                 onClick = {
                     onRelationsChanged(
-                        relations + EditableRelation(
-                            targetId = node.string("id"),
+                        relations + pcNewRelationship(
+                            currentCharacterId = currentCharacterId,
+                            targetCharacterId = node.string("id"),
                             targetName = node.string("name"),
-                            relationshipType = "related",
-                            description = "",
                         ),
                     )
                 },
@@ -589,8 +643,16 @@ private fun RelationshipEditor(
         OutlinedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    relation.targetName.ifBlank { relation.targetId },
+                    relation.counterpartName.ifBlank {
+                        relation.counterpartId(currentCharacterId)
+                    },
                     fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    relation.directionLabel(currentCharacterId)
+                        .replace("当前角色", currentCharacterName),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 TextButton(onClick = {
                     onRelationsChanged(relations.filterIndexed { itemIndex, _ -> itemIndex != index })
@@ -685,31 +747,6 @@ private fun CharacterVersionList(
     }
 }
 
-private fun relationEditorRows(network: JsonObject, currentId: String): List<EditableRelation> {
-    val names = network.arrayObjects("nodes").associate { it.string("id") to it.string("name") }
-    return network.arrayObjects("edges").mapNotNull { edge ->
-        val from = edge.string("from")
-        val to = edge.string("to")
-        val target = when (currentId) {
-            from -> to
-            to -> from
-            else -> return@mapNotNull null
-        }
-        EditableRelation(
-            targetId = target,
-            targetName = names[target].orEmpty(),
-            relationshipType = edge.string("relationship_type"),
-            description = edge.string("description"),
-        )
-    }
-}
-
-private fun relationPayload(relation: EditableRelation): JsonObject = buildJsonObject {
-    put("target_character_id", relation.targetId)
-    put("relationship_type", relation.relationshipType.ifBlank { "related" })
-    if (relation.description.isNotBlank()) put("description", relation.description)
-}
-
 private fun aiConfigFields(config: JsonObject): Map<String, String> = mapOf(
     "tone_style" to config.string("tone_style"),
     "catchphrases" to config.stringList("catchphrases").joinToString("\n"),
@@ -754,6 +791,11 @@ private fun formatPcSnapshotDiff(result: JsonObject): String {
             chunk.stringList("to_lines").take(8).forEach { append("+ ").append(it).append('\n') }
         }.trimEnd()
     }
+}
+
+private fun canonicalWriteNotice(success: String, result: JsonObject): String {
+    val warning = result.mobileRefreshWarning()
+    return if (warning.isBlank()) success else "$success；手机副本待刷新：$warning"
 }
 
 private fun <T> List<T>.replaceAt(index: Int, value: T): List<T> =

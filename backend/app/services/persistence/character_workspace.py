@@ -117,7 +117,7 @@ class SqlAlchemyCharacterWorkspace:
             self.db.add(
                 CharacterRelationship(
                     project_id=project_id,
-                    character_a_id=character_id,
+                    character_a_id=item.source_character_id or character_id,
                     character_b_id=item.target_character_id,
                     relationship_type=item.relationship_type,
                     description=item.description,

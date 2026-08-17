@@ -124,6 +124,30 @@ class MobileContextParityTest {
         assertTrue(context.indexOf("必须交代病毒来源") < context.indexOf("传道石"))
     }
 
+    @Test
+    fun `governance context keeps only latest state per character`() {
+        val oldState = buildJsonObject {
+            put("_record_type", "character_narrative_state")
+            put("id", "state-old")
+            put("character_id", "c1")
+            put("current_goal", "逃离青云宗")
+            put("created_at", "2026-08-01T00:00:00Z")
+        }
+        val newState = buildJsonObject {
+            put("_record_type", "character_narrative_state")
+            put("id", "state-new")
+            put("character_id", "c1")
+            put("current_goal", "切断病毒网络")
+            put("created_at", "2026-08-17T00:00:00Z")
+        }
+
+        val context = pcGovernanceContext(listOf(oldState, newState))
+
+        assertTrue("切断病毒网络" in context)
+        assertFalse("逃离青云宗" in context)
+        assertEquals(1, Regex("角色动态/c1").findAll(context).count())
+    }
+
     private fun character(id: String, name: String, aliases: List<String> = emptyList()): JsonObject =
         buildJsonObject {
             put("_record_type", "character")

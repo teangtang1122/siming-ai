@@ -126,7 +126,7 @@ internal fun pcCharacterDetails(
     }
 }
 
-/** Mirrors PC governance_context ordering and open-status filtering. */
+/** Mirrors PC governance_context ordering, open-status filtering, and latest-state selection. */
 internal fun pcGovernanceContext(allRecords: List<JsonObject>, limit: Int = 12): String {
     val weighted = mutableListOf<Pair<Int, String>>()
     allRecords.forEach { row ->
@@ -134,7 +134,7 @@ internal fun pcGovernanceContext(allRecords: List<JsonObject>, limit: Int = 12):
             "narrative_debt" -> if (row.string("status") in OPEN_STATUSES) {
                 val priority = row.string("priority").ifBlank { "medium" }
                 weighted += importance(priority) + 4 to
-                    "[叙事债务/$priority/ID:${row.string("id")}] ${row.string("title")}" 
+                    "[叙事债务/$priority/ID:${row.string("id")}] ${row.string("title")}"
             }
             "foreshadowing" -> if (row.string("status") in OPEN_STATUSES) {
                 val importance = row.string("importance").ifBlank { "medium" }
@@ -148,25 +148,43 @@ internal fun pcGovernanceContext(allRecords: List<JsonObject>, limit: Int = 12):
             "causal_edge" -> if (row.string("status") in OPEN_STATUSES) {
                 val strength = row.doubleValue("strength") ?: 0.0
                 weighted += (strength * 5).toInt() + 2 to
-                    "[未闭环因果/ID:${row.string("id")}] ${row.string("cause")} -> ${row.string("effect")}" 
-            }
-            "character_narrative_state" -> {
-                val detail = listOf(
-                    row.string("current_goal"),
-                    row.string("emotional_residue"),
-                    row.string("behavior_boundaries"),
-                ).filter(String::isNotBlank).joinToString("；")
-                if (detail.isNotBlank()) {
-                    weighted += 4 to "[角色动态/${row.string("character_id")}] $detail"
-                }
+                    "[未闭环因果/ID:${row.string("id")}] ${row.string("cause")} -> ${row.string("effect")}"
             }
         }
     }
+
+    latestCharacterStates(allRecords).forEach { row ->
+        val detail = listOf(
+            row.string("current_goal"),
+            row.string("emotional_residue"),
+            row.string("behavior_boundaries"),
+        ).filter(String::isNotBlank).joinToString("；")
+        if (detail.isNotBlank()) {
+            weighted += 4 to "[角色动态/${row.string("character_id")}] $detail"
+        }
+    }
+
     if (weighted.isEmpty()) return ""
     return "叙事治理锁：\n" + weighted
         .sortedByDescending { it.first }
         .take(limit)
         .joinToString("\n") { it.second }
+}
+
+private fun latestCharacterStates(allRecords: List<JsonObject>): List<JsonObject> {
+    val latest = linkedMapOf<String, JsonObject>()
+    allRecords.asSequence()
+        .filter { it.recordType() == "character_narrative_state" }
+        .sortedWith(
+            compareByDescending<JsonObject> { it.string("created_at") }
+                .thenByDescending { it.string("id") },
+        )
+        .take(100)
+        .forEach { row ->
+            val characterId = row.string("character_id")
+            if (characterId.isNotBlank()) latest.putIfAbsent(characterId, row)
+        }
+    return latest.values.toList()
 }
 
 private fun JsonObject.recordType(): String = string("_record_type")

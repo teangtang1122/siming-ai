@@ -333,15 +333,21 @@ def update_character_relationships(
     db = command.session
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
-    target_ids = {item.target_character_id for item in payload.relationships}
-    if character.id in target_ids:
-        raise ValidationError("角色不能与自身建立关系")
+    endpoint_ids: set[str] = set()
+    for item in payload.relationships:
+        source_id = item.source_character_id or character.id
+        target_id = item.target_character_id
+        if character.id not in {source_id, target_id}:
+            raise ValidationError("提交的关系必须连接当前角色")
+        if source_id == target_id:
+            raise ValidationError("角色不能与自身建立关系")
+        endpoint_ids.update({source_id, target_id})
 
-    if target_ids:
-        if not character_workspace(db).targets_exist(project_id, target_ids):
-            raise ValidationError("关系目标角色必须属于当前作品")
+    workspace = character_workspace(db)
+    if endpoint_ids and not workspace.targets_exist(project_id, endpoint_ids):
+        raise ValidationError("关系两端角色必须属于当前作品")
 
-    character_workspace(db).replace_relationships(
+    workspace.replace_relationships(
         project_id,
         character.id,
         payload.relationships,

@@ -747,7 +747,13 @@ def _prepare_domain_mutation_values(
     elif spec.model is CharacterAIConfig:
         values = _canonical_character_ai_config_values(values)
         if row is not None:
-            values.setdefault("character_id", row.character_id)
+            supplied_character_id = values.get("character_id")
+            if (
+                supplied_character_id is not None
+                and str(supplied_character_id) != str(row.character_id)
+            ):
+                raise ValidationError("角色 AI 配置不能移动到其他角色")
+            values["character_id"] = row.character_id
     elif spec.model is OutlineNode:
         values, outline_links = _canonical_outline_values(values)
     return (

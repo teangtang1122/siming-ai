@@ -179,3 +179,42 @@ def test_character_relation_rejects_self_link(tmp_path):
                 )
     finally:
         engine.dispose()
+
+
+def test_character_ai_config_cannot_move_to_another_character(tmp_path):
+    engine, Session = _session(tmp_path)
+    try:
+        with Session() as db:
+            project = Project(title="AI 配置归属校验")
+            db.add(project)
+            db.flush()
+            original = Character(project_id=project.id, name="陆糖")
+            other = Character(project_id=project.id, name="小七")
+            db.add_all([original, other])
+            db.flush()
+            config = CharacterAIConfig(character_id=original.id, tone_style="冷静")
+            db.add(config)
+            db.commit()
+
+            with pytest.raises(ValidationError, match="不能移动"):
+                apply_domain_mutation(
+                    db,
+                    project_id=project.id,
+                    entity_type="character_ai_config",
+                    entity_id=config.id,
+                    operation="upsert",
+                    payload={
+                        "_record_type": "character_ai_config",
+                        "id": config.id,
+                        "project_id": project.id,
+                        "character_id": other.id,
+                        "tone_style": "活泼",
+                    },
+                )
+
+            db.rollback()
+            db.refresh(config)
+            assert config.character_id == original.id
+            assert config.tone_style == "冷静"
+    finally:
+        engine.dispose()

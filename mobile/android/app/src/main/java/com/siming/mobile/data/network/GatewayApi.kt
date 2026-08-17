@@ -251,7 +251,7 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
             .addQueryParameter("to_snapshot_id", toSnapshotId)
             .build()
             .toString()
-        return request<ApiEnvelope<JsonObject>>("", url, absolutePath = true).data
+        return request<ApiEnvelope<JsonObject>>(connection.baseUrl, url, absolutePath = true).data
     }
 
     suspend fun restoreChapterSnapshot(

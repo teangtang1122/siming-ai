@@ -290,6 +290,65 @@ class TestCharacterRelationships(CharacterTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("当前作品", response.json()["message"])
 
+    def test_editing_from_target_endpoint_preserves_direction(self):
+        project_id = self.create_project()
+        parent = self.create_character(project_id, "陆承宇")
+        child = self.create_character(project_id, "陆糖")
+
+        created = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/characters/{parent['id']}/relationships",
+            json={
+                "relationships": [
+                    {
+                        "target_character_id": child["id"],
+                        "relationship_type": "父女",
+                        "description": "互相信任",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+
+        saved_from_child = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/characters/{child['id']}/relationships",
+            json={
+                "relationships": [
+                    {
+                        "source_character_id": parent["id"],
+                        "target_character_id": child["id"],
+                        "relationship_type": "父女",
+                        "description": "互相信任",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(saved_from_child.status_code, 200)
+        edges = saved_from_child.json()["data"]["edges"]
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["from"], parent["id"])
+        self.assertEqual(edges[0]["to"], child["id"])
+
+    def test_relationship_payload_must_remain_connected_to_current_character(self):
+        project_id = self.create_project()
+        current = self.create_character(project_id, "当前角色")
+        other_a = self.create_character(project_id, "角色甲")
+        other_b = self.create_character(project_id, "角色乙")
+
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/characters/{current['id']}/relationships",
+            json={
+                "relationships": [
+                    {
+                        "source_character_id": other_a["id"],
+                        "target_character_id": other_b["id"],
+                        "relationship_type": "同门",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("连接当前角色", response.json()["message"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

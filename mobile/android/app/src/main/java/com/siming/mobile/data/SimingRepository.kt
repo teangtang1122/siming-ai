@@ -25,6 +25,7 @@ import com.siming.mobile.data.network.PcApiPayloads
 import com.siming.mobile.data.network.RemoteSyncProject
 import com.siming.mobile.data.network.SyncMutationRequest
 import com.siming.mobile.data.network.WorkspaceAssistantRequest
+import com.siming.mobile.data.network.withMobileRefreshFailure
 import com.siming.mobile.security.PairingSecurity
 import com.siming.mobile.security.MobileProviderEncryption
 import com.siming.mobile.security.SecureApiConfigStore
@@ -35,6 +36,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -540,11 +542,24 @@ class SimingRepository(context: Context) {
         return connection
     }
 
-    suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject {
-        val connection = canonicalCommandConnection()
-        val result = api.reorderChapters(connection, projectId, chapterIds)
+    suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject =
+        canonicalCommandMutex.withLock {
+            val connection = canonicalCommandConnection()
+            val result = api.reorderChapters(connection, projectId, chapterIds)
+            refreshAfterCanonicalWrite(connection, projectId, result)
+        }
+
+    private suspend fun refreshAfterCanonicalWrite(
+        connection: GatewayConnection,
+        projectId: String,
+        result: JsonObject,
+    ): JsonObject = try {
         pullAll(connection, listOf(projectId))
-        return result
+        result
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        result.withMobileRefreshFailure(error.toUserFacingMessage())
     }
 
     suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
@@ -578,11 +593,10 @@ class SimingRepository(context: Context) {
         projectId: String,
         chapterId: String,
         snapshotId: String,
-    ): JsonObject {
+    ): JsonObject = canonicalCommandMutex.withLock {
         val connection = canonicalCommandConnection()
         val result = api.restoreChapterSnapshot(connection, projectId, chapterId, snapshotId)
-        pullAll(connection, listOf(projectId))
-        return result
+        refreshAfterCanonicalWrite(connection, projectId, result)
     }
 
     suspend fun characterRelationshipNetwork(projectId: String): JsonObject =
@@ -592,7 +606,7 @@ class SimingRepository(context: Context) {
         projectId: String,
         characterId: String,
         relationships: JsonArray,
-    ): JsonObject {
+    ): JsonObject = canonicalCommandMutex.withLock {
         val connection = canonicalCommandConnection()
         val result = api.replaceCharacterRelationships(
             connection,
@@ -600,8 +614,7 @@ class SimingRepository(context: Context) {
             characterId,
             buildJsonObject { put("relationships", relationships) },
         )
-        pullAll(connection, listOf(projectId))
-        return result
+        refreshAfterCanonicalWrite(connection, projectId, result)
     }
 
     suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject =
@@ -611,11 +624,10 @@ class SimingRepository(context: Context) {
         projectId: String,
         characterId: String,
         payload: JsonObject,
-    ): JsonObject {
+    ): JsonObject = canonicalCommandMutex.withLock {
         val connection = canonicalCommandConnection()
         val result = api.updateCharacterAiConfig(connection, projectId, characterId, payload)
-        pullAll(connection, listOf(projectId))
-        return result
+        refreshAfterCanonicalWrite(connection, projectId, result)
     }
 
     suspend fun characterVersions(projectId: String, characterId: String): JsonObject =
@@ -1614,6 +1626,7 @@ class SimingRepository(context: Context) {
             "governance" to "narrative_debt",
         )
         private val syncMutex = Mutex()
+        private val canonicalCommandMutex = Mutex()
     }
 }
 
