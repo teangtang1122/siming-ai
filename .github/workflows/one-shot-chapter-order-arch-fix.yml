@@ -1,0 +1,38 @@
+name: One-shot chapter order architecture fix
+
+on:
+  push:
+    branches:
+      - feature/independent-chapter-order
+    paths:
+      - scripts/one_shot_chapter_order_arch_fix.py
+      - scripts/run_one_shot_chapter_order_arch_fix.py
+      - .github/workflows/one-shot-chapter-order-arch-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/independent-chapter-order
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Apply architecture gate fix
+        run: python scripts/run_one_shot_chapter_order_arch_fix.py
+      - name: Validate generated sources
+        run: |
+          python -m compileall -q backend/app backend/alembic
+          git diff --check
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: keep chapter-order changes within architecture baseline"
+          git push origin HEAD:feature/independent-chapter-order
