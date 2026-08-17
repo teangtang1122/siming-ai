@@ -69,6 +69,12 @@ interface SimingDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveEntities(entities: List<ReplicaEntity>)
 
+    @Query(
+        "DELETE FROM replica_entities WHERE projectId = :projectId " +
+            "AND dirty = 0 AND conflicted = 0",
+    )
+    suspend fun deleteCleanProjectReplicas(projectId: String)
+
     @Query("DELETE FROM replica_entities WHERE projectId = :projectId")
     suspend fun deleteProjectReplica(projectId: String)
 
