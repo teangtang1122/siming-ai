@@ -39,6 +39,22 @@ class ReplicaOrderingTest {
     }
 
     @Test
+    fun semanticSortingKeepsUnnumberedChapterSlots() {
+        val records = listOf(
+            chapter("epilogue", "尾声", "2026-08-16T10:00:05.000000Z", 5_000),
+            chapter("three", "第三章", "2026-08-16T10:00:04.000000Z", 4_000),
+            chapter("interlude", "间章", "2026-08-16T10:00:03.000000Z", 3_000),
+            chapter("thirty-four", "第34章", "2026-08-16T10:00:02.000000Z", 2_000),
+            chapter("prologue", "序章", "2026-08-16T10:00:01.000000Z", 1_000),
+        )
+
+        assertEquals(
+            listOf("prologue", "three", "interlude", "thirty-four", "epilogue"),
+            orderReplicaEntities("chapter", records).map(ReplicaEntity::entityId),
+        )
+    }
+
+    @Test
     fun locallyImportedChaptersFallBackToNumberThenCreationTime() {
         val records = listOf(
             chapter("ten", "第10章", null, 3_000),
