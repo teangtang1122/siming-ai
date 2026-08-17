@@ -23,11 +23,18 @@ def _time_key(value):
 
 def upgrade() -> None:
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    tables = set(inspector.get_table_names())
+    # Some historical/fixture databases are intentionally partial but already
+    # carry an Alembic revision. They must still advance safely to head.
+    if "chapters" not in tables:
+        return
+
     # The 3.0 baseline reconciler uses current SQLAlchemy metadata when it sees
     # an unversioned/fresh database. In that path the new column may already
     # exist before this explicit revision runs; versioned 300a16 databases still
     # need the normal ALTER TABLE.
-    chapter_columns = {column["name"] for column in sa.inspect(bind).get_columns("chapters")}
+    chapter_columns = {column["name"] for column in inspector.get_columns("chapters")}
     if "sort_order" not in chapter_columns:
         op.add_column(
             "chapters",
@@ -57,14 +64,16 @@ def upgrade() -> None:
         if row[0]
     ]
     for project_id in project_ids:
-        outline_rows = bind.execute(
-            sa.select(
-                outlines.c.id,
-                outlines.c.parent_id,
-                outlines.c.sort_order,
-                outlines.c.created_at,
-            ).where(outlines.c.project_id == project_id)
-        ).mappings().all()
+        outline_rows = []
+        if "outline_nodes" in tables:
+            outline_rows = bind.execute(
+                sa.select(
+                    outlines.c.id,
+                    outlines.c.parent_id,
+                    outlines.c.sort_order,
+                    outlines.c.created_at,
+                ).where(outlines.c.project_id == project_id)
+            ).mappings().all()
         children: dict[str | None, list] = {}
         for row in outline_rows:
             children.setdefault(row["parent_id"], []).append(row)
@@ -113,4 +122,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("chapters", "sort_order")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if "chapters" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("chapters")}
+    if "sort_order" in columns:
+        op.drop_column("chapters", "sort_order")
