@@ -201,8 +201,10 @@ def test_outline_mobile_mutation_maps_pc_metadata_and_character_links(tmp_path):
     try:
         with Session() as db:
             project = Project(title="大纲契约测试")
+            db.add(project)
+            db.flush()
             character = Character(project_id=project.id, name="陆糖")
-            db.add_all([project, character])
+            db.add(character)
             db.flush()
 
             apply_domain_mutation(
@@ -255,8 +257,10 @@ def test_mobile_cannot_write_server_managed_history_rows(tmp_path):
     try:
         with Session() as db:
             project = Project(title="只读记录测试")
+            db.add(project)
+            db.flush()
             character = Character(project_id=project.id, name="陆糖")
-            db.add_all([project, character])
+            db.add(character)
             db.commit()
 
             with pytest.raises(ValidationError, match="移动端只读"):
