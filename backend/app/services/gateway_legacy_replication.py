@@ -39,6 +39,7 @@ from app.modules.story.infrastructure.entities import (
     Chapter,
     ChapterSnapshot,
     Character,
+    CharacterAIConfig,
     CharacterAlias,
     CharacterRelationship,
     CharacterVersion,
@@ -57,6 +58,7 @@ from app.services.character_service import (
     character_to_dict,
     create_character_version,
     dumps_list,
+    loads_list,
     sync_character_aliases,
 )
 from app.services.narrative_governance import create_narrative_checkpoint
@@ -108,6 +110,12 @@ RECORD_SPECS = (
         {"node_type": "chapter", "title": "未命名大纲"},
     ),
     RecordSpec(Character, "character", "character", "direct", {"name": "未命名角色"}),
+    RecordSpec(
+        CharacterAIConfig,
+        "character_ai_config",
+        "character_ai_config",
+        "character",
+    ),
     RecordSpec(CharacterVersion, "character", "character_version", "character"),
     RecordSpec(CharacterAlias, "character_alias", "character_alias", "direct"),
     RecordSpec(
@@ -177,6 +185,7 @@ DEFAULT_RECORD_TYPES = {
     "chapter_version": "chapter_snapshot",
     "outline": "outline_node",
     "character": "character",
+    "character_ai_config": "character_ai_config",
     "character_alias": "character_alias",
     "character_relation": "character_relationship",
     "world": "world_entry",
@@ -244,8 +253,41 @@ MUTATION_COLUMNS_BY_MODEL: dict[type, frozenset[str]] = {
         }
     ),
     Character: CHARACTER_MUTATION_COLUMNS,
+    CharacterRelationship: frozenset(
+        {
+            "id",
+            "project_id",
+            "character_a_id",
+            "character_b_id",
+            "relationship_type",
+            "description",
+        }
+    ),
+    CharacterAIConfig: frozenset(
+        {
+            "id",
+            "character_id",
+            "tone_style",
+            "catchphrases",
+            "verbosity",
+            "emotion_tendency",
+            "model_override",
+            "custom_system_prompt",
+        }
+    ),
     WorldbuildingEntry: frozenset(
         {"id", "project_id", "dimension", "title", "content", "sort_order"}
+    ),
+    WorldbuildingRelation: frozenset(
+        {
+            "id",
+            "project_id",
+            "source_entry_id",
+            "target_entry_id",
+            "relation_type",
+            "description",
+            "metadata_json",
+        }
     ),
     Foreshadowing: frozenset(
         {
@@ -316,6 +358,31 @@ def serialize_record(row: Any, spec: RecordSpec | None = None) -> dict[str, Any]
         return {"_record_type": spec.record_type, **character_to_dict(row)}
     if spec.model is OutlineNode:
         return {"_record_type": spec.record_type, **node_to_dict(row)}
+    if spec.model is CharacterRelationship:
+        return {
+            "_record_type": spec.record_type,
+            "id": row.id,
+            "project_id": row.project_id,
+            "from": row.character_a_id,
+            "to": row.character_b_id,
+            "relationship_type": row.relationship_type,
+            "description": row.description,
+            "created_at": _json_value(row.created_at),
+        }
+    if spec.model is CharacterAIConfig:
+        return {
+            "_record_type": spec.record_type,
+            "id": row.id,
+            "character_id": row.character_id,
+            "tone_style": row.tone_style or "neutral",
+            "catchphrases": loads_list(row.catchphrases),
+            "verbosity": row.verbosity or "moderate",
+            "emotion_tendency": row.emotion_tendency or "neutral",
+            "model_override": row.model_override,
+            "custom_system_prompt": row.custom_system_prompt,
+            "created_at": _json_value(row.created_at),
+            "updated_at": _json_value(row.updated_at),
+        }
     payload: dict[str, Any] = {"_record_type": spec.record_type}
     for column in sa_inspect(spec.model).columns:
         if column.key in LOCAL_ONLY_COLUMNS:
@@ -565,6 +632,64 @@ def _canonical_character_values(values: dict[str, Any]) -> tuple[dict[str, Any],
     return values, aliases
 
 
+def _canonical_character_relation_values(values: dict[str, Any]) -> dict[str, Any]:
+    source = values.pop("from", None)
+    target = values.pop("to", None)
+    if source is not None:
+        values.setdefault("character_a_id", source)
+    if target is not None:
+        values.setdefault("character_b_id", target)
+    return values
+
+
+def _canonical_character_ai_config_values(values: dict[str, Any]) -> dict[str, Any]:
+    if "catchphrases" in values:
+        phrases = _string_list(values.get("catchphrases"), field="catchphrases")
+        values["catchphrases"] = dumps_list(phrases) if phrases is not None else None
+    return values
+
+
+def _validate_auxiliary_relationships(
+    db: Session,
+    project_id: str,
+    model: type,
+    values: dict[str, Any],
+    row: Any | None,
+) -> None:
+    if model is CharacterRelationship:
+        source_id = str(values.get("character_a_id") or getattr(row, "character_a_id", "") or "")
+        target_id = str(values.get("character_b_id") or getattr(row, "character_b_id", "") or "")
+        if not source_id or not target_id:
+            raise ValidationError("角色关系缺少起点或终点角色")
+        if source_id == target_id:
+            raise ValidationError("角色不能与自身建立关系")
+        source = db.get(Character, source_id)
+        target = db.get(Character, target_id)
+        if (
+            not source
+            or not target
+            or source.project_id != project_id
+            or target.project_id != project_id
+        ):
+            raise ValidationError("角色关系两端必须属于当前作品")
+    elif model is WorldbuildingRelation:
+        source_id = str(values.get("source_entry_id") or getattr(row, "source_entry_id", "") or "")
+        target_id = str(values.get("target_entry_id") or getattr(row, "target_entry_id", "") or "")
+        if not source_id or not target_id:
+            raise ValidationError("世界观关系缺少起点或终点条目")
+        if source_id == target_id:
+            raise ValidationError("世界观条目不能与自身建立关系")
+        source = db.get(WorldbuildingEntry, source_id)
+        target = db.get(WorldbuildingEntry, target_id)
+        if (
+            not source
+            or not target
+            or source.project_id != project_id
+            or target.project_id != project_id
+        ):
+            raise ValidationError("世界观关系两端必须属于当前作品")
+
+
 def _prepare_character_mutation_values(
     values: dict[str, Any],
     row: Character | None,
@@ -615,6 +740,8 @@ def apply_domain_mutation(
     if operation == "delete":
         if spec.model is Project:
             raise ValidationError("请在作品管理页确认删除，移动端不会直接删除整部作品")
+        if spec.model is CharacterAIConfig:
+            raise ValidationError("角色 AI 配置不单独删除，请通过角色配置页修改")
         if row is None:
             return
         actual_project = project_id_for_record(db, row, spec)
@@ -643,6 +770,12 @@ def apply_domain_mutation(
             values,
             row,
         )
+    if spec.model is CharacterRelationship:
+        values = _canonical_character_relation_values(values)
+    if spec.model is CharacterAIConfig:
+        values = _canonical_character_ai_config_values(values)
+        if row is not None:
+            values.setdefault("character_id", row.character_id)
     if spec.model is OutlineNode:
         values, outline_links = _canonical_outline_values(values)
     payload_id = values.get("id")
@@ -669,6 +802,8 @@ def apply_domain_mutation(
 
     if spec.model is Chapter and values.get("outline_node_id"):
         get_outline_node_or_404(db, project_id, values.get("outline_node_id"))
+    if spec.model in {CharacterRelationship, WorldbuildingRelation}:
+        _validate_auxiliary_relationships(db, project_id, spec.model, values, row)
     if spec.model is OutlineNode and "parent_id" in values:
         ensure_no_cycle(db, project_id, entity_id, values.get("parent_id"))
 
