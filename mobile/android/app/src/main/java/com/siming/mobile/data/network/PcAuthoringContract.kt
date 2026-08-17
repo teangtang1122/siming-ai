@@ -4,7 +4,9 @@ package com.siming.mobile.data.network
  * Writable field contract published by the PC authoring APIs.
  *
  * Android UI, online requests, and offline mutation projection must all use
- * this table instead of inventing independent mobile entity shapes.
+ * this table instead of inventing independent mobile entity shapes. Room may
+ * cache richer PC response snapshots for offline reading; the outbox must still
+ * project those snapshots back to this writable contract before synchronization.
  */
 internal enum class PcFieldKind {
     Text,
