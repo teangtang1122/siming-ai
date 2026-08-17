@@ -6,6 +6,7 @@ on:
       - feat/android-pc-contract-parity-2
     paths:
       - .github/workflows/patch-gateway-character-role-parity.yml
+      - .github/scripts/patch_gateway_character_role_parity.py
 
 permissions:
   contents: write
