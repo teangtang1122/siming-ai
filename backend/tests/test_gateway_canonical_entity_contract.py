@@ -74,6 +74,11 @@ def test_character_mobile_mutation_round_trips_public_arrays_and_profile(tmp_pat
                     "abilities": ["剑术", "新吐纳法"],
                     "aliases": ["景珩", "兄长"],
                     "profile": {"core_belief": "家人优先", "action_habit": "先观察再拔剑"},
+                    # These are present in CharacterResponse but are not writable
+                    # in the PC CharacterCreate/CharacterUpdate contract.
+                    "current_version": 999,
+                    "created_at": "2000-01-01T00:00:00Z",
+                    "updated_at": "2000-01-01T00:00:00Z",
                 },
             )
             db.commit()
@@ -86,5 +91,8 @@ def test_character_mobile_mutation_round_trips_public_arrays_and_profile(tmp_pat
                 "action_habit": "先观察再拔剑",
             }
             assert [item.alias for item in character.aliases] == ["景珩", "兄长"]
+            assert character.current_version == 1
+            assert character.created_at.year != 2000
+            assert character.updated_at.year != 2000
     finally:
         engine.dispose()
