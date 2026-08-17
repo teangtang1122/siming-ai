@@ -3,6 +3,7 @@ package com.siming.mobile.data.agent
 import android.content.Context
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.orderReplicaEntities
+import com.siming.mobile.data.local.primaryAuthoringSnapshot
 import com.siming.mobile.data.network.DirectAgentTurn
 import com.siming.mobile.data.network.DirectApiClient
 import com.siming.mobile.data.network.DirectApiConfig
@@ -694,9 +695,12 @@ internal class MobileWorkspaceAgent(
     }
 
     private suspend fun records(projectId: String, entityType: String? = null): List<LocalRecord> {
-        val matching = loadSnapshot(projectId).asSequence()
-            .filter { it.operation == "upsert" && (entityType == null || it.entityType == entityType) }
-            .toList()
+        val snapshot = loadSnapshot(projectId).filter { it.operation == "upsert" }
+        val matching = if (entityType == null) {
+            primaryAuthoringSnapshot(snapshot)
+        } else {
+            snapshot.filter { it.entityType == entityType }
+        }
         val ordered = entityType?.let { orderReplicaEntities(it, matching) } ?: matching
         return ordered.asSequence()
             .mapNotNull { entity ->
