@@ -7,6 +7,8 @@ package com.siming.mobile.data.network
  * this table instead of inventing independent mobile entity shapes. Room may
  * cache richer PC response snapshots for offline reading; the outbox must still
  * project those snapshots back to this writable contract before synchronization.
+ * Conflict review may retain an exact stale client request, while the accepted
+ * server branch is always represented by the canonical PC domain snapshot.
  */
 internal enum class PcFieldKind {
     Text,
