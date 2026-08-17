@@ -73,6 +73,12 @@ internal object PcApiPaths {
     fun characterVersion(projectId: String, characterId: String, versionId: String): String =
         "${characterVersions(projectId, characterId)}/${segment(versionId)}"
 
+    fun worldVersions(projectId: String, entryId: String): String =
+        "${authoringItem(projectId, "world", entryId)}/versions"
+
+    fun worldTimeline(projectId: String, entryId: String): String =
+        "${authoringItem(projectId, "world", entryId)}/timeline"
+
     fun assistantStream(projectId: String): String =
         "${project(projectId)}/ai/workspace-assistant/stream"
 

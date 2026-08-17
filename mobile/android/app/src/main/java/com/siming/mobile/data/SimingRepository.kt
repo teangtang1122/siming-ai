@@ -632,6 +632,12 @@ class SimingRepository(context: Context) {
         versionId,
     )
 
+    suspend fun worldVersions(projectId: String, entryId: String): JsonObject =
+        api.listWorldVersions(requireConnection(), projectId, entryId)
+
+    suspend fun worldTimeline(projectId: String, entryId: String): JsonObject =
+        api.listWorldTimeline(requireConnection(), projectId, entryId)
+
     suspend fun syncNow(): SyncOutcome = syncMutex.withLock {
         val connection = requireConnection()
         val localProjectIds = dao.localProjectIds()

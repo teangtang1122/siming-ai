@@ -326,6 +326,24 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         PcApiPaths.characterVersion(projectId, characterId, versionId),
     ).data
 
+    suspend fun listWorldVersions(
+        connection: GatewayConnection,
+        projectId: String,
+        entryId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.worldVersions(projectId, entryId),
+    ).data
+
+    suspend fun listWorldTimeline(
+        connection: GatewayConnection,
+        projectId: String,
+        entryId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.worldTimeline(projectId, entryId),
+    ).data
+
     suspend fun listNovelCreationSessions(connection: GatewayConnection): List<JsonObject> {
         val data = request<ApiEnvelope<JsonObject>>(
             connection.baseUrl,

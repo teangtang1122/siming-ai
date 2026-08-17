@@ -410,6 +410,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         versionId: String,
     ): JsonObject = repository.characterVersion(projectId, characterId, versionId)
 
+    suspend fun worldVersions(projectId: String, entryId: String): JsonObject =
+        repository.worldVersions(projectId, entryId)
+
+    suspend fun worldTimeline(projectId: String, entryId: String): JsonObject =
+        repository.worldTimeline(projectId, entryId)
+
     fun createProject(title: String, description: String, onCreated: (String) -> Unit) {
         viewModelScope.launch {
             try {
