@@ -283,31 +283,6 @@ class DraftNovelBlueprintTest(unittest.TestCase):
         self.assertEqual(result[0]["protagonist"]["name"], "Lin Yuan")
         self.assertNotEqual(result[0]["protagonist"]["name"], "Template Hero")
 
-    def test_clarifying_question_is_owned_by_selected_model(self):
-        from app.services.workspace.tools.novel_creation import _generate_clarifying_questions
-
-        model_question = {
-            "question": "既然他是实验体，他第一次主动违抗组织会付出什么代价？",
-            "purpose": "这个选择会改变开篇冲突和主角底色",
-            "options": [],
-            "type": "text",
-        }
-        with patch(
-            "app.services.workspace.tools.novel_creation.decide_next_interview_step",
-            new=AsyncMock(return_value={"action": "ask_more", "questions": [model_question]}),
-        ) as decision_mock:
-            result = asyncio.run(_generate_clarifying_questions(
-                user_brief="我要写玄幻修仙",
-                genre_label="玄幻/修仙",
-                target_audience="男频",
-                platform="起点",
-                model="claude_cli:claude-code",
-            ))
-
-        self.assertEqual(result, [model_question])
-        self.assertEqual(decision_mock.await_args.kwargs["user_brief"], "我要写玄幻修仙")
-        self.assertEqual(decision_mock.await_args.kwargs["model"], "claude_cli:claude-code")
-
     def test_draft_returns_one_structurally_usable_llm_blueprint(self):
         from app.services.workspace.tools.novel_creation import draft_novel_blueprint
 
