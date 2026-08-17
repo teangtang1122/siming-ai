@@ -45,6 +45,22 @@ class CanonicalReplicaContractTest {
     }
 
     @Test
+    fun standaloneAuthoringSnapshotDropsVersionRowsButKeepsDedicatedContextEntities() {
+        val records = listOf(
+            replica("character", "character-main", "character", "\"name\":\"陆糖\""),
+            replica("character", "character-version", "character_version", "\"snapshot_json\":{}"),
+            replica("world", "world-main", "world_entry", "\"title\":\"归墟\""),
+            replica("world", "world-version", "world_version", "\"content\":\"旧版本\""),
+            replica("summary", "summary-main", "chapter_summary", "\"chapter_id\":\"c1\""),
+        )
+
+        assertEquals(
+            listOf("character-main", "world-main", "summary-main"),
+            primaryAuthoringSnapshot(records).map(ReplicaEntity::entityId),
+        )
+    }
+
+    @Test
     fun legacyPrimaryReplicaWithoutRecordTypeRemainsVisibleWhenWellFormed() {
         val record = replica("foreshadowing", "legacy", null, "\"title\":\"旧伏笔\"")
 
