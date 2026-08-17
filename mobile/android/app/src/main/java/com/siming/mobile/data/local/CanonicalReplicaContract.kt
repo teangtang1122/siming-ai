@@ -7,9 +7,8 @@ import kotlinx.serialization.json.contentOrNull
 
 /**
  * Maps the coarse sync entity type to the canonical PC record shown in the
- * authoring UI. The sync protocol deliberately carries version/timeline rows
- * under the same coarse entity type; those rows stay in Room for AI/context
- * use, but must never be rendered as primary authoring cards.
+ * authoring UI and generic mobile authoring agent. Version/history rows remain
+ * stored in Room, but they are not interchangeable with their parent PC entity.
  */
 private val primaryRecordTypes = mapOf(
     "project" to setOf("project"),
@@ -20,7 +19,7 @@ private val primaryRecordTypes = mapOf(
     "foreshadowing" to setOf("foreshadowing"),
     // The mobile governance editor currently edits the same narrative-debt
     // record as the PC governance panel. Checkpoints/metrics/reviews remain
-    // synced for context but are not editable through this generic card list.
+    // stored for sync/history but are not generic authoring cards.
     "governance" to setOf("narrative_debt"),
 )
 
@@ -37,23 +36,34 @@ private val identityFields = mapOf(
 internal fun primaryAuthoringRecords(
     entityType: String,
     records: List<ReplicaEntity>,
-): List<ReplicaEntity> {
-    val accepted = primaryRecordTypes[entityType] ?: return records.filter { it.operation == "upsert" }
-    return records.filter { record ->
-        if (record.operation != "upsert") return@filter false
-        val payload = record.payloadObject() ?: return@filter false
-        val recordType = (payload["_record_type"] as? JsonPrimitive)
-            ?.contentOrNull
-            ?.takeIf(String::isNotBlank)
-        // Replicas created by very old Android builds did not have
-        // _record_type. Keep well-formed legacy primary rows, but never render
-        // malformed leftovers as "unnamed" PC entities.
-        val typeMatches = recordType == null || recordType in accepted
-        val identityField = identityFields[entityType]
-        val identity = identityField?.let { payload[it] as? JsonPrimitive }?.contentOrNull
-        val hasIdentity = identityField == null || !identity.isNullOrBlank()
-        typeMatches && hasIdentity
+): List<ReplicaEntity> = records.filter { record ->
+    isPrimaryAuthoringRecord(entityType, record)
+}
+
+internal fun primaryAuthoringSnapshot(records: List<ReplicaEntity>): List<ReplicaEntity> =
+    records.filter { record ->
+        if (record.entityType in primaryRecordTypes) {
+            isPrimaryAuthoringRecord(record.entityType, record)
+        } else {
+            record.operation == "upsert"
+        }
     }
+
+private fun isPrimaryAuthoringRecord(entityType: String, record: ReplicaEntity): Boolean {
+    if (record.operation != "upsert") return false
+    val accepted = primaryRecordTypes[entityType] ?: return true
+    val payload = record.payloadObject() ?: return false
+    val recordType = (payload["_record_type"] as? JsonPrimitive)
+        ?.contentOrNull
+        ?.takeIf(String::isNotBlank)
+    // Replicas created by very old Android builds did not have _record_type.
+    // Keep well-formed legacy primary rows, but never render malformed leftovers
+    // as "unnamed" PC entities.
+    val typeMatches = recordType == null || recordType in accepted
+    val identityField = identityFields[entityType]
+    val identity = identityField?.let { payload[it] as? JsonPrimitive }?.contentOrNull
+    val hasIdentity = identityField == null || !identity.isNullOrBlank()
+    return typeMatches && hasIdentity
 }
 
 internal fun ReplicaEntity.recordType(): String? =
