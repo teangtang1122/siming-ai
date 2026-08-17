@@ -64,6 +64,7 @@ def test_offline_character_role_uses_same_normalization_and_identity_preservatio
             )
             assert snapshot is not None
             assert snapshot["role_type"] == "protagonist"
+            assert snapshot["background"] == character.background
             assert "身份补充：穿越者、陆家三岁孙女" in (snapshot["background"] or "")
     finally:
         engine.dispose()
