@@ -5,15 +5,35 @@ import kotlin.test.assertEquals
 
 class ReplicaOrderingTest {
     @Test
-    fun chaptersUseCanonicalCreationTimeInsteadOfLocalBootstrapTime() {
+    fun unnumberedChaptersUseCanonicalCreationTimeInsteadOfLocalBootstrapTime() {
         val records = listOf(
-            chapter("third", "第三章", "2026-08-16T10:00:03.000000Z", 9_999),
-            chapter("first", "第一章", "2026-08-16T10:00:01.000000Z", 9_997),
-            chapter("second", "第二章", "2026-08-16T10:00:02.000000Z", 9_998),
+            chapter("closing", "收束", "2026-08-16T10:00:03.000000Z", 9_999),
+            chapter("opening", "开端", "2026-08-16T10:00:01.000000Z", 9_997),
+            chapter("turning", "转折", "2026-08-16T10:00:02.000000Z", 9_998),
         )
 
         assertEquals(
-            listOf("first", "second", "third"),
+            listOf("opening", "turning", "closing"),
+            orderReplicaEntities("chapter", records).map(ReplicaEntity::entityId),
+        )
+    }
+
+    @Test
+    fun syncedNumberedChaptersPreferSemanticNumberOverCreationTime() {
+        val records = listOf(
+            chapter(
+                "thirty-four",
+                "第34章 新朋友·壹（小七）",
+                "2026-08-16T10:00:01.000000Z",
+                4_000,
+            ),
+            chapter("eleven", "第十一章 日常", "2026-08-16T10:00:02.000000Z", 3_000),
+            chapter("four", "第四章 暗流", "2026-08-16T10:00:03.000000Z", 2_000),
+            chapter("three", "第三章 打回去", "2026-08-16T10:00:04.000000Z", 1_000),
+        )
+
+        assertEquals(
+            listOf("three", "four", "eleven", "thirty-four"),
             orderReplicaEntities("chapter", records).map(ReplicaEntity::entityId),
         )
     }
