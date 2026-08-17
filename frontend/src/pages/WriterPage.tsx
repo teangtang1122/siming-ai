@@ -19,6 +19,8 @@ import {
   message,
 } from 'antd'
 import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
   AuditOutlined,
   DeleteOutlined,
   DiffOutlined,
@@ -62,6 +64,7 @@ interface ChapterItem {
   title: string
   word_count: number
   current_version: number
+  sort_order: number
   outline_title?: string | null
   outline_status?: string | null
   outline_node_type?: string | null
@@ -172,6 +175,9 @@ function flattenOutline(nodes: OutlineNode[], depth = 0, prefix: string[] = []):
 function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageProps) {
   const [form] = Form.useForm<ChapterFormValues>()
   const [chapters, setChapters] = useState<ChapterItem[]>([])
+  const [draggedChapterId, setDraggedChapterId] = useState<string | null>(null)
+  const [dragOverChapterId, setDragOverChapterId] = useState<string | null>(null)
+  const [reordering, setReordering] = useState(false)
   const [outlineOptions, setOutlineOptions] = useState<Array<{ value: string; label: string }>>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const {
@@ -431,6 +437,51 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     }
   }
 
+  const saveChapterOrder = async (nextChapters: ChapterItem[]) => {
+    if (reordering) return
+    const previous = chapters
+    const optimistic = nextChapters.map((chapter, index) => ({
+      ...chapter,
+      sort_order: (index + 1) * 1000,
+    }))
+    setChapters(optimistic)
+    setReordering(true)
+    try {
+      const res = await apiClient.put<ApiResponse<{ items: ChapterItem[]; total: number }>>(
+        `/projects/${projectId}/chapters/reorder`,
+        { ids: optimistic.map((chapter) => chapter.id) },
+      )
+      setChapters(res.data.data.items)
+      message.success('正文顺序已更新')
+    } catch (err: any) {
+      setChapters(previous)
+      message.error(err.message || '调整正文顺序失败')
+    } finally {
+      setReordering(false)
+    }
+  }
+
+  const moveChapterByOffset = (chapterId: string, offset: -1 | 1) => {
+    const index = chapters.findIndex((chapter) => chapter.id === chapterId)
+    const target = index + offset
+    if (index < 0 || target < 0 || target >= chapters.length || reordering) return
+    const next = [...chapters]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    void saveChapterOrder(next)
+  }
+
+  const placeChapterBefore = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId || reordering) return
+    const next = [...chapters]
+    const sourceIndex = next.findIndex((chapter) => chapter.id === sourceId)
+    if (sourceIndex < 0) return
+    const [moved] = next.splice(sourceIndex, 1)
+    const targetIndex = next.findIndex((chapter) => chapter.id === targetId)
+    if (targetIndex < 0) return
+    next.splice(targetIndex, 0, moved)
+    void saveChapterOrder(next)
+  }
+
   const restoreSnapshot = async (snapshotId: string) => {
     if (!selectedId) return
     try {
@@ -653,12 +704,36 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
             loading={loading}
             dataSource={chapters}
             locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无章节"><Button type="primary" icon={<PlusOutlined />} onClick={startCreate}>新建章节</Button></Empty> }}
-            renderItem={(chapter) => (
+            renderItem={(chapter, index) => (
               <List.Item
-                className={`writer-chapter-item${chapter.id === selectedId ? ' writer-chapter-item-active' : ''}`}
+                className={`writer-chapter-item${chapter.id === selectedId ? ' writer-chapter-item-active' : ''}${chapter.id === dragOverChapterId ? ' writer-chapter-item-drag-over' : ''}`}
                 role="button"
                 tabIndex={0}
                 aria-label={`打开章节：${chapter.title}`}
+                title="拖动章节卡片，或使用上下按钮调整正文顺序"
+                draggable={!loading && !reordering}
+                onDragStart={(event) => {
+                  setDraggedChapterId(chapter.id)
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('text/plain', chapter.id)
+                }}
+                onDragOver={(event) => {
+                  if (!draggedChapterId || draggedChapterId === chapter.id) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  setDragOverChapterId(chapter.id)
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  const sourceId = draggedChapterId || event.dataTransfer.getData('text/plain')
+                  setDraggedChapterId(null)
+                  setDragOverChapterId(null)
+                  if (sourceId) placeChapterBefore(sourceId, chapter.id)
+                }}
+                onDragEnd={() => {
+                  setDraggedChapterId(null)
+                  setDragOverChapterId(null)
+                }}
                 onClick={() => confirmLeave(() => setSelectedId(chapter.id))}
                 onKeyDown={(event) => {
                   if (event.key !== 'Enter' && event.key !== ' ') return
@@ -666,6 +741,34 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                   confirmLeave(() => setSelectedId(chapter.id))
                 }}
               >
+                <div className="writer-chapter-order-controls" aria-label={`调整章节顺序：${chapter.title}`}>
+                  <Tooltip title="上移">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ArrowUpOutlined />}
+                      aria-label={`上移章节：${chapter.title}`}
+                      disabled={index === 0 || reordering}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        moveChapterByOffset(chapter.id, -1)
+                      }}
+                    />
+                  </Tooltip>
+                  <Tooltip title="下移">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ArrowDownOutlined />}
+                      aria-label={`下移章节：${chapter.title}`}
+                      disabled={index === chapters.length - 1 || reordering}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        moveChapterByOffset(chapter.id, 1)
+                      }}
+                    />
+                  </Tooltip>
+                </div>
                 <List.Item.Meta
                   title={<span className="writer-chapter-title" title={chapter.title}>{chapter.title}</span>}
                   description={

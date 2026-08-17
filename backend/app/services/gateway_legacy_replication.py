@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Date, DateTime
+from sqlalchemy import Date, DateTime, func
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
@@ -347,6 +347,14 @@ def apply_domain_mutation(
     }
     for key, value in (spec.defaults or {}).items():
         allowed.setdefault(key, value)
+    if spec.model is Chapter and row is None and "sort_order" not in allowed:
+        highest = (
+            db.query(func.max(Chapter.sort_order))
+            .filter(Chapter.project_id == project_id)
+            .scalar()
+            or 0
+        )
+        allowed["sort_order"] = int(highest) + 1000
     _assert_parent_project(db, spec, allowed, project_id)
 
     if row is None:

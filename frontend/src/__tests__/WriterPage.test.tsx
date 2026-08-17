@@ -58,6 +58,7 @@ const chapter = {
   title: '第一章',
   word_count: source.length,
   current_version: 1,
+  sort_order: 1000,
   outline_title: null,
   outline_status: null,
   outline_node_type: null,
@@ -106,6 +107,46 @@ describe('WriterPage manual writing actions', () => {
       current_version: 2,
       snapshot_count: 2,
     }))
+  })
+
+  it('reorders正文 independently from outline links', async () => {
+    const secondChapter = {
+      ...chapter,
+      id: 'chapter-2',
+      title: '第二章',
+      sort_order: 2000,
+      content: '第二章正文。',
+    }
+    api.get.mockImplementation((url: string) => {
+      if (url.endsWith('/outline')) return Promise.resolve(response({ items: [], flat: [], total: 0 }))
+      if (url.endsWith('/chapters')) return Promise.resolve(response({ items: [chapter, secondChapter], total: 2 }))
+      if (url.endsWith('/snapshots')) return Promise.resolve(response({ items: [], total: 0 }))
+      if (url.endsWith('/chapters/chapter-1')) return Promise.resolve(response(chapter))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    api.put.mockImplementation((url: string, payload: { ids?: string[] }) => {
+      if (url.endsWith('/chapters/reorder')) {
+        expect(payload.ids).toEqual(['chapter-2', 'chapter-1'])
+        return Promise.resolve(response({
+          items: [
+            { ...secondChapter, sort_order: 1000 },
+            { ...chapter, sort_order: 2000 },
+          ],
+          total: 2,
+        }))
+      }
+      throw new Error(`Unexpected PUT ${url}`)
+    })
+
+    render(<WriterPage projectId="project-1" />)
+    const up = await screen.findByRole('button', { name: '上移章节：第二章' })
+    fireEvent.click(up)
+
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
+      '/projects/project-1/chapters/reorder',
+      { ids: ['chapter-2', 'chapter-1'] },
+    ))
+    expect(await screen.findByText('正文顺序已更新')).toBeInTheDocument()
   })
 
   it('previews without writing, then saves an explicitly applied candidate as de_ai', async () => {

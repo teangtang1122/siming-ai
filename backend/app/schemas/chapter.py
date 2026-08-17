@@ -27,6 +27,12 @@ class ChapterUpdate(BaseModel):
     context_manifest_id: Optional[str] = None
 
 
+class ChapterReorderRequest(BaseModel):
+    """Replace the reading order of all chapters in one project."""
+
+    ids: list[str] = Field(default_factory=list, description="Chapter IDs in reading order")
+
+
 class ChapterDeAiPreviewRequest(BaseModel):
     """Generate a non-destructive de-AI revision candidate for editor review."""
 
@@ -80,6 +86,7 @@ class ChapterListItem(BaseModel):
     title: str
     word_count: int
     current_version: int
+    sort_order: int
     outline_title: Optional[str]
     outline_status: Optional[str]
     outline_node_type: Optional[str]

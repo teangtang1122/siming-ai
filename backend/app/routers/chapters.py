@@ -17,6 +17,7 @@ from ..schemas.chapter import (
     ChapterCreate,
     ChapterDeAiPreviewRequest,
     ChapterQualityScoreRequest,
+    ChapterReorderRequest,
     ChapterUpdate,
 )
 from ..services.chapter_quality import preview_chapter_quality
@@ -78,6 +79,19 @@ async def create_chapter(
     command.finish()
     data = _start_chapter_cataloging(db, project_id, result.data)
     return ApiResponse.success(data=data, message="章节已创建，正式建档任务已启动")
+
+
+@router.put("/projects/{project_id}/chapters/reorder")
+def reorder_chapters(
+    project_id: str,
+    payload: ChapterReorderRequest,
+    workspace: Annotated[ChapterWorkspace, Depends(get_chapter_workspace)],
+    command: Annotated[StoryCommandContext, Depends(get_story_command)],
+):
+    result = workspace.reorder(project_id, payload.ids)
+    command.queue_all(result.sync_intents)
+    command.finish()
+    return ApiResponse.success(data=result.data, message="章节顺序已更新")
 
 
 @router.get("/projects/{project_id}/chapters/{chapter_id}")

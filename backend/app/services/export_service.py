@@ -23,7 +23,6 @@ from ..database.models import (
     OutlineNode,
     WorldbuildingEntry,
 )
-from .outline_service import load_outline_nodes, outline_sort_context
 
 EXPORT_ROOT = Path(__file__).resolve().parents[3] / "artifacts" / "exports"
 
@@ -36,23 +35,18 @@ def _ordered_chapters(
     project_id: str,
     chapter_ids: Optional[list[str]] = None,
 ) -> list[Chapter]:
-    """Return chapters in the same outline order used by the writing workspace."""
-    outline_context = outline_sort_context(load_outline_nodes(db, project_id))
+    """Return chapters in canonical reading order, independent from outline order."""
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
     if chapter_ids:
         unique_ids = list(dict.fromkeys(chapter_ids))
         query = query.filter(Chapter.id.in_(unique_ids))
-    chapters = query.all()
+    chapters = query.order_by(
+        Chapter.sort_order.asc(),
+        Chapter.created_at.asc(),
+        Chapter.id.asc(),
+    ).all()
     if chapter_ids and len(chapters) != len(set(chapter_ids)):
         raise ValidationError("导出章节必须属于当前作品")
-
-    def sort_key(chapter: Chapter):
-        outline_key = outline_context["sort_keys"].get(chapter.outline_node_id)
-        if outline_key is None:
-            return (1, (999999,), chapter.created_at or datetime.min)
-        return (0, outline_key, chapter.created_at or datetime.min)
-
-    chapters.sort(key=sort_key)
     return chapters
 
 

@@ -5,6 +5,20 @@ import kotlin.test.assertEquals
 
 class ReplicaOrderingTest {
     @Test
+    fun canonicalSortOrderBeatsTitleAndCreationTime() {
+        val records = listOf(
+            chapter("third", "第一章（改名）", "2026-08-16T10:00:01.000000Z", 1_000, 3_000),
+            chapter("first", "尾声", "2026-08-16T10:00:03.000000Z", 3_000, 1_000),
+            chapter("second", "第99章", "2026-08-16T10:00:02.000000Z", 2_000, 2_000),
+        )
+
+        assertEquals(
+            listOf("first", "second", "third"),
+            orderReplicaEntities("chapter", records).map(ReplicaEntity::entityId),
+        )
+    }
+
+    @Test
     fun unnumberedChaptersUseCanonicalCreationTimeInsteadOfLocalBootstrapTime() {
         val records = listOf(
             chapter("closing", "收束", "2026-08-16T10:00:03.000000Z", 9_999),
@@ -97,8 +111,15 @@ class ReplicaOrderingTest {
         )
     }
 
-    private fun chapter(id: String, title: String, createdAt: String?, localModifiedAt: Long): ReplicaEntity {
+    private fun chapter(
+        id: String,
+        title: String,
+        createdAt: String?,
+        localModifiedAt: Long,
+        sortOrder: Int? = null,
+    ): ReplicaEntity {
         val createdAtField = createdAt?.let { "\"created_at\":\"$it\"," } ?: ""
+        val sortOrderField = sortOrder?.let { "\"sort_order\":$it," } ?: ""
         return ReplicaEntity(
             key = ReplicaEntity.key("project", "chapter", id),
             projectId = "project",
@@ -106,7 +127,7 @@ class ReplicaOrderingTest {
             entityId = id,
             revision = 1,
             operation = "upsert",
-            payloadJson = "{$createdAtField\"title\":\"$title\"}",
+            payloadJson = "{$createdAtField$sortOrderField\"title\":\"$title\"}",
             contentHash = id,
             serverModifiedAt = "2026-08-16T10:00:00Z",
             localModifiedAt = localModifiedAt,

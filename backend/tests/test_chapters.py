@@ -2,7 +2,7 @@
 Test cases for chapter management and version control.
 
 Covers:
-  - Chapter CRUD and outline-ordered list
+  - Chapter CRUD and independently ordered chapter list
   - Save-time snapshot creation
   - Snapshot history and restore
   - Line-based diff between snapshots
@@ -125,6 +125,7 @@ class TestChapterCRUD(ChapterTestCase):
         self.assertEqual(chapter["outline_title"], "Opening Outline")
         self.assertEqual(chapter["word_count"], 7)  # 6 CJK + 1 punctuation
         self.assertEqual(chapter["current_version"], 1)
+        self.assertEqual(chapter["sort_order"], 1000)
         self.assertEqual(chapter["snapshot_count"], 1)
 
         response = self.client.get(f"{API_PREFIX}/projects/{project_id}/chapters/{chapter['id']}")
@@ -1187,7 +1188,7 @@ class TestChapterCRUD(ChapterTestCase):
         finally:
             db.close()
 
-    def test_list_chapters_ordered_by_outline_tree(self):
+    def test_list_chapters_keeps_reading_order_independent_from_outline_tree(self):
         project_id = self.create_project()
         volume = self.create_outline_node(project_id, "Volume One", "volume")
         second_outline = self.create_outline_node(
@@ -1204,17 +1205,46 @@ class TestChapterCRUD(ChapterTestCase):
             parent_id=volume["id"],
             sort_order=0,
         )
-        self.create_chapter(project_id, "Second Chapter", second_outline["id"])
-        self.create_chapter(project_id, "Unlinked Chapter")
-        self.create_chapter(project_id, "First Chapter", first_outline["id"])
+        second = self.create_chapter(project_id, "Second Chapter", second_outline["id"])
+        unlinked = self.create_chapter(project_id, "Unlinked Chapter")
+        first = self.create_chapter(project_id, "First Chapter", first_outline["id"])
 
         response = self.client.get(f"{API_PREFIX}/projects/{project_id}/chapters")
         self.assertEqual(response.status_code, 200)
+        items = response.json()["data"]["items"]
+        self.assertEqual(
+            [item["title"] for item in items],
+            ["Second Chapter", "Unlinked Chapter", "First Chapter"],
+        )
+        self.assertEqual([item["sort_order"] for item in items], [1000, 2000, 3000])
+        self.assertEqual(items[2]["outline_path"], ["Volume One", "First Outline"])
 
-        titles = [item["title"] for item in response.json()["data"]["items"]]
-        self.assertEqual(titles, ["First Chapter", "Second Chapter", "Unlinked Chapter"])
-        first = response.json()["data"]["items"][0]
-        self.assertEqual(first["outline_path"], ["Volume One", "First Outline"])
+        reordered = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/chapters/reorder",
+            json={"ids": [first["id"], second["id"], unlinked["id"]]},
+        )
+        self.assertEqual(reordered.status_code, 200, reordered.text)
+        reordered_items = reordered.json()["data"]["items"]
+        self.assertEqual(
+            [item["title"] for item in reordered_items],
+            ["First Chapter", "Second Chapter", "Unlinked Chapter"],
+        )
+        self.assertEqual(
+            [item["sort_order"] for item in reordered_items],
+            [1000, 2000, 3000],
+        )
+
+        # Changing the outline hierarchy after writing must not reorder正文.
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/outline/{first_outline['id']}",
+            json={"sort_order": 9},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.get(f"{API_PREFIX}/projects/{project_id}/chapters")
+        self.assertEqual(
+            [item["title"] for item in response.json()["data"]["items"]],
+            ["First Chapter", "Second Chapter", "Unlinked Chapter"],
+        )
 
     def test_delete_chapter_removes_snapshots(self):
         project_id = self.create_project()

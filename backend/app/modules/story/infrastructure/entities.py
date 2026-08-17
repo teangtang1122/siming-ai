@@ -369,6 +369,8 @@ class Chapter(Base):
     content_hash = Column(String(64), nullable=True)
     word_count = Column(Integer, default=0)
     current_version = Column(Integer, default=1)
+    # Canonical reading order. This is intentionally independent from outline_node_id.
+    sort_order = Column(Integer, nullable=False, default=0)
     quality_score = Column(Integer, nullable=True)
     quality_detail = Column(Text, nullable=True)
     quality_evaluated_at = Column(DateTime, nullable=True)

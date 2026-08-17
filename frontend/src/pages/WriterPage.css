@@ -76,6 +76,31 @@
   min-width: 0;
 }
 
+.writer-chapter-order-controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  margin-right: 4px;
+}
+
+.writer-chapter-order-controls .ant-btn {
+  color: var(--ant-color-text-tertiary);
+  height: 22px;
+  width: 24px;
+}
+
+.writer-chapter-item[draggable="true"] {
+  cursor: grab;
+}
+
+.writer-chapter-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.writer-chapter-item-drag-over {
+  box-shadow: inset 0 2px 0 var(--siming-accent, var(--ant-color-primary));
+}
+
 .writer-chapter-item .ant-list-item-meta-title,
 .writer-chapter-item .ant-list-item-meta-description {
   min-width: 0;

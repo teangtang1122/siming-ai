@@ -4,42 +4,56 @@ import java.text.Normalizer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * Return chapter replicas in their semantic reading order.
+ * Return chapter replicas in canonical reading order.
  *
- * Room's local write time is a transport detail: a bootstrap can insert every
- * chapter in one transaction, so it cannot reconstruct the source order. We
- * first establish a deterministic PC-time fallback order, then reorder only the
- * slots occupied by validated numbered titles. This fixes numbered chapters
- * without pushing unnumbered entries such as prologues or interludes to the end.
+ * New PC/Gateway snapshots carry Chapter.sort_order, which is the only
+ * authoritative cross-device ordering signal. Title parsing remains strictly
+ * as a compatibility fallback for old/offline replicas that predate that field.
  */
 fun orderReplicaEntities(entityType: String, records: List<ReplicaEntity>): List<ReplicaEntity> {
     if (entityType != "chapter" || records.size < 2) return records
 
-    val fallbackOrdered = records
-        .map { record -> ChapterOrder(record, payload(record)) }
-        .sortedWith(chapterFallbackOrder)
-    if (fallbackOrdered.count { it.titleNumber != null } < 2) {
-        return fallbackOrdered.map(ChapterOrder::record)
+    val items = records.map { record -> ChapterOrder(record, payload(record)) }
+    val canonical = items.filter { it.sortOrder != null }
+    if (canonical.isNotEmpty()) {
+        val legacy = legacyOrder(items.filter { it.sortOrder == null })
+        return canonical.sortedWith(canonicalChapterOrder).map(ChapterOrder::record) +
+            legacy.map(ChapterOrder::record)
     }
-
-    val numbered = fallbackOrdered
-        .filter { it.titleNumber != null }
-        .sortedWith(numberedChapterOrder)
-        .iterator()
-    return fallbackOrdered.map { item ->
-        if (item.titleNumber == null) item.record else numbered.next().record
-    }
+    return legacyOrder(items).map(ChapterOrder::record)
 }
 
 private data class ChapterOrder(
     val record: ReplicaEntity,
     val payload: JsonObject?,
 ) {
+    val sortOrder = payload?.get("sort_order")?.jsonPrimitive?.let { value ->
+        value.intOrNull ?: value.contentOrNull?.toIntOrNull()
+    }
     val createdAt = payload?.string("created_at")?.takeIf(String::isNotBlank)
     val titleNumber = payload?.string("title")?.let(::chapterNumber)
+}
+
+private val canonicalChapterOrder =
+    compareBy<ChapterOrder> { it.sortOrder ?: Int.MAX_VALUE }
+        .thenBy { it.createdAt == null }
+        .thenBy { it.createdAt.orEmpty() }
+        .thenBy { it.record.entityId }
+
+private fun legacyOrder(items: List<ChapterOrder>): List<ChapterOrder> {
+    val fallbackOrdered = items.sortedWith(chapterFallbackOrder)
+    if (fallbackOrdered.count { it.titleNumber != null } < 2) return fallbackOrdered
+    val numbered = fallbackOrdered
+        .filter { it.titleNumber != null }
+        .sortedWith(numberedChapterOrder)
+        .iterator()
+    return fallbackOrdered.map { item ->
+        if (item.titleNumber == null) item else numbered.next()
+    }
 }
 
 private val chapterFallbackOrder =

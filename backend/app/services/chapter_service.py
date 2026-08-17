@@ -29,6 +29,7 @@ def chapter_to_list_item(chapter: Chapter, outline_context: dict) -> dict:
         title=chapter.title,
         word_count=chapter.word_count or 0,
         current_version=chapter.current_version or 1,
+        sort_order=chapter.sort_order or 0,
         outline_title=outline_node.title if outline_node else None,
         outline_status=outline_node.status if outline_node else None,
         outline_node_type=outline_node.node_type if outline_node else None,
