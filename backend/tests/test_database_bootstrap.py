@@ -37,7 +37,7 @@ def test_fresh_database_is_initialized_and_versioned():
                 ).scalar_one()
             assert result.mode == "initialized"
             assert result.read_only is False
-            assert result.schema_revision == revision == "300a16_character_role_type_enum"
+            assert result.schema_revision == revision == "300a17_chapter_sort_order"
             assert epoch == SCHEMA_EPOCH
             assert {
                 "projects",
@@ -47,6 +47,9 @@ def test_fresh_database_is_initialized_and_versioned():
                 "gateway_devices",
                 "sync_changes",
             } <= tables
+            assert "sort_order" in {
+                column["name"] for column in inspect(engine).get_columns("chapters")
+            }
         finally:
             engine.dispose()
 
@@ -80,7 +83,7 @@ def test_recognized_legacy_database_is_backed_up_and_preserved():
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             assert title == "Legacy Story"
-            assert revision == "300a16_character_role_type_enum"
+            assert revision == "300a17_chapter_sort_order"
         finally:
             engine.dispose()
 
@@ -155,7 +158,7 @@ def test_stamped_300a12_database_repairs_missing_resolution_evidence_columns():
 
             inspector = inspect(engine)
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a16_character_role_type_enum"
+            assert result.schema_revision == "300a17_chapter_sort_order"
             for table_name in ("foreshadowings", "causal_edges", "narrative_debts"):
                 assert "resolution_evidence" in {
                     column["name"] for column in inspector.get_columns(table_name)
@@ -209,7 +212,7 @@ def test_stamped_300a13_database_repairs_cataloged_outline_hierarchy_only():
                     )).mappings()
                 }
             volumes = [row for row in rows.values() if row.node_type == "volume"]
-            assert result.schema_revision == "300a16_character_role_type_enum"
+            assert result.schema_revision == "300a17_chapter_sort_order"
             assert len(volumes) == 1
             assert rows["chapter-3"].parent_id == volumes[0].id
             assert rows["section-3"].parent_id == "chapter-3"
@@ -264,7 +267,7 @@ def test_stamped_300a14_database_canonicalizes_free_form_character_roles():
                         "SELECT id, role_type, background FROM characters ORDER BY id"
                     )).mappings()
                 }
-            assert result.schema_revision == "300a16_character_role_type_enum"
+            assert result.schema_revision == "300a17_chapter_sort_order"
             assert {key: row.role_type for key, row in rows.items()} == {
                 "elder": "other",
                 "hero": "protagonist",
@@ -372,7 +375,7 @@ def test_alpha1_database_upgrades_through_gateway_sync():
             result = bootstrap_database(engine, database_url=url)
 
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a16_character_role_type_enum"
+            assert result.schema_revision == "300a17_chapter_sort_order"
             assert {"content_sync_jobs", "gateway_devices", "sync_changes"} <= set(
                 inspect(engine).get_table_names()
             )
