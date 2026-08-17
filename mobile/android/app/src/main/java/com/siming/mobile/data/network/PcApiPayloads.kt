@@ -157,8 +157,7 @@ internal object PcApiPayloads {
                 values["characters"] = JsonArray(
                     linked.mapNotNull { element ->
                         val item = element as? JsonObject ?: return@mapNotNull null
-                        val id = (item["character_id"] ?: item["id"] as? JsonElement)
-                            ?.let { it as? JsonPrimitive }
+                        val id = ((item["character_id"] ?: item["id"]) as? JsonPrimitive)
                             ?.contentOrNull
                             .orEmpty()
                         if (id.isBlank()) return@mapNotNull null
