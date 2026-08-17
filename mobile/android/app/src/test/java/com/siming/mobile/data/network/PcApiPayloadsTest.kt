@@ -5,9 +5,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -53,6 +56,48 @@ class PcApiPayloadsTest {
         assertFalse("change_summary" in createPayload)
         assertFalse("current_version" in createPayload)
         assertEquals("进入温室", updatePayload.getValue("change_summary").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `character editor strings normalize to PC arrays object and boolean`() {
+        val source = JsonObject(
+            mapOf(
+                "name" to JsonPrimitive("陆糖"),
+                "abilities" to JsonPrimitive("阵法\n推演，炼丹"),
+                "aliases" to JsonPrimitive("糖糖、特昂糖"),
+                "profile" to JsonPrimitive("{\"core_motivation\":\"保护家人\"}"),
+                "is_evolution_tracked" to JsonPrimitive("false"),
+            ),
+        )
+
+        val payload = PcApiPayloads.authoring("character", source, create = false)
+
+        assertEquals(
+            listOf("阵法", "推演", "炼丹"),
+            payload.getValue("abilities").jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals(
+            listOf("糖糖", "特昂糖"),
+            payload.getValue("aliases").jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals(
+            "保护家人",
+            payload.getValue("profile").jsonObject.getValue("core_motivation").jsonPrimitive.content,
+        )
+        assertFalse(payload.getValue("is_evolution_tracked").jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `character create defaults keep PC collection shapes`() {
+        val payload = PcApiPayloads.authoring(
+            "character",
+            JsonObject(mapOf("name" to JsonPrimitive("陆景珩"))),
+            create = true,
+        )
+
+        assertEquals(JsonArray(emptyList()), payload["abilities"])
+        assertEquals(JsonArray(emptyList()), payload["aliases"])
+        assertEquals(JsonObject(emptyMap()), payload["profile"])
     }
 
     @Test
