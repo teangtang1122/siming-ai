@@ -9,7 +9,6 @@ from ...story.interfaces.chapter_evidence import ChapterEvidenceReader
 from ..domain.governance_lifecycle import normalize_item_type, validate_transition
 from .models import CausalEdge, Foreshadowing, NarrativeDebt, NarrativeGovernanceEvent
 
-
 STATUS_UPDATE_FIELDS = frozenset(
     {
         "status",

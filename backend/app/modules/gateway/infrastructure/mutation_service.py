@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
 from app.modules.gateway.application.contracts import MutationResult, SyncMutation
-from app.services.gateway_legacy_replication import apply_domain_mutation, domain_snapshot_for_entity
+from app.services.gateway_legacy_replication import (
+    apply_domain_mutation,
+    domain_snapshot_for_entity,
+)
 
 from .models import SyncChange, SyncConflict, SyncEntityState, SyncTombstone
 from .support import MAX_ENTITY_PAYLOAD_BYTES, canonical_payload, payload_hash, utcnow
