@@ -571,6 +571,8 @@ def _prepare_character_mutation_values(
 ) -> tuple[dict[str, Any], list[str] | None, str | None]:
     raw_summary = values.pop("change_summary", None)
     change_summary = str(raw_summary or "").strip() or None
+    if row is None and "role_type" not in values:
+        values["role_type"] = normalize_character_role_type(None)
     if "role_type" in values:
         raw_role_type = values["role_type"]
         values["background"] = append_character_role_description(
