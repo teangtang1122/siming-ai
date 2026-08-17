@@ -1,0 +1,27 @@
+name: One-shot Gateway PC parity patch
+
+on:
+  push:
+    branches:
+      - feat/android-pc-contract-parity-2
+    paths:
+      - .github/workflows/patch-gateway-pc-parity2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/android-pc-contract-parity-2
+      - run: python .github/scripts/patch_gateway_pc_parity2.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/app/services/gateway_legacy_replication.py backend/app/modules/gateway/infrastructure/mutation_service.py
+          git diff --cached --check
+          git commit -m "fix(gateway): persist canonical PC snapshots after mobile sync"
+          git push origin HEAD:feat/android-pc-contract-parity-2
