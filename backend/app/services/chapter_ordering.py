@@ -24,11 +24,11 @@ def next_chapter_sort_order(db: Session, project_id: str) -> int:
     return int(highest) + CHAPTER_ORDER_STEP
 
 
-def chapter_order_asc():
+def chapter_order_asc() -> tuple:
     return (Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
 
 
-def chapter_order_desc():
+def chapter_order_desc() -> tuple:
     return (Chapter.sort_order.desc(), Chapter.created_at.desc(), Chapter.id.desc())
 
 
