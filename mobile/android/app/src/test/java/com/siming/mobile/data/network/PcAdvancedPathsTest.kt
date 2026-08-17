@@ -2,6 +2,7 @@ package com.siming.mobile.data.network
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class PcAdvancedPathsTest {
     @Test
@@ -55,5 +56,15 @@ class PcAdvancedPathsTest {
             "/api/v1/projects/project-1/characters/character-1/versions/version-1",
             PcApiPaths.characterVersion(project, character, version),
         )
+    }
+
+    @Test
+    fun `advanced paths reject unsafe path segments`() {
+        assertFailsWith<IllegalArgumentException> {
+            PcApiPaths.chapterSnapshot("project-1", "../chapter", "snapshot-1")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            PcApiPaths.characterVersion("project-1", "character-1", "version/escape")
+        }
     }
 }
