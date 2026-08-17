@@ -8,16 +8,18 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * Return chapter replicas in canonical reading order.
+ * Return replicas in the canonical authoring view.
  *
- * New PC/Gateway snapshots carry Chapter.sort_order, which is the only
- * authoritative cross-device ordering signal. Title parsing remains strictly
- * as a compatibility fallback for old/offline replicas that predate that field.
+ * The sync protocol intentionally groups history/version rows under the same
+ * coarse entity type as their primary record. Filter those rows first so a
+ * CharacterVersion can never become an "unnamed character" card. Chapters are
+ * then ordered by Chapter.sort_order; title parsing is legacy fallback only.
  */
 fun orderReplicaEntities(entityType: String, records: List<ReplicaEntity>): List<ReplicaEntity> {
-    if (entityType != "chapter" || records.size < 2) return records
+    val primary = primaryAuthoringRecords(entityType, records)
+    if (entityType != "chapter" || primary.size < 2) return primary
 
-    val items = records.map { record -> ChapterOrder(record, payload(record)) }
+    val items = primary.map { record -> ChapterOrder(record, payload(record)) }
     val canonical = items.filter { it.sortOrder != null }
     if (canonical.isNotEmpty()) {
         val legacy = legacyOrder(items.filter { it.sortOrder == null })
