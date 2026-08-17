@@ -9,6 +9,7 @@ from ....architecture.uow import SqlAlchemyUnitOfWork
 from ....core.db_helpers import get_outline_node_or_404, get_project_or_404
 from ....core.exceptions import NotFoundError, ValidationError
 from ....core.utils import count_words
+from ....services.chapter_ordering import next_chapter_sort_order
 from ....services.chapter_service import (
     chapter_to_detail,
     chapter_to_list_item,
@@ -64,15 +65,6 @@ class SqlAlchemyChapterWorkspace:
 
     def _outline_context(self, project_id: str) -> dict:
         return outline_sort_context(load_outline_nodes(self._session, project_id))
-
-    def _next_sort_order(self, project_id: str) -> int:
-        last = (
-            self._session.query(Chapter)
-            .filter(Chapter.project_id == project_id)
-            .order_by(Chapter.sort_order.desc(), Chapter.created_at.desc(), Chapter.id.desc())
-            .first()
-        )
-        return ((last.sort_order or 0) if last else 0) + 1000
 
     def _validate_manifest(self, project_id: str, manifest_id: str | None) -> None:
         if not manifest_id:
@@ -150,7 +142,7 @@ class SqlAlchemyChapterWorkspace:
             content=content,
             word_count=count_words(content),
             current_version=1,
-            sort_order=self._next_sort_order(project_id),
+            sort_order=next_chapter_sort_order(self._session, project_id),
             context_manifest_id=payload.get("context_manifest_id"),
         )
         self._session.add(chapter)
@@ -261,7 +253,16 @@ class SqlAlchemyChapterWorkspace:
         for index, chapter_id in enumerate(requested_ids, start=1):
             by_id[chapter_id].sort_order = index * 1000
         self._session.flush()
-        return StoryMutation(data=self.list(project_id), sync_intents=[])
+        return StoryMutation(
+            data=self.list(project_id),
+            sync_intents=[
+                ContentSyncIntent(
+                    project_id=project_id,
+                    target=ContentSyncTarget.PROJECT,
+                    source="chapter_reorder",
+                )
+            ],
+        )
 
     def delete(self, project_id: str, chapter_id: str) -> StoryMutation:
         project = get_project_or_404(self._session, project_id)

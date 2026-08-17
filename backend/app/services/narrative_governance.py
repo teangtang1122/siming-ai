@@ -50,7 +50,7 @@ def _serialize(row: Any) -> dict[str, Any]:
 
 
 def _chapter_number_map(db: Session, project_id: str) -> dict[str, int]:
-    chapters = db.query(Chapter).filter(Chapter.project_id == project_id).order_by(Chapter.created_at, Chapter.id).all()
+    chapters = db.query(Chapter).filter(Chapter.project_id == project_id).order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).all()
     return {chapter.id: index for index, chapter in enumerate(chapters, start=1)}
 
 
@@ -863,7 +863,7 @@ def governance_dashboard(db: Session, project_id: str, *, chapter_id: str = "", 
     chapters = (
         db.query(Chapter)
         .filter(Chapter.project_id == project_id)
-        .order_by(Chapter.created_at, Chapter.id)
+        .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
         .all()
     )
     reviews = (

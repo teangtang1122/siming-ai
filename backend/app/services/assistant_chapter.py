@@ -17,6 +17,7 @@ from ..database.models import (
 )
 from ..services.context_builders import _get_outline_node_or_404
 from ..services.style_rules import _detect_forbidden_sentence_violations, _repair_forbidden_sentence_text
+from .chapter_ordering import next_chapter_sort_order
 from .workspace import execute_workspace_action
 
 
@@ -66,6 +67,7 @@ def _create_assistant_chapter(
         content=content,
         word_count=count_words(content),
         current_version=1,
+        sort_order=next_chapter_sort_order(db, project_id),
     )
     db.add(chapter)
     db.flush()
@@ -117,6 +119,7 @@ def _create_assistant_chapter_placeholder(
         content="（AI正在生成正文，完成后会自动写入。）",
         word_count=0,
         current_version=1,
+        sort_order=next_chapter_sort_order(db, project_id),
     )
     db.add(chapter)
     db.flush()

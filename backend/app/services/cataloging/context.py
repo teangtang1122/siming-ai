@@ -6,7 +6,6 @@ import json
 from sqlalchemy.orm import Session
 
 from ...database.models import Chapter, Character, ChapterSummary, OutlineNode, WorldbuildingEntry
-from ...services.outline_service import load_outline_nodes, outline_sort_context
 from .constants import (
     CATALOGING_FULL_CONTEXT_CHARACTER_LIMIT,
     CATALOGING_FULL_CONTEXT_OUTLINE_LIMIT,
@@ -15,20 +14,16 @@ from .constants import (
 
 
 def ordered_chapters(db: Session, project_id: str, chapter_ids: list[str] | None = None) -> list[Chapter]:
-    outline_context = outline_sort_context(load_outline_nodes(db, project_id))
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
-    chapters = query.all()
+    chapters = query.order_by(
+        Chapter.sort_order.asc(),
+        Chapter.created_at.asc(),
+        Chapter.id.asc(),
+    ).all()
     by_id = {chapter.id: chapter for chapter in chapters}
     if chapter_ids:
         return [by_id[item] for item in chapter_ids if item in by_id]
-
-    def sort_key(chapter: Chapter):
-        outline_key = outline_context["sort_keys"].get(chapter.outline_node_id)
-        if outline_key is None:
-            return (1, (999999,), chapter.created_at)
-        return (0, outline_key, chapter.created_at)
-
-    return sorted(chapters, key=sort_key)
+    return chapters
 
 
 def build_light_context(db: Session, project_id: str, chapter: Chapter) -> dict:

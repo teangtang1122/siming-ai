@@ -98,7 +98,7 @@ def _recent_chapter_refs(db: Session, project_id: str, limit: int) -> list[dict]
     chapters = (
         db.query(Chapter)
         .filter(Chapter.project_id == project_id)
-        .order_by(Chapter.created_at.desc())
+        .order_by(Chapter.sort_order.desc(), Chapter.created_at.desc(), Chapter.id.desc())
         .limit(limit)
         .all()
     )

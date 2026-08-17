@@ -370,7 +370,7 @@ class Chapter(Base):
     word_count = Column(Integer, default=0)
     current_version = Column(Integer, default=1)
     # Canonical reading order. This is intentionally independent from outline_node_id.
-    sort_order = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=1_000_000_000)
     quality_score = Column(Integer, nullable=True)
     quality_detail = Column(Text, nullable=True)
     quality_evaluated_at = Column(DateTime, nullable=True)

@@ -35,7 +35,7 @@ def build_training_dataset(
         query = query.filter(Chapter.project_id == project_id)
     if chapter_ids:
         query = query.filter(Chapter.id.in_(chapter_ids))
-    chapters = query.order_by(Chapter.created_at.asc()).all()
+    chapters = query.order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).all()
     if not chapters:
         raise ValueError("没有可用于训练的章节")
     project = db.query(Project).filter(Project.id == project_id).first() if project_id else None

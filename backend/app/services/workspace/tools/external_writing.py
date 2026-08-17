@@ -219,7 +219,7 @@ async def prepare_external_writing_context(
     # Recent chapter summaries
     recent_chapters = db.query(Chapter).filter(
         Chapter.project_id == project_id,
-    ).order_by(Chapter.created_at.desc()).limit(5).all()
+    ).order_by(Chapter.sort_order.desc(), Chapter.created_at.desc(), Chapter.id.desc()).limit(5).all()
 
     result["recent_summaries"] = []
     for ch in recent_chapters:

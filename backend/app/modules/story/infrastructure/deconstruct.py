@@ -17,7 +17,7 @@ class SqlAlchemyDeconstructionReader:
         chapters = (
             self._session.query(Chapter)
             .filter(Chapter.project_id == project_id)
-            .order_by(Chapter.created_at.asc())
+            .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
             .all()
         )
         chapter_opts = [

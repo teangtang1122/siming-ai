@@ -236,7 +236,7 @@ async def design_plot(
         existing = (
             db.query(Chapter)
             .filter(Chapter.project_id == project_id, Chapter.outline_node_id == outline_node_id)
-            .order_by(Chapter.created_at.asc())
+            .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
             .all()
         )
         if existing:

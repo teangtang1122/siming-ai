@@ -553,7 +553,7 @@ def build_source_from_payload(project, payload, db: Session) -> tuple[str, str, 
     chapters = (
         db.query(Chapter)
         .filter(Chapter.project_id == project.id)
-        .order_by(Chapter.created_at.asc())
+        .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
         .all()
     )
     if not chapters:
@@ -573,7 +573,7 @@ def build_golden_three_source(project, payload, db: Session) -> tuple[str, list[
     chapters = (
         db.query(Chapter)
         .filter(Chapter.project_id == project.id)
-        .order_by(Chapter.created_at.asc())
+        .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
         .limit(3)
         .all()
     )

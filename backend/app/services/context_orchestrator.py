@@ -1116,7 +1116,7 @@ class ContextOrchestrator:
         chapters = (
             self.db.query(Chapter)
             .filter(Chapter.project_id == project_id)
-            .order_by(Chapter.created_at.desc())
+            .order_by(Chapter.sort_order.desc(), Chapter.created_at.desc(), Chapter.id.desc())
             .all()
         )
         if chapter_id:

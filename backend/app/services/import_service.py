@@ -19,6 +19,7 @@ from ..modules.model_runtime.application.execution import model_executor as LLMG
 from ..core.exceptions import ValidationError
 from ..core.utils import count_words
 from ..database.models import Chapter
+from .chapter_ordering import CHAPTER_ORDER_STEP, next_chapter_sort_order
 from ..prompts.import_prompts import build_split_correction_messages
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -301,6 +302,7 @@ def execute_import(
 ) -> list[dict]:
     """Create Chapter rows from split definitions and return summaries."""
     created_chapters: list[Chapter] = []
+    next_sort_order = next_chapter_sort_order(db, project_id)
     if splits:
         for i, split in enumerate(splits):
             start = max(0, int(_split_attr(split, "start_char", 0) or 0))
@@ -315,6 +317,7 @@ def execute_import(
                 outline_node_id=outline_node_id,
                 word_count=count_words(chunk),
                 current_version=1,
+                sort_order=next_sort_order + len(created_chapters) * CHAPTER_ORDER_STEP,
             )
             db.add(chapter)
             created_chapters.append(chapter)
@@ -329,6 +332,7 @@ def execute_import(
             outline_node_id=outline_node_id,
             word_count=count_words(chunk),
             current_version=1,
+            sort_order=next_sort_order,
         )
         db.add(chapter)
         created_chapters.append(chapter)

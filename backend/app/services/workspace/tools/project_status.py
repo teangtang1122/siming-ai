@@ -112,7 +112,7 @@ async def get_project_archive_status(
 
     audited_chapters = db.query(Chapter).filter(
         Chapter.project_id == project_id,
-    ).order_by(Chapter.created_at.asc()).limit(200).all()
+    ).order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).limit(200).all()
     granularity_items = [
         inspect_chapter_granularity(db, project_id, chapter)
         for chapter in audited_chapters

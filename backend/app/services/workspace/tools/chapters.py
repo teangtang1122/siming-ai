@@ -24,6 +24,7 @@ from ....database.models import (
 )
 from ....modules.story.application.content_sync import queue_content_sync
 from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
+from ....services.chapter_ordering import next_chapter_sort_order
 from ....services.chapter_service import (
     create_snapshot,
     diff_snapshots,
@@ -326,7 +327,7 @@ def _chapter_write_candidates(
         query = query.filter(Chapter.title == title[:200])
     else:
         return []
-    return query.order_by(Chapter.created_at.asc()).all()
+    return query.order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).all()
 
 
 def _save_chapter_summary(db: Session, chapter: Chapter, args: dict[str, Any]) -> None:
@@ -441,6 +442,7 @@ async def _persist_created_chapter(
             content=content,
             word_count=count_words(content),
             current_version=1,
+            sort_order=next_chapter_sort_order(db, project_id),
             context_manifest_id=context_manifest_id,
         )
         db.add(chapter)

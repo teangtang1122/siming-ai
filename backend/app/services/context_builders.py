@@ -690,7 +690,7 @@ def _build_chapter_detail_context(
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
     chapter = query.filter(Chapter.id == chapter_id).first() if chapter_id else None
     if not chapter:
-        chapter = query.order_by(Chapter.created_at.desc()).first()
+        chapter = query.order_by(Chapter.sort_order.desc(), Chapter.created_at.desc(), Chapter.id.desc()).first()
     if not chapter:
         return "暂无章节正文。"
     content = chapter.content or ""

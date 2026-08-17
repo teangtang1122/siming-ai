@@ -84,7 +84,7 @@ async def inspect_story_granularity(
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
     if chapter_id:
         query = query.filter(Chapter.id == chapter_id)
-    chapters = query.order_by(Chapter.created_at.asc()).limit(limit).all()
+    chapters = query.order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).limit(limit).all()
     checks = [
         inspect_chapter_granularity(db, project_id, chapter, level=level)
         for chapter in chapters
@@ -129,7 +129,7 @@ async def repair_story_granularity(
     query = db.query(Chapter).filter(Chapter.project_id == project_id)
     if chapter_id:
         query = query.filter(Chapter.id == chapter_id)
-    chapters = query.order_by(Chapter.created_at.asc()).limit(limit).all()
+    chapters = query.order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).limit(limit).all()
     target_chapters: list[Chapter] = []
     audits: list[dict[str, Any]] = []
     for chapter in chapters:

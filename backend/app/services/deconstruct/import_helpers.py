@@ -190,7 +190,7 @@ def ordered_source_chapters(db: Session, project_id: str, report_data: dict) -> 
     all_chapters = (
         db.query(Chapter)
         .filter(Chapter.project_id == project_id)
-        .order_by(Chapter.created_at.asc())
+        .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
         .all()
     )
     selected_ids = [str(item) for item in (report_data.get("selected_chapter_ids") or []) if item]

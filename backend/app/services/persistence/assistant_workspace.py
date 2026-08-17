@@ -21,6 +21,7 @@ from app.database.models import (
     OutlineNode,
     OutlineNodeCharacter,
 )
+from app.services.chapter_ordering import next_chapter_sort_order
 
 
 class SqlAlchemyAssistantWorkspace:
@@ -76,6 +77,9 @@ class SqlAlchemyAssistantWorkspace:
         return resolved[:limit]
 
     def create_chapter(self, **values: Any):
+        project_id = str(values.get("project_id") or "").strip()
+        if project_id and values.get("sort_order") is None:
+            values["sort_order"] = next_chapter_sort_order(self.db, project_id)
         chapter = Chapter(**values)
         self.db.add(chapter)
         return chapter

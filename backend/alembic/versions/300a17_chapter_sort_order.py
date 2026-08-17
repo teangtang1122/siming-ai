@@ -24,7 +24,7 @@ def _time_key(value):
 def upgrade() -> None:
     op.add_column(
         "chapters",
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="1000000000"),
     )
     bind = op.get_bind()
     chapters = sa.table(
@@ -88,7 +88,11 @@ def upgrade() -> None:
         ).mappings().all()
 
         def old_pc_sort_key(row):
-            outline_key = outline_keys.get(str(row["outline_node_id"])) if row["outline_node_id"] else None
+            outline_key = (
+                outline_keys.get(str(row["outline_node_id"]))
+                if row["outline_node_id"]
+                else None
+            )
             if outline_key is None:
                 return (1, (999999,), _time_key(row["created_at"]), str(row["id"]))
             return (0, outline_key, _time_key(row["created_at"]), str(row["id"]))

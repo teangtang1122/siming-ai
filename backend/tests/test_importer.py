@@ -78,9 +78,15 @@ class ImporterTestCase(unittest.TestCase):
 
         db = SessionLocal()
         try:
-            stored = db.query(Chapter).filter(Chapter.project_id == project_id).order_by(Chapter.title.asc()).all()
+            stored = (
+                db.query(Chapter)
+                .filter(Chapter.project_id == project_id)
+                .order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc())
+                .all()
+            )
             self.assertEqual(len(stored), 2)
             self.assertEqual([chapter.word_count for chapter in stored], expected_counts)
+            self.assertEqual([chapter.sort_order for chapter in stored], [1000, 2000])
             self.assertTrue(all(chapter.outline_node_id == outline_id for chapter in stored))
         finally:
             db.close()
