@@ -564,7 +564,7 @@ private fun ProjectScreen(
                     records = records,
                     online = connection != null,
                     onOpen = { editor = EditorTarget(section, it) },
-                    onAdvanced = if (section in setOf("chapter", "character")) {
+                    onAdvanced = if (section in setOf("chapter", "character", "world")) {
                         { record -> advanced = EditorTarget(section, record) }
                     } else {
                         null
@@ -602,6 +602,13 @@ private fun ProjectScreen(
                 "character" -> CharacterAdvancedDialog(
                     projectId = project.projectId,
                     character = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+                "world" -> WorldAdvancedDialog(
+                    projectId = project.projectId,
+                    entry = record,
                     online = connection != null,
                     viewModel = viewModel,
                     onDismiss = { advanced = null },
@@ -741,6 +748,7 @@ private fun RecordCard(
                             when (entityType) {
                                 "chapter" -> if (advancedEnabled) "版本历史" else "版本需连接 PC"
                                 "character" -> if (advancedEnabled) "关系 / AI / 版本" else "高级资料需连接 PC"
+                                "world" -> if (advancedEnabled) "版本 / 时间线" else "历史需连接 PC"
                                 else -> "高级资料"
                             },
                         )

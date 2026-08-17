@@ -452,6 +452,104 @@ internal fun CharacterAdvancedDialog(
     )
 }
 
+private enum class WorldAdvancedTab(val label: String) {
+    Versions("版本"),
+    Timeline("时间线"),
+}
+
+@Composable
+internal fun WorldAdvancedDialog(
+    projectId: String,
+    entry: ReplicaEntity,
+    online: Boolean,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var tab by remember { mutableStateOf(WorldAdvancedTab.Versions) }
+    var loading by remember { mutableStateOf(false) }
+    var versions by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    var timeline by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+
+    LaunchedEffect(entry.entityId, online) {
+        if (!online) return@LaunchedEffect
+        loading = true
+        try {
+            versions = viewModel.worldVersions(projectId, entry.entityId).arrayObjects("items")
+            timeline = viewModel.worldTimeline(projectId, entry.entityId).arrayObjects("items")
+        } catch (error: Exception) {
+            viewModel.reportError(error.toUserFacingMessage())
+        } finally {
+            loading = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${entry.text("title").ifBlank { "世界观条目" }} · 历史") },
+        text = {
+            Column(
+                Modifier.heightIn(max = 600.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (!online) {
+                    Text("世界观版本和时间线由 PC 维护，需要连接 Gateway 才能查看。")
+                    return@Column
+                }
+                Text(
+                    "世界观关系目前没有 PC 专用 HTTP 编辑路由，手机只保留同步数据，不自行发明写接口。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    WorldAdvancedTab.entries.forEach { item ->
+                        AssistChip(onClick = { tab = item }, label = { Text(item.label) })
+                    }
+                }
+                if (loading) CircularProgressIndicator()
+                when (tab) {
+                    WorldAdvancedTab.Versions -> {
+                        if (versions.isEmpty() && !loading) Text("暂无世界观版本记录。")
+                        versions.forEach { version ->
+                            OutlinedCard(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("v${version.int("version_number")}", fontWeight = FontWeight.SemiBold)
+                                    Text(version.string("change_summary").ifBlank { "无变更摘要" })
+                                    version.string("source_chapter_id").takeIf(String::isNotBlank)?.let {
+                                        Text("来源章节：$it", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Text(version.string("created_at"), style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                    WorldAdvancedTab.Timeline -> {
+                        if (timeline.isEmpty() && !loading) Text("暂无世界观时间线事件。")
+                        timeline.forEach { event ->
+                            OutlinedCard(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        "#${event.int("sort_order")} · ${event.string("event_type").ifBlank { "event" }}",
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(event.string("event_description").ifBlank { "无事件描述" })
+                                    event.string("evidence").takeIf(String::isNotBlank)?.let {
+                                        Text("证据：$it", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    event.string("chapter_id").takeIf(String::isNotBlank)?.let {
+                                        Text("章节：$it", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
 @Composable
 private fun RelationshipEditor(
     currentCharacterId: String,
