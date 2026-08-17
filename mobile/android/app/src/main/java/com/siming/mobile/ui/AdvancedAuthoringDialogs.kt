@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -85,7 +84,7 @@ internal fun ChapterOrderDialog(
                             Spacer(Modifier.width(10.dp))
                             Text(
                                 chapter.text("title").ifBlank { "未命名章节" },
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.fillMaxWidth(0.58f),
                             )
                             TextButton(
                                 enabled = index > 0 && !saving,
@@ -491,12 +490,13 @@ private fun RelationshipEditor(
     relations.forEachIndexed { index, relation ->
         OutlinedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(relation.targetName.ifBlank { relation.targetId }, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                    TextButton(onClick = {
-                        onRelationsChanged(relations.filterIndexed { itemIndex, _ -> itemIndex != index })
-                    }) { Text("移除") }
-                }
+                Text(
+                    relation.targetName.ifBlank { relation.targetId },
+                    fontWeight = FontWeight.SemiBold,
+                )
+                TextButton(onClick = {
+                    onRelationsChanged(relations.filterIndexed { itemIndex, _ -> itemIndex != index })
+                }) { Text("移除") }
                 OutlinedTextField(
                     value = relation.relationshipType,
                     onValueChange = { value ->
