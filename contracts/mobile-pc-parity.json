@@ -1,0 +1,1752 @@
+{
+  "schema_version": 1,
+  "contract_version": "2026-08-17",
+  "canonical_authority": "pc",
+  "modes": {
+    "pc": "桌面后端和前端所使用的权威领域实现。",
+    "android_online": "Android 已连接 PC Gateway，优先调用 PC HTTP/Agent 能力。",
+    "android_offline": "Android 无 Gateway，仅使用本地副本与可回放 outbox。",
+    "android_standalone": "Android 配置独立模型，运行本地 Agent 和本地工具适配器。"
+  },
+  "coverage_targets": [
+    {
+      "id": "pc_api_paths",
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPaths.kt",
+      "extractor": "kotlin_functions",
+      "symbols": {
+        "project": "authoring.project",
+        "chapterReorder": "chapter.reorder",
+        "chapterSnapshots": "chapter.history",
+        "chapterSnapshotDiff": "chapter.history",
+        "chapterSnapshot": "chapter.history",
+        "chapterRestore": "chapter.restore",
+        "characterRelationshipNetwork": "character.relationships",
+        "characterRelationships": "character.relationships",
+        "characterAiConfig": "character.ai_config",
+        "characterVersions": "character.versions",
+        "characterVersion": "character.versions",
+        "worldVersions": "worldbuilding.history",
+        "worldTimeline": "worldbuilding.history",
+        "assistantStream": "assistant.workspace",
+        "novelCreationSession": "novel_creation.session",
+        "novelCreationRuns": "novel_creation.session",
+        "novelCreationRun": "novel_creation.session",
+        "novelCreationStageConfirm": "novel_creation.session",
+        "novelCreationStage": "novel_creation.session",
+        "narrativeGovernanceItems": "governance.items",
+        "narrativeGovernanceStatus": "governance.items",
+        "conflictResolution": "sync.conflicts"
+      },
+      "ignore_symbols": {
+        "authoringCollection": "Generic route factory; individual authoring capabilities own the semantic decision.",
+        "authoringItem": "Generic route factory; individual authoring capabilities own the semantic decision.",
+        "segment": "Path-segment validation helper, not a user capability."
+      }
+    },
+    {
+      "id": "pc_authoring_contract_types",
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcAuthoringContract.kt",
+      "extractor": "kotlin_map_list_keys",
+      "symbols": {
+        "project": "authoring.project",
+        "chapter": "authoring.chapter",
+        "outline": "authoring.outline",
+        "character": "authoring.character",
+        "character_relation": "character.relationships",
+        "character_ai_config": "character.ai_config",
+        "world": "authoring.worldbuilding",
+        "world_relation": "worldbuilding.relationships",
+        "foreshadowing": "governance.items",
+        "governance": "governance.items"
+      },
+      "ignore_symbols": {}
+    },
+    {
+      "id": "standalone_workspace_tools",
+      "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+      "extractor": "kotlin_when_strings",
+      "start_marker": "private suspend fun execute(",
+      "end_marker": "private suspend fun getProjectInfo(",
+      "symbols": {
+        "get_project_info": "authoring.project",
+        "update_project_info": "authoring.project",
+        "list_characters": "authoring.character",
+        "search_characters": "authoring.character",
+        "create_character": "authoring.character",
+        "update_character": "authoring.character",
+        "list_chapters": "authoring.chapter",
+        "search_chapters": "authoring.chapter",
+        "create_chapter": "authoring.chapter",
+        "update_chapter": "authoring.chapter",
+        "search_outline": "authoring.outline",
+        "search_outline_tree": "authoring.outline",
+        "create_outline_node": "authoring.outline",
+        "create_outline_nodes": "authoring.outline",
+        "update_outline_node": "authoring.outline",
+        "list_worldbuilding": "authoring.worldbuilding",
+        "search_worldbuilding": "authoring.worldbuilding",
+        "create_worldbuilding_entry": "authoring.worldbuilding",
+        "update_worldbuilding_entry": "authoring.worldbuilding",
+        "preview_writing_context": "context.preview",
+        "chapter_writer": "writer.chapter",
+        "character_writer": "writer.character",
+        "outline_writer": "writer.outline",
+        "worldbuilding_writer": "writer.worldbuilding"
+      },
+      "ignore_symbols": {}
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "assistant.workspace",
+      "area": "assistant",
+      "summary": "统一的工作区 Agent 对话与工具循环",
+      "status": "partial",
+      "authority": {
+        "type": "pc_workspace_tool",
+        "entrypoint": "workspace assistant stream / MobileWorkspaceAgent",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/ai_writer.py",
+            "contains": "workspace-assistant/stream"
+          },
+          {
+            "path": "backend/app/services/workspace/assistant_stream_runtime.py",
+            "contains": "async def"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun streamAssistant("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "没有 Gateway 且未配置手机直连模型时不启动 Agent。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "internal class MobileWorkspaceAgent("
+            },
+            {
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "MOBILE_TOOL_NAMES = ["
+            }
+          ],
+          "limitations": "共享生成后的提示词与工具 schema，但工具执行、上下文选择和审计仍是 Android 本地实现。"
+        }
+      },
+      "side_effects": [],
+      "idempotency": {
+        "required": false,
+        "strategy": "not_applicable"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_workspace_assistant_outcome.py",
+          "contains": "test_"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/DirectApiClientTest.kt",
+          "contains": "class DirectApiClientTest"
+        }
+      ],
+      "known_gaps": [
+        "手机独立 Agent 尚未共享 PC 的 ContextManifest、运行日志和完整恢复语义。"
+      ]
+    },
+    {
+      "id": "authoring.chapter",
+      "area": "authoring",
+      "summary": "章节创建、读取、更新和删除",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/{project_id}/chapters",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/chapters.py",
+            "contains": "@router.post(\"/projects/{project_id}/chapters\")"
+          },
+          {
+            "path": "backend/app/modules/story/infrastructure/chapters.py",
+            "contains": "class SqlAlchemyChapterWorkspace"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun saveAuthoringEntity("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"chapter\" -> \"chapter\""
+            },
+            {
+              "path": "backend/app/services/gateway_legacy_replication.py",
+              "contains": "if spec.model is Chapter and row_existed:"
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"create_chapter\" -> createChapter"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"update_chapter\" -> updateChapter"
+            }
+          ],
+          "notes": "先写本地副本与 outbox，连接 PC 后由领域服务回放。"
+        }
+      },
+      "side_effects": [
+        "chapter_snapshot",
+        "narrative_checkpoint",
+        "cataloging",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_chapters.py",
+          "contains": "test_save_chapter_creates_snapshot_with_new_content"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
+          "contains": "standaloneAuthoringSnapshotDropsVersionRowsButKeepsDedicatedContextEntities"
+        }
+      ]
+    },
+    {
+      "id": "authoring.character",
+      "area": "authoring",
+      "summary": "角色卡创建、读取、更新和删除",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/{project_id}/characters",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/characters.py",
+            "contains": "@router.post(\"/projects/{project_id}/characters\")"
+          },
+          {
+            "path": "backend/app/services/persistence/character_workspace.py",
+            "contains": "class SqlAlchemyCharacterWorkspace"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun saveAuthoringEntity("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"character\" -> \"character\""
+            },
+            {
+              "path": "backend/app/services/gateway_legacy_replication.py",
+              "contains": "elif spec.model is Character:"
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"create_character\" -> createCharacter"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"update_character\" -> updateCharacter"
+            }
+          ],
+          "notes": "本地写入统一投影为 PC Character 公共契约。"
+        }
+      },
+      "side_effects": [
+        "character_version",
+        "alias_sync",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_characters.py",
+          "contains": "test_update_character_increments_version_and_writes_snapshot"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
+          "contains": "class PcApiPayloadsTest"
+        }
+      ]
+    },
+    {
+      "id": "authoring.outline",
+      "area": "authoring",
+      "summary": "大纲节点创建、读取和更新",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/{project_id}/outline",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/outline.py",
+            "contains": "APIRouter"
+          },
+          {
+            "path": "backend/app/services/gateway_legacy_replication.py",
+            "contains": "elif spec.model is OutlineNode:"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun saveAuthoringEntity("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"outline\" -> \"outline_node\""
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"create_outline_node\" -> createOutlineNode"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"update_outline_node\" -> updateOutlineNode"
+            }
+          ]
+        }
+      },
+      "side_effects": [
+        "cycle_validation",
+        "character_link_replace",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
+          "contains": "class PcApiPayloadsTest"
+        },
+        {
+          "path": "backend/tests/test_gateway_canonical_entity_contract.py",
+          "contains": "test_outline_mobile_mutation_maps_pc_metadata_and_character_links"
+        }
+      ]
+    },
+    {
+      "id": "authoring.project",
+      "area": "authoring",
+      "summary": "作品资料读取与更新",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/{project_id}",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/projects.py",
+            "contains": "APIRouter"
+          },
+          {
+            "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPaths.kt",
+            "contains": "fun project(projectId: String)"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun createProject("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"project\" -> \"project\""
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"update_project_info\" -> updateProjectInfo"
+            }
+          ]
+        }
+      },
+      "side_effects": [
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_projects.py",
+          "contains": "test_"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
+          "contains": "class PcApiPayloadsTest"
+        }
+      ]
+    },
+    {
+      "id": "authoring.worldbuilding",
+      "area": "authoring",
+      "summary": "世界观条目创建、读取、更新和删除",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/{project_id}/worldbuilding",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/worldbuilding.py",
+            "contains": "APIRouter"
+          },
+          {
+            "path": "backend/app/modules/story/infrastructure/worldbuilding.py",
+            "contains": "class SqlAlchemyWorldbuildingWorkspace"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun saveAuthoringEntity("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"world\" -> \"world_entry\""
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"create_worldbuilding_entry\" -> createWorldbuilding"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "\"update_worldbuilding_entry\" -> updateWorldbuilding"
+            }
+          ]
+        }
+      },
+      "side_effects": [
+        "world_version",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_worldbuilding.py",
+          "contains": "test_update_worldbuilding_entry"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
+          "contains": "class PcApiPayloadsTest"
+        }
+      ]
+    },
+    {
+      "id": "chapter.history",
+      "area": "chapter",
+      "summary": "章节快照列表、详情与差异比较",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "GET /chapters/{chapter_id}/snapshots[/diff/{snapshot_id}]",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/chapters.py",
+            "contains": "def list_chapter_snapshots("
+          },
+          {
+            "path": "backend/app/routers/chapters.py",
+            "contains": "def diff_chapter_snapshots("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "read_only_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun listChapterSnapshots("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun diffChapterSnapshots("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "高级历史页面明确要求连接 PC Gateway，避免把不完整缓存当作权威版本。"
+        },
+        "android_standalone": {
+          "support": "unsupported",
+          "reason": "手机独立 Agent 不维护 PC 版本账本。"
+        }
+      },
+      "side_effects": [],
+      "idempotency": {
+        "required": false,
+        "strategy": "read_only"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_chapters.py",
+          "contains": "test_diff_between_two_snapshots"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAdvancedPathsTest.kt",
+          "contains": "chapter advanced commands use canonical PC routes"
+        }
+      ],
+      "known_gaps": [
+        "离线副本中即使存在历史记录也不会开放恢复或 diff，以免版本链不完整。"
+      ]
+    },
+    {
+      "id": "chapter.reorder",
+      "area": "chapter",
+      "summary": "章节权威阅读顺序重排",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "PUT /api/v1/projects/{project_id}/chapters/reorder",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/chapters.py",
+            "contains": "def reorder_chapters("
+          },
+          {
+            "path": "backend/app/modules/story/infrastructure/chapters.py",
+            "contains": "def reorder(self, project_id: str, chapter_ids: list[str])"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "suspend fun reorderChapters("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "排序必须一次提交当前作品全部章节，离线副本不能猜测 authoritative sort_order。"
+        },
+        "android_standalone": {
+          "support": "blocked",
+          "reason": "独立 Agent 不直接改变 PC 权威章节顺序。"
+        }
+      },
+      "side_effects": [
+        "authoritative_reorder",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "set_replacement"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_chapters.py",
+          "contains": "test_list_chapters_keeps_reading_order_independent_from_outline_tree"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAdvancedPathsTest.kt",
+          "contains": "chapter advanced commands use canonical PC routes"
+        }
+      ]
+    },
+    {
+      "id": "chapter.restore",
+      "area": "chapter",
+      "summary": "从历史快照恢复章节及关联叙事状态",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "POST /chapters/{chapter_id}/restore/{snapshot_id}",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/chapters.py",
+            "contains": "async def restore_chapter_snapshot("
+          },
+          {
+            "path": "backend/app/modules/story/infrastructure/chapters.py",
+            "contains": "def restore("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "suspend fun restoreChapterSnapshot("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/AdvancedAuthoringDialogs.kt",
+              "contains": "var restoring by remember"
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "恢复会创建新版本并恢复 ledger，必须连接 PC。"
+        },
+        "android_standalone": {
+          "support": "blocked",
+          "reason": "独立 Agent 不具备 PC ledger/checkpoint 权威数据。"
+        }
+      },
+      "side_effects": [
+        "chapter_restore",
+        "chapter_snapshot",
+        "ledger_restore",
+        "governance_invalidation",
+        "cataloging",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "client_serialization",
+        "limitations": "Android 已串行化恢复并阻止重复点击；PC 恢复接口每次调用仍会创建一个新 restore 版本，后续应增加服务端 request key。"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_chapters.py",
+          "contains": "test_restore_snapshot_creates_restore_snapshot"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcCanonicalCommandResultTest.kt",
+          "contains": "refresh failure keeps successful command payload"
+        }
+      ]
+    },
+    {
+      "id": "character.ai_config",
+      "area": "character",
+      "summary": "角色专用语气、口头禅与模型配置",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "GET/PUT /characters/{character_id}/ai-config",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/characters.py",
+            "contains": "def get_character_ai_config("
+          },
+          {
+            "path": "backend/app/routers/characters.py",
+            "contains": "def update_character_ai_config("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun updateCharacterAiConfig("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"character_ai_config\" -> values.normalizeStringArray(\"catchphrases\")"
+            },
+            {
+              "path": "backend/app/services/gateway_legacy_replication.py",
+              "contains": "角色 AI 配置不能移动到其他角色"
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "unsupported",
+          "reason": "手机独立 Agent 不消费 CharacterAIConfig；普通章节写作明确避免错误注入。"
+        }
+      },
+      "side_effects": [
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_gateway_auxiliary_authoring_contract.py",
+          "contains": "test_character_ai_config_cannot_move_to_another_character"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAuxiliaryPayloadsTest.kt",
+          "contains": "character AI config keeps catchphrases as PC string array"
+        }
+      ],
+      "known_gaps": [
+        "CharacterAIConfig 仅在连接 PC 的高级页面和同步回放中可用，尚未接入手机独立角色扮演能力。"
+      ]
+    },
+    {
+      "id": "character.relationships",
+      "area": "character",
+      "summary": "有方向的角色关系网读取与替换",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "GET /characters/relationships; PUT /characters/{character_id}/relationships",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/characters.py",
+            "contains": "def get_relationship_network("
+          },
+          {
+            "path": "backend/app/routers/characters.py",
+            "contains": "def update_character_relationships("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcRelationshipEditorContract.kt",
+              "contains": "internal data class PcEditableRelationship"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun replaceCharacterRelationships("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"character_relation\" -> {"
+            },
+            {
+              "path": "backend/app/services/gateway_legacy_replication.py",
+              "contains": "def _canonical_character_relation_values("
+            }
+          ],
+          "notes": "离线以单条有向边回放，不模拟在线“替换当前角色全部关系”的事务。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextParity.kt",
+              "contains": "internal fun pcRelationshipPayloads("
+            }
+          ],
+          "limitations": "能消费缓存关系并写入创作上下文，但没有离线专用完整关系网编辑器。"
+        }
+      },
+      "side_effects": [
+        "relationship_replace",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "set_replacement"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_characters.py",
+          "contains": "test_editing_from_target_endpoint_preserves_direction"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcRelationshipEditorContractTest.kt",
+          "contains": "editing from target endpoint preserves original direction"
+        }
+      ],
+      "known_gaps": [
+        "手机在线编辑复用 PC 全量替换接口；离线回放仍是逐边 upsert，事务语义不同。"
+      ]
+    },
+    {
+      "id": "character.versions",
+      "area": "character",
+      "summary": "角色版本列表与历史快照查看",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "GET /characters/{character_id}/versions[/{version_id}]",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/characters.py",
+            "contains": "def list_character_versions("
+          },
+          {
+            "path": "backend/app/routers/characters.py",
+            "contains": "def get_character_version("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "read_only_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun listCharacterVersions("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "离线列表可能缺少完整历史，界面不把缓存冒充权威版本。"
+        },
+        "android_standalone": {
+          "support": "unsupported",
+          "reason": "独立 Agent 不维护角色版本账本。"
+        }
+      },
+      "side_effects": [],
+      "idempotency": {
+        "required": false,
+        "strategy": "read_only"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_characters.py",
+          "contains": "test_update_character_increments_version_and_writes_snapshot"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAdvancedPathsTest.kt",
+          "contains": "character advanced commands use canonical PC routes"
+        }
+      ],
+      "known_gaps": [
+        "Android 当前只读查看，尚未提供角色历史恢复。"
+      ]
+    },
+    {
+      "id": "context.preview",
+      "area": "context",
+      "summary": "写章前上下文预检",
+      "status": "partial",
+      "authority": {
+        "type": "pc_workspace_tool",
+        "entrypoint": "preview_writing_context",
+        "source_refs": [
+          {
+            "path": "backend/app/services/workspace/tools/context_preview.py",
+            "contains": "async def preview_writing_context("
+          },
+          {
+            "path": "backend/app/services/context_orchestrator.py",
+            "contains": "class ContextOrchestrator"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun streamAssistant("
+            }
+          ],
+          "notes": "通过 PC workspace assistant 调用同一工具。"
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "没有模型执行路由时只保留资料缓存，不运行上下文预检。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun previewWritingContext("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextParity.kt",
+              "contains": "internal fun pcGovernanceContext("
+            }
+          ],
+          "limitations": "角色、关系和治理优先级已复刻，但没有 PC RAG、FTS、ContextManifest、source hash 和预算覆盖判定。"
+        }
+      },
+      "side_effects": [],
+      "idempotency": {
+        "required": false,
+        "strategy": "read_only"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_workspace_context_preview.py",
+          "contains": "test_preview_writing_context_returns_state_and_warnings"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextParityTest.kt",
+          "contains": "governance context keeps only latest state per character"
+        }
+      ],
+      "known_gaps": [
+        "手机独立预检仍是 Kotlin 近似实现，下一阶段应改为版本化 ContextManifest 契约。"
+      ]
+    },
+    {
+      "id": "governance.items",
+      "area": "governance",
+      "summary": "伏笔、叙事债务及生命周期状态操作",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/narrative-governance/items[/{type}/{id}]",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/narrative_governance.py",
+            "contains": "APIRouter"
+          },
+          {
+            "path": "backend/app/services/narrative_governance.py",
+            "contains": "def governance_context("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun saveGovernanceEntity("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun updateGovernanceStatus("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "fun governanceContent("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "fun governanceStatus("
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextParity.kt",
+              "contains": "internal fun pcGovernanceContext("
+            }
+          ],
+          "limitations": "可读取最新治理锁并用于写章，但独立 Agent 未开放治理项创建、复检和关闭工具。"
+        }
+      },
+      "side_effects": [
+        "governance_transition",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_narrative_governance.py",
+          "contains": "test_verified_close_requires_repair_then_review_evidence"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextParityTest.kt",
+          "contains": "governance context mirrors PC open statuses and priority ordering"
+        }
+      ],
+      "known_gaps": [
+        "手机独立 Agent 目前只消费治理锁，不执行治理生命周期命令。"
+      ]
+    },
+    {
+      "id": "novel_creation.session",
+      "area": "novel_creation",
+      "summary": "对话式立项会话、阶段确认和正式归档",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/novel-creation/*",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/novel_creation.py",
+            "contains": "APIRouter"
+          },
+          {
+            "path": "backend/app/services/novel_creation_workspace.py",
+            "contains": "initialize_session_draft"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun startNovelCreation("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun confirmNovelCreationStage("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "local_cache",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationConversationAgent.kt",
+              "contains": "class MobileCreationConversationAgent"
+            }
+          ],
+          "notes": "会话先保存在手机，正式归档后进入规范同步。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationAgent.kt",
+              "contains": "class MobileCreationAgent"
+            },
+            {
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "_creation_baseline_fixture"
+            }
+          ],
+          "limitations": "共享 PC 提示词、阶段规范和基线夹具，但运行状态机、恢复与并发控制仍是手机实现。"
+        }
+      },
+      "side_effects": [
+        "project_archive",
+        "structured_entities",
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "request_key"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_novel_creation_compact_flow.py",
+          "contains": "test_"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/creation/PcCreationAgentContractTest.kt",
+          "contains": "currentPcCreationAgentPromptRequiresImmediateIncrementalWrites"
+        }
+      ],
+      "known_gaps": [
+        "手机独立立项尚未完全复用 PC 的运行记录、暂停/恢复和操作幂等状态机。"
+      ]
+    },
+    {
+      "id": "sync.conflicts",
+      "area": "sync",
+      "summary": "同步冲突查看与用户选择解决",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_sync_protocol",
+        "entrypoint": "POST /api/v1/sync/conflicts/{conflict_id}/resolve",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/gateway.py",
+            "contains": "conflicts"
+          },
+          {
+            "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPaths.kt",
+            "contains": "fun conflictResolution("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun resolveConflict("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "冲突选择必须读取服务端当前分支。"
+        },
+        "android_standalone": {
+          "support": "not_applicable",
+          "reason": "未连接 Gateway 时没有远端冲突可解决。"
+        }
+      },
+      "side_effects": [
+        "conflict_resolution",
+        "sync_cursor"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "server_transaction"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_gateway_sync.py",
+          "contains": "test_same_entity_divergence_preserves_both_versions"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/UserFacingErrorTest.kt",
+          "contains": "class UserFacingErrorTest"
+        }
+      ]
+    },
+    {
+      "id": "sync.replication",
+      "area": "sync",
+      "summary": "修订、outbox、bootstrap、push/pull 和 tombstone 同步",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_sync_protocol",
+        "entrypoint": "/api/v1/sync/{bootstrap,push,pull}",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/gateway.py",
+            "contains": "@router.post(\"/sync/push\""
+          },
+          {
+            "path": "backend/app/services/gateway_legacy_replication.py",
+            "contains": "def project_snapshots("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "suspend fun syncNow()"
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "local_cache",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "private suspend fun pushPending("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "private suspend fun deleteOfflineEntity("
+            }
+          ],
+          "notes": "本地修订和 tombstone 保存在 Room/outbox。"
+        },
+        "android_standalone": {
+          "support": "local_cache",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private val saveEntity"
+            }
+          ],
+          "notes": "Agent 写入同一副本/outbox。"
+        }
+      },
+      "side_effects": [
+        "revision_order",
+        "tombstone",
+        "conflict_detection",
+        "sync_cursor"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_gateway_sync.py",
+          "contains": "test_sync_is_ordered_idempotent_and_merges_different_entities"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
+          "contains": "class CanonicalReplicaContractTest"
+        }
+      ]
+    },
+    {
+      "id": "worldbuilding.history",
+      "area": "worldbuilding",
+      "summary": "世界观版本与时间线查看",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "GET /worldbuilding/{entry_id}/{versions|timeline}",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/worldbuilding.py",
+            "contains": "versions"
+          },
+          {
+            "path": "backend/app/routers/worldbuilding.py",
+            "contains": "timeline"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "read_only_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun listWorldVersions("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun listWorldTimeline("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "历史入口要求完整 PC 版本链。"
+        },
+        "android_standalone": {
+          "support": "unsupported",
+          "reason": "手机独立 Agent 不维护世界观版本和时间线账本。"
+        }
+      },
+      "side_effects": [],
+      "idempotency": {
+        "required": false,
+        "strategy": "read_only"
+      },
+      "tests": [
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcWorldAdvancedPathsTest.kt",
+          "contains": "worldbuilding history uses canonical PC routes"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
+          "contains": "worldHistoryDoesNotBecomeUnnamedWorldCards"
+        }
+      ],
+      "known_gaps": [
+        "Android 当前只读查看，尚未提供世界观历史恢复。"
+      ]
+    },
+    {
+      "id": "worldbuilding.relationships",
+      "area": "worldbuilding",
+      "summary": "世界观条目之间的结构化关系边",
+      "status": "partial",
+      "authority": {
+        "type": "pc_sync_protocol",
+        "entrypoint": "WorldbuildingRelation sync record",
+        "source_refs": [
+          {
+            "path": "backend/app/services/gateway_legacy_replication.py",
+            "contains": "WorldbuildingRelation: frozenset("
+          },
+          {
+            "path": "backend/app/modules/story/infrastructure/entities.py",
+            "contains": "class WorldbuildingRelation"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
+              "contains": "\"world_relation\" -> values.normalizeJsonObject"
+            }
+          ],
+          "notes": "当前没有专用 PC HTTP 编辑路由，在线写入仍走同步契约。"
+        },
+        "android_offline": {
+          "support": "sync_replay",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcAuthoringContract.kt",
+              "contains": "\"world_relation\" to listOf("
+            }
+          ]
+        },
+        "android_standalone": {
+          "support": "unsupported",
+          "reason": "世界观写作上下文尚未消费 WorldbuildingRelation。"
+        }
+      },
+      "side_effects": [
+        "content_sync"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "revisioned_outbox"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_gateway_auxiliary_authoring_contract.py",
+          "contains": "test_auxiliary_relationship_and_ai_config_contracts_round_trip"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAuxiliaryPayloadsTest.kt",
+          "contains": "world relation metadata stays a JSON object"
+        }
+      ],
+      "known_gaps": [
+        "PC 尚无世界观关系专用 HTTP 领域命令；手机独立写作也尚未消费关系边。"
+      ]
+    },
+    {
+      "id": "writer.chapter",
+      "area": "context",
+      "summary": "根据大纲和受治理上下文生成章节草稿",
+      "status": "partial",
+      "authority": {
+        "type": "pc_workspace_tool",
+        "entrypoint": "chapter_writer",
+        "source_refs": [
+          {
+            "path": "backend/app/services/workspace/tools/chapter_writer.py",
+            "contains": "async def chapter_writer("
+          },
+          {
+            "path": "backend/app/services/context_orchestrator.py",
+            "contains": "TASK_CONTEXT_CONTRACTS"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun streamAssistant("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "无模型执行路由时只编辑资料，不生成正文。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun chapterWriter("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextParity.kt",
+              "contains": "internal fun pcCharacterDetails("
+            }
+          ],
+          "limitations": "共享章节提示词并消费角色关系/治理锁，但未使用 ContextManifest、RAG、source hash、预算和 stale 校验。"
+        }
+      },
+      "side_effects": [
+        "draft_store"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "draft_reference"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_context_orchestrator.py",
+          "contains": "test_writing_manifest_consumes_full_character_card_and_relationships"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextParityTest.kt",
+          "contains": "relationship preview uses PC names and selected endpoint semantics"
+        }
+      ],
+      "known_gaps": [
+        "手机独立写章是当前最大语义差距，下一阶段必须共享 ContextManifest 选择和审计契约。"
+      ]
+    },
+    {
+      "id": "writer.character",
+      "area": "context",
+      "summary": "根据作品与世界观生成结构化角色卡",
+      "status": "partial",
+      "authority": {
+        "type": "pc_workspace_tool",
+        "entrypoint": "character_writer",
+        "source_refs": [
+          {
+            "path": "backend/app/services/workspace/tools/character_writer.py",
+            "contains": "async def character_writer("
+          },
+          {
+            "path": "backend/app/prompts/character_writer_prompts.py",
+            "contains": "build_character_writer_messages"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun streamAssistant("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "没有手机直连模型时不运行生成器。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun characterWriter("
+            },
+            {
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "CHARACTER_CARD_TOOL"
+            }
+          ],
+          "limitations": "提示词和输出工具由 PC 构建时导出，但上下文检索和后续领域副作用在手机端执行。"
+        }
+      },
+      "side_effects": [
+        "draft_store"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "draft_reference"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_mobile_prompt_contract.py",
+          "contains": "test_android_prompt_contract_contains_full_nested_writer_pipeline"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/creation/PcCreationAgentContractTest.kt",
+          "contains": "class PcCreationAgentContractTest"
+        }
+      ],
+      "known_gaps": [
+        "手机独立生成器尚未绑定 PC ContextManifest 和运行审计。"
+      ]
+    },
+    {
+      "id": "writer.outline",
+      "area": "context",
+      "summary": "生成结构化大纲节点",
+      "status": "partial",
+      "authority": {
+        "type": "pc_workspace_tool",
+        "entrypoint": "outline_writer",
+        "source_refs": [
+          {
+            "path": "backend/app/services/workspace/tools/outline_writer.py",
+            "contains": "async def outline_writer("
+          },
+          {
+            "path": "backend/app/prompts/outline_writer_prompts.py",
+            "contains": "build_outline_writer_messages"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun streamAssistant("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "没有手机直连模型时不运行生成器。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun outlineWriter("
+            },
+            {
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "OUTLINE_NODES_TOOL"
+            }
+          ],
+          "limitations": "提示词和输出工具共享，批次限制与本地上下文选择仍由 Kotlin 实现。"
+        }
+      },
+      "side_effects": [
+        "draft_store"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "draft_reference"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_mobile_prompt_contract.py",
+          "contains": "test_android_prompt_contract_contains_full_nested_writer_pipeline"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
+          "contains": "class CanonicalReplicaContractTest"
+        }
+      ],
+      "known_gaps": [
+        "手机独立生成器尚未绑定 PC ContextManifest 和运行审计。"
+      ]
+    },
+    {
+      "id": "writer.worldbuilding",
+      "area": "context",
+      "summary": "生成结构化世界观条目",
+      "status": "partial",
+      "authority": {
+        "type": "pc_workspace_tool",
+        "entrypoint": "worldbuilding_writer",
+        "source_refs": [
+          {
+            "path": "backend/app/services/workspace/tools/worldbuilding_writer.py",
+            "contains": "async def worldbuilding_writer("
+          },
+          {
+            "path": "backend/app/prompts/worldbuilding_writer_prompts.py",
+            "contains": "build_worldbuilding_writer_messages"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun streamAssistant("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "没有手机直连模型时不运行生成器。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun worldbuildingWriter("
+            },
+            {
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "WORLDBUILDING_ENTRY_TOOL"
+            }
+          ],
+          "limitations": "提示词和输出工具共享，但未消费世界观关系边，也没有 PC 上下文清单审计。"
+        }
+      },
+      "side_effects": [
+        "draft_store"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "draft_reference"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_mobile_prompt_contract.py",
+          "contains": "test_android_prompt_contract_contains_full_nested_writer_pipeline"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAuxiliaryPayloadsTest.kt",
+          "contains": "world relation metadata stays a JSON object"
+        }
+      ],
+      "known_gaps": [
+        "手机独立世界观生成尚未消费 WorldbuildingRelation 或 ContextManifest。"
+      ]
+    }
+  ]
+}
