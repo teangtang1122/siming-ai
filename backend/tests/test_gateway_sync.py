@@ -297,17 +297,24 @@ def test_same_entity_divergence_preserves_both_versions(tmp_path):
             ).results[0]
             assert result.status == "conflict"
             assert result.revision == server_revision
-            assert result.server_snapshot["payload"] == {"content": "桌面版本"}
+            server_payload = result.server_snapshot["payload"]
+            assert server_payload["_record_type"] == "chapter"
+            assert server_payload["id"] == "chapter-1"
+            assert server_payload["content"] == "桌面版本"
+            assert server_payload["current_version"] == 1
+            assert server_payload["word_count"] > 0
 
             conflict = db.query(SyncConflict).one()
+            # Client branch keeps the exact stale request for conflict review;
+            # server branch is the authoritative PC-shaped domain snapshot.
             assert conflict.client_payload_json == {"content": "手机离线版本"}
-            assert conflict.server_payload_json == {"content": "桌面版本"}
+            assert conflict.server_payload_json == server_payload
             state = (
                 db.query(SyncEntityState)
                 .filter(SyncEntityState.entity_type == "chapter")
                 .one()
             )
-            assert state.payload_json == {"content": "桌面版本"}
+            assert state.payload_json == server_payload
 
             view = service.resolve_conflict(
                 conflict.id,
@@ -327,6 +334,9 @@ def test_same_entity_divergence_preserves_both_versions(tmp_path):
                 .one()
             )
             assert resolved_state.revision > server_revision
+            assert resolved_state.payload_json["_record_type"] == "chapter"
+            assert resolved_state.payload_json["content"] == "手机离线版本"
+            assert resolved_state.payload_json["current_version"] == 2
             assert service.list_conflicts(status="open") == []
             assert service.list_conflicts(status="resolved")[0].id == conflict.id
     finally:
