@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.exceptions import ValidationError
 from app.database import models as _models  # noqa: F401
 from app.database.session import Base
 from app.modules.story.infrastructure.entities import (
@@ -63,7 +65,9 @@ def test_auxiliary_relationship_and_ai_config_contracts_round_trip(tmp_path):
             db.commit()
 
             snapshots = [payload for _spec, _row, payload in project_snapshots(db, project.id)]
-            ai_snapshot = next(row for row in snapshots if row.get("_record_type") == "character_ai_config")
+            ai_snapshot = next(
+                row for row in snapshots if row.get("_record_type") == "character_ai_config"
+            )
             assert ai_snapshot["character_id"] == a.id
             assert ai_snapshot["catchphrases"] == ["先验证", "数据说话"]
 
@@ -157,7 +161,7 @@ def test_character_relation_rejects_self_link(tmp_path):
             db.add(character)
             db.commit()
 
-            try:
+            with pytest.raises(ValidationError, match="自身"):
                 apply_domain_mutation(
                     db,
                     project_id=project.id,
@@ -173,9 +177,5 @@ def test_character_relation_rejects_self_link(tmp_path):
                         "relationship_type": "self",
                     },
                 )
-            except ValueError as exc:
-                assert "自身" in str(exc)
-            else:
-                raise AssertionError("self relationship should be rejected")
     finally:
         engine.dispose()
