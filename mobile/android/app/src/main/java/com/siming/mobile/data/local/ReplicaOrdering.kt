@@ -10,24 +10,28 @@ import kotlinx.serialization.json.jsonPrimitive
  * Return chapter replicas in their semantic reading order.
  *
  * Room's local write time is a transport detail: a bootstrap can insert every
- * chapter in one transaction, so it cannot reconstruct the source order. For
- * numbered titles, the validated chapter number is the cross-device reading
- * order signal. Unnumbered titles fall back to immutable PC creation time, then
- * local timestamps and entity IDs for deterministic legacy ordering.
+ * chapter in one transaction, so it cannot reconstruct the source order. We
+ * first establish a deterministic PC-time fallback order, then reorder only the
+ * slots occupied by validated numbered titles. This fixes numbered chapters
+ * without pushing unnumbered entries such as prologues or interludes to the end.
  */
 fun orderReplicaEntities(entityType: String, records: List<ReplicaEntity>): List<ReplicaEntity> {
     if (entityType != "chapter" || records.size < 2) return records
-    return records
+
+    val fallbackOrdered = records
         .map { record -> ChapterOrder(record, payload(record)) }
-        .sortedWith(
-            compareBy<ChapterOrder> { it.titleNumber == null }
-                .thenBy { it.titleNumber ?: Int.MAX_VALUE }
-                .thenBy { it.createdAt == null }
-                .thenBy { it.createdAt.orEmpty() }
-                .thenBy { it.record.localModifiedAt }
-                .thenBy { it.record.entityId },
-        )
-        .map(ChapterOrder::record)
+        .sortedWith(chapterFallbackOrder)
+    if (fallbackOrdered.count { it.titleNumber != null } < 2) {
+        return fallbackOrdered.map(ChapterOrder::record)
+    }
+
+    val numbered = fallbackOrdered
+        .filter { it.titleNumber != null }
+        .sortedWith(numberedChapterOrder)
+        .iterator()
+    return fallbackOrdered.map { item ->
+        if (item.titleNumber == null) item.record else numbered.next().record
+    }
 }
 
 private data class ChapterOrder(
@@ -37,6 +41,19 @@ private data class ChapterOrder(
     val createdAt = payload?.string("created_at")?.takeIf(String::isNotBlank)
     val titleNumber = payload?.string("title")?.let(::chapterNumber)
 }
+
+private val chapterFallbackOrder =
+    compareBy<ChapterOrder> { it.createdAt == null }
+        .thenBy { it.createdAt.orEmpty() }
+        .thenBy { it.record.localModifiedAt }
+        .thenBy { it.record.entityId }
+
+private val numberedChapterOrder =
+    compareBy<ChapterOrder> { it.titleNumber ?: Int.MAX_VALUE }
+        .thenBy { it.createdAt == null }
+        .thenBy { it.createdAt.orEmpty() }
+        .thenBy { it.record.localModifiedAt }
+        .thenBy { it.record.entityId }
 
 private const val MAX_CHAPTER_NUMBER = 99_999
 private const val CHINESE_NUMBER_CHARS = "零〇○一二两三四五六七八九十百千万"
