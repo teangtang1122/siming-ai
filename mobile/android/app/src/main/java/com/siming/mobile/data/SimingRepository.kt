@@ -532,6 +532,106 @@ class SimingRepository(context: Context) {
         }
     }
 
+    private suspend fun canonicalCommandConnection(): GatewayConnection {
+        val connection = requireConnection()
+        check(prepareCanonicalWrite()) {
+            "当前无法连接 PC Gateway，高级结构命令不会在手机端猜测执行"
+        }
+        return connection
+    }
+
+    suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject {
+        val connection = canonicalCommandConnection()
+        val result = api.reorderChapters(connection, projectId, chapterIds)
+        pullAll(connection, listOf(projectId))
+        return result
+    }
+
+    suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
+        api.listChapterSnapshots(requireConnection(), projectId, chapterId)
+
+    suspend fun getChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = api.getChapterSnapshot(
+        requireConnection(),
+        projectId,
+        chapterId,
+        snapshotId,
+    )
+
+    suspend fun diffChapterSnapshots(
+        projectId: String,
+        chapterId: String,
+        fromSnapshotId: String,
+        toSnapshotId: String,
+    ): JsonObject = api.diffChapterSnapshots(
+        requireConnection(),
+        projectId,
+        chapterId,
+        fromSnapshotId,
+        toSnapshotId,
+    )
+
+    suspend fun restoreChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject {
+        val connection = canonicalCommandConnection()
+        val result = api.restoreChapterSnapshot(connection, projectId, chapterId, snapshotId)
+        pullAll(connection, listOf(projectId))
+        return result
+    }
+
+    suspend fun characterRelationshipNetwork(projectId: String): JsonObject =
+        api.getCharacterRelationshipNetwork(requireConnection(), projectId)
+
+    suspend fun replaceCharacterRelationships(
+        projectId: String,
+        characterId: String,
+        relationships: JsonArray,
+    ): JsonObject {
+        val connection = canonicalCommandConnection()
+        val result = api.replaceCharacterRelationships(
+            connection,
+            projectId,
+            characterId,
+            buildJsonObject { put("relationships", relationships) },
+        )
+        pullAll(connection, listOf(projectId))
+        return result
+    }
+
+    suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject =
+        api.getCharacterAiConfig(requireConnection(), projectId, characterId)
+
+    suspend fun updateCharacterAiConfig(
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject {
+        val connection = canonicalCommandConnection()
+        val result = api.updateCharacterAiConfig(connection, projectId, characterId, payload)
+        pullAll(connection, listOf(projectId))
+        return result
+    }
+
+    suspend fun characterVersions(projectId: String, characterId: String): JsonObject =
+        api.listCharacterVersions(requireConnection(), projectId, characterId)
+
+    suspend fun characterVersion(
+        projectId: String,
+        characterId: String,
+        versionId: String,
+    ): JsonObject = api.getCharacterVersion(
+        requireConnection(),
+        projectId,
+        characterId,
+        versionId,
+    )
+
     suspend fun syncNow(): SyncOutcome = syncMutex.withLock {
         val connection = requireConnection()
         val localProjectIds = dao.localProjectIds()
