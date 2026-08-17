@@ -21,6 +21,22 @@ jobs:
         with:
           python-version: '3.11'
       - run: python .github/scripts/patch_auxiliary_gateway_contracts.py
+      - name: Normalize long validation conditions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("backend/app/services/gateway_legacy_replication.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              '        if not source or not target or source.project_id != project_id or target.project_id != project_id:\n            raise ValidationError("角色关系两端必须属于当前作品")',
+              '        if (\n            not source\n            or not target\n            or source.project_id != project_id\n            or target.project_id != project_id\n        ):\n            raise ValidationError("角色关系两端必须属于当前作品")',
+          )
+          text = text.replace(
+              '        if not source or not target or source.project_id != project_id or target.project_id != project_id:\n            raise ValidationError("世界观关系两端必须属于当前作品")',
+              '        if (\n            not source\n            or not target\n            or source.project_id != project_id\n            or target.project_id != project_id\n        ):\n            raise ValidationError("世界观关系两端必须属于当前作品")',
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
       - run: |
           python -m pip install 'ruff<1,>=0.11'
           cd backend
