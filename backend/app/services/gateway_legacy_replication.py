@@ -12,8 +12,17 @@ from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ValidationError
+from app.core.utils import count_words
 from app.services.chapter_ordering import next_chapter_sort_order
+from app.services.chapter_service import chapter_to_detail
 from app.services.character_service import character_to_dict, dumps_list, sync_character_aliases
+from app.services.outline_service import (
+    ensure_no_cycle,
+    load_outline_nodes,
+    node_to_dict,
+    outline_sort_context,
+    replace_character_links,
+)
 from app.modules.continuity.infrastructure.models import (
     CausalEdge,
     ChapterGovernanceReview,
@@ -185,6 +194,90 @@ CHARACTER_MUTATION_COLUMNS = frozenset(
     }
 )
 
+MUTATION_COLUMNS_BY_MODEL: dict[type, frozenset[str]] = {
+    Project: frozenset(
+        {
+            "id",
+            "title",
+            "description",
+            "tags",
+            "narrative_perspective",
+            "writing_style",
+            "forbidden_sentence_patterns",
+            "rhetoric_guidelines",
+            "short_sentences",
+            "custom_style_prompt",
+            "daily_word_goal",
+        }
+    ),
+    Chapter: frozenset(
+        {"id", "project_id", "title", "outline_node_id", "content", "context_manifest_id"}
+    ),
+    OutlineNode: frozenset(
+        {
+            "id",
+            "project_id",
+            "parent_id",
+            "node_type",
+            "title",
+            "summary",
+            "status",
+            "sort_order",
+            "metadata_json",
+        }
+    ),
+    Character: CHARACTER_MUTATION_COLUMNS,
+    WorldbuildingEntry: frozenset(
+        {"id", "project_id", "dimension", "title", "content", "sort_order"}
+    ),
+    Foreshadowing: frozenset(
+        {
+            "id",
+            "project_id",
+            "title",
+            "description",
+            "status",
+            "importance",
+            "source_chapter_id",
+            "target_chapter_id",
+            "target_chapter_number",
+            "resolved_chapter_id",
+            "evidence",
+            "resolution_note",
+            "resolution_evidence",
+            "verification_note",
+            "closed_by",
+            "storyline",
+            "dedupe_key",
+            "source",
+        }
+    ),
+    NarrativeDebt: frozenset(
+        {
+            "id",
+            "project_id",
+            "debt_type",
+            "title",
+            "description",
+            "status",
+            "priority",
+            "source_chapter_id",
+            "target_chapter_id",
+            "target_chapter_number",
+            "resolved_chapter_id",
+            "linked_foreshadowing_id",
+            "linked_causal_edge_id",
+            "evidence",
+            "resolution_note",
+            "resolution_evidence",
+            "verification_note",
+            "closed_by",
+            "dedupe_key",
+            "source",
+        }
+    ),
+}
+
 
 def _json_value(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -204,6 +297,8 @@ def serialize_record(row: Any, spec: RecordSpec | None = None) -> dict[str, Any]
         # sync snapshots, otherwise bootstrap can replace a canonical PC API
         # response with an incompatible payload.
         return {"_record_type": spec.record_type, **character_to_dict(row)}
+    if spec.model is OutlineNode:
+        return {"_record_type": spec.record_type, **node_to_dict(row)}
     payload: dict[str, Any] = {"_record_type": spec.record_type}
     for column in sa_inspect(spec.model).columns:
         if column.key in LOCAL_ONLY_COLUMNS:
@@ -262,11 +357,38 @@ def _rows_for_spec(db: Session, project_id: str, spec: RecordSpec) -> list[Any]:
     return []
 
 
+def _serialize_domain_row(db: Session, row: Any, spec: RecordSpec) -> dict[str, Any]:
+    if spec.model is Chapter:
+        context = outline_sort_context(load_outline_nodes(db, str(row.project_id)))
+        return {"_record_type": spec.record_type, **chapter_to_detail(row, context)}
+    return serialize_record(row, spec)
+
+
+def domain_snapshot_for_entity(
+    db: Session,
+    *,
+    project_id: str,
+    entity_type: str,
+    entity_id: str,
+) -> dict[str, Any] | None:
+    """Return the authoritative PC-shaped snapshot after a sync mutation."""
+    for spec in RECORD_SPECS:
+        if spec.entity_type != entity_type:
+            continue
+        row = db.get(spec.model, entity_id)
+        if row is None:
+            continue
+        if project_id_for_record(db, row, spec) != project_id:
+            continue
+        return _serialize_domain_row(db, row, spec)
+    return None
+
+
 def project_snapshots(db: Session, project_id: str) -> list[tuple[RecordSpec, Any, dict[str, Any]]]:
     snapshots: list[tuple[RecordSpec, Any, dict[str, Any]]] = []
     for spec in RECORD_SPECS:
         for row in _rows_for_spec(db, project_id, spec):
-            snapshots.append((spec, row, serialize_record(row, spec)))
+            snapshots.append((spec, row, _serialize_domain_row(db, row, spec)))
     snapshots.sort(key=lambda item: (item[0].entity_type, str(item[1].id)))
     return snapshots
 
@@ -344,6 +466,55 @@ def _string_list(value: Any, *, field: str) -> list[str] | None:
     raise ValidationError(f"角色 {field} 必须是字符串数组")
 
 
+def _canonical_project_values(values: dict[str, Any]) -> dict[str, Any]:
+    tags = values.get("tags")
+    if isinstance(tags, list):
+        values["tags"] = json.dumps([str(item) for item in tags], ensure_ascii=False)
+    elif tags is not None and not isinstance(tags, str):
+        raise ValidationError("作品 tags 必须是字符串数组")
+    return values
+
+
+def _canonical_outline_values(
+    values: dict[str, Any],
+) -> tuple[dict[str, Any], list[tuple[str, str | None]] | None]:
+    if "metadata" in values:
+        metadata = values.pop("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValidationError("大纲 metadata 必须是对象")
+        values["metadata_json"] = metadata
+
+    characters = values.pop("characters", None)
+    character_ids = values.pop("character_ids", None)
+    links: list[tuple[str, str | None]] | None = None
+    if characters is not None:
+        if not isinstance(characters, list):
+            raise ValidationError("大纲 characters 必须是数组")
+        links = []
+        seen: set[str] = set()
+        for item in characters:
+            if not isinstance(item, dict):
+                raise ValidationError("大纲 characters 元素必须是对象")
+            character_id = str(item.get("character_id") or "").strip()
+            if not character_id or character_id in seen:
+                continue
+            seen.add(character_id)
+            role = str(item.get("role_in_scene") or "").strip() or None
+            links.append((character_id, role))
+    elif character_ids is not None:
+        if not isinstance(character_ids, list):
+            raise ValidationError("大纲 character_ids 必须是数组")
+        links = []
+        seen: set[str] = set()
+        for raw in character_ids:
+            character_id = str(raw or "").strip()
+            if not character_id or character_id in seen:
+                continue
+            seen.add(character_id)
+            links.append((character_id, None))
+    return values, links
+
+
 def _canonical_character_values(values: dict[str, Any]) -> tuple[dict[str, Any], list[str] | None]:
     """Translate the public PC Character contract back to persistence fields."""
     aliases = _string_list(values.pop("aliases", None), field="aliases")
@@ -393,6 +564,8 @@ def apply_domain_mutation(
         if operation == "delete"
         else _spec_for_payload(entity_type, payload)
     )
+    if spec.model not in MUTATION_COLUMNS_BY_MODEL:
+        raise ValidationError("该同步记录由 PC 管理，移动端只读")
     row = db.get(spec.model, entity_id)
     if operation == "delete":
         if spec.model is Project:
@@ -409,8 +582,13 @@ def apply_domain_mutation(
     values = dict(payload or {})
     values.pop("_record_type", None)
     character_aliases: list[str] | None = None
+    outline_links: list[tuple[str, str | None]] | None = None
+    if spec.model is Project:
+        values = _canonical_project_values(values)
     if spec.model is Character:
         values, character_aliases = _canonical_character_values(values)
+    if spec.model is OutlineNode:
+        values, outline_links = _canonical_outline_values(values)
     payload_id = values.get("id")
     if payload_id is not None and str(payload_id) != entity_id:
         raise ValidationError("同步记录 ID 与实体 ID 不一致")
@@ -424,13 +602,15 @@ def apply_domain_mutation(
             raise ValidationError("不能把记录移动到其他作品")
         values["project_id"] = project_id
 
+    if spec.model is OutlineNode and "parent_id" in values:
+        ensure_no_cycle(db, project_id, entity_id, values.get("parent_id"))
+
     columns = {column.key: column for column in sa_inspect(spec.model).columns}
+    mutation_columns = MUTATION_COLUMNS_BY_MODEL[spec.model]
     allowed = {
         key: _coerce_column_value(columns[key], value)
         for key, value in values.items()
-        if key in columns
-        and key not in LOCAL_ONLY_COLUMNS
-        and (spec.model is not Character or key in CHARACTER_MUTATION_COLUMNS)
+        if key in columns and key in mutation_columns
     }
     for key, value in (spec.defaults or {}).items():
         allowed.setdefault(key, value)
@@ -449,6 +629,12 @@ def apply_domain_mutation(
             if key != "id":
                 setattr(row, key, value)
     db.flush()
+    if spec.model is Chapter and "content" in allowed:
+        row.word_count = count_words(row.content or "")
+        db.flush()
+    if spec.model is OutlineNode and outline_links is not None:
+        replace_character_links(db, project_id, row, outline_links)
+        db.flush()
     if spec.model is Character and character_aliases is not None:
         sync_character_aliases(db, row, character_aliases)
         db.flush()
@@ -463,6 +649,7 @@ __all__ = [
     "RECORD_SPECS",
     "RecordSpec",
     "apply_domain_mutation",
+    "domain_snapshot_for_entity",
     "project_id_for_record",
     "project_snapshots",
     "serialize_record",
