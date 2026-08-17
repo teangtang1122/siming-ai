@@ -1,13 +1,11 @@
 package com.siming.mobile.ui
 
 import com.siming.mobile.data.local.ReplicaEntity
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Convert canonical PC JSON values into an editor-friendly string without
@@ -33,4 +31,21 @@ internal fun canonicalCharacterSummary(record: ReplicaEntity): String = listOf(
     record.text("current_goal").takeIf(String::isNotBlank),
 ).filterNotNull().joinToString(" · ")
 
-internal val replicaPresentationJson = Json { ignoreUnknownKeys = true }
+internal fun canonicalCharacterFormValues(values: Map<String, String>): MutableMap<String, Any?> =
+    values.mapValuesTo(linkedMapOf()) { it.value }.apply {
+        this["abilities"] = stringArray(values["abilities"].orEmpty())
+        this["aliases"] = stringArray(values["aliases"].orEmpty())
+        this["is_evolution_tracked"] = values["is_evolution_tracked"]
+            .orEmpty()
+            .trim()
+            .lowercase()
+            .let { it !in setOf("0", "false", "no", "off", "否") }
+    }
+
+private fun stringArray(raw: String): JsonArray = JsonArray(
+    raw.split('\n', ',', '，', '、')
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .distinct()
+        .map(::JsonPrimitive),
+)
