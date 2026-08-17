@@ -2,8 +2,8 @@ package com.siming.mobile.data.local
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Maps the coarse sync entity type to the canonical PC record shown in the
@@ -42,23 +42,24 @@ internal fun primaryAuthoringRecords(
     return records.filter { record ->
         if (record.operation != "upsert") return@filter false
         val payload = record.payloadObject() ?: return@filter false
-        val recordType = payload["_record_type"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+        val recordType = (payload["_record_type"] as? JsonPrimitive)
+            ?.contentOrNull
+            ?.takeIf(String::isNotBlank)
         // Replicas created by very old Android builds did not have
         // _record_type. Keep well-formed legacy primary rows, but never render
         // malformed leftovers as "unnamed" PC entities.
         val typeMatches = recordType == null || recordType in accepted
         val identityField = identityFields[entityType]
-        val hasIdentity = identityField == null ||
-            payload[identityField]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true
+        val identity = identityField?.let { payload[it] as? JsonPrimitive }?.contentOrNull
+        val hasIdentity = identityField == null || !identity.isNullOrBlank()
         typeMatches && hasIdentity
     }
 }
 
-internal fun ReplicaEntity.recordType(): String? = payloadObject()
-    ?.get("_record_type")
-    ?.jsonPrimitive
-    ?.contentOrNull
-    ?.takeIf(String::isNotBlank)
+internal fun ReplicaEntity.recordType(): String? =
+    (payloadObject()?.get("_record_type") as? JsonPrimitive)
+        ?.contentOrNull
+        ?.takeIf(String::isNotBlank)
 
 private fun ReplicaEntity.payloadObject(): JsonObject? {
     val raw = payloadJson ?: return null
