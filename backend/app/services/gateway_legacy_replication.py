@@ -160,6 +160,30 @@ DEFAULT_RECORD_TYPES = {
     "foreshadowing": "foreshadowing",
     "governance": "narrative_checkpoint",
 }
+CHARACTER_MUTATION_COLUMNS = frozenset(
+    {
+        "id",
+        "project_id",
+        "name",
+        "appearance",
+        "role_type",
+        "personality",
+        "background",
+        "abilities",
+        "age",
+        "is_evolution_tracked",
+        "life_status",
+        "current_location",
+        "realm_or_level",
+        "physical_state",
+        "mental_state",
+        "current_goal",
+        "active_conflict",
+        "abilities_state",
+        "items_or_assets",
+        "profile_json",
+    }
+)
 
 
 def _json_value(value: Any) -> Any:
@@ -175,10 +199,10 @@ def serialize_record(row: Any, spec: RecordSpec | None = None) -> dict[str, Any]
     if spec is None:
         raise ValidationError(f"不支持同步记录：{type(row).__name__}")
     if spec.model is Character:
-        # Android and the web UI must consume one Character contract. Do not
+        # Android and the web UI consume the same Character contract. Do not
         # leak DB-only shapes such as abilities JSON text or profile_json into
-        # sync snapshots, otherwise a bootstrap can overwrite a canonical PC
-        # API response with an incompatible payload.
+        # sync snapshots, otherwise bootstrap can replace a canonical PC API
+        # response with an incompatible payload.
         return {"_record_type": spec.record_type, **character_to_dict(row)}
     payload: dict[str, Any] = {"_record_type": spec.record_type}
     for column in sa_inspect(spec.model).columns:
@@ -404,7 +428,9 @@ def apply_domain_mutation(
     allowed = {
         key: _coerce_column_value(columns[key], value)
         for key, value in values.items()
-        if key in columns and key not in LOCAL_ONLY_COLUMNS
+        if key in columns
+        and key not in LOCAL_ONLY_COLUMNS
+        and (spec.model is not Character or key in CHARACTER_MUTATION_COLUMNS)
     }
     for key, value in (spec.defaults or {}).items():
         allowed.setdefault(key, value)
