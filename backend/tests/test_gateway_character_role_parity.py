@@ -6,7 +6,10 @@ from sqlalchemy.orm import sessionmaker
 from app.database import models as _models  # noqa: F401
 from app.database.session import Base
 from app.modules.story.infrastructure.entities import Character, Project
-from app.services.gateway_legacy_replication import apply_domain_mutation
+from app.services.gateway_legacy_replication import (
+    apply_domain_mutation,
+    domain_snapshot_for_entity,
+)
 
 
 def _session(tmp_path):
@@ -52,5 +55,15 @@ def test_offline_character_role_uses_same_normalization_and_identity_preservatio
             assert character.role_type == "protagonist"
             assert "华清实验室天才少女转生。" in (character.background or "")
             assert "身份补充：穿越者、陆家三岁孙女" in (character.background or "")
+
+            snapshot = domain_snapshot_for_entity(
+                db,
+                project_id=project.id,
+                entity_type="character",
+                entity_id=character.id,
+            )
+            assert snapshot is not None
+            assert snapshot["role_type"] == "protagonist"
+            assert "身份补充：穿越者、陆家三岁孙女" in (snapshot["background"] or "")
     finally:
         engine.dispose()
