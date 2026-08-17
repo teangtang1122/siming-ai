@@ -1,27 +1,10 @@
 name: One-shot mobile agent canonical snapshot patch
 
 on:
-  push:
-    branches:
-      - fix/android-canonical-entity-contract
-    paths:
-      - .github/workflows/patch-mobile-agent-canonical-snapshot.yml
-
-permissions:
-  contents: write
+  workflow_dispatch:
 
 jobs:
-  patch:
+  disabled:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: fix/android-canonical-entity-contract
-      - run: python .github/scripts/patch_mobile_agent_canonical_snapshot.py
-      - run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt
-          git diff --cached --check
-          git commit -m "fix(android): keep standalone agent on canonical entity rows"
-          git push origin HEAD:fix/android-canonical-entity-contract
+      - run: echo "one-shot patch completed"
