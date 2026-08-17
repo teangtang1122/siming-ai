@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -714,7 +715,7 @@ private fun kotlinx.serialization.json.JsonObjectBuilder.putAny(key: String, val
         is Float -> put(key, value)
         is Double -> put(key, value)
         is Boolean -> put(key, value)
-        is JsonPrimitive -> put(key, value)
+        is JsonElement -> put(key, value)
         else -> put(key, value.toString())
     }
 }

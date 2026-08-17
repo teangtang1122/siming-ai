@@ -588,7 +588,7 @@ private fun RecordList(
                     } else {
                         "当前离线；正文先保存在手机，恢复连接后进入可靠同步队列。"
                     }
-                    "character" -> "角色动机、状态与冲突会随正文一起同步，帮助 AI 减少 OOC。"
+                    "character" -> "字段直接对应 PC 角色卡：别名、外貌、能力、位置、境界、身心状态、目标与冲突共享同一份数据。"
                     "world" -> "规则与设定作为独立实体维护，避免二创时漂移。"
                     else -> if (online) {
                         "在线修改调用 PC 端规范 API，同时维护手机离线副本。"
@@ -644,7 +644,7 @@ private fun RecordCard(entityType: String, record: ReplicaEntity, onClick: () ->
                 else if (record.dirty) Icon(Icons.Outlined.CloudQueue, "等待同步", tint = SimingBlue)
                 else Icon(Icons.Outlined.CheckCircle, "已同步", tint = SimingGreen)
             }
-            val summary = record.text(summaryKey)
+            val summary = if (entityType == "character") canonicalCharacterSummary(record) else record.text(summaryKey)
             if (summary.isNotBlank()) {
                 Text(
                     summary,
@@ -688,11 +688,23 @@ private fun fieldsFor(type: String): List<FormField> = when (type) {
     )
     "character" -> listOf(
         FormField("name", "角色名"),
-        FormField("role_type", "角色定位", "protagonist / supporting / antagonist"),
-        FormField("personality", "性格与口吻", "稳定行为方式、表达习惯与禁区", true),
+        FormField("aliases", "别名", "一行一个；与 PC 角色别名完全同步", true),
+        FormField("role_type", "角色定位", "protagonist / supporting / antagonist / mentor / other"),
+        FormField("age", "年龄"),
+        FormField("appearance", "外貌", multiline = true),
+        FormField("personality", "性格", "稳定行为方式、表达习惯与禁区", true),
         FormField("background", "背景", multiline = true),
+        FormField("abilities", "能力", "一行一个；保存为 PC 的 abilities 数组", true),
+        FormField("life_status", "生命状态", "active / deceased / unknown"),
+        FormField("current_location", "当前位置"),
+        FormField("realm_or_level", "境界 / 等级"),
+        FormField("physical_state", "身体状态", multiline = true),
+        FormField("mental_state", "心理状态", multiline = true),
         FormField("current_goal", "当前目标", multiline = true),
         FormField("active_conflict", "当前冲突", multiline = true),
+        FormField("abilities_state", "能力状态", multiline = true),
+        FormField("items_or_assets", "持有物 / 资产", multiline = true),
+        FormField("is_evolution_tracked", "持续追踪角色变化", "true / false"),
     )
     "world" -> listOf(
         FormField("title", "设定标题"),
@@ -727,7 +739,7 @@ private fun RecordEditorScreen(
     val fields = remember(target.entityType) { fieldsFor(target.entityType) }
     val values = remember(target.record?.key, target.entityType) {
         mutableStateMapOf<String, String>().apply {
-            fields.forEach { field -> put(field.key, target.record?.text(field.key).orEmpty()) }
+            fields.forEach { field -> put(field.key, target.record?.formText(field.key).orEmpty()) }
             when (target.entityType) {
                 "outline" -> {
                     putIfAbsent("sort_order", "0")
@@ -735,6 +747,11 @@ private fun RecordEditorScreen(
                 "world" -> {
                     putIfAbsent("dimension", "culture")
                     putIfAbsent("sort_order", "0")
+                }
+                "character" -> {
+                    putIfAbsent("role_type", "supporting")
+                    putIfAbsent("life_status", "active")
+                    putIfAbsent("is_evolution_tracked", "true")
                 }
                 "foreshadowing" -> {
                     putIfAbsent("status", "open")
@@ -772,9 +789,13 @@ private fun RecordEditorScreen(
             Surface(tonalElevation = 3.dp, color = SimingPaperWarm) {
                 Button(
                     onClick = {
-                        val mapped = values.mapValues { (key, value) ->
-                            if (fields.firstOrNull { it.key == key }?.numeric == true) value.toIntOrNull() ?: 0 else value
-                        }.toMutableMap<String, Any?>()
+                        val mapped = if (target.entityType == "character") {
+                            canonicalCharacterFormValues(values)
+                        } else {
+                            values.mapValues { (key, value) ->
+                                if (fields.firstOrNull { it.key == key }?.numeric == true) value.toIntOrNull() ?: 0 else value
+                            }.toMutableMap<String, Any?>()
+                        }
                         when (target.entityType) {
                             "chapter" -> {
                                 mapped["word_count"] = values["content"].orEmpty().count { !it.isWhitespace() }
@@ -784,7 +805,6 @@ private fun RecordEditorScreen(
                                 mapped["node_type"] = target.record?.text("node_type").orEmpty().ifBlank { "chapter" }
                                 mapped["status"] = target.record?.text("status").orEmpty().ifBlank { "pending" }
                             }
-                            "character" -> mapped["is_evolution_tracked"] = true
                             "world" -> mapped["status"] = target.record?.text("status").orEmpty().ifBlank { "active" }
                         }
                         viewModel.saveRecord(
@@ -819,7 +839,7 @@ private fun RecordEditorScreen(
                 StatusBanner(
                     Icons.Outlined.Person,
                     "先写清动机，再让 AI 接着写",
-                    "角色目标、冲突、性格与口吻会作为独立资料同步，降低跨章节 OOC。",
+                    "当前表单直接编辑 PC Character 字段；能力/别名保持数组结构，未展示的稳定写作 profile 会原样保留。",
                 )
             }
             fields.forEach { field ->
