@@ -24,6 +24,16 @@ private val primaryRecordTypes = mapOf(
     "governance" to setOf("narrative_debt"),
 )
 
+private val identityFields = mapOf(
+    "project" to "title",
+    "chapter" to "title",
+    "outline" to "title",
+    "character" to "name",
+    "world" to "title",
+    "foreshadowing" to "title",
+    "governance" to "title",
+)
+
 internal fun primaryAuthoringRecords(
     entityType: String,
     records: List<ReplicaEntity>,
@@ -31,15 +41,26 @@ internal fun primaryAuthoringRecords(
     val accepted = primaryRecordTypes[entityType] ?: return records.filter { it.operation == "upsert" }
     return records.filter { record ->
         if (record.operation != "upsert") return@filter false
-        val recordType = record.recordType()
+        val payload = record.payloadObject() ?: return@filter false
+        val recordType = payload["_record_type"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
         // Replicas created by very old Android builds did not have
-        // _record_type. Treat them as the primary row for compatibility.
-        recordType == null || recordType in accepted
+        // _record_type. Keep well-formed legacy primary rows, but never render
+        // malformed leftovers as "unnamed" PC entities.
+        val typeMatches = recordType == null || recordType in accepted
+        val identityField = identityFields[entityType]
+        val hasIdentity = identityField == null ||
+            payload[identityField]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true
+        typeMatches && hasIdentity
     }
 }
 
-internal fun ReplicaEntity.recordType(): String? {
+internal fun ReplicaEntity.recordType(): String? = payloadObject()
+    ?.["_record_type"]
+    ?.jsonPrimitive
+    ?.contentOrNull
+    ?.takeIf(String::isNotBlank)
+
+private fun ReplicaEntity.payloadObject(): JsonObject? {
     val raw = payloadJson ?: return null
-    val payload = runCatching { Json.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return null
-    return payload["_record_type"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+    return runCatching { Json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
 }
