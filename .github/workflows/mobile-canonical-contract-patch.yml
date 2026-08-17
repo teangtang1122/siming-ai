@@ -1,29 +1,10 @@
 name: One-shot mobile canonical contract patch
 
 on:
-  push:
-    branches:
-      - fix/android-canonical-entity-contract
-    paths:
-      - .github/workflows/mobile-canonical-contract-patch.yml
-
-permissions:
-  contents: write
+  workflow_dispatch:
 
 jobs:
-  patch:
+  disabled:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: fix/android-canonical-entity-contract
-      - name: Apply focused Android UI patch
-        run: python .github/scripts/mobile_canonical_contract_patch.py
-      - name: Commit generated patch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add mobile/android/app/src/main/java/com/siming/mobile/ui/MainViewModel.kt mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt
-          git diff --cached --check
-          git commit -m "feat(android): align character editor with PC contract"
-          git push origin HEAD:fix/android-canonical-entity-contract
+      - run: echo "one-shot patch completed"
