@@ -54,10 +54,14 @@ def test_android_prompt_contract_contains_full_nested_writer_pipeline():
 
 
 def test_android_prompt_contract_contains_pc_novel_creation_pipeline():
-    contract = json.loads(ASSET.read_text(encoding="utf-8"))["creation"]
+    payload = json.loads(ASSET.read_text(encoding="utf-8"))
+    contract = payload["creation"]
+    agent = payload["creation_agent"]
 
     assert contract["schema_version"] == 3
-    assert contract["interview_max_turns"] == 8
+    assert agent["max_iterations"] == 6
+    assert "不要强迫用户走固定阶段" in agent["system_template"]
+    assert "立即增量写入" in agent["system_template"]
     assert contract["stage_order"] == [
         "constraints",
         "concepts",
@@ -68,7 +72,6 @@ def test_android_prompt_contract_contains_pc_novel_creation_pipeline():
         "opening_outline",
         "final_review",
     ]
-    assert "自然对话式采访" in contract["interview_system_prompt"]
     assert "正式作品" in contract["stage_system_template"]
     assert "parent_client_id" in contract["stage_contracts"]["opening_outline"]
     assert contract["impact_dependencies"]["characters"] == [
