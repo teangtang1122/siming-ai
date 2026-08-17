@@ -64,6 +64,9 @@ internal object PcApiPaths {
     fun narrativeGovernanceItems(projectId: String): String =
         "${project(projectId)}/narrative-governance/items"
 
+    fun narrativeGovernanceStatus(projectId: String, itemType: String, itemId: String): String =
+        "${project(projectId)}/narrative-governance/items/${segment(itemType)}/${segment(itemId)}"
+
     fun conflictResolution(conflictId: String): String =
         "$SYNC_CONFLICTS/${segment(conflictId)}/resolve"
 
