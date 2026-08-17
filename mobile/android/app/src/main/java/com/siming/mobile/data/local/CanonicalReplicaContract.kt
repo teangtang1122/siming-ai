@@ -55,7 +55,7 @@ internal fun primaryAuthoringRecords(
 }
 
 internal fun ReplicaEntity.recordType(): String? = payloadObject()
-    ?.["_record_type"]
+    ?.get("_record_type")
     ?.jsonPrimitive
     ?.contentOrNull
     ?.takeIf(String::isNotBlank)
