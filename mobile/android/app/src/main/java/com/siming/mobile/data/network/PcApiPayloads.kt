@@ -1,10 +1,12 @@
 package com.siming.mobile.data.network
 
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -69,19 +71,8 @@ internal object PcApiPayloads {
         val values = linkedMapOf<String, JsonElement>()
         allowed.forEach { key -> source[key]?.let { values[key] = it } }
 
-        if (entityType == "project") {
-            val tags = values["tags"]
-            if (tags is JsonPrimitive) {
-                val raw = tags.content.trim()
-                values["tags"] = runCatching { Json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
-                    ?: JsonArray(
-                        raw.split(',', '，')
-                            .map(String::trim)
-                            .filter(String::isNotBlank)
-                            .map(::JsonPrimitive),
-                    )
-            }
-        }
+        if (entityType == "project") normalizeProject(values)
+        if (entityType == "character") normalizeCharacter(values)
         if (entityType == "world") {
             val dimension = (values["dimension"] as? JsonPrimitive)?.content.orEmpty()
             if (dimension !in WORLD_DIMENSIONS) values["dimension"] = JsonPrimitive("culture")
@@ -122,6 +113,59 @@ internal object PcApiPayloads {
         }
     }
 
+    private fun normalizeProject(values: MutableMap<String, JsonElement>) {
+        val tags = values["tags"]
+        if (tags is JsonPrimitive) {
+            val raw = tags.content.trim()
+            values["tags"] = runCatching { Json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
+                ?: stringArray(raw)
+        }
+    }
+
+    private fun normalizeCharacter(values: MutableMap<String, JsonElement>) {
+        values.normalizeStringArray("abilities")
+        values.normalizeStringArray("aliases")
+
+        val profile = values["profile"]
+        if (profile is JsonPrimitive) {
+            val raw = profile.content.trim()
+            values["profile"] = if (raw.isBlank()) {
+                JsonObject(emptyMap())
+            } else {
+                runCatching { Json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+                    ?: error("角色稳定写作档案必须是 JSON 对象")
+            }
+        }
+
+        val tracked = values["is_evolution_tracked"]
+        if (tracked is JsonPrimitive && tracked.booleanOrNull == null) {
+            values["is_evolution_tracked"] = JsonPrimitive(
+                tracked.content.trim().lowercase() !in setOf("0", "false", "no", "off", "否"),
+            )
+        }
+    }
+
+    private fun MutableMap<String, JsonElement>.normalizeStringArray(key: String) {
+        val value = get(key) ?: return
+        if (value is JsonNull || value is JsonArray) return
+        if (value is JsonPrimitive) {
+            val raw = value.content.trim()
+            put(
+                key,
+                runCatching { Json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
+                    ?: stringArray(raw),
+            )
+        }
+    }
+
+    private fun stringArray(raw: String): JsonArray = JsonArray(
+        raw.split('\n', ',', '，', '、')
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .map(::JsonPrimitive),
+    )
+
     private fun addCreateDefaults(entityType: String, values: MutableMap<String, JsonElement>) {
         when (entityType) {
             "project" -> {
@@ -143,6 +187,9 @@ internal object PcApiPayloads {
             }
             "character" -> {
                 values.ensureText("name", "未命名角色")
+                values.putIfAbsent("abilities", JsonArray(emptyList()))
+                values.putIfAbsent("aliases", JsonArray(emptyList()))
+                values.putIfAbsent("profile", JsonObject(emptyMap()))
                 values.putIfAbsent("is_evolution_tracked", JsonPrimitive(true))
             }
             "world" -> {
