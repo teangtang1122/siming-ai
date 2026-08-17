@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -348,6 +349,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         "同步完成"
     }
 
+    suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject =
+        repository.reorderChapters(projectId, chapterIds)
+
+    suspend fun chapterSnapshots(projectId: String, chapterId: String): JsonObject =
+        repository.listChapterSnapshots(projectId, chapterId)
+
+    suspend fun chapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = repository.getChapterSnapshot(projectId, chapterId, snapshotId)
+
+    suspend fun chapterSnapshotDiff(
+        projectId: String,
+        chapterId: String,
+        fromSnapshotId: String,
+        toSnapshotId: String,
+    ): JsonObject = repository.diffChapterSnapshots(
+        projectId,
+        chapterId,
+        fromSnapshotId,
+        toSnapshotId,
+    )
+
+    suspend fun restoreChapterSnapshot(
+        projectId: String,
+        chapterId: String,
+        snapshotId: String,
+    ): JsonObject = repository.restoreChapterSnapshot(projectId, chapterId, snapshotId)
+
+    suspend fun characterRelationshipNetwork(projectId: String): JsonObject =
+        repository.characterRelationshipNetwork(projectId)
+
+    suspend fun replaceCharacterRelationships(
+        projectId: String,
+        characterId: String,
+        relationships: JsonArray,
+    ): JsonObject = repository.replaceCharacterRelationships(
+        projectId,
+        characterId,
+        relationships,
+    )
+
+    suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject =
+        repository.characterAiConfig(projectId, characterId)
+
+    suspend fun updateCharacterAiConfig(
+        projectId: String,
+        characterId: String,
+        payload: JsonObject,
+    ): JsonObject = repository.updateCharacterAiConfig(projectId, characterId, payload)
+
+    suspend fun characterVersions(projectId: String, characterId: String): JsonObject =
+        repository.characterVersions(projectId, characterId)
+
+    suspend fun characterVersion(
+        projectId: String,
+        characterId: String,
+        versionId: String,
+    ): JsonObject = repository.characterVersion(projectId, characterId, versionId)
+
     fun createProject(title: String, description: String, onCreated: (String) -> Unit) {
         viewModelScope.launch {
             try {
@@ -582,6 +644,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reportError(message: String) {
         uiState.value = uiState.value.copy(error = message)
+    }
+
+    fun reportNotice(message: String) {
+        uiState.value = uiState.value.copy(notice = message)
     }
 
     private fun launchActivity(label: String, action: suspend () -> String) {
