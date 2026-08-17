@@ -6,6 +6,7 @@ on:
       - feature/independent-chapter-order
     paths:
       - scripts/one_shot_chapter_order_patch.py
+      - scripts/run_one_shot_chapter_order_patch.py
       - .github/workflows/one-shot-chapter-order.yml
 
 permissions:
@@ -25,7 +26,7 @@ jobs:
           python-version: "3.11"
 
       - name: Apply independent chapter order patch
-        run: python scripts/one_shot_chapter_order_patch.py
+        run: python scripts/run_one_shot_chapter_order_patch.py
 
       - name: Validate generated sources
         run: |
