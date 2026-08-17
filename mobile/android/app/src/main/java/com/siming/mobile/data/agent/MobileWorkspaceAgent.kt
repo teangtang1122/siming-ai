@@ -304,47 +304,60 @@ internal class MobileWorkspaceAgent(
 
     private suspend fun previewWritingContext(projectId: String, args: JsonObject): JsonObject {
         val all = records(projectId)
+        val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
         val outlineId = args.string("outline_node_id")
         val involved = args.stringList("involved_characters").take(12)
         val characterLimit = args.int("character_limit", 8).coerceIn(1, 16)
         val recentLimit = args.int("recent_limit", 5).coerceIn(1, 12)
         val chapters = orderedChapters(all)
-        val characters = all.filter { it.entity.entityType == "character" }
-            .filter { involved.isEmpty() || it.payload.string("name") in involved }
-            .take(characterLimit)
-            .map { clean(it.payload) }
+        val resolved = resolvePcCharacters(
+            rawPayloads,
+            outlineId.takeIf(String::isNotBlank),
+            involved,
+            characterLimit,
+        )
+        val characters = resolved.characters.map(::clean)
+        val relationships = pcRelationshipPayloads(rawPayloads, resolved.characters)
+        val governance = pcGovernanceContext(rawPayloads)
         val recent = chapters.takeLast(recentLimit)
             .map { select(it.payload, "id", "title", "outline_node_id", "word_count", "summary") }
         val outline = outlineContext(all, outlineId)
         val world = worldContext(all)
+        val matchedNames = resolved.characters.mapTo(mutableSetOf()) { it.string("name") } +
+            resolved.resolvedAliases.keys
+        val missingNames = involved.filterNot { it in matchedNames }
         val warnings = buildJsonArray {
             if (outlineId.isNotBlank() && all.none { it.entity.entityType == "outline" && it.entity.entityId == outlineId }) {
                 add(JsonPrimitive("未找到目标大纲节点，章节写作可能会偏离规划。"))
             }
+            if (missingNames.isNotEmpty()) {
+                add(JsonPrimitive("部分指定角色未命中角色卡或别名：${missingNames.joinToString("、")}"))
+            }
             if (characters.isEmpty()) add(JsonPrimitive("本次写作未命中任何角色当前状态。"))
             if (world == "暂无世界观设定。") add(JsonPrimitive("本次写作没有可用世界观设定。"))
         }
+        val usedChars = outline.length + world.length + governance.length
         val data = buildJsonObject {
             put("outline_context", outline)
             put("recent_chapters", JsonArray(recent))
             put("recent_summaries_text", recentSummaries(all, recentLimit))
             put("characters", JsonArray(characters))
-            put("relationships", JsonArray(emptyList()))
+            put("relationships", relationships)
             put("world_context", world)
-            put("narrative_governance_context", "")
+            put("narrative_governance_context", governance)
             put("warnings", warnings)
             put("requirements_preview", args.string("requirements").take(1_000))
-            put("resolved_aliases", JsonObject(emptyMap()))
+            put("resolved_aliases", jsonStringMap(resolved.resolvedAliases))
             put("rag_sections", JsonArray(emptyList()))
-            put("total_used_chars", outline.length + world.length)
-            put("total_estimated_tokens", (outline.length + world.length).coerceAtLeast(1) / 4)
+            put("total_used_chars", usedChars)
+            put("total_estimated_tokens", usedChars.coerceAtLeast(1) / 4)
             put("rag_used", false)
             put("fts_available", false)
             put("auto_indexed", false)
         }
         return ok(
             "preview_writing_context",
-            "写作上下文预检：${characters.size} 个角色、${warnings.size} 条风险",
+            "写作上下文预检：${characters.size} 个角色、${relationships.size} 条关系、${warnings.size} 条风险",
             data,
         )
     }
@@ -355,16 +368,28 @@ internal class MobileWorkspaceAgent(
         config: DirectApiConfig,
     ): JsonObject {
         val all = records(projectId)
+        val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
         val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
             ?: return skipped("chapter_writer", "项目不存在", JsonObject(emptyMap()))
         val outlineId = args.string("outline_node_id")
+        val involved = args.stringList("involved_characters").take(12)
+        val resolved = resolvePcCharacters(
+            rawPayloads,
+            outlineId.takeIf(String::isNotBlank),
+            involved,
+            12,
+        )
+        val governance = pcGovernanceContext(rawPayloads)
+        val worldAndGovernance = listOf(worldContext(all), governance)
+            .filter(String::isNotBlank)
+            .joinToString("\n\n")
         val requirements = args.string("requirements")
         val messages = contract.chapterMessages(
             mode = args.string("mode").ifBlank { "quality" },
             project = project,
             outlineContext = outlineContext(all, outlineId),
-            worldContext = worldContext(all),
-            characterProfiles = characterContext(all, args.stringList("involved_characters")),
+            worldContext = worldAndGovernance,
+            characterProfiles = pcCharacterDetails(rawPayloads, resolved.characters),
             recentSummaries = recentSummaries(all, 5),
             requirements = requirements,
         )
@@ -390,6 +415,10 @@ internal class MobileWorkspaceAgent(
             put("context_snapshot", buildJsonObject {
                 put("outline_node_id", outlineId)
                 put("outline_title", outlineTitle)
+                put("involved_characters", JsonArray(involved.map(::JsonPrimitive)))
+                put("resolved_aliases", jsonStringMap(resolved.resolvedAliases))
+                put("relationship_count", pcRelationshipPayloads(rawPayloads, resolved.characters).size)
+                put("narrative_governance_used", governance.isNotBlank())
                 put("prompt_contract_sha256", contract.sourceHash)
                 put("execution_route", "android_standalone")
             })
@@ -694,6 +723,18 @@ internal class MobileWorkspaceAgent(
         return ok("update_worldbuilding_entry", "已更新世界观：${payload.string("title")}", clean(payload))
     }
 
+    private suspend fun rawRecords(projectId: String): List<LocalRecord> =
+        loadSnapshot(projectId)
+            .asSequence()
+            .filter { it.operation == "upsert" }
+            .mapNotNull { entity ->
+                val payload = entity.payloadJson?.let { raw ->
+                    runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+                } ?: return@mapNotNull null
+                LocalRecord(entity, payload)
+            }
+            .toList()
+
     private suspend fun records(projectId: String, entityType: String? = null): List<LocalRecord> {
         val snapshot = loadSnapshot(projectId).filter { it.operation == "upsert" }
         val matching = if (entityType == null) {
@@ -942,6 +983,10 @@ internal class MobileWorkspaceAgent(
 
     private fun select(source: JsonObject, vararg fields: String): JsonObject = buildJsonObject {
         fields.forEach { field -> source[field]?.let { put(field, it) } }
+    }
+
+    private fun jsonStringMap(values: Map<String, String>): JsonObject = buildJsonObject {
+        values.forEach { (key, value) -> put(key, value) }
     }
 
     private fun JsonObject.withDefaults(defaults: Map<String, JsonElement>): JsonObject = buildJsonObject {
