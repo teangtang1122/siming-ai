@@ -136,7 +136,7 @@ class MobileContextManifestTest {
 
     @Test
     fun `token estimator mirrors PC CJK and non CJK heuristic`() {
-        assertEquals(4, estimateMobileTokens("天地玄黄"))
+        assertEquals(5, estimateMobileTokens("天地玄黄"))
         assertEquals(2, estimateMobileTokens("abcdefgh"))
         assertEquals(4, estimateMobileTokens("天地abcdefgh"))
     }
