@@ -1,0 +1,73 @@
+name: Temporary local project delete semantics fix
+
+on:
+  push:
+    branches:
+      - feature/android-outline-library-parity
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/android-outline-library-parity
+          fetch-depth: 0
+      - name: Keep never-synced projects local during deletion
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt')
+          text = path.read_text(encoding='utf-8')
+          old = '''        val connection = dao.connection()
+          if (connection != null) {
+              val canonicalReady = prepareCanonicalWrite()
+              if (canonicalReady) {
+                  try {
+                      api.deleteProject(connection, projectId)
+                      purgeLocalProject(projectId)
+                      return@withLock
+                  } catch (error: GatewayHttpException) {
+                      throw error
+                  } catch (_: IOException) {
+                      // A canonical project must not be converted into a local-only
+                      // delete when the PC is unreachable: it would be resurrected
+                      // on the next authoritative pull.
+                  }
+              }
+          }
+
+          check(isUnsyncedLocalProject(current)) {
+              "这部作品已经进入 PC 权威库；请连接 PC Gateway 后再删除，避免下次同步把作品重新拉回手机"
+          }
+          purgeLocalProject(projectId)
+          '''
+          new = '''        if (isUnsyncedLocalProject(current)) {
+              purgeLocalProject(projectId)
+              return@withLock
+          }
+
+          val connection = dao.connection()
+              ?: error("这部作品已经进入 PC 权威库；请连接 PC Gateway 后再删除，避免下次同步把作品重新拉回手机")
+          check(prepareCanonicalWrite()) {
+              "当前无法连接 PC Gateway；已同步作品必须由 PC 权威库确认删除"
+          }
+          api.deleteProject(connection, projectId)
+          purgeLocalProject(projectId)
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'project delete anchor mismatch: {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          rm .github/workflows/fix-local-project-delete-order-temporary.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(android): delete never-synced projects locally first'
+          git push origin HEAD:feature/android-outline-library-parity
