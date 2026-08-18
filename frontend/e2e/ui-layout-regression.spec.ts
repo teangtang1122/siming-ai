@@ -635,7 +635,7 @@ test('keeps onboarding, model settings and governance visually focused', async (
   await mockUiApi(page)
 
   await page.goto('/getting-started', { waitUntil: 'networkidle' })
-  await expect(page.getByRole('heading', { name: '免费写作能力已经准备好' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'OpenCode 已可用，再完成一步即可启用完整 Agent' })).toBeVisible()
   await expectViewportSafe(page)
   await expectVisualSnapshot(page, 'quick-start-ready-1920x1080.png')
 
