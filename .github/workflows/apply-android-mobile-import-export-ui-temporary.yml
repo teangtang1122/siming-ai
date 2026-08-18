@@ -1,16 +1,23 @@
 name: Temporary Android mobile import export UI phase 2
 
 on:
-  push:
+  pull_request:
     branches:
-      - feature/android-mobile-import-export-ui
+      - develop
+    paths:
+      - "mobile/**"
+      - "contracts/mobile-pc-parity.json"
+      - "docs/mobile-pc-parity.md"
+      - "scripts/patch-android-mobile-import-export-ui.py"
+      - ".github/workflows/apply-android-mobile-import-export-ui-temporary.yml"
+      - ".github/android-mobile-import-export-ui.trigger"
 
 permissions:
   contents: write
 
 jobs:
   apply-and-verify:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.ref == 'feature/android-mobile-import-export-ui'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
