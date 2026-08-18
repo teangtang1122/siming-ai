@@ -59,9 +59,9 @@ internal fun ProjectToolsPanel(
     ) {
         item {
             ScreenHeading(
-                kicker = "PROJECT TOOLBOX",
+                kicker = "",
                 title = "作品工具",
-                detail = "导入后的建档、全书导出和作品维护集中在这里，减少在多个页面之间来回寻找功能。",
+                detail = "建档、导出和作品维护集中在这里。",
             )
         }
         item {

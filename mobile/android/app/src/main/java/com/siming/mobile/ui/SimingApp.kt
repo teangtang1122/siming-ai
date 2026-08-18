@@ -115,8 +115,8 @@ import com.siming.mobile.data.network.PcFieldKind
 import com.siming.mobile.BuildConfig
 
 private enum class RootTab(val label: String, val icon: ImageVector) {
-    Create("AI 立项", Icons.Outlined.AutoAwesome),
     Library("作品", Icons.AutoMirrored.Outlined.LibraryBooks),
+    Create("立项", Icons.Outlined.AutoAwesome),
     Sync("同步", Icons.Outlined.Sync),
     Settings("设置", Icons.Outlined.Settings),
 }
@@ -152,7 +152,7 @@ fun SimingApp(
     val creationDrafts by viewModel.creationDrafts.collectAsStateWithLifecycle()
     val ui by viewModel.uiState
     val snackbar = remember { SnackbarHostState() }
-    var rootTab by rememberSaveable { mutableStateOf(RootTab.Create) }
+    var rootTab by rememberSaveable { mutableStateOf(RootTab.Library) }
     var selectedProjectId by rememberSaveable { mutableStateOf<String?>(null) }
     var showDirectApiSetup by rememberSaveable { mutableStateOf(false) }
 
@@ -348,36 +348,25 @@ private fun LibraryScreen(
             modifier = Modifier.fillMaxSize(),
         ) {
             item {
-                ScreenHeading(
-                    kicker = "LOCAL-FIRST LIBRARY",
-                    title = "作品库",
-                    detail = "从零立项、导入现有小说、继续写作都从这里开始；导入后可直接进入作品建档与导出。",
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("作品", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        if (projects.isEmpty()) "创建或导入你的第一部小说" else "${projects.size} 部作品 · 继续上次的创作",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             item {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onStartAiCreation) {
-                        Icon(Icons.Outlined.AutoAwesome, null)
-                        Spacer(Modifier.width(7.dp))
-                        Text("AI 立项")
-                    }
-                    OutlinedButton(onClick = { showCreate = true }) {
-                        Icon(Icons.Outlined.Add, null)
-                        Spacer(Modifier.width(7.dp))
-                        Text("空白作品")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            onPickText { name, text ->
-                                viewModel.importNovel(name, text, onOpenProject)
-                            }
-                        },
-                    ) {
-                        Icon(Icons.Outlined.FileOpen, null)
-                        Spacer(Modifier.width(7.dp))
-                        Text("导入已有小说")
-                    }
-                }
+                LibraryActionPanel(
+                    onStartAiCreation = onStartAiCreation,
+                    onCreateBlank = { showCreate = true },
+                    onImportNovel = {
+                        onPickText { name, text ->
+                            viewModel.importNovel(name, text, onOpenProject)
+                        }
+                    },
+                )
             }
             if (projects.isEmpty()) {
                 item {
@@ -389,8 +378,8 @@ private fun LibraryScreen(
                 }
             } else {
                 items(projects, key = { it.key }) { project ->
-                    ProjectCard(
-                        project,
+                    MobileProjectCard(
+                        project = project,
                         localOnly = connection == null,
                         onClick = { onOpenProject(project.projectId) },
                         onDelete = { deleteTarget = project },
@@ -513,7 +502,8 @@ private fun ProjectScreen(
     snackbar: SnackbarHostState,
     onSaveExport: (MobileExportFile) -> Unit,
 ) {
-    var section by rememberSaveable(project.projectId) { mutableStateOf("assistant") }
+    var section by rememberSaveable(project.projectId) { mutableStateOf("chapter") }
+    var lastReferenceSection by rememberSaveable(project.projectId) { mutableStateOf("outline") }
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
     var advanced by remember { mutableStateOf<EditorTarget?>(null) }
     var showChapterOrder by remember { mutableStateOf(false) }
@@ -561,6 +551,13 @@ private fun ProjectScreen(
                 if (ui.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         },
+        bottomBar = {
+            ProjectPrimaryNavigation(
+                selected = section,
+                preferredReferenceSection = lastReferenceSection,
+                onSelected = { section = it },
+            )
+        },
         floatingActionButton = {
             if (section !in setOf("assistant", "tools")) {
                 FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {
@@ -570,7 +567,15 @@ private fun ProjectScreen(
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            ProjectSectionNavigation(selected = section, onSelected = { section = it })
+            if (section in projectReferenceSections.map { it.first }) {
+                ProjectReferenceNavigation(
+                    selected = section,
+                    onSelected = {
+                        section = it
+                        lastReferenceSection = it
+                    },
+                )
+            }
             when (section) {
                 "assistant" -> AssistantScreen(project.projectId, viewModel)
                 "tools" -> ProjectToolsPanel(
@@ -1977,12 +1982,18 @@ private fun CreateProjectDialog(onDismiss: () -> Unit, onCreate: (String, String
     )
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 internal fun ScreenHeading(kicker: String, title: String, detail: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(kicker, color = SimingCinnabar, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        if (detail.isNotBlank()) {
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
