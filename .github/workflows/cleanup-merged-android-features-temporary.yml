@@ -18,25 +18,20 @@ jobs:
           ref: develop
           fetch-depth: 0
 
-      - name: Verify and delete merged feature branches
+      - name: Verify and delete squash-merged feature branches
         run: |
           set -euo pipefail
           expected_develop='e01062bde0e6aa8571f6ad64373d18bec7b753f6'
-          test "$(git rev-parse HEAD)" = "$expected_develop"
+          expected_phase1='88957f7b12d07ef1c33cbd1d9524b3f179a2cb64'
+          expected_phase2='bc44a039b418c26b8f4c424f6d67aec30f88fa5e'
 
+          test "$(git rev-parse HEAD)" = "$expected_develop"
           git fetch origin \
             feature/android-mobile-import-export-ui \
             feature/android-outline-library-parity
 
-          for branch in \
-            feature/android-mobile-import-export-ui \
-            feature/android-outline-library-parity
-          do
-            if ! git merge-base --is-ancestor "origin/$branch" HEAD; then
-              echo "$branch is not fully merged into develop" >&2
-              exit 1
-            fi
-          done
+          test "$(git rev-parse origin/feature/android-mobile-import-export-ui)" = "$expected_phase2"
+          test "$(git rev-parse origin/feature/android-outline-library-parity)" = "$expected_phase1"
 
           git push origin --delete \
             feature/android-mobile-import-export-ui \
