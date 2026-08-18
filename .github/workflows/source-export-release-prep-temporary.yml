@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/mobile-parity-release-prep
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
