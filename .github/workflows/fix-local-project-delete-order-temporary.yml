@@ -1,4 +1,4 @@
-name: Temporary local project delete semantics fix
+name: Temporary final Android parity cleanup
 
 on:
   push:
@@ -17,13 +17,14 @@ jobs:
         with:
           ref: feature/android-outline-library-parity
           fetch-depth: 0
-      - name: Keep never-synced projects local during deletion
+      - name: Finalize delete semantics and Compose compilation
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          path = Path('mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt')
-          text = path.read_text(encoding='utf-8')
+
+          repo = Path('mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt')
+          text = repo.read_text(encoding='utf-8')
           old = '''        val connection = dao.connection()
           if (connection != null) {
               val canonicalReady = prepareCanonicalWrite()
@@ -60,14 +61,22 @@ jobs:
           api.deleteProject(connection, projectId)
           purgeLocalProject(projectId)
           '''
-          if text.count(old) != 1:
-              raise SystemExit(f'project delete anchor mismatch: {text.count(old)}')
-          path.write_text(text.replace(old, new), encoding='utf-8')
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'project delete anchor mismatch: {count}')
+          repo.write_text(text.replace(old, new), encoding='utf-8')
+
+          outline = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/OutlineTree.kt')
+          text = outline.read_text(encoding='utf-8')
+          bad = 'import androidx.compose.foundation.layout.weight\n'
+          if text.count(bad) != 1:
+              raise SystemExit(f'weight import mismatch: {text.count(bad)}')
+          outline.write_text(text.replace(bad, ''), encoding='utf-8')
           PY
           rm .github/workflows/fix-local-project-delete-order-temporary.yml
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m 'fix(android): delete never-synced projects locally first'
+          git commit -m 'fix(android): finalize project deletion and outline tree build'
           git push origin HEAD:feature/android-outline-library-parity
