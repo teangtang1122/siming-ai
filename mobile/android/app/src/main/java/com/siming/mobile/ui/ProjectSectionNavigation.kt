@@ -13,6 +13,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 
 internal data class ProjectPrimaryDestination(
     val key: String,
@@ -50,7 +51,7 @@ internal fun ProjectPrimaryNavigation(
     onSelected: (String) -> Unit,
 ) {
     val active = projectPrimaryKey(selected)
-    NavigationBar(containerColor = SimingPaperWarm, tonalElevation = androidx.compose.ui.unit.Dp.Unspecified) {
+    NavigationBar(containerColor = SimingPaperWarm, tonalElevation = 0.dp) {
         projectPrimaryDestinations.forEach { destination ->
             NavigationBarItem(
                 selected = active == destination.key,
@@ -76,7 +77,7 @@ internal fun ProjectReferenceNavigation(
     ScrollableTabRow(
         selectedTabIndex = selectedIndex,
         containerColor = SimingPaper,
-        edgePadding = androidx.compose.ui.unit.dp(12f),
+        edgePadding = 12.dp,
         divider = {},
     ) {
         projectReferenceSections.forEachIndexed { index, (key, label) ->
