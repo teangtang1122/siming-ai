@@ -1,0 +1,40 @@
+name: Temporary Apply Release 3.2.4
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - reopened
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/release-3.2.4
+      - name: Verify and apply release patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          encoded=.github/release-3.2.4.patch.gz.b64
+          temporary_workflow=.github/workflows/apply-release-3.2.4-temporary.yml
+          echo "6040e32d193dded69f22a2bf6a58521b4a8304f3ad385f33242c4d320cabfb3f  $encoded" | sha256sum -c -
+          base64 --decode "$encoded" > /tmp/release-3.2.4.patch.gz
+          echo "3a6e309a199d5188ac152f64f859e4794d535256d86175fe005deb097c424bcd  /tmp/release-3.2.4.patch.gz" | sha256sum -c -
+          gzip --decompress --stdout /tmp/release-3.2.4.patch.gz > /tmp/release-3.2.4.patch
+          echo "2b471aa43fe6e3466ff13163527816e4554e0f51d7d112d361eaa0f4a42b3a09  /tmp/release-3.2.4.patch" | sha256sum -c -
+          git apply --check /tmp/release-3.2.4.patch
+          git apply /tmp/release-3.2.4.patch
+          rm -f "$encoded" "$temporary_workflow"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "release: prepare Siming 3.2.4"
+          git push origin HEAD:agent/release-3.2.4
