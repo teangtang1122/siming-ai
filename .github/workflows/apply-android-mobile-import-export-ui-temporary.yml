@@ -110,6 +110,7 @@ jobs:
           python scripts/patch-android-mobile-import-export-ui.py
           python - <<'PY'
           from pathlib import Path
+
           path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/ProjectToolsPanel.kt')
           text = path.read_text(encoding='utf-8')
           if 'import androidx.compose.foundation.layout.ExperimentalLayoutApi\n' not in text:
@@ -122,6 +123,17 @@ jobs:
           if target in text:
               text = text.replace(target, '@OptIn(ExperimentalLayoutApi::class)\n@Composable\ninternal fun ProjectToolsPanel(', 1)
           path.write_text(text, encoding='utf-8')
+
+          app = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt')
+          app_text = app.read_text(encoding='utf-8')
+          for old, new in (
+              ('private fun ScreenHeading(', 'internal fun ScreenHeading('),
+              ('private fun MicroTag(', 'internal fun MicroTag('),
+          ):
+              if app_text.count(old) != 1:
+                  raise SystemExit(f'UI primitive anchor mismatch: {old} -> {app_text.count(old)}')
+              app_text = app_text.replace(old, new, 1)
+          app.write_text(app_text, encoding='utf-8')
           PY
           python - <<'PY'
           import json
