@@ -34,6 +34,6 @@ jobs:
           git apply --exclude="$release_workflow" /tmp/release-3.2.4.patch
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backend/app/version.py frontend/package.json frontend/package-lock.json mobile/android/app/build.gradle.kts docs/release-notes-3.2.4.md
-          git commit -m "release: prepare Siming 3.2.4 versions and notes"
+          git add backend/app/version.py frontend/package.json frontend/package-lock.json mobile/android/app/build.gradle.kts
+          git commit -m "release: align Siming 3.2.4 versions"
           git push origin HEAD:agent/release-3.2.4
