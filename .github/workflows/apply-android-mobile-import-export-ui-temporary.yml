@@ -36,7 +36,62 @@ jobs:
       - name: Apply focused implementation
         run: |
           set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/patch-android-mobile-import-export-ui.py')
+          text = path.read_text(encoding='utf-8')
+          marker = "'            snackbar = snackbar,\\n            onSaveExport = onSaveExport,\\n        )\\n',"
+          pos = text.find(marker)
+          if pos < 0:
+              raise SystemExit('unique ProjectScreen export callback marker missing')
+          start = text.rfind('replace_once(\n', 0, pos)
+          end = text.find(')\nreplace_once(\n', pos)
+          if start < 0 or end < 0:
+              raise SystemExit('could not isolate ProjectScreen replacement block')
+          replacement = '''replace_once(
+              "mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt",
+              '    val selectedProject = projects.firstOrNull { it.projectId == selectedProjectId }\\n'
+              '    if (selectedProject != null) {\\n'
+              '        ProjectScreen(\\n'
+              '            viewModel = viewModel,\\n'
+              '            project = selectedProject,\\n'
+              '            onBack = { selectedProjectId = null },\\n'
+              '            snackbar = snackbar,\\n'
+              '        )\\n'
+              '        return\\n'
+              '    }\\n',
+              '    val selectedProject = projects.firstOrNull { it.projectId == selectedProjectId }\\n'
+              '    if (selectedProject != null) {\\n'
+              '        ProjectScreen(\\n'
+              '            viewModel = viewModel,\\n'
+              '            project = selectedProject,\\n'
+              '            onBack = { selectedProjectId = null },\\n'
+              '            snackbar = snackbar,\\n'
+              '            onSaveExport = onSaveExport,\\n'
+              '        )\\n'
+              '        return\\n'
+              '    }\\n',
+          )
+          '''
+          path.write_text(text[:start] + replacement + text[end + 2:], encoding='utf-8')
+          PY
           python scripts/patch-android-mobile-import-export-ui.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/ProjectToolsPanel.kt')
+          text = path.read_text(encoding='utf-8')
+          if 'import androidx.compose.foundation.layout.ExperimentalLayoutApi\n' not in text:
+              text = text.replace(
+                  'import androidx.compose.foundation.layout.Column\n',
+                  'import androidx.compose.foundation.layout.Column\nimport androidx.compose.foundation.layout.ExperimentalLayoutApi\n',
+                  1,
+              )
+          target = '@Composable\ninternal fun ProjectToolsPanel('
+          if target in text:
+              text = text.replace(target, '@OptIn(ExperimentalLayoutApi::class)\n@Composable\ninternal fun ProjectToolsPanel(', 1)
+          path.write_text(text, encoding='utf-8')
+          PY
           python scripts/check-mobile-pc-parity.py --write-doc docs/mobile-pc-parity.md
           git diff --check
 
