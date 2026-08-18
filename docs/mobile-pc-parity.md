@@ -71,7 +71,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **Android 离线：** 修订队列回放
 - **Android 独立 Agent：** 修订队列回放：本地写入统一投影为 PC Character 公共契约。
 
-### `authoring.outline` — 大纲节点创建、读取和更新
+### `authoring.outline` — 大纲树创建、读取、更新、删除和同级排序
 
 - **权威入口：** `/api/v1/projects/{project_id}/outline`（`pc_http`）
 - **状态：** 已对齐
@@ -82,7 +82,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **Android 离线：** 修订队列回放
 - **Android 独立 Agent：** 修订队列回放
 
-### `authoring.project` — 作品资料读取与更新
+### `authoring.project` — 作品创建、读取、更新和删除
 
 - **权威入口：** `/api/v1/projects/{project_id}`（`pc_http`）
 - **状态：** 已对齐

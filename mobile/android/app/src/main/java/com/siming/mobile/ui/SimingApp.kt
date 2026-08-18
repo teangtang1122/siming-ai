@@ -322,6 +322,7 @@ private fun LibraryScreen(
     onStartAiCreation: () -> Unit,
 ) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<ReplicaEntity?>(null) }
     Column(modifier.fillMaxSize()) {
         if (connection == null) {
             StatusBanner(
@@ -388,6 +389,7 @@ private fun LibraryScreen(
                         project,
                         localOnly = connection == null,
                         onClick = { onOpenProject(project.projectId) },
+                        onDelete = { deleteTarget = project },
                     )
                 }
             }
@@ -402,10 +404,45 @@ private fun LibraryScreen(
             },
         )
     }
+    deleteTarget?.let { target ->
+        val title = target.text("title").ifBlank { "未命名作品" }
+        val canAttemptDelete = connection != null || (target.dirty && target.revision == 0L)
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除《$title》？") },
+            text = {
+                Text(
+                    when {
+                        connection != null -> "删除后会从 PC 权威作品库移除，并清理这台手机的离线副本。此操作不可撤销。"
+                        canAttemptDelete -> "这部作品尚未同步到 PC，将只从当前手机移除。此操作不可撤销。"
+                        else -> "这部作品已经与 PC 同步。为避免下次同步重新出现，请先连接 PC Gateway，再执行删除。"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = canAttemptDelete,
+                    onClick = {
+                        viewModel.deleteProject(target.projectId) { deleteTarget = null }
+                    },
+                ) {
+                    Text(if (canAttemptDelete) "确认删除" else "删除需联网")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @Composable
-private fun ProjectCard(project: ReplicaEntity, localOnly: Boolean, onClick: () -> Unit) {
+private fun ProjectCard(
+    project: ReplicaEntity,
+    localOnly: Boolean,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val title = project.text("title").ifBlank { "未命名作品" }
     val description = project.text("description")
     OutlinedCard(
@@ -449,6 +486,14 @@ private fun ProjectCard(project: ReplicaEntity, localOnly: Boolean, onClick: () 
                     if (project.conflicted) MicroTag("有分岔", MaterialTheme.colorScheme.error)
                     if (!project.dirty && !project.conflicted) MicroTag("已落库", SimingGreen)
                 }
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Outlined.DeleteOutline,
+                    "删除作品",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(20.dp),
+                )
             }
             Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, Modifier.size(18.dp))
         }
@@ -556,10 +601,18 @@ private fun ProjectScreen(
                     )
                 }
             }
-            if (section == "assistant") {
-                AssistantScreen(project.projectId, viewModel)
-            } else {
-                RecordList(
+            when (section) {
+                "assistant" -> AssistantScreen(project.projectId, viewModel)
+                "outline" -> OutlineTreeList(
+                    projectId = project.projectId,
+                    records = records,
+                    online = connection != null,
+                    onOpen = { editor = EditorTarget("outline", it) },
+                    onReorder = { parentId, nodeIds ->
+                        viewModel.reorderOutline(project.projectId, parentId, nodeIds)
+                    },
+                )
+                else -> RecordList(
                     section = requireNotNull(currentSection),
                     records = records,
                     online = connection != null,

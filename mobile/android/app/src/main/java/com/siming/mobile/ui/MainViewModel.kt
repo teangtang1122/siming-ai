@@ -355,6 +355,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject =
         repository.reorderChapters(projectId, chapterIds)
 
+    fun reorderOutline(projectId: String, parentId: String?, nodeIds: List<String>) {
+        viewModelScope.launch {
+            try {
+                repository.reorderOutline(projectId, parentId, nodeIds)
+                uiState.value = uiState.value.copy(
+                    notice = if (connection.value != null) {
+                        "大纲顺序已通过 PC 端同一排序 API 更新"
+                    } else {
+                        "大纲顺序已保存到手机，恢复连接后按节点修订同步"
+                    },
+                )
+            } catch (error: Exception) {
+                showError(error)
+            }
+        }
+    }
+
     suspend fun chapterSnapshots(projectId: String, chapterId: String): JsonObject =
         repository.listChapterSnapshots(projectId, chapterId)
 
@@ -431,6 +448,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     },
                 )
                 onCreated(id)
+            } catch (error: Exception) {
+                showError(error)
+            }
+        }
+    }
+
+    fun deleteProject(projectId: String, onDeleted: () -> Unit) {
+        viewModelScope.launch {
+            try {
+                repository.deleteProject(projectId)
+                uiState.value = uiState.value.copy(
+                    notice = if (connection.value != null) {
+                        "作品已从 PC 权威库删除，手机副本已清理"
+                    } else {
+                        "尚未同步的本地作品已从手机删除"
+                    },
+                )
+                onDeleted()
             } catch (error: Exception) {
                 showError(error)
             }

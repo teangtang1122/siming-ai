@@ -17,6 +17,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -180,6 +181,39 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
             "DELETE",
         )
     }
+
+    suspend fun deleteProject(connection: GatewayConnection, projectId: String) {
+        request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.project(projectId),
+            "DELETE",
+        )
+    }
+
+    suspend fun reorderOutline(
+        connection: GatewayConnection,
+        projectId: String,
+        parentId: String?,
+        nodeIds: List<String>,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.outlineReorder(projectId),
+        method = "PUT",
+        payload = buildJsonObject {
+            put(
+                "items",
+                JsonArray(
+                    nodeIds.mapIndexed { index, nodeId ->
+                        buildJsonObject {
+                            put("id", nodeId)
+                            put("parent_id", parentId?.let(::JsonPrimitive) ?: JsonNull)
+                            put("sort_order", index)
+                        }
+                    },
+                ),
+            )
+        },
+    )
 
     suspend fun saveGovernanceEntity(
         connection: GatewayConnection,

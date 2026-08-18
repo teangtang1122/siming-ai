@@ -25,6 +25,15 @@ class PcApiPathsTest {
     }
 
     @Test
+    fun `project and outline management use canonical PC routes`() {
+        assertEquals("/api/v1/projects/project-1", PcApiPaths.project("project-1"))
+        assertEquals(
+            "/api/v1/projects/project-1/outline/reorder",
+            PcApiPaths.outlineReorder("project-1"),
+        )
+    }
+
+    @Test
     fun `creation path parameters reject path injection`() {
         assertFailsWith<IllegalArgumentException> {
   PcApiPaths.novelCreationSession("session-1/../../config")

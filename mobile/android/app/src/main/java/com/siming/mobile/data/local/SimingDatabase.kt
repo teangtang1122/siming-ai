@@ -78,6 +78,12 @@ interface SimingDao {
     @Query("DELETE FROM replica_entities WHERE projectId = :projectId")
     suspend fun deleteProjectReplica(projectId: String)
 
+    @Query("DELETE FROM sync_outbox WHERE projectId = :projectId")
+    suspend fun deleteProjectMutations(projectId: String)
+
+    @Query("DELETE FROM local_conflicts WHERE projectId = :projectId")
+    suspend fun deleteProjectConflicts(projectId: String)
+
     @Query("SELECT DISTINCT projectId FROM replica_entities WHERE entityType = 'project' AND operation = 'upsert'")
     suspend fun localProjectIds(): List<String>
 

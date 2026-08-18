@@ -46,6 +46,9 @@ internal object PcApiPaths {
     fun chapterReorder(projectId: String): String =
         "${authoringCollection(projectId, "chapter")}/reorder"
 
+    fun outlineReorder(projectId: String): String =
+        "${authoringCollection(projectId, "outline")}/reorder"
+
     fun chapterSnapshots(projectId: String, chapterId: String): String =
         "${authoringItem(projectId, "chapter", chapterId)}/snapshots"
 

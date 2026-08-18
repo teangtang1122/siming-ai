@@ -15,6 +15,7 @@
       "extractor": "kotlin_functions",
       "symbols": {
         "project": "authoring.project",
+        "outlineReorder": "authoring.outline",
         "chapterReorder": "chapter.reorder",
         "chapterSnapshots": "chapter.history",
         "chapterSnapshotDiff": "chapter.history",
@@ -363,7 +364,7 @@
     {
       "id": "authoring.outline",
       "area": "authoring",
-      "summary": "大纲节点创建、读取和更新",
+      "summary": "大纲树创建、读取、更新、删除和同级排序",
       "status": "aligned",
       "authority": {
         "type": "pc_http",
@@ -438,7 +439,7 @@
     {
       "id": "authoring.project",
       "area": "authoring",
-      "summary": "作品资料读取与更新",
+      "summary": "作品创建、读取、更新和删除",
       "status": "aligned",
       "authority": {
         "type": "pc_http",
