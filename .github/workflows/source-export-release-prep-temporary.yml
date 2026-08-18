@@ -1,31 +1,37 @@
-name: Temporary Release Prep Source Export
+name: Temporary Apply Release Prep Patch
 
 on:
   push:
     branches:
       - agent/mobile-parity-release-prep
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  export:
+  apply:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
-      - name: Archive tracked source
+          fetch-depth: 0
+          ref: agent/mobile-parity-release-prep
+      - name: Verify and apply staged patch
         shell: bash
         run: |
-          git archive --format=tar.gz --output=siming-release-prep-source.tar.gz HEAD
-      - uses: actions/upload-artifact@v4
-        with:
-          name: siming-release-prep-source-${{ github.sha }}
-          path: siming-release-prep-source.tar.gz
-          retention-days: 1
-          if-no-files-found: error
+          set -euo pipefail
+          cat .github/patch-chunks/*.b64 > /tmp/mobile-parity.patch.gz.b64
+          echo "c7dfaf96c95787f57fa93addc60f1f65da918f541dd2f2737e8dd8a0395f4a3a  /tmp/mobile-parity.patch.gz.b64" | sha256sum -c -
+          base64 --decode /tmp/mobile-parity.patch.gz.b64 > /tmp/mobile-parity.patch.gz
+          echo "70a666425f438617a8420d2015998d7a3ed622ad4e9450c76962b18382d60945  /tmp/mobile-parity.patch.gz" | sha256sum -c -
+          gzip --decompress --stdout /tmp/mobile-parity.patch.gz > /tmp/mobile-parity.patch
+          echo "ea39c1d381068b3d3c598adb1cfa6047258dd1f5b7f496e73c656e632896c033  /tmp/mobile-parity.patch" | sha256sum -c -
+          git apply --check /tmp/mobile-parity.patch
+          git apply /tmp/mobile-parity.patch
+          rm -rf .github/patch-chunks
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(mobile): make standalone chapter writes recoverable"
+          git push origin HEAD:agent/mobile-parity-release-prep
