@@ -41,6 +41,7 @@ jobs:
 
           path = Path('scripts/patch-android-mobile-import-export-ui.py')
           text = path.read_text(encoding='utf-8')
+
           marker = "'            snackbar = snackbar,\\n            onSaveExport = onSaveExport,\\n        )\\n',"
           pos = text.find(marker)
           if pos < 0:
@@ -74,7 +75,35 @@ jobs:
               '    }\\n',
           )
           '''
-          path.write_text(text[:start] + replacement + text[end + 2:], encoding='utf-8')
+          text = text[:start] + replacement + text[end + 2:]
+
+          nav_start = text.find('nav_old = dedent(\n')
+          nav_call = '''replace_once(
+              "mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt",
+              nav_old,
+              '            ProjectSectionNavigation(selected = section, onSelected = { section = it })\\n',
+          )
+          '''
+          nav_end = text.find(nav_call, nav_start)
+          if nav_start < 0 or nav_end < 0:
+              raise SystemExit('could not isolate navigation patch block')
+          nav_end += len(nav_call)
+          nav_replacement = '''nav_source = read("mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt")
+          nav_anchor = '            Row(\\n                modifier = Modifier\\n                    .horizontalScroll(rememberScrollState())\\n'
+          nav_start_index = nav_source.find(nav_anchor)
+          nav_end_marker = '            when (section) {\\n'
+          nav_end_index = nav_source.find(nav_end_marker, nav_start_index)
+          if nav_start_index < 0 or nav_end_index < 0:
+              raise SystemExit("mobile project navigation anchors missing")
+          nav_old = nav_source[nav_start_index:nav_end_index]
+          replace_once(
+              "mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt",
+              nav_old,
+              '            ProjectSectionNavigation(selected = section, onSelected = { section = it })\\n',
+          )
+          '''
+          text = text[:nav_start] + nav_replacement + text[nav_end:]
+          path.write_text(text, encoding='utf-8')
           PY
           python scripts/patch-android-mobile-import-export-ui.py
           python - <<'PY'
