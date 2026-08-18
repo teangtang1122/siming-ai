@@ -33,7 +33,10 @@ const baseStatus = {
 }
 
 describe('GettingStartedPanel', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
 
   it('offers one plain-language activation action', async () => {
     api.get.mockResolvedValue({ data: { data: baseStatus } })
@@ -54,7 +57,7 @@ describe('GettingStartedPanel', () => {
     expect(screen.queryByText(/先安装 Node.js/)).not.toBeInTheDocument()
   })
 
-  it('shows the first-idea prompt as soon as a model is ready', async () => {
+  it('offers MCP setup for ready OpenCode and shows the first-idea prompt after verification', async () => {
     api.get.mockResolvedValue({ data: { data: {
       ...baseStatus,
       needs_setup: false,
@@ -62,13 +65,28 @@ describe('GettingStartedPanel', () => {
       is_global_default: true,
       has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
+      opencode_mcp_configured: false,
     } } })
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/getting-started/opencode/mcp/configure') {
+        return Promise.resolve({ data: { data: {
+          ready: true,
+          detail: 'OpenCode 与 Siming MCP 已就绪',
+          preflight: { ready: true, detail: '建档工具已加载', missing_tools: [] },
+        } } })
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
 
     renderPanel()
 
+    expect(await screen.findByText('OpenCode 已可用，再完成一步即可启用完整 Agent')).toBeInTheDocument()
+    expect(screen.queryByLabelText('你想写什么故事？')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /配置并验证 MCP/ }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/mcp/configure'))
     expect(await screen.findByText('免费写作能力已经准备好')).toBeInTheDocument()
     expect(screen.getByLabelText('你想写什么故事？')).toBeInTheDocument()
-    expect(api.get).toHaveBeenCalledTimes(1)
   })
 
   it('does not resume or poll a stale activation job after any model is usable', async () => {
@@ -95,6 +113,7 @@ describe('GettingStartedPanel', () => {
     api.get.mockResolvedValue({ data: { data: {
       ...baseStatus, needs_setup: false, is_global_default: true, has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
+      opencode_mcp_configured: true,
     } } })
     api.post.mockImplementation((url: string) => {
       if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
