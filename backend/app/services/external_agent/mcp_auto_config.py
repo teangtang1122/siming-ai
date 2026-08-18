@@ -144,7 +144,7 @@ def auto_configure_mcp_for_provider(
     if provider == "claude_cli":
         client = _configure_claude_code(server, cli_command=cli_command)
     elif provider == "opencode_cli":
-        client = _configure_opencode(server)
+        client = _configure_opencode(server, cli_command=cli_command)
     elif provider == "mimocode_cli":
         client = _configure_mimocode(server, cli_command=cli_command)
     elif provider == "cursor_cli":
@@ -1062,8 +1062,12 @@ def _write_local_mcp_json(
     }
 
 
-def _configure_opencode(server: dict[str, Any]) -> dict[str, Any]:
-    opencode = _resolve_command(None, ["opencode.cmd", "opencode", "opencode.exe"])
+def _configure_opencode(
+    server: dict[str, Any],
+    *,
+    cli_command: str | None = None,
+) -> dict[str, Any]:
+    opencode = _resolve_command(cli_command, ["opencode.cmd", "opencode", "opencode.exe"])
     config_path = _opencode_config_path()
     if not opencode and not config_path.parent.exists():
         return {
@@ -1175,7 +1179,7 @@ def _configure_custom_cli(
     if "mimo" in command_name:
         return _configure_mimocode(server, cli_command=cli_command)
     if "opencode" in command_name:
-        return _configure_opencode(server)
+        return _configure_opencode(server, cli_command=cli_command)
     if "claude" in command_name:
         return _configure_claude_code(server, cli_command=cli_command)
     if "codex" in command_name:

@@ -598,3 +598,31 @@ def test_opencode_preflight_reports_missing_mcp_configuration():
     assert result["ready"] is False
     assert result["configured"] is False
     assert "尚未配置" in result["detail"]
+
+def test_opencode_configuration_accepts_managed_command_outside_path():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        managed_command = root / "managed" / "opencode.exe"
+        managed_command.parent.mkdir(parents=True)
+        managed_command.write_bytes(b"managed-opencode")
+        config_path = root / "config" / "opencode.json"
+        server = {
+            "command": "python",
+            "args": ["-m", "app.mcp.server", "--permission-pack", "auto"],
+        }
+        with patch(
+            "app.services.external_agent.mcp_auto_config._opencode_config_path",
+            return_value=config_path,
+        ), patch(
+            "app.services.external_agent.mcp_auto_config.shutil.which",
+            return_value=None,
+        ):
+            result = mcp_auto_config._configure_opencode(
+                server,
+                cli_command=str(managed_command),
+            )
+
+        assert result["status"] == "configured"
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert saved["mcp"]["siming"]["enabled"] is True
+        assert saved["mcp"]["siming"]["command"][:2] == ["python", "-m"]
