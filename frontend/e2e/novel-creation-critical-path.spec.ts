@@ -496,6 +496,7 @@ test('turns one story sentence into the first adjustable concept run after setup
       has_detected_models: true,
       has_usable_models: true,
       global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
+      opencode_mcp_configured: true,
     },
   })
   await page.goto('/getting-started', { waitUntil: 'domcontentloaded' })
