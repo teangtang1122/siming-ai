@@ -1,0 +1,50 @@
+name: Temporary E2E MCP fixture patch
+
+on:
+  pull_request:
+    branches: [develop]
+    paths:
+      - ".github/workflows/temporary-e2e-mcp-fixture.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.ref == 'agent/opencode-mcp-onboarding'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Align durable concept E2E fixture with MCP onboarding
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('frontend/e2e/novel-creation-critical-path.spec.ts')
+          text = path.read_text(encoding='utf-8')
+          marker = "test('turns one story sentence into the first adjustable concept run after setup'"
+          before, sep, after = text.partition(marker)
+          if not sep:
+              raise SystemExit('target E2E test marker not found')
+          target = "      global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },\n"
+          if target not in after:
+              raise SystemExit('target getting-started fixture not found')
+          replacement = target + "      opencode_mcp_configured: true,\n"
+          after = after.replace(target, replacement, 1)
+          path.write_text(before + sep + after, encoding='utf-8')
+          PY
+          git diff --check
+          grep -A14 "turns one story sentence" frontend/e2e/novel-creation-critical-path.spec.ts
+
+      - name: Commit clean fixture update
+        run: |
+          rm .github/workflows/temporary-e2e-mcp-fixture.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/e2e/novel-creation-critical-path.spec.ts .github/workflows/temporary-e2e-mcp-fixture.yml
+          git commit -m "Align browser test with MCP onboarding"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
