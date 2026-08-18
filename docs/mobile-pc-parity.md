@@ -4,7 +4,7 @@
 
 PC 是小说数据、领域副作用和上下文治理的唯一权威实现。Android 在线模式应尽量作为薄客户端；离线模式只允许可验证回放的修订；手机独立 Agent 的降级能力必须显式记录。
 
-当前共登记 **23** 项能力：**9** 项已对齐、**14** 项部分对齐、**0** 项待实现。
+当前共登记 **25** 项能力：**9** 项已对齐、**16** 项部分对齐、**0** 项待实现。
 
 ## 总览
 
@@ -13,9 +13,11 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 | `assistant.workspace` | workspace assistant stream / MobileWorkspaceAgent | 调用 PC 权威接口 | 明确阻止 | 明确降级实现 | 部分对齐 |
 | `authoring.chapter` | /api/v1/projects/{project_id}/chapters | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.character` | /api/v1/projects/{project_id}/characters | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
+| `authoring.export` | /api/v1/projects/{project_id}/export | 调用 PC 权威接口 | 明确降级实现 | 明确降级实现 | 部分对齐 |
 | `authoring.outline` | /api/v1/projects/{project_id}/outline | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.project` | /api/v1/projects/{project_id} | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.worldbuilding` | /api/v1/projects/{project_id}/worldbuilding | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
+| `chapter.cataloging` | /api/v1/projects/{project_id}/cataloging | 调用 PC 权威接口 | 明确阻止 | 明确阻止 | 部分对齐 |
 | `chapter.history` | GET /chapters/{chapter_id}/snapshots[/diff/{snapshot_id}] | 调用 PC 只读接口 | 明确阻止 | 尚未支持 | 部分对齐 |
 | `chapter.reorder` | PUT /api/v1/projects/{project_id}/chapters/reorder | 调用 PC 权威接口 | 明确阻止 | 明确阻止 | 已对齐 |
 | `chapter.restore` | POST /chapters/{chapter_id}/restore/{snapshot_id} | 调用 PC 权威接口 | 明确阻止 | 明确阻止 | 已对齐 |
@@ -71,6 +73,19 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **Android 离线：** 修订队列回放
 - **Android 独立 Agent：** 修订队列回放：本地写入统一投影为 PC Character 公共契约。
 
+### `authoring.export` — 小说 TXT / Word / PDF 导出与本机保存
+
+- **权威入口：** `/api/v1/projects/{project_id}/export`（`pc_http`）
+- **状态：** 部分对齐
+- **副作用：** 无写入副作用
+- **幂等策略：** `not_applicable`；只读或无需防重
+- **PC：** PC 权威实现
+- **Android 在线：** 调用 PC 权威接口
+- **Android 离线：** 明确降级实现：离线只导出本机章节 TXT；Word/PDF 需要 PC 的正式导出服务。
+- **Android 独立 Agent：** 明确降级实现：手机独立模式可导出 TXT，Word/PDF 连接 PC 后生成。
+- **已知缺口：**
+  - 离线和手机独立模式只支持 TXT；Word / PDF 仍需连接 PC 权威导出服务。
+
 ### `authoring.outline` — 大纲树创建、读取、更新、删除和同级排序
 
 - **权威入口：** `/api/v1/projects/{project_id}/outline`（`pc_http`）
@@ -103,6 +118,20 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 修订队列回放
 - **Android 独立 Agent：** 修订队列回放
+
+### `chapter.cataloging` — 导入或既有章节的作品建档任务
+
+- **权威入口：** `/api/v1/projects/{project_id}/cataloging`（`pc_http`）
+- **状态：** 部分对齐
+- **副作用：** cataloging
+- **幂等策略：** `client_serialization`；必须防重
+- **幂等限制：** Android 同一时刻只启动一个建档任务；服务端任务 ID 作为后续流式进度、查询与取消的唯一引用。
+- **PC：** PC 权威实现
+- **Android 在线：** 调用 PC 权威接口
+- **Android 离线：** 明确阻止：完整建档会同时更新摘要、角色、世界观和治理资料，离线时不复制第二套权威实现。
+- **Android 独立 Agent：** 明确阻止：手机独立 Agent 暂不伪装成 PC Cataloging；连接 Gateway 后运行权威建档。
+- **已知缺口：**
+  - 手机独立模型尚未实现与 PC 完全一致的批量 Cataloging 运行时。
 
 ### `chapter.history` — 章节快照列表、详情与差异比较
 

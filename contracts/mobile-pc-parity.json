@@ -36,7 +36,13 @@
         "novelCreationStage": "novel_creation.session",
         "narrativeGovernanceItems": "governance.items",
         "narrativeGovernanceStatus": "governance.items",
-        "conflictResolution": "sync.conflicts"
+        "conflictResolution": "sync.conflicts",
+        "catalogingStart": "chapter.cataloging",
+        "catalogingJob": "chapter.cataloging",
+        "catalogingStream": "chapter.cataloging",
+        "catalogingCancel": "chapter.cataloging",
+        "projectExport": "authoring.export",
+        "projectExportDownload": "authoring.export"
       },
       "ignore_symbols": {
         "authoringCollection": "Generic route factory; individual authoring capabilities own the semantic decision.",
@@ -362,6 +368,74 @@
       ]
     },
     {
+      "id": "authoring.export",
+      "area": "authoring",
+      "summary": "小说 TXT / Word / PDF 导出与本机保存",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/{project_id}/export",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/export.py",
+            "contains": "def export_project("
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun createProjectExport("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/MobileProjectTools.kt",
+              "contains": "buildLocalNovelExport"
+            }
+          ],
+          "limitations": "离线只导出本机章节 TXT；Word/PDF 需要 PC 的正式导出服务。"
+        },
+        "android_standalone": {
+          "support": "degraded",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/MobileProjectTools.kt",
+              "contains": "buildLocalNovelExport"
+            }
+          ],
+          "limitations": "手机独立模式可导出 TXT，Word/PDF 连接 PC 后生成。"
+        }
+      },
+      "side_effects": [],
+      "idempotency": {
+        "required": false,
+        "strategy": "not_applicable"
+      },
+      "tests": [
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/MobileProjectToolsTest.kt",
+          "contains": "local txt export keeps chapter order and content"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/ProjectToolPathsTest.kt",
+          "contains": "cataloging and export use canonical PC routes"
+        }
+      ],
+      "known_gaps": [
+        "离线和手机独立模式只支持 TXT；Word / PDF 仍需连接 PC 权威导出服务。"
+      ]
+    },
+    {
       "id": "authoring.outline",
       "area": "authoring",
       "summary": "大纲树创建、读取、更新、删除和同级排序",
@@ -577,6 +651,65 @@
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
           "contains": "class PcApiPayloadsTest"
         }
+      ]
+    },
+    {
+      "id": "chapter.cataloging",
+      "area": "chapter",
+      "summary": "导入或既有章节的作品建档任务",
+      "status": "partial",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/{project_id}/cataloging",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/cataloging.py",
+            "contains": "start_cataloging"
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun startCataloging("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun streamCataloging("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "blocked",
+          "reason": "完整建档会同时更新摘要、角色、世界观和治理资料，离线时不复制第二套权威实现。"
+        },
+        "android_standalone": {
+          "support": "blocked",
+          "reason": "手机独立 Agent 暂不伪装成 PC Cataloging；连接 Gateway 后运行权威建档。"
+        }
+      },
+      "side_effects": [
+        "cataloging"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "client_serialization",
+        "limitations": "Android 同一时刻只启动一个建档任务；服务端任务 ID 作为后续流式进度、查询与取消的唯一引用。"
+      },
+      "tests": [
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/ProjectToolPathsTest.kt",
+          "contains": "cataloging and export use canonical PC routes"
+        }
+      ],
+      "known_gaps": [
+        "手机独立模型尚未实现与 PC 完全一致的批量 Cataloging 运行时。"
       ]
     },
     {

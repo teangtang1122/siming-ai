@@ -82,6 +82,22 @@ internal object PcApiPaths {
     fun worldTimeline(projectId: String, entryId: String): String =
         "${authoringItem(projectId, "world", entryId)}/timeline"
 
+    fun catalogingStart(projectId: String): String = "${project(projectId)}/cataloging/start"
+
+    fun catalogingJob(projectId: String, jobId: String): String =
+        "${project(projectId)}/cataloging/${segment(jobId)}"
+
+    fun catalogingStream(projectId: String, jobId: String): String =
+        "${catalogingJob(projectId, jobId)}/stream"
+
+    fun catalogingCancel(projectId: String, jobId: String): String =
+        "${catalogingJob(projectId, jobId)}/cancel"
+
+    fun projectExport(projectId: String): String = "${project(projectId)}/export"
+
+    fun projectExportDownload(projectId: String, fileId: String): String =
+        "${projectExport(projectId)}/download/${segment(fileId)}"
+
     fun assistantStream(projectId: String): String =
         "${project(projectId)}/ai/workspace-assistant/stream"
 

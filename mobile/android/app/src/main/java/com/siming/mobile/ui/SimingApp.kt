@@ -107,6 +107,7 @@ import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.AssistantModelRoute
+import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
 import com.siming.mobile.data.network.PcAuthoringContract
@@ -136,6 +137,7 @@ private val entitySections = listOf(
     EntitySection("world", "世界", Icons.Outlined.Hub, "还没有世界观设定"),
     EntitySection("foreshadowing", "伏笔", Icons.Outlined.Link, "还没有伏笔记录"),
     EntitySection("governance", "治理", Icons.Outlined.WarningAmber, "还没有叙事承诺或治理记录"),
+    EntitySection("tools", "工具", Icons.Outlined.Settings, ""),
 )
 
 @Composable
@@ -143,6 +145,7 @@ fun SimingApp(
     viewModel: MainViewModel,
     onScanQr: () -> Unit,
     onPickText: (((String, String) -> Unit) -> Unit),
+    onSaveExport: (MobileExportFile) -> Unit,
 ) {
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val projects by viewModel.projects.collectAsStateWithLifecycle()
@@ -190,6 +193,7 @@ fun SimingApp(
             project = selectedProject,
             onBack = { selectedProjectId = null },
             snackbar = snackbar,
+            onSaveExport = onSaveExport,
         )
         return
     }
@@ -347,7 +351,7 @@ private fun LibraryScreen(
                 ScreenHeading(
                     kicker = "LOCAL-FIRST LIBRARY",
                     title = "作品库",
-                    detail = "创建新小说，或导入已有正文继续二创；资料先落手机，联网后按修订号同步。",
+                    detail = "从零立项、导入现有小说、继续写作都从这里开始；导入后可直接进入作品建档与导出。",
                 )
             }
             item {
@@ -360,7 +364,7 @@ private fun LibraryScreen(
                     OutlinedButton(onClick = { showCreate = true }) {
                         Icon(Icons.Outlined.Add, null)
                         Spacer(Modifier.width(7.dp))
-                        Text("快速建档")
+                        Text("空白作品")
                     }
                     OutlinedButton(
                         onClick = {
@@ -507,6 +511,7 @@ private fun ProjectScreen(
     project: ReplicaEntity,
     onBack: () -> Unit,
     snackbar: SnackbarHostState,
+    onSaveExport: (MobileExportFile) -> Unit,
 ) {
     var section by rememberSaveable(project.projectId) { mutableStateOf("assistant") }
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
@@ -557,7 +562,7 @@ private fun ProjectScreen(
             }
         },
         floatingActionButton = {
-            if (section != "assistant") {
+            if (section !in setOf("assistant", "tools")) {
                 FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {
                     Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
                 }
@@ -565,44 +570,16 @@ private fun ProjectScreen(
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            Row(
-                modifier = Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .background(SimingPaperWarm)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                AssistChip(
-                    onClick = { section = "assistant" },
-                    label = { Text("AI 共创") },
-                    leadingIcon = { Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(17.dp)) },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = if (section == "assistant") MaterialTheme.colorScheme.primaryContainer else Color.White,
-                        labelColor = if (section == "assistant") SimingCinnabar else MaterialTheme.colorScheme.onSurface,
-                    ),
-                    border = AssistChipDefaults.assistChipBorder(
-                        enabled = true,
-                        borderColor = if (section == "assistant") SimingCinnabar else MaterialTheme.colorScheme.outlineVariant,
-                    ),
-                )
-                entitySections.forEach { item ->
-                    AssistChip(
-                        onClick = { section = item.type },
-                        label = { Text(item.label) },
-                        leadingIcon = { Icon(item.icon, null, Modifier.size(17.dp)) },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = if (section == item.type) MaterialTheme.colorScheme.primaryContainer else Color.White,
-                            labelColor = if (section == item.type) SimingCinnabar else MaterialTheme.colorScheme.onSurface,
-                        ),
-                        border = AssistChipDefaults.assistChipBorder(
-                            enabled = true,
-                            borderColor = if (section == item.type) SimingCinnabar else MaterialTheme.colorScheme.outlineVariant,
-                        ),
-                    )
-                }
-            }
+            ProjectSectionNavigation(selected = section, onSelected = { section = it })
             when (section) {
                 "assistant" -> AssistantScreen(project.projectId, viewModel)
+                "tools" -> ProjectToolsPanel(
+                    project = project,
+                    online = connection != null,
+                    ui = ui,
+                    viewModel = viewModel,
+                    onExportReady = onSaveExport,
+                )
                 "outline" -> OutlineTreeList(
                     projectId = project.projectId,
                     records = records,
@@ -631,6 +608,37 @@ private fun ProjectScreen(
             }
         }
     }
+
+
+if (ui.pendingCatalogingProjectId == project.projectId) {
+    AlertDialog(
+        onDismissRequest = viewModel::dismissImportCatalogingPrompt,
+        title = { Text("导入完成 · ${ui.importedChapterCount} 章") },
+        text = {
+            Text(
+                if (connection != null) {
+                    "正文已经导入作品库。现在可以启动与 PC 相同的作品建档流程，让司命从现有章节整理摘要、角色变化和世界观资料。"
+                } else {
+                    "正文已经保存在手机。完整作品建档需要连接 PC Gateway；你可以先阅读、编辑或导出 TXT，连接后再到“管理 → 工具”启动建档。"
+                },
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (connection != null) viewModel.startCataloging(project.projectId)
+                    section = "tools"
+                    viewModel.dismissImportCatalogingPrompt()
+                },
+            ) {
+                Text(if (connection != null) "开始建档" else "打开作品工具")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = viewModel::dismissImportCatalogingPrompt) { Text("稍后") }
+        },
+    )
+}
 
     if (showChapterOrder) {
         ChapterOrderDialog(
@@ -1970,7 +1978,7 @@ private fun CreateProjectDialog(onDismiss: () -> Unit, onCreate: (String, String
 }
 
 @Composable
-private fun ScreenHeading(kicker: String, title: String, detail: String) {
+internal fun ScreenHeading(kicker: String, title: String, detail: String) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(kicker, color = SimingCinnabar, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
@@ -2033,7 +2041,7 @@ private fun MetricCard(label: String, value: String, detail: String, modifier: M
 }
 
 @Composable
-private fun MicroTag(text: String, color: Color) {
+internal fun MicroTag(text: String, color: Color) {
     Text(
         text,
         color = color,

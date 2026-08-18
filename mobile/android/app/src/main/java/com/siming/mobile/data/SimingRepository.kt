@@ -658,6 +658,68 @@ class SimingRepository(context: Context) {
         result.withMobileRefreshFailure(error.toUserFacingMessage())
     }
 
+
+suspend fun runCataloging(
+    projectId: String,
+    onProgress: suspend (MobileCatalogingProgress, String?) -> Unit,
+): MobileCatalogingProgress {
+    val connection = canonicalCommandConnection()
+    val chapters = orderReplicaEntities(
+        "chapter",
+        dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
+    )
+    require(chapters.isNotEmpty()) { "作品没有可建档章节" }
+    val started = api.startCataloging(connection, projectId, chapters.map { it.entityId })
+    var latest = started.toMobileCatalogingProgress()
+    onProgress(latest, "作品建档任务已创建")
+    api.streamCataloging(connection, projectId, latest.jobId) { raw ->
+        val event = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+        val job = event?.get("job") as? JsonObject
+        if (job != null) latest = job.toMobileCatalogingProgress()
+        val message = (event?.get("message") as? JsonPrimitive)?.contentOrNull
+            ?: (event?.get("detail") as? JsonPrimitive)?.contentOrNull
+            ?: (event?.get("type") as? JsonPrimitive)?.contentOrNull
+        onProgress(latest, message)
+    }
+    val finalData = api.getCatalogingJob(connection, projectId, latest.jobId)
+    val finalJob = finalData["job"] as? JsonObject
+    if (finalJob != null) latest = finalJob.toMobileCatalogingProgress()
+    runCatching { pullAll(connection, listOf(projectId)) }
+    return latest
+}
+
+suspend fun cancelCataloging(projectId: String, jobId: String) {
+    val connection = requireConnection()
+    api.cancelCataloging(connection, projectId, jobId)
+}
+
+suspend fun exportProject(projectId: String, format: String): MobileExportFile {
+    val normalized = format.lowercase()
+    require(normalized in setOf("txt", "docx", "pdf")) { "不支持的导出格式：$format" }
+    val project = dao.entity(ReplicaEntity.key(projectId, "project", projectId))
+        ?: error("作品不存在")
+    val connection = dao.connection()
+    if (connection == null) {
+        require(normalized == "txt") { "Word / PDF 导出需要连接 PC Gateway" }
+        val chapters = orderReplicaEntities(
+            "chapter",
+            dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
+        )
+        return buildLocalNovelExport(project, chapters)
+    }
+    check(prepareCanonicalWrite()) { "当前无法同步本机修改，请恢复 Gateway 连接后再导出" }
+    val metadata = api.createProjectExport(connection, projectId, normalized)
+    val fileId = (metadata["file_id"] as? JsonPrimitive)?.contentOrNull
+        ?: error("PC 导出结果缺少 file_id")
+    val filename = (metadata["filename"] as? JsonPrimitive)?.contentOrNull
+        ?: "司命导出.$normalized"
+    return MobileExportFile(
+        filename = filename,
+        mimeType = exportMimeType(normalized),
+        bytes = api.downloadProjectExport(connection, projectId, fileId),
+    )
+}
+
     suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
         api.listChapterSnapshots(requireConnection(), projectId, chapterId)
 

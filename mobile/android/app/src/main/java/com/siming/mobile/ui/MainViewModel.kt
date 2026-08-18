@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.siming.mobile.data.SimingRepository
 import com.siming.mobile.data.AssistantRoute
 import com.siming.mobile.data.AssistantModelRoute
+import com.siming.mobile.data.MobileCatalogingProgress
+import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.creation.CreationExecutionRoute
 import com.siming.mobile.data.creation.CreationStartInput
 import com.siming.mobile.data.toUserFacingMessage
@@ -48,6 +50,17 @@ data class MobileUiState(
     val activeCreationId: String? = null,
     val creationRunning: Boolean = false,
     val creationActivity: String = "",
+    val pendingCatalogingProjectId: String? = null,
+    val importedChapterCount: Int = 0,
+    val catalogingProjectId: String? = null,
+    val catalogingJobId: String? = null,
+    val catalogingStatus: String = "",
+    val catalogingTotal: Int = 0,
+    val catalogingCompleted: Int = 0,
+    val catalogingFailed: Int = 0,
+    val catalogingRunning: Boolean = false,
+    val catalogingActivity: String = "",
+    val exportRunning: Boolean = false,
 )
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -55,6 +68,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SimingRepository(application)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private var assistantJob: Job? = null
+    private var catalogingJob: Job? = null
 
     val connection = repository.connection.stateIn(
         viewModelScope,
@@ -372,6 +386,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+
+fun dismissImportCatalogingPrompt() {
+    uiState.value = uiState.value.copy(pendingCatalogingProjectId = null, importedChapterCount = 0)
+}
+
+fun startCataloging(projectId: String) {
+    if (catalogingJob?.isActive == true) return
+    catalogingJob = viewModelScope.launch {
+        uiState.value = uiState.value.copy(
+            pendingCatalogingProjectId = null,
+            catalogingProjectId = projectId,
+            catalogingRunning = true,
+            catalogingActivity = "正在准备作品建档…",
+            error = null,
+        )
+        try {
+            val result = repository.runCataloging(projectId) { progress, message ->
+                updateCatalogingProgress(projectId, progress, message)
+            }
+            updateCatalogingProgress(projectId, result, "作品建档已结束")
+            uiState.value = uiState.value.copy(
+                catalogingRunning = false,
+                catalogingActivity = "",
+                notice = when (result.status) {
+                    "completed" -> "作品建档完成，手机已刷新角色、设定和摘要副本"
+                    "cancelled" -> "作品建档已取消"
+                    else -> "作品建档已停止：${result.status}"
+                },
+            )
+        } catch (_: CancellationException) {
+            uiState.value = uiState.value.copy(catalogingRunning = false, catalogingActivity = "")
+        } catch (error: Exception) {
+            uiState.value = uiState.value.copy(catalogingRunning = false, catalogingActivity = "")
+            showError(error)
+        } finally {
+            catalogingJob = null
+        }
+    }
+}
+
+fun cancelCataloging(projectId: String) {
+    val jobId = uiState.value.catalogingJobId ?: return
+    viewModelScope.launch {
+        runCatching { repository.cancelCataloging(projectId, jobId) }
+            .onFailure(::showError)
+        catalogingJob?.cancel(CancellationException("用户取消作品建档"))
+        uiState.value = uiState.value.copy(
+            catalogingRunning = false,
+            catalogingStatus = "cancelled",
+            catalogingActivity = "",
+            notice = "作品建档已取消",
+        )
+    }
+}
+
+fun prepareExport(
+    projectId: String,
+    format: String,
+    onReady: (MobileExportFile) -> Unit,
+) {
+    viewModelScope.launch {
+        uiState.value = uiState.value.copy(exportRunning = true, error = null)
+        try {
+            val file = repository.exportProject(projectId, format)
+            uiState.value = uiState.value.copy(exportRunning = false)
+            onReady(file)
+        } catch (error: Exception) {
+            uiState.value = uiState.value.copy(exportRunning = false)
+            showError(error)
+        }
+    }
+}
+
+private fun updateCatalogingProgress(
+    projectId: String,
+    progress: MobileCatalogingProgress,
+    message: String?,
+) {
+    uiState.value = uiState.value.copy(
+        catalogingProjectId = projectId,
+        catalogingJobId = progress.jobId,
+        catalogingStatus = progress.status,
+        catalogingTotal = progress.totalChapters,
+        catalogingCompleted = progress.completedChapters,
+        catalogingFailed = progress.failedChapters,
+        catalogingActivity = message.orEmpty(),
+    )
+}
+
     suspend fun chapterSnapshots(projectId: String, chapterId: String): JsonObject =
         repository.listChapterSnapshots(projectId, chapterId)
 
@@ -496,11 +599,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
-                    notice = if (connection.value != null) {
-                        "已通过 PC 端规范 API 导入 ${chapters.size} 章"
-                    } else {
-                        "已在手机导入 ${chapters.size} 章，连接 Gateway 后自动同步"
-                    },
+                    notice = "已导入 ${chapters.size} 章，可以继续作品建档或直接阅读编辑",
+                    pendingCatalogingProjectId = projectId,
+                    importedChapterCount = chapters.size,
                 )
                 onCreated(projectId)
             } catch (error: Exception) {
