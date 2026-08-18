@@ -31,8 +31,6 @@ text = Path(path).read_text(encoding="utf-8")
 marker = "def test_opencode_configuration_accepts_managed_command_outside_path():"
 if marker not in text:
     addition = r'''
-
-
 def test_opencode_configuration_accepts_managed_command_outside_path():
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -61,6 +59,10 @@ def test_opencode_configuration_accepts_managed_command_outside_path():
         assert saved["mcp"]["siming"]["enabled"] is True
         assert saved["mcp"]["siming"]["command"][:2] == ["python", "-m"]
 '''
-    Path(path).write_text(text.rstrip() + addition + "\n", encoding="utf-8", newline="\n")
+    Path(path).write_text(
+        text.rstrip() + "\n\n" + addition.strip() + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
 print("Managed OpenCode MCP command fix applied")
