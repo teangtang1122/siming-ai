@@ -38,11 +38,11 @@ jobs:
           git diff --check
 
       - name: Install backend dependencies
-        run: python -m pip install -r backend/requirements.txt
+        run: python -m pip install -r backend/requirements.txt pytest
 
       - name: Run backend regressions
         working-directory: backend
-        run: pytest -q tests/test_mcp_auto_config.py tests/test_getting_started.py tests/test_local_cli_cataloging_agent.py
+        run: python -m pytest -q tests/test_mcp_auto_config.py tests/test_getting_started.py tests/test_local_cli_cataloging_agent.py
 
       - uses: actions/setup-node@v4
         with:
