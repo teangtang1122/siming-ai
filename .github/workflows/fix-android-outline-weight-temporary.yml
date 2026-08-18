@@ -1,0 +1,41 @@
+name: Temporary Android outline cleanup
+
+on:
+  push:
+    branches:
+      - feature/android-outline-library-parity
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/android-outline-library-parity
+          fetch-depth: 0
+      - name: Add missing Compose import and remove temporary workflows
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/OutlineTree.kt')
+          text = path.read_text(encoding='utf-8')
+          anchor = 'import androidx.compose.foundation.layout.width\n'
+          needed = 'import androidx.compose.foundation.layout.weight\n'
+          if needed not in text:
+              if anchor not in text:
+                  raise SystemExit('OutlineTree import anchor missing')
+              path.write_text(text.replace(anchor, anchor + needed, 1), encoding='utf-8')
+          PY
+          rm -f .github/workflows/apply-android-outline-library-parity-temporary.yml
+          rm -f .github/workflows/fix-android-outline-weight-temporary.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(android): finalize outline tree Compose imports'
+          git push origin HEAD:feature/android-outline-library-parity
