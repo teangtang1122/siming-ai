@@ -1,0 +1,30 @@
+name: Temporary cleanup Android mobile UI redesign branch
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.ref == 'cleanup/android-mobile-ui-redesign-20260819'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Verify squash result and delete temporary branches
+        run: |
+          set -euo pipefail
+          expected_develop='5cbd287b39af4b3d560202a3e374b0fa85025b07'
+          expected_feature='43c03542fe947912fb7a6c41a8779aa544677aea'
+          test "$(git rev-parse HEAD)" = "$expected_develop"
+          git fetch origin feature/android-mobile-ui-redesign
+          test "$(git rev-parse origin/feature/android-mobile-ui-redesign)" = "$expected_feature"
+          git push origin --delete feature/android-mobile-ui-redesign
+          git push origin --delete cleanup/android-mobile-ui-redesign-20260819
