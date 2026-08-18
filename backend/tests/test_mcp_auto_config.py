@@ -558,3 +558,43 @@ class McpAutoConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_opencode_preflight_requires_configured_connected_siming():
+    connected = MagicMock(returncode=0, stdout="siming connected\n", stderr="")
+    with patch(
+        "app.services.external_agent.mcp_auto_config._resolve_command",
+        return_value="opencode",
+    ), patch(
+        "app.services.external_agent.mcp_auto_config.subprocess.run",
+        return_value=connected,
+    ), patch(
+        "app.services.external_agent.mcp_auto_config._probe_siming_mcp_tools",
+        return_value=(set(mcp_auto_config.CATALOGING_MCP_TOOL_NAMES), ""),
+    ):
+        result = mcp_auto_config.preflight_cli_integration(
+            "opencode_cli",
+            cli_command="opencode",
+        )
+
+    assert result["ready"] is True
+    assert result["connected"] is True
+    assert result["missing_tools"] == []
+
+
+def test_opencode_preflight_reports_missing_mcp_configuration():
+    listed = MagicMock(returncode=0, stdout="No MCP servers configured\n", stderr="")
+    with patch(
+        "app.services.external_agent.mcp_auto_config._resolve_command",
+        return_value="opencode",
+    ), patch(
+        "app.services.external_agent.mcp_auto_config.subprocess.run",
+        return_value=listed,
+    ), patch(
+        "app.services.external_agent.mcp_auto_config._probe_siming_mcp_tools",
+        return_value=(set(mcp_auto_config.CATALOGING_MCP_TOOL_NAMES), ""),
+    ):
+        result = mcp_auto_config.preflight_cli_integration("opencode_cli")
+
+    assert result["ready"] is False
+    assert result["configured"] is False
+    assert "尚未配置" in result["detail"]

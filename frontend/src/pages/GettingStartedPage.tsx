@@ -91,7 +91,14 @@ interface GettingStartedStatus {
   global_model?: { provider: string; model: string } | null
   available_model?: { provider: string; model: string } | null
   activation_job?: ActivationJob | null
+  opencode_mcp_configured?: boolean
   official_links?: { model_docs?: string }
+}
+
+interface McpSetupResult {
+  ready: boolean
+  detail?: string
+  preflight?: { ready?: boolean; detail?: string; missing_tools?: string[] }
 }
 
 interface ApiEnvelope<T> {
@@ -174,6 +181,12 @@ export function GettingStartedPanel() {
   const [selectedModel, setSelectedModel] = useState<string>()
   const [setupError, setSetupError] = useState('')
   const [authCredential, setAuthCredential] = useState('')
+  const [mcpSetupRunning, setMcpSetupRunning] = useState(false)
+  const [mcpSetupError, setMcpSetupError] = useState('')
+  const [mcpConfigured, setMcpConfigured] = useState(false)
+  const [mcpDeferred, setMcpDeferred] = useState(
+    () => localStorage.getItem('siming_getting_started_mcp_deferred') === '1',
+  )
   const downloadRate = useDownloadRate({
     active: job?.phase === 'downloading',
     bytes: job?.bytes_downloaded,
@@ -192,6 +205,14 @@ export function GettingStartedPanel() {
       setSetupError(errorText(error))
     }
   }, [queryClient])
+
+  useEffect(() => {
+    if (status?.opencode_mcp_configured) {
+      setMcpConfigured(true)
+      setMcpDeferred(false)
+      localStorage.removeItem('siming_getting_started_mcp_deferred')
+    }
+  }, [status?.opencode_mcp_configured])
 
   useEffect(() => {
     if (!status) return
@@ -272,6 +293,35 @@ export function GettingStartedPanel() {
     }
   }
 
+  const configureMcp = async () => {
+    setMcpSetupRunning(true)
+    setMcpSetupError('')
+    try {
+      const response = await apiClient.post<ApiEnvelope<McpSetupResult>>(
+        '/config/getting-started/opencode/mcp/configure',
+      )
+      const result = response.data.data
+      if (!result.ready) {
+        setMcpSetupError(result.preflight?.detail || result.detail || 'MCP 配置检查未通过')
+        return
+      }
+      setMcpConfigured(true)
+      setMcpDeferred(false)
+      localStorage.removeItem('siming_getting_started_mcp_deferred')
+      message.success('OpenCode 与 Siming MCP 已配置并验证')
+      await fetchStatus(false)
+    } catch (error) {
+      setMcpSetupError(errorText(error))
+    } finally {
+      setMcpSetupRunning(false)
+    }
+  }
+
+  const deferMcpSetup = () => {
+    localStorage.setItem('siming_getting_started_mcp_deferred', '1')
+    setMcpDeferred(true)
+  }
+
   const currentStep = useMemo(() => {
     if (job?.status === 'ready' || status?.has_usable_models) return 2
     if (job && ['discovering_models', 'testing', 'auth_required', 'authenticating', 'credential_required'].includes(job.phase)) return 1
@@ -290,6 +340,42 @@ export function GettingStartedPanel() {
     : job?.selected_model
       ? `opencode_cli:${job.selected_model}`
       : undefined
+  const shouldOfferMcp = Boolean(
+    ready
+      && activeModel?.startsWith('opencode_cli:')
+      && !status.opencode_mcp_configured
+      && !mcpConfigured
+      && !mcpDeferred,
+  )
+  if (shouldOfferMcp) {
+    return (
+      <div className="getting-started-panel">
+        <div className="getting-started-layout">
+          <section className="getting-started-work" aria-live="polite">
+            <CheckCircleOutlined className="getting-started-ready-icon" />
+            <Title level={3}>OpenCode 已可用，再完成一步即可启用完整 Agent</Title>
+            <Paragraph>
+              配置 Siming MCP 后，OpenCode 才能在作品建档等任务中把结构化结果正式写回司命。
+              司命只为托管建档回合开放读取作品镜像和专用建档工具，不会给 OpenCode 任意文件写入或命令执行权限。
+            </Paragraph>
+            <Alert
+              type="info"
+              showIcon
+              message="推荐完成配置"
+              description="司命会先写入 OpenCode 的 siming MCP 配置，再实际检查 MCP 连接和建档工具列表。你也可以暂时跳过，之后在系统设置中补配。"
+            />
+            {mcpSetupError && <Alert type="error" showIcon message="MCP 配置未完成" description={mcpSetupError} />}
+            <Space wrap>
+              <Button type="primary" loading={mcpSetupRunning} onClick={() => void configureMcp()}>
+                推荐：配置并验证 MCP
+              </Button>
+              <Button disabled={mcpSetupRunning} onClick={deferMcpSetup}>暂时跳过</Button>
+            </Space>
+          </section>
+        </div>
+      </div>
+    )
+  }
   if (ready) return <FirstIdea modelReady model={activeModel} />
 
   const running = Boolean(job && ['pending', 'running'].includes(job.status))

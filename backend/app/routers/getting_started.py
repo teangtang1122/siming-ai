@@ -15,6 +15,11 @@ from ..database.session import get_db
 from ..modules.model_runtime.application.getting_started import (
     get_getting_started_configuration,
 )
+from ..services.external_agent.mcp_auto_config import (
+    configure_cli_integration,
+    preflight_cli_integration,
+    scan_cli_integrations,
+)
 from ..services.opencode_onboarding import (
     OPENCODE_INSTALL_DOCS_URL,
     OPENCODE_MODELS_DOCS_URL,
@@ -111,6 +116,7 @@ class GettingStartedStatus(BaseModel):
     global_model: dict[str, str | None] | None = None
     available_model: dict[str, str | None] | None = None
     activation_job: OpenCodeActivationStatus | None = None
+    opencode_mcp_configured: bool = False
     official_links: dict[str, str] = Field(default_factory=dict)
 
     model_config = {"protected_namespaces": ()}
@@ -118,6 +124,16 @@ class GettingStartedStatus(BaseModel):
 
 def _getting_started_summary(db: Session) -> dict:
     state = get_getting_started_configuration().state(db)
+    opencode_mcp_configured = False
+    if state.opencode_command:
+        try:
+            scan = scan_cli_integrations()
+            opencode_mcp_configured = any(
+                item.get("provider") == "opencode_cli" and bool(item.get("configured"))
+                for item in scan.get("clients") or []
+            )
+        except Exception:
+            opencode_mcp_configured = False
     has_usable_model = bool(
         state.has_usable_models and state.usable_provider and state.usable_model
     )
@@ -152,6 +168,7 @@ def _getting_started_summary(db: Session) -> dict:
         # verified model is already available. Users can still revalidate a
         # model explicitly from model settings.
         "activation_job": None if has_usable_model else get_latest_opencode_activation_job(db),
+        "opencode_mcp_configured": opencode_mcp_configured,
         "official_links": {
             "releases": OPENCODE_RELEASES_URL,
             "install_docs": OPENCODE_INSTALL_DOCS_URL,
@@ -222,6 +239,39 @@ def activate_opencode(
     except RuntimeError as exc:
         raise ValidationError(str(exc)) from exc
     return ApiResponse.success(data=job, message="免费写作能力正在准备")
+
+
+
+@router.post("/config/getting-started/opencode/mcp/configure")
+def configure_getting_started_opencode_mcp(db: Session = Depends(get_db)):
+    """Explicitly configure and verify Siming MCP after OpenCode is usable."""
+
+    state = get_getting_started_configuration().state(db)
+    command = resolve_opencode_command(state.opencode_command)
+    if not command:
+        raise ValidationError("还没有可运行的 OpenCode，请先完成快速开始")
+    configured = configure_cli_integration(
+        "opencode_cli",
+        cli_command=command,
+        permission_pack="auto",
+    )
+    preflight = preflight_cli_integration(
+        "opencode_cli",
+        cli_command=command,
+        permission_pack="cataloging_worker",
+    )
+    return ApiResponse.success(
+        data={
+            **configured,
+            "ready": bool(preflight.get("ready")),
+            "preflight": preflight,
+        },
+        message=(
+            "OpenCode 与 Siming MCP 已配置并验证"
+            if preflight.get("ready")
+            else preflight.get("detail") or configured.get("detail") or "MCP 配置未完成"
+        ),
+    )
 
 
 @router.get("/config/getting-started/opencode/jobs/{job_id}")

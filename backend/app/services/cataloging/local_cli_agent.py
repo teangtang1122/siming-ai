@@ -51,6 +51,10 @@ from app.services.cataloging.candidate_io import candidate_to_dict
 from app.services.cataloging.fact_store import fact_to_dict
 from app.services.cataloging.job_control import refresh_job_progress
 from app.services.cataloging.orchestrator import job_to_dict, run_to_dict, sse_event
+from app.services.external_agent.mcp_auto_config import (
+    CATALOGING_MCP_TOOL_NAMES,
+    preflight_cli_integration,
+)
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
 from app.services.operation_runtime import (
     finish_operation,
@@ -73,6 +77,48 @@ def _timeout_seconds_from_env(name: str, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def _opencode_cataloging_permission_env() -> str:
+    permission: dict[str, Any] = {
+        "*": "deny",
+        "read": {
+            "*": "allow",
+            "*.env": "deny",
+            "*.env.*": "deny",
+            "*.env.example": "allow",
+        },
+        "glob": "allow",
+        "grep": "allow",
+        "edit": "deny",
+        "bash": "deny",
+        "question": "deny",
+        "task": "deny",
+        "skill": "deny",
+        "lsp": "deny",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "external_directory": "deny",
+        "doom_loop": "allow",
+    }
+    for tool_name in CATALOGING_MCP_TOOL_NAMES:
+        permission[f"siming_{tool_name}"] = "allow"
+    return json.dumps(permission, ensure_ascii=False, separators=(",", ":"))
+
+
+def _agent_tool_event_count(agent_run_id: str) -> int:
+    db = SessionLocal()
+    try:
+        return (
+            db.query(AgentRunEvent.id)
+            .filter(
+                AgentRunEvent.run_id == agent_run_id,
+                AgentRunEvent.event_type == "tool_start",
+            )
+            .count()
+        )
+    finally:
+        db.close()
 
 
 def _latest_agent_event_at(agent_run_id: str) -> datetime | None:
@@ -180,6 +226,18 @@ def ensure_local_cli_cataloging_worker(
     if not config:
         raise RuntimeError("未找到可用的本机 CLI 配置")
     provider = config.provider
+    mcp_preflight = None
+    if provider == "opencode_cli":
+        mcp_preflight = preflight_cli_integration(
+            provider,
+            cli_command=config.cli_command,
+            permission_pack="cataloging_worker",
+        )
+        if not mcp_preflight.get("ready"):
+            raise RuntimeError(
+                "OpenCode 无法开始 MCP 建档："
+                + str(mcp_preflight.get("detail") or "MCP 启动检查未通过")
+            )
     run = _active_agent_run(db, job, provider)
     job.execution_backend = "local_cli_agent"
     if job.status not in _TERMINAL_JOBS and job.status != "waiting_confirmation":
@@ -206,6 +264,7 @@ def ensure_local_cli_cataloging_worker(
         "agent_run_id": run.id,
         "provider": provider,
         "job_id": job.id,
+        "mcp_preflight": mcp_preflight,
     }
 
 
@@ -344,7 +403,7 @@ async def stream_local_cli_cataloging_job(project_id: str, job_id: str):
             ensure_local_cli_cataloging_worker(db, job)
         yield sse_event({
             "type": "cataloging_stage",
-            "message": "本机 CLI Agent 已连接，将直接读取作品文件并通过 Siming MCP 写入",
+            "message": "本机 CLI Agent 已连接，Siming MCP 建档工具已通过启动检查",
             "job": job_to_dict(job),
         })
 
@@ -746,6 +805,7 @@ async def _run_direct_jsonl_cataloging_fallback(
     stage: str,
     stdout_tail: str = "",
     stderr_tail: str = "",
+    failure_reason: str = "",
 ) -> tuple[bool, str]:
     """Fallback when a managed CLI turn exits without calling MCP writes.
 
@@ -758,7 +818,10 @@ async def _run_direct_jsonl_cataloging_fallback(
         agent_run_id,
         "chapter_agent_fallback",
         status="running",
-        message="本机 CLI 未通过 MCP 保存，改用同一模型的直连 JSONL 建档兜底",
+        message=(
+            failure_reason
+            or "本机 CLI 未通过 MCP 保存，改用同一模型的直连 JSONL 建档兜底"
+        ),
         payload_json=json.dumps({
             "job_id": job.id,
             "chapter_id": run.chapter_id,
@@ -878,6 +941,10 @@ async def _run_cli_turn(
     }
     for suffix, value in managed_env.items():
         set_compatible_env(f"SIMING_{suffix}", value, target=env)
+    if config.provider == "opencode_cli":
+        # OpenCode supports a runtime-only permission override. Keep the managed
+        # cataloging child read-only except for the ten Siming cataloging tools.
+        env["OPENCODE_PERMISSION"] = _opencode_cataloging_permission_env()
     process = await asyncio.create_subprocess_exec(
         resolved,
         *launch.args,
@@ -918,6 +985,7 @@ async def _run_cli_turn(
             operation_id=job.operation_id,
             external_activity_probe=lambda: _latest_agent_event_at(agent_run_id),
             poll_seconds=poll_seconds,
+            stop_on_permission_request=True,
         )
     except CLIQuotaLimitError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -1064,6 +1132,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
             finally:
                 db.close()
 
+            tool_events_before = _agent_tool_event_count(agent_run_id)
             try:
                 returncode, stdout, stderr = await _run_cli_turn(
                     job=job_snapshot,
@@ -1137,6 +1206,7 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                         "stderr_tail": stderr[-1500:],
                     }, ensure_ascii=False),
                 )
+                tool_activity = _agent_tool_event_count(agent_run_id) > tool_events_before
                 no_saved_progress = returncode == 0 and _turn_has_no_saved_progress(stage, run.status)
                 if no_saved_progress:
                     attempt = no_save_attempts.get(run.id, 0) + 1
@@ -1153,8 +1223,12 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                             "chapter_agent_retry",
                             status="running",
                             message=(
-                                f"本机 CLI 未保存第 {run.chapter_order + 1} 章，"
-                                f"正在自动重试 {attempt + 1}/{_MAX_NO_SAVE_ATTEMPTS}"
+                                (
+                                    "MCP 已连接，但模型本轮未调用任何 Siming 工具；"
+                                    if not tool_activity
+                                    else "模型调用了 Siming MCP，但未完成本章保存；"
+                                )
+                                + f"正在自动重试 {attempt + 1}/{_MAX_NO_SAVE_ATTEMPTS}"
                             ),
                             payload_json=json.dumps({
                                 "job_id": job.id,
@@ -1181,6 +1255,13 @@ async def _coordinate_cataloging(job_id: str, provider: str) -> None:
                         stage=stage,
                         stdout_tail=stdout,
                         stderr_tail=stderr,
+                        failure_reason=(
+                            "MCP 已连接，但模型连续重试后仍未调用建档写入工具；"
+                            "改用同一模型的直连 JSONL 建档兜底"
+                            if not tool_activity
+                            else "模型调用了 Siming MCP，但连续重试后仍未完成本章保存；"
+                            "改用同一模型的直连 JSONL 建档兜底"
+                        ),
                     )
                     if ok:
                         no_save_attempts.pop(run.id, None)

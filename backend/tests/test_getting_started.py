@@ -763,3 +763,35 @@ def test_one_time_auth_credential_is_written_without_returning_or_logging_it():
 
     process.write.assert_called_once_with("secret-token-value\r")
     assert "secret-token-value" not in str(result)
+
+def test_quick_start_can_explicitly_configure_and_preflight_opencode_mcp():
+    from app.routers.getting_started import configure_getting_started_opencode_mcp
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        db.add(APIConfig(
+            provider="opencode_cli",
+            provider_type="local_cli",
+            api_key_encrypted="test",
+            default_model="opencode/big-pickle",
+            cli_command=r"C:\\managed\\opencode.exe",
+            readiness_status="ready",
+        ))
+        db.commit()
+        with patch(
+            "app.routers.getting_started.resolve_opencode_command",
+            return_value=r"C:\\managed\\opencode.exe",
+        ), patch(
+            "app.routers.getting_started.configure_cli_integration",
+            return_value={"status": "configured", "configured": True, "detail": "configured"},
+        ) as configure, patch(
+            "app.routers.getting_started.preflight_cli_integration",
+            return_value={"ready": True, "detail": "ready", "missing_tools": []},
+        ) as preflight:
+            result = configure_getting_started_opencode_mcp(db)
+
+    assert result.data["ready"] is True
+    configure.assert_called_once()
+    preflight.assert_called_once()

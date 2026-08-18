@@ -694,3 +694,15 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_opencode_cataloging_permission_env_is_read_only_except_cataloging_mcp():
+    from app.services.cataloging.local_cli_agent import _opencode_cataloging_permission_env
+    from app.services.external_agent.mcp_auto_config import CATALOGING_MCP_TOOL_NAMES
+
+    permissions = json.loads(_opencode_cataloging_permission_env())
+    assert permissions["edit"] == "deny"
+    assert permissions["bash"] == "deny"
+    assert permissions["external_directory"] == "deny"
+    assert permissions["read"]["*"] == "allow"
+    for tool_name in CATALOGING_MCP_TOOL_NAMES:
+        assert permissions[f"siming_{tool_name}"] == "allow"
