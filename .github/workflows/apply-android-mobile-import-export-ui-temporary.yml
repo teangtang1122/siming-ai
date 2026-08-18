@@ -103,6 +103,8 @@ jobs:
           )
           '''
           text = text[:nav_start] + nav_replacement + text[nav_end:]
+          text = text.replace('"idempotency": {"required": true,', '"idempotency": {"required": True,')
+          text = text.replace('"idempotency": {"required": false,', '"idempotency": {"required": False,')
           path.write_text(text, encoding='utf-8')
           PY
           python scripts/patch-android-mobile-import-export-ui.py
