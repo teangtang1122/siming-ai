@@ -24,13 +24,13 @@ from app.database.models import (
     Project,
 )
 from app.services.cataloging.local_cli_agent import (
-    _MAX_NO_SAVE_ATTEMPTS,
     _build_cataloging_cli_launch,
     _coordinate_cataloging,
     _run_cli_turn,
     _task_prompt,
     _task_text,
 )
+from app.services.cataloging.local_cli_result import _MAX_NO_SAVE_ATTEMPTS
 from app.services.cataloging.orchestrator import create_cataloging_job
 from app.services.workspace.tools.cataloging import apply_pending_cataloging
 from app.services.workspace.tools.external_cataloging import (
@@ -443,7 +443,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                 side_effect=stalled_cli_turn,
             ),
             patch(
-                "app.services.cataloging.local_cli_agent._run_direct_jsonl_cataloging_fallback",
+                "app.services.cataloging.local_cli_result._run_direct_jsonl_cataloging_fallback",
                 side_effect=direct_fallback,
             ),
         ):
@@ -696,10 +696,10 @@ if __name__ == "__main__":
     unittest.main()
 
 def test_opencode_cataloging_permission_env_is_read_only_except_cataloging_mcp():
-    from app.services.cataloging.local_cli_agent import _opencode_cataloging_permission_env
-    from app.services.external_agent.mcp_auto_config import CATALOGING_MCP_TOOL_NAMES
+    from app.services.cataloging.local_cli_mcp import opencode_cataloging_permission_env
+    from app.services.external_agent.mcp_preflight import CATALOGING_MCP_TOOL_NAMES
 
-    permissions = json.loads(_opencode_cataloging_permission_env())
+    permissions = json.loads(opencode_cataloging_permission_env())
     assert permissions["edit"] == "deny"
     assert permissions["bash"] == "deny"
     assert permissions["external_directory"] == "deny"

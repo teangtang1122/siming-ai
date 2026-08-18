@@ -17,9 +17,9 @@ from ..modules.model_runtime.application.getting_started import (
 )
 from ..services.external_agent.mcp_auto_config import (
     configure_cli_integration,
-    preflight_cli_integration,
     scan_cli_integrations,
 )
+from ..services.external_agent.mcp_preflight import preflight_cli_integration
 from ..services.opencode_onboarding import (
     OPENCODE_INSTALL_DOCS_URL,
     OPENCODE_MODELS_DOCS_URL,
