@@ -1,0 +1,68 @@
+name: Temporary Android outline and library parity patch
+
+on:
+  push:
+    branches:
+      - feature/android-outline-library-parity
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/android-outline-library-parity
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Apply focused implementation
+        run: |
+          set -euo pipefail
+          python scripts/patch-android-outline-library-parity.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/OutlineTree.kt')
+          text = path.read_text(encoding='utf-8')
+          anchor = 'import androidx.compose.foundation.layout.width\n'
+          needed = 'import androidx.compose.foundation.layout.weight\n'
+          if needed not in text:
+              if anchor not in text:
+                  raise SystemExit('OutlineTree import anchor missing')
+              text = text.replace(anchor, anchor + needed, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+          python scripts/check-mobile-pc-parity.py --write-doc docs/mobile-pc-parity.md
+          git diff --check
+
+      - name: Validate parity contract
+        run: python scripts/check-mobile-pc-parity.py --check-doc docs/mobile-pc-parity.md
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build Android
+        working-directory: mobile/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Commit implementation and remove temporary files
+        run: |
+          set -euo pipefail
+          rm .github/workflows/apply-android-outline-library-parity-temporary.yml
+          rm scripts/patch-android-outline-library-parity.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat(android): align outline tree and project library controls'
+          git push origin HEAD:feature/android-outline-library-parity
