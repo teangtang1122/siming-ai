@@ -40,6 +40,10 @@ from ..modules.gateway.interfaces.contracts import (
     SyncStatusResponse,
     TokenPair,
 )
+from ..services.cataloging.launcher import (
+    AUTO_CHAPTER_WRITE_SOURCE,
+    create_and_queue_cataloging_job,
+)
 
 router = APIRouter(tags=["gateway"])
 ADMIN_SESSION_COOKIE = "siming_gateway_session"
@@ -554,8 +558,42 @@ def sync_bootstrap(
     )
 
 
+def _launch_deferred_chapter_cataloging(
+    service: GatewayService,
+) -> dict[str, tuple[bool, str]]:
+    """Start canonical post-write cataloging after the sync transaction commits."""
+
+    outcomes: dict[str, tuple[bool, str]] = {}
+    for mutation_id, project_id, chapter_id in service.take_deferred_chapter_cataloging():
+        try:
+            _job, launch = create_and_queue_cataloging_job(
+                service.db,
+                project_id,
+                [chapter_id],
+                execution_mode="auto",
+                trigger_source=AUTO_CHAPTER_WRITE_SOURCE,
+                run_now=True,
+            )
+            message = (
+                "章节已按 PC 领域语义同步，并启动正式建档"
+                if launch.get("worker_queued")
+                else "章节已按 PC 领域语义同步，正式建档任务已创建"
+            )
+            outcomes[mutation_id] = (True, message)
+        except Exception as exc:
+            # The chapter and sync revision are already committed.  Preserve an
+            # accurate retryable outcome instead of rolling back or claiming the
+            # post-write lifecycle completed.
+            outcomes[mutation_id] = (
+                False,
+                "章节已同步；正式建档启动失败，可在任务列表重试："
+                f"{str(exc)[:500]}",
+            )
+    return outcomes
+
+
 @router.post("/sync/push", response_model=ApiResponse[SyncPushResponse])
-def sync_push(
+async def sync_push(
     payload: SyncPushRequest,
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -563,13 +601,17 @@ def sync_push(
 ):
     _require_gateway(settings)
     context = _request_auth(request, service, allow_local=True)
-    return ApiResponse.success(
-        data=service.push(
-            payload.mutations,
-            protocol_version=payload.protocol_version,
-            device_id=context.device_id,
-        )
+    data = service.push(
+        payload.mutations,
+        protocol_version=payload.protocol_version,
+        device_id=context.device_id,
     )
+    results_by_mutation = {item.mutation_id: item for item in data.results}
+    for mutation_id, (_started, message) in _launch_deferred_chapter_cataloging(service).items():
+        result = results_by_mutation.get(mutation_id)
+        if result is not None:
+            result.message = message
+    return ApiResponse.success(data=data)
 
 
 @router.get("/sync/pull", response_model=ApiResponse[SyncPullResponse])
@@ -629,7 +671,7 @@ def list_sync_conflicts(
     "/sync/conflicts/{conflict_id}/resolve",
     response_model=ApiResponse[SyncConflictView],
 )
-def resolve_sync_conflict(
+async def resolve_sync_conflict(
     conflict_id: str,
     payload: SyncConflictResolutionRequest,
     request: Request,
@@ -638,14 +680,17 @@ def resolve_sync_conflict(
 ):
     _require_gateway(settings)
     context = _request_auth(request, service, allow_local=True)
-    return ApiResponse.success(
-        data=service.resolve_conflict(
-            conflict_id,
-            payload,
-            device_id=context.device_id,
-        ),
-        message="同步冲突已处理，双方原始版本仍保留在记录中",
+    data = service.resolve_conflict(
+        conflict_id,
+        payload,
+        device_id=context.device_id,
     )
+    outcomes = _launch_deferred_chapter_cataloging(service)
+    failed = [message for started, message in outcomes.values() if not started]
+    message = "同步冲突已处理，双方原始版本仍保留在记录中"
+    if failed:
+        message += "；章节已写入，但正式建档需要在任务列表重试"
+    return ApiResponse.success(data=data, message=message)
 
 
 __all__ = ["router"]

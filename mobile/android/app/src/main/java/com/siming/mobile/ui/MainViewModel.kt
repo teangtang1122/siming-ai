@@ -15,6 +15,8 @@ import com.siming.mobile.security.VerifiedPairing
 import com.siming.mobile.data.network.DirectApiSummary
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
@@ -52,6 +54,7 @@ data class MobileUiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SimingRepository(application)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    private var assistantJob: Job? = null
 
     val connection = repository.connection.stateIn(
         viewModelScope,
@@ -562,8 +565,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prompt: String,
         modelRoute: AssistantModelRoute,
     ) {
-        if (prompt.isBlank()) return
-        viewModelScope.launch {
+        if (prompt.isBlank() || assistantJob?.isActive == true) return
+        assistantJob = viewModelScope.launch {
             uiState.value = uiState.value.copy(
                 assistantRunning = true,
                 assistantOutput = "",
@@ -595,14 +598,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             "手机独立工作区任务已完成，本地产生的修改已写入手机副本"
                     },
                 )
+            } catch (_: CancellationException) {
+                uiState.value = uiState.value.copy(
+                    assistantRunning = false,
+                    assistantActivity = "",
+                    notice = "任务已取消；未提交的章节不会写入，已生成草稿可在下次相同请求中恢复",
+                )
             } catch (error: Exception) {
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
                     assistantActivity = "",
                 )
                 showError(error)
+            } finally {
+                assistantJob = null
             }
         }
+    }
+
+    fun cancelAssistant() {
+        val job = assistantJob ?: return
+        if (!job.isActive) return
+        uiState.value = uiState.value.copy(assistantActivity = "正在取消；不会写入未提交的章节…")
+        job.cancel(CancellationException("用户取消手机工作区任务"))
     }
 
     fun saveAssistantAsChapter(projectId: String, onSaved: () -> Unit = {}) {

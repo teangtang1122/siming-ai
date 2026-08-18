@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "2026-08-17",
+  "contract_version": "2026-08-18",
   "canonical_authority": "pc",
   "modes": {
     "pc": "桌面后端和前端所使用的权威领域实现。",
@@ -147,9 +147,13 @@
             {
               "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextManifest.kt",
               "contains": "internal class MobileContextManifestEngine("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
+              "contains": "internal class MobileChapterWriteStore("
             }
           ],
-          "limitations": "提示词、工具 schema 与版本化上下文策略均由 PC 源生成；Android 仍使用本地工具适配器、会话级 ContextManifest 和确定性词法降级，不具备 PC 的持久运行审计与完整恢复语义。"
+          "limitations": "提示词、工具 schema 与版本化上下文策略均由 PC 源生成；章节写作运行、草稿和完整 ContextManifest 已具备本地持久恢复，但通用 Agent 对话转录仍未进入 PC 的数据库级运行审计，检索仍是确定性词法降级。"
         }
       },
       "side_effects": [],
@@ -165,10 +169,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/DirectApiClientTest.kt",
           "contains": "class DirectApiClientTest"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
+          "contains": "generated draft and full manifest survive a new store instance"
         }
       ],
       "known_gaps": [
-        "手机独立 Agent 尚未持久化运行日志和 ContextManifest，应用重启后的恢复仍弱于 PC。"
+        "手机独立 Agent 的章节写作已经支持跨重启恢复；非写章工具的完整对话转录仍未进入 PC AgentRun 审计账本。"
       ]
     },
     {
@@ -213,6 +221,14 @@
             {
               "path": "backend/app/services/gateway_legacy_replication.py",
               "contains": "if spec.model is Chapter and row_existed:"
+            },
+            {
+              "path": "backend/app/modules/gateway/infrastructure/mutation_service.py",
+              "contains": "def _defer_post_commit_side_effects("
+            },
+            {
+              "path": "backend/app/routers/gateway.py",
+              "contains": "for mutation_id, project_id, chapter_id in service.take_deferred_chapter_cataloging()"
             }
           ]
         },
@@ -226,9 +242,13 @@
             {
               "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
               "contains": "\"update_chapter\" -> updateChapter"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
+              "contains": "internal fun mobileChapterEntityId("
             }
           ],
-          "notes": "先写本地副本与 outbox，连接 PC 后由领域服务回放。"
+          "notes": "草稿、ContextManifest 和提交状态先写入本机运行日志；确定性章节 ID 与同一 outbox 修订防止重启/重试产生重复章节，连接 PC 后回放快照、检查点并在事务提交后启动正式建档。"
         }
       },
       "side_effects": [
@@ -249,6 +269,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
           "contains": "standaloneAuthoringSnapshotDropsVersionRowsButKeepsDedicatedContextEntities"
+        },
+        {
+          "path": "backend/tests/test_gateway_authoring_side_effect_parity.py",
+          "contains": "test_mobile_replay_matches_pc_chapter_lifecycle_and_is_idempotent"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
+          "contains": "commit transition and deterministic entity id make retries coalesce"
         }
       ]
     },
@@ -1014,7 +1042,7 @@
               "contains": "def build_policy()"
             }
           ],
-          "limitations": "已共享版本化策略、必选 coverage、全局 token 预算、source hash、选择指纹和 stale 校验；Android 独立模式仍以本地词法检索替代 PC FTS/向量检索，不支持 pinned chunks，且清单仅在会话内保存。"
+          "limitations": "已共享版本化策略、必选 coverage、全局 token 预算、source hash、选择指纹和 stale 校验；写章实际消费的完整清单会随运行持久化。Android 独立模式仍以本地词法检索替代 PC FTS/向量检索，不支持 pinned chunks，也不写入 PC 数据库级 ContextManifest 审计。"
         }
       },
       "side_effects": [],
@@ -1037,7 +1065,7 @@
         }
       ],
       "known_gaps": [
-        "手机独立预检尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计。"
+        "手机独立预检尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计；实际写章清单已在本机运行日志中持久化。"
       ]
     },
     {
@@ -1526,9 +1554,13 @@
             {
               "path": "mobile/android/app/src/main/assets/pc_context_manifest_policy.json",
               "contains": "\"stale_on_selected_source_change\": true"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
+              "contains": "internal fun mobileChapterWriteRunId("
             }
           ],
-          "limitations": "写章前会创建或校验会话级 ContextManifest，并把必选锚点、预算、策略/请求/选择指纹写入草稿快照；检索仍为 Android 本地词法降级，清单和草稿审计尚未持久化到 PC 账本。"
+          "limitations": "写章前创建或校验 ContextManifest，生成前持久化运行、成功后原子保存草稿与完整清单；同一请求使用确定性 run/entity ID，应用重启、断流和提交重试会合并到同一草稿/章节。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。"
         }
       },
       "side_effects": [
@@ -1550,10 +1582,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextManifestTest.kt",
           "contains": "model changes make a cached manifest stale"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
+          "contains": "commit transition and deterministic entity id make retries coalesce"
         }
       ],
       "known_gaps": [
-        "手机独立写章已具备 ContextManifest 防漂移门禁，但仍缺 PC 级持久审计、语义检索和跨重启恢复。"
+        "手机独立写章已具备持久 ContextManifest、取消状态和跨重启防重；仍缺 PC 语义检索和数据库级 AgentRun 审计。"
       ]
     },
     {

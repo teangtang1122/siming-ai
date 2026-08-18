@@ -717,6 +717,20 @@ class GatewayService(GatewayTokenMixin):
         commit_session(self.db)
         return SyncPushResponse(cursor=self._current_cursor(), results=results)
 
+    def take_deferred_chapter_cataloging(self) -> list[tuple[str, str, str]]:
+        """Return and clear post-commit chapter cataloging requests.
+
+        Each tuple is ``(mutation_id, project_id, chapter_id)``.  Multiple
+        writes to the same chapter within one push collapse to the latest
+        mutation because only the final canonical chapter state needs a job.
+        """
+
+        pending = self.db.info.pop("siming_deferred_chapter_cataloging", {})
+        return [
+            (mutation_id, project_id, chapter_id)
+            for (project_id, chapter_id), mutation_id in pending.items()
+        ]
+
     def _apply_mutation(
         self,
         mutation: SyncMutation,

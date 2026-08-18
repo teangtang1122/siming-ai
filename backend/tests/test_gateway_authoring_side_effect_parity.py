@@ -8,13 +8,25 @@ from sqlalchemy.orm import sessionmaker
 from app.core.utils import count_words
 from app.database import models as _models  # noqa: F401
 from app.database.session import Base
-from app.modules.continuity.infrastructure.models import NarrativeCheckpoint
+from app.modules.continuity.infrastructure.models import (
+    CatalogingChapterRun,
+    CatalogingJob,
+    NarrativeCheckpoint,
+)
+from app.modules.gateway.application.contracts import SyncMutation
+from app.modules.gateway.infrastructure.mutation_service import GatewayMutationApplier
+from app.modules.gateway.infrastructure.service import GatewayService
+from app.modules.story.infrastructure.chapters import SqlAlchemyChapterWorkspace
 from app.modules.story.infrastructure.entities import (
     Chapter,
     ChapterSnapshot,
     Character,
     CharacterVersion,
     Project,
+)
+from app.services.cataloging.launcher import (
+    AUTO_CHAPTER_WRITE_SOURCE,
+    create_and_queue_cataloging_job,
 )
 from app.services.gateway_legacy_replication import apply_domain_mutation
 
@@ -142,5 +154,155 @@ def test_offline_existing_character_save_reuses_pc_character_version_semantics(t
             assert snapshot["abilities"] == ["推演", "阵法"]
             assert snapshot["aliases"] == ["糖糖"]
             assert snapshot["profile"] == {"core_motivation": "保护家人"}
+    finally:
+        engine.dispose()
+
+
+def test_mobile_replay_matches_pc_chapter_lifecycle_and_is_idempotent(tmp_path):
+    """Compare canonical PC create with the Android outbox replay path.
+
+    Identifiers differ by design, so the assertion compares the final domain
+    state: chapter, snapshot, checkpoint, and durable cataloging job.  Replaying
+    the same mutation ID must not create another version or job.
+    """
+
+    engine, Session = _session(tmp_path)
+    try:
+        with Session() as db:
+            pc_project = Project(title="PC 写章路径")
+            mobile_project = Project(title="Android 回放路径")
+            db.add_all([pc_project, mobile_project])
+            db.commit()
+
+            title = "断线重连"
+            content = "陆糖切断病毒网络，归墟阵纹随即亮起。"
+
+            pc_result = SqlAlchemyChapterWorkspace(db).create(
+                pc_project.id,
+                {
+                    "title": title,
+                    "content": content,
+                    "outline_node_id": None,
+                },
+            )
+            db.commit()
+            pc_chapter_id = pc_result.data["id"]
+            create_and_queue_cataloging_job(
+                db,
+                pc_project.id,
+                [pc_chapter_id],
+                execution_mode="auto",
+                backend_override="external_agent",
+                provider_override="parity_test",
+                trigger_source=AUTO_CHAPTER_WRITE_SOURCE,
+                run_now=False,
+            )
+
+            mutation = SyncMutation(
+                mutation_id="mobile-write-run-1",
+                project_id=mobile_project.id,
+                entity_type="chapter",
+                entity_id="mobile-deterministic-chapter",
+                operation="upsert",
+                base_revision=0,
+                payload={
+                    "_record_type": "chapter",
+                    "id": "mobile-deterministic-chapter",
+                    "project_id": mobile_project.id,
+                    "title": title,
+                    "content": content,
+                },
+            )
+            applier = GatewayMutationApplier(
+                db,
+                tombstone_retention_days=90,
+                refresh_project_manifest=lambda _project_id: None,
+            )
+            applied = applier.apply(mutation, device_id="android-test")
+            db.commit()
+            assert applied.status == "applied"
+
+            deferred = GatewayService(db).take_deferred_chapter_cataloging()
+            assert deferred == [
+                (mutation.mutation_id, mobile_project.id, mutation.entity_id),
+            ]
+            for _mutation_id, project_id, chapter_id in deferred:
+                create_and_queue_cataloging_job(
+                    db,
+                    project_id,
+                    [chapter_id],
+                    execution_mode="auto",
+                    backend_override="external_agent",
+                    provider_override="parity_test",
+                    trigger_source=AUTO_CHAPTER_WRITE_SOURCE,
+                    run_now=False,
+                )
+
+            def final_state(project_id: str, chapter_id: str) -> dict:
+                chapter = db.get(Chapter, chapter_id)
+                assert chapter is not None
+                snapshots = (
+                    db.query(ChapterSnapshot)
+                    .filter(ChapterSnapshot.chapter_id == chapter_id)
+                    .order_by(ChapterSnapshot.version_number.asc())
+                    .all()
+                )
+                checkpoints = (
+                    db.query(NarrativeCheckpoint)
+                    .filter(
+                        NarrativeCheckpoint.project_id == project_id,
+                        NarrativeCheckpoint.chapter_id == chapter_id,
+                    )
+                    .order_by(NarrativeCheckpoint.sequence.asc())
+                    .all()
+                )
+                jobs = (
+                    db.query(CatalogingJob)
+                    .join(CatalogingChapterRun, CatalogingChapterRun.job_id == CatalogingJob.id)
+                    .filter(
+                        CatalogingJob.project_id == project_id,
+                        CatalogingChapterRun.chapter_id == chapter_id,
+                    )
+                    .all()
+                )
+                return {
+                    "chapter": {
+                        "title": chapter.title,
+                        "content": chapter.content,
+                        "word_count": chapter.word_count,
+                        "current_version": chapter.current_version,
+                        "sort_order": chapter.sort_order,
+                    },
+                    "snapshots": [
+                        (item.version_number, item.content, item.word_count, item.trigger_type)
+                        for item in snapshots
+                    ],
+                    "checkpoints": [
+                        (item.trigger_type, item.label.endswith(" 创建"))
+                        for item in checkpoints
+                    ],
+                    "cataloging": [
+                        (
+                            item.status,
+                            item.execution_mode,
+                            item.execution_backend,
+                            str(item.model_source or "").split(":", 1)[0],
+                            item.total_chapters,
+                        )
+                        for item in jobs
+                    ],
+                }
+
+            assert final_state(mobile_project.id, mutation.entity_id) == final_state(
+                pc_project.id,
+                pc_chapter_id,
+            )
+
+            before = final_state(mobile_project.id, mutation.entity_id)
+            duplicate = applier.apply(mutation, device_id="android-test")
+            db.commit()
+            assert duplicate.status == "duplicate"
+            assert GatewayService(db).take_deferred_chapter_cataloging() == []
+            assert final_state(mobile_project.id, mutation.entity_id) == before
     finally:
         engine.dispose()

@@ -45,9 +45,9 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 明确阻止：没有 Gateway 且未配置手机直连模型时不启动 Agent。
-- **Android 独立 Agent：** 明确降级实现：提示词、工具 schema 与版本化上下文策略均由 PC 源生成；Android 仍使用本地工具适配器、会话级 ContextManifest 和确定性词法降级，不具备 PC 的持久运行审计与完整恢复语义。
+- **Android 独立 Agent：** 明确降级实现：提示词、工具 schema 与版本化上下文策略均由 PC 源生成；章节写作运行、草稿和完整 ContextManifest 已具备本地持久恢复，但通用 Agent 对话转录仍未进入 PC 的数据库级运行审计，检索仍是确定性词法降级。
 - **已知缺口：**
-  - 手机独立 Agent 尚未持久化运行日志和 ContextManifest，应用重启后的恢复仍弱于 PC。
+  - 手机独立 Agent 的章节写作已经支持跨重启恢复；非写章工具的完整对话转录仍未进入 PC AgentRun 审计账本。
 
 ### `authoring.chapter` — 章节创建、读取、更新和删除
 
@@ -58,7 +58,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 修订队列回放
-- **Android 独立 Agent：** 修订队列回放：先写本地副本与 outbox，连接 PC 后由领域服务回放。
+- **Android 独立 Agent：** 修订队列回放：草稿、ContextManifest 和提交状态先写入本机运行日志；确定性章节 ID 与同一 outbox 修订防止重启/重试产生重复章节，连接 PC 后回放快照、检查点并在事务提交后启动正式建档。
 
 ### `authoring.character` — 角色卡创建、读取、更新和删除
 
@@ -188,9 +188,9 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口：通过 PC workspace assistant 调用同一工具。
 - **Android 离线：** 明确阻止：没有模型执行路由时只保留资料缓存，不运行上下文预检。
-- **Android 独立 Agent：** 明确降级实现：已共享版本化策略、必选 coverage、全局 token 预算、source hash、选择指纹和 stale 校验；Android 独立模式仍以本地词法检索替代 PC FTS/向量检索，不支持 pinned chunks，且清单仅在会话内保存。
+- **Android 独立 Agent：** 明确降级实现：已共享版本化策略、必选 coverage、全局 token 预算、source hash、选择指纹和 stale 校验；写章实际消费的完整清单会随运行持久化。Android 独立模式仍以本地词法检索替代 PC FTS/向量检索，不支持 pinned chunks，也不写入 PC 数据库级 ContextManifest 审计。
 - **已知缺口：**
-  - 手机独立预检尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计。
+  - 手机独立预检尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计；实际写章清单已在本机运行日志中持久化。
 
 ### `governance.items` — 伏笔、叙事债务及生命周期状态操作
 
@@ -275,9 +275,9 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 明确阻止：无模型执行路由时只编辑资料，不生成正文。
-- **Android 独立 Agent：** 明确降级实现：写章前会创建或校验会话级 ContextManifest，并把必选锚点、预算、策略/请求/选择指纹写入草稿快照；检索仍为 Android 本地词法降级，清单和草稿审计尚未持久化到 PC 账本。
+- **Android 独立 Agent：** 明确降级实现：写章前创建或校验 ContextManifest，生成前持久化运行、成功后原子保存草稿与完整清单；同一请求使用确定性 run/entity ID，应用重启、断流和提交重试会合并到同一草稿/章节。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。
 - **已知缺口：**
-  - 手机独立写章已具备 ContextManifest 防漂移门禁，但仍缺 PC 级持久审计、语义检索和跨重启恢复。
+  - 手机独立写章已具备持久 ContextManifest、取消状态和跨重启防重；仍缺 PC 语义检索和数据库级 AgentRun 审计。
 
 ### `writer.character` — 根据作品与世界观生成结构化角色卡
 

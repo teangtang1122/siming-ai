@@ -38,8 +38,8 @@ internal class MobileWorkspaceAgent(
     private val contract = PcPromptContract(context.applicationContext)
     private val contextPolicy = PcContextManifestPolicy(context.applicationContext).policy
     private val contextEngine = MobileContextManifestEngine(contextPolicy)
+    private val chapterWriteStore = MobileChapterWriteStore(context.applicationContext)
     private val json = Json { ignoreUnknownKeys = true }
-    private val chapterDrafts = LinkedHashMap<String, String>()
     private val contextManifests = LinkedHashMap<String, MobileContextManifest>()
 
     suspend fun run(
@@ -315,7 +315,7 @@ internal class MobileWorkspaceAgent(
         val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
             ?: return skipped("preview_writing_context", "项目不存在", JsonObject(emptyMap()))
         val request = MobileContextRequest.fromArgs(args, contextPolicy)
-        val inputs = manifestInputs(projectId, config, request, project, all, rawPayloads)
+        val inputs = manifestInputs(projectId, config.model, request, project, all, rawPayloads)
         val manifest = contextEngine.prepare(inputs)
         cacheManifest(manifestKey(projectId, request), manifest)
 
@@ -374,7 +374,7 @@ internal class MobileWorkspaceAgent(
         val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
             ?: return skipped("chapter_writer", "项目不存在", JsonObject(emptyMap()))
         val request = MobileContextRequest.fromArgs(args, contextPolicy)
-        val inputs = manifestInputs(projectId, config, request, project, all, rawPayloads)
+        val inputs = manifestInputs(projectId, config.model, request, project, all, rawPayloads)
         val key = manifestKey(projectId, request)
         val cached = contextManifests[key]
         val manifest = if (cached == null) {
@@ -406,6 +406,49 @@ internal class MobileWorkspaceAgent(
             )
         }
 
+        val outlineTitle = all.firstOrNull {
+            it.entity.entityType == "outline" && it.entity.entityId == request.outlineNodeId
+        }?.payload?.string("title").orEmpty()
+        val runId = mobileChapterWriteRunId(projectId, config.model, manifest)
+        val stored = chapterWriteStore.load(runId)
+        if (
+            stored != null &&
+            stored.content.isNotBlank() &&
+            stored.state in setOf(
+                MobileChapterWriteState.GENERATED,
+                MobileChapterWriteState.COMMITTING,
+                MobileChapterWriteState.COMMITTED,
+            )
+        ) {
+            val validation = contextEngine.validate(stored.manifest, inputs)
+            if (validation.ready) {
+                val recovered = chapterWriteStore.save(stored.copy(manifest = validation.current))
+                cacheManifest(key, validation.current)
+                return chapterDraftResult(
+                    run = recovered,
+                    outlineTitle = outlineTitle,
+                    rawPayloads = rawPayloads,
+                    detail = if (recovered.state == MobileChapterWriteState.COMMITTED) {
+                        "已恢复此前提交的章节运行，重复调用不会再次创建章节"
+                    } else {
+                        "已从本机恢复此前生成的章节草稿"
+                    },
+                    recovered = true,
+                )
+            }
+        }
+
+        val generating = chapterWriteStore.save(
+            MobileChapterWriteRun(
+                id = runId,
+                projectId = projectId,
+                model = config.model,
+                title = outlineTitle.ifBlank { args.string("title").ifBlank { "未命名章节" } },
+                content = "",
+                state = MobileChapterWriteState.GENERATING,
+                manifest = manifest,
+            ),
+        )
         val governance = manifest.categoryText(
             "narrative_governance",
             "Narrative governance: no due or high-risk items.",
@@ -426,32 +469,80 @@ internal class MobileWorkspaceAgent(
             recentSummaries = manifest.categoryText("previous_summary", "暂无前文摘要。"),
             requirements = requirements,
         )
-        val content = directApi.complete(
-            config = config,
-            systemPrompt = messages[0].string("content"),
-            userPrompt = messages[1].string("content"),
-            maxOutputTokens = 7_000,
-            temperature = 0.8,
-        ).trim()
-        if (content.isBlank()) return errorResult("chapter_writer", "生成的章节正文为空")
-        val draftId = UUID.randomUUID().toString()
-        chapterDrafts[draftId] = content
-        while (chapterDrafts.size > MAX_DRAFTS) chapterDrafts.remove(chapterDrafts.keys.first())
-        val outlineTitle = all.firstOrNull {
-            it.entity.entityType == "outline" && it.entity.entityId == request.outlineNodeId
-        }?.payload?.string("title").orEmpty()
+        val content = try {
+            directApi.complete(
+                config = config,
+                systemPrompt = messages[0].string("content"),
+                userPrompt = messages[1].string("content"),
+                maxOutputTokens = 7_000,
+                temperature = 0.8,
+            ).trim()
+        } catch (error: CancellationException) {
+            chapterWriteStore.transition(
+                generating,
+                MobileChapterWriteState.CANCELLED,
+                error = "用户取消生成；未写入章节。",
+            )
+            throw error
+        } catch (error: Exception) {
+            chapterWriteStore.transition(
+                generating,
+                MobileChapterWriteState.FAILED,
+                error = error.message ?: "章节生成失败",
+            )
+            throw error
+        }
+        if (content.isBlank()) {
+            chapterWriteStore.transition(
+                generating,
+                MobileChapterWriteState.FAILED,
+                error = "模型返回空正文",
+            )
+            return errorResult("chapter_writer", "生成的章节正文为空")
+        }
+        val generated = chapterWriteStore.save(
+            generating.copy(
+                content = content,
+                state = MobileChapterWriteState.GENERATED,
+                error = null,
+            ),
+        )
+        return chapterDraftResult(
+            run = generated,
+            outlineTitle = outlineTitle,
+            rawPayloads = rawPayloads,
+            detail = "已生成章节正文（${countWords(content)} 字），草稿与 ContextManifest 已持久化",
+            recovered = false,
+        )
+    }
+
+    private fun chapterDraftResult(
+        run: MobileChapterWriteRun,
+        outlineTitle: String,
+        rawPayloads: List<JsonObject>,
+        detail: String,
+        recovered: Boolean,
+    ): JsonObject {
+        val request = run.manifest.request
         val resolved = resolvePcCharacters(
             rawPayloads,
             request.outlineNodeId.takeIf(String::isNotBlank),
             request.involvedCharacters,
             request.characterLimit,
         )
+        val governance = run.manifest.categoryText(
+            "narrative_governance",
+            "Narrative governance: no due or high-risk items.",
+        )
         val data = buildJsonObject {
-            put("draft_id", draftId)
-            put("content_ref", draftId)
-            put("content", content)
-            put("word_count", countWords(content))
-            put("model", config.model)
+            put("draft_id", run.id)
+            put("content_ref", run.id)
+            put("content", run.content)
+            put("word_count", countWords(run.content))
+            put("model", run.model)
+            put("write_run_state", run.state)
+            put("recovered", recovered)
+            run.chapterId?.let { put("committed_chapter_id", it) }
             put("context_snapshot", buildJsonObject {
                 put("outline_node_id", request.outlineNodeId)
                 put("outline_title", outlineTitle)
@@ -460,18 +551,19 @@ internal class MobileWorkspaceAgent(
                 put("relationship_count", pcRelationshipPayloads(rawPayloads, resolved.characters).size)
                 put("narrative_governance_used", governance.isNotBlank())
                 put("prompt_contract_sha256", contract.sourceHash)
-                put("context_manifest_id", manifest.id)
-                put("context_policy_version", manifest.policyVersion)
-                put("context_index_version", manifest.indexVersion)
-                put("context_policy_sha256", manifest.policySourceHash)
-                put("context_request_fingerprint", manifest.requestFingerprint)
-                put("context_selection_fingerprint", manifest.selectionFingerprint)
-                put("context_status", manifest.status)
-                put("context_estimated_input_tokens", manifest.estimatedInputTokens)
+                put("context_manifest_id", run.manifest.id)
+                put("context_policy_version", run.manifest.policyVersion)
+                put("context_index_version", run.manifest.indexVersion)
+                put("context_policy_sha256", run.manifest.policySourceHash)
+                put("context_request_fingerprint", run.manifest.requestFingerprint)
+                put("context_selection_fingerprint", run.manifest.selectionFingerprint)
+                put("context_status", run.manifest.status)
+                put("context_estimated_input_tokens", run.manifest.estimatedInputTokens)
                 put("execution_route", "android_standalone")
+                put("write_run_id", run.id)
             })
         }
-        return ok("chapter_writer", "已生成章节正文（${countWords(content)} 字）", data)
+        return ok("chapter_writer", detail, data)
     }
 
     private suspend fun characterWriter(
@@ -601,36 +693,180 @@ internal class MobileWorkspaceAgent(
     }
 
     private suspend fun createChapter(projectId: String, args: JsonObject): JsonObject {
-        val resolved = resolveDraft(args) ?: return errorResult("create_chapter", "章节草稿引用不存在或已过期")
-        val id = UUID.randomUUID().toString()
+        val resolved = resolveDraft(args)
+            ?: return errorResult("create_chapter", "章节草稿引用不存在或已过期")
+        val run = resolved.run
+        if (run != null) {
+            val validation = validateChapterRun(projectId, run)
+            if (!validation.ready) {
+                return skipped(
+                    "create_chapter",
+                    "写入前 ContextManifest 已失效：${validation.detail}",
+                    buildJsonObject {
+                        put("context_status", validation.status)
+                        put("context_manifest", validation.current.toJson(includeContent = false))
+                        put("requires_preview", true)
+                    },
+                )
+            }
+        }
+        val id = run?.chapterId ?: run?.let { mobileChapterEntityId(projectId, it.id) }
+            ?: UUID.randomUUID().toString()
+        val existing = records(projectId, "chapter").firstOrNull { it.entity.entityId == id }
+        if (existing != null && run != null) {
+            if (existing.payload.string("content") != resolved.args.string("content")) {
+                return errorResult("create_chapter", "同一手机写章运行对应的章节已存在且正文不同，请先处理版本分岔")
+            }
+            val committed = chapterWriteStore.transition(
+                run,
+                MobileChapterWriteState.COMMITTED,
+                chapterId = id,
+                error = null,
+            )
+            return ok(
+                "create_chapter",
+                "章节此前已经写入，本次重试未创建重复章节：${existing.payload.string("title")}",
+                clean(existing.payload)
+                    .withDerived("id", JsonPrimitive(id))
+                    .withDerived("write_run_id", JsonPrimitive(committed.id)),
+            )
+        }
+        val committing = run?.let {
+            chapterWriteStore.transition(
+                it,
+                MobileChapterWriteState.COMMITTING,
+                chapterId = id,
+                error = null,
+            )
+        }
         val payload = mergeRecord(
             null,
-            resolved,
+            resolved.args,
             "chapter",
             projectId,
             id,
             excluded = CHAPTER_CONTROL_FIELDS,
         )
             .withDefaults(mapOf("title" to JsonPrimitive("未命名章节"), "content" to JsonPrimitive("")))
-            .withDerived("word_count", JsonPrimitive(countWords(resolved.string("content"))))
+            .withDerived("word_count", JsonPrimitive(countWords(resolved.args.string("content"))))
         val savedId = saveEntity(projectId, "chapter", id, payload)
-        return ok("create_chapter", "已创建章节：${payload.string("title")}", clean(payload).withDerived("id", JsonPrimitive(savedId)))
+        committing?.let {
+            chapterWriteStore.transition(
+                it,
+                MobileChapterWriteState.COMMITTED,
+                chapterId = savedId,
+                error = null,
+            )
+        }
+        return ok(
+            "create_chapter",
+            "已创建章节：${payload.string("title")}；写章运行已标记为已提交",
+            clean(payload)
+                .withDerived("id", JsonPrimitive(savedId))
+                .let { data ->
+                    if (run == null) data else data.withDerived("write_run_id", JsonPrimitive(run.id))
+                },
+        )
     }
 
     private suspend fun updateChapter(projectId: String, args: JsonObject): JsonObject {
         val current = findChapter(records(projectId, "chapter"), args)
             ?: return errorResult("update_chapter", "未找到章节，本轮未修改正文")
-        val resolved = resolveDraft(args) ?: return errorResult("update_chapter", "章节草稿引用不存在或已过期")
+        val resolved = resolveDraft(args)
+            ?: return errorResult("update_chapter", "章节草稿引用不存在或已过期")
+        val run = resolved.run
+        if (run != null) {
+            val validation = validateChapterRun(projectId, run)
+            if (!validation.ready) {
+                return skipped(
+                    "update_chapter",
+                    "写入前 ContextManifest 已失效：${validation.detail}",
+                    buildJsonObject {
+                        put("context_status", validation.status)
+                        put("context_manifest", validation.current.toJson(includeContent = false))
+                        put("requires_preview", true)
+                    },
+                )
+            }
+            if (
+                current.payload.string("content") == resolved.args.string("content") &&
+                run.chapterId == current.entity.entityId
+            ) {
+                chapterWriteStore.transition(
+                    run,
+                    MobileChapterWriteState.COMMITTED,
+                    chapterId = current.entity.entityId,
+                    error = null,
+                )
+                return ok(
+                    "update_chapter",
+                    "章节此前已经更新，本次重试未创建新版本：${current.payload.string("title")}",
+                    clean(current.payload).withDerived("write_run_id", JsonPrimitive(run.id)),
+                )
+            }
+        }
+        val committing = run?.let {
+            chapterWriteStore.transition(
+                it,
+                MobileChapterWriteState.COMMITTING,
+                chapterId = current.entity.entityId,
+                error = null,
+            )
+        }
         val payload = mergeRecord(
             current.payload,
-            resolved,
+            resolved.args,
             "chapter",
             projectId,
             current.entity.entityId,
             CHAPTER_LOCATOR_FIELDS + CHAPTER_CONTROL_FIELDS,
-        ).withDerived("word_count", JsonPrimitive(countWords(resolved.string("content").ifBlank { current.payload.string("content") })))
+        ).withDerived(
+            "word_count",
+            JsonPrimitive(countWords(resolved.args.string("content").ifBlank { current.payload.string("content") })),
+        )
         saveEntity(projectId, "chapter", current.entity.entityId, payload)
-        return ok("update_chapter", "已更新章节：${payload.string("title")}", clean(payload))
+        committing?.let {
+            chapterWriteStore.transition(
+                it,
+                MobileChapterWriteState.COMMITTED,
+                chapterId = current.entity.entityId,
+                error = null,
+            )
+        }
+        return ok(
+            "update_chapter",
+            "已更新章节：${payload.string("title")}；写章运行已标记为已提交",
+            clean(payload).let { data ->
+                if (run == null) data else data.withDerived("write_run_id", JsonPrimitive(run.id))
+            },
+        )
+    }
+
+    private suspend fun validateChapterRun(
+        projectId: String,
+        run: MobileChapterWriteRun,
+    ): MobileContextValidation {
+        if (run.projectId != projectId) {
+            val current = run.manifest.copy(status = "stale")
+            return MobileContextValidation("stale", "草稿不属于当前作品。", current)
+        }
+        val all = records(projectId)
+        val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
+        val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
+            ?: return MobileContextValidation(
+                "stale",
+                "当前作品副本不存在。",
+                run.manifest.copy(status = "stale"),
+            )
+        val inputs = manifestInputs(
+            projectId,
+            run.model,
+            run.manifest.request,
+            project,
+            all,
+            rawPayloads,
+        )
+        return contextEngine.validate(run.manifest, inputs)
     }
 
     private suspend fun createCharacter(projectId: String, args: JsonObject): JsonObject {
@@ -773,14 +1009,14 @@ internal class MobileWorkspaceAgent(
 
     private fun manifestInputs(
         projectId: String,
-        config: DirectApiConfig,
+        model: String,
         request: MobileContextRequest,
         project: JsonObject,
         all: List<LocalRecord>,
         rawPayloads: List<JsonObject>,
     ): MobileContextInputs = MobileContextInputs(
         projectId = projectId,
-        model = config.model,
+        model = model,
         request = request,
         project = project,
         styleText = contract.styleContext(project),
@@ -840,11 +1076,24 @@ internal class MobileWorkspaceAgent(
         ).mapNotNull { byKey[it.key] }
     }
 
-    private fun resolveDraft(args: JsonObject): JsonObject? {
+    private suspend fun resolveDraft(args: JsonObject): ResolvedChapterDraft? {
         val reference = args.string("draft_id").ifBlank { args.string("content_ref") }
-        if (reference.isBlank()) return args
-        val content = chapterDrafts[reference] ?: return null
-        return args.withDerived("content", JsonPrimitive(content))
+        if (reference.isBlank()) return ResolvedChapterDraft(args, null)
+        val run = chapterWriteStore.load(reference) ?: return null
+        if (
+            run.content.isBlank() ||
+            run.state !in setOf(
+                MobileChapterWriteState.GENERATED,
+                MobileChapterWriteState.COMMITTING,
+                MobileChapterWriteState.COMMITTED,
+            )
+        ) {
+            return null
+        }
+        return ResolvedChapterDraft(
+            args = args.withDerived("content", JsonPrimitive(run.content)),
+            run = run,
+        )
     }
 
     private fun findChapter(chapters: List<LocalRecord>, args: JsonObject): LocalRecord? {
@@ -1103,9 +1352,13 @@ internal class MobileWorkspaceAgent(
 
     private data class LocalRecord(val entity: ReplicaEntity, val payload: JsonObject)
 
+    private data class ResolvedChapterDraft(
+        val args: JsonObject,
+        val run: MobileChapterWriteRun?,
+    )
+
     companion object {
         private const val MAX_ITERATIONS = 30
-        private const val MAX_DRAFTS = 20
         private const val MAX_CONTEXT_MANIFESTS = 20
         private val WORLD_DIMENSIONS = setOf("geography", "history", "factions", "power_system", "races", "culture")
         private val LOCATOR_FIELDS = setOf(

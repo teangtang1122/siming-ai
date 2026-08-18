@@ -1216,6 +1216,18 @@ private fun AssistantScreen(projectId: String, viewModel: MainViewModel) {
                 )
             }
         }
+        if (ui.assistantRunning) {
+            item {
+                OutlinedButton(
+                    onClick = viewModel::cancelAssistant,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.DeleteOutline, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("取消当前任务")
+                }
+            }
+        }
         if (standaloneMobile && ui.assistantOutput.isNotBlank() && !ui.assistantRunning) {
             item {
                 OutlinedButton(

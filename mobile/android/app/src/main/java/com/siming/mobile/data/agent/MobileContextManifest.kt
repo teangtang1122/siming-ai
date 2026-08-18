@@ -100,6 +100,15 @@ internal data class MobileContextRequest(
     val characterLimit: Int,
     val recentLimit: Int,
 ) {
+    fun toJson(): JsonObject = buildJsonObject {
+        put("outline_node_id", outlineNodeId)
+        put("target_chapter_id", targetChapterId)
+        put("requirements", requirements)
+        put("involved_characters", JsonArray(involvedCharacters.map(::JsonPrimitive)))
+        put("character_limit", characterLimit)
+        put("recent_limit", recentLimit)
+    }
+
     fun fingerprint(projectId: String): String = mobileSha256(
         listOf(
             "project=$projectId",
@@ -113,6 +122,15 @@ internal data class MobileContextRequest(
     )
 
     companion object {
+        fun fromJson(root: JsonObject): MobileContextRequest = MobileContextRequest(
+            outlineNodeId = root.stringValue("outline_node_id"),
+            targetChapterId = root.stringValue("target_chapter_id"),
+            requirements = root.stringValue("requirements"),
+            involvedCharacters = root.stringList("involved_characters"),
+            characterLimit = root.intValue("character_limit", 8).coerceAtLeast(1),
+            recentLimit = root.intValue("recent_limit", 3).coerceAtLeast(1),
+        )
+
         fun fromArgs(args: JsonObject, policy: MobileContextPolicy): MobileContextRequest {
             val maxCharacters = policy.categories["scene_character"]?.maxItems ?: 12
             val maxSummaries = policy.categories["previous_summary"]?.maxItems ?: 3
@@ -165,6 +183,15 @@ internal data class MobileContextCoverage(
         put("item_count", itemCount)
         if (reason.isNotBlank()) put("reason", reason)
     }
+
+    companion object {
+        fun fromJson(root: JsonObject): MobileContextCoverage = MobileContextCoverage(
+            required = root.booleanValue("required"),
+            status = root.stringValue("status"),
+            itemCount = root.intValue("item_count", 0),
+            reason = root.stringValue("reason"),
+        )
+    }
 }
 
 internal data class MobileContextManifestItem(
@@ -206,6 +233,30 @@ internal data class MobileContextManifestItem(
         put("selection_reason", selectionReason)
         put("estimated_tokens", estimatedTokens)
         if (includeContent) put("content", content)
+    }
+
+    companion object {
+        fun fromJson(root: JsonObject): MobileContextManifestItem {
+            val scores = root.objectValue("scores")
+            return MobileContextManifestItem(
+                category = root.stringValue("category"),
+                sourceType = root.stringValue("source_type"),
+                sourceId = root.stringValue("source_id").ifBlank { null },
+                chunkId = root.stringValue("chunk_id").ifBlank { null },
+                title = root.stringValue("title"),
+                content = root.stringValue("content"),
+                required = root.booleanValue("required"),
+                tier = root.intValue("tier", 4),
+                lexicalScore = scores.optionalDouble("lexical"),
+                recencyScore = scores.optionalDouble("recency"),
+                structuralScore = scores.optionalDouble("structural"),
+                finalScore = scores.doubleValue("final", 0.0),
+                selectionReason = root.stringValue("selection_reason"),
+                sourceHash = root.stringValue("source_hash").ifBlank {
+                    mobileSha256(root.stringValue("content"))
+                },
+            )
+        }
     }
 }
 
@@ -272,6 +323,44 @@ internal data class MobileContextManifest(
         put("warnings", JsonArray(warnings.map(::JsonPrimitive)))
         put("items", JsonArray(items.map { it.toJson(includeContent) }))
         if (includeContent) put("rendered_context", renderedContext())
+    }
+
+    companion object {
+        fun fromJson(root: JsonObject, request: MobileContextRequest): MobileContextManifest {
+            val budget = root.objectValue("budget")
+            val coverage = root.objectValue("coverage").mapValues { (_, value) ->
+                MobileContextCoverage.fromJson(value as? JsonObject ?: JsonObject(emptyMap()))
+            }
+            val items = (root["items"] as? JsonArray).orEmpty().mapNotNull { value ->
+                (value as? JsonObject)?.let(MobileContextManifestItem::fromJson)
+            }
+            return MobileContextManifest(
+                id = root.stringValue("id"),
+                projectId = root.stringValue("project_id"),
+                model = root.stringValue("model"),
+                policyVersion = root.intValue("policy_version", 1),
+                indexVersion = root.intValue("index_version", 1),
+                policySourceHash = root.stringValue("policy_source_sha256"),
+                status = root.stringValue("status"),
+                request = request,
+                requestFingerprint = root.stringValue("request_fingerprint"),
+                selectionFingerprint = root.stringValue("selection_fingerprint"),
+                contextWindowTokens = budget.intValue("context_window_tokens", 16_384),
+                inputBudgetTokens = budget.intValue("input_budget_tokens", 8_000),
+                outputReserveTokens = budget.intValue("output_reserve_tokens", 2_048),
+                safetyMarginTokens = budget.intValue("safety_margin_tokens", 512),
+                items = items,
+                coverage = coverage,
+                warnings = root.stringList("warnings"),
+            ).also { manifest ->
+                require(manifest.id.isNotBlank() && manifest.projectId.isNotBlank()) {
+                    "持久化 ContextManifest 缺少标识"
+                }
+                require(manifest.items.all { it.content.isNotBlank() }) {
+                    "持久化 ContextManifest 缺少来源正文"
+                }
+            }
+        }
     }
 }
 
@@ -807,6 +896,9 @@ private fun JsonObject.optionalInt(name: String): Int? = (get(name) as? JsonPrim
 
 private fun JsonObject.doubleValue(name: String, fallback: Double): Double =
     (get(name) as? JsonPrimitive)?.doubleOrNull ?: fallback
+
+private fun JsonObject.optionalDouble(name: String): Double? =
+    (get(name) as? JsonPrimitive)?.doubleOrNull
 
 private fun JsonObject.booleanValue(name: String): Boolean = (get(name) as? JsonPrimitive)?.booleanOrNull ?: false
 

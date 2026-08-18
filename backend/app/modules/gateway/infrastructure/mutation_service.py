@@ -57,7 +57,10 @@ class GatewayMutationApplier:
         projection_error = self._project_to_domain(mutation) if project_domain else None
         if projection_error is not None:
             return projection_error
-        return self._record_applied(mutation, state=state, device_id=device_id)
+        result = self._record_applied(mutation, state=state, device_id=device_id)
+        if result.status == "applied":
+            self._defer_post_commit_side_effects(mutation)
+        return result
 
     def _previous_result(self, mutation: SyncMutation) -> MutationResult | None:
         change = (
@@ -210,6 +213,30 @@ class GatewayMutationApplier:
             status="applied",
             revision=change.revision,
         )
+
+    def _defer_post_commit_side_effects(self, mutation: SyncMutation) -> None:
+        """Record async side effects only after the canonical mutation was accepted.
+
+        The sync projection itself runs inside a savepoint and the push service
+        commits all mutations as one unit.  Cataloging therefore cannot be
+        launched inside ``apply_domain_mutation`` without racing uncommitted
+        chapter data.  The router consumes this ordered map after ``push`` has
+        committed and starts the canonical cataloging launcher on the request
+        event loop.
+        """
+
+        if mutation.entity_type != "chapter" or mutation.operation != "upsert":
+            return
+        snapshot = domain_snapshot_for_entity(
+            self.db,
+            project_id=mutation.project_id,
+            entity_type=mutation.entity_type,
+            entity_id=mutation.entity_id,
+        )
+        if not snapshot or int(snapshot.get("word_count") or 0) <= 0:
+            return
+        pending = self.db.info.setdefault("siming_deferred_chapter_cataloging", {})
+        pending[(mutation.project_id, mutation.entity_id)] = mutation.mutation_id
 
     def _update_state(
         self,
