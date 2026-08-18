@@ -123,6 +123,21 @@ jobs:
               text = text.replace(target, '@OptIn(ExperimentalLayoutApi::class)\n@Composable\ninternal fun ProjectToolsPanel(', 1)
           path.write_text(text, encoding='utf-8')
           PY
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('contracts/mobile-pc-parity.json')
+          data = json.loads(path.read_text(encoding='utf-8'))
+          capabilities = {item['id']: item for item in data['capabilities']}
+          export = capabilities['authoring.export']
+          export['status'] = 'partial'
+          export['known_gaps'] = ['离线和手机独立模式只支持 TXT；Word / PDF 仍需连接 PC 权威导出服务。']
+          cataloging = capabilities['chapter.cataloging']
+          cataloging['idempotency']['limitations'] = 'Android 同一时刻只启动一个建档任务；服务端任务 ID 作为后续流式进度、查询与取消的唯一引用。'
+          data['capabilities'].sort(key=lambda item: item['id'])
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
           python scripts/check-mobile-pc-parity.py --write-doc docs/mobile-pc-parity.md
           git diff --check
 
