@@ -24,15 +24,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          temporary_workflow=.github/workflows/source-export-release-prep-temporary.yml
           cat .github/patch-chunks/*.b64 > /tmp/mobile-parity.patch.gz.b64
           echo "c7dfaf96c95787f57fa93addc60f1f65da918f541dd2f2737e8dd8a0395f4a3a  /tmp/mobile-parity.patch.gz.b64" | sha256sum -c -
           base64 --decode /tmp/mobile-parity.patch.gz.b64 > /tmp/mobile-parity.patch.gz
           echo "70a666425f438617a8420d2015998d7a3ed622ad4e9450c76962b18382d60945  /tmp/mobile-parity.patch.gz" | sha256sum -c -
           gzip --decompress --stdout /tmp/mobile-parity.patch.gz > /tmp/mobile-parity.patch
           echo "ea39c1d381068b3d3c598adb1cfa6047258dd1f5b7f496e73c656e632896c033  /tmp/mobile-parity.patch" | sha256sum -c -
-          git apply --check /tmp/mobile-parity.patch
-          git apply /tmp/mobile-parity.patch
-          rm -rf .github/patch-chunks
+          git apply --check --exclude="$temporary_workflow" /tmp/mobile-parity.patch
+          git apply --exclude="$temporary_workflow" /tmp/mobile-parity.patch
+          rm -rf .github/patch-chunks "$temporary_workflow"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
