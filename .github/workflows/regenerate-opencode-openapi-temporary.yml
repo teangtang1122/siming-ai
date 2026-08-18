@@ -1,0 +1,56 @@
+name: Regenerate OpenCode onboarding API types
+
+on:
+  pull_request:
+    branches: [develop]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.event.pull_request.head.ref == 'agent/opencode-mcp-onboarding'
+    runs-on: ubuntu-latest
+    env:
+      MOSHU_DISABLE_AUTO_MCP_SETUP: "1"
+      SIMING_ENABLE_LOCAL_RUNTIME: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/opencode-mcp-onboarding
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Regenerate and verify OpenAPI types
+        working-directory: frontend
+        run: |
+          npm run api:generate
+          npm run api:check
+
+      - name: Commit generated contract
+        run: |
+          rm .github/workflows/regenerate-opencode-openapi-temporary.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/src/api/generated/schema.d.ts .github/workflows/regenerate-opencode-openapi-temporary.yml
+          git commit -m "Sync OpenAPI types for MCP onboarding"
+          git push origin HEAD:agent/opencode-mcp-onboarding
