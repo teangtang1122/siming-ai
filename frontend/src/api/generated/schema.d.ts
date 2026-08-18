@@ -507,6 +507,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/config/getting-started/opencode/mcp/configure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure Getting Started Opencode Mcp
+         * @description Explicitly configure and verify Siming MCP after OpenCode is usable.
+         */
+        post: operations["configure_getting_started_opencode_mcp_api_v1_config_getting_started_opencode_mcp_configure_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/config/global-model": {
         parameters: {
             query?: never;
@@ -6871,6 +6891,11 @@ export interface components {
                 [key: string]: string;
             };
             /**
+             * Opencode Mcp Configured
+             * @default false
+             */
+            opencode_mcp_configured: boolean;
+            /**
              * Platform Supported
              * @default true
              */
@@ -10141,6 +10166,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    configure_getting_started_opencode_mcp_api_v1_config_getting_started_opencode_mcp_configure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
