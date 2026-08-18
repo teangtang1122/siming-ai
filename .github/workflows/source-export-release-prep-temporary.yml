@@ -1,0 +1,28 @@
+name: Temporary Release Prep Source Export
+
+on:
+  push:
+    branches:
+      - agent/mobile-parity-release-prep
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Archive tracked source
+        shell: bash
+        run: |
+          git archive --format=tar.gz --output=siming-release-prep-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: siming-release-prep-source-${{ github.sha }}
+          path: siming-release-prep-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
