@@ -23,7 +23,9 @@ jobs:
           python-version: '3.11'
 
       - name: Apply architecture refactor
-        run: python scripts/apply-opencode-mcp-architecture-refactor.py
+        run: |
+          python scripts/apply-opencode-mcp-architecture-refactor.py
+          python scripts/trim-mcp-auto-config-after-refactor.py
 
       - name: Syntax and diff checks
         run: |
@@ -56,6 +58,7 @@ jobs:
       - name: Commit verified refactor
         run: |
           rm scripts/apply-opencode-mcp-architecture-refactor.py
+          rm scripts/trim-mcp-auto-config-after-refactor.py
           rm .github/workflows/apply-opencode-mcp-architecture-refactor-temporary.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
