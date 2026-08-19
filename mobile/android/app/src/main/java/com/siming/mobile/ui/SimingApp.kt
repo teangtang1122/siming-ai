@@ -247,18 +247,19 @@ fun SimingApp(
                 onPickText = onPickText,
                 onStartAiCreation = { rootTab = RootTab.Create },
             )
-            RootTab.Sync -> SyncScreen(
+            RootTab.Sync -> MobileSyncWorkspace(
                 modifier = Modifier.padding(padding),
                 viewModel = viewModel,
                 connection = connection,
                 onScanQr = onScanQr,
             )
-            RootTab.Settings -> AboutScreen(
+            RootTab.Settings -> MobileSettingsWorkspace(
                 modifier = Modifier.padding(padding),
                 connection = connection,
                 directApi = ui.directApi,
                 viewModel = viewModel,
                 onConfigureApi = { showDirectApiSetup = true },
+                onOpenSync = { rootTab = RootTab.Sync },
             )
         }
     }
@@ -508,6 +509,8 @@ private fun ProjectScreen(
     var advanced by remember { mutableStateOf<EditorTarget?>(null) }
     var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
     var referenceTarget by remember { mutableStateOf<EditorTarget?>(null) }
+    var outlineTarget by remember { mutableStateOf<OutlineEditorTarget?>(null) }
+    var narrativeTarget by remember { mutableStateOf<EditorTarget?>(null) }
     var creatingChapter by remember { mutableStateOf(false) }
     var showChapterOrder by remember { mutableStateOf(false) }
     val currentSection = entitySections.firstOrNull { it.type == section }
@@ -542,7 +545,32 @@ private fun ProjectScreen(
         return
     }
 
-    if (referenceTarget != null) {
+    if (outlineTarget != null) {
+    val activeOutlineTarget = requireNotNull(outlineTarget)
+    OutlineDetailScreen(
+        projectId = project.projectId,
+        target = activeOutlineTarget,
+        records = outlineRecords,
+        viewModel = viewModel,
+        onBack = { outlineTarget = null },
+        onAddChild = { parent -> outlineTarget = OutlineEditorTarget(null, parent.entityId) },
+    )
+    return
+}
+
+if (narrativeTarget != null) {
+    val activeNarrativeTarget = requireNotNull(narrativeTarget)
+    NarrativeDetailScreen(
+        projectId = project.projectId,
+        entityType = activeNarrativeTarget.entityType,
+        record = activeNarrativeTarget.record,
+        viewModel = viewModel,
+        onBack = { narrativeTarget = null },
+    )
+    return
+}
+
+if (referenceTarget != null) {
     val target = requireNotNull(referenceTarget)
     when (target.entityType) {
         "character" -> CharacterDetailScreen(
@@ -639,7 +667,9 @@ if (editor != null) {
                 FloatingActionButton(
             onClick = {
                 if (section == "chapter") creatingChapter = true
+                else if (section == "outline") outlineTarget = OutlineEditorTarget(null)
                 else if (section in setOf("character", "world")) referenceTarget = EditorTarget(section, null)
+                else if (section in setOf("foreshadowing", "governance")) narrativeTarget = EditorTarget(section, null)
                 else editor = EditorTarget(section, null)
             },
         ) {
@@ -674,14 +704,20 @@ if (editor != null) {
                     viewModel = viewModel,
                     onExportReady = onSaveExport,
                 )
-                "outline" -> OutlineTreeList(
+                "outline" -> MobileOutlineWorkspace(
                     projectId = project.projectId,
                     records = records,
                     online = connection != null,
-                    onOpen = { editor = EditorTarget("outline", it) },
+                    onOpen = { outlineTarget = OutlineEditorTarget(it) },
+                    onAddChild = { parent -> outlineTarget = OutlineEditorTarget(null, parent.entityId) },
                     onReorder = { parentId, nodeIds ->
                         viewModel.reorderOutline(project.projectId, parentId, nodeIds)
                     },
+                )
+                "foreshadowing", "governance" -> NarrativeWorkspace(
+                    entityType = section,
+                    records = records,
+                    onOpen = { narrativeTarget = EditorTarget(section, it) },
                 )
                 "character" -> CharacterWorkspace(
                     records = records,
