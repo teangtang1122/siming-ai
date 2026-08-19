@@ -1,0 +1,29 @@
+name: Temporary cleanup Android management UI branch
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.ref == 'cleanup/android-management-ui-redesign-20260819'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify merged state and delete temporary branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin develop feature/android-management-ui-redesign cleanup/android-management-ui-redesign-20260819
+          test "$(git rev-parse origin/develop)" = "7f766e15fe8567513a249e2d822c63c6be384257"
+          test "$(git rev-parse origin/feature/android-management-ui-redesign)" = "15542f38dd17868783d161e81fe37cb1a6a160e4"
+          git push origin --delete feature/android-management-ui-redesign
+          git push origin --delete cleanup/android-management-ui-redesign-20260819
