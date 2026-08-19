@@ -506,11 +506,40 @@ private fun ProjectScreen(
     var lastReferenceSection by rememberSaveable(project.projectId) { mutableStateOf("outline") }
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
     var advanced by remember { mutableStateOf<EditorTarget?>(null) }
+    var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
+    var creatingChapter by remember { mutableStateOf(false) }
     var showChapterOrder by remember { mutableStateOf(false) }
     val currentSection = entitySections.firstOrNull { it.type == section }
     val records by viewModel.entities(project.projectId, section).collectAsStateWithLifecycle(initialValue = emptyList())
+    val outlineRecords by viewModel.entities(project.projectId, "outline").collectAsStateWithLifecycle(initialValue = emptyList())
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val ui by viewModel.uiState
+
+    if (creatingChapter || chapterEditor != null) {
+        val activeChapter = chapterEditor
+        ChapterEditorScreen(
+            projectId = project.projectId,
+            chapter = activeChapter,
+            suggestedTitle = "第 ${records.size + 1} 章",
+            viewModel = viewModel,
+            onBack = {
+                creatingChapter = false
+                chapterEditor = null
+            },
+            onOpenAi = {
+                creatingChapter = false
+                chapterEditor = null
+                section = "assistant"
+            },
+            onOpenHistory = activeChapter?.let { record ->
+                {
+                    chapterEditor = null
+                    advanced = EditorTarget("chapter", record)
+                }
+            },
+        )
+        return
+    }
 
     if (editor != null) {
         RecordEditorScreen(
@@ -560,7 +589,12 @@ private fun ProjectScreen(
         },
         floatingActionButton = {
             if (section !in setOf("assistant", "tools")) {
-                FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {
+                FloatingActionButton(
+            onClick = {
+                if (section == "chapter") creatingChapter = true
+                else editor = EditorTarget(section, null)
+            },
+        ) {
                     Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
                 }
             }
@@ -577,6 +611,13 @@ private fun ProjectScreen(
                 )
             }
             when (section) {
+                "chapter" -> ChapterWorkspace(
+                    chapters = records,
+                    outlines = outlineRecords,
+                    online = connection != null,
+                    onOpen = { chapterEditor = it },
+                    onManageOrder = { showChapterOrder = true },
+                )
                 "assistant" -> AssistantScreen(project.projectId, viewModel)
                 "tools" -> ProjectToolsPanel(
                     project = project,
@@ -599,16 +640,12 @@ private fun ProjectScreen(
                     records = records,
                     online = connection != null,
                     onOpen = { editor = EditorTarget(section, it) },
-                    onAdvanced = if (section in setOf("chapter", "character", "world")) {
+                    onAdvanced = if (section in setOf("character", "world")) {
                         { record -> advanced = EditorTarget(section, record) }
                     } else {
                         null
                     },
-                    onManageChapterOrder = if (section == "chapter") {
-                        { showChapterOrder = true }
-                    } else {
-                        null
-                    },
+                    onManageChapterOrder = null,
                 )
             }
         }
@@ -624,7 +661,7 @@ if (ui.pendingCatalogingProjectId == project.projectId) {
                 if (connection != null) {
                     "正文已经导入作品库。现在可以启动与 PC 相同的作品建档流程，让司命从现有章节整理摘要、角色变化和世界观资料。"
                 } else {
-                    "正文已经保存在手机。完整作品建档需要连接 PC Gateway；你可以先阅读、编辑或导出 TXT，连接后再到“管理 → 工具”启动建档。"
+                    "正文已经保存在手机。完整作品建档需要连接 PC Gateway；你可以先阅读、编辑或导出 TXT，连接后再到“工具”启动建档。"
                 },
             )
         },
@@ -1998,7 +2035,7 @@ internal fun ScreenHeading(kicker: String, title: String, detail: String) {
 }
 
 @Composable
-private fun EmptyPanel(icon: ImageVector, title: String, detail: String) {
+internal fun EmptyPanel(icon: ImageVector, title: String, detail: String) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
