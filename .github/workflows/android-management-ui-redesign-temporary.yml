@@ -158,6 +158,16 @@ jobs:
                   raise SystemExit(f'missing integration marker: {marker}')
 
           path.write_text(text, encoding='utf-8')
+
+          outline_path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/OutlineWorkspace.kt')
+          outline = outline_path.read_text(encoding='utf-8')
+          color_import = 'import androidx.compose.ui.graphics.Color\n'
+          if color_import not in outline:
+              modifier_import = 'import androidx.compose.ui.Modifier\n'
+              if outline.count(modifier_import) != 1:
+                  raise SystemExit(f'OutlineWorkspace Modifier import mismatch: {outline.count(modifier_import)}')
+              outline = outline.replace(modifier_import, modifier_import + color_import, 1)
+          outline_path.write_text(outline, encoding='utf-8')
           PY
 
       - name: Validate parity contract
@@ -176,6 +186,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm .github/workflows/android-management-ui-redesign-temporary.yml
           git add mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/OutlineWorkspace.kt
           git diff --cached --check
           git commit -m 'feat(android): integrate management UI redesign'
           git push origin HEAD:feature/android-management-ui-redesign
