@@ -46,6 +46,7 @@
     "@vitejs/plugin-react": "^4.2.1",
     "dependency-cruiser": "^18.1.0",
     "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^4.6.2",
     "jscpd": "^5.0.12",
     "jsdom": "^29.1.1",
     "openapi-typescript": "^7.13.0",
