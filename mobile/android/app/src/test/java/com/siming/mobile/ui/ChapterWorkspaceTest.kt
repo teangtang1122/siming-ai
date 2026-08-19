@@ -10,11 +10,11 @@ class ChapterWorkspaceTest {
     fun `word count prefers canonical stored value and falls back to content`() {
         assertEquals(
             321,
-            chapterWordCount(replica("chapter", "c1", """{"title":"第一章","content":"很短","word_count":321}""")),
+            chapterWordCount(replica("chapter", "c1", "{\"title\":\"第一章\",\"content\":\"很短\",\"word_count\":321}")),
         )
         assertEquals(
             4,
-            chapterWordCount(replica("chapter", "c2", """{"title":"第二章","content":"天 地\n玄黄"}""")),
+            chapterWordCount(replica("chapter", "c2", "{\"title\":\"第二章\",\"content\":\"天 地\\n玄黄\"}")),
         )
     }
 
@@ -23,17 +23,17 @@ class ChapterWorkspaceTest {
         val volume = replica(
             "outline",
             "v1",
-            """{"title":"第一卷 山雨欲来","node_type":"volume","parent_id":null}""",
+            "{\"title\":\"第一卷 山雨欲来\",\"node_type\":\"volume\",\"parent_id\":null}",
         )
         val outlineChapter = replica(
             "outline",
             "o1",
-            """{"title":"第一章 穿越","node_type":"chapter","parent_id":"v1"}""",
+            "{\"title\":\"第一章 穿越\",\"node_type\":\"chapter\",\"parent_id\":\"v1\"}",
         )
         val chapter = replica(
             "chapter",
             "c1",
-            """{"title":"第一章 穿越","content":"正文","outline_node_id":"o1"}""",
+            "{\"title\":\"第一章 穿越\",\"content\":\"正文\",\"outline_node_id\":\"o1\"}",
         )
 
         assertEquals("第一卷 山雨欲来", chapterVolumeLabel(chapter, listOf(volume, outlineChapter)))
@@ -41,13 +41,13 @@ class ChapterWorkspaceTest {
 
     @Test
     fun `unlinked or cyclic outline does not invent a volume`() {
-        val unlinked = replica("chapter", "c1", """{"title":"第一章","content":"正文"}""")
-        val a = replica("outline", "a", """{"title":"A","node_type":"chapter","parent_id":"b"}""")
-        val b = replica("outline", "b", """{"title":"B","node_type":"section","parent_id":"a"}""")
+        val unlinked = replica("chapter", "c1", "{\"title\":\"第一章\",\"content\":\"正文\"}")
+        val a = replica("outline", "a", "{\"title\":\"A\",\"node_type\":\"chapter\",\"parent_id\":\"b\"}")
+        val b = replica("outline", "b", "{\"title\":\"B\",\"node_type\":\"section\",\"parent_id\":\"a\"}")
         val linked = replica(
             "chapter",
             "c2",
-            """{"title":"第二章","content":"正文","outline_node_id":"a"}""",
+            "{\"title\":\"第二章\",\"content\":\"正文\",\"outline_node_id\":\"a\"}",
         )
 
         assertNull(chapterVolumeLabel(unlinked, listOf(a, b)))
