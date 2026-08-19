@@ -150,7 +150,7 @@ jobs:
           PY
 
       - name: Validate parity contract
-        run: python scripts/validate_mobile_pc_parity.py
+        run: python scripts/check-mobile-pc-parity.py --check-doc docs/mobile-pc-parity.md
 
       - name: Install Android SDK components
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
