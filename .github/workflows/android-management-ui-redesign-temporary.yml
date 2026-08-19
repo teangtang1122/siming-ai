@@ -1,0 +1,181 @@
+name: Temporary Android management UI redesign
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.ref == 'feature/android-management-ui-redesign'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/android-management-ui-redesign
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Integrate management workspaces
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt')
+          text = path.read_text(encoding='utf-8')
+
+          root_old = '''            RootTab.Sync -> SyncScreen(
+                          modifier = Modifier.padding(padding),
+                          viewModel = viewModel,
+                          connection = connection,
+                          onScanQr = onScanQr,
+                      )
+                      RootTab.Settings -> AboutScreen(
+                          modifier = Modifier.padding(padding),
+                          connection = connection,
+                          directApi = ui.directApi,
+                          viewModel = viewModel,
+                          onConfigureApi = { showDirectApiSetup = true },
+                      )'''
+          root_new = '''            RootTab.Sync -> MobileSyncWorkspace(
+                          modifier = Modifier.padding(padding),
+                          viewModel = viewModel,
+                          connection = connection,
+                          onScanQr = onScanQr,
+                      )
+                      RootTab.Settings -> MobileSettingsWorkspace(
+                          modifier = Modifier.padding(padding),
+                          connection = connection,
+                          directApi = ui.directApi,
+                          viewModel = viewModel,
+                          onConfigureApi = { showDirectApiSetup = true },
+                          onOpenSync = { rootTab = RootTab.Sync },
+                      )'''
+          if text.count(root_old) != 1:
+              raise SystemExit(f'root workspace anchor mismatch: {text.count(root_old)}')
+          text = text.replace(root_old, root_new, 1)
+
+          state_old = '''    var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
+              var referenceTarget by remember { mutableStateOf<EditorTarget?>(null) }
+              var creatingChapter by remember { mutableStateOf(false) }'''
+          state_new = '''    var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
+              var referenceTarget by remember { mutableStateOf<EditorTarget?>(null) }
+              var outlineTarget by remember { mutableStateOf<OutlineEditorTarget?>(null) }
+              var narrativeTarget by remember { mutableStateOf<EditorTarget?>(null) }
+              var creatingChapter by remember { mutableStateOf(false) }'''
+          if text.count(state_old) != 1:
+              raise SystemExit(f'project state anchor mismatch: {text.count(state_old)}')
+          text = text.replace(state_old, state_new, 1)
+
+          anchor = '    if (referenceTarget != null) {\n'
+          if text.count(anchor) != 1:
+              raise SystemExit(f'reference target anchor mismatch: {text.count(anchor)}')
+          management_blocks = '''    if (outlineTarget != null) {
+              val activeOutlineTarget = requireNotNull(outlineTarget)
+              OutlineDetailScreen(
+                  projectId = project.projectId,
+                  target = activeOutlineTarget,
+                  records = outlineRecords,
+                  viewModel = viewModel,
+                  onBack = { outlineTarget = null },
+                  onAddChild = { parent -> outlineTarget = OutlineEditorTarget(null, parent.entityId) },
+              )
+              return
+          }
+
+          if (narrativeTarget != null) {
+              val activeNarrativeTarget = requireNotNull(narrativeTarget)
+              NarrativeDetailScreen(
+                  projectId = project.projectId,
+                  entityType = activeNarrativeTarget.entityType,
+                  record = activeNarrativeTarget.record,
+                  viewModel = viewModel,
+                  onBack = { narrativeTarget = null },
+              )
+              return
+          }
+
+          if (referenceTarget != null) {
+          '''
+          text = text.replace(anchor, management_blocks, 1)
+
+          fab_old = '''                if (section == "chapter") creatingChapter = true
+                          else if (section in setOf("character", "world")) referenceTarget = EditorTarget(section, null)
+                          else editor = EditorTarget(section, null)'''
+          fab_new = '''                if (section == "chapter") creatingChapter = true
+                          else if (section == "outline") outlineTarget = OutlineEditorTarget(null)
+                          else if (section in setOf("character", "world")) referenceTarget = EditorTarget(section, null)
+                          else if (section in setOf("foreshadowing", "governance")) narrativeTarget = EditorTarget(section, null)
+                          else editor = EditorTarget(section, null)'''
+          if text.count(fab_old) != 1:
+              raise SystemExit(f'fab anchor mismatch: {text.count(fab_old)}')
+          text = text.replace(fab_old, fab_new, 1)
+
+          outline_pattern = re.compile(
+              r'                "outline" -> OutlineTreeList\(\n.*?\n                \)\n                "character" -> CharacterWorkspace\(',
+              re.S,
+          )
+          outline_replacement = '''                "outline" -> MobileOutlineWorkspace(
+                              projectId = project.projectId,
+                              records = records,
+                              online = connection != null,
+                              onOpen = { outlineTarget = OutlineEditorTarget(it) },
+                              onAddChild = { parent -> outlineTarget = OutlineEditorTarget(null, parent.entityId) },
+                              onReorder = { parentId, nodeIds ->
+                                  viewModel.reorderOutline(project.projectId, parentId, nodeIds)
+                              },
+                          )
+                          "foreshadowing", "governance" -> NarrativeWorkspace(
+                              entityType = section,
+                              records = records,
+                              onOpen = { narrativeTarget = EditorTarget(section, it) },
+                          )
+                          "character" -> CharacterWorkspace('''
+          text, count = outline_pattern.subn(outline_replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'outline route anchor mismatch: {count}')
+
+          for marker in (
+              'MobileSyncWorkspace(',
+              'MobileSettingsWorkspace(',
+              'OutlineDetailScreen(',
+              'NarrativeDetailScreen(',
+              'MobileOutlineWorkspace(',
+              'NarrativeWorkspace(',
+          ):
+              if marker not in text:
+                  raise SystemExit(f'missing integration marker: {marker}')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate parity contract
+        run: python scripts/check-mobile-pc-parity.py --check-doc docs/mobile-pc-parity.md
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build Android
+        working-directory: mobile/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Commit verified integration
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/android-management-ui-redesign-temporary.yml
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt
+          git diff --cached --check
+          git commit -m 'feat(android): integrate management UI redesign'
+          git push origin HEAD:feature/android-management-ui-redesign
