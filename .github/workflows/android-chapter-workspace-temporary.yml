@@ -88,19 +88,14 @@ jobs:
           '''))
 
           replacements.append((
-          '''                FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {
-                      Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
-                  }
-          ''',
-          '''                FloatingActionButton(
+              '                FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {',
+              '''                FloatingActionButton(
                       onClick = {
                           if (section == "chapter") creatingChapter = true
                           else editor = EditorTarget(section, null)
                       },
-                  ) {
-                      Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
-                  }
-          '''))
+                  ) {''',
+          ))
 
           replacements.append((
           '''            when (section) {
