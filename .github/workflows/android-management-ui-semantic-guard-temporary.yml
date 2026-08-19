@@ -1,0 +1,158 @@
+name: Temporary Android management UI semantic guards
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.event.pull_request.head.ref == 'feature/android-management-ui-redesign'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/android-management-ui-redesign
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Add outline ordering and cascade-delete guards
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          outline_path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/OutlineWorkspace.kt')
+          outline = outline_path.read_text(encoding='utf-8')
+
+          helper_anchor = '''internal fun outlineSuggestedChildType(parentType: String?): String = when (parentType) {
+              "volume" -> "chapter"
+              "chapter" -> "section"
+              else -> "chapter"
+          }
+
+          '''
+          helper_block = helper_anchor + '''private fun outlineParentId(record: ReplicaEntity?): String? =
+              record?.formText("parent_id")?.trim()?.takeIf(String::isNotEmpty)
+
+          internal fun nextOutlineSortOrder(
+              records: List<ReplicaEntity>,
+              parentId: String?,
+              currentId: String? = null,
+          ): Int = records
+              .asSequence()
+              .filter { it.entityId != currentId && outlineParentId(it) == parentId }
+              .mapNotNull { it.formText("sort_order").toIntOrNull() }
+              .maxOrNull()
+              ?.plus(1)
+              ?: 0
+
+          internal fun outlineSortOrderForSave(
+              record: ReplicaEntity?,
+              records: List<ReplicaEntity>,
+              parentId: String?,
+          ): Int {
+              if (record != null && outlineParentId(record) == parentId) {
+                  return record.formText("sort_order").toIntOrNull() ?: 0
+              }
+              return nextOutlineSortOrder(records, parentId, record?.entityId)
+          }
+
+          '''
+          if outline.count(helper_anchor) != 1:
+              raise SystemExit(f'outline helper anchor mismatch: {outline.count(helper_anchor)}')
+          outline = outline.replace(helper_anchor, helper_block, 1)
+
+          sort_old = '"sort_order" to (record?.formText("sort_order")?.toIntOrNull() ?: 0),'
+          sort_new = '"sort_order" to outlineSortOrderForSave(record, records, parentId),'
+          if outline.count(sort_old) != 1:
+              raise SystemExit(f'sort save anchor mismatch: {outline.count(sort_old)}')
+          outline = outline.replace(sort_old, sort_new, 1)
+
+          delete_old = '''            text = { Text(if (childCount > 0) "这个节点还有 $childCount 个直接子节点。建议先调整子节点结构，再删除父节点。" else "删除后会同步到其他设备。") },
+                      confirmButton = {
+                          TextButton(onClick = { showDelete = false; viewModel.deleteRecord(projectId, "outline", record.entityId, onBack) }) {
+                              Text("确认删除", color = MaterialTheme.colorScheme.error)
+                          }
+                      },
+                      dismissButton = { TextButton(onClick = { showDelete = false }) { Text("取消") } },'''
+          delete_new = '''            text = {
+                          Text(
+                              if (childCount > 0) {
+                                  "这个节点还有 $childCount 个直接子节点。PC 数据库会对父节点删除执行级联，因此手机端会阻止直接删除；请先移动或删除子节点。"
+                              } else {
+                                  "删除后会同步到其他设备。"
+                              },
+                          )
+                      },
+                      confirmButton = {
+                          if (childCount > 0) {
+                              TextButton(onClick = { showDelete = false }) { Text("返回调整结构") }
+                          } else {
+                              TextButton(onClick = { showDelete = false; viewModel.deleteRecord(projectId, "outline", record.entityId, onBack) }) {
+                                  Text("确认删除", color = MaterialTheme.colorScheme.error)
+                              }
+                          }
+                      },
+                      dismissButton = {
+                          if (childCount == 0) TextButton(onClick = { showDelete = false }) { Text("取消") }
+                      },'''
+          if outline.count(delete_old) != 1:
+              raise SystemExit(f'delete guard anchor mismatch: {outline.count(delete_old)}')
+          outline = outline.replace(delete_old, delete_new, 1)
+          outline_path.write_text(outline, encoding='utf-8')
+
+          test_path = Path('mobile/android/app/src/test/java/com/siming/mobile/ui/ManagementUiWorkspaceTest.kt')
+          test = test_path.read_text(encoding='utf-8')
+          test_anchor = '''    @Test
+              fun `narrative labels hide backend enum vocabulary`() {'''
+          test_block = '''    @Test
+              fun `new or reparented outline nodes append after siblings`() {
+                  val volume = replica("outline", "v1", "{\\"title\\":\\"第一卷\\",\\"node_type\\":\\"volume\\",\\"parent_id\\":null,\\"sort_order\\":0}")
+                  val chapter1 = replica("outline", "c1", "{\\"title\\":\\"第一章\\",\\"node_type\\":\\"chapter\\",\\"parent_id\\":\\"v1\\",\\"sort_order\\":0}")
+                  val chapter2 = replica("outline", "c2", "{\\"title\\":\\"第二章\\",\\"node_type\\":\\"chapter\\",\\"parent_id\\":\\"v1\\",\\"sort_order\\":1}")
+                  val rootChapter = replica("outline", "r1", "{\\"title\\":\\"根级章\\",\\"node_type\\":\\"chapter\\",\\"parent_id\\":null,\\"sort_order\\":8}")
+                  val records = listOf(volume, chapter1, chapter2, rootChapter)
+
+                  assertEquals(2, nextOutlineSortOrder(records, "v1"))
+                  assertEquals(8, outlineSortOrderForSave(rootChapter, records, null))
+                  assertEquals(2, outlineSortOrderForSave(rootChapter, records, "v1"))
+              }
+
+              @Test
+              fun `narrative labels hide backend enum vocabulary`() {'''
+          if test.count(test_anchor) != 1:
+              raise SystemExit(f'test anchor mismatch: {test.count(test_anchor)}')
+          test = test.replace(test_anchor, test_block, 1)
+          test_path.write_text(test, encoding='utf-8')
+          PY
+
+      - name: Validate parity contract
+        run: python scripts/check-mobile-pc-parity.py --check-doc docs/mobile-pc-parity.md
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build Android
+        working-directory: mobile/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Commit verified semantic guards
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/android-management-ui-semantic-guard-temporary.yml
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/OutlineWorkspace.kt
+          git add mobile/android/app/src/test/java/com/siming/mobile/ui/ManagementUiWorkspaceTest.kt
+          git diff --cached --check
+          git commit -m 'fix(android): guard outline ordering and parent deletion'
+          git push origin HEAD:feature/android-management-ui-redesign
