@@ -1,0 +1,29 @@
+name: Temporary cleanup Android reference assistant workspace branch
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.ref == 'cleanup/android-reference-assistant-workspace-20260819'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cleanup/android-reference-assistant-workspace-20260819
+          fetch-depth: 0
+
+      - name: Verify merged state and delete temporary branches
+        run: |
+          git fetch origin develop feature/android-reference-assistant-workspace
+          DEVELOP_SHA="$(git rev-parse origin/develop)"
+          FEATURE_SHA="$(git rev-parse origin/feature/android-reference-assistant-workspace)"
+          test "$DEVELOP_SHA" = "89b3e2c2969452d958a37f8b116507bb46d4c9d5"
+          test "$FEATURE_SHA" = "b7de3f5e5ae050d92287a13cca68a3148adbbd7f"
+          git push origin --delete feature/android-reference-assistant-workspace
+          git push origin --delete cleanup/android-reference-assistant-workspace-20260819
