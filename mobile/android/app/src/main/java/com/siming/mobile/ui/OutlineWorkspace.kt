@@ -98,6 +98,32 @@ internal fun outlineSuggestedChildType(parentType: String?): String = when (pare
     else -> "chapter"
 }
 
+private fun outlineParentId(record: ReplicaEntity?): String? =
+    record?.formText("parent_id")?.trim()?.takeIf(String::isNotEmpty)
+
+internal fun nextOutlineSortOrder(
+    records: List<ReplicaEntity>,
+    parentId: String?,
+    currentId: String? = null,
+): Int = records
+    .asSequence()
+    .filter { it.entityId != currentId && outlineParentId(it) == parentId }
+    .mapNotNull { it.formText("sort_order").toIntOrNull() }
+    .maxOrNull()
+    ?.plus(1)
+    ?: 0
+
+internal fun outlineSortOrderForSave(
+    record: ReplicaEntity?,
+    records: List<ReplicaEntity>,
+    parentId: String?,
+): Int {
+    if (record != null && outlineParentId(record) == parentId) {
+        return record.formText("sort_order").toIntOrNull() ?: 0
+    }
+    return nextOutlineSortOrder(records, parentId, record?.entityId)
+}
+
 internal fun validOutlineParentType(nodeType: String, parentType: String?): Boolean = when (nodeType) {
     "volume" -> parentType == null
     "section" -> parentType == "chapter"
@@ -426,7 +452,7 @@ internal fun OutlineDetailScreen(
                                 "parent_id" to parentId,
                                 "summary" to summary,
                                 "status" to status,
-                                "sort_order" to (record?.formText("sort_order")?.toIntOrNull() ?: 0),
+                                "sort_order" to outlineSortOrderForSave(record, records, parentId),
                             )
                             if (creating || showAdvanced) {
                                 val parsedCharacters = runCatching { outlineEditorJson.parseToJsonElement(charactersJson) as? JsonArray }.getOrNull()
@@ -633,13 +659,27 @@ internal fun OutlineDetailScreen(
         AlertDialog(
             onDismissRequest = { showDelete = false },
             title = { Text("删除《${title.ifBlank { "未命名节点" }}》？") },
-            text = { Text(if (childCount > 0) "这个节点还有 $childCount 个直接子节点。建议先调整子节点结构，再删除父节点。" else "删除后会同步到其他设备。") },
+            text = {
+                Text(
+                    if (childCount > 0) {
+                        "这个节点还有 $childCount 个直接子节点。PC 数据库会对父节点删除执行级联，因此手机端会阻止直接删除；请先移动或删除子节点。"
+                    } else {
+                        "删除后会同步到其他设备。"
+                    },
+                )
+            },
             confirmButton = {
-                TextButton(onClick = { showDelete = false; viewModel.deleteRecord(projectId, "outline", record.entityId, onBack) }) {
-                    Text("确认删除", color = MaterialTheme.colorScheme.error)
+                if (childCount > 0) {
+                    TextButton(onClick = { showDelete = false }) { Text("返回调整结构") }
+                } else {
+                    TextButton(onClick = { showDelete = false; viewModel.deleteRecord(projectId, "outline", record.entityId, onBack) }) {
+                        Text("确认删除", color = MaterialTheme.colorScheme.error)
+                    }
                 }
             },
-            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("取消") } },
+            dismissButton = {
+                if (childCount == 0) TextButton(onClick = { showDelete = false }) { Text("取消") }
+            },
         )
     }
 }

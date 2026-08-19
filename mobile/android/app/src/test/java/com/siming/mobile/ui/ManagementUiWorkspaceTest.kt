@@ -49,6 +49,19 @@ class ManagementUiWorkspaceTest {
     }
 
     @Test
+    fun `new or reparented outline nodes append after siblings`() {
+        val volume = replica("outline", "v1", "{\"title\":\"第一卷\",\"node_type\":\"volume\",\"parent_id\":null,\"sort_order\":0}")
+        val chapter1 = replica("outline", "c1", "{\"title\":\"第一章\",\"node_type\":\"chapter\",\"parent_id\":\"v1\",\"sort_order\":0}")
+        val chapter2 = replica("outline", "c2", "{\"title\":\"第二章\",\"node_type\":\"chapter\",\"parent_id\":\"v1\",\"sort_order\":1}")
+        val rootChapter = replica("outline", "r1", "{\"title\":\"根级章\",\"node_type\":\"chapter\",\"parent_id\":null,\"sort_order\":8}")
+        val records = listOf(volume, chapter1, chapter2, rootChapter)
+
+        assertEquals(2, nextOutlineSortOrder(records, "v1"))
+        assertEquals(8, outlineSortOrderForSave(rootChapter, records, null))
+        assertEquals(2, outlineSortOrderForSave(rootChapter, records, "v1"))
+    }
+
+    @Test
     fun `narrative labels hide backend enum vocabulary`() {
         assertEquals("待复检", narrativeStatusLabel("pending_review"))
         assertEquals("已兑现", narrativeStatusLabel("fulfilled"))
