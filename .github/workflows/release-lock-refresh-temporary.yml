@@ -39,11 +39,28 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
 
-      - name: Verify fresh npm install tree
+      - name: Diagnose and repair npm lock install tree
         working-directory: frontend
         run: |
+          set -euxo pipefail
           npm cache clean --force
           npm ci --include=dev --prefer-online
+          echo "omit=$(npm config get omit)"
+          echo "include=$(npm config get include)"
+          node - <<'NODE'
+          const lock = require('./package-lock.json')
+          console.log('root devDependency:', lock.packages[''].devDependencies['eslint-plugin-react-hooks'])
+          console.log('lock entry:', JSON.stringify(lock.packages['node_modules/eslint-plugin-react-hooks'], null, 2))
+          NODE
+          npm ls eslint-plugin-react-hooks --all || true
+          npm explain eslint-plugin-react-hooks || true
+          if [ ! -f node_modules/eslint-plugin-react-hooks/package.json ]; then
+            echo "react-hooks missing after npm ci; refreshing its lock edge"
+            npm install --save-dev --package-lock-only --ignore-scripts eslint-plugin-react-hooks@4.6.2
+            rm -rf node_modules
+            npm cache clean --force
+            npm ci --include=dev --prefer-online
+          fi
           test -f node_modules/eslint-plugin-react-hooks/package.json
           npm run lint
           npm test
