@@ -507,6 +507,7 @@ private fun ProjectScreen(
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
     var advanced by remember { mutableStateOf<EditorTarget?>(null) }
     var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
+    var referenceTarget by remember { mutableStateOf<EditorTarget?>(null) }
     var creatingChapter by remember { mutableStateOf(false) }
     var showChapterOrder by remember { mutableStateOf(false) }
     val currentSection = entitySections.firstOrNull { it.type == section }
@@ -541,7 +542,53 @@ private fun ProjectScreen(
         return
     }
 
-    if (editor != null) {
+    if (referenceTarget != null) {
+    val target = requireNotNull(referenceTarget)
+    when (target.entityType) {
+        "character" -> CharacterDetailScreen(
+            projectId = project.projectId,
+            character = target.record,
+            viewModel = viewModel,
+            onBack = { referenceTarget = null },
+            onAdvanced = target.record?.let { record ->
+                { advanced = EditorTarget("character", record) }
+            },
+        )
+        "world" -> WorldDetailScreen(
+            projectId = project.projectId,
+            entry = target.record,
+            viewModel = viewModel,
+            onBack = { referenceTarget = null },
+            onAdvanced = target.record?.let { record ->
+                { advanced = EditorTarget("world", record) }
+            },
+        )
+    }
+    advanced?.let { extra ->
+        val record = extra.record
+        if (record != null) {
+            when (extra.entityType) {
+                "character" -> CharacterAdvancedDialog(
+                    projectId = project.projectId,
+                    character = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+                "world" -> WorldAdvancedDialog(
+                    projectId = project.projectId,
+                    entry = record,
+                    online = connection != null,
+                    viewModel = viewModel,
+                    onDismiss = { advanced = null },
+                )
+            }
+        }
+    }
+    return
+}
+
+if (editor != null) {
         RecordEditorScreen(
             projectId = project.projectId,
             target = requireNotNull(editor),
@@ -592,6 +639,7 @@ private fun ProjectScreen(
                 FloatingActionButton(
             onClick = {
                 if (section == "chapter") creatingChapter = true
+                else if (section in setOf("character", "world")) referenceTarget = EditorTarget(section, null)
                 else editor = EditorTarget(section, null)
             },
         ) {
@@ -634,6 +682,14 @@ private fun ProjectScreen(
                     onReorder = { parentId, nodeIds ->
                         viewModel.reorderOutline(project.projectId, parentId, nodeIds)
                     },
+                )
+                "character" -> CharacterWorkspace(
+                    records = records,
+                    onOpen = { referenceTarget = EditorTarget("character", it) },
+                )
+                "world" -> WorldWorkspace(
+                    records = records,
+                    onOpen = { referenceTarget = EditorTarget("world", it) },
                 )
                 else -> RecordList(
                     section = requireNotNull(currentSection),
@@ -1177,202 +1233,7 @@ private fun RecordEditorScreen(
 
 @Composable
 private fun AssistantScreen(projectId: String, viewModel: MainViewModel) {
-    var prompt by rememberSaveable { mutableStateOf("") }
-    var scope by rememberSaveable { mutableStateOf("project") }
-    val ui by viewModel.uiState
-    val connection by viewModel.connection.collectAsStateWithLifecycle()
-    val directApi = ui.directApi
-    var modelRoute by rememberSaveable { mutableStateOf("pc") }
-    LaunchedEffect(connection?.deviceId, directApi?.model) {
-        modelRoute = when {
-            connection == null && directApi != null -> "mobile"
-            modelRoute == "mobile" && directApi == null -> "pc"
-            else -> modelRoute
-        }
-    }
-    val standaloneMobile = connection == null && directApi != null
-    val gatewayMobile = connection != null && directApi != null && modelRoute == "mobile"
-    val canUseAi = connection != null || directApi != null
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            ScreenHeading(
-                kicker = when {
-                    standaloneMobile -> "FULL PC PROMPT CONTRACT · ON DEVICE"
-                    gatewayMobile -> "PC WORKFLOW · MOBILE API KEY"
-                    else -> "PC WORKFLOW · PC MODEL ROUTE"
-                },
-                title = "AI 共创工作台",
-                detail = when {
-                    standaloneMobile ->
-                        "手机内置 PC 工作区的完整提示词契约与结构化工具循环，直接调用本机保存的 API Key。"
-                    gatewayMobile ->
-                        "PC 执行同一工作区助手与落库工具；本轮模型凭据来自手机，并经端到端加密传递。"
-                    else ->
-                        "请求由自己的 Gateway 执行，使用 PC 已配置的模型、完整提示词与项目工具。"
-                },
-            )
-        }
-        if (connection != null && directApi != null) {
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Text("本轮模型线路", style = MaterialTheme.typography.labelMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        AssistChip(
-                            onClick = { modelRoute = "pc" },
-                            label = { Text("PC 已配置线路") },
-                            leadingIcon = { Icon(Icons.Outlined.Devices, null, Modifier.size(17.dp)) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = if (modelRoute == "pc") MaterialTheme.colorScheme.primaryContainer else Color.White,
-                            ),
-                        )
-                        AssistChip(
-                            onClick = { modelRoute = "mobile" },
-                            label = { Text("手机私有 Key") },
-                            leadingIcon = { Icon(Icons.Outlined.Key, null, Modifier.size(17.dp)) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = if (modelRoute == "mobile") MaterialTheme.colorScheme.primaryContainer else Color.White,
-                            ),
-                        )
-                    }
-                }
-            }
-        }
-        if (!canUseAi) {
-            item {
-                StatusBanner(
-                    Icons.Outlined.CloudOff,
-                    "尚未配置 AI",
-                    "项目资料仍可离线编辑；请在“设置”中配置手机直连 API，或连接自己的 Gateway。",
-                    warning = true,
-                )
-            }
-        } else if (standaloneMobile || gatewayMobile) {
-            item {
-                StatusBanner(
-                    Icons.Outlined.PhoneAndroid,
-                    if (standaloneMobile) {
-                        "手机独立执行 ${directApi?.model.orEmpty()}"
-                    } else {
-                        "PC 工作流使用手机模型 ${directApi?.model.orEmpty()}"
-                    },
-                    if (standaloneMobile) {
-                        "使用内置的 PC 同源提示词、结构化动作和手机副本；生成动作会写入本地实体。"
-                    } else {
-                        "API Key 只在手机持久化；每次请求加密后临时交给自己的 Gateway，任务结束即释放。"
-                    },
-                )
-            }
-        }
-        item {
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                listOf("project" to "全书", "outline" to "大纲", "characters" to "角色", "worldbuilding" to "世界观").forEach { (value, label) ->
-                    AssistChip(
-                        onClick = { scope = value },
-                        label = { Text(label) },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = if (scope == value) MaterialTheme.colorScheme.primaryContainer else Color.White,
-                        ),
-                    )
-                }
-            }
-        }
-        item {
-            OutlinedTextField(
-                value = prompt,
-                onValueChange = { prompt = it },
-                label = { Text("告诉项目助手要做什么") },
-                placeholder = { Text("例如：用质量模式续写下一章，保持周遥的求证动机与温室管理规则，并留下章末钩子") },
-                minLines = 4,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            Button(
-                onClick = {
-                    viewModel.runAssistant(
-                        projectId,
-                        scope,
-                        prompt,
-                        if (modelRoute == "mobile") AssistantModelRoute.MobileKey else AssistantModelRoute.Pc,
-                    )
-                },
-                enabled = canUseAi && prompt.isNotBlank() && !ui.assistantRunning,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                if (ui.assistantRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Icon(Icons.Outlined.AutoAwesome, null)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when {
-                        ui.assistantRunning -> "正在生成…"
-                        standaloneMobile -> "在手机执行完整工作区流程"
-                        gatewayMobile -> "用手机 Key 执行 PC 工作流"
-                        else -> "交给自己的 Gateway"
-                    },
-                )
-            }
-        }
-        if (ui.assistantRunning) {
-            item {
-                OutlinedButton(
-                    onClick = viewModel::cancelAssistant,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Outlined.DeleteOutline, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("取消当前任务")
-                }
-            }
-        }
-        if (standaloneMobile && ui.assistantOutput.isNotBlank() && !ui.assistantRunning) {
-            item {
-                OutlinedButton(
-                    onClick = { viewModel.saveAssistantAsChapter(projectId) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Outlined.Save, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("保存为本机新章节")
-                }
-            }
-        }
-        if (ui.assistantRunning && ui.assistantActivity.isNotBlank()) {
-            item {
-                Text(
-                    ui.assistantActivity,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                modifier = Modifier.fillMaxWidth().height(240.dp),
-            ) {
-                SelectionContainer {
-                    Text(
-                        ui.assistantOutput.ifBlank {
-                            if (standaloneMobile) {
-                                "同源工作区流程的最终回复会显示在这里；工具执行进度单独显示，不会混入正文。"
-                            } else {
-                                "AI 最终回复会显示在这里；工具执行进度单独显示。"
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp),
-                        color = if (ui.assistantOutput.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-        }
-    }
+    AssistantWorkspace(projectId, viewModel)
 }
 
 @Composable
@@ -2049,7 +1910,7 @@ internal fun EmptyPanel(icon: ImageVector, title: String, detail: String) {
 }
 
 @Composable
-private fun StatusBanner(
+internal fun StatusBanner(
     icon: ImageVector,
     title: String,
     detail: String,

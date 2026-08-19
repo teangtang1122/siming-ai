@@ -273,13 +273,13 @@ internal fun CharacterDetailScreen(
 
     var name by rememberSaveable(character?.key) { mutableStateOf(character?.formText("name").orEmpty()) }
     var aliases by rememberSaveable(character?.key) { mutableStateOf(character?.formText("aliases").orEmpty()) }
-    var roleType by rememberSaveable(character?.key) { mutableStateOf(character?.formText("role_type").ifBlank { "supporting" }) }
+    var roleType by rememberSaveable(character?.key) { mutableStateOf(character?.formText("role_type").orEmpty().ifBlank { "supporting" }) }
     var age by rememberSaveable(character?.key) { mutableStateOf(character?.formText("age").orEmpty()) }
     var appearance by rememberSaveable(character?.key) { mutableStateOf(character?.formText("appearance").orEmpty()) }
     var personality by rememberSaveable(character?.key) { mutableStateOf(character?.formText("personality").orEmpty()) }
     var background by rememberSaveable(character?.key) { mutableStateOf(character?.formText("background").orEmpty()) }
     var abilities by rememberSaveable(character?.key) { mutableStateOf(character?.formText("abilities").orEmpty()) }
-    var lifeStatus by rememberSaveable(character?.key) { mutableStateOf(character?.formText("life_status").ifBlank { "active" }) }
+    var lifeStatus by rememberSaveable(character?.key) { mutableStateOf(character?.formText("life_status").orEmpty().ifBlank { "active" }) }
     var location by rememberSaveable(character?.key) { mutableStateOf(character?.formText("current_location").orEmpty()) }
     var realm by rememberSaveable(character?.key) { mutableStateOf(character?.formText("realm_or_level").orEmpty()) }
     var physical by rememberSaveable(character?.key) { mutableStateOf(character?.formText("physical_state").orEmpty()) }
@@ -289,7 +289,7 @@ internal fun CharacterDetailScreen(
     var abilityState by rememberSaveable(character?.key) { mutableStateOf(character?.formText("abilities_state").orEmpty()) }
     var assets by rememberSaveable(character?.key) { mutableStateOf(character?.formText("items_or_assets").orEmpty()) }
     var tracked by rememberSaveable(character?.key) { mutableStateOf(character?.let(::characterTracked) ?: true) }
-    var profileJson by rememberSaveable(character?.key) { mutableStateOf(character?.formText("profile").ifBlank { "{}" }) }
+    var profileJson by rememberSaveable(character?.key) { mutableStateOf(character?.formText("profile").orEmpty().ifBlank { "{}" }) }
     var showProfile by rememberSaveable(character?.key) { mutableStateOf(false) }
 
     fun reset() {
@@ -299,13 +299,13 @@ internal fun CharacterDetailScreen(
         }
         name = character?.formText("name").orEmpty()
         aliases = character?.formText("aliases").orEmpty()
-        roleType = character?.formText("role_type").ifBlank { "supporting" }
+        roleType = character?.formText("role_type").orEmpty().ifBlank { "supporting" }
         age = character?.formText("age").orEmpty()
         appearance = character?.formText("appearance").orEmpty()
         personality = character?.formText("personality").orEmpty()
         background = character?.formText("background").orEmpty()
         abilities = character?.formText("abilities").orEmpty()
-        lifeStatus = character?.formText("life_status").ifBlank { "active" }
+        lifeStatus = character?.formText("life_status").orEmpty().ifBlank { "active" }
         location = character?.formText("current_location").orEmpty()
         realm = character?.formText("realm_or_level").orEmpty()
         physical = character?.formText("physical_state").orEmpty()
@@ -315,7 +315,7 @@ internal fun CharacterDetailScreen(
         abilityState = character?.formText("abilities_state").orEmpty()
         assets = character?.formText("items_or_assets").orEmpty()
         tracked = character?.let(::characterTracked) ?: true
-        profileJson = character?.formText("profile").ifBlank { "{}" }
+        profileJson = character?.formText("profile").orEmpty().ifBlank { "{}" }
         showProfile = false
         editing = false
     }
@@ -678,7 +678,7 @@ internal fun WorldDetailScreen(
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     var editing by rememberSaveable(entry?.key) { mutableStateOf(creating) }
     var title by rememberSaveable(entry?.key) { mutableStateOf(entry?.formText("title").orEmpty()) }
-    var dimension by rememberSaveable(entry?.key) { mutableStateOf(entry?.formText("dimension").ifBlank { "culture" }) }
+    var dimension by rememberSaveable(entry?.key) { mutableStateOf(entry?.formText("dimension").orEmpty().ifBlank { "culture" }) }
     var content by rememberSaveable(entry?.key) { mutableStateOf(entry?.formText("content").orEmpty()) }
     var showMore by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
@@ -689,7 +689,7 @@ internal fun WorldDetailScreen(
             return
         }
         title = entry?.formText("title").orEmpty()
-        dimension = entry?.formText("dimension").ifBlank { "culture" }
+        dimension = entry?.formText("dimension").orEmpty().ifBlank { "culture" }
         content = entry?.formText("content").orEmpty()
         editing = false
     }
