@@ -1,0 +1,174 @@
+name: Temporary Android chapter workspace
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.ref == 'feature/android-chapter-workspace'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/android-chapter-workspace
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Integrate chapter workspace into project shell
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = []
+
+          replacements.append((
+          '''    var editor by remember { mutableStateOf<EditorTarget?>(null) }
+              var advanced by remember { mutableStateOf<EditorTarget?>(null) }
+              var showChapterOrder by remember { mutableStateOf(false) }
+              val currentSection = entitySections.firstOrNull { it.type == section }
+              val records by viewModel.entities(project.projectId, section).collectAsStateWithLifecycle(initialValue = emptyList())
+              val connection by viewModel.connection.collectAsStateWithLifecycle()
+              val ui by viewModel.uiState
+
+              if (editor != null) {
+          ''',
+          '''    var editor by remember { mutableStateOf<EditorTarget?>(null) }
+              var advanced by remember { mutableStateOf<EditorTarget?>(null) }
+              var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
+              var creatingChapter by remember { mutableStateOf(false) }
+              var showChapterOrder by remember { mutableStateOf(false) }
+              val currentSection = entitySections.firstOrNull { it.type == section }
+              val records by viewModel.entities(project.projectId, section).collectAsStateWithLifecycle(initialValue = emptyList())
+              val outlineRecords by viewModel.entities(project.projectId, "outline").collectAsStateWithLifecycle(initialValue = emptyList())
+              val connection by viewModel.connection.collectAsStateWithLifecycle()
+              val ui by viewModel.uiState
+
+              if (creatingChapter || chapterEditor != null) {
+                  val activeChapter = chapterEditor
+                  ChapterEditorScreen(
+                      projectId = project.projectId,
+                      chapter = activeChapter,
+                      suggestedTitle = "第 ${records.size + 1} 章",
+                      viewModel = viewModel,
+                      onBack = {
+                          creatingChapter = false
+                          chapterEditor = null
+                      },
+                      onOpenAi = {
+                          creatingChapter = false
+                          chapterEditor = null
+                          section = "assistant"
+                      },
+                      onOpenHistory = activeChapter?.let { record ->
+                          {
+                              chapterEditor = null
+                              advanced = EditorTarget("chapter", record)
+                          }
+                      },
+                  )
+                  return
+              }
+
+              if (editor != null) {
+          '''))
+
+          replacements.append((
+          '''                FloatingActionButton(onClick = { editor = EditorTarget(section, null) }) {
+                      Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
+                  }
+          ''',
+          '''                FloatingActionButton(
+                      onClick = {
+                          if (section == "chapter") creatingChapter = true
+                          else editor = EditorTarget(section, null)
+                      },
+                  ) {
+                      Icon(Icons.Outlined.Add, "新建${requireNotNull(currentSection).label}")
+                  }
+          '''))
+
+          replacements.append((
+          '''            when (section) {
+                          "assistant" -> AssistantScreen(project.projectId, viewModel)
+          ''',
+          '''            when (section) {
+                          "chapter" -> ChapterWorkspace(
+                              chapters = records,
+                              outlines = outlineRecords,
+                              online = connection != null,
+                              onOpen = { chapterEditor = it },
+                              onManageOrder = { showChapterOrder = true },
+                          )
+                          "assistant" -> AssistantScreen(project.projectId, viewModel)
+          '''))
+
+          replacements.append((
+          '''                    onAdvanced = if (section in setOf("chapter", "character", "world")) {
+                              { record -> advanced = EditorTarget(section, record) }
+                          } else {
+                              null
+                          },
+                          onManageChapterOrder = if (section == "chapter") {
+                              { showChapterOrder = true }
+                          } else {
+                              null
+                          },
+          ''',
+          '''                    onAdvanced = if (section in setOf("character", "world")) {
+                              { record -> advanced = EditorTarget(section, record) }
+                          } else {
+                              null
+                          },
+                          onManageChapterOrder = null,
+          '''))
+
+          replacements.append((
+              '连接后再到“管理 → 工具”启动建档。',
+              '连接后再到“工具”启动建档。',
+          ))
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old[:120]!r}')
+              text = text.replace(old, new, 1)
+
+          if 'ProjectSectionNavigation(' in text:
+              raise SystemExit('legacy project navigation call unexpectedly remains')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate parity contract
+        run: python scripts/validate_mobile_pc_parity.py
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build Android
+        working-directory: mobile/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Commit verified implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/android-chapter-workspace-temporary.yml
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt
+          git diff --cached --check
+          git commit -m 'feat(android): redesign chapter reading and editing workspace'
+          git push origin HEAD:feature/android-chapter-workspace
