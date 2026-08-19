@@ -1,0 +1,172 @@
+name: Temporary Android reference assistant workspace
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.ref == 'feature/android-reference-assistant-workspace'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/android-reference-assistant-workspace
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Integrate reference and assistant workspaces
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          siming_path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt')
+          siming = siming_path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '    var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }\n    var creatingChapter by remember { mutableStateOf(false) }',
+                  '    var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }\n    var referenceTarget by remember { mutableStateOf<EditorTarget?>(null) }\n    var creatingChapter by remember { mutableStateOf(false) }',
+              ),
+              (
+                  '                if (section == "chapter") creatingChapter = true\n                else editor = EditorTarget(section, null)',
+                  '                if (section == "chapter") creatingChapter = true\n                else if (section in setOf("character", "world")) referenceTarget = EditorTarget(section, null)\n                else editor = EditorTarget(section, null)',
+              ),
+          ]
+          for old, new in replacements:
+              count = siming.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old!r}')
+              siming = siming.replace(old, new, 1)
+
+          reference_block = '''    if (referenceTarget != null) {
+              val target = requireNotNull(referenceTarget)
+              when (target.entityType) {
+                  "character" -> CharacterDetailScreen(
+                      projectId = project.projectId,
+                      character = target.record,
+                      viewModel = viewModel,
+                      onBack = { referenceTarget = null },
+                      onAdvanced = target.record?.let { record ->
+                          { advanced = EditorTarget("character", record) }
+                      },
+                  )
+                  "world" -> WorldDetailScreen(
+                      projectId = project.projectId,
+                      entry = target.record,
+                      viewModel = viewModel,
+                      onBack = { referenceTarget = null },
+                      onAdvanced = target.record?.let { record ->
+                          { advanced = EditorTarget("world", record) }
+                      },
+                  )
+              }
+              advanced?.let { extra ->
+                  val record = extra.record
+                  if (record != null) {
+                      when (extra.entityType) {
+                          "character" -> CharacterAdvancedDialog(
+                              projectId = project.projectId,
+                              character = record,
+                              online = connection != null,
+                              viewModel = viewModel,
+                              onDismiss = { advanced = null },
+                          )
+                          "world" -> WorldAdvancedDialog(
+                              projectId = project.projectId,
+                              entry = record,
+                              online = connection != null,
+                              viewModel = viewModel,
+                              onDismiss = { advanced = null },
+                          )
+                      }
+                  }
+              }
+              return
+          }
+
+          if (editor != null) {
+          '''
+          anchor = '    if (editor != null) {\n'
+          if siming.count(anchor) != 1:
+              raise SystemExit(f'expected one editor anchor, got {siming.count(anchor)}')
+          siming = siming.replace(anchor, reference_block, 1)
+
+          route_anchor = '                else -> RecordList(\n'
+          if siming.count(route_anchor) != 1:
+              raise SystemExit(f'expected one RecordList route anchor, got {siming.count(route_anchor)}')
+          siming = siming.replace(
+              route_anchor,
+              '''                "character" -> CharacterWorkspace(
+                              records = records,
+                              onOpen = { referenceTarget = EditorTarget("character", it) },
+                          )
+                          "world" -> WorldWorkspace(
+                              records = records,
+                              onOpen = { referenceTarget = EditorTarget("world", it) },
+                          )
+                          else -> RecordList(
+          ''',
+              1,
+          )
+
+          assistant_pattern = re.compile(
+              r'@Composable\nprivate fun AssistantScreen\(projectId: String, viewModel: MainViewModel\) \{.*?\n\}\n\n@Composable\nprivate fun SyncScreen',
+              re.S,
+          )
+          siming, count = assistant_pattern.subn(
+              '@Composable\nprivate fun AssistantScreen(projectId: String, viewModel: MainViewModel) {\n    AssistantWorkspace(projectId, viewModel)\n}\n\n@Composable\nprivate fun SyncScreen',
+              siming,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f'expected one AssistantScreen block, got {count}')
+
+          for required in ('CharacterWorkspace(', 'WorldWorkspace(', 'AssistantWorkspace(projectId, viewModel)'):
+              if required not in siming:
+                  raise SystemExit(f'missing integration marker: {required}')
+          siming_path.write_text(siming, encoding='utf-8')
+
+          reference_path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/ReferenceWorkspace.kt')
+          reference = reference_path.read_text(encoding='utf-8')
+          if 'import androidx.compose.foundation.layout.weight\n' not in reference:
+              reference = reference.replace(
+                  'import androidx.compose.foundation.layout.width\n',
+                  'import androidx.compose.foundation.layout.width\nimport androidx.compose.foundation.layout.weight\n',
+                  1,
+              )
+          reference_path.write_text(reference, encoding='utf-8')
+          PY
+
+      - name: Validate parity contract
+        run: python scripts/check-mobile-pc-parity.py --check-doc docs/mobile-pc-parity.md
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Test, lint, and build Android
+        working-directory: mobile/android
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Commit verified implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/android-reference-assistant-workspace-temporary.yml
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/ReferenceWorkspace.kt
+          git diff --cached --check
+          git commit -m 'feat(android): integrate reference and assistant workspaces'
+          git push origin HEAD:feature/android-reference-assistant-workspace
