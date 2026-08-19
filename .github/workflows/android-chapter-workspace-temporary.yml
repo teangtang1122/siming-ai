@@ -123,6 +123,11 @@ jobs:
               '连接后再到“工具”启动建档。',
           ))
 
+          replacements.append((
+              'private fun EmptyPanel(',
+              'internal fun EmptyPanel(',
+          ))
+
           for old, new in replacements:
               count = text.count(old)
               if count != 1:
