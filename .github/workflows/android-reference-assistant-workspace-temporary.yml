@@ -51,6 +51,11 @@ jobs:
                   raise SystemExit(f'expected exactly one match, got {count}: {old!r}')
               siming = siming.replace(old, new, 1)
 
+          status_anchor = 'private fun StatusBanner('
+          if siming.count(status_anchor) != 1:
+              raise SystemExit(f'expected one StatusBanner visibility anchor, got {siming.count(status_anchor)}')
+          siming = siming.replace(status_anchor, 'internal fun StatusBanner(', 1)
+
           reference_block = '''    if (referenceTarget != null) {
               val target = requireNotNull(referenceTarget)
               when (target.entityType) {
@@ -139,14 +144,24 @@ jobs:
                   raise SystemExit(f'missing integration marker: {required}')
           siming_path.write_text(siming, encoding='utf-8')
 
+          assistant_path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/AssistantWorkspace.kt')
+          assistant = assistant_path.read_text(encoding='utf-8')
+          assistant = assistant.replace('import androidx.compose.foundation.layout.weight\n', '')
+          assistant_path.write_text(assistant, encoding='utf-8')
+
           reference_path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/ReferenceWorkspace.kt')
           reference = reference_path.read_text(encoding='utf-8')
-          if 'import androidx.compose.foundation.layout.weight\n' not in reference:
-              reference = reference.replace(
-                  'import androidx.compose.foundation.layout.width\n',
-                  'import androidx.compose.foundation.layout.width\nimport androidx.compose.foundation.layout.weight\n',
-                  1,
-              )
+          reference = reference.replace('import androidx.compose.foundation.layout.weight\n', '')
+          nullable_defaults = [
+              ('character?.formText("role_type").ifBlank', 'character?.formText("role_type").orEmpty().ifBlank'),
+              ('character?.formText("life_status").ifBlank', 'character?.formText("life_status").orEmpty().ifBlank'),
+              ('character?.formText("profile").ifBlank', 'character?.formText("profile").orEmpty().ifBlank'),
+              ('entry?.formText("dimension").ifBlank', 'entry?.formText("dimension").orEmpty().ifBlank'),
+          ]
+          for old, new in nullable_defaults:
+              if old not in reference:
+                  raise SystemExit(f'missing nullable default anchor: {old}')
+              reference = reference.replace(old, new)
           reference_path.write_text(reference, encoding='utf-8')
           PY
 
@@ -167,6 +182,7 @@ jobs:
           git rm .github/workflows/android-reference-assistant-workspace-temporary.yml
           git add mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt
           git add mobile/android/app/src/main/java/com/siming/mobile/ui/ReferenceWorkspace.kt
+          git add mobile/android/app/src/main/java/com/siming/mobile/ui/AssistantWorkspace.kt
           git diff --cached --check
           git commit -m 'feat(android): integrate reference and assistant workspaces'
           git push origin HEAD:feature/android-reference-assistant-workspace
