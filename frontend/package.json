@@ -1,7 +1,7 @@
 {
   "name": "siming-frontend",
   "private": true,
-  "version": "3.2.4",
+  "version": "3.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -46,8 +46,7 @@
     "@vitejs/plugin-react": "^4.2.1",
     "dependency-cruiser": "^18.1.0",
     "eslint": "^8.57.1",
-    "eslint-plugin-react-hooks": "^4.6.2",
-    "jscpd": "^5.0.12",
+    "jscpd": "^4.0.5",
     "jsdom": "^29.1.1",
     "openapi-typescript": "^7.13.0",
     "typescript": "^5.3.3",
