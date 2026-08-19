@@ -1,0 +1,30 @@
+name: Temporary cleanup Android chapter workspace branch
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.ref == 'cleanup/android-chapter-workspace-20260819'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Verify squash result and delete temporary branches
+        run: |
+          set -euo pipefail
+          expected_develop='64ee4b4b8b4f8d8d246cffe2d0c31a7bf72007e7'
+          expected_feature='98ecf03dafb7596553c7a1a82c2e3f29d475cfe6'
+          test "$(git rev-parse HEAD)" = "$expected_develop"
+          git fetch origin feature/android-chapter-workspace
+          test "$(git rev-parse FETCH_HEAD)" = "$expected_feature"
+          git push origin --delete feature/android-chapter-workspace
+          git push origin --delete cleanup/android-chapter-workspace-20260819
