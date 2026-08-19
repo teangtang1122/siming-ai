@@ -30,6 +30,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('mobile/android/app/src/main/java/com/siming/mobile/ui/SimingApp.kt')
           text = path.read_text(encoding='utf-8')
@@ -113,24 +114,9 @@ jobs:
           '''))
 
           replacements.append((
-          '''                    onAdvanced = if (section in setOf("chapter", "character", "world")) {
-                              { record -> advanced = EditorTarget(section, record) }
-                          } else {
-                              null
-                          },
-                          onManageChapterOrder = if (section == "chapter") {
-                              { showChapterOrder = true }
-                          } else {
-                              null
-                          },
-          ''',
-          '''                    onAdvanced = if (section in setOf("character", "world")) {
-                              { record -> advanced = EditorTarget(section, record) }
-                          } else {
-                              null
-                          },
-                          onManageChapterOrder = null,
-          '''))
+              'onAdvanced = if (section in setOf("chapter", "character", "world")) {',
+              'onAdvanced = if (section in setOf("character", "world")) {',
+          ))
 
           replacements.append((
               '连接后再到“管理 → 工具”启动建档。',
@@ -142,6 +128,21 @@ jobs:
               if count != 1:
                   raise SystemExit(f'expected exactly one match, got {count}: {old[:120]!r}')
               text = text.replace(old, new, 1)
+
+          pattern = re.compile(
+              r'(?P<indent>[ \t]*)onManageChapterOrder = if \(section == "chapter"\) \{\n'
+              r'(?P=indent)    \{ showChapterOrder = true \}\n'
+              r'(?P=indent)\} else \{\n'
+              r'(?P=indent)    null\n'
+              r'(?P=indent)\},'
+          )
+          text, count = pattern.subn(
+              lambda match: f'{match.group("indent")}onManageChapterOrder = null,',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f'expected exactly one chapter order callback block, got {count}')
 
           if 'ProjectSectionNavigation(' in text:
               raise SystemExit('legacy project navigation call unexpectedly remains')
