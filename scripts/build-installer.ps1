@@ -44,9 +44,6 @@ function Resolve-InnoCompiler {
     return $Configured
   }
 
-  $Command = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
-  if ($Command) { return $Command.Source }
-
   $Roots = @(${env:ProgramFiles}, ${env:ProgramFiles(x86)}) |
     Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
   foreach ($ProgramRoot in $Roots) {
@@ -59,6 +56,11 @@ function Resolve-InnoCompiler {
       return ($Candidates | Sort-Object -Descending | Select-Object -First 1)
     }
   }
+
+  # Package managers can expose an ISCC.exe shim whose own file version is
+  # unrelated to the installed compiler. Prefer the real Program Files binary.
+  $Command = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+  if ($Command) { return $Command.Source }
 
   throw "Inno Setup compiler ISCC.exe is required. Install Inno Setup or set SIMING_INNO_ISCC."
 }

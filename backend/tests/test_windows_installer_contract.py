@@ -34,6 +34,15 @@ def test_installer_build_uses_onedir_payload_without_portable_release_asset():
     assert "portable bridge" not in script.lower()
 
 
+def test_installer_prefers_real_inno_binary_over_package_manager_shim():
+    script = (ROOT / "scripts" / "build-installer.ps1").read_text(encoding="utf-8")
+
+    program_files_lookup = script.index("$Roots = @(${env:ProgramFiles}")
+    path_lookup = script.index('$Command = Get-Command "ISCC.exe"')
+
+    assert program_files_lookup < path_lookup
+
+
 def test_installer_update_is_signed_and_verified_separately():
     signer = (ROOT / "scripts" / "sign-windows-installer.ps1").read_text(encoding="utf-8")
     verifier = (ROOT / "scripts" / "verify-windows-installer.ps1").read_text(encoding="utf-8")
