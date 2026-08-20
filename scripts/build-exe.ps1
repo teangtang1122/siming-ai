@@ -21,6 +21,8 @@ $AppName = "Siming"
 $DefaultUpdateRepo = "teangtang1122/siming-ai"
 $ToolchainPath = Join-Path $Root "build-toolchain.json"
 $PythonBuildLock = Join-Path $BackendDir "requirements-windows-build.lock"
+$ProductDisplayName = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5Y+45ZG9IChTaW1pbmcp"))
+$FileDescription = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5Y+45ZG9IChTaW1pbmcpIOahjOmdouW6lOeUqA=="))
 
 function Write-Step {
   param([string]$Message)
@@ -171,12 +173,12 @@ VSVersionInfo(
         u'040904B0',
         [
           StringStruct(u'CompanyName', u'teangtang1122'),
-          StringStruct(u'FileDescription', u'司命 (Siming) 桌面应用'),
+          StringStruct(u'FileDescription', u'$FileDescription'),
           StringStruct(u'FileVersion', u'$FileVersion'),
           StringStruct(u'InternalName', u'Siming'),
           StringStruct(u'LegalCopyright', u'Copyright (C) 2026 teangtang1122'),
           StringStruct(u'OriginalFilename', u'Siming.exe'),
-          StringStruct(u'ProductName', u'司命 (Siming)'),
+          StringStruct(u'ProductName', u'$ProductDisplayName'),
           StringStruct(u'ProductVersion', u'$Version')
         ]
       )
@@ -202,8 +204,8 @@ function Assert-WindowsVersionInfo {
   $VersionInfo = (Get-Item -LiteralPath $ExecutablePath).VersionInfo
   $Expected = [ordered]@{
     CompanyName = "teangtang1122"
-    ProductName = "司命 (Siming)"
-    FileDescription = "司命 (Siming) 桌面应用"
+    ProductName = $ProductDisplayName
+    FileDescription = $FileDescription
     FileVersion = $ExpectedFileVersion
     ProductVersion = $Version
     OriginalFilename = "Siming.exe"
