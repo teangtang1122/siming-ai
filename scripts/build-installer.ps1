@@ -82,11 +82,27 @@ function Assert-InnoCompilerVersion {
     [Parameter(Mandatory=$true)][string]$ExpectedVersion
   )
 
-  $VersionOutput = (& $CompilerPath "--version" 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0) {
-    throw "Unable to query Inno Setup version from $CompilerPath (exit $LASTEXITCODE): $VersionOutput"
+  $ProbeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("siming-inno-version-" + [guid]::NewGuid().ToString("N"))
+  $ProbeScript = Join-Path $ProbeDir "version-probe.iss"
+  New-Item -ItemType Directory -Force -Path $ProbeDir | Out-Null
+  [System.IO.File]::WriteAllText(
+    $ProbeScript,
+    "[Setup]`r`nAppName=Siming Compiler Probe`r`nAppVersion=1.0`r`nDefaultDirName={tmp}\SimingCompilerProbe`r`n",
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  $SavedErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $VersionOutput = (& $CompilerPath "/O-" $ProbeScript 2>&1 | Out-String).Trim()
+    $CompilerExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $SavedErrorActionPreference
+    Remove-Item -LiteralPath $ProbeDir -Recurse -Force -ErrorAction SilentlyContinue
   }
-  $VersionMatch = [regex]::Match($VersionOutput, '(?<!\d)(?<Version>\d+\.\d+\.\d+)(?!\d)')
+  if ($CompilerExitCode -ne 0) {
+    throw "Unable to query Inno Setup version from $CompilerPath (exit $CompilerExitCode): $VersionOutput"
+  }
+  $VersionMatch = [regex]::Match($VersionOutput, 'Compiler engine version:\s+.*?(?<Version>\d+\.\d+\.\d+)')
   if (-not $VersionMatch.Success) {
     throw "Unable to determine Inno Setup version from $CompilerPath output: $VersionOutput"
   }

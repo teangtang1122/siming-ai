@@ -31,7 +31,9 @@ def test_installer_build_uses_onedir_payload_without_portable_release_asset():
     assert '@("Siming.exe", "update.json", "sha256.txt")' in script
     assert "Read-PinnedInnoVersion" in script
     assert "Assert-InnoCompilerVersion" in script
-    assert '& $CompilerPath "--version"' in script
+    assert '& $CompilerPath "/O-" $ProbeScript' in script
+    assert "Compiler engine version:" in script
+    assert '"--version"' not in script
     assert ".VersionInfo" not in script
     assert "portable bridge" not in script.lower()
 
