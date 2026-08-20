@@ -82,18 +82,19 @@ function Assert-InnoCompilerVersion {
     [Parameter(Mandatory=$true)][string]$ExpectedVersion
   )
 
-  $VersionInfo = (Get-Item -LiteralPath $CompilerPath).VersionInfo
-  foreach ($Candidate in @($VersionInfo.ProductVersion, $VersionInfo.FileVersion)) {
-    if ([string]$Candidate -match '(?<Version>\d+\.\d+\.\d+)') {
-      $ActualVersion = $Matches.Version
-      if ($ActualVersion -ne $ExpectedVersion) {
-        throw "Inno Setup $ExpectedVersion is required for reproducible packaging; found $ActualVersion at $CompilerPath."
-      }
-      Write-Step "Pinned Inno Setup $ActualVersion verified: $CompilerPath"
-      return
-    }
+  $VersionOutput = (& $CompilerPath "--version" 2>&1 | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to query Inno Setup version from $CompilerPath (exit $LASTEXITCODE): $VersionOutput"
   }
-  throw "Unable to determine Inno Setup version from $CompilerPath"
+  $VersionMatch = [regex]::Match($VersionOutput, '(?<!\d)(?<Version>\d+\.\d+\.\d+)(?!\d)')
+  if (-not $VersionMatch.Success) {
+    throw "Unable to determine Inno Setup version from $CompilerPath output: $VersionOutput"
+  }
+  $ActualVersion = $VersionMatch.Groups["Version"].Value
+  if ($ActualVersion -ne $ExpectedVersion) {
+    throw "Inno Setup $ExpectedVersion is required for reproducible packaging; found $ActualVersion at $CompilerPath."
+  }
+  Write-Step "Pinned Inno Setup $ActualVersion verified: $CompilerPath"
 }
 
 function Read-AppVersion {
