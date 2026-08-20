@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "python": "3.11.15",
+  "python": "3.11.9",
   "python_implementation": "CPython",
   "python_architecture": "64bit",
   "pip": "26.2.1",

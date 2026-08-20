@@ -75,7 +75,7 @@ def test_windows_packaging_toolchain_and_python_environment_are_fully_pinned():
 
     assert toolchain == {
         "schema_version": 1,
-        "python": "3.11.15",
+        "python": "3.11.9",
         "python_implementation": "CPython",
         "python_architecture": "64bit",
         "pip": "26.2.1",

@@ -74,7 +74,7 @@ Windows 安装包使用仓库根目录的 `build-toolchain.json` 作为工具链
 
 | 工具 | 固定版本 |
 | --- | --- |
-| CPython（Windows x64，带 Tk） | 3.11.15 |
+| CPython（Windows x64，带 Tk） | 3.11.9 |
 | pip | 26.2.1 |
 | setuptools | 79.0.1 |
 | PyInstaller | 6.21.0 |
