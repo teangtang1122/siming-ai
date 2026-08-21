@@ -42,7 +42,7 @@ golden_cases:
 - 新角色用 character_create；稳定档案出现新信息时用 character_update，并合并完整 background、aliases、profile 和 custom_system_prompt。profile 覆盖 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger；只写有正文或旧档案依据的内容，不编造。
 - “神秘人影、陌生声音、黑影、蒙面人”等身份未确认的描述，只作为本章角色线索写入摘要、场景和 chapter_link；除非正文已经提供可持续使用的稳定档案，否则不要放入 character_profiles，也不要创建空白永久角色卡。
 - character_create/update 的 role_type 只能是 protagonist、supporting、antagonist、mentor、other 之一；“穿越者”“陆家三岁孙女”等身份描述应写入 background/age，禁止与“主角”一起拼入 role_type。
-- 新设定或变化使用 worldbuilding_create、worldbuilding_update、worldbuilding_timeline；维度仅用 geography、history、factions、power_system、races、culture。已有设定若本章只是关键引用且没有变化，不要虚构 update，同标题 chapter_link 即可。
+- 新设定或变化使用 worldbuilding_create、worldbuilding_update、worldbuilding_timeline；维度仅用 geography、history、factions、power_system、races、culture。既有设定若本章只是关键引用且没有变化，不要虚构 update，同标题 chapter_link 即可。
 - `coverage_manifest.characters` 中每个稳定角色都必须有同名独立 character_state_update；`coverage_manifest.worldbuilding` 中新增、变化、确认、受损、受限或被使用的设定必须有同标题 worldbuilding_create/update/timeline，既有且未变化的引用必须有同标题 chapter_link；`coverage_manifest.character_profiles` 中每个角色必须有同名 character_create/update；`coverage_manifest.relationships` 中每个关系必须有同端点、同类型的 character_relationship。系统按身份逐项核对，重复卡不能凑数，数量或身份不足时本章不会通过验收。
 - 世界观清单、候选和 chapter_link 必须使用完全相同的稳定标题。不要把“系统”改写成“系统（无界面·无沟通·自行探索型）”；说明性后缀写入 content/description。
 - 亲属、师徒、盟友、敌对、主从、利益合作、情感关系等，只要正文明确且影响后续写作，就必须进入 relationships 和 character_relationship；双方都必须列入 characters，并已有角色档案或先输出 character_create/update。地点、功法、组织、事件不能作为角色关系端点。
