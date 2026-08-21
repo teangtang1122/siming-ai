@@ -1,0 +1,79 @@
+name: Sync published release to Gitee
+
+on:
+  workflow_run:
+    workflows: ["Release Gate"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: sync-gitee-after-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-exact-release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve the release tag published by Release Gate
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          remote_tags="$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git")"
+          tag="$(
+            awk -v sha="$HEAD_SHA" '
+              $1 == sha {
+                ref = $2
+                sub(/^refs\/tags\//, "", ref)
+                sub(/\^\{\}$/, "", ref)
+                if (ref ~ /^v[0-9]/) print ref
+              }
+            ' <<< "$remote_tags" | sort -V | tail -n 1
+          )"
+
+          if [[ -z "$tag" ]]; then
+            echo "Release Gate commit $HEAD_SHA has no v* tag; this was a normal main push."
+            echo "should_sync=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The publishing step is complete before workflow_run fires, but the
+          # release API can still be briefly eventually consistent.
+          for attempt in $(seq 1 12); do
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Resolved published release $tag at $HEAD_SHA"
+              echo "tag=$tag" >> "$GITHUB_OUTPUT"
+              echo "should_sync=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Release $tag is not visible yet ($attempt/12); waiting..."
+            sleep 5
+          done
+
+          echo "::error::Release Gate completed for $tag, but the GitHub Release was not published."
+          exit 1
+
+      - name: Dispatch the exact Gitee mirror
+        if: steps.release.outputs.should_sync == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run sync-gitee.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f "tag=$TAG"
+          echo "Dispatched Gitee mirror for $TAG"
