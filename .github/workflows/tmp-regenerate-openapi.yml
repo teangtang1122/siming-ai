@@ -1,13 +1,6 @@
 name: Temporary regenerate OpenAPI types
 
 on:
-  push:
-    branches:
-      - develop
-    paths:
-      - .github/workflows/tmp-regenerate-openapi.yml
-      - backend/**
-      - frontend/**
   pull_request:
     branches:
       - main
@@ -31,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: develop
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
