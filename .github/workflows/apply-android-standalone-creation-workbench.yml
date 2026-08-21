@@ -1,0 +1,73 @@
+name: Apply Android standalone creation workbench
+
+on:
+  push:
+    branches:
+      - feat/android-standalone-creation-workbench
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/android-standalone-creation-workbench
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Reconstruct and apply workbench source changes
+        run: |
+          cat .github/patches/android-standalone-creation-workbench.part{1,2,3,4,5,6} > /tmp/android-creation-workbench.b64
+          python - <<'PY'
+          import base64
+          import gzip
+          from pathlib import Path
+
+          encoded = ''.join(Path('/tmp/android-creation-workbench.b64').read_text().split())
+          Path('/tmp/apply_android_standalone_creation_workbench.py').write_bytes(
+              gzip.decompress(base64.b64decode(encoded))
+          )
+          PY
+          python /tmp/apply_android_standalone_creation_workbench.py
+
+      - name: Regenerate and validate mobile-PC parity document
+        run: |
+          python scripts/check-mobile-pc-parity.py --write-doc docs/mobile-pc-parity.md
+          python scripts/check-mobile-pc-parity.py --check-doc docs/mobile-pc-parity.md
+
+      - name: Run Android tests, lint and build
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+
+      - name: Validate generated diff
+        run: |
+          git diff --check
+          git status --short
+
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mobile/android contracts/mobile-pc-parity.json docs/mobile-pc-parity.md
+          git commit -m "新增 Android 独立建档工作台"
+          git push origin HEAD:feat/android-standalone-creation-workbench
