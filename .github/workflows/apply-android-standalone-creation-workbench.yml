@@ -46,9 +46,13 @@ jobs:
           from pathlib import Path
 
           encoded = ''.join(Path('/tmp/android-creation-workbench.b64').read_text().split())
-          Path('.github/scripts/apply_android_standalone_creation_workbench.py').write_bytes(
-              gzip.decompress(base64.b64decode(encoded))
+          path = Path('.github/scripts/apply_android_standalone_creation_workbench.py')
+          source = gzip.decompress(base64.b64decode(encoded)).decode('utf-8')
+          source = source.replace(
+              '再基于真实数据决定下一步问题；角色、世界观和大纲不再有强制顺序。',
+              '再问最有价值的下一件事；角色、世界观和大纲不再有强制顺序。',
           )
+          path.write_text(source, encoding='utf-8')
           PY
           python .github/scripts/apply_android_standalone_creation_workbench.py
 
