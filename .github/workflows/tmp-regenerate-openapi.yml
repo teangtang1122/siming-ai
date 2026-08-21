@@ -8,6 +8,13 @@ on:
       - .github/workflows/tmp-regenerate-openapi.yml
       - backend/**
       - frontend/**
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/tmp-regenerate-openapi.yml
+      - backend/**
+      - frontend/**
 
 permissions:
   contents: write
