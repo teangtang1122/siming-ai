@@ -30,6 +30,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -62,6 +63,7 @@ internal fun CreationConversationWorkspace(
     running: Boolean,
     activity: String,
     onBack: () -> Unit,
+    onOpenDossier: () -> Unit,
     onSend: (String) -> Unit,
     onDiscard: () -> Unit,
     onOpenProject: (String) -> Unit,
@@ -98,6 +100,9 @@ internal fun CreationConversationWorkspace(
                         style = MaterialTheme.typography.labelSmall,
                         color = if (route == "pc") SimingBlue else SimingGreen,
                     )
+                }
+                IconButton(onClick = onOpenDossier, enabled = !running) {
+                    Icon(Icons.Outlined.FolderOpen, "打开结构化建档页")
                 }
                 IconButton(onClick = onDiscard, enabled = !running) {
                     Icon(Icons.Outlined.DeleteOutline, "移除立项草稿")
@@ -150,6 +155,18 @@ internal fun CreationConversationWorkspace(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        item {
+            OutlinedButton(
+                onClick = onOpenDossier,
+                enabled = !running,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Outlined.FolderOpen, null)
+                Spacer(Modifier.width(8.dp))
+                Text("打开 PC 同款结构化建档页", fontWeight = FontWeight.Bold)
+            }
         }
 
         item { HorizontalDivider() }
@@ -247,7 +264,7 @@ internal fun CreationConversationWorkspace(
 
         item {
             Text(
-                "只有你明确要求“创建正式作品”时，Agent 才会执行最终建档。结构化资料始终可以在后续对话中继续调整。",
+                "你也可以打开结构化建档页，按 PC 相同的阶段逐项生成、编辑、确认并最终建档；对话与建档页始终读取同一份 V3 草稿。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

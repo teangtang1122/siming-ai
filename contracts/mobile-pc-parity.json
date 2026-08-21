@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "2026-08-18",
+  "contract_version": "2026-08-21",
   "canonical_authority": "pc",
   "modes": {
     "pc": "桌面后端和前端所使用的权威领域实现。",
@@ -1340,9 +1340,21 @@
             {
               "path": "scripts/export-mobile-prompt-contract.py",
               "contains": "_creation_baseline_fixture"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/CreationDossierWorkspace.kt",
+              "contains": "internal fun CreationDossierWorkspace("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/creation/CreationWorkbenchContract.kt",
+              "contains": "internal object CreationWorkbenchContract"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "suspend fun generateCreationStage("
             }
           ],
-          "limitations": "共享 PC 提示词、阶段规范和基线夹具，但运行状态机、恢复与并发控制仍是手机实现。"
+          "limitations": "使用与 PC 构建时导出的 V3 PromptSpec、阶段结构、标准化、依赖失效和最终建档门槛；新增结构化建档页后，创意选择、阶段生成/编辑/确认、最终审阅和正式建档体验与 PC 对齐。手机独立执行仍没有 PC 服务端 durable Operation/AgentRun 审计记录。"
         }
       },
       "side_effects": [
@@ -1362,10 +1374,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/creation/PcCreationAgentContractTest.kt",
           "contains": "currentPcCreationAgentPromptRequiresImmediateIncrementalWrites"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/creation/CreationWorkbenchContractTest.kt",
+          "contains": "fun archiveReadinessMatchesPcFinalizationGate()"
         }
       ],
       "known_gaps": [
-        "手机独立立项尚未完全复用 PC 的运行记录、暂停/恢复和操作幂等状态机。"
+        "手机独立模式没有 PC 服务端 durable Operation/AgentRun 的暂停、恢复与审计记录；建档数据结构、确认门槛和用户操作已通过同源契约与回归测试对齐。"
       ]
     },
     {

@@ -1217,6 +1217,204 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
         return updated
     }
 
+    suspend fun generateCreationStage(
+        sessionId: String,
+        stage: String,
+        operation: String = "generate",
+        instruction: String = "",
+        onProgress: suspend (String) -> Unit = {},
+    ): JsonObject {
+        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(operation in setOf("generate", "regenerate", "refine")) { "不支持的生成操作：$operation" }
+        if (operation == "refine") require(instruction.isNotBlank()) { "请先填写本次调整要求" }
+
+        val current = loadCreationSession(sessionId)
+        val route = creationRoute(current)
+        val host = creationHost(current)
+        val updated = if (host == CREATION_HOST_DEVICE) {
+            onProgress("正在用手机模型生成${creationStageLabel(stage)}…")
+            tagCreationRoute(
+                mobileCreationAgent.generateStage(
+                    current,
+                    stage,
+                    instruction.trim(),
+                    resolvedDirectConfig(),
+                ),
+                route,
+                CREATION_HOST_DEVICE,
+            )
+        } else {
+            val connection = requireConnection()
+            onProgress("正在由 PC 权威建档服务生成${creationStageLabel(stage)}…")
+            val payload = buildJsonObject {
+                put("stage", stage)
+                put("model_route", if (route == CreationExecutionRoute.MobileKey) "mobile" else "pc")
+                put("use_model", true)
+                put("auto_confirm", false)
+                put("operation", operation)
+                put("expected_revision", current.int("revision"))
+                if (instruction.isNotBlank()) put("instruction", instruction.trim())
+                if (route == CreationExecutionRoute.MobileKey) {
+                    put("mobile_provider", mobileProviderPayload(connection, sessionId))
+                }
+            }
+            val started = api.startNovelCreationRun(connection, sessionId, payload)
+            val run = started["run"] as? JsonObject ?: started
+            val runId = run.string("id").ifBlank { run.string("run_id") }
+            require(runId.isNotBlank()) { "PC 立项任务没有返回 run_id" }
+            awaitCreationRun(connection, runId, onProgress)
+            tagCreationRoute(
+                api.getNovelCreationSession(connection, sessionId),
+                route,
+                CREATION_HOST_GATEWAY,
+            )
+        }
+        saveCreationSession(updated)
+        return updated
+    }
+
+    suspend fun updateCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+    ): JsonObject {
+        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(data.isNotEmpty()) { "阶段内容不能为空" }
+        val current = loadCreationSession(sessionId)
+        val route = creationRoute(current)
+        val host = creationHost(current)
+        val updated = if (host == CREATION_HOST_DEVICE) {
+            tagCreationRoute(
+                mobileCreationAgent.replaceArtifact(current, stage, data, sourceLabel = "author"),
+                route,
+                CREATION_HOST_DEVICE,
+            )
+        } else {
+            val connection = requireConnection()
+            tagCreationRoute(
+                api.updateNovelCreationStage(
+                    connection,
+                    sessionId,
+                    stage,
+                    buildJsonObject {
+                        put("data", data)
+                        put("source", "author")
+                        put("expected_revision", current.int("revision"))
+                    },
+                ),
+                route,
+                CREATION_HOST_GATEWAY,
+            )
+        }
+        saveCreationSession(updated)
+        return updated
+    }
+
+    suspend fun confirmCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+    ): JsonObject {
+        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(data.isNotEmpty()) { "阶段内容不能为空" }
+        var current = loadCreationSession(sessionId)
+        val route = creationRoute(current)
+        val host = creationHost(current)
+
+        if (stage == "concepts" && current.stageState("constraints").string("status") != "confirmed") {
+            val constraintData = current.draft().objectValue("form")
+            current = if (host == CREATION_HOST_DEVICE) {
+                tagCreationRoute(
+                    mobileCreationAgent.confirmStage(current, "constraints", constraintData),
+                    route,
+                    CREATION_HOST_DEVICE,
+                )
+            } else {
+                val connection = requireConnection()
+                tagCreationRoute(
+                    api.confirmNovelCreationStage(
+                        connection,
+                        sessionId,
+                        "constraints",
+                        buildJsonObject {
+                            put("data", constraintData)
+                            put("confirm", true)
+                            put("source", "author")
+                            put("expected_revision", current.int("revision"))
+                        },
+                    ),
+                    route,
+                    CREATION_HOST_GATEWAY,
+                )
+            }
+        }
+
+        val normalizedData = if (stage == "concepts") {
+            val selected = data.string("selected_concept_id")
+                .ifBlank { current.draft().string("selected_concept_id") }
+                .ifBlank {
+                    ((data["options"] as? JsonArray)?.firstOrNull() as? JsonObject)
+                        ?.string("id")
+                        .orEmpty()
+                }
+            require(selected.isNotBlank()) { "请先选择一个创意方向" }
+            JsonObject(data.toMutableMap().apply {
+                put("selected_concept_id", JsonPrimitive(selected))
+            })
+        } else {
+            data
+        }
+
+        val updated = if (host == CREATION_HOST_DEVICE) {
+            tagCreationRoute(
+                mobileCreationAgent.confirmStage(current, stage, normalizedData),
+                route,
+                CREATION_HOST_DEVICE,
+            )
+        } else {
+            val connection = requireConnection()
+            tagCreationRoute(
+                api.confirmNovelCreationStage(
+                    connection,
+                    sessionId,
+                    stage,
+                    buildJsonObject {
+                        put("data", normalizedData)
+                        put("confirm", true)
+                        put("source", "author")
+                        put("expected_revision", current.int("revision"))
+                    },
+                ),
+                route,
+                CREATION_HOST_GATEWAY,
+            )
+        }
+        saveCreationSession(updated)
+        return updated
+    }
+
+    private suspend fun awaitCreationRun(
+        connection: GatewayConnection,
+        runId: String,
+        onProgress: suspend (String) -> Unit,
+    ): JsonObject {
+        repeat(640) {
+            val run = api.getNovelCreationRun(connection, runId)
+            val status = run.string("status")
+            val message = run.string("current_message")
+                .ifBlank { run.objectValue("card_presentation").string("message") }
+            if (message.isNotBlank()) onProgress(message)
+            if (status in CREATION_TERMINAL_RUN_STATUSES) {
+                if (status in CREATION_SUCCESS_RUN_STATUSES) return run
+                val nextAction = run.string("next_action")
+                    .ifBlank { run.objectValue("card_presentation").string("reason") }
+                error(nextAction.ifBlank { "${creationStageLabel(run.string("stage"))}生成失败，请重试" })
+            }
+            kotlinx.coroutines.delay(750)
+        }
+        error("PC 立项任务等待超时；任务仍保留，可稍后继续查看")
+    }
+
     suspend fun archiveCreation(
         sessionId: String,
         onProgress: suspend (String) -> Unit = {},
@@ -1762,9 +1960,13 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
             "opening_outline" to "前3章细纲",
             "final_review" to "最终审阅",
         )
-        private val CREATION_TERMINAL_RUN_STATUSES = setOf(
+        private val CREATION_SUCCESS_RUN_STATUSES = setOf(
             "waiting_user",
+            "waiting_author",
             "completed",
+            "partial_success",
+        )
+        private val CREATION_TERMINAL_RUN_STATUSES = CREATION_SUCCESS_RUN_STATUSES + setOf(
             "failed",
             "cancelled",
             "interrupted",

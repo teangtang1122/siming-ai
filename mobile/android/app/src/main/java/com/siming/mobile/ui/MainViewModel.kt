@@ -146,6 +146,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun generateCreationStage(
+        sessionId: String,
+        stage: String,
+        operation: String,
+        instruction: String,
+    ) = launchCreation("正在生成立项资料…") {
+        repository.generateCreationStage(
+            sessionId = sessionId,
+            stage = stage,
+            operation = operation,
+            instruction = instruction,
+            onProgress = { message ->
+                uiState.value = uiState.value.copy(creationActivity = message)
+            },
+        )
+        when (operation) {
+            "refine" -> "已按要求更新当前阶段；请检查后再确认"
+            "regenerate" -> "已重新生成当前阶段；旧内容仍可从修订历史追溯"
+            else -> "阶段内容已生成并保存，等待作者确认"
+        }
+    }
+
+    fun saveCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+        onSaved: () -> Unit = {},
+    ) = launchCreation("正在保存建档修改…") {
+        repository.updateCreationStage(sessionId, stage, data)
+        onSaved()
+        "建档修改已保存；受影响的下游阶段会按 PC 规则重新校验"
+    }
+
+    fun confirmCreationStage(
+        sessionId: String,
+        stage: String,
+        data: JsonObject,
+        onConfirmed: () -> Unit = {},
+    ) = launchCreation("正在确认立项阶段…") {
+        repository.confirmCreationStage(sessionId, stage, data)
+        onConfirmed()
+        "当前阶段已确认"
+    }
+
     fun archiveCreation(sessionId: String, onArchived: (String) -> Unit) {
         viewModelScope.launch {
             uiState.value = uiState.value.copy(

@@ -93,6 +93,7 @@ internal fun CreationScreen(
     val drafts by viewModel.creationDrafts.collectAsStateWithLifecycle()
     val ui by viewModel.uiState
     val active = drafts.firstOrNull { it.entityId == ui.activeCreationId }?.creationPayload()
+    var showDossier by rememberSaveable(ui.activeCreationId) { mutableStateOf(false) }
 
     LaunchedEffect(connection?.deviceId) {
         if (connection != null) viewModel.refreshCreationDrafts()
@@ -102,6 +103,25 @@ internal fun CreationScreen(
         ui.activeCreationId != null && active == null -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
+        active != null && showDossier -> CreationDossierWorkspace(
+            modifier = modifier,
+            session = active,
+            stages = stages,
+            running = ui.creationRunning,
+            activity = ui.creationActivity,
+            onBackToChat = { showDossier = false },
+            onGenerate = { stage, operation, instruction ->
+                viewModel.generateCreationStage(active.string("id"), stage, operation, instruction)
+            },
+            onSave = { stage, data, onSaved ->
+                viewModel.saveCreationStage(active.string("id"), stage, data, onSaved)
+            },
+            onConfirm = { stage, data, onConfirmed ->
+                viewModel.confirmCreationStage(active.string("id"), stage, data, onConfirmed)
+            },
+            onArchive = { viewModel.archiveCreation(active.string("id"), onOpenProject) },
+            onOpenProject = onOpenProject,
+        )
         active != null -> CreationConversationWorkspace(
             modifier = modifier,
             session = active,
@@ -109,6 +129,7 @@ internal fun CreationScreen(
             running = ui.creationRunning,
             activity = ui.creationActivity,
             onBack = viewModel::closeCreation,
+            onOpenDossier = { showDossier = true },
             onSend = { message -> viewModel.sendCreationMessage(active.string("id"), message) },
             onDiscard = { viewModel.discardCreation(active.string("id")) },
             onOpenProject = onOpenProject,
@@ -120,6 +141,7 @@ internal fun CreationScreen(
             connection = connection,
             directApi = directApi,
             presets = pcContract.presets,
+            presetDefaults = pcContract::presetDefaults,
             stages = stages,
             running = ui.creationRunning,
             activity = ui.creationActivity,
@@ -138,6 +160,7 @@ private fun CreationLanding(
     connection: GatewayConnection?,
     directApi: DirectApiSummary?,
     presets: List<PcCreationPreset>,
+    presetDefaults: (String) -> JsonObject,
     stages: List<Pair<String, String>>,
     running: Boolean,
     activity: String,
@@ -161,6 +184,10 @@ private fun CreationLanding(
     var targetChapters by rememberSaveable { mutableStateOf("240") }
     var requirements by rememberSaveable { mutableStateOf("") }
     var avoid by rememberSaveable { mutableStateOf("") }
+    var worldTone by rememberSaveable { mutableStateOf("") }
+    var storyStructure by rememberSaveable { mutableStateOf("") }
+    var pacing by rememberSaveable { mutableStateOf("") }
+    var writingStyle by rememberSaveable { mutableStateOf("") }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -259,6 +286,13 @@ private fun CreationLanding(
                                     presetId = preset.id
                                     themeId = ""
                                     genre = preset.label
+                                    val defaults = presetDefaults(preset.id)
+                                    worldTone = defaults.string("world_tone")
+                                    storyStructure = defaults.string("story_structure")
+                                    pacing = defaults.string("pacing")
+                                    writingStyle = defaults.string("writing_style")
+                                    requirements = defaults.linesText("special_requirements")
+                                    avoid = defaults.linesText("avoid")
                                 },
                                 label = { Text(preset.label) },
                                 colors = AssistChipDefaults.assistChipColors(
@@ -318,6 +352,14 @@ private fun CreationLanding(
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(targetWords, { targetWords = it.filter(Char::isDigit) }, label = { Text("目标字数") }, modifier = Modifier.weight(1f))
                         OutlinedTextField(targetChapters, { targetChapters = it.filter(Char::isDigit) }, label = { Text("目标章节") }, modifier = Modifier.weight(1f))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(worldTone, { worldTone = it }, label = { Text("世界观基调") }, minLines = 2, modifier = Modifier.weight(1f))
+                        OutlinedTextField(storyStructure, { storyStructure = it }, label = { Text("剧情结构") }, minLines = 2, modifier = Modifier.weight(1f))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(pacing, { pacing = it }, label = { Text("节奏控制") }, minLines = 2, modifier = Modifier.weight(1f))
+                        OutlinedTextField(writingStyle, { writingStyle = it }, label = { Text("正文风格") }, minLines = 2, modifier = Modifier.weight(1f))
                     }
                     OutlinedTextField(
                         requirements,
@@ -394,6 +436,10 @@ private fun CreationLanding(
                             platform = platform,
                             targetWords = targetWords.toIntOrNull() ?: 600_000,
                             targetChapters = targetChapters.toIntOrNull() ?: 240,
+                            worldTone = worldTone,
+                            storyStructure = storyStructure,
+                            pacing = pacing,
+                            writingStyle = writingStyle,
                             specialRequirements = requirements.lines().filter(String::isNotBlank),
                             avoid = avoid.lines().filter(String::isNotBlank),
                             lockedRequirements = requirements.lines().filter(String::isNotBlank),
@@ -414,7 +460,7 @@ private fun CreationLanding(
         }
         item {
             Text(
-                "接下来直接进入对话式立项：AI 每轮先读当前资料，把确定事实立即写入，再问最有价值的下一件事；角色、世界观和大纲不再有强制顺序。",
+                "接下来可在对话与结构化建档页之间随时切换：聊天负责补想法，建档页负责像 PC 一样生成、编辑、确认每个阶段并建立正式作品。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -553,4 +599,9 @@ private fun ReplicaEntity.creationPayload(): JsonObject? = payloadJson?.let { ra
 }
 
 private fun JsonObject.string(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
+private fun JsonObject.linesText(name: String): String =
+    (get(name) as? kotlinx.serialization.json.JsonArray)
+        .orEmpty()
+        .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        .joinToString("\n")
 private fun JsonObject.int(name: String): Int = (get(name) as? JsonPrimitive)?.intOrNull ?: 0
