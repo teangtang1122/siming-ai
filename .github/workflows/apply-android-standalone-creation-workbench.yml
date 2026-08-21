@@ -39,17 +39,18 @@ jobs:
       - name: Reconstruct and apply workbench source changes
         run: |
           cat .github/patches/android-standalone-creation-workbench.part{1,2,3,4,5,6} > /tmp/android-creation-workbench.b64
+          mkdir -p .github/scripts
           python - <<'PY'
           import base64
           import gzip
           from pathlib import Path
 
           encoded = ''.join(Path('/tmp/android-creation-workbench.b64').read_text().split())
-          Path('/tmp/apply_android_standalone_creation_workbench.py').write_bytes(
+          Path('.github/scripts/apply_android_standalone_creation_workbench.py').write_bytes(
               gzip.decompress(base64.b64decode(encoded))
           )
           PY
-          python /tmp/apply_android_standalone_creation_workbench.py
+          python .github/scripts/apply_android_standalone_creation_workbench.py
 
       - name: Regenerate and validate mobile-PC parity document
         run: |
