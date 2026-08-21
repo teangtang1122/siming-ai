@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/android-standalone-creation-workbench
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
