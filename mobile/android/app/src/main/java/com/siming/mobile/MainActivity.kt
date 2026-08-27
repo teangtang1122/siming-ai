@@ -13,13 +13,19 @@ import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.siming.mobile.data.MAX_NOVEL_IMPORT_BYTES
+import com.siming.mobile.data.MAX_PROJECT_PACKAGE_BYTES
 import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.MobileNovelImportFile
+import com.siming.mobile.data.MobileProjectPackageFile
+import com.siming.mobile.data.PROJECT_PACKAGE_MEDIA_TYPE
+import com.siming.mobile.data.sha256File
 import com.siming.mobile.ui.MainViewModel
 import com.siming.mobile.ui.PortraitCaptureActivity
 import com.siming.mobile.ui.SimingApp
 import com.siming.mobile.ui.SimingTheme
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,17 +43,33 @@ private val exportSaver = registerForActivityResult(ActivityResultContracts.Star
     val file = pendingExport
     pendingExport = null
     val uri = result.data?.data
-    if (result.resultCode != Activity.RESULT_OK || uri == null || file == null) return@registerForActivityResult
+    if (file == null) return@registerForActivityResult
+    if (result.resultCode != Activity.RESULT_OK || uri == null) {
+        file.deleteTemporarySource()
+        return@registerForActivityResult
+    }
     lifecycleScope.launch {
         runCatching {
             withContext(Dispatchers.IO) {
                 contentResolver.openOutputStream(uri, "w")?.use { output ->
-                    output.write(file.bytes)
+                    val bytes = file.bytes
+                    if (bytes != null) {
+                        output.write(bytes)
+                    } else {
+                        File(requireNotNull(file.sourceFilePath)).inputStream().buffered().use { input ->
+                            input.copyTo(output, 1024 * 1024)
+                        }
+                    }
                 } ?: error("无法打开导出位置")
             }
         }.onSuccess { viewModel.reportNotice("已导出：${file.filename}") }
             .onFailure { viewModel.reportError(it.message ?: "导出文件写入失败") }
+        file.deleteTemporarySource()
     }
+}
+
+private fun MobileExportFile.deleteTemporarySource() {
+    if (deleteSourceAfterSave) sourceFilePath?.let(::File)?.delete()
 }
 
 private fun saveExport(file: MobileExportFile) {
@@ -61,6 +83,7 @@ private fun saveExport(file: MobileExportFile) {
 }
 
 private var importCallback: ((MobileNovelImportFile) -> Unit)? = null
+private var projectPackageCallback: ((MobileProjectPackageFile) -> Unit)? = null
 
     private suspend fun readImportFile(uri: Uri): MobileNovelImportFile = withContext(Dispatchers.IO) {
         val name = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -96,6 +119,46 @@ private var importCallback: ((MobileNovelImportFile) -> Unit)? = null
         }
     }
 
+    private suspend fun readProjectPackageFile(uri: Uri): MobileProjectPackageFile = withContext(Dispatchers.IO) {
+        val name = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+        } ?: "导入作品.siming-project"
+        val inbox = File(filesDir, "project-package-inbox").apply { mkdirs() }
+        val destination = File(inbox, "${UUID.randomUUID()}.siming-project")
+        try {
+            var total = 0L
+            contentResolver.openInputStream(uri)?.use { input ->
+                destination.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        require(total <= MAX_PROJECT_PACKAGE_BYTES) { "项目包不能超过 512 MiB" }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            } ?: error("无法读取选择的项目包")
+            require(total > 0L) { "选择的项目包为空" }
+            MobileProjectPackageFile(name, destination, total, sha256File(destination))
+        } catch (error: Exception) {
+            destination.delete()
+            throw error
+        }
+    }
+
+    private val projectPackagePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val callback = projectPackageCallback
+        projectPackageCallback = null
+        if (uri == null || callback == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            runCatching { readProjectPackageFile(uri) }
+                .onSuccess(callback)
+                .onFailure { viewModel.reportError(it.message ?: "无法读取选择的项目包") }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -122,6 +185,15 @@ private var importCallback: ((MobileNovelImportFile) -> Unit)? = null
                                 "application/docx",
                                 "application/x-docx",
                                 "application/msword",
+                                "application/octet-stream",
+                            ),
+                        )
+                    },
+                    onPickProjectPackage = { callback ->
+                        projectPackageCallback = callback
+                        projectPackagePicker.launch(
+                            arrayOf(
+                                PROJECT_PACKAGE_MEDIA_TYPE,
                                 "application/zip",
                                 "application/x-zip-compressed",
                                 "application/octet-stream",

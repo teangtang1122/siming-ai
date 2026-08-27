@@ -713,7 +713,7 @@ function NovelCreationWizardPage() {
               <button type="button" className="creation-path-card" onClick={() => navigate('/dashboard?create=import')}>
                 <span className="creation-path-icon"><UploadOutlined /></span>
                 <strong>导入已有小说</strong>
-                <span>导入 TXT 或 DOCX，自动拆章建档，再进入写作工作台续写或二创。</span>
+                <span>导入 TXT、Markdown 或 DOCX，自动拆章建档，再进入写作工作台续写或二创。</span>
                 <em>选择小说文件</em>
               </button>
             </div>

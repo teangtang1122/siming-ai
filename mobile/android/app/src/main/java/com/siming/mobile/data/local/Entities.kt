@@ -89,3 +89,25 @@ data class LocalConflict(
     val status: String = "open",
     val createdAt: Long = System.currentTimeMillis(),
 )
+
+@Entity(
+    tableName = "project_packages",
+    indices = [
+        Index(value = ["projectId"], unique = true),
+        Index(value = ["syncState", "createdAt"]),
+    ],
+)
+data class StoredProjectPackage(
+    @PrimaryKey val idempotencyKey: String,
+    val packageId: String,
+    val projectId: String,
+    val originalFilename: String,
+    val localFilePath: String,
+    val packageSha256: String,
+    val profile: String,
+    val requestedTitle: String?,
+    val syncState: String = "pending",
+    val lastError: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val uploadedAt: Long? = null,
+)

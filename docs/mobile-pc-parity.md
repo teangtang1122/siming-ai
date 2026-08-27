@@ -4,7 +4,7 @@
 
 PC 是小说数据、领域副作用和上下文治理的唯一权威实现。Android 在线模式应尽量作为薄客户端；离线模式只允许可验证回放的修订；手机独立 Agent 的降级能力必须显式记录。
 
-当前共登记 **26** 项能力：**9** 项已对齐、**17** 项部分对齐、**0** 项待实现。
+当前共登记 **27** 项能力：**10** 项已对齐、**17** 项部分对齐、**0** 项待实现。
 
 ## 总览
 
@@ -14,6 +14,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 | `authoring.chapter` | /api/v1/projects/{project_id}/chapters | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.character` | /api/v1/projects/{project_id}/characters | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.document_import` | /api/v1/import/project-file | 调用 PC 权威接口 | 本地副本 | 本地副本 | 部分对齐 |
+| `authoring.exchange_package` | /api/v1/projects/project-package/import | 调用 PC 权威接口 | 本地副本 | 本地副本 | 已对齐 |
 | `authoring.export` | /api/v1/projects/{project_id}/export | 调用 PC 权威接口 | 明确降级实现 | 明确降级实现 | 部分对齐 |
 | `authoring.outline` | /api/v1/projects/{project_id}/outline | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.project` | /api/v1/projects/{project_id} | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
@@ -74,7 +75,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **Android 离线：** 修订队列回放
 - **Android 独立 Agent：** 修订队列回放：本地写入统一投影为 PC Character 公共契约。
 
-### `authoring.document_import` — 小说 TXT / DOCX 批量导入与章节拆分
+### `authoring.document_import` — 小说 TXT / Markdown / DOCX 批量导入与章节拆分
 
 - **权威入口：** `/api/v1/import/project-file`（`pc_http`）
 - **状态：** 部分对齐
@@ -83,10 +84,21 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **幂等限制：** Android 一次只提交一个导入文件；服务端当前未接收独立 request key。
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
-- **Android 离线：** 本地副本：本机直接解析 TXT / DOCX，TXT 与 PC 共用多编码回归样本且严格拒绝替换字符；作品和章节在同一本地事务中写入后进入 outbox。
-- **Android 独立 Agent：** 本地副本：手机独立模式可直接导入与 PC 相同的 TXT / DOCX，不要求 PC 正在运行。
+- **Android 离线：** 本地副本：本机直接解析 TXT / Markdown / DOCX，文本与 PC 共用多编码回归样本且严格拒绝替换字符；Markdown 标题只参与章节边界识别，作品和章节在同一本地事务中写入后进入 outbox。
+- **Android 独立 Agent：** 本地副本：手机独立模式可直接导入与 PC 相同的 TXT / Markdown / DOCX，不要求 PC 正在运行。
 - **已知缺口：**
-  - 离线和手机独立导入先在本地事务中建档，再经 outbox 回放，不会生成 PC 单次导入接口的服务端操作审计记录；TXT / DOCX 输入格式和 TXT 编码结果已对齐。
+  - 离线和手机独立导入先在本地事务中建档，再经 outbox 回放，不会生成 PC 单次导入接口的服务端操作审计记录；TXT / Markdown / DOCX 输入格式和文本编码结果已对齐。
+
+### `authoring.exchange_package` — 司命项目包完整/结构档位的流式导入导出
+
+- **权威入口：** `/api/v1/projects/project-package/import`（`pc_http`）
+- **状态：** 已对齐
+- **副作用：** content_sync、deterministic_index_rebuild
+- **幂等策略：** `request_key`；必须防重
+- **PC：** PC 权威实现
+- **Android 在线：** 调用 PC 权威接口
+- **Android 离线：** 本地副本：先流式落盘并完成协议校验，再恢复可编辑副本；完整原包、请求键和暂不展示的合法集合持续保留，联网后先上传项目包再回放普通 outbox。
+- **Android 独立 Agent：** 本地副本：可从保留的完整原包叠加本机最新作者资料并生成相同 v1 格式；暂不展示的集合和素材不会丢失，也不会启动 Agent、建档或自动任务。
 
 ### `authoring.export` — 小说 TXT / Word / PDF 导出与本机保存
 

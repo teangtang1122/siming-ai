@@ -54,6 +54,7 @@ android {
             "META-INF/NOTICE*",
         )
     }
+    sourceSets.getByName("test").resources.srcDir("../../../contracts/fixtures")
     testOptions { unitTests.isReturnDefaultValues = true }
 }
 
@@ -77,6 +78,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.apache.commons:commons-compress:1.26.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.crypto.tink:tink-android:1.15.0")

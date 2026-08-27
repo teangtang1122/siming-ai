@@ -297,7 +297,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="import_file_as_chapters",
-        description="Import a local TXT/DOCX file from file_path into an existing project as chapters. Prefer this over passing a whole novel as text through MCP.",
+        description="Import a local TXT/Markdown/DOCX file from file_path into an existing project as chapters. Prefer this over passing a whole novel as text through MCP.",
         input_schema={
             "file_path": {
                 "type": "string",
@@ -329,7 +329,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="import_file_as_project",
-        description="Create a new project from a local TXT/DOCX file and import the file as chapters in one step. Best tool for requests like '导入这本小说为新作品'.",
+        description="Create a new project from a local TXT/Markdown/DOCX file and import the file as chapters in one step. Best tool for requests like '导入这本小说为新作品'.",
         input_schema={
             "file_path": {
                 "type": "string",

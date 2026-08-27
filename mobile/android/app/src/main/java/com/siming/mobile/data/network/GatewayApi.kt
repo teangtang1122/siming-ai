@@ -1,10 +1,12 @@
 package com.siming.mobile.data.network
 
+import com.siming.mobile.data.PROJECT_PACKAGE_MEDIA_TYPE
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.security.PairingSecurity
 import com.siming.mobile.security.SecureTokenStore
 import com.siming.mobile.security.StoredTokenPair
 import java.io.IOException
+import java.io.File
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 
 class GatewayHttpException(val status: Int, override val message: String) : IOException(message)
 
@@ -281,6 +284,90 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
             }
         }
         throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+    }
+
+    suspend fun importProjectPackage(
+        connection: GatewayConnection,
+        filename: String,
+        file: File,
+        idempotencyKey: String,
+        newTitle: String?,
+    ): JsonObject = withContext(Dispatchers.IO) {
+        var token = validAccessToken(connection.baseUrl)
+        repeat(2) { attempt ->
+            val multipart = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "file",
+                    filename,
+                    file.asRequestBody(PROJECT_PACKAGE_MEDIA_TYPE.toMediaType()),
+                )
+                .apply {
+                    newTitle?.trim()?.takeIf(String::isNotBlank)?.let { addFormDataPart("new_title", it) }
+                }
+                .build()
+            val request = Request.Builder()
+                .url(connection.baseUrl + PcApiPaths.PROJECT_PACKAGE_IMPORT)
+                .header("Authorization", "Bearer $token")
+                .header("Accept", "application/json")
+                .header("Idempotency-Key", idempotencyKey)
+                .post(multipart)
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.code == 401 && attempt == 0) {
+                    response.body?.close()
+                    token = refresh(connection.baseUrl, token)
+                    return@use
+                }
+                val raw = response.body?.string().orEmpty()
+                if (!response.isSuccessful) throw errorFrom(response.code, raw)
+                return@withContext json.decodeFromString<ApiEnvelope<JsonObject>>(raw).data
+            }
+        }
+        throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+    }
+
+    suspend fun downloadProjectPackage(
+        connection: GatewayConnection,
+        projectId: String,
+        profile: String,
+        destination: File,
+    ): String? = withContext(Dispatchers.IO) {
+        var token = validAccessToken(connection.baseUrl)
+        try {
+            repeat(2) { attempt ->
+                val request = Request.Builder()
+                    .url(connection.baseUrl + PcApiPaths.projectPackageExport(projectId, profile))
+                    .header("Authorization", "Bearer $token")
+                    .header("Accept", PROJECT_PACKAGE_MEDIA_TYPE)
+                    .post(EMPTY_BODY)
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (response.code == 401 && attempt == 0) {
+                        response.body?.close()
+                        token = refresh(connection.baseUrl, token)
+                        return@use
+                    }
+                    if (!response.isSuccessful) throw errorFrom(response.code, response.body?.string())
+                    val body = response.body ?: throw IOException("项目包导出响应为空")
+                    destination.outputStream().buffered().use { output ->
+                        body.byteStream().buffered().use { input -> input.copyTo(output, 1024 * 1024) }
+                    }
+                    if (destination.length() == 0L) throw IOException("项目包导出响应为空")
+                    return@withContext response.header("Content-Disposition")
+                        ?.substringAfter("filename*=UTF-8''", "")
+                        ?.takeIf(String::isNotBlank)
+                        ?: response.header("Content-Disposition")
+                            ?.substringAfter("filename=", "")
+                            ?.trim(' ', '"')
+                            ?.takeIf(String::isNotBlank)
+                }
+            }
+            throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
+        } catch (error: Exception) {
+            destination.delete()
+            throw error
+        }
     }
 
     suspend fun deleteProject(connection: GatewayConnection, projectId: String) {

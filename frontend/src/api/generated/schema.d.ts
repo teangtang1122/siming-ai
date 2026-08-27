@@ -2194,6 +2194,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/project-package/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Project Package
+         * @description Validate the complete package before creating a new project.
+         */
+        post: operations["import_project_package_api_v1_projects_project_package_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}": {
         parameters: {
             query?: never;
@@ -3966,7 +3986,7 @@ export interface paths {
         put?: never;
         /**
          * Import File
-         * @description Upload a TXT or .docx file and return its parsed text content.
+         * @description Upload a TXT, Markdown, or DOCX file and return its parsed text content.
          */
         post: operations["import_file_api_v1_projects__project_id__import_file_post"];
         delete?: never;
@@ -4268,6 +4288,26 @@ export interface paths {
         post?: never;
         /** Delete Outline Node */
         delete: operations["delete_outline_node_api_v1_projects__project_id__outline__node_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/project-package/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Project Package
+         * @description Stream a strict, versioned author-data package from a temporary file.
+         */
+        post: operations["export_project_package_api_v1_projects__project_id__project_package_export_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -5671,6 +5711,13 @@ export interface components {
         Body_import_project_file_as_project_api_v1_import_project_file_post: {
             /** File */
             file: string;
+        };
+        /** Body_import_project_package_api_v1_projects_project_package_import_post */
+        Body_import_project_package_api_v1_projects_project_package_import_post: {
+            /** File */
+            file: string;
+            /** New Title */
+            new_title?: string | null;
         };
         /** Body_route_assistant_input_file_api_v1_novel_creation_assistant_input_route_file_post */
         Body_route_assistant_input_file_api_v1_novel_creation_assistant_input_route_file_post: {
@@ -13451,6 +13498,41 @@ export interface operations {
             };
         };
     };
+    import_project_package_api_v1_projects_project_package_import_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_project_package_api_v1_projects_project_package_import_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_project_api_v1_projects__project_id__get: {
         parameters: {
             query?: never;
@@ -17746,6 +17828,39 @@ export interface operations {
             path: {
                 project_id: string;
                 node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_project_package_api_v1_projects__project_id__project_package_export_post: {
+        parameters: {
+            query?: {
+                profile?: "full" | "structure";
+            };
+            header?: never;
+            path: {
+                project_id: string;
             };
             cookie?: never;
         };

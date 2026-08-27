@@ -1,4 +1,4 @@
-"""Prompt for chapter boundary correction during TXT/DOCX import."""
+"""Prompt for chapter boundary correction during TXT/Markdown/DOCX import."""
 from __future__ import annotations
 
 import json

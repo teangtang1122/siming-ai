@@ -1,6 +1,7 @@
 """Regression tests for imported chapter persistence."""
 
 import base64
+import contextlib
 import json
 import os
 import unittest
@@ -10,8 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
-from fastapi.testclient import TestClient
 from docx import Document as DocxDocument
+from fastapi.testclient import TestClient
 
 from app.core.utils import count_words
 from app.database.models import Chapter, Project
@@ -33,10 +34,8 @@ class ImporterTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         Base.metadata.drop_all(bind=engine)
-        try:
+        with contextlib.suppress(OSError):
             os.remove("test_novel_agent.db")
-        except OSError:
-            pass
 
     def create_project(self, title: str) -> str:
         response = self.client.post(f"{API_PREFIX}/projects", json={"title": title})
@@ -118,7 +117,7 @@ class ImporterTestCase(unittest.TestCase):
 
         response = self.client.post(
             f"{API_PREFIX}/projects/{project_id}/import/file",
-            files={"file": ("sample.txt", "第一章\n正文".encode("utf-8"), "text/plain")},
+            files={"file": ("sample.txt", "第一章\n正文".encode(), "text/plain")},
         )
 
         self.assertEqual(response.status_code, 200)
@@ -126,6 +125,21 @@ class ImporterTestCase(unittest.TestCase):
         self.assertEqual(data["filename"], "sample.txt")
         self.assertEqual(data["format"], "txt")
         self.assertIn("第一章", data["text"])
+
+    def test_import_file_alias_parses_markdown_without_losing_markup(self):
+        project_id = self.create_project("Markdown Upload Project")
+        text = "# 第一章 风起\n\n这里有 **加粗正文**。"
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/import/file",
+            files={"file": ("sample.md", text.encode("utf-8"), "text/markdown")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["format"], "md")
+        self.assertEqual(data["text"], text)
+        self.assertEqual(data["encoding"], "UTF-8")
 
     def test_import_file_detects_gb18030(self):
         project_id = self.create_project("GB18030 Project")
@@ -157,7 +171,11 @@ class ImporterTestCase(unittest.TestCase):
         self.assertEqual(data["text"], text)
 
     def test_shared_android_encoding_fixtures_match_pc_decoder(self):
-        fixture_path = Path(__file__).resolve().parents[2] / "contracts" / "novel-import-encoding-fixtures.json"
+        fixture_path = (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "novel-import-encoding-fixtures.json"
+        )
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
 
         for case in fixture["cases"]:
@@ -169,8 +187,10 @@ class ImporterTestCase(unittest.TestCase):
 
     def test_atomic_project_file_import_creates_project_and_all_chapters(self):
         text = (
-            "第一章 风起\n" + "这里是第一章正文。" * 10 +
-            "\n\n第二章 云涌\n" + "这里是第二章正文。" * 10
+            "第一章 风起\n"
+            + "这里是第一章正文。" * 10
+            + "\n\n第二章 云涌\n"
+            + "这里是第二章正文。" * 10
         )
 
         response = self.client.post(
@@ -197,6 +217,41 @@ class ImporterTestCase(unittest.TestCase):
             self.assertEqual(project.title, "批量导入")
             self.assertEqual(len(chapters), 2)
             self.assertEqual([chapter.sort_order for chapter in chapters], [1000, 2000])
+        finally:
+            db.close()
+
+    def test_atomic_project_file_import_uses_markdown_headings_as_boundaries(self):
+        text = (
+            "# 第一章 风起\n\n"
+            + "这里是 **第一章** 正文。" * 10
+            + "\n\n## 第二章 云涌\n\n"
+            + "这里是 _第二章_ 正文。" * 10
+        )
+
+        response = self.client.post(
+            f"{API_PREFIX}/import/project-file",
+            files={"file": ("Markdown小说.md", text.encode("utf-8"), "text/markdown")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["format"], "md")
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(
+            [chapter["title"] for chapter in data["chapters"]],
+            ["第一章 风起", "第二章 云涌"],
+        )
+        db = SessionLocal()
+        try:
+            chapters = (
+                db.query(Chapter)
+                .filter(Chapter.project_id == data["project_id"])
+                .order_by(Chapter.sort_order.asc())
+                .all()
+            )
+            self.assertEqual(len(chapters), 2)
+            self.assertTrue(chapters[0].content.startswith("# 第一章"))
+            self.assertIn("**第一章**", chapters[0].content)
         finally:
             db.close()
 
@@ -240,8 +295,10 @@ class ImporterTestCase(unittest.TestCase):
     def test_import_preview_uses_regex_chapter_boundaries_without_llm(self):
         project_id = self.create_project("Preview Project")
         text = (
-            "第一章 风起\n" + "这里是第一章正文。" * 10 +
-            "\n\n第二章 云涌\n" + "这里是第二章正文。" * 10
+            "第一章 风起\n"
+            + "这里是第一章正文。" * 10
+            + "\n\n第二章 云涌\n"
+            + "这里是第二章正文。" * 10
         )
 
         response = self.client.post(
@@ -259,24 +316,29 @@ class ImporterTestCase(unittest.TestCase):
     def test_import_preview_uses_chunked_llm_corrections(self, mock_chat):
         project_id = self.create_project("LLM Preview Project")
         text = (
-            "第一章 风起\n" + "这里是第一章正文。" * 10 +
-            "\n\n第二章 云涌\n" + "这里是第二章正文。" * 10
+            "第一章 风起\n"
+            + "这里是第一章正文。" * 10
+            + "\n\n第二章 云涌\n"
+            + "这里是第二章正文。" * 10
         )
         mock_chat.return_value = {
-            "content": json.dumps([
-                {
-                    "title": "第一章 风起（校正）",
-                    "start_char": 0,
-                    "end_char": text.index("第二章 云涌"),
-                    "preview": "这里是第一章正文。",
-                },
-                {
-                    "title": "第二章 云涌（校正）",
-                    "start_char": text.index("第二章 云涌"),
-                    "end_char": len(text),
-                    "preview": "这里是第二章正文。",
-                },
-            ], ensure_ascii=False)
+            "content": json.dumps(
+                [
+                    {
+                        "title": "第一章 风起（校正）",
+                        "start_char": 0,
+                        "end_char": text.index("第二章 云涌"),
+                        "preview": "这里是第一章正文。",
+                    },
+                    {
+                        "title": "第二章 云涌（校正）",
+                        "start_char": text.index("第二章 云涌"),
+                        "end_char": len(text),
+                        "preview": "这里是第二章正文。",
+                    },
+                ],
+                ensure_ascii=False,
+            )
         }
 
         response = self.client.post(
@@ -288,7 +350,10 @@ class ImporterTestCase(unittest.TestCase):
         data = response.json()["data"]
         self.assertEqual(data["method"], "regex+chunked-llm")
         self.assertEqual(data["failed_blocks"], 0)
-        self.assertEqual([item["title"] for item in data["splits"]], ["第一章 风起（校正）", "第二章 云涌（校正）"])
+        self.assertEqual(
+            [item["title"] for item in data["splits"]],
+            ["第一章 风起（校正）", "第二章 云涌（校正）"],
+        )
         self.assertTrue(all(item["source"] == "llm" for item in data["splits"]))
         self.assertEqual(mock_chat.await_count, 1)
 
@@ -296,10 +361,7 @@ class ImporterTestCase(unittest.TestCase):
     @patch("app.routers.importer.LLMGateway.chat_completion", new_callable=AsyncMock)
     def test_import_preview_marks_failed_llm_blocks_for_manual_review(self, mock_chat, mock_sleep):
         project_id = self.create_project("Failed LLM Preview Project")
-        text = "\n\n".join(
-            f"第{i}章 标题{i}\n" + f"这里是第{i}章正文。" * 8
-            for i in range(1, 5)
-        )
+        text = "\n\n".join(f"第{i}章 标题{i}\n" + f"这里是第{i}章正文。" * 8 for i in range(1, 5))
         mock_chat.side_effect = RuntimeError("llm unavailable")
 
         response = self.client.post(

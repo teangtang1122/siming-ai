@@ -12,5 +12,10 @@ class ProjectToolPathsTest {
         assertEquals("/api/v1/projects/p1/cataloging/j1/cancel", PcApiPaths.catalogingCancel("p1", "j1"))
         assertEquals("/api/v1/projects/p1/export", PcApiPaths.projectExport("p1"))
         assertEquals("/api/v1/projects/p1/export/download/f1", PcApiPaths.projectExportDownload("p1", "f1"))
+        assertEquals("/api/v1/projects/project-package/import", PcApiPaths.PROJECT_PACKAGE_IMPORT)
+        assertEquals(
+            "/api/v1/projects/p1/project-package/export?profile=full",
+            PcApiPaths.projectPackageExport("p1", "full"),
+        )
     }
 }

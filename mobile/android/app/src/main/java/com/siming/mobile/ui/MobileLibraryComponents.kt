@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.FileOpen
@@ -44,6 +45,7 @@ internal fun LibraryActionPanel(
     onStartAiCreation: () -> Unit,
     onCreateBlank: () -> Unit,
     onImportNovel: () -> Unit,
+    onImportProjectPackage: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Card(
@@ -82,7 +84,7 @@ internal fun LibraryActionPanel(
             LibrarySmallAction(
                 icon = Icons.Outlined.FileOpen,
                 title = "导入小说",
-                detail = "TXT / DOCX 建档",
+                detail = "TXT / MD / DOCX",
                 modifier = Modifier.weight(1f),
                 onClick = onImportNovel,
             )
@@ -94,6 +96,13 @@ internal fun LibraryActionPanel(
                 onClick = onCreateBlank,
             )
         }
+        LibrarySmallAction(
+            icon = Icons.Outlined.Archive,
+            title = "导入司命项目包",
+            detail = ".siming-project · 完整或结构档位",
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onImportProjectPackage,
+        )
     }
 }
 

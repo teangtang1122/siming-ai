@@ -23,14 +23,16 @@ import { Modal } from 'antd'
 // ---------------------------------------------------------------------------
 // Mock axios globally for jsdom compatibility
 // ---------------------------------------------------------------------------
-const { mockApiGet } = vi.hoisted(() => ({
+const { mockApiGet, mockApiPostForm } = vi.hoisted(() => ({
   mockApiGet: vi.fn(),
+  mockApiPostForm: vi.fn(),
 }))
 
 vi.mock('axios', () => {
   const mockInstance = {
     get: mockApiGet,
     post: vi.fn(),
+    postForm: mockApiPostForm,
     put: vi.fn(),
     delete: vi.fn(),
     interceptors: {
@@ -144,6 +146,7 @@ describe('DashboardPage', () => {
     mockCreateProject.mockResolvedValue(makeProject({ id: 'new-1', title: '新作品' }))
     mockUpdateProject.mockResolvedValue(makeProject({ id: 'edit-1', title: '已编辑' }))
     mockDeleteProject.mockResolvedValue(true)
+    mockApiPostForm.mockReset()
     mockApiGet.mockImplementation((url: string) => {
       if (url === '/novel-creation/sessions') {
         return Promise.resolve({ data: { data: { sessions: [] } } })
@@ -155,8 +158,8 @@ describe('DashboardPage', () => {
   it('opens the existing import flow when routed from the creation chooser', async () => {
     renderDashboard('/dashboard?create=import')
 
-    expect(await screen.findByRole('dialog', { name: '创建作品' })).toBeInTheDocument()
-    expect(screen.getByText('导入已有小说（可选）')).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: '导入外部小说' })).toBeInTheDocument()
+    expect(screen.getByText('只导入文稿')).toBeInTheDocument()
   })
 
   // ------------------------------------------------------------------
@@ -173,12 +176,14 @@ describe('DashboardPage', () => {
   // ------------------------------------------------------------------
   // TC-F02: Renders "create" prompt button in empty state
   // ------------------------------------------------------------------
-  it('should keep one creation action and one import action in the page header', async () => {
+  it('should keep project-package and external-novel imports as separate actions', async () => {
     renderDashboard()
 
     await waitFor(() => {
       expect(screen.getAllByRole('button', { name: /创建新作品/ })).toHaveLength(1)
-      expect(screen.getAllByRole('button', { name: /直接创建或导入/ })).toHaveLength(1)
+      expect(screen.getAllByRole('button', { name: /直接创建/ })).toHaveLength(1)
+      expect(screen.getAllByRole('button', { name: /导入外部小说/ })).toHaveLength(1)
+      expect(screen.getAllByRole('button', { name: /导入司命项目包/ })).toHaveLength(1)
     })
   })
 
@@ -278,7 +283,7 @@ describe('DashboardPage', () => {
     )
     renderDashboard()
 
-    await user.click(screen.getAllByText('直接创建或导入')[0])
+    await user.click(screen.getAllByText('直接创建')[0])
 
     const titleInput = screen.getByLabelText('作品标题')
     await user.type(titleInput, '我的新作品')
@@ -301,7 +306,7 @@ describe('DashboardPage', () => {
     const user = userEvent.setup()
     renderDashboard()
 
-    await user.click(screen.getAllByText('直接创建或导入')[0])
+    await user.click(screen.getAllByText('直接创建')[0])
 
     const footer = document.querySelector('.ant-modal-footer') as HTMLElement
     const cancelButton = within(footer).getByRole('button', { name: '取消' })
@@ -309,6 +314,67 @@ describe('DashboardPage', () => {
 
     await waitFor(() => {
       expect(screen.queryByLabelText('作品标题')).not.toBeInTheDocument()
+    })
+  })
+
+  it('should atomically import Markdown through the external-novel route', async () => {
+    const user = userEvent.setup()
+    mockApiPostForm.mockResolvedValueOnce({
+      data: { data: { project_id: 'markdown-project', total: 2 } },
+    })
+    renderDashboard()
+
+    await user.click(screen.getByRole('button', { name: /导入外部小说/ }))
+    const dialog = await screen.findByRole('dialog', { name: '导入外部小说' })
+    const input = dialog.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['# 第一章\n正文'], '小说.md', { type: 'text/markdown' })
+    await user.upload(input, file)
+    await user.click(within(dialog).getByRole('button', { name: '创建作品并导入' }))
+
+    await waitFor(() => {
+      expect(mockApiPostForm).toHaveBeenCalledTimes(1)
+      expect(mockApiPostForm.mock.calls[0][0]).toBe('/import/project-file')
+      expect((mockApiPostForm.mock.calls[0][1] as FormData).get('file')).toBe(file)
+      expect(mockNavigate).toHaveBeenCalledWith('/project/markdown-project')
+    })
+  })
+
+  it('should reuse the project-package idempotency key when retrying', async () => {
+    const user = userEvent.setup()
+    mockApiPostForm
+      .mockRejectedValueOnce(new Error('暂时失败'))
+      .mockResolvedValueOnce({
+        data: {
+          data: {
+            project_id: 'package-project',
+            project_title: '恢复作品',
+            replayed: true,
+          },
+        },
+      })
+    renderDashboard()
+
+    await user.click(screen.getByRole('button', { name: /导入司命项目包/ }))
+    const dialog = await screen.findByRole('dialog', { name: '导入司命项目包' })
+    const input = dialog.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['PK'], '作品.siming-project', {
+      type: 'application/vnd.siming.project+zip',
+    })
+    await user.upload(input, file)
+    const submit = within(dialog).getByRole('button', { name: '创建新作品' })
+    await user.click(submit)
+    await waitFor(() => expect(mockApiPostForm).toHaveBeenCalledTimes(1))
+    await user.click(submit)
+
+    await waitFor(() => {
+      expect(mockApiPostForm).toHaveBeenCalledTimes(2)
+      const firstConfig = mockApiPostForm.mock.calls[0][2] as { headers: Record<string, string> }
+      const secondConfig = mockApiPostForm.mock.calls[1][2] as { headers: Record<string, string> }
+      expect(firstConfig.headers['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/i)
+      expect(secondConfig.headers['Idempotency-Key']).toBe(
+        firstConfig.headers['Idempotency-Key'],
+      )
+      expect(mockNavigate).toHaveBeenCalledWith('/project/package-project')
     })
   })
 

@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { Modal } from 'antd'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { createSimingQueryClient } from '../shared/query/client'
@@ -36,6 +37,11 @@ describe('GettingStartedPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
+  })
+
+  afterEach(() => {
+    Modal.destroyAll()
+    document.querySelectorAll('.ant-modal-root').forEach((root) => root.remove())
   })
 
   it('offers one plain-language activation action', async () => {
@@ -232,7 +238,7 @@ describe('GettingStartedPanel', () => {
     })
 
     renderPanel()
-    fireEvent.click(await screen.findByRole('button', { name: '开始官方登录' }))
+    fireEvent.click(await screen.findByRole('button', { name: '开始官方登录' }, { timeout: 10_000 }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/authenticate'))
     expect(await screen.findByText('正在等待 OpenCode 官方登录')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/retry')

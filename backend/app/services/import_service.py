@@ -1,4 +1,5 @@
-"""TXT/DOCX import service: parse files, split chapters, and create chapter rows."""
+"""TXT/Markdown/DOCX import service: parse files and create chapter rows."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +8,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from docx import Document as DocxDocument
 from fastapi import UploadFile
@@ -24,9 +25,9 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MiB
 MAX_IMPORT_CHAPTERS = 2_000
 LLM_SPLIT_GROUP_SIZE = 3
 LLM_SPLIT_OVERLAP = 1
-SUPPORTED_IMPORT_EXTENSIONS = {"txt", "docx"}
+SUPPORTED_IMPORT_EXTENSIONS = {"txt", "md", "docx"}
 CHAPTER_TITLE_RE = re.compile(
-    r"(?im)^[ \t]*("
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?("
     r"(?:【[ \t]*)?"
     r"(?:"
     r"第[ \t]*[零〇一二三四五六七八九十百千万\d]+[ \t]*[章节部卷]"
@@ -68,7 +69,6 @@ def _is_likely_chapter_title(value: str) -> bool:
         suffix[0] in _CHAPTER_TITLE_SEPARATORS
         or suffix.rstrip()[-1] not in _CHAPTER_SENTENCE_ENDINGS
     )
-
 
 
 def _text_quality(text: str) -> float:
@@ -178,7 +178,7 @@ def _parse_docx(raw: bytes) -> str:
 def _parse_raw_file(filename: str, raw: bytes) -> dict:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in SUPPORTED_IMPORT_EXTENSIONS:
-        raise ValidationError("仅支持 .txt 和 .docx 格式文件")
+        raise ValidationError("仅支持 .txt、.md 和 .docx 格式文件")
     if len(raw) > MAX_UPLOAD_BYTES:
         raise ValidationError("文件太大，最大支持 20 MiB")
 
@@ -201,14 +201,14 @@ def _parse_raw_file(filename: str, raw: bytes) -> dict:
 
 
 def parse_uploaded_file(file: UploadFile) -> dict:
-    """Parse an uploaded TXT/DOCX file and return text payload metadata."""
+    """Parse an uploaded TXT/Markdown/DOCX file and return text metadata."""
     filename = file.filename or ""
     raw = file.file.read()
     return _parse_raw_file(filename, raw)
 
 
 def parse_local_file(file_path: str) -> dict:
-    """Parse a local TXT/DOCX file by path for workspace/MCP import tools."""
+    """Parse a local TXT/Markdown/DOCX file for workspace/MCP import tools."""
     expanded = os.path.expandvars(str(file_path or "").strip())
     path = Path(expanded).expanduser()
     if not path.exists() or not path.is_file():
@@ -222,7 +222,9 @@ def _fallback_splits(text: str, chunk_size: int = 5000) -> list[dict]:
     if not text:
         return []
     if len(text) <= chunk_size:
-        return [{"title": "导入章节", "start_char": 0, "end_char": len(text), "preview": text[:100]}]
+        return [
+            {"title": "导入章节", "start_char": 0, "end_char": len(text), "preview": text[:100]}
+        ]
 
     splits = []
     start = 0
@@ -235,12 +237,14 @@ def _fallback_splits(text: str, chunk_size: int = 5000) -> list[dict]:
                 end = boundary
         chunk = text[start:end].strip()
         if chunk:
-            splits.append({
-                "title": f"导入章节 {index}",
-                "start_char": start,
-                "end_char": end,
-                "preview": chunk[:100],
-            })
+            splits.append(
+                {
+                    "title": f"导入章节 {index}",
+                    "start_char": start,
+                    "end_char": end,
+                    "preview": chunk[:100],
+                }
+            )
             index += 1
         start = max(end, start + 1)
     return splits
@@ -262,12 +266,14 @@ def _regex_splits(text: str) -> list[dict]:
         chunk = text[start:end].strip()
         if not chunk:
             continue
-        splits.append({
-            "title": match.group(1).strip()[:100],
-            "start_char": start,
-            "end_char": end,
-            "preview": chunk[:100],
-        })
+        splits.append(
+            {
+                "title": match.group(1).strip()[:100],
+                "start_char": start,
+                "end_char": end,
+                "preview": chunk[:100],
+            }
+        )
     return splits or _fallback_splits(text)
 
 
@@ -283,16 +289,18 @@ def _normalize_splits(raw_splits: list, text: str) -> list[dict]:
         chunk = text[start:end].strip()
         if not chunk:
             continue
-        normalized.append({
-            "title": str(split.get("title") or f"导入章节 {index + 1}")[:100],
-            "start_char": start,
-            "end_char": end,
-            "preview": str(split.get("preview") or chunk[:100])[:200],
-            "needs_review": bool(split.get("needs_review", False)),
-            "review_reason": split.get("review_reason"),
-            "source": split.get("source"),
-            "block_index": split.get("block_index"),
-        })
+        normalized.append(
+            {
+                "title": str(split.get("title") or f"导入章节 {index + 1}")[:100],
+                "start_char": start,
+                "end_char": end,
+                "preview": str(split.get("preview") or chunk[:100])[:200],
+                "needs_review": bool(split.get("needs_review", False)),
+                "review_reason": split.get("review_reason"),
+                "source": split.get("source"),
+                "block_index": split.get("block_index"),
+            }
+        )
     normalized.sort(key=lambda item: item["start_char"])
     return normalized
 
@@ -305,14 +313,16 @@ def _split_candidate_groups(candidates: list[dict]) -> list[dict]:
     while start < len(candidates):
         end = min(len(candidates), start + LLM_SPLIT_GROUP_SIZE)
         group_candidates = candidates[start:end]
-        groups.append({
-            "block_index": len(groups),
-            "candidate_start": start,
-            "candidate_end": end,
-            "candidates": group_candidates,
-            "start_char": min(item["start_char"] for item in group_candidates),
-            "end_char": max(item["end_char"] for item in group_candidates),
-        })
+        groups.append(
+            {
+                "block_index": len(groups),
+                "candidate_start": start,
+                "candidate_end": end,
+                "candidates": group_candidates,
+                "start_char": min(item["start_char"] for item in group_candidates),
+                "end_char": max(item["end_char"] for item in group_candidates),
+            }
+        )
         if end >= len(candidates):
             break
         start = max(end - LLM_SPLIT_OVERLAP, start + 1)
@@ -349,7 +359,9 @@ async def _llm_correct_split_group(
                 max_tokens=2000,
             )
             splits_text = result.get("content", "")
-            parsed = json.loads(splits_text.strip().removeprefix("```json").removesuffix("```").strip())
+            parsed = json.loads(
+                splits_text.strip().removeprefix("```json").removesuffix("```").strip()
+            )
             normalized = _normalize_splits(parsed if isinstance(parsed, list) else [], text)
             if normalized:
                 for item in normalized:
@@ -393,8 +405,8 @@ def _merge_chunked_splits(results: list[dict]) -> tuple[list[dict], int]:
 async def _llm_correct_splits_chunked(
     text: str,
     candidates: list[dict],
-    model: Optional[str],
-) -> tuple[Optional[list[dict]], int]:
+    model: str | None,
+) -> tuple[list[dict] | None, int]:
     if not model:
         return None, 0
     groups = _split_candidate_groups(candidates)
@@ -407,7 +419,9 @@ async def _llm_correct_splits_chunked(
     return (merged or None), failed_blocks
 
 
-async def build_split_preview(text: str, model: Optional[str] = None) -> tuple[list[dict], str, bool, int]:
+async def build_split_preview(
+    text: str, model: str | None = None
+) -> tuple[list[dict], str, bool, int]:
     candidates = _normalize_splits(_regex_splits(text), text)
     needs_review = len(candidates) <= 1 and len(text) > 5000
     method = "regex" if len(candidates) > 1 else "length"
@@ -429,7 +443,7 @@ def execute_import(
     project_id: str,
     text: str,
     splits: list,
-    outline_node_id: Optional[str] = None,
+    outline_node_id: str | None = None,
 ) -> list[dict]:
     """Create Chapter rows from split definitions and return summaries."""
     created_chapters: list[Chapter] = []

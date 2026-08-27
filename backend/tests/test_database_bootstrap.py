@@ -39,7 +39,7 @@ def test_fresh_database_is_initialized_and_versioned():
                 ).scalar_one()
             assert result.mode == "initialized"
             assert result.read_only is False
-            assert result.schema_revision == revision == "300a22_provider_task_models"
+            assert result.schema_revision == revision == "300a23_project_package_receipts"
             assert epoch == SCHEMA_EPOCH
             assert {
                 "projects",
@@ -85,7 +85,7 @@ def test_recognized_legacy_database_is_backed_up_and_preserved():
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             assert title == "Legacy Story"
-            assert revision == "300a22_provider_task_models"
+            assert revision == "300a23_project_package_receipts"
         finally:
             engine.dispose()
 
@@ -173,7 +173,7 @@ def test_overlay_upgrade_migrates_legacy_concepts_and_drops_retired_columns():
             inspector = inspect(engine)
             assert result.mode == "migrated"
             assert result.read_only is False
-            assert result.schema_revision == "300a22_provider_task_models"
+            assert result.schema_revision == "300a23_project_package_receipts"
             assert "blueprint_json" not in {
                 item["name"] for item in inspector.get_columns("novel_creation_sessions")
             }
@@ -197,7 +197,7 @@ def test_legacy_truncated_run_step_json_is_repaired_before_retry():
         engine = create_engine(url)
         try:
             initialized = bootstrap_database(engine, database_url=url)
-            assert initialized.schema_revision == "300a22_provider_task_models"
+            assert initialized.schema_revision == "300a23_project_package_receipts"
 
             Session = sessionmaker(bind=engine)
             with Session() as db:
@@ -227,7 +227,7 @@ def test_legacy_truncated_run_step_json_is_repaired_before_retry():
             migrated = bootstrap_database(engine, database_url=url)
 
             assert migrated.mode == "migrated"
-            assert migrated.schema_revision == "300a22_provider_task_models"
+            assert migrated.schema_revision == "300a23_project_package_receipts"
             with engine.connect() as connection:
                 row = connection.execute(
                     text(
@@ -252,7 +252,7 @@ def test_retired_data_only_revision_is_backed_up_and_normalized():
         engine = create_engine(url)
         try:
             initialized = bootstrap_database(engine, database_url=url)
-            assert initialized.schema_revision == "300a22_provider_task_models"
+            assert initialized.schema_revision == "300a23_project_package_receipts"
             with engine.begin() as connection:
                 connection.execute(
                     text(
@@ -278,18 +278,18 @@ def test_retired_data_only_revision_is_backed_up_and_normalized():
 
             assert result.mode == "migrated"
             assert result.read_only is False
-            assert result.schema_revision == "300a22_provider_task_models"
+            assert result.schema_revision == "300a23_project_package_receipts"
             assert result.backup_path and Path(result.backup_path).is_file()
             with engine.connect() as connection:
                 assert connection.execute(
                     text("SELECT version_num FROM alembic_version")
-                ).scalar_one() == "300a22_provider_task_models"
+                ).scalar_one() == "300a23_project_package_receipts"
                 assert connection.execute(
                     text(
                         "SELECT value FROM siming_schema_metadata "
                         "WHERE key = 'alembic_revision'"
                     )
-                ).scalar_one() == "300a22_provider_task_models"
+                ).scalar_one() == "300a23_project_package_receipts"
                 assert connection.execute(
                     text("SELECT title FROM projects WHERE id = 'retired-project'")
                 ).scalar_one() == "保留作品"
@@ -325,7 +325,7 @@ def test_stamped_300a12_database_repairs_missing_resolution_evidence_columns():
 
             inspector = inspect(engine)
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a22_provider_task_models"
+            assert result.schema_revision == "300a23_project_package_receipts"
             for table_name in ("foreshadowings", "causal_edges", "narrative_debts"):
                 assert "resolution_evidence" in {
                     column["name"] for column in inspector.get_columns(table_name)
@@ -379,7 +379,7 @@ def test_stamped_300a13_database_repairs_cataloged_outline_hierarchy_only():
                     )).mappings()
                 }
             volumes = [row for row in rows.values() if row.node_type == "volume"]
-            assert result.schema_revision == "300a22_provider_task_models"
+            assert result.schema_revision == "300a23_project_package_receipts"
             assert len(volumes) == 1
             assert rows["chapter-3"].parent_id == volumes[0].id
             assert rows["section-3"].parent_id == "chapter-3"
@@ -434,7 +434,7 @@ def test_stamped_300a14_database_canonicalizes_free_form_character_roles():
                         "SELECT id, role_type, background FROM characters ORDER BY id"
                     )).mappings()
                 }
-            assert result.schema_revision == "300a22_provider_task_models"
+            assert result.schema_revision == "300a23_project_package_receipts"
             assert {key: row.role_type for key, row in rows.items()} == {
                 "elder": "other",
                 "hero": "protagonist",
@@ -542,7 +542,7 @@ def test_alpha1_database_upgrades_through_gateway_sync():
             result = bootstrap_database(engine, database_url=url)
 
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a22_provider_task_models"
+            assert result.schema_revision == "300a23_project_package_receipts"
             assert {"content_sync_jobs", "gateway_devices", "sync_changes"} <= set(
                 inspect(engine).get_table_names()
             )
@@ -582,7 +582,7 @@ def test_provider_task_model_migration_replaces_legacy_local_only_settings():
             result = bootstrap_database(engine, database_url=url)
 
             inspector = inspect(engine)
-            assert result.schema_revision == "300a22_provider_task_models"
+            assert result.schema_revision == "300a23_project_package_receipts"
             assert "local_model_task_settings" not in inspector.get_table_names()
             assert "model_task_settings" in inspector.get_table_names()
             assert "available_models_json" in {

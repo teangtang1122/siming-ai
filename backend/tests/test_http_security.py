@@ -48,6 +48,46 @@ def test_limited_streaming_post_delegates_disconnect_after_replaying_body() -> N
     ]
 
 
+def test_project_package_stream_is_bounded_without_content_length(monkeypatch) -> None:
+    sent: list[dict] = []
+
+    async def downstream(scope, receive, send) -> None:
+        while True:
+            message = await receive()
+            if message["type"] != "http.request" or not message.get("more_body", False):
+                return
+
+    incoming = iter(
+        [
+            {"type": "http.request", "body": b"abc", "more_body": True},
+            {"type": "http.request", "body": b"def", "more_body": False},
+        ]
+    )
+
+    async def receive() -> dict:
+        return next(incoming)
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    path = "/api/v1/projects/project-package/import"
+    limits = dict(GatewayRequestLimitMiddleware.BODY_LIMITS)
+    limits[path] = 4
+    monkeypatch.setattr(GatewayRequestLimitMiddleware, "BODY_LIMITS", limits)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "headers": [(b"transfer-encoding", b"chunked")],
+        "client": ("127.0.0.1", 12345),
+    }
+
+    asyncio.run(GatewayRequestLimitMiddleware(downstream, enabled=True)(scope, receive, send))
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 413
+
+
 def test_foreign_host_is_rejected() -> None:
     with TestClient(create_app(run_startup=False)) as client:
         response = client.get("/health", headers={"host": "malicious.example"})

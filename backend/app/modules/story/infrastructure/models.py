@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Column, DateTime, Index, Integer, String, Text
+from sqlalchemy import JSON, Column, DateTime, Index, Integer, String, Text, UniqueConstraint
 
 from ....database.models_support import generate_uuid
 from ....database.session import Base
@@ -44,4 +44,35 @@ class ContentSyncJob(Base):
     )
 
 
-__all__ = ["ContentSyncJob"]
+class ProjectPackageImportReceipt(Base):
+    """Idempotency receipt for one project-package import request."""
+
+    __tablename__ = "project_package_import_receipts"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    idempotency_key = Column(String(36), nullable=False)
+    package_sha256 = Column(String(64), nullable=False)
+    requested_title = Column(String(200), nullable=True)
+    package_id = Column(String(36), nullable=False)
+    profile = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="processing")
+    project_id = Column(String(36), nullable=True)
+    result_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_project_package_import_receipt_key",
+        ),
+        Index("ix_project_package_import_receipt_project", "project_id"),
+    )
+
+
+__all__ = ["ContentSyncJob", "ProjectPackageImportReceipt"]

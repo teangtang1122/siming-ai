@@ -111,6 +111,7 @@ import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.AssistantModelRoute
 import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.MobileNovelImportFile
+import com.siming.mobile.data.MobileProjectPackageFile
 import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
 import com.siming.mobile.data.network.PcAuthoringContract
@@ -148,6 +149,7 @@ fun SimingApp(
     viewModel: MainViewModel,
     onScanQr: () -> Unit,
     onPickText: (((MobileNovelImportFile) -> Unit) -> Unit),
+    onPickProjectPackage: (((MobileProjectPackageFile) -> Unit) -> Unit),
     onSaveExport: (MobileExportFile) -> Unit,
 ) {
     val connection by viewModel.connection.collectAsStateWithLifecycle()
@@ -254,6 +256,7 @@ fun SimingApp(
                 onOpenProject = { selectedProjectId = it },
                 onScanQr = onScanQr,
                 onPickText = onPickText,
+                onPickProjectPackage = onPickProjectPackage,
                 onStartAiCreation = { rootTab = RootTab.Create },
             )
             RootTab.Sync -> MobileSyncWorkspace(
@@ -333,6 +336,7 @@ private fun LibraryScreen(
     onOpenProject: (String) -> Unit,
     onScanQr: () -> Unit,
     onPickText: (((MobileNovelImportFile) -> Unit) -> Unit),
+    onPickProjectPackage: (((MobileProjectPackageFile) -> Unit) -> Unit),
     onStartAiCreation: () -> Unit,
 ) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
@@ -376,6 +380,11 @@ private fun LibraryScreen(
                             viewModel.importNovel(file, onOpenProject)
                         }
                     },
+                    onImportProjectPackage = {
+                        onPickProjectPackage { file ->
+                            viewModel.importProjectPackage(file, onOpenProject)
+                        }
+                    },
                 )
             }
             if (projects.isEmpty()) {
@@ -383,7 +392,7 @@ private fun LibraryScreen(
                     EmptyPanel(
                         icon = Icons.AutoMirrored.Outlined.LibraryBooks,
                         title = "这里还没有作品",
-                        detail = "可以从零立项，也可以直接导入 TXT 或 DOCX；连接 PC Gateway 时会自动使用 PC 权威导入服务。",
+                        detail = "可以从零立项，也可以直接导入 TXT、Markdown 或 DOCX；连接 PC Gateway 时会自动使用 PC 权威导入服务。",
                     )
                 }
             } else {

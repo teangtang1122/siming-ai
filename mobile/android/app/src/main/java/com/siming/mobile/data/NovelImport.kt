@@ -44,11 +44,11 @@ internal data class NovelChapterDraft(
 )
 
 internal object NovelFileDecoder {
-    val supportedExtensions: Set<String> = setOf("txt", "docx")
+    val supportedExtensions: Set<String> = setOf("txt", "md", "docx")
 
     fun decode(filename: String, raw: ByteArray): DecodedNovelText {
         val extension = filename.substringAfterLast('.', "").lowercase()
-        require(extension in supportedExtensions) { "仅支持导入 TXT 或 DOCX 文件" }
+        require(extension in supportedExtensions) { "仅支持导入 TXT、Markdown 或 DOCX 文件" }
         return when (extension) {
             "docx" -> DocxImportDecoder.decode(raw)
             else -> TxtImportDecoder.decode(raw)
@@ -61,7 +61,7 @@ internal object TxtImportDecoder {
     private val big5: Charset = Charset.forName("Big5")
 
     fun decode(raw: ByteArray): DecodedNovelText {
-        require(raw.isNotEmpty()) { "TXT 文件内容为空" }
+        require(raw.isNotEmpty()) { "文本文件内容为空" }
 
         bomDecode(raw)?.let { return it }
 
@@ -90,9 +90,9 @@ internal object TxtImportDecoder {
         }
 
         val best = candidates.maxByOrNull { it.score }
-            ?: error("无法识别 TXT 编码，请先另存为 UTF-8 或 GB18030")
+            ?: error("无法识别文本编码，请先另存为 UTF-8 或 GB18030")
         require(best.score >= 0.72) {
-            "无法可靠识别 TXT 编码，请先另存为 UTF-8、GB18030 或 UTF-16"
+            "无法可靠识别文本编码，请先另存为 UTF-8、GB18030 或 UTF-16"
         }
         return DecodedNovelText(best.text.removePrefix("\uFEFF"), best.encoding)
     }
@@ -374,7 +374,7 @@ internal object NovelImportSplitter {
     private const val MAX_CHAPTER_CHARS = 200_000
 
     private val marker = Regex(
-        """^[ \t]*((?:【[ \t]*)?(?:第[ \t]*[零〇一二三四五六七八九十百千万0-9]+[ \t]*[章节部卷]|(?:卷|部)[ \t]*[零〇一二三四五六七八九十百千万0-9]+|Chapter[ \t]+[0-9]+|Part[ \t]+[0-9]+|序章|楔子|引子|尾声)(?:[^\r\n]{0,60})?(?:[ \t]*】)?)[ \t]*$""",
+        """^[ \t]*(?:#{1,6}[ \t]+)?((?:【[ \t]*)?(?:第[ \t]*[零〇一二三四五六七八九十百千万0-9]+[ \t]*[章节部卷]|(?:卷|部)[ \t]*[零〇一二三四五六七八九十百千万0-9]+|Chapter[ \t]+[0-9]+|Part[ \t]+[0-9]+|序章|楔子|引子|尾声)(?:[^\r\n]{0,60})?(?:[ \t]*】)?)[ \t]*$""",
         setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
     )
     private val markerPrefix = Regex(
@@ -398,7 +398,7 @@ internal object NovelImportSplitter {
     fun split(content: String): List<NovelChapterDraft> {
         require(content.isNotBlank()) { "导入文件内容为空" }
         val matches = marker.findAll(content)
-            .filter { isLikelyChapterTitle(it.value) }
+            .filter { isLikelyChapterTitle(it.groupValues[1]) }
             .toList()
         val chapters = if (matches.isEmpty()) {
             chunkBody("导入章节", content.trim(), FALLBACK_CHUNK_CHARS)
@@ -412,7 +412,7 @@ internal object NovelImportSplitter {
                     val bodyEnd = matches.getOrNull(index + 1)?.range?.first ?: content.length
                     val body = content.substring(bodyStart, bodyEnd).trim()
                     if (body.isNotBlank()) {
-                        addAll(chunkBody(match.value.trim(), body, MAX_CHAPTER_CHARS))
+                        addAll(chunkBody(match.groupValues[1].trim(), body, MAX_CHAPTER_CHARS))
                     }
                 }
             }

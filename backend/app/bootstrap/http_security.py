@@ -121,7 +121,9 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     "/api/v1/novel-creation/sessions/{session_id}/stages/{stage}": frozenset({"PATCH"}),
     "/api/v1/projects": frozenset({"GET", "POST"}),
     "/api/v1/import/project-file": frozenset({"POST"}),
+    "/api/v1/projects/project-package/import": frozenset({"POST"}),
     "/api/v1/projects/{project_id}": frozenset({"GET", "PUT"}),
+    "/api/v1/projects/{project_id}/project-package/export": frozenset({"POST"}),
     "/api/v1/projects/{project_id}/chapters": frozenset({"GET", "POST"}),
     "/api/v1/projects/{project_id}/chapter-drafts/pending": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/chapters/{chapter_id}": frozenset(
@@ -362,6 +364,7 @@ class GatewayAuthenticationMiddleware:
             return matched_template in {
                 "/api/v1/projects",
                 "/api/v1/import/project-file",
+                "/api/v1/projects/project-package/import",
             } or matched_template.startswith("/api/v1/novel-creation/")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", project_id):
             return False
@@ -421,6 +424,10 @@ class GatewayAuthenticationMiddleware:
         await response(scope, receive, send)
 
 
+class _StreamingBodyLimitExceeded(Exception):
+    """Internal control flow for an oversized unbuffered request body."""
+
+
 class GatewayRequestLimitMiddleware:
     """Bound sensitive Gateway requests before JSON parsing or authentication."""
 
@@ -432,7 +439,12 @@ class GatewayRequestLimitMiddleware:
         "/api/v1/auth/admin/login": 16 * 1024,
         "/api/v1/sync/bootstrap": 128 * 1024,
         "/api/v1/sync/push": 8 * 1024 * 1024,
+        # Multipart framing and the optional title need a small allowance above
+        # the package's strict 512 MiB file limit, which the route enforces while
+        # streaming the UploadFile to disk.
+        "/api/v1/projects/project-package/import": 513 * 1024 * 1024,
     }
+    STREAMING_BODY_PATHS = frozenset({"/api/v1/projects/project-package/import"})
     RATE_LIMITS = {
         "/api/v1/pairing/start": (12, 60.0),
         "/api/v1/pairing/complete": (20, 60.0),
@@ -514,6 +526,23 @@ class GatewayRequestLimitMiddleware:
         content_length = _header(scope, b"content-length")
         if content_length.isdigit() and int(content_length) > maximum:
             await self._reject_large(scope, receive, send, maximum)
+            return
+        if path in self.STREAMING_BODY_PATHS:
+            received = 0
+
+            async def limited_receive() -> Message:
+                nonlocal received
+                message = await receive()
+                if message["type"] == "http.request":
+                    received += len(message.get("body", b""))
+                    if received > maximum:
+                        raise _StreamingBodyLimitExceeded
+                return message
+
+            try:
+                await self.app(scope, limited_receive, send)
+            except _StreamingBodyLimitExceeded:
+                await self._reject_large(scope, receive, send, maximum)
             return
 
         messages: list[Message] = []
