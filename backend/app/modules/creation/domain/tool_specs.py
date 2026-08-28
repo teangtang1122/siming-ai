@@ -92,6 +92,9 @@ class ListCreationEntitiesInput(CompatibleInput):
     artifact: str = ""
     entity_type: str = ""
     include_deleted: bool = False
+    query: str = ""
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=50)
 
 
 class CreationEntityInput(CompatibleInput):
@@ -128,6 +131,8 @@ class ConfirmCreationArtifactInput(CreationArtifactInput):
 class ModelBackedCreationArtifactInput(CreationArtifactInput):
     model: str = Field(default="", description=_CREATION_MODEL_DESCRIPTION)
     use_model: bool = True
+    context_entity_ids: list[str] = Field(default_factory=list, max_length=24)
+    context_artifacts: list[str] = Field(default_factory=list, max_length=6)
 
 
 class GenerateCreationArtifactInput(ModelBackedCreationArtifactInput):

@@ -1,10 +1,7 @@
 """Workspace tools for the resumable novel creation workbench."""
 from __future__ import annotations
 
-from app.architecture.uow import commit_session
-
 import asyncio
-import json
 import re
 import time
 from contextlib import nullcontext
@@ -14,12 +11,28 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....core.model_limits import MAX_CONFIGURABLE_LIMIT, default_output_token_limit
-from ....modules.model_runtime.application.execution import model_executor as LLMGateway
-from ...operation_runtime import current_operation_id, record_operation_signal
+from app.architecture.uow import commit_session
+
 from ....core.json_repair import parse_json_object_detailed
-from ....database.models import NovelCreationMaterialImport, NovelCreationSession, NovelCreationStageRun, OperationRun
+from ....core.model_limits import MAX_CONFIGURABLE_LIMIT, default_output_token_limit
+from ....database.models import (
+    NovelCreationMaterialImport,
+    NovelCreationSession,
+    NovelCreationStageRun,
+    OperationRun,
+)
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
+from ....modules.operations.interfaces.dependencies import get_operation_service
 from ....services.context_orchestrator import activate_context_manifest
+from ....services.novel_creation_actions import (
+    delete_creation_entity as delete_creation_entity_record,
+)
+from ....services.novel_creation_actions import (
+    patch_creation_entity as patch_creation_entity_record,
+)
+from ....services.novel_creation_actions import (
+    restore_artifact_version as restore_creation_artifact_version_record,
+)
 from ....services.novel_creation_authoring import (
     _WORLD_STYLE_TEXT_FIELDS,
     _author_context,
@@ -31,12 +44,29 @@ from ....services.novel_creation_authoring import (
     _validate_compact_concepts,
     _validate_stage,
 )
+from ....services.novel_creation_consistency import (
+    creation_dependency_graph,
+    validate_creation_consistency,
+)
+from ....services.novel_creation_context_projection import (
+    build_stage_generation_context,
+    compact_creation_snapshot,
+    project_creation_artifact,
+)
 from ....services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
-from ....services.novel_creation_prompting import (
-    CREATION_REPAIR_SYSTEM_PROMPT,
-    CREATION_REPAIR_USER_TEMPLATE,
-    build_compact_concept_messages,
-    build_creation_stage_messages,
+from ....services.novel_creation_entities import (
+    _extract_records,
+    query_creation_entities,
+    serialize_creation_entity,
+)
+from ....services.novel_creation_entities import (
+    get_creation_entity as get_creation_entity_record,
+)
+from ....services.novel_creation_entity_normalization import (
+    normalize_characters as _normalize_characters,
+)
+from ....services.novel_creation_entity_normalization import (
+    normalize_locations as _normalize_locations,
 )
 from ....services.novel_creation_imports import (
     apply_material_import,
@@ -44,19 +74,11 @@ from ....services.novel_creation_imports import (
     run_material_import,
     serialize_material_import,
 )
-from ....services.novel_creation_entities import (
-    get_creation_entity as get_creation_entity_record,
-    list_creation_entities as list_creation_entity_records,
-    serialize_creation_entity,
-)
-from ....services.novel_creation_actions import (
-    delete_creation_entity as delete_creation_entity_record,
-    patch_creation_entity as patch_creation_entity_record,
-    restore_artifact_version as restore_creation_artifact_version_record,
-)
-from ....services.novel_creation_consistency import (
-    creation_dependency_graph,
-    validate_creation_consistency,
+from ....services.novel_creation_prompting import (
+    CREATION_REPAIR_SYSTEM_PROMPT,
+    CREATION_REPAIR_USER_TEMPLATE,
+    build_compact_concept_messages,
+    build_creation_stage_messages,
 )
 from ....services.novel_creation_submission import save_creation_stage_data
 from ....services.novel_creation_versions import (
@@ -66,25 +88,17 @@ from ....services.novel_creation_versions import (
     serialize_artifact_version,
 )
 from ....services.operation_runtime import register_operation_actions
-from ....modules.operations.interfaces.dependencies import get_operation_service
 from ...novel_creation_workspace import (
-    STAGE_ORDER,
     STAGE_LABELS,
     confirm_run,
     creation_artifact_dependencies,
-    list_creation_artifacts,
-    initialize_session_draft,
     patch_creation_artifact,
     patch_session,
     serialize_creation_artifact,
-    serialize_session,
     set_creation_artifact_locks,
     undo_creation_artifact,
 )
-from ....services.novel_creation_entity_normalization import (
-    normalize_characters as _normalize_characters,
-    normalize_locations as _normalize_locations,
-)
+from ...operation_runtime import current_operation_id, record_operation_signal
 
 STREAM_PROGRESS_INTERVAL_SECONDS = 0.2
 STREAM_PROGRESS_PREVIEW_CHARS = 320
@@ -476,6 +490,7 @@ async def _generate_compact_concepts(
                     "moshu_task_type": "planning",
                     "storage_target": "session_draft",
                     "local_cli_retry_attempts": 1,
+                    "moshu_context_manifest_rendered": True,
                 },
             ),
         )
@@ -542,22 +557,13 @@ async def _enhance_with_model(
     context_manifest: Any | None = None,
     input_snapshot: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    draft = deepcopy(input_snapshot) if isinstance(input_snapshot, dict) else (session.draft_json if isinstance(session.draft_json, dict) else {})
-    instruction = _text(draft.get("_refinement_instruction"))
-    context = {
-        "form": draft.get("form"),
-        "author_source": _author_context(draft),
-        "selected_concept_id": draft.get("selected_concept_id"),
-        "current_stage_data": ((draft.get("stages") or {}).get(stage) or {}).get("data"),
-        "confirmed_stages": {
-            name: value.get("data")
-            for name, value in (draft.get("stages") or {}).items()
-            if isinstance(value, dict) and value.get("status") == "confirmed"
-        },
-        "baseline": baseline,
-        "refinement_instruction": instruction,
-        "entity_target": draft.get("_entity_target"),
-    }
+    draft = (
+        deepcopy(input_snapshot)
+        if isinstance(input_snapshot, dict)
+        else (session.draft_json if isinstance(session.draft_json, dict) else {})
+    )
+    context, entity_target = build_stage_generation_context(draft, baseline)
+    instruction = _text(context.get("refinement_instruction"))
     opening_chapter_count = _opening_outline_chapter_count(baseline) if stage == "opening_outline" else None
     stage_contract = _stage_contract(
         stage,
@@ -588,6 +594,7 @@ async def _enhance_with_model(
                     "moshu_task_type": "planning",
                     "storage_target": "session_draft",
                     "local_cli_retry_attempts": 1,
+                    "moshu_context_manifest_rendered": True,
                 },
             ),
         )
@@ -600,7 +607,15 @@ async def _enhance_with_model(
             raise ValueError("模型返回的阶段 JSON 格式不合法")
         data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
         data = _normalize_stage_data(stage, data, baseline)
-        _validate_stage(stage, data)
+        if entity_target:
+            target_type = _text(entity_target.get("entity_type"))
+            if not any(
+                record["entity_type"] == target_type
+                for record in _extract_records(stage, data)
+            ):
+                raise ValueError(f"模型没有返回可用的 {target_type} 实体")
+        else:
+            _validate_stage(stage, data)
         metadata = {"attempt": attempt, "result_mode": "model", "warning": None}
         if parse_method != "direct":
             metadata.update(_repair_provenance(
@@ -632,7 +647,15 @@ async def _enhance_with_model(
             data = repaired.get("data") if isinstance(repaired.get("data"), dict) else repaired
             _raise_if_task_cancelled()
             data = _normalize_stage_data(stage, data, baseline)
-            _validate_stage(stage, data)
+            if entity_target:
+                target_type = _text(entity_target.get("entity_type"))
+                if not any(
+                    record["entity_type"] == target_type
+                    for record in _extract_records(stage, data)
+                ):
+                    raise ValueError(f"模型没有返回可用的 {target_type} 实体")
+            else:
+                _validate_stage(stage, data)
             metadata = {
                 "attempt": attempt + repair_attempt,
                 **_repair_provenance(raw, "model_json", "模型原始回复格式不合法，已使用同一模型完成一次结构修复"),
@@ -655,61 +678,8 @@ async def get_creation_session(db: Session, project_id: str, args: dict[str, Any
     return {
         "tool": "get_creation_session",
         "status": "ok",
-        "detail": "Novel creation session loaded",
-        "data": serialize_session(session),
-    }
-
-
-def _compact_creation_snapshot(session: NovelCreationSession) -> dict[str, Any]:
-    """Return only facts needed for one model turn, without duplicated workflow history."""
-
-    draft = deepcopy(initialize_session_draft(session, persist=False))
-    stages = draft.get("stages") if isinstance(draft.get("stages"), dict) else {}
-    locks = draft.get("artifact_locks") if isinstance(draft.get("artifact_locks"), dict) else {}
-    compact_draft = {
-        key: deepcopy(draft.get(key))
-        for key in (
-            "schema_version",
-            "creation_mode",
-            "author_brief",
-            "author_outline",
-            "locked_requirements",
-            "form",
-        )
-    }
-    revision = int(session.revision or 0)
-    artifacts: list[dict[str, Any]] = []
-    for stage in STAGE_ORDER:
-        state = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
-        artifacts.append({
-            "artifact": stage,
-            "label": STAGE_LABELS[stage],
-            "status": _text(state.get("status")) or "pending",
-            "data": deepcopy(state.get("data")),
-            "source": _text(state.get("source")) or "unknown",
-            "updated_at": state.get("updated_at"),
-            "stale_reason": state.get("stale_reason"),
-            "locked_paths": list(locks.get(stage) or []),
-            "revision": revision,
-        })
-    return {
-        "revision": revision,
-        "session": {
-            "id": session.id,
-            "source_project_id": session.source_project_id,
-            "created_project_id": session.created_project_id,
-            "status": session.status,
-            "mode": session.mode,
-            "schema_version": int(draft.get("schema_version") or session.schema_version or 1),
-            "current_stage": session.current_stage,
-            "revision": revision,
-            "user_brief": session.user_brief,
-            "target_audience": session.target_audience,
-            "genre": session.genre,
-            "platform": session.platform,
-            "draft": compact_draft,
-        },
-        "artifacts": artifacts,
+        "detail": "Novel creation session overview loaded",
+        "data": compact_creation_snapshot(session),
     }
 
 
@@ -721,7 +691,7 @@ async def get_creation_snapshot(db: Session, project_id: str, args: dict[str, An
         "tool": "get_creation_snapshot",
         "status": "ok",
         "detail": "Creation snapshot loaded",
-        "data": _compact_creation_snapshot(session),
+        "data": compact_creation_snapshot(session),
     }
 
 
@@ -746,7 +716,18 @@ async def patch_creation_session_tool(db: Session, project_id: str, args: dict[s
     try:
         patch_session(session, changes, source="assistant")
         commit_session(db)
-        return {"tool": "patch_creation_session", "status": "ok", "detail": "Creation session patched", "data": serialize_session(session)}
+        return {
+            "tool": "patch_creation_session",
+            "status": "ok",
+            "detail": "Creation session patched",
+            "data": {
+                "session_id": session.id,
+                "revision": int(session.revision or 0),
+                "status": session.status,
+                "current_stage": session.current_stage,
+                "changed_fields": sorted(str(key) for key in changes),
+            },
+        }
     except Exception as exc:
         db.rollback()
         return {"tool": "patch_creation_session", "status": "error", "detail": str(exc), "data": None}
@@ -758,7 +739,12 @@ async def get_creation_artifact(db: Session, project_id: str, args: dict[str, An
     if not session:
         return {"tool": "get_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
     try:
-        return {"tool": "get_creation_artifact", "status": "ok", "detail": "Artifact loaded", "data": serialize_creation_artifact(session, stage)}
+        return {
+            "tool": "get_creation_artifact",
+            "status": "ok",
+            "detail": "Artifact loaded",
+            "data": project_creation_artifact(session, stage),
+        }
     except ValueError as exc:
         return {"tool": "get_creation_artifact", "status": "error", "detail": str(exc), "data": None}
 
@@ -771,7 +757,7 @@ async def list_creation_artifacts_tool(db: Session, project_id: str, args: dict[
         "tool": "list_creation_artifacts",
         "status": "ok",
         "detail": "Creation artifacts loaded",
-        "data": {"revision": int(session.revision or 0), "artifacts": list_creation_artifacts(session)},
+        "data": compact_creation_snapshot(session),
     }
 
 
@@ -891,18 +877,21 @@ async def list_creation_entities_tool(db: Session, project_id: str, args: dict[s
     session = _session(db, _text(args.get("session_id")))
     if not session:
         return {"tool": "list_creation_entities", "status": "skipped", "detail": "Session not found", "data": None}
-    entities = list_creation_entity_records(
+    result = query_creation_entities(
         session,
         artifact=_text(args.get("artifact")) or None,
         entity_type=_text(args.get("entity_type")) or None,
         include_deleted=bool(args.get("include_deleted", False)),
+        query=_text(args.get("query")),
+        offset=int(args.get("offset") or 0),
+        limit=int(args.get("limit") or 20),
     )
     commit_session(db)
     return {
         "tool": "list_creation_entities",
         "status": "ok",
         "detail": "Creation entities loaded",
-        "data": {"revision": int(session.revision or 0), "entities": entities},
+        "data": {"revision": int(session.revision or 0), **result},
     }
 
 

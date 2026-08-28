@@ -15,10 +15,16 @@ from app.services.context_orchestrator import ContextOrchestrator
 from app.services.novel_creation_authoring import (
     _validate_stage,
 )
+from app.services.novel_creation_contract import (
+    LEGACY_OPENING_OUTLINE_CHAPTER_COUNT,
+    OPENING_OUTLINE_CHAPTER_COUNT,
+)
 from app.services.novel_creation_entities import (
+    ENTITY_COLLECTIONS,
     ENTITY_TYPES_BY_ARTIFACT,
     _extract_records,
     get_creation_entity,
+    serialize_creation_entity,
 )
 from app.services.novel_creation_stage_runtime import generate_stage_data, stage_tool_result
 from app.services.novel_creation_workspace import (
@@ -27,13 +33,10 @@ from app.services.novel_creation_workspace import (
     add_run_event,
     complete_run,
     create_run,
-    derive_stage,
     fail_run,
     patch_session,
     save_compact_concepts,
     save_stage,
-    serialize_run,
-    serialize_session,
 )
 
 
@@ -67,6 +70,8 @@ class StageExecution:
     enhance_with_model: Any
     expected_revision: int
     entity_target: dict[str, Any] | None = None
+    context_entities: list[dict[str, Any]] = field(default_factory=list)
+    context_artifacts: list[str] = field(default_factory=list)
     active_stage: str = ""
     generated: dict[str, Any] = field(default_factory=dict)
     run_metadata: list[dict[str, Any]] = field(default_factory=list)
@@ -114,6 +119,228 @@ def _revision_conflict(expected: int, actual: int) -> StageRevisionConflict:
         "立项草稿版本已经变化，本次生成结果未保存，以免覆盖你的人工修改。"
         f"任务基于版本 {expected}，当前版本为 {actual}；请确认当前内容后重新生成本阶段。"
     )
+
+
+def _unique_strings(value: Any, *, limit: int) -> list[str]:
+    rows = value if isinstance(value, list) else []
+    result: list[str] = []
+    for row in rows:
+        item = _text(row)
+        if item and item not in result:
+            result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _resolve_entity_target(
+    db: Session,
+    session: NovelCreationSession,
+    stage: str,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    entity_id = _text(args.get("entity_id"))
+    entity_type = _text(args.get("entity_type"))
+    if entity_id:
+        entity = get_creation_entity(db, entity_id)
+        if not entity or entity.session_id != session.id or entity.status == "deleted":
+            raise ValueError("目标实体不存在或已删除")
+        if entity.artifact_key != stage:
+            raise ValueError("目标实体不属于当前立项对象")
+        return {
+            "id": entity.id,
+            "entity_type": entity.entity_type,
+            "entity_key": entity.entity_key,
+            "mode": "existing",
+        }, entity_id
+    if not entity_type:
+        return None, ""
+    if entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(stage, frozenset()):
+        raise ValueError("目标实体类型不属于当前立项对象")
+    return {
+        "entity_type": entity_type,
+        "mode": "new",
+        "count": (
+            max(1, min(int(args["entity_count"]), 20))
+            if args.get("entity_count")
+            else None
+        ),
+    }, ""
+
+
+def _resolve_context_references(
+    db: Session,
+    session: NovelCreationSession,
+    args: dict[str, Any],
+    *,
+    target_entity_id: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    entities: list[dict[str, Any]] = []
+    for entity_id in _unique_strings(args.get("context_entity_ids"), limit=24):
+        if entity_id == target_entity_id:
+            continue
+        entity = get_creation_entity(db, entity_id)
+        if not entity or entity.session_id != session.id or entity.status == "deleted":
+            raise ValueError(f"上下文实体不存在或已删除：{entity_id}")
+        entities.append(serialize_creation_entity(entity))
+    artifacts = _unique_strings(args.get("context_artifacts"), limit=6)
+    invalid = [name for name in artifacts if name not in STAGE_ORDER]
+    if invalid:
+        raise ValueError("上下文立项对象不存在：" + "、".join(invalid))
+    return entities, artifacts
+
+
+def _prepare_stage_manifest(
+    db: Session,
+    session: NovelCreationSession,
+    stage: str,
+    model: str,
+    args: dict[str, Any],
+    run: NovelCreationStageRun | None,
+    working_draft: dict[str, Any],
+    entity_target: dict[str, Any] | None,
+    context_entities: list[dict[str, Any]],
+    context_artifacts: list[str],
+) -> tuple[ContextOrchestrator, Any]:
+    orchestrator = ContextOrchestrator(db)
+    manifest_id = _text(args.get("context_manifest_id")) or _text(
+        getattr(run, "context_manifest_id", "")
+    )
+    manifest = orchestrator.get_manifest(manifest_id) if manifest_id else None
+    if manifest is not None:
+        return orchestrator, manifest
+    interview = working_draft.get("interview")
+    answers = (
+        (interview.get("history") or [])[-6:]
+        if isinstance(interview, dict) and isinstance(interview.get("history"), list)
+        else []
+    )
+    manifest = orchestrator.prepare(
+        project_id=None,
+        task_type="new_project",
+        model=model or None,
+        execution_route="novel_creation",
+        session_id=session.id,
+        arguments={
+            "session_id": session.id,
+            "session": {
+                "id": session.id,
+                "brief": session.user_brief,
+                "revision": int(session.revision or 0),
+            },
+            "answers": answers,
+            "author_constraints": session.user_brief or "",
+            "stage": stage,
+            "entity_target": deepcopy(entity_target),
+            "context_entity_ids": [item["id"] for item in context_entities],
+            "context_artifacts": context_artifacts,
+        },
+    )
+    return orchestrator, manifest
+
+
+def _opening_count(draft: dict[str, Any]) -> int:
+    form = draft.get("form") if isinstance(draft.get("form"), dict) else {}
+    opening = (
+        ((draft.get("stages") or {}).get("opening_outline") or {}).get("data")
+        if isinstance(draft.get("stages"), dict)
+        else None
+    )
+    candidates = [
+        opening.get("opening_chapter_count") if isinstance(opening, dict) else None,
+        form.get("opening_chapters"),
+    ]
+    for value in candidates:
+        try:
+            if int(value or 0) == LEGACY_OPENING_OUTLINE_CHAPTER_COUNT:
+                return LEGACY_OPENING_OUTLINE_CHAPTER_COUNT
+        except (TypeError, ValueError):
+            continue
+    return OPENING_OUTLINE_CHAPTER_COUNT
+
+
+def _generation_shape_baseline(context: StageExecution, stage: str) -> dict[str, Any]:
+    """Provide schema and author-supplied scalars, never fabricated plot events."""
+
+    draft = context.working_draft
+    form = draft.get("form") if isinstance(draft.get("form"), dict) else {}
+    if stage == "constraints":
+        return deepcopy(form)
+    if stage == "world_style":
+        return {
+            "writing_style": _text(form.get("writing_style")),
+            "world_tone": _text(form.get("world_tone")),
+            "story_structure": _text(form.get("story_structure")),
+            "pacing": _text(form.get("pacing")),
+            "style_rules": [],
+            "forbidden_patterns": deepcopy(
+                form.get("avoid") if isinstance(form.get("avoid"), list) else []
+            ),
+            "worldbuilding": [],
+            "display_groups": [],
+        }
+    if stage == "characters":
+        return {"characters": [], "relationships": []}
+    if stage == "locations":
+        return {"entries": [], "relations": []}
+    if stage == "macro_outline":
+        return {
+            "story_overview": "",
+            "core_conflict": "",
+            "ending_direction": "",
+            "target_chapters": int(form.get("target_chapters") or 0),
+            "volumes": [],
+            "stage_plan": [],
+        }
+    if stage == "opening_outline":
+        return {
+            "opening_chapter_count": _opening_count(draft),
+            "chapters": [],
+            "sections": [],
+        }
+    if stage == "final_review":
+        return {"ready": False, "blocking": [], "warnings": [], "counts": {}}
+    return {}
+
+
+def _entity_prompt_baseline(
+    context: StageExecution,
+    stage: str,
+    storage_baseline: dict[str, Any],
+) -> dict[str, Any]:
+    target = context.entity_target
+    if not target:
+        return _generation_shape_baseline(context, stage)
+    prompt_baseline = _generation_shape_baseline(context, stage)
+    if target.get("mode") != "existing":
+        return prompt_baseline
+    current = next(
+        (
+            item
+            for item in _extract_records(stage, storage_baseline)
+            if item["entity_type"] == target.get("entity_type")
+            and item["entity_key"] == target.get("entity_key")
+        ),
+        None,
+    )
+    if current is None:
+        raise ValueError("目标实体已不在当前立项数据中")
+    prompt_baseline.setdefault(current["field"], [])
+    prompt_baseline[current["field"]] = [deepcopy(current["data"])]
+    return prompt_baseline
+
+
+def _artifact_prompt_baseline(
+    context: StageExecution,
+    stage: str,
+    storage_baseline: dict[str, Any],
+) -> dict[str, Any]:
+    prompt_baseline = _generation_shape_baseline(context, stage)
+    collection_fields = {field for field, _kind in ENTITY_COLLECTIONS.get(stage, ())}
+    for key, value in storage_baseline.items():
+        if key not in collection_fields:
+            prompt_baseline[key] = deepcopy(value)
+    return prompt_baseline
 
 
 def _save_with_revision_cas(context: StageExecution, saver: Any) -> Any:
@@ -204,57 +431,29 @@ def _prepare_execution(
     instruction = _text(args.get("instruction"))
     if instruction:
         working_draft["_refinement_instruction"] = instruction
-    entity_target: dict[str, Any] | None = None
-    entity_id = _text(args.get("entity_id"))
-    entity_type = _text(args.get("entity_type"))
-    if entity_id:
-        entity = get_creation_entity(db, entity_id)
-        if not entity or entity.session_id != session.id or entity.status == "deleted":
-            raise ValueError("目标实体不存在或已删除")
-        if entity.artifact_key != stage:
-            raise ValueError("目标实体不属于当前立项对象")
-        entity_target = {
-            "id": entity.id,
-            "entity_type": entity.entity_type,
-            "entity_key": entity.entity_key,
-            "mode": "existing",
-        }
-    elif entity_type:
-        if entity_type not in ENTITY_TYPES_BY_ARTIFACT.get(stage, frozenset()):
-            raise ValueError("目标实体类型不属于当前立项对象")
-        entity_target = {
-            "entity_type": entity_type,
-            "mode": "new",
-            "count": (
-                max(1, min(int(args["entity_count"]), 20))
-                if args.get("entity_count")
-                else None
-            ),
-        }
+    entity_target, entity_id = _resolve_entity_target(db, session, stage, args)
     if entity_target:
         working_draft["_entity_target"] = deepcopy(entity_target)
-    orchestrator = ContextOrchestrator(db)
-    manifest_id = _text(args.get("context_manifest_id")) or _text(
-        getattr(run, "context_manifest_id", "")
+    context_entities, context_artifacts = _resolve_context_references(
+        db,
+        session,
+        args,
+        target_entity_id=entity_id,
     )
-    manifest = orchestrator.get_manifest(manifest_id) if manifest_id else None
-    if manifest is None:
-        interview = working_draft.get("interview")
-        manifest = orchestrator.prepare(
-            project_id=None,
-            task_type="new_project",
-            model=model or None,
-            execution_route="novel_creation",
-            session_id=session.id,
-            arguments={
-                "session_id": session.id,
-                "session": {"brief": session.user_brief, "draft": working_draft},
-                "answers": interview.get("history") if isinstance(interview, dict) else [],
-                "confirmed_stages": working_draft.get("stages") or {},
-                "author_constraints": session.user_brief or "",
-                "stage": stage,
-            },
-        )
+    working_draft["_retrieved_entities"] = deepcopy(context_entities)
+    working_draft["_context_artifacts"] = context_artifacts
+    orchestrator, manifest = _prepare_stage_manifest(
+        db,
+        session,
+        stage,
+        model,
+        args,
+        run,
+        working_draft,
+        entity_target,
+        context_entities,
+        context_artifacts,
+    )
     governed_args = {**args, "context_manifest_id": manifest.id}
     if run is None:
         run = create_run(db, session, stage, governed_args)
@@ -287,6 +486,8 @@ def _prepare_execution(
             else (run.input_revision if run.input_revision is not None else session.revision or 0)
         ),
         entity_target=entity_target,
+        context_entities=context_entities,
+        context_artifacts=context_artifacts,
         active_stage=stage,
     ), None
 
@@ -300,6 +501,10 @@ def _merge_entity_generation(
     """Keep unrelated rows byte-for-byte stable during entity-level generation."""
     target = context.entity_target
     if not target:
+        for field, _entity_type in ENTITY_COLLECTIONS.get(stage, ()):
+            existing = baseline.get(field)
+            if isinstance(existing, list) and existing:
+                generated[field] = deepcopy(existing)
         return generated, None
     baseline_records = _extract_records(stage, baseline)
     generated_records = _extract_records(stage, generated)
@@ -487,16 +692,30 @@ async def _generate_regular_stages(context: StageExecution) -> None:
         context.run.current_message = f"正在生成{label}"
         commit_session(context.db)
         existing_stage = ((context.working_draft.get("stages") or {}).get(name) or {})
-        baseline = (
+        existing_data = (
             deepcopy(existing_stage.get("data"))
-            if (context.operation == "refine" or context.entity_target)
-            and isinstance(existing_stage.get("data"), dict)
-            else derive_stage(context.session, name, context.working_draft)
+            if isinstance(existing_stage.get("data"), dict)
+            else None
+        )
+        storage_baseline = (
+            existing_data
+            if existing_data is not None
+            and (
+                context.operation in {"refine", "regenerate"}
+                or context.entity_target
+                or bool(ENTITY_COLLECTIONS.get(name))
+            )
+            else _generation_shape_baseline(context, name)
+        )
+        prompt_baseline = (
+            _entity_prompt_baseline(context, name, storage_baseline)
+            if context.entity_target
+            else _artifact_prompt_baseline(context, name, storage_baseline)
         )
         data, source, metadata = await generate_stage_data(
             context.session,
             stage=name,
-            baseline=baseline,
+            baseline=prompt_baseline,
             model=context.model,
             use_model=context.use_model,
             manifest=context.manifest,
@@ -506,8 +725,13 @@ async def _generate_regular_stages(context: StageExecution) -> None:
         context.ensure_not_cancelled(context.db, context.run)
         _capture_model_diagnostic(context, name, metadata)
         context.run_metadata.append(metadata)
-        data = context.normalize_stage(name, data, baseline)
-        data, entity_summary = _merge_entity_generation(context, name, baseline, data)
+        data = context.normalize_stage(name, data, prompt_baseline)
+        data, entity_summary = _merge_entity_generation(
+            context,
+            name,
+            storage_baseline,
+            data,
+        )
         _validate_stage(name, data)
         def save_generated_stage(
             stage_name: str = name,

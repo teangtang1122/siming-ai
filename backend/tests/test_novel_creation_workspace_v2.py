@@ -47,8 +47,10 @@ from app.services.workspace.tools.novel_creation_v2 import (
     _validate_stage,
     confirm_creation_artifact,
     generate_creation_artifact,
+    get_creation_artifact,
     run_creation_artifact_generation,
     get_creation_snapshot,
+    list_creation_entities_tool,
     patch_creation_session_tool,
     save_creation_artifact,
 )
@@ -736,10 +738,190 @@ def test_creation_snapshot_and_session_patch_are_revision_protected():
     assert "runs" not in snapshot["data"]["session"]
     assert "stage_flow" not in snapshot["data"]["session"]
     assert "checkpoints" not in snapshot["data"]["session"]
-    assert "stages" not in snapshot["data"]["session"]["draft"]
+    assert "draft" not in snapshot["data"]["session"]
+    assert all("data" not in item for item in snapshot["data"]["artifacts"])
+    assert all("data_shape" in item for item in snapshot["data"]["artifacts"])
     assert all("flow" not in item for item in snapshot["data"]["artifacts"])
     assert all("running_operation" not in item for item in snapshot["data"]["artifacts"])
-    assert len(json.dumps(snapshot["data"], ensure_ascii=False)) < 16_000
+    assert len(json.dumps(snapshot["data"], ensure_ascii=False)) < 8_000
+
+
+def test_large_cast_snapshot_and_entity_search_stay_bounded():
+    db = _db()
+    session = _ready_session(db)
+    characters = deepcopy(
+        session.draft_json["stages"]["characters"]["data"]
+    )
+    characters["characters"].extend([
+        {
+            "name": f"同人角色-{index:03d}",
+            "role_type": "supporting",
+            "goal": f"完成支线目标-{index:03d}",
+            "description": "只属于该角色的精确资料" * 20,
+        }
+        for index in range(180)
+    ])
+    save_stage(session, "characters", characters, source="author")
+    db.commit()
+
+    snapshot = asyncio.run(get_creation_snapshot(db, "", {"session_id": session.id}))
+    snapshot_wire = json.dumps(snapshot["data"], ensure_ascii=False)
+    assert len(snapshot_wire) < 8_000
+    assert "同人角色-179" not in snapshot_wire
+    character_overview = next(
+        item for item in snapshot["data"]["artifacts"]
+        if item["artifact"] == "characters"
+    )
+    assert character_overview["data_shape"]["collection_counts"]["characters"] == 182
+
+    page = asyncio.run(list_creation_entities_tool(db, "", {
+        "session_id": session.id,
+        "artifact": "characters",
+        "entity_type": "character",
+        "query": "同人角色-179",
+        "limit": 5,
+    }))
+    assert page["status"] == "ok"
+    assert page["data"]["total"] == 1
+    assert page["data"]["entities"][0]["label"] == "同人角色-179"
+    assert "data" not in page["data"]["entities"][0]
+
+    artifact = asyncio.run(get_creation_artifact(db, "", {
+        "session_id": session.id,
+        "artifact": "characters",
+    }))
+    assert artifact["data"]["omitted_collections"]["characters"] == 182
+    assert "同人角色-179" not in json.dumps(artifact, ensure_ascii=False)
+
+
+def test_entity_generation_prompt_uses_only_target_and_explicit_references():
+    db = _db()
+    session = _ready_session(db)
+    characters = deepcopy(
+        session.draft_json["stages"]["characters"]["data"]
+    )
+    characters["characters"].extend([
+        {
+            "name": f"未召回角色-{index:03d}",
+            "role_type": "supporting",
+            "goal": f"未召回目标-{index:03d}",
+        }
+        for index in range(80)
+    ])
+    save_stage(session, "characters", characters, source="author")
+    db.commit()
+    target_page = asyncio.run(list_creation_entities_tool(db, "", {
+        "session_id": session.id,
+        "artifact": "characters",
+        "entity_type": "character",
+        "query": "林七",
+    }))
+    reference_page = asyncio.run(list_creation_entities_tool(db, "", {
+        "session_id": session.id,
+        "artifact": "characters",
+        "entity_type": "character",
+        "query": "周渡",
+    }))
+    target_id = target_page["data"]["entities"][0]["id"]
+    reference_id = reference_page["data"]["entities"][0]["id"]
+    captured: dict = {}
+
+    def scoped_stream(**kwargs):
+        captured.update(kwargs)
+
+        async def generate():
+            yield json.dumps({"data": {
+                "characters": [{
+                    "name": "林七",
+                    "role_type": "protagonist",
+                    "goal": "找到母亲并保护周渡",
+                }],
+                "relationships": [],
+            }}, ensure_ascii=False)
+
+        return generate()
+
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=MagicMock(side_effect=scoped_stream),
+    ):
+        result = asyncio.run(generate_creation_artifact(db, "", {
+            "session_id": session.id,
+            "artifact": "characters",
+            "entity_id": target_id,
+            "context_entity_ids": [reference_id],
+            "instruction": "让林七明确保护周渡",
+            "expected_revision": int(session.revision or 0),
+            "model": "openai:test",
+            "use_model": True,
+        }))
+
+    assert result["status"] == "ok"
+    prompt_wire = captured["messages"][1]["content"]
+    assert "林七" in prompt_wire
+    assert "周渡" in prompt_wire
+    assert "未召回角色-079" not in prompt_wire
+    assert captured["extra_body"]["moshu_context_manifest_rendered"] is True
+    saved_names = {
+        item["name"]
+        for item in session.draft_json["stages"]["characters"]["data"]["characters"]
+    }
+    assert "未召回角色-079" in saved_names
+
+
+def test_generation_does_not_auto_select_the_first_concept():
+    db = _db()
+    session = NovelCreationSession(
+        mode="internal_llm",
+        status="drafting",
+        user_brief="只使用作者明确选中的方向",
+    )
+    db.add(session)
+    initialize_session_draft(session, {"preset_id": "free"})
+    first = _concept_seed("不应自动选中的方向")
+    second = _concept_seed("另一个未选择方向")
+    save_compact_concepts(session, [first, second])
+    db.commit()
+    captured: dict = {}
+
+    def world_stream(**kwargs):
+        captured.update(kwargs)
+
+        async def generate():
+            yield json.dumps({"data": {
+                "writing_style": "克制",
+                "world_tone": "现实",
+                "story_structure": "线性",
+                "pacing": "稳健",
+                "style_rules": [],
+                "forbidden_patterns": [],
+                "worldbuilding": [{
+                    "title": "作者事实",
+                    "dimension": "culture",
+                    "content": "只来自用户简介",
+                }],
+                "display_groups": [],
+            }}, ensure_ascii=False)
+
+        return generate()
+
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=MagicMock(side_effect=world_stream),
+    ):
+        result = asyncio.run(run_creation_artifact_generation(db, "", {
+            "session_id": session.id,
+            "stage": "world_style",
+            "expected_revision": int(session.revision or 0),
+            "model": "openai:test",
+            "use_model": True,
+        }))
+
+    assert result["status"] == "ok"
+    prompt_wire = captured["messages"][1]["content"]
+    assert '"selected_concept": null' in prompt_wire
+    assert "不应自动选中的方向" not in prompt_wire
+    assert "另一个未选择方向" not in prompt_wire
 
 
 def test_all_stage_run_without_a_model_fails_without_contract_generated_content():

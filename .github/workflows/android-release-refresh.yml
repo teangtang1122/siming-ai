@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Existing release whose Android assets will be refreshed
         required: true
-        default: v3.3.4
+        default: v3.3.5
         type: string
 
 permissions:

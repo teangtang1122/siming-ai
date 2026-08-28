@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from app.ai.local_cli_adapter import is_local_cli_provider
 from app.ai.local_cli_prompt import supports_direct_mcp
-from app.services.agent_tool_stream import collect_tool_turn
 from app.architecture.tool_categories import (
     TOOL_CATEGORY_CONTROLLER,
     TOOL_CATEGORY_METADATA,
@@ -25,6 +24,22 @@ from app.modules.creation.interfaces.agent_scope import (
     CREATION_MODEL_SPAWNING_TOOL_NAMES,
 )
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
+from app.services.agent_tool_stream import collect_tool_turn
+from app.services.creation_agent_execution import (
+    CREATION_AGENT_TOOLS,
+    CreationExecutionBindings,
+    CreationTurnState,
+    finish_creation_turn,
+    run_native_steps,
+)
+from app.services.creation_agent_turn_records import (
+    CREATION_AGENT_TURN_SCHEMA,
+    creation_agent_replay_messages,
+)
+from app.services.creation_agent_turn_records import (
+    record_prompt_metric as _record_prompt_metric,
+)
+from app.services.novel_creation_runs import interrupt_novel_creation_run
 from app.services.tool_category_state import (
     activate_tool_categories,
     create_tool_category_state,
@@ -32,19 +47,6 @@ from app.services.tool_category_state import (
     read_tool_category_events,
     read_tool_category_state,
     remove_tool_category_state,
-)
-from app.services.novel_creation_runs import interrupt_novel_creation_run
-from app.services.creation_agent_turn_records import (
-    CREATION_AGENT_TURN_SCHEMA,
-    creation_agent_replay_messages,
-    record_prompt_metric as _record_prompt_metric,
-)
-from app.services.creation_agent_execution import (
-    CREATION_AGENT_TOOLS,
-    CreationExecutionBindings,
-    CreationTurnState,
-    finish_creation_turn,
-    run_native_steps,
 )
 from app.services.workspace.registry import registry
 
@@ -127,13 +129,14 @@ def _system_prompt(session_id: str) -> str:
     return f"""你是司命的对话式立项助手。当前 creation session_id={session_id}。
 所有立项资料必须通过工具读取和修改。可按任意顺序工作；软依赖缺失时说明影响但不阻断。
 每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。立项资料通常使用 creation_data，生成、确认、版本、导入或正式建书通常使用 creation_flow。
-结合快照和最新消息按语义选择工具，不使用关键词或固定流程。
+快照只是 revision、状态、锁和数据规模索引，不包含阶段正文；不得把省略内容当成空值或自行补写。以最新用户消息决定查询目标：先读取目标 artifact；角色、关系、地点、势力、分卷、章节或场景先用 list_creation_entities 的 artifact/entity_type/query/limit 召回摘要，再对候选 ID 调用 get_creation_entity 复核精确事实。
+读取结果必须先返回给你，再由下一模型步骤决定写工具；不得在同一个模型步骤并列发出读取和写入。不要用对话历史中的旧工具结果代替本轮数据库读取。
 用户给出明确的新事实、偏好或简短回答时，立即增量写入，再基于现有缺口提一个最有价值的问题；不得积攒到采访结束，也不得只读取后声称保存。
 每条用户消息最多完成一次成功的写工具调用；一次原子写入可以包含用户对同一个目标明确给出的全部事实。写入成功后立即停止本轮的确认、生成和下游推进，简要报告结果并只提一个问题，等待作者下一条消息后才能继续写。
 “继续”“下一步”等简短回复只能由你结合最新消息和真实快照判断当前一个待处理动作，不能据此连续确认多个阶段或自动生成后续阶段。confirm_creation_artifact 仅在最新用户消息确实表达了对当前版本的确认时使用；不得确认本轮刚生成或刚修改的内容。
 写入参数失败时可根据真实错误修正，但最多尝试三次；达到上限后如实说明错误并结束，不得循环重试。
 用户可随时跳到任意资料。新增对象时将完整要求放入 instruction，数量服从用户语义。
-局部请求优先使用 entity 工具或带 entity_type/entity_id 的生成工具，不要重写整个 artifact。
+局部请求必须优先使用 entity 工具或带 entity_type/entity_id 的生成工具，不要重写整个 artifact。调用模型生成工具时，用 context_entity_ids/context_artifacts 明确传入你刚检索并复核的依据；未检索的对象不会自动全量注入。
 写入必须使用刚读取到的 revision；不得改动锁定字段，不得用旧结果覆盖人工新修改。
 只有用户明确要求创建正式作品时才调用 finalize_creation_session。成功后请用户通过界面按钮进入正式作品，并说明项目助手会自动展开，不再邀请其在立项会话写正文。
 工具返回 running 表示任务已可靠创建，不要重复调用。最后简洁说明实际读取、修改或启动的内容及影响。"""
@@ -163,8 +166,8 @@ def _cli_mcp_system_prompt(
 用户已授权本条消息连接进程级临时 Siming MCP；MCP 只提供当前会话的直接读取和写入，不会替你再启动模型。
 
 {category_instruction}
-处理业务步骤时先调用 siming_turn 的 get_creation_snapshot 读取最新 revision、锁定字段和现有事实，再自行生成结构化内容并直接写入。不要使用 Shell、编辑文件、扫描项目目录或访问其他会话。
-会话基本字段使用 patch_creation_session；完整阶段使用 patch_creation_artifact；单个已有角色、地点、势力、卷、章节或场景优先使用 entity 工具。完整阶段可用 path=/、action=set 一次写入根对象。
+处理业务步骤时先调用 siming_turn 的 get_creation_snapshot 读取最新 revision、状态、锁和数据规模索引；快照不含阶段正文，不得猜测省略事实。随后按最新消息读取一个目标 artifact；角色、关系、地点、势力、分卷、章节或场景使用 list_creation_entities 的 artifact/entity_type/query/limit 查摘要，并对候选 ID 调用 get_creation_entity 复核。不要使用 Shell、编辑文件、扫描项目目录或访问其他会话。
+会话基本字段使用 patch_creation_session；完整阶段使用 patch_creation_artifact；单个已有角色、地点、势力、卷、章节或场景必须优先使用 entity 工具。完整阶段可用 path=/、action=set 一次写入根对象。不得为了写一个对象而读取或回写整个集合。
 创意方向 artifact=concepts 的根对象必须包含 options 和 selected_concept_id。每个 option 至少包含 id、title、logline、protagonist_seed（identity、goal、lack）、world_hook、core_conflict、opening_hook；story_engine、subtitle、differentiators、risks 可按内容补充。方案数量完全服从用户语义：用户未指定数量时只生成一套；只有用户明确要求多个、候选或对比时才生成对应数量，绝不擅自补成多套。
 其他阶段保持快照中的结构；若尚无数据：world_style 使用 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups；characters 使用 characters/relationships；locations 使用 entries/relations；macro_outline 使用 story_overview/core_conflict/ending_direction/target_chapters/volumes/stage_plan；opening_outline 只规划三章，使用顶层 chapters/sections，每章 2 至 6 个场景。
 
