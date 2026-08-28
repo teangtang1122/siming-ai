@@ -17,6 +17,8 @@ from sqlalchemy.orm import sessionmaker
 from app.database.bootstrap import SCHEMA_EPOCH, bootstrap_database
 from app.database.models import AssistantRun, AssistantRunStep
 
+HEAD_REVISION = "300a24_character_change_version"
+
 
 def _database_url(path: Path) -> str:
     return f"sqlite:///{path.as_posix()}"
@@ -39,7 +41,7 @@ def test_fresh_database_is_initialized_and_versioned():
                 ).scalar_one()
             assert result.mode == "initialized"
             assert result.read_only is False
-            assert result.schema_revision == revision == "300a23_project_package_receipts"
+            assert result.schema_revision == revision == HEAD_REVISION
             assert epoch == SCHEMA_EPOCH
             assert {
                 "projects",
@@ -85,7 +87,7 @@ def test_recognized_legacy_database_is_backed_up_and_preserved():
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             assert title == "Legacy Story"
-            assert revision == "300a23_project_package_receipts"
+            assert revision == HEAD_REVISION
         finally:
             engine.dispose()
 
@@ -132,6 +134,66 @@ def test_current_database_bootstrap_is_idempotent():
             engine.dispose()
 
 
+def test_stamped_300a23_database_repairs_missing_character_change_log_version():
+    """A shipped model field was missing from the corresponding migration."""
+
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "missing-character-change-version.db"
+        url = _database_url(database_path)
+        engine = create_engine(url)
+        try:
+            initialized = bootstrap_database(engine, database_url=url)
+            assert initialized.schema_revision == HEAD_REVISION
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "INSERT INTO character_change_logs "
+                    "(id, character_id, chapter_id, chapter_version, change_type, "
+                    "field_name, confirmed, created_at) "
+                    "VALUES ('legacy-change', 'character-1', 'chapter-1', 3, "
+                    "'personality', 'current_goal', 1, CURRENT_TIMESTAMP)"
+                ))
+                connection.execute(text(
+                    "ALTER TABLE character_change_logs DROP COLUMN chapter_version"
+                ))
+                connection.execute(text(
+                    "UPDATE alembic_version "
+                    "SET version_num = '300a23_project_package_receipts'"
+                ))
+                connection.execute(text(
+                    "UPDATE siming_schema_metadata "
+                    "SET value = '300a23_project_package_receipts' "
+                    "WHERE key = 'alembic_revision'"
+                ))
+
+            migrated = bootstrap_database(engine, database_url=url)
+
+            assert migrated.mode == "migrated"
+            assert migrated.read_only is False
+            assert migrated.schema_revision == HEAD_REVISION
+            assert migrated.backup_path and Path(migrated.backup_path).is_file()
+            assert "chapter_version" in {
+                column["name"]
+                for column in inspect(engine).get_columns("character_change_logs")
+            }
+            with engine.connect() as connection:
+                row = connection.execute(text(
+                    "SELECT id, character_id, chapter_id, chapter_version, "
+                    "change_type, field_name, confirmed "
+                    "FROM character_change_logs WHERE id = 'legacy-change'"
+                )).mappings().one()
+            assert dict(row) == {
+                "id": "legacy-change",
+                "character_id": "character-1",
+                "chapter_id": "chapter-1",
+                "chapter_version": None,
+                "change_type": "personality",
+                "field_name": "current_goal",
+                "confirmed": 1,
+            }
+        finally:
+            engine.dispose()
+
+
 def test_overlay_upgrade_migrates_legacy_concepts_and_drops_retired_columns():
     with TemporaryDirectory() as temp_dir:
         database_path = Path(temp_dir) / "legacy-concepts.db"
@@ -173,7 +235,7 @@ def test_overlay_upgrade_migrates_legacy_concepts_and_drops_retired_columns():
             inspector = inspect(engine)
             assert result.mode == "migrated"
             assert result.read_only is False
-            assert result.schema_revision == "300a23_project_package_receipts"
+            assert result.schema_revision == HEAD_REVISION
             assert "blueprint_json" not in {
                 item["name"] for item in inspector.get_columns("novel_creation_sessions")
             }
@@ -197,7 +259,7 @@ def test_legacy_truncated_run_step_json_is_repaired_before_retry():
         engine = create_engine(url)
         try:
             initialized = bootstrap_database(engine, database_url=url)
-            assert initialized.schema_revision == "300a23_project_package_receipts"
+            assert initialized.schema_revision == HEAD_REVISION
 
             Session = sessionmaker(bind=engine)
             with Session() as db:
@@ -227,7 +289,7 @@ def test_legacy_truncated_run_step_json_is_repaired_before_retry():
             migrated = bootstrap_database(engine, database_url=url)
 
             assert migrated.mode == "migrated"
-            assert migrated.schema_revision == "300a23_project_package_receipts"
+            assert migrated.schema_revision == HEAD_REVISION
             with engine.connect() as connection:
                 row = connection.execute(
                     text(
@@ -252,7 +314,7 @@ def test_retired_data_only_revision_is_backed_up_and_normalized():
         engine = create_engine(url)
         try:
             initialized = bootstrap_database(engine, database_url=url)
-            assert initialized.schema_revision == "300a23_project_package_receipts"
+            assert initialized.schema_revision == HEAD_REVISION
             with engine.begin() as connection:
                 connection.execute(
                     text(
@@ -278,18 +340,18 @@ def test_retired_data_only_revision_is_backed_up_and_normalized():
 
             assert result.mode == "migrated"
             assert result.read_only is False
-            assert result.schema_revision == "300a23_project_package_receipts"
+            assert result.schema_revision == HEAD_REVISION
             assert result.backup_path and Path(result.backup_path).is_file()
             with engine.connect() as connection:
                 assert connection.execute(
                     text("SELECT version_num FROM alembic_version")
-                ).scalar_one() == "300a23_project_package_receipts"
+                ).scalar_one() == HEAD_REVISION
                 assert connection.execute(
                     text(
                         "SELECT value FROM siming_schema_metadata "
                         "WHERE key = 'alembic_revision'"
                     )
-                ).scalar_one() == "300a23_project_package_receipts"
+                ).scalar_one() == HEAD_REVISION
                 assert connection.execute(
                     text("SELECT title FROM projects WHERE id = 'retired-project'")
                 ).scalar_one() == "保留作品"
@@ -325,7 +387,7 @@ def test_stamped_300a12_database_repairs_missing_resolution_evidence_columns():
 
             inspector = inspect(engine)
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a23_project_package_receipts"
+            assert result.schema_revision == HEAD_REVISION
             for table_name in ("foreshadowings", "causal_edges", "narrative_debts"):
                 assert "resolution_evidence" in {
                     column["name"] for column in inspector.get_columns(table_name)
@@ -379,7 +441,7 @@ def test_stamped_300a13_database_repairs_cataloged_outline_hierarchy_only():
                     )).mappings()
                 }
             volumes = [row for row in rows.values() if row.node_type == "volume"]
-            assert result.schema_revision == "300a23_project_package_receipts"
+            assert result.schema_revision == HEAD_REVISION
             assert len(volumes) == 1
             assert rows["chapter-3"].parent_id == volumes[0].id
             assert rows["section-3"].parent_id == "chapter-3"
@@ -434,7 +496,7 @@ def test_stamped_300a14_database_canonicalizes_free_form_character_roles():
                         "SELECT id, role_type, background FROM characters ORDER BY id"
                     )).mappings()
                 }
-            assert result.schema_revision == "300a23_project_package_receipts"
+            assert result.schema_revision == HEAD_REVISION
             assert {key: row.role_type for key, row in rows.items()} == {
                 "elder": "other",
                 "hero": "protagonist",
@@ -542,7 +604,7 @@ def test_alpha1_database_upgrades_through_gateway_sync():
             result = bootstrap_database(engine, database_url=url)
 
             assert result.mode == "migrated"
-            assert result.schema_revision == "300a23_project_package_receipts"
+            assert result.schema_revision == HEAD_REVISION
             assert {"content_sync_jobs", "gateway_devices", "sync_changes"} <= set(
                 inspect(engine).get_table_names()
             )
@@ -582,7 +644,7 @@ def test_provider_task_model_migration_replaces_legacy_local_only_settings():
             result = bootstrap_database(engine, database_url=url)
 
             inspector = inspect(engine)
-            assert result.schema_revision == "300a23_project_package_receipts"
+            assert result.schema_revision == HEAD_REVISION
             assert "local_model_task_settings" not in inspector.get_table_names()
             assert "model_task_settings" in inspector.get_table_names()
             assert "available_models_json" in {
