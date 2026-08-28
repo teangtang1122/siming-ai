@@ -685,18 +685,6 @@ private fun updateCatalogingProgress(
                 )
                 if (refreshWarning == null) onCreated(result.projectId)
             } catch (error: Exception) {
-                val reconciledDraft = runCatching {
-                    repository.pendingChapterDraft(draft.projectId)
-                }
-                uiState.value = uiState.value.copy(
-                    busy = false,
-                    activity = "",
-                    pendingChapterDraft = if (reconciledDraft.isSuccess) {
-                        reconciledDraft.getOrNull()
-                    } else {
-                        uiState.value.pendingChapterDraft
-                    },
-                )
                 showError(error)
             }
         }
@@ -998,7 +986,18 @@ private fun updateCatalogingProgress(
                 )
                 onSaved(chapterId)
             } catch (error: Exception) {
-                uiState.value = uiState.value.copy(busy = false, activity = "")
+                val reconciledDraft = runCatching {
+                    repository.pendingChapterDraft(draft.projectId)
+                }
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingChapterDraft = if (reconciledDraft.isSuccess) {
+                        reconciledDraft.getOrNull()
+                    } else {
+                        uiState.value.pendingChapterDraft
+                    },
+                )
                 showError(error)
             }
         }
