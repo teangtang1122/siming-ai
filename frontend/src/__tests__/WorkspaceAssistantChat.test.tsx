@@ -543,7 +543,9 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     await user.click(await screen.findByRole('button', { name: '保存并建档' }))
 
     expect(await screen.findByText(detail)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '保存并建档' })).toBeEnabled()
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /保存并建档/ })).toBeEnabled()
+    })
   })
 
   it('connects OpenCode to the isolated one-turn MCP without a grant step', async () => {
