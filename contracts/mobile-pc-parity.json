@@ -513,7 +513,7 @@
             "contains": "@router.post(\"/projects/project-package/import\")"
           },
           {
-            "path": "backend/app/services/project_package_service.py",
+            "path": "backend/app/services/project_package_contract.py",
             "contains": "PACKAGE_FORMAT = \"siming-project-package\""
           }
         ]

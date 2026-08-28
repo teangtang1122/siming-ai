@@ -48,6 +48,7 @@ from app.database.models import (
 from app.database.session import Base, get_db
 from app.routers.project_package import router
 from app.services import project_package_service as package_service
+from app.services import project_package_validation as package_validation
 from app.services.project_package_service import (
     ERROR_ASSET,
     ERROR_INVALID,
@@ -367,6 +368,7 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     content = tmp_path / "content"
     content.mkdir()
     monkeypatch.setattr(package_service, "content_root", lambda: content)
+    monkeypatch.setattr(package_validation, "content_root", lambda: content)
     engine, factory = _database(tmp_path / "source.db")
     db = factory()
     _seed_project(db, tmp_path)
