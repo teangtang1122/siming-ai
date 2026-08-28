@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import openapiTS, { astToString, COMMENT_HEADER } from 'openapi-typescript'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const frontendDir = resolve(scriptDir, '..')
@@ -10,7 +11,6 @@ const backendDir = join(rootDir, 'backend')
 const buildDir = join(rootDir, '.build')
 const openapiPath = join(buildDir, 'openapi.json')
 const generatedPath = join(frontendDir, 'src', 'api', 'generated', 'schema.d.ts')
-const temporaryPath = join(buildDir, 'schema.generated.d.ts')
 const checkOnly = process.argv.includes('--check')
 
 const pythonCandidates = process.platform === 'win32'
@@ -55,19 +55,11 @@ if (!exported) {
   throw new Error('Unable to export OpenAPI. Install backend dependencies first.')
 }
 
-const openapiCli = join(
-  frontendDir,
-  'node_modules',
-  'openapi-typescript',
-  'bin',
-  'cli.js',
-)
-if (!run(process.execPath, [openapiCli, openapiPath, '--output', temporaryPath], frontendDir)) {
-  throw new Error('openapi-typescript failed.')
-}
-
-const generated = readFileSync(temporaryPath, 'utf8').replaceAll('\r\n', '\n')
-rmSync(temporaryPath, { force: true })
+// Passing an absolute path through the CLI percent-encodes non-ASCII Windows
+// workspace names before Redocly opens the file. Supplying the parsed schema
+// object avoids that path round-trip and produces the same canonical output.
+const openapi = JSON.parse(readFileSync(openapiPath, 'utf8'))
+const generated = `${COMMENT_HEADER}${astToString(await openapiTS(openapi))}`.replaceAll('\r\n', '\n')
 if (checkOnly) {
   if (!existsSync(generatedPath)) {
     throw new Error('Generated OpenAPI types are missing. Run npm run api:generate.')

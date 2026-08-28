@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -44,6 +45,8 @@ SESSION_TOOLS = CREATION_AGENT_TOOLS - {
 }
 REVISION_TOOLS = set(CREATION_AGENT_REVISION_TOOL_NAMES)
 WRITE_TOOLS = set(CREATION_AGENT_WRITE_TOOL_NAMES)
+READ_TOOLS = CREATION_AGENT_TOOLS - WRITE_TOOLS
+_MAX_TOOL_MESSAGE_CHARS = 90_000
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 CompleteTurn = Callable[..., Awaitable[dict[str, Any]]]
@@ -73,6 +76,7 @@ class CreationTurnState:
     active_categories: tuple[str, ...] = ()
     successful_write_count: int = 0
     failed_write_count: int = 0
+    successful_read_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,126 @@ def _parse_arguments(raw_arguments: Any) -> dict[str, Any]:
         )
     except (json.JSONDecodeError, TypeError, ValueError):
         return parse_json_object(str(raw_arguments)) or {}
+
+
+def _run_message_projection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    projected = {
+        key: value.get(key)
+        for key in (
+            "run_id", "id", "session_id", "stage", "operation", "status",
+            "operation_id", "input_revision", "result_mode", "warning",
+            "failure_class", "current_message", "next_action",
+        )
+        if value.get(key) is not None
+    }
+    result = value.get("result") if isinstance(value.get("result"), dict) else {}
+    stages = result.get("stages") if isinstance(result.get("stages"), dict) else {}
+    if stages:
+        projected["generated_artifacts"] = sorted(
+            key for key in stages if key != "entity_change"
+        )
+    entity_change = stages.get("entity_change")
+    if isinstance(entity_change, dict):
+        projected["entity_change"] = entity_change
+    return projected
+
+
+def _write_message_projection(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    projected: dict[str, Any] = {}
+    for key in (
+        "session_id", "revision", "current_revision", "failure_class",
+        "artifact", "affected_artifacts", "changed_fields", "operation_id",
+        "project_id", "reason",
+    ):
+        value = data.get(key)
+        if value is not None and not isinstance(value, dict):
+            projected[key] = value
+    artifact = data.get("artifact") if isinstance(data.get("artifact"), dict) else None
+    if artifact:
+        projected["artifact"] = {
+            key: artifact.get(key)
+            for key in ("artifact", "status", "source", "revision", "stale_reason")
+            if artifact.get(key) is not None
+        }
+    entity = data.get("entity") if isinstance(data.get("entity"), dict) else None
+    if entity:
+        projected["entity"] = {
+            key: entity.get(key)
+            for key in ("id", "artifact", "entity_type", "entity_key", "status", "revision")
+            if entity.get(key) is not None
+        }
+    run = _run_message_projection(data.get("run"))
+    if run:
+        projected["run"] = run
+    session = data.get("session") if isinstance(data.get("session"), dict) else None
+    if session:
+        projected["session"] = {
+            key: session.get(key)
+            for key in ("id", "status", "current_stage", "revision", "created_project_id")
+            if session.get(key) is not None
+        }
+    changes = data.get("changes")
+    if isinstance(changes, list):
+        projected["change_count"] = len(changes)
+    return {
+        "tool": result.get("tool"),
+        "status": result.get("status"),
+        "detail": result.get("detail"),
+        "data": projected or None,
+    }
+
+
+def _bounded_tool_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 8:
+        return {"omitted": True, "reason": "maximum_depth"}
+    if isinstance(value, str):
+        if len(value) <= 12_000:
+            return value
+        return value[:12_000] + "…[truncated]"
+    if isinstance(value, list):
+        selected = value[:40]
+        bounded = [_bounded_tool_value(item, depth=depth + 1) for item in selected]
+        if len(value) > len(selected):
+            bounded.append({"omitted_items": len(value) - len(selected)})
+        return bounded
+    if isinstance(value, dict):
+        items = list(value.items())[:80]
+        bounded = {
+            str(key): _bounded_tool_value(child, depth=depth + 1)
+            for key, child in items
+        }
+        if len(value) > len(items):
+            bounded["_omitted_fields"] = len(value) - len(items)
+        return bounded
+    return value
+
+
+def _tool_message_content(name: str, result: dict[str, Any]) -> str:
+    """Serialize valid, bounded JSON for the model without altering API results."""
+
+    payload = _write_message_projection(result) if name in WRITE_TOOLS else result
+    content = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(content) <= _MAX_TOOL_MESSAGE_CHARS:
+        return content
+    bounded = _bounded_tool_value(payload)
+    content = json.dumps(bounded, ensure_ascii=False, default=str)
+    if len(content) <= _MAX_TOOL_MESSAGE_CHARS:
+        return content
+    return json.dumps({
+        "tool": result.get("tool") or name,
+        "status": "error",
+        "detail": (
+            "Tool result exceeded the model context boundary. Narrow the artifact/entity "
+            "query and fetch exact candidates separately."
+        ),
+        "data": {
+            "reason": "tool_result_too_large",
+            "original_chars": len(json.dumps(result, ensure_ascii=False, default=str)),
+        },
+    }, ensure_ascii=False)
 
 
 async def _execute_domain_call(
@@ -197,17 +321,35 @@ async def _execute_native_calls(
     calls: list[dict[str, Any]],
 ) -> tuple[str, ...] | None:
     available = set(tool_names_for_categories(state.active_categories)) & CREATION_AGENT_TOOLS
+    reads_ready_before_step = state.successful_read_count > 0
     for call in calls:
         function = call.get("function") if isinstance(call, dict) else {}
         name = str((function or {}).get("name") or "")
         arguments = _parse_arguments((function or {}).get("arguments") or "{}")
-        tool_result, pending_categories = await _execute_domain_call(
-            state,
-            bindings,
-            name,
-            arguments,
-            available,
-        )
+        if name in WRITE_TOOLS and not reads_ready_before_step:
+            tool_result, pending_categories = ({
+                "tool": name,
+                "status": "denied",
+                "detail": (
+                    "写入前必须先完成一次真实业务读取，并让读取结果进入下一模型步骤；"
+                    "不得在同一个模型步骤并列决定读取和写入。"
+                ),
+                "data": {
+                    "reason": "read_required",
+                    "required_next_step": (
+                        "Read the exact target, then decide the write "
+                        "in the next model step."
+                    ),
+                },
+            }, None)
+        else:
+            tool_result, pending_categories = await _execute_domain_call(
+                state,
+                bindings,
+                name,
+                arguments,
+                available,
+            )
         state.tool_results.append(tool_result)
         if name != TOOL_CATEGORY_CONTROLLER:
             completed = creation_tool_completed_event(name, arguments, tool_result)
@@ -229,7 +371,9 @@ async def _execute_native_calls(
             if status in CREATION_WRITE_SUCCESS_STATUSES:
                 state.successful_write_count += 1
                 state.write_results.append(tool_result)
-            elif boundary_reason not in {"successful_write_limit", "failed_write_limit"}:
+            elif boundary_reason not in {
+                "successful_write_limit", "failed_write_limit", "read_required",
+            }:
                 state.failed_write_count += 1
                 if state.failed_write_count == CREATION_TURN_MAX_FAILED_WRITES:
                     await bindings.emit_progress(
@@ -244,10 +388,15 @@ async def _execute_native_calls(
                             "failed_writes": state.failed_write_count,
                         },
                     )
+        if (
+            name in READ_TOOLS
+            and str(tool_result.get("status") or "") in {"ok", "warning"}
+        ):
+            state.successful_read_count += 1
         tool_message = {
             "role": "tool",
             "tool_call_id": str(call.get("id") or ""),
-            "content": json.dumps(tool_result, ensure_ascii=False, default=str)[:120_000],
+            "content": _tool_message_content(name, tool_result),
         }
         state.messages.append(tool_message)
         state.protocol_messages.append(tool_message)

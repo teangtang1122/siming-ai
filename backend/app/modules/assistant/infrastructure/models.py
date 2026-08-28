@@ -220,6 +220,16 @@ class ChapterDraft(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    __table_args__ = (
+        Index(
+            "uq_chapter_drafts_project_pending",
+            "project_id",
+            unique=True,
+            sqlite_where=(status == "pending"),
+            postgresql_where=(status == "pending"),
+        ),
+    )
+
 
 class RagDocument(Base):
     __tablename__ = "rag_documents"

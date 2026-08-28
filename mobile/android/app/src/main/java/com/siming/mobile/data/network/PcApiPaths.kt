@@ -10,6 +10,7 @@ internal object PcApiPaths {
     const val RUNTIME_CAPABILITIES = "/api/v1/runtime/capabilities"
     const val PROJECTS = "/api/v1/projects"
     const val IMPORT_PROJECT_FILE = "/api/v1/import/project-file"
+    const val PROJECT_PACKAGE_IMPORT = "/api/v1/projects/project-package/import"
     const val PAIRING_COMPLETE = "/api/v1/pairing/complete"
     const val AUTH_REFRESH = "/api/v1/auth/refresh"
     const val SYNC_PROJECTS = "/api/v1/sync/projects"
@@ -26,6 +27,9 @@ internal object PcApiPaths {
     const val NOVEL_CREATION_AGENT_TURN = "$NOVEL_CREATION/agent-turn"
 
     fun project(projectId: String): String = "$PROJECTS/${segment(projectId)}"
+
+    fun projectPackageExport(projectId: String, profile: String): String =
+        "${project(projectId)}/project-package/export?profile=${segment(profile)}"
 
     fun authoringCollection(projectId: String, entityType: String): String = when (entityType) {
         "chapter" -> "${project(projectId)}/chapters"

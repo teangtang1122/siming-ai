@@ -82,6 +82,7 @@ def _register_routers(app: FastAPI) -> None:
         novel_creation,
         operations,
         outline,
+        project_package,
         projects,
         prompt_packs,
         stats,
@@ -113,6 +114,7 @@ def _register_routers(app: FastAPI) -> None:
         narrative_governance,
         context_governance,
         operations,
+        project_package,
     )
     if get_settings().local_runtime_enabled:
         from ..routers import (

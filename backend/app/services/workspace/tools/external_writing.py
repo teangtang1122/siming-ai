@@ -204,6 +204,53 @@ async def prepare_external_writing_context(
         },
     }
 
+
+def _external_draft_manifest_error(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+    context_manifest_id: str | None,
+    outline_node_id: str,
+) -> dict | None:
+    route = str(args.get("_context_execution_route") or "").strip()
+    if route not in {"external_mcp", "local_cli_agent"}:
+        return None
+    if not context_manifest_id:
+        return {
+            "tool": "save_external_chapter_draft",
+            "status": "needs_confirmation",
+            "detail": "Prepare task context first and attach its context_manifest_id to the draft.",
+            "data": None,
+        }
+
+    from ....services.context_orchestrator import ContextOrchestrator
+
+    manifest = ContextOrchestrator(db).get_manifest(context_manifest_id, project_id)
+    if not manifest:
+        return {
+            "tool": "save_external_chapter_draft",
+            "status": "needs_confirmation",
+            "detail": "The supplied context manifest is unavailable for this project.",
+            "data": {"context_manifest_id": context_manifest_id},
+        }
+    manifest_outline_ids = {
+        str(item.source_id)
+        for item in manifest.items
+        if item.category == "target_outline" and item.source_id
+    }
+    if outline_node_id in manifest_outline_ids:
+        return None
+    return {
+        "tool": "save_external_chapter_draft",
+        "status": "needs_confirmation",
+        "detail": "The context manifest target does not match the selected chapter outline.",
+        "data": {
+            "context_manifest_id": context_manifest_id,
+            "outline_node_id": outline_node_id,
+        },
+    }
+
+
 async def save_external_chapter_draft(
     db: Session,
     project_id: str,
@@ -222,6 +269,8 @@ async def save_external_chapter_draft(
         find_cataloging_required_chapter,
     )
     from app.services.workspace.generated_drafts import (
+        ChapterDraftOutlineConflict,
+        PendingChapterDraftConflict,
         find_pending_chapter_draft,
         pending_draft_block_result,
         store_chapter_draft,
@@ -293,48 +342,40 @@ async def save_external_chapter_draft(
     if required_chapter:
         return cataloging_required_block_result("save_external_chapter_draft", required_chapter)
 
-    if str(args.get("_context_execution_route") or "").strip() in {"external_mcp", "local_cli_agent"}:
-        if not context_manifest_id:
-            return {
-                "tool": "save_external_chapter_draft",
-                "status": "needs_confirmation",
-                "detail": "Prepare task context first and attach its context_manifest_id to the draft.",
-                "data": None,
-            }
-        from ....services.context_orchestrator import ContextOrchestrator
-
-        context_manifest = ContextOrchestrator(db).get_manifest(context_manifest_id, project_id)
-        if not context_manifest:
-            return {
-                "tool": "save_external_chapter_draft",
-                "status": "needs_confirmation",
-                "detail": "The supplied context manifest is unavailable for this project.",
-                "data": {"context_manifest_id": context_manifest_id},
-            }
-        manifest_outline_ids = {
-            str(item.source_id)
-            for item in context_manifest.items
-            if item.category == "target_outline" and item.source_id
-        }
-        if outline_node_id not in manifest_outline_ids:
-            return {
-                "tool": "save_external_chapter_draft",
-                "status": "needs_confirmation",
-                "detail": "The context manifest target does not match the selected chapter outline.",
-                "data": {
-                    "context_manifest_id": context_manifest_id,
-                    "outline_node_id": outline_node_id,
-                },
-            }
-
-    draft_id = store_chapter_draft(
-        project_id=project_id,
-        content=content,
-        title=title,
-        outline_node_id=outline_node_id,
-        context_manifest_id=context_manifest_id,
-        db=db,
+    manifest_error = _external_draft_manifest_error(
+        db,
+        project_id,
+        args,
+        context_manifest_id,
+        outline_node_id,
     )
+    if manifest_error:
+        return manifest_error
+
+    try:
+        draft_id = store_chapter_draft(
+            project_id=project_id,
+            content=content,
+            title=title,
+            outline_node_id=outline_node_id,
+            context_manifest_id=context_manifest_id,
+            db=db,
+        )
+    except PendingChapterDraftConflict as conflict:
+        return pending_draft_block_result("save_external_chapter_draft", conflict.draft)
+    except ChapterDraftOutlineConflict as conflict:
+        return {
+            "tool": "save_external_chapter_draft",
+            "status": "skipped",
+            "detail": (
+                "The outline acquired a formal chapter before this draft was stored. "
+                "The late result was discarded without replacing prose or creating a stale draft."
+            ),
+            "data": {
+                "outline_node_id": outline_node_id,
+                "existing_chapter_id": conflict.chapter.id,
+            },
+        }
 
     return apply_turn_directive({
         "tool": "save_external_chapter_draft",

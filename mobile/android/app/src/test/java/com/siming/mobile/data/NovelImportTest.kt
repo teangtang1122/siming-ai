@@ -56,6 +56,16 @@ class NovelImportTest {
     }
 
     @Test
+    fun decodesMarkdownThroughTheTextDecoder() {
+        val markdown = "# 第一章 风起\n\n这是 **Markdown** 正文。"
+
+        val decoded = NovelFileDecoder.decode("novel.MD", markdown.toByteArray(Charsets.UTF_8))
+
+        assertEquals(markdown, decoded.text)
+        assertEquals("UTF-8", decoded.encoding)
+    }
+
+    @Test
     fun decodesGb18030WithoutReplacementCharacters() {
         val text = "第一章 风起\n陆糖看见归墟阵重新亮起。"
         val decoded = TxtImportDecoder.decode(text.toByteArray(Charset.forName("GB18030")))
@@ -140,6 +150,26 @@ class NovelImportTest {
         assertEquals(listOf("第一章 风起", "第二章 云涌"), chapters.map { it.title })
         assertTrue(chapters[0].content.startsWith("第一章正文"))
         assertTrue(chapters[1].content.startsWith("第二章正文"))
+    }
+
+    @Test
+    fun splitsMarkdownHeadingsWithoutKeepingHeadingMarkersInTitles() {
+        val text = """
+            # 第一章 风起
+
+            第一章有 **加粗** 正文。
+
+            ## 第二章 云涌
+
+            第二章保留 [链接](https://example.com) 标记。
+        """.trimIndent()
+
+        val chapters = NovelImportSplitter.split(text)
+
+        assertEquals(2, chapters.size)
+        assertEquals(listOf("第一章 风起", "第二章 云涌"), chapters.map { it.title })
+        assertTrue(chapters[0].content.contains("**加粗**"))
+        assertTrue(chapters[1].content.contains("[链接](https://example.com)"))
     }
 
     @Test

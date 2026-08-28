@@ -273,10 +273,26 @@ function WorkspaceAssistantChat({
       cataloging_mode: mode,
       trigger_type: 'ai_insert',
     }
-    const response = await apiClient.post<ApiResponse<Record<string, any>>>(
-      `/projects/${projectId}/chapters`,
-      payload,
-    )
+    let response: { data: ApiResponse<Record<string, any>> }
+    try {
+      response = await apiClient.post<ApiResponse<Record<string, any>>>(
+        `/projects/${projectId}/chapters`,
+        payload,
+      )
+    } catch (error) {
+      try {
+        const pending = await apiClient.get<ApiResponse<{ draft_id?: string } | null>>(
+          `/projects/${projectId}/chapter-drafts/pending`,
+        )
+        if (String(pending.data.data?.draft_id || '') !== draft.draftId) {
+          updateGeneratedDraft({ status: 'superseded' })
+          triggerRefresh()
+        }
+      } catch {
+        // Keep the local draft when the authoritative state cannot be checked.
+      }
+      throw error
+    }
     const chapterId = String(response.data.data.id || response.data.data.chapter_id || '')
     const savedDraft = {
       ...draft,

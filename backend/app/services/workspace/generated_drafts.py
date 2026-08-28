@@ -15,6 +15,8 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
+
 from app.architecture.uow import commit_session
 
 from ...core.utils import count_words
@@ -22,6 +24,68 @@ from ...core.utils import count_words
 MAX_CHAPTER_DRAFTS = 64
 
 _CHAPTER_DRAFTS: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+
+
+class PendingChapterDraftConflict(RuntimeError):
+    """Another generated draft already owns the author's editor slot."""
+
+    def __init__(self, draft: Any):
+        super().__init__("a pending chapter draft already exists")
+        self.draft = draft
+
+
+class ChapterDraftOutlineConflict(RuntimeError):
+    """The target outline acquired formal prose while generation was running."""
+
+    def __init__(self, chapter: Any):
+        super().__init__("the target outline already has a formal chapter")
+        self.chapter = chapter
+
+
+def _cache_chapter_draft(
+    *,
+    draft_id: str,
+    project_id: str,
+    title: str,
+    outline_node_id: str | None,
+    context_manifest_id: str | None,
+    saved_chapter_id: str | None,
+    status: str,
+    content: str,
+    created_at: datetime,
+) -> None:
+    _CHAPTER_DRAFTS[draft_id] = {
+        "project_id": project_id,
+        "title": title,
+        "outline_node_id": outline_node_id or "",
+        "context_manifest_id": context_manifest_id or "",
+        "saved_chapter_id": saved_chapter_id or "",
+        "status": status,
+        "content": content,
+        "created_at": created_at,
+    }
+    _CHAPTER_DRAFTS.move_to_end(draft_id)
+    while len(_CHAPTER_DRAFTS) > MAX_CHAPTER_DRAFTS:
+        _CHAPTER_DRAFTS.popitem(last=False)
+
+
+def _set_chapter_draft_superseded(draft: Any) -> None:
+    draft.status = "superseded"
+    cached = _CHAPTER_DRAFTS.get(str(draft.id))
+    if cached:
+        cached["status"] = "superseded"
+
+
+def lock_chapter_draft_project(db: Any, project_id: str) -> Any | None:
+    """Serialize formal chapter creation and generated-draft finalization."""
+    from ...database.models import Project
+
+    return (
+        db.query(Project)
+        .filter(Project.id == project_id)
+        .with_for_update()
+        .first()
+    )
 
 
 def store_chapter_draft(
@@ -33,45 +97,104 @@ def store_chapter_draft(
     context_manifest_id: str | None = None,
     db: Any = None,
 ) -> str:
+    """Persist one author-visible draft without replacing an existing draft.
+
+    A model call can take minutes, so all checks made before generation are
+    stale by definition. The transaction is completed here before checking the
+    two authoritative conflicts again. The database partial unique index is the
+    final guard when two completions reach this function at the same time.
+    """
     draft_id = str(uuid4())
-    _CHAPTER_DRAFTS[draft_id] = {
-        "project_id": project_id,
-        "title": title,
-        "outline_node_id": outline_node_id or "",
-        "context_manifest_id": context_manifest_id or "",
-        "saved_chapter_id": "",
-        "status": "pending",
-        "content": content,
-        "created_at": datetime.utcnow(),
-    }
-    _CHAPTER_DRAFTS.move_to_end(draft_id)
-    while len(_CHAPTER_DRAFTS) > MAX_CHAPTER_DRAFTS:
-        _CHAPTER_DRAFTS.popitem(last=False)
+    created_at = datetime.utcnow()
+    if db is None:
+        _cache_chapter_draft(
+            draft_id=draft_id,
+            project_id=project_id,
+            title=title or "",
+            outline_node_id=outline_node_id,
+            context_manifest_id=context_manifest_id,
+            saved_chapter_id=None,
+            status="pending",
+            content=content,
+            created_at=created_at,
+        )
+        return draft_id
 
-    if db is not None:
-        from ...database.models import ChapterDraft
+    from ...database.models import Chapter, ChapterDraft
 
-        pending = db.query(ChapterDraft).filter(
+    # End the pre-generation transaction so the checks below see chapters and
+    # drafts committed while the model request was in flight.
+    commit_session(db)
+    lock_chapter_draft_project(db, project_id)
+
+    if outline_node_id:
+        existing_chapter = db.query(Chapter).filter(
+            Chapter.project_id == project_id,
+            Chapter.outline_node_id == outline_node_id,
+        ).first()
+        if existing_chapter:
+            db.rollback()
+            raise ChapterDraftOutlineConflict(existing_chapter)
+
+    existing_draft = (
+        db.query(ChapterDraft)
+        .filter(
             ChapterDraft.project_id == project_id,
             ChapterDraft.status == "pending",
         )
-        for previous in pending.all():
-            previous.status = "superseded"
-            cached = _CHAPTER_DRAFTS.get(str(previous.id))
-            if cached:
-                cached["status"] = "superseded"
+        .order_by(ChapterDraft.updated_at.desc(), ChapterDraft.created_at.desc())
+        .first()
+    )
+    if existing_draft:
+        db.rollback()
+        raise PendingChapterDraftConflict(existing_draft)
 
-        row = ChapterDraft(
-            id=draft_id,
-            project_id=project_id,
-            title=title or "",
-            outline_node_id=outline_node_id or None,
-            context_manifest_id=context_manifest_id or None,
-            status="pending",
-            content=content,
-        )
-        db.add(row)
+    row = ChapterDraft(
+        id=draft_id,
+        project_id=project_id,
+        title=title or "",
+        outline_node_id=outline_node_id or None,
+        context_manifest_id=context_manifest_id or None,
+        status="pending",
+        content=content,
+        created_at=created_at,
+    )
+    db.add(row)
+    try:
         commit_session(db)
+    except IntegrityError:
+        db.rollback()
+        concurrent_draft = (
+            db.query(ChapterDraft)
+            .filter(
+                ChapterDraft.project_id == project_id,
+                ChapterDraft.status == "pending",
+            )
+            .order_by(ChapterDraft.updated_at.desc(), ChapterDraft.created_at.desc())
+            .first()
+        )
+        if concurrent_draft:
+            raise PendingChapterDraftConflict(concurrent_draft) from None
+        if outline_node_id:
+            concurrent_chapter = db.query(Chapter).filter(
+                Chapter.project_id == project_id,
+                Chapter.outline_node_id == outline_node_id,
+            ).first()
+            if concurrent_chapter:
+                raise ChapterDraftOutlineConflict(concurrent_chapter) from None
+        raise
+
+    _cache_chapter_draft(
+        draft_id=draft_id,
+        project_id=project_id,
+        title=title or "",
+        outline_node_id=outline_node_id,
+        context_manifest_id=context_manifest_id,
+        saved_chapter_id=None,
+        status="pending",
+        content=content,
+        created_at=row.created_at or created_at,
+    )
 
     return draft_id
 
@@ -225,6 +348,7 @@ def find_pending_chapter_draft(
     """Return the one author-visible draft that blocks further generation."""
     from ...database.models import ChapterDraft
 
+    release_stale_pending_chapter_drafts(db, project_id)
     return (
         db.query(ChapterDraft)
         .filter(
@@ -239,6 +363,7 @@ def find_pending_chapter_draft(
 def pending_chapter_draft_ids(db: Any, project_id: str) -> set[str]:
     from ...database.models import ChapterDraft
 
+    release_stale_pending_chapter_drafts(db, project_id)
     return {
         str(row[0])
         for row in db.query(ChapterDraft.id).filter(
@@ -251,6 +376,7 @@ def pending_chapter_draft_ids(db: Any, project_id: str) -> set[str]:
 def latest_pending_chapter_draft(db: Any, project_id: str) -> Any | None:
     from ...database.models import ChapterDraft
 
+    release_stale_pending_chapter_drafts(db, project_id)
     return (
         db.query(ChapterDraft)
         .filter(
@@ -269,6 +395,7 @@ def find_new_pending_chapter_draft(
 ) -> Any | None:
     from ...database.models import ChapterDraft
 
+    release_stale_pending_chapter_drafts(db, project_id)
     query = db.query(ChapterDraft).filter(
         ChapterDraft.project_id == project_id,
         ChapterDraft.status == "pending",
@@ -290,12 +417,47 @@ def find_chapter_draft(db: Any, project_id: str, draft_id: str) -> Any | None:
     ).first()
 
 
+def release_stale_pending_chapter_drafts(db: Any, project_id: str) -> int:
+    """Release legacy pending drafts whose outline already has formal prose."""
+    from ...database.models import Chapter, ChapterDraft
+
+    pending = db.query(ChapterDraft).filter(
+        ChapterDraft.project_id == project_id,
+        ChapterDraft.status == "pending",
+        ChapterDraft.outline_node_id.isnot(None),
+    ).all()
+    outline_ids = {str(draft.outline_node_id) for draft in pending if draft.outline_node_id}
+    if not outline_ids:
+        return 0
+
+    used_outline_ids = {
+        str(row[0])
+        for row in db.query(Chapter.outline_node_id).filter(
+            Chapter.project_id == project_id,
+            Chapter.outline_node_id.in_(outline_ids),
+        ).all()
+        if row[0]
+    }
+    stale = [
+        draft for draft in pending
+        if str(draft.outline_node_id or "") in used_outline_ids
+    ]
+    if not stale:
+        return 0
+    for draft in stale:
+        _set_chapter_draft_superseded(draft)
+    commit_session(db)
+    return len(stale)
+
+
 def ensure_generated_draft_outline_is_unused(
     db: Any,
     project_id: str,
     outline_node_id: str | None,
+    *,
+    draft: Any = None,
 ) -> None:
-    """Reject promotion when the selected outline already owns formal prose."""
+    """Reject promotion and release a stale draft when formal prose exists."""
     if not outline_node_id:
         return
 
@@ -307,9 +469,13 @@ def ensure_generated_draft_outline_is_unused(
         Chapter.outline_node_id == outline_node_id,
     ).first()
     if existing:
+        if draft is not None and draft.status == "pending":
+            _set_chapter_draft_superseded(draft)
+            commit_session(db)
         raise ValidationError(
-            "该大纲已关联正式章节；AI 新章草稿不能覆盖或伪装成已有章节，"
-            "请选择尚未写入正文的章级大纲"
+            "该大纲已在草稿生成期间关联正式章节；"
+            "迟到草稿已释放且不会阻塞后续写作，"
+            "AI 新章草稿不能覆盖或伪装成已有章节"
         )
 
 

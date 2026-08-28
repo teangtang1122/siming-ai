@@ -10,8 +10,14 @@ import kotlinx.serialization.json.intOrNull
 data class MobileExportFile(
     val filename: String,
     val mimeType: String,
-    val bytes: ByteArray,
-)
+    val bytes: ByteArray? = null,
+    val sourceFilePath: String? = null,
+    val deleteSourceAfterSave: Boolean = false,
+) {
+    init {
+        require((bytes != null) xor (sourceFilePath != null)) { "导出文件必须且只能提供一种内容来源" }
+    }
+}
 
 data class MobileCatalogingProgress(
     val jobId: String,

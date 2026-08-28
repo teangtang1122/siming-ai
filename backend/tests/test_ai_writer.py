@@ -14,6 +14,11 @@ from app.database.models import Chapter, ChapterDraft, Character
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
 from app.routers.ai_writer import _execute_workspace_action
+from app.services.workspace.generated_drafts import (
+    ChapterDraftOutlineConflict,
+    PendingChapterDraftConflict,
+    store_chapter_draft,
+)
 from app.services.tool_category_state import replace_tool_categories
 
 
@@ -575,6 +580,124 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         finally:
             db.close()
 
+    def test_first_completed_draft_keeps_the_only_pending_editor_slot(self):
+        project_id = self.create_project("Concurrent draft completion")
+        outline_id = self.create_outline(project_id, "第一章 山雨")
+        db = SessionLocal()
+        try:
+            first_id = store_chapter_draft(
+                project_id=project_id,
+                title="第一章 山雨",
+                outline_node_id=outline_id,
+                content="第一份先完成的草稿。",
+                db=db,
+            )
+            with self.assertRaises(PendingChapterDraftConflict) as raised:
+                store_chapter_draft(
+                    project_id=project_id,
+                    title="第一章 山雨",
+                    outline_node_id=outline_id,
+                    content="第二份迟到的草稿。",
+                    db=db,
+                )
+
+            pending = db.query(ChapterDraft).filter(
+                ChapterDraft.project_id == project_id,
+                ChapterDraft.status == "pending",
+            ).all()
+            self.assertEqual([str(row.id) for row in pending], [first_id])
+            self.assertEqual(pending[0].content, "第一份先完成的草稿。")
+            self.assertEqual(str(raised.exception.draft.id), first_id)
+            self.assertEqual(
+                db.query(ChapterDraft).filter(ChapterDraft.status == "superseded").count(),
+                0,
+            )
+        finally:
+            db.close()
+
+    def test_late_generation_result_is_discarded_after_outline_is_saved(self):
+        project_id = self.create_project("Late completion")
+        outline_id = self.create_outline(project_id, "第一章 潮汐")
+        generating_db = SessionLocal()
+        saving_db = SessionLocal()
+        try:
+            # Start the generation-side read transaction before another request
+            # saves the target outline as formal prose.
+            self.assertIsNone(
+                generating_db.query(Chapter).filter(
+                    Chapter.project_id == project_id,
+                    Chapter.outline_node_id == outline_id,
+                ).first()
+            )
+            chapter = Chapter(
+                project_id=project_id,
+                title="第一章 潮汐",
+                outline_node_id=outline_id,
+                content="已经由先完成的请求保存为正式正文。",
+                word_count=17,
+                sort_order=1000,
+                cataloging_required=False,
+            )
+            saving_db.add(chapter)
+            saving_db.commit()
+
+            with self.assertRaises(ChapterDraftOutlineConflict) as raised:
+                store_chapter_draft(
+                    project_id=project_id,
+                    title="第一章 潮汐",
+                    outline_node_id=outline_id,
+                    content="不应再变成待保存草稿的迟到结果。",
+                    db=generating_db,
+                )
+
+            self.assertEqual(str(raised.exception.chapter.id), str(chapter.id))
+            self.assertEqual(
+                generating_db.query(ChapterDraft).filter(
+                    ChapterDraft.project_id == project_id,
+                ).count(),
+                0,
+            )
+        finally:
+            saving_db.close()
+            generating_db.close()
+
+    def test_pending_restore_releases_legacy_draft_for_a_used_outline(self):
+        project_id = self.create_project("Legacy stale draft")
+        outline_id = self.create_outline(project_id, "第一章 归港")
+        db = SessionLocal()
+        try:
+            db.add(Chapter(
+                project_id=project_id,
+                title="第一章 归港",
+                outline_node_id=outline_id,
+                content="船已经归港，正文也已正式保存。",
+                word_count=15,
+                sort_order=1000,
+                cataloging_required=False,
+            ))
+            draft = ChapterDraft(
+                project_id=project_id,
+                title="迟到草稿",
+                outline_node_id=outline_id,
+                content="这是升级前留下的无效待保存草稿。",
+                status="pending",
+            )
+            db.add(draft)
+            db.commit()
+            draft_id = str(draft.id)
+        finally:
+            db.close()
+
+        restored = self.client.get(f"{API_PREFIX}/projects/{project_id}/chapter-drafts/pending")
+
+        self.assertEqual(restored.status_code, 200)
+        self.assertIsNone(restored.json()["data"])
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.get(ChapterDraft, draft_id).status, "superseded")
+        finally:
+            db.close()
+
     def test_generated_draft_cannot_be_saved_through_chapter_update(self):
         project_id = self.create_project("PUT draft guard")
         outline_id = self.create_outline(project_id, "第一章 原文")
@@ -659,13 +782,18 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+        self.assertIn("迟到草稿已释放", response.json()["message"])
         db = SessionLocal()
         try:
             self.assertEqual(db.query(Chapter).count(), 1)
             self.assertEqual(db.get(Chapter, chapter_id).content, "这是已经保存的第一章。")
-            self.assertEqual(db.get(ChapterDraft, draft_id).status, "pending")
+            self.assertEqual(db.get(ChapterDraft, draft_id).status, "superseded")
         finally:
             db.close()
+
+        restored = self.client.get(f"{API_PREFIX}/projects/{project_id}/chapter-drafts/pending")
+        self.assertEqual(restored.status_code, 200)
+        self.assertIsNone(restored.json()["data"])
 
     @patch("app.routers.chapters.preview_de_ai_revision", new_callable=AsyncMock)
     @patch("app.routers.chapters.preview_chapter_quality", new_callable=AsyncMock)

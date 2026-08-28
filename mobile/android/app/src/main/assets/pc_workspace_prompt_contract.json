@@ -1488,7 +1488,7 @@
     }
   },
   "creation_agent": {
-    "system_template": "你是司命的对话式立项助手。当前 creation session_id={{session_id}}。\n所有立项资料必须通过工具读取和修改。可按任意顺序工作；软依赖缺失时说明影响但不阻断。\n每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。立项资料通常使用 creation_data，生成、确认、版本、导入或正式建书通常使用 creation_flow。\n结合快照和最新消息按语义选择工具，不使用关键词或固定流程。\n用户给出明确的新事实、偏好或简短回答时，立即增量写入，再基于现有缺口提一个最有价值的问题；不得积攒到采访结束，也不得只读取后声称保存。\n每条用户消息最多完成一次成功的写工具调用；一次原子写入可以包含用户对同一个目标明确给出的全部事实。写入成功后立即停止本轮的确认、生成和下游推进，简要报告结果并只提一个问题，等待作者下一条消息后才能继续写。\n“继续”“下一步”等简短回复只能由你结合最新消息和真实快照判断当前一个待处理动作，不能据此连续确认多个阶段或自动生成后续阶段。confirm_creation_artifact 仅在最新用户消息确实表达了对当前版本的确认时使用；不得确认本轮刚生成或刚修改的内容。\n写入参数失败时可根据真实错误修正，但最多尝试三次；达到上限后如实说明错误并结束，不得循环重试。\n用户可随时跳到任意资料。新增对象时将完整要求放入 instruction，数量服从用户语义。\n局部请求优先使用 entity 工具或带 entity_type/entity_id 的生成工具，不要重写整个 artifact。\n写入必须使用刚读取到的 revision；不得改动锁定字段，不得用旧结果覆盖人工新修改。\n只有用户明确要求创建正式作品时才调用 finalize_creation_session。成功后请用户通过界面按钮进入正式作品，并说明项目助手会自动展开，不再邀请其在立项会话写正文。\n工具返回 running 表示任务已可靠创建，不要重复调用。最后简洁说明实际读取、修改或启动的内容及影响。",
+    "system_template": "你是司命的对话式立项助手。当前 creation session_id={{session_id}}。\n所有立项资料必须通过工具读取和修改。可按任意顺序工作；软依赖缺失时说明影响但不阻断。\n每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。立项资料通常使用 creation_data，生成、确认、版本、导入或正式建书通常使用 creation_flow。\n快照只是 revision、状态、锁和数据规模索引，不包含阶段正文；不得把省略内容当成空值或自行补写。以最新用户消息决定查询目标：先读取目标 artifact；角色、关系、地点、势力、分卷、章节或场景先用 list_creation_entities 的 artifact/entity_type/query/limit 召回摘要，再对候选 ID 调用 get_creation_entity 复核精确事实。\n读取结果必须先返回给你，再由下一模型步骤决定写工具；不得在同一个模型步骤并列发出读取和写入。不要用对话历史中的旧工具结果代替本轮数据库读取。\n用户给出明确的新事实、偏好或简短回答时，立即增量写入，再基于现有缺口提一个最有价值的问题；不得积攒到采访结束，也不得只读取后声称保存。\n每条用户消息最多完成一次成功的写工具调用；一次原子写入可以包含用户对同一个目标明确给出的全部事实。写入成功后立即停止本轮的确认、生成和下游推进，简要报告结果并只提一个问题，等待作者下一条消息后才能继续写。\n“继续”“下一步”等简短回复只能由你结合最新消息和真实快照判断当前一个待处理动作，不能据此连续确认多个阶段或自动生成后续阶段。confirm_creation_artifact 仅在最新用户消息确实表达了对当前版本的确认时使用；不得确认本轮刚生成或刚修改的内容。\n写入参数失败时可根据真实错误修正，但最多尝试三次；达到上限后如实说明错误并结束，不得循环重试。\n用户可随时跳到任意资料。新增对象时将完整要求放入 instruction，数量服从用户语义。\n局部请求必须优先使用 entity 工具或带 entity_type/entity_id 的生成工具，不要重写整个 artifact。调用模型生成工具时，用 context_entity_ids/context_artifacts 明确传入你刚检索并复核的依据；未检索的对象不会自动全量注入。\n写入必须使用刚读取到的 revision；不得改动锁定字段，不得用旧结果覆盖人工新修改。\n只有用户明确要求创建正式作品时才调用 finalize_creation_session。成功后请用户通过界面按钮进入正式作品，并说明项目助手会自动展开，不再邀请其在立项会话写正文。\n工具返回 running 表示任务已可靠创建，不要重复调用。最后简洁说明实际读取、修改或启动的内容及影响。",
     "tool_names": [
       "apply_creation_import",
       "cancel_creation_operation",
@@ -1601,7 +1601,7 @@
         "type": "function",
         "function": {
           "name": "get_creation_session",
-          "description": "Read the canonical creation session, including its scope, revision, workflow states, and provenance.",
+          "description": "Read the bounded creation-session overview and artifact index. Detailed artifact and entity bodies are intentionally omitted.",
           "parameters": {
             "additionalProperties": true,
             "properties": {
@@ -1622,7 +1622,7 @@
         "type": "function",
         "function": {
           "name": "get_creation_snapshot",
-          "description": "Read a compact immutable snapshot containing the current revision, author brief, constraints, artifact data, statuses, and locked paths. Runtime history is intentionally omitted.",
+          "description": "Read a bounded immutable index containing revision, workflow states, locks/counts, and data shapes. Use exact artifact/entity reads for facts; stage bodies are intentionally omitted.",
           "parameters": {
             "additionalProperties": true,
             "properties": {
@@ -1693,7 +1693,7 @@
         "type": "function",
         "function": {
           "name": "list_creation_artifacts",
-          "description": "List all structured artifacts in a creation session with their current workflow state.",
+          "description": "List bounded metadata and data shapes for every artifact; does not return stage bodies.",
           "parameters": {
             "additionalProperties": true,
             "properties": {
@@ -2041,7 +2041,7 @@
         "type": "function",
         "function": {
           "name": "list_creation_entities",
-          "description": "List independently addressable characters, relationships, locations, factions, volumes, chapters, and scenes in a creation session.",
+          "description": "Search a fenced, paginated summary index of characters, relationships, locations, factions, volumes, chapters, and scenes. Fetch exact candidates by entity ID before writing.",
           "parameters": {
             "additionalProperties": true,
             "properties": {
@@ -2063,6 +2063,24 @@
                 "default": false,
                 "title": "Include Deleted",
                 "type": "boolean"
+              },
+              "query": {
+                "default": "",
+                "title": "Query",
+                "type": "string"
+              },
+              "offset": {
+                "default": 0,
+                "minimum": 0,
+                "title": "Offset",
+                "type": "integer"
+              },
+              "limit": {
+                "default": 20,
+                "maximum": 50,
+                "minimum": 1,
+                "title": "Limit",
+                "type": "integer"
               }
             },
             "required": [
@@ -2374,6 +2392,22 @@
                 "title": "Use Model",
                 "type": "boolean"
               },
+              "context_entity_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 24,
+                "title": "Context Entity Ids",
+                "type": "array"
+              },
+              "context_artifacts": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 6,
+                "title": "Context Artifacts",
+                "type": "array"
+              },
               "expected_revision": {
                 "title": "Expected Revision",
                 "type": "integer"
@@ -2426,6 +2460,22 @@
                 "title": "Use Model",
                 "type": "boolean"
               },
+              "context_entity_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 24,
+                "title": "Context Entity Ids",
+                "type": "array"
+              },
+              "context_artifacts": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 6,
+                "title": "Context Artifacts",
+                "type": "array"
+              },
               "expected_revision": {
                 "title": "Expected Revision",
                 "type": "integer"
@@ -2477,6 +2527,22 @@
                 "default": true,
                 "title": "Use Model",
                 "type": "boolean"
+              },
+              "context_entity_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 24,
+                "title": "Context Entity Ids",
+                "type": "array"
+              },
+              "context_artifacts": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 6,
+                "title": "Context Artifacts",
+                "type": "array"
               },
               "expected_revision": {
                 "title": "Expected Revision",
@@ -3300,8 +3366,8 @@
       "final_review": []
     },
     "stage_system_template": "你是司命的新书立项编辑。任务：{{task_kind}}。\n\n- 只处理本轮范围，不创建正式作品、不写文件；未经作者本轮明确要求，不得改写作者输入、已确认事实或锁定字段。\n- 只输出可编辑、字段完整的 JSON，不要 Markdown 或解释。\n- 创意方向返回本轮真正需要的可持续调整方案，不为凑数量生成相似方案；阶段任务只返回当前阶段。\n- 生成开篇细纲时，前 3 章每章包含章节点和 2-6 个 section；保留世界观、关系与角色写作锁结构。\n\n本轮范围：{{task_rules}}",
-    "stage_task_rules": "只深化当前阶段的 baseline，顶层只返回 data 字段；未经本轮明确调整要求，保留作者原文、锁定要求、已确认事实和专名，不提前生成下游阶段。明确调整只作用于当前阶段；没有明确授权时不得改动其他内容。如果 entity_target 存在，只生成或修改其中指定类型的对象，其他对象必须保持原样；新增数量必须根据作者本次调整要求判断，作者未给固定数字时按语义生成最合适的少量对象。",
-    "stage_user_prefix": "当前阶段：{stage_label}\n结构契约：{stage_contract}\n请在保留作者约束和已确认事实的前提下，深化 baseline；不要改变已经确认的专名。\n",
+    "stage_task_rules": "只深化当前阶段的 baseline，顶层只返回 data 字段；baseline 之外的项目事实视为未知，不得自行补成剧情。未经本轮明确调整要求，保留作者原文、锁定要求、已确认事实和专名，不提前生成下游阶段。明确调整只作用于当前阶段；没有明确授权时不得改动其他内容。如果 entity_target 存在，只返回其中指定类型的目标对象；未出现在 baseline 的其他对象由运行时原样保留，不得在输出中重建；新增数量必须根据作者本次调整要求判断，作者未给固定数字时按语义生成最合适的少量对象。",
+    "stage_user_prefix": "当前阶段：{stage_label}\n结构契约：{stage_contract}\n请只依据下方显式证据深化 baseline；不要改变已经确认的专名，也不要猜测未提供的项目事实。\n",
     "repair_system_prompt": "你是司命的阶段结构修复器。只修复 JSON 语法和结构契约，不改写作者事实、专名、已确认内容或创作方向。只输出一个 JSON 对象，不要解释。",
     "repair_user_template": "结构契约：{contract}\n校验错误：{error}\n请把下面的模型原始输出修复为合法结构；无法确定的内容保持原样，不要另写故事。\n原始输出：{raw}",
     "stage_contracts": {
@@ -4840,5 +4906,5 @@
       }
     }
   },
-  "source_sha256": "6fb8e88f20fd60e25ab64a188e04986c284a24637f5ba2219cfd9c40835c4b6b"
+  "source_sha256": "59b33ee49210fbf7b2ef0f62e9059fa469adef5e02724d51f9cf0dece18dda98"
 }

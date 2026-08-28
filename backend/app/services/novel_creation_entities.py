@@ -1,15 +1,16 @@
 """Entity projection and entity-level edits for structured creation data."""
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.database.models_support import generate_uuid
 from app.modules.creation.infrastructure.models import NovelCreationEntity, NovelCreationSession
-
 
 ENTITY_COLLECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "world_style": (("worldbuilding", "worldbuilding"),),
@@ -101,6 +102,144 @@ def serialize_creation_entity(entity: NovelCreationEntity) -> dict[str, Any]:
         "created_at": entity.created_at.isoformat() if entity.created_at else None,
         "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
         "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
+    }
+
+
+def _entity_label(entity: NovelCreationEntity) -> str:
+    data = entity.data_json if isinstance(entity.data_json, dict) else {}
+    for field in ("name", "title"):
+        value = _text(data.get(field))
+        if value:
+            return value[:160]
+    source = _text(
+        data.get("source_title")
+        or data.get("character_a")
+        or data.get("source")
+    )
+    target = _text(
+        data.get("target_title")
+        or data.get("character_b")
+        or data.get("target")
+    )
+    if source or target:
+        return f"{source} → {target}"[:160]
+    return _text(entity.entity_key)[:160]
+
+
+def _entity_excerpt(entity: NovelCreationEntity) -> str:
+    data = entity.data_json if isinstance(entity.data_json, dict) else {}
+    values: list[str] = []
+    for field in (
+        "summary", "description", "content", "goal", "current_goal",
+        "identity", "role_type", "relation_type", "dimension",
+    ):
+        value = _text(data.get(field))
+        if value and value not in values:
+            values.append(value)
+    return "；".join(values)[:320]
+
+
+def serialize_creation_entity_summary(
+    entity: NovelCreationEntity,
+    *,
+    match_score: int | None = None,
+) -> dict[str, Any]:
+    """Return a bounded index row; exact entity data stays behind the get tool."""
+
+    payload = {
+        "id": entity.id,
+        "artifact": entity.artifact_key,
+        "entity_type": entity.entity_type,
+        "entity_key": entity.entity_key,
+        "label": _entity_label(entity),
+        "excerpt": _entity_excerpt(entity),
+        "position": int(entity.position or 0),
+        "status": entity.status,
+        "revision": int(entity.revision or 0),
+        "source": entity.source,
+        "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
+    }
+    if match_score is not None:
+        payload["match_score"] = match_score
+    return payload
+
+
+def _entity_search_score(entity: NovelCreationEntity, query: str) -> int:
+    """Rank an author/model supplied query without inferring task intent."""
+
+    needle = _text(query).casefold()
+    if not needle:
+        return 0
+    data = entity.data_json if isinstance(entity.data_json, dict) else {}
+    label = _entity_label(entity).casefold()
+    key = _text(entity.entity_key).casefold()
+    haystack = " ".join((
+        label,
+        key,
+        _text(entity.entity_type).casefold(),
+        json.dumps(data, ensure_ascii=False, sort_keys=True, default=str).casefold(),
+    ))
+    if needle in (label, key):
+        return 100
+    if needle in label or needle in key:
+        return 90
+    if needle in haystack:
+        return 70
+    terms = [term for term in needle.split() if term]
+    matches = sum(1 for term in terms if term in haystack)
+    if not matches:
+        return -1
+    return min(60, 20 + matches * 10)
+
+
+def query_creation_entities(
+    session: NovelCreationSession,
+    *,
+    artifact: str | None = None,
+    entity_type: str | None = None,
+    include_deleted: bool = False,
+    query: str = "",
+    offset: int = 0,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Fence, rank and paginate entity summaries for model-controlled retrieval."""
+
+    ensure_creation_entities(session)
+    rows = [
+        item
+        for item in session.entities
+        if (not artifact or item.artifact_key == artifact)
+        and (not entity_type or item.entity_type == entity_type)
+        and (include_deleted or item.status != "deleted")
+    ]
+    needle = _text(query)
+    ranked: list[tuple[int, NovelCreationEntity]] = []
+    for item in rows:
+        score = _entity_search_score(item, needle)
+        if needle and score < 0:
+            continue
+        ranked.append((score, item))
+    ranked.sort(key=lambda pair: (
+        -pair[0] if needle else 0,
+        pair[1].artifact_key,
+        int(pair[1].position or 0),
+        pair[1].entity_key,
+    ))
+    total = len(ranked)
+    safe_offset = max(0, int(offset or 0))
+    safe_limit = max(1, min(int(limit or 20), 50))
+    selected = ranked[safe_offset:safe_offset + safe_limit]
+    return {
+        "entities": [
+            serialize_creation_entity_summary(item, match_score=score if needle else None)
+            for score, item in selected
+        ],
+        "query": needle,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "total": total,
+        "has_more": safe_offset + len(selected) < total,
+        "next_offset": safe_offset + len(selected) if safe_offset + len(selected) < total else None,
     }
 
 
@@ -315,6 +454,8 @@ __all__ = [
     "get_creation_entity",
     "list_creation_entities",
     "patch_creation_entity",
+    "query_creation_entities",
     "serialize_creation_entity",
+    "serialize_creation_entity_summary",
     "sync_creation_entities",
 ]

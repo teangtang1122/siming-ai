@@ -28,9 +28,11 @@ COMPACT_CONCEPT_SHAPE: dict[str, Any] = {
 
 CREATION_STAGE_TASK_RULES = (
     "只深化当前阶段的 baseline，顶层只返回 data 字段；"
+    "baseline 之外的项目事实视为未知，不得自行补成剧情。"
     "未经本轮明确调整要求，保留作者原文、锁定要求、已确认事实和专名，不提前生成下游阶段。"
     "明确调整只作用于当前阶段；没有明确授权时不得改动其他内容。"
-    "如果 entity_target 存在，只生成或修改其中指定类型的对象，其他对象必须保持原样；"
+    "如果 entity_target 存在，只返回其中指定类型的目标对象；"
+    "未出现在 baseline 的其他对象由运行时原样保留，不得在输出中重建；"
     "新增数量必须根据作者本次调整要求判断，作者未给固定数字时按语义生成最合适的少量对象。"
 )
 
@@ -62,7 +64,7 @@ CONCEPT_USER_INTROS = {
 CREATION_STAGE_USER_PREFIX = (
     "当前阶段：{stage_label}\n"
     "结构契约：{stage_contract}\n"
-    "请在保留作者约束和已确认事实的前提下，深化 baseline；不要改变已经确认的专名。\n"
+    "请只依据下方显式证据深化 baseline；不要改变已经确认的专名，也不要猜测未提供的项目事实。\n"
 )
 
 CREATION_REPAIR_SYSTEM_PROMPT = (

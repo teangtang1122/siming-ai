@@ -1,6 +1,6 @@
 /* Message list rendering for the assistant chat. */
 import { useState } from 'react'
-import { Button, Dropdown, Empty, Space, Tag, Typography } from 'antd'
+import { Button, Dropdown, Empty, Space, Tag, Typography, message } from 'antd'
 import { DatabaseOutlined, DownOutlined, SaveOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { ChapterVersionPanel } from '../ChapterVersionPanel'
@@ -71,24 +71,36 @@ function ChapterDraftSaveActions({
   const [savingMode, setSavingMode] = useState<'save_only' | 'save_and_catalog' | null>(null)
   const draftId = String(action.data?.draft_id || '')
   const saved = activeDraftId === draftId && activeDraftStatus === 'saved'
+  const superseded = activeDraftId === draftId && activeDraftStatus === 'superseded'
+  const replaced = Boolean(activeDraftId && activeDraftId !== draftId)
   const save = async (mode: 'save_only' | 'save_and_catalog') => {
+    if (savingMode) return
     setSavingMode(mode)
     try {
       await onSave(action, mode)
+    } catch (error: any) {
+      message.error(
+        error?.response?.data?.detail
+        || error?.message
+        || '保存章节草稿失败，请重试',
+      )
     } finally {
       setSavingMode(null)
     }
   }
   if (saved) return <Tag color="green">草稿已保存</Tag>
+  if (superseded) return <Tag>迟到草稿已释放</Tag>
+  if (replaced) return <Tag>已被当前草稿替代</Tag>
   return (
     <Dropdown.Button
       type="primary"
       size="small"
       icon={<SaveOutlined />}
-      loading={savingMode === 'save_and_catalog'}
+      loading={savingMode !== null}
+      disabled={savingMode !== null}
       onClick={() => void save('save_and_catalog')}
       menu={{
-        items: [{ key: 'save_only', label: '仅保存' }],
+        items: [{ key: 'save_only', label: '仅保存', disabled: savingMode !== null }],
         onClick: ({ key }) => {
           if (key === 'save_only') void save('save_only')
         },

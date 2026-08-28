@@ -12,7 +12,7 @@ class MobileProjectToolsTest {
         val first = entity("p|chapter|1", "chapter", "1", "{\"title\":\"第一章\",\"content\":\"正文一\"}")
         val second = entity("p|chapter|2", "chapter", "2", "{\"title\":\"第二章\",\"content\":\"正文二\"}")
         val file = buildLocalNovelExport(project, listOf(first, second))
-        val text = file.bytes.toString(Charsets.UTF_8)
+        val text = requireNotNull(file.bytes).toString(Charsets.UTF_8)
         assertEquals("测试_小说.txt", file.filename)
         assertTrue(text.indexOf("第一章") < text.indexOf("第二章"))
         assertTrue(text.contains("正文一"))

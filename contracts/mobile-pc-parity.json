@@ -48,7 +48,8 @@
         "catalogingStream": "chapter.cataloging",
         "catalogingCancel": "chapter.cataloging",
         "projectExport": "authoring.export",
-        "projectExportDownload": "authoring.export"
+        "projectExportDownload": "authoring.export",
+        "projectPackageExport": "authoring.exchange_package"
       },
       "ignore_symbols": {
         "authoringCollection": "Generic route factory; individual authoring capabilities own the semantic decision.",
@@ -410,7 +411,7 @@
     {
       "id": "authoring.document_import",
       "area": "authoring",
-      "summary": "小说 TXT / DOCX 批量导入与章节拆分",
+      "summary": "小说 TXT / Markdown / DOCX 批量导入与章节拆分",
       "status": "partial",
       "authority": {
         "type": "pc_http",
@@ -422,7 +423,7 @@
           },
           {
             "path": "backend/app/services/import_service.py",
-            "contains": "SUPPORTED_IMPORT_EXTENSIONS = {\"txt\", \"docx\"}"
+            "contains": "SUPPORTED_IMPORT_EXTENSIONS = {\"txt\", \"md\", \"docx\"}"
           }
         ]
       },
@@ -455,7 +456,7 @@
               "contains": "NovelFileDecoder.decode(file.filename, file.bytes)"
             }
           ],
-          "notes": "本机直接解析 TXT / DOCX，TXT 与 PC 共用多编码回归样本且严格拒绝替换字符；作品和章节在同一本地事务中写入后进入 outbox。"
+          "notes": "本机直接解析 TXT / Markdown / DOCX，文本与 PC 共用多编码回归样本且严格拒绝替换字符；Markdown 标题只参与章节边界识别，作品和章节在同一本地事务中写入后进入 outbox。"
         },
         "android_standalone": {
           "support": "local_cache",
@@ -465,7 +466,7 @@
               "contains": "suspend fun importNovel("
             }
           ],
-          "notes": "手机独立模式可直接导入与 PC 相同的 TXT / DOCX，不要求 PC 正在运行。"
+          "notes": "手机独立模式可直接导入与 PC 相同的 TXT / Markdown / DOCX，不要求 PC 正在运行。"
         }
       },
       "side_effects": [
@@ -486,13 +487,106 @@
           "contains": "decodesDocxDocumentParagraphsAndIgnoresTableCellParagraphsLikePc"
         },
         {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/NovelImportTest.kt",
+          "contains": "splitsMarkdownHeadingsWithoutKeepingHeadingMarkersInTitles"
+        },
+        {
           "path": "backend/tests/test_importer.py",
           "contains": "test_shared_android_encoding_fixtures_match_pc_decoder"
         }
       ],
       "known_gaps": [
-        "离线和手机独立导入先在本地事务中建档，再经 outbox 回放，不会生成 PC 单次导入接口的服务端操作审计记录；TXT / DOCX 输入格式和 TXT 编码结果已对齐。"
+        "离线和手机独立导入先在本地事务中建档，再经 outbox 回放，不会生成 PC 单次导入接口的服务端操作审计记录；TXT / Markdown / DOCX 输入格式和文本编码结果已对齐。"
       ]
+    },
+    {
+      "id": "authoring.exchange_package",
+      "area": "authoring",
+      "summary": "司命项目包完整/结构档位的流式导入导出",
+      "status": "aligned",
+      "authority": {
+        "type": "pc_http",
+        "entrypoint": "/api/v1/projects/project-package/import",
+        "source_refs": [
+          {
+            "path": "backend/app/routers/project_package.py",
+            "contains": "@router.post(\"/projects/project-package/import\")"
+          },
+          {
+            "path": "backend/app/services/project_package_contract.py",
+            "contains": "PACKAGE_FORMAT = \"siming-project-package\""
+          }
+        ]
+      },
+      "modes": {
+        "pc": {
+          "support": "canonical"
+        },
+        "android_online": {
+          "support": "canonical_proxy",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun importProjectPackage("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun downloadProjectPackage("
+            }
+          ]
+        },
+        "android_offline": {
+          "support": "local_cache",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/ProjectPackage.kt",
+              "contains": "internal class MobileProjectPackageValidator"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/local/Entities.kt",
+              "contains": "data class StoredProjectPackage("
+            }
+          ],
+          "notes": "先流式落盘并完成协议校验，再恢复可编辑副本；完整原包、请求键和暂不展示的合法集合持续保留，联网后先上传项目包再回放普通 outbox。"
+        },
+        "android_standalone": {
+          "support": "local_cache",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/ProjectPackage.kt",
+              "contains": "fun rewriteImported("
+            }
+          ],
+          "notes": "可从保留的完整原包叠加本机最新作者资料并生成相同 v1 格式；暂不展示的集合和素材不会丢失，也不会启动 Agent、建档或自动任务。"
+        }
+      },
+      "side_effects": [
+        "content_sync",
+        "deterministic_index_rebuild"
+      ],
+      "idempotency": {
+        "required": true,
+        "strategy": "request_key"
+      },
+      "tests": [
+        {
+          "path": "backend/tests/test_project_package.py",
+          "contains": "test_real_fastapi_routes_stream_export_and_idempotently_import"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/ProjectPackageTest.kt",
+          "contains": "validatesStructurePackageAndUsesBackendCompatibleUuidV5"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/ProjectPackageTest.kt",
+          "contains": "localWriterKeepsDraftsInFullAndRemovesAllBodySentinelsFromStructure"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/ProjectPackageTest.kt",
+          "contains": "importedFullPackageRestoresDraftReplicaAndRewriteOverlaysEdits"
+        }
+      ],
+      "known_gaps": []
     },
     {
       "id": "authoring.export",

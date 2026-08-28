@@ -116,7 +116,7 @@ from app.modules.story.infrastructure.entities import (
     WorldbuildingEntry,
     WorldbuildingRelation,
 )
-from app.modules.story.infrastructure.models import ContentSyncJob
+from app.modules.story.infrastructure.models import ContentSyncJob, ProjectPackageImportReceipt
 
 __all__ = [
     "Project",
@@ -198,6 +198,7 @@ __all__ = [
     "OperationEvent",
     "OperationRun",
     "ContentSyncJob",
+    "ProjectPackageImportReceipt",
     "GatewayIdentity",
     "GatewayDevice",
     "GatewayPairingSession",

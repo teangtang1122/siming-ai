@@ -215,7 +215,7 @@ function ImportPage({ projectId }: ImportPageProps) {
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           <Space wrap>
             <Upload
-              accept=".txt,.docx"
+              accept=".txt,.md,.docx"
               showUploadList={false}
               customRequest={({ file, onSuccess }: any) => {
                 handleUpload({ file })
@@ -223,10 +223,10 @@ function ImportPage({ projectId }: ImportPageProps) {
               }}
             >
               <Button icon={<UploadOutlined />} loading={uploading} size="large">
-                上传 TXT / DOCX 文件
+                上传 TXT / Markdown / DOCX 文件
               </Button>
             </Upload>
-            <Text type="secondary">支持 UTF-8 编码的 .txt 文件和 .docx 文件，最大 10MB</Text>
+            <Text type="secondary">支持 .txt、.md 和 .docx 文件，最大 10MB；Markdown 标题可用于章节识别</Text>
           </Space>
 
           <Divider plain>或直接粘贴文本</Divider>

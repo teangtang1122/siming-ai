@@ -9,6 +9,7 @@ import com.siming.mobile.data.AssistantModelRoute
 import com.siming.mobile.data.MobileCatalogingProgress
 import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.MobileNovelImportFile
+import com.siming.mobile.data.MobileProjectPackageFile
 import com.siming.mobile.data.MobilePendingChapterDraft
 import com.siming.mobile.data.MobileAssistantConversation
 import com.siming.mobile.data.MobileAssistantMessage
@@ -521,6 +522,24 @@ fun prepareExport(
     }
 }
 
+fun prepareProjectPackageExport(
+    projectId: String,
+    profile: String,
+    onReady: (MobileExportFile) -> Unit,
+) {
+    viewModelScope.launch {
+        uiState.value = uiState.value.copy(exportRunning = true, error = null)
+        try {
+            val file = repository.exportProjectPackage(projectId, profile)
+            uiState.value = uiState.value.copy(exportRunning = false)
+            onReady(file)
+        } catch (error: Exception) {
+            uiState.value = uiState.value.copy(exportRunning = false)
+            showError(error)
+        }
+    }
+}
+
 private fun updateCatalogingProgress(
     projectId: String,
     progress: MobileCatalogingProgress,
@@ -666,6 +685,34 @@ private fun updateCatalogingProgress(
                 )
                 if (refreshWarning == null) onCreated(result.projectId)
             } catch (error: Exception) {
+                showError(error)
+            }
+        }
+    }
+
+    fun importProjectPackage(file: MobileProjectPackageFile, onCreated: (String) -> Unit) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                busy = true,
+                activity = "正在流式校验司命项目包…",
+                error = null,
+            )
+            try {
+                val result = repository.importProjectPackage(file) { activity ->
+                    uiState.value = uiState.value.copy(activity = activity)
+                }
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    notice = if (result.remote) {
+                        "已通过 Gateway 导入${if (result.profile == "full") "完整" else "结构"}项目包：${result.projectTitle}"
+                    } else {
+                        "项目包已安全导入手机并排队同步：${result.projectTitle}"
+                    },
+                )
+                onCreated(result.projectId)
+            } catch (error: Exception) {
+                file.file.delete()
                 uiState.value = uiState.value.copy(busy = false, activity = "")
                 showError(error)
             }
@@ -939,7 +986,18 @@ private fun updateCatalogingProgress(
                 )
                 onSaved(chapterId)
             } catch (error: Exception) {
-                uiState.value = uiState.value.copy(busy = false, activity = "")
+                val reconciledDraft = runCatching {
+                    repository.pendingChapterDraft(draft.projectId)
+                }
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingChapterDraft = if (reconciledDraft.isSuccess) {
+                        reconciledDraft.getOrNull()
+                    } else {
+                        uiState.value.pendingChapterDraft
+                    },
+                )
                 showError(error)
             }
         }

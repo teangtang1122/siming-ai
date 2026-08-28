@@ -1,0 +1,21 @@
+{
+  "format": "siming-project-package",
+  "format_version": 1,
+  "uuid_namespace": "8a746db1-9153-5a74-977c-4ad4dc1f6cb7",
+  "idempotency_key": "11111111-1111-1111-1111-111111111111",
+  "source_project_id": "source-project",
+  "expected_project_id": "412214c5-d29d-554d-9cea-60ef6e125cb4",
+  "structure_paths": [
+    "data/project.jsonl",
+    "data/creation_sessions.jsonl",
+    "data/creation_entities.jsonl",
+    "data/outline_nodes.jsonl",
+    "data/characters.jsonl",
+    "data/character_ai_configs.jsonl",
+    "data/character_aliases.jsonl",
+    "data/character_relationships.jsonl",
+    "data/worldbuilding_entries.jsonl",
+    "data/worldbuilding_relations.jsonl",
+    "data/outline_characters.jsonl"
+  ]
+}

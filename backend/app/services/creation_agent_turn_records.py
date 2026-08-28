@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.architecture.tool_categories import TOOL_CATEGORY_CONTROLLER
-
 CREATION_AGENT_TURN_SCHEMA = "creation_agent_turn.v1"
 _MAX_REPLAY_TURNS = 6
 
@@ -150,25 +148,19 @@ def _validated_turn_messages(value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _without_control_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    controller_ids: set[str] = set()
-    filtered: list[dict[str, Any]] = []
-    for message in messages:
-        if message.get("role") == "assistant" and isinstance(message.get("tool_calls"), list):
-            retained_calls: list[dict[str, Any]] = []
-            for call in message["tool_calls"]:
-                function = call.get("function") if isinstance(call, dict) else None
-                if isinstance(function, dict) and function.get("name") == TOOL_CATEGORY_CONTROLLER:
-                    controller_ids.add(str(call.get("id") or ""))
-                else:
-                    retained_calls.append(call)
-            if retained_calls:
-                filtered.append({**message, "tool_calls": retained_calls})
-            continue
-        if message.get("role") == "tool" and str(message.get("tool_call_id") or "") in controller_ids:
-            continue
-        filtered.append(message)
-    return filtered
+def _conversation_projection(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Replay only human-visible conversation; live data must be read again."""
+
+    if len(messages) < 2:
+        return []
+    first = messages[0]
+    final = messages[-1]
+    if first.get("role") != "user" or final.get("role") != "assistant":
+        return []
+    return [
+        {"role": "user", "content": str(first.get("content") or "")[:20_000]},
+        {"role": "assistant", "content": str(final.get("content") or "")[:8_000]},
+    ]
 
 
 def creation_agent_replay_messages(
@@ -198,7 +190,7 @@ def creation_agent_replay_messages(
             continue
         validated = _validated_turn_messages(trace.get("messages"))
         if validated:
-            replayable = _validated_turn_messages(_without_control_rounds(validated))
+            replayable = _conversation_projection(validated)
             if replayable:
                 turns.append(replayable)
     return [message for turn in turns[-_MAX_REPLAY_TURNS:] for message in turn]

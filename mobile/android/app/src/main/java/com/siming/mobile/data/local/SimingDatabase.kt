@@ -58,6 +58,12 @@ interface SimingDao {
     suspend fun projectSnapshot(projectId: String): List<ReplicaEntity>
 
     @Query(
+        "SELECT * FROM replica_entities WHERE projectId = :projectId " +
+            "ORDER BY localModifiedAt DESC",
+    )
+    suspend fun projectPackageSnapshot(projectId: String): List<ReplicaEntity>
+
+    @Query(
         "SELECT * FROM replica_entities WHERE projectId IN (:projectIds) " +
             "AND dirty = 1",
     )
@@ -118,10 +124,18 @@ interface SimingDao {
     @Query("DELETE FROM sync_outbox WHERE mutationId = :mutationId")
     suspend fun deleteMutation(mutationId: String)
 
-    @Query("SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')")
+    @Query(
+        "SELECT " +
+            "(SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')) + " +
+            "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading'))",
+    )
     fun observePendingCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')")
+    @Query(
+        "SELECT " +
+            "(SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')) + " +
+            "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading'))",
+    )
     suspend fun pendingMutationCount(): Int
 
     @Query("SELECT * FROM sync_cursor WHERE id = 1")
@@ -145,6 +159,24 @@ interface SimingDao {
     @Query("SELECT * FROM local_conflicts WHERE status = 'open'")
     suspend fun openConflictsSnapshot(): List<LocalConflict>
 
+    @Query("SELECT * FROM project_packages WHERE projectId = :projectId LIMIT 1")
+    suspend fun projectPackage(projectId: String): StoredProjectPackage?
+
+    @Query("SELECT * FROM project_packages WHERE idempotencyKey = :idempotencyKey LIMIT 1")
+    suspend fun projectPackageByKey(idempotencyKey: String): StoredProjectPackage?
+
+    @Query(
+        "SELECT * FROM project_packages WHERE syncState IN ('pending', 'uploading') " +
+            "ORDER BY createdAt, rowid",
+    )
+    suspend fun pendingProjectPackages(): List<StoredProjectPackage>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveProjectPackage(projectPackage: StoredProjectPackage)
+
+    @Query("DELETE FROM project_packages WHERE projectId = :projectId")
+    suspend fun deleteProjectPackage(projectId: String)
+
     @Query(
         "DELETE FROM sync_outbox WHERE projectId = :projectId AND entityType = :entityType " +
             "AND entityId = :entityId AND state = 'conflict'",
@@ -162,6 +194,9 @@ interface SimingDao {
 
     @Query("DELETE FROM local_conflicts")
     suspend fun clearConflicts()
+
+    @Query("DELETE FROM project_packages")
+    suspend fun clearProjectPackages()
 }
 
 @Database(
@@ -171,8 +206,9 @@ interface SimingDao {
         GatewayConnection::class,
         SyncCursor::class,
         LocalConflict::class,
+        StoredProjectPackage::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class SimingDatabase : RoomDatabase() {
@@ -187,7 +223,7 @@ abstract class SimingDatabase : RoomDatabase() {
                 SimingDatabase::class.java,
                 "siming-mobile.db",
             )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 .also { instance = it }
         }
@@ -197,6 +233,35 @@ abstract class SimingDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE gateway_connection " +
                         "ADD COLUMN gatewayEncryptionPublicKey TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `project_packages` (" +
+                        "`idempotencyKey` TEXT NOT NULL, " +
+                        "`packageId` TEXT NOT NULL, " +
+                        "`projectId` TEXT NOT NULL, " +
+                        "`originalFilename` TEXT NOT NULL, " +
+                        "`localFilePath` TEXT NOT NULL, " +
+                        "`packageSha256` TEXT NOT NULL, " +
+                        "`profile` TEXT NOT NULL, " +
+                        "`requestedTitle` TEXT, " +
+                        "`syncState` TEXT NOT NULL, " +
+                        "`lastError` TEXT, " +
+                        "`createdAt` INTEGER NOT NULL, " +
+                        "`uploadedAt` INTEGER, " +
+                        "PRIMARY KEY(`idempotencyKey`))",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_project_packages_projectId` " +
+                        "ON `project_packages` (`projectId`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_project_packages_syncState_createdAt` " +
+                        "ON `project_packages` (`syncState`, `createdAt`)",
                 )
             }
         }

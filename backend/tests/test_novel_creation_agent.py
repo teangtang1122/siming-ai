@@ -285,7 +285,10 @@ def test_creation_agent_endpoint_persists_and_replays_backend_owned_tool_history
     assert next(event for event in reattached_events if event["type"] == "complete")["data"]["reply"] == "已完成读取。"
     assert agent.await_count == 2
     assert agent.call_args_list[0].kwargs["replay_messages"] == []
-    assert agent.call_args_list[1].kwargs["replay_messages"] == first_messages
+    assert agent.call_args_list[1].kwargs["replay_messages"] == [
+        first_messages[0],
+        first_messages[-1],
+    ]
     detail = conversations.get(conversation_id)
     traces = [
         message["payload"]["creation_agent_turn"]
@@ -386,25 +389,27 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
         {
             "content": "",
             "usage": {"prompt_tokens": 220, "completion_tokens": 20, "total_tokens": 240},
-            "tool_calls": [
-                {
-                    "id": "call-read",
-                    "type": "function",
-                    "function": {"name": "get_creation_snapshot", "arguments": "{}"},
+            "tool_calls": [{
+                "id": "call-read",
+                "type": "function",
+                "function": {"name": "get_creation_snapshot", "arguments": "{}"},
+            }],
+        },
+        {
+            "content": "",
+            "usage": {"prompt_tokens": 180, "completion_tokens": 20, "total_tokens": 200},
+            "tool_calls": [{
+                "id": "call-generate",
+                "type": "function",
+                "function": {
+                    "name": "generate_creation_artifact",
+                    "arguments": json.dumps({
+                        "artifact": "world_style",
+                        "entity_type": "worldbuilding",
+                        "instruction": "新增用户描述的两条修炼规则",
+                    }, ensure_ascii=False),
                 },
-                {
-                    "id": "call-generate",
-                    "type": "function",
-                    "function": {
-                        "name": "generate_creation_artifact",
-                        "arguments": json.dumps({
-                            "artifact": "world_style",
-                            "entity_type": "worldbuilding",
-                            "instruction": "新增用户描述的两条修炼规则",
-                        }, ensure_ascii=False),
-                    },
-                },
-            ],
+            }],
         },
         {"content": "已读取当前设定，并开始新增修炼规则。", "tool_calls": []},
     ])
@@ -453,13 +458,14 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
     assert "generate_creation_artifact" in second_schema_names
     assert "patch_creation_entity" in second_schema_names
     assert [item["role"] for item in result["_turn_trace"]["messages"]] == [
-        "user", "assistant", "tool", "assistant", "tool", "tool", "assistant",
+        "user", "assistant", "tool", "assistant", "tool", "assistant", "tool", "assistant",
     ]
     metrics = result["_turn_trace"]["prompt_metrics"]
     assert metrics[0]["tool_count"] == 1
     assert metrics[0]["prompt_tokens"] == 100
     assert metrics[1]["prompt_tokens"] == 220
-    assert result["_turn_trace"]["outcome"]["prompt_tokens"] == 320
+    assert metrics[2]["prompt_tokens"] == 180
+    assert result["_turn_trace"]["outcome"]["prompt_tokens"] == 500
 
 
 def test_native_creation_agent_blocks_a_second_successful_write_in_one_user_turn():
@@ -475,6 +481,14 @@ def test_native_creation_agent_blocks_a_second_successful_write_in_one_user_turn
                     "name": "set_tool_categories",
                     "arguments": '{"enabled_categories":["creation_data"]}',
                 },
+            }],
+        },
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-read-before-write",
+                "type": "function",
+                "function": {"name": "get_creation_snapshot", "arguments": "{}"},
             }],
         },
         {
@@ -500,12 +514,19 @@ def test_native_creation_agent_blocks_a_second_successful_write_in_one_user_turn
         },
         {"content": "已记录本轮一个修改。下一步想先完善哪个角色？", "tool_calls": []},
     ])
-    executor = AsyncMock(return_value={
-        "tool": "patch_creation_session",
-        "status": "ok",
-        "detail": "立项会话已更新",
-        "data": {"revision": int(session.revision or 0) + 1},
-    })
+    executor = AsyncMock(side_effect=[
+        {
+            "tool": "get_creation_snapshot",
+            "status": "ok",
+            "data": {"revision": int(session.revision or 0)},
+        },
+        {
+            "tool": "patch_creation_session",
+            "status": "ok",
+            "detail": "立项会话已更新",
+            "data": {"revision": int(session.revision or 0) + 1},
+        },
+    ])
 
     with patch(
         "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
@@ -521,13 +542,153 @@ def test_native_creation_agent_blocks_a_second_successful_write_in_one_user_turn
             model="openai:test",
         ))
 
-    assert executor.await_count == 1
+    assert executor.await_count == 2
     assert result["write_count"] == 1
     blocked = next(item for item in result["tool_results"] if item["tool"] == "patch_creation_artifact")
     assert blocked["status"] == "denied"
     assert blocked["data"]["reason"] == "successful_write_limit"
-    assert completion.call_args_list[2].kwargs["tools"] == []
+    assert completion.call_args_list[3].kwargs["tools"] == []
     assert "下一步想先完善哪个角色" in result["reply"]
+
+
+def test_native_creation_agent_defers_same_step_write_until_read_result_is_seen():
+    db = _db()
+    session = _ready_session(db)
+    completion = _stream_completion([
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-categories",
+                "type": "function",
+                "function": {
+                    "name": "set_tool_categories",
+                    "arguments": '{"enabled_categories":["creation_data"]}',
+                },
+            }],
+        },
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-read",
+                    "type": "function",
+                    "function": {"name": "get_creation_snapshot", "arguments": "{}"},
+                },
+                {
+                    "id": "call-too-early-write",
+                    "type": "function",
+                    "function": {
+                        "name": "patch_creation_session",
+                        "arguments": '{"changes":{"genre":"玄幻"}}',
+                    },
+                },
+            ],
+        },
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-write-after-read",
+                "type": "function",
+                "function": {
+                    "name": "patch_creation_session",
+                    "arguments": '{"changes":{"genre":"玄幻"}}',
+                },
+            }],
+        },
+        {"content": "已在读取真实 revision 后保存类型。", "tool_calls": []},
+    ])
+    executor = AsyncMock(side_effect=[
+        {
+            "tool": "get_creation_snapshot",
+            "status": "ok",
+            "data": {"revision": int(session.revision or 0)},
+        },
+        {
+            "tool": "patch_creation_session",
+            "status": "ok",
+            "detail": "Creation session patched",
+            "data": {"revision": int(session.revision or 0) + 1},
+        },
+    ])
+
+    with patch(
+        "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
+        new=completion,
+    ), patch(
+        "app.services.creation_agent_execution.execute_workspace_action",
+        new=executor,
+    ):
+        result = asyncio.run(run_creation_agent(
+            db,
+            session=session,
+            message="改成玄幻",
+            model="openai:test",
+        ))
+
+    assert executor.await_count == 2
+    denied = next(
+        item for item in result["tool_results"]
+        if item["tool"] == "patch_creation_session" and item["status"] == "denied"
+    )
+    assert denied["data"]["reason"] == "read_required"
+    assert result["write_count"] == 1
+
+
+def test_native_tool_message_is_valid_json_when_exact_entity_is_oversized():
+    db = _db()
+    session = _ready_session(db)
+    completion = _stream_completion([
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-categories",
+                "type": "function",
+                "function": {
+                    "name": "set_tool_categories",
+                    "arguments": '{"enabled_categories":["creation_data"]}',
+                },
+            }],
+        },
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-entity",
+                "type": "function",
+                "function": {
+                    "name": "get_creation_entity",
+                    "arguments": '{"entity_id":"entity-1"}',
+                },
+            }],
+        },
+        {"content": "已读取目标实体。", "tool_calls": []},
+    ])
+    executor = AsyncMock(return_value={
+        "tool": "get_creation_entity",
+        "status": "ok",
+        "data": {"id": "entity-1", "data": {"notes": "长资料" * 100_000}},
+    })
+
+    with patch(
+        "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
+        new=completion,
+    ), patch(
+        "app.services.creation_agent_execution.execute_workspace_action",
+        new=executor,
+    ):
+        result = asyncio.run(run_creation_agent(
+            db,
+            session=session,
+            message="读取目标角色",
+            model="openai:test",
+        ))
+
+    tool_message = next(
+        item for item in result["_turn_trace"]["messages"]
+        if item["role"] == "tool" and item["tool_call_id"] == "call-entity"
+    )
+    parsed = json.loads(tool_message["content"])
+    assert parsed["status"] == "ok"
+    assert len(tool_message["content"]) < 90_000
 
 
 def test_creation_agent_rejects_native_text_before_category_selection():
@@ -553,7 +714,7 @@ def test_creation_agent_rejects_native_text_before_category_selection():
     assert completion.call_args.kwargs["tool_choice"] == "required"
 
 
-def test_creation_agent_replay_keeps_complete_tool_rounds_and_skips_invalid_turns():
+def test_creation_agent_replay_keeps_only_conversation_and_skips_invalid_turns():
     valid_messages = [
         {"role": "user", "content": "把门派名改为归墟宗"},
         {
@@ -608,10 +769,10 @@ def test_creation_agent_replay_keeps_complete_tool_rounds_and_skips_invalid_turn
 
     replay = creation_agent_replay_messages(conversation, session_id="session-1")
 
-    assert replay == valid_messages
+    assert replay == [valid_messages[0], valid_messages[-1]]
 
 
-def test_creation_agent_replay_atomically_removes_controller_call_and_result():
+def test_creation_agent_replay_removes_all_tool_protocol_messages():
     messages = [
         {"role": "user", "content": "修改主角"},
         {
@@ -658,8 +819,8 @@ def test_creation_agent_replay_atomically_removes_controller_call_and_result():
     wire = json.dumps(replay)
     assert "set_tool_categories" not in wire
     assert "call-categories" not in wire
-    assert "get_creation_snapshot" in wire
-    assert [message["role"] for message in replay] == ["user", "assistant", "tool", "assistant"]
+    assert "get_creation_snapshot" not in wire
+    assert [message["role"] for message in replay] == ["user", "assistant"]
 
 
 def test_creation_agent_rejects_non_creation_tools_even_if_model_requests_one():
@@ -719,18 +880,19 @@ def test_creation_agent_returns_a_deterministic_formal_project_handoff():
         },
         {
             "content": "",
-            "tool_calls": [
-                {
-                    "id": "call-read",
-                    "type": "function",
-                    "function": {"name": "get_creation_snapshot", "arguments": "{}"},
-                },
-                {
-                    "id": "call-finalize",
-                    "type": "function",
-                    "function": {"name": "finalize_creation_session", "arguments": "{}"},
-                },
-            ],
+            "tool_calls": [{
+                "id": "call-read",
+                "type": "function",
+                "function": {"name": "get_creation_snapshot", "arguments": "{}"},
+            }],
+        },
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-finalize",
+                "type": "function",
+                "function": {"name": "finalize_creation_session", "arguments": "{}"},
+            }],
         },
         {"content": "项目建好了，我们继续在这里写第一章。", "tool_calls": []},
     ])
@@ -1201,25 +1363,26 @@ def test_creation_agent_resolves_default_model_once_and_propagates_it_to_generat
         },
         {
             "content": "",
-            "tool_calls": [
-                {
-                    "id": "call-read-default-model",
-                    "type": "function",
-                    "function": {"name": "get_creation_snapshot", "arguments": "{}"},
+            "tool_calls": [{
+                "id": "call-read-default-model",
+                "type": "function",
+                "function": {"name": "get_creation_snapshot", "arguments": "{}"},
+            }],
+        },
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-generate-default-model",
+                "type": "function",
+                "function": {
+                    "name": "generate_creation_artifact",
+                    "arguments": json.dumps({
+                        "artifact": "concepts",
+                        "model": None,
+                        "use_model": False,
+                    }),
                 },
-                {
-                    "id": "call-generate-default-model",
-                    "type": "function",
-                    "function": {
-                        "name": "generate_creation_artifact",
-                        "arguments": json.dumps({
-                            "artifact": "concepts",
-                            "model": None,
-                            "use_model": False,
-                        }),
-                    },
-                },
-            ],
+            }],
         },
         {"content": "已使用当前有效模型开始生成创意方向。", "tool_calls": []},
     ])

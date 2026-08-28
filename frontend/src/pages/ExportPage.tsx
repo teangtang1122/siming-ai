@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Button,
+  Alert,
   Card,
   Input,
   Radio,
@@ -17,6 +18,7 @@ import {
   FileTextOutlined,
   FileWordOutlined,
   FilePdfOutlined,
+  FileZipOutlined,
   ExportOutlined,
   FolderOpenOutlined,
 } from '@ant-design/icons'
@@ -56,10 +58,36 @@ interface ExportPageProps {
   projectId: string
 }
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = window.document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  window.document.body.appendChild(anchor)
+  anchor.click()
+  window.document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
+}
+
+function responseFilename(disposition: unknown, fallback: string) {
+  const value = typeof disposition === 'string' ? disposition : ''
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      return fallback
+    }
+  }
+  return value.match(/filename="?([^";]+)"?/i)?.[1] || fallback
+}
+
 function ExportPage({ projectId }: ExportPageProps) {
   const [scope, setScope] = useState('all')
   const [format, setFormat] = useState('txt')
   const [exporting, setExporting] = useState(false)
+  const [packageProfile, setPackageProfile] = useState<'full' | 'structure'>('full')
+  const [packageExporting, setPackageExporting] = useState(false)
   const [report, setReport] = useState<WordCountReport | null>(null)
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([])
   const [outputDirectory, setOutputDirectory] = useState('')
@@ -116,19 +144,34 @@ function ExportPage({ projectId }: ExportPageProps) {
       const downloadRes = await fetch(exportData.download_url)
       if (!downloadRes.ok) throw new Error('下载导出文件失败')
       const blob = await downloadRes.blob()
-      const url = URL.createObjectURL(blob)
-      const a = window.document.createElement('a')
-      a.href = url
-      a.download = exportData.filename || `export_${projectId.slice(0, 8)}_${new Date().toISOString().slice(0, 10)}.${format}`
-      window.document.body.appendChild(a)
-      a.click()
-      window.document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      downloadBlob(
+        blob,
+        exportData.filename || `export_${projectId.slice(0, 8)}_${new Date().toISOString().slice(0, 10)}.${format}`,
+      )
       message.success(`导出完成：${exportData.filename}`)
     } catch (err: any) {
       message.error(err.message || '导出失败')
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleProjectPackageExport = async () => {
+    setPackageExporting(true)
+    try {
+      const response = await apiClient.post<Blob>(
+        `/projects/${projectId}/project-package/export?profile=${packageProfile}`,
+        undefined,
+        { responseType: 'blob' },
+      )
+      const fallback = `siming-project-${projectId.slice(0, 8)}-${packageProfile}.siming-project`
+      const filename = responseFilename(response.headers['content-disposition'], fallback)
+      downloadBlob(response.data, filename)
+      message.success(`已请求保存司命项目包：${filename}`)
+    } catch (err: any) {
+      message.error(err.message || '司命项目包导出失败')
+    } finally {
+      setPackageExporting(false)
     }
   }
 
@@ -178,8 +221,14 @@ function ExportPage({ projectId }: ExportPageProps) {
         </Col>
       </Row>
 
-      <Card title="导出选项" style={{ marginBottom: 16 }}>
+      <Card title="稿件导出" style={{ marginBottom: 16 }}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="用于阅读、投稿或交付"
+            description="TXT、DOCX 和 PDF 只生成可读稿件，不包含草稿、角色关系、世界观关系或其他项目数据。"
+          />
           <div>
             <Text strong style={{ display: 'block', marginBottom: 8 }}>导出范围</Text>
             <Radio.Group value={scope} onChange={(e) => setScope(e.target.value)}>
@@ -227,6 +276,40 @@ function ExportPage({ projectId }: ExportPageProps) {
             onClick={handleExport}
           >
             开始导出
+          </Button>
+        </Space>
+      </Card>
+
+      <Card title="司命项目包" style={{ marginBottom: 16 }}>
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="用于司命之间迁移或备份"
+            description="生成专用 .siming-project 文件。Windows 安装版会弹出“另存为”，浏览器模式使用浏览器下载位置。它不是普通 ZIP，也不能作为 TXT、Markdown 或 DOCX 文稿导入。"
+          />
+          <div>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>项目包档位</Text>
+            <Radio.Group
+              value={packageProfile}
+              onChange={(event) => setPackageProfile(event.target.value)}
+            >
+              <Radio.Button value="full">完整项目</Radio.Button>
+              <Radio.Button value="structure">仅结构</Radio.Button>
+            </Radio.Group>
+          </div>
+          <Text type="secondary">
+            {packageProfile === 'full'
+              ? '包含正式章节、未保存草稿、快照、摘要、作者已应用的治理数据和原始立项素材；不包含自动任务、对话、RAG 或模型配置。'
+              : '只包含写作设置、当前立项简报、大纲、角色及关系、世界观及关系；严格不含正文、草稿、历史版本和素材。'}
+          </Text>
+          <Button
+            icon={<FileZipOutlined />}
+            size="large"
+            loading={packageExporting}
+            onClick={() => { void handleProjectPackageExport() }}
+          >
+            导出 .siming-project
           </Button>
         </Space>
       </Card>

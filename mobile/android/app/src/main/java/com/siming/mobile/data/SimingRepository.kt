@@ -16,6 +16,7 @@ import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.OutboxMutation
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.SimingDatabase
+import com.siming.mobile.data.local.StoredProjectPackage
 import com.siming.mobile.data.local.SyncCursor
 import com.siming.mobile.data.local.orderReplicaEntities
 import com.siming.mobile.data.network.GatewayApi
@@ -36,6 +37,8 @@ import com.siming.mobile.security.SecureTokenStore
 import com.siming.mobile.security.StoredTokenPair
 import com.siming.mobile.security.VerifiedPairing
 import java.io.IOException
+import java.io.File
+import java.net.URLDecoder
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
@@ -55,6 +58,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
@@ -269,7 +273,7 @@ class SimingRepository(context: Context) {
         onProgress: suspend (String) -> Unit = {},
     ): MobileNovelImportResult {
         val extension = file.filename.substringAfterLast('.', "").lowercase()
-        require(extension in NovelFileDecoder.supportedExtensions) { "仅支持导入 TXT 或 DOCX 文件" }
+        require(extension in NovelFileDecoder.supportedExtensions) { "仅支持导入 TXT、Markdown 或 DOCX 文件" }
         require(file.bytes.isNotEmpty()) { "导入文件内容为空" }
         require(file.bytes.size <= MAX_NOVEL_IMPORT_BYTES) {
             "单个导入文件不能超过 20 MiB"
@@ -413,6 +417,113 @@ class SimingRepository(context: Context) {
                 clientModifiedAt = now,
             ),
         )
+    }
+
+    suspend fun importProjectPackage(
+        file: MobileProjectPackageFile,
+        newTitle: String? = null,
+        onProgress: suspend (String) -> Unit = {},
+    ): MobileProjectPackageImportResult {
+        require(file.filename.lowercase().endsWith(PROJECT_PACKAGE_EXTENSION)) {
+            "这里只接受 .siming-project；TXT、Markdown 或 DOCX 请使用“导入外部小说”"
+        }
+        require(file.file.isFile && file.sizeBytes > 0L) { "选择的项目包为空" }
+        require(file.sizeBytes <= MAX_PROJECT_PACKAGE_BYTES) { "项目包不能超过 512 MiB" }
+        require((newTitle?.trim()?.length ?: 0) <= 200) { "新作品标题不能超过 200 个字符" }
+        onProgress("正在校验项目包格式、条目、大小和哈希…")
+        val validated = withContext(Dispatchers.IO) {
+            MobileProjectPackageValidator(file.file, file.sha256).validate()
+        }
+        val requestKey = UUID.randomUUID()
+        val normalizedTitle = newTitle?.trim()?.takeIf(String::isNotBlank)
+        val (projectId, replicas) = MobileProjectPackageMaterializer.materialize(
+            validated,
+            requestKey,
+            normalizedTitle,
+        )
+        val retained = retainProjectPackage(file.file, requestKey)
+        val now = Instant.now().toString()
+        val stored = StoredProjectPackage(
+            idempotencyKey = requestKey.toString(),
+            packageId = validated.packageId,
+            projectId = projectId,
+            originalFilename = file.filename,
+            localFilePath = retained.absolutePath,
+            packageSha256 = validated.packageSha256,
+            profile = validated.profile,
+            requestedTitle = normalizedTitle,
+        )
+        try {
+            onProgress("正在本机事务中恢复可编辑副本，并保留完整原始项目包…")
+            database.withTransaction {
+                check(dao.entity(ReplicaEntity.key(projectId, "project", projectId)) == null) {
+                    "项目包导入目标已存在，请重新选择文件"
+                }
+                replicas.forEach { replica ->
+                    val encoded = json.encodeToString(replica.payload)
+                    dao.saveEntity(
+                        ReplicaEntity(
+                            key = ReplicaEntity.key(replica.projectId, replica.entityType, replica.entityId),
+                            projectId = replica.projectId,
+                            entityType = replica.entityType,
+                            entityId = replica.entityId,
+                            revision = 0,
+                            operation = "upsert",
+                            payloadJson = encoded,
+                            contentHash = sha256(encoded),
+                            serverModifiedAt = now,
+                            dirty = false,
+                            conflicted = false,
+                        ),
+                    )
+                }
+                dao.saveProjectPackage(stored)
+            }
+        } catch (error: Exception) {
+            retained.delete()
+            throw error
+        }
+
+        val projectTitle = replicas.first { it.entityType == "project" }.payload.string("title")
+        val connection = dao.connection()
+        if (connection != null) {
+            onProgress("正在先上传完整项目包，再同步该作品的普通修改…")
+            try {
+                val result = uploadStoredProjectPackage(connection, stored)
+                return MobileProjectPackageImportResult(
+                    projectId = projectId,
+                    projectTitle = result.string("project_title").ifBlank { projectTitle },
+                    profile = validated.profile,
+                    remote = true,
+                    replayed = (result["replayed"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                )
+            } catch (error: GatewayHttpException) {
+                purgeLocalProject(projectId)
+                throw error
+            } catch (_: IOException) {
+                // A validated local copy remains queued and is uploaded before
+                // ordinary outbox mutations on the next successful sync.
+            }
+        }
+        if (dao.connection() != null) SyncScheduler.enqueue(appContext)
+        return MobileProjectPackageImportResult(
+            projectId = projectId,
+            projectTitle = projectTitle,
+            profile = validated.profile,
+            remote = false,
+        )
+    }
+
+    private fun retainProjectPackage(source: File, requestKey: UUID): File {
+        val root = File(appContext.filesDir, "project-packages").apply { mkdirs() }
+        val destination = File(root, "$requestKey$PROJECT_PACKAGE_EXTENSION")
+        if (!source.renameTo(destination)) {
+            source.inputStream().buffered().use { input ->
+                destination.outputStream().buffered().use { output -> input.copyTo(output, 1024 * 1024) }
+            }
+            source.delete()
+        }
+        return destination
     }
 
     suspend fun createProject(title: String, description: String = ""): String {
@@ -613,11 +724,14 @@ class SimingRepository(context: Context) {
     }
 
     private suspend fun purgeLocalProject(projectId: String) {
+        val storedPackage = dao.projectPackage(projectId)
         database.withTransaction {
             dao.deleteProjectMutations(projectId)
             dao.deleteProjectConflicts(projectId)
             dao.deleteProjectReplica(projectId)
+            dao.deleteProjectPackage(projectId)
         }
+        storedPackage?.localFilePath?.let(::File)?.delete()
     }
 
     suspend fun deleteEntity(projectId: String, entityType: String, entityId: String) {
@@ -903,6 +1017,62 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
     )
 }
 
+suspend fun exportProjectPackage(projectId: String, profile: String): MobileExportFile {
+    val normalized = profile.lowercase()
+    require(normalized in setOf("full", "structure")) { "项目包档位只能是完整或结构" }
+    val project = dao.entity(ReplicaEntity.key(projectId, "project", projectId))
+        ?: error("作品不存在")
+    val title = project.payloadJson
+        ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+        ?.string("title")
+        .orEmpty()
+        .ifBlank { "未命名作品" }
+    val exportRoot = File(appContext.cacheDir, "project-package-exports").apply { mkdirs() }
+    val destination = File(exportRoot, "${UUID.randomUUID()}$PROJECT_PACKAGE_EXTENSION")
+    val connection = dao.connection()
+    val filename = if (connection != null) {
+        check(prepareCanonicalWrite()) { "当前无法同步本机修改，请恢复 Gateway 连接后再导出项目包" }
+        api.downloadProjectPackage(connection, projectId, normalized, destination)
+            ?.let { URLDecoder.decode(it, Charsets.UTF_8.name()) }
+    } else {
+        val stored = dao.projectPackage(projectId)
+        val snapshot = dao.projectPackageSnapshot(projectId)
+        val draft = mobileWorkspaceAgent.pendingChapterDraft(projectId)
+            ?.let { MobilePendingChapterDraft.fromJson(projectId, it) }
+        if (stored != null) {
+            val source = File(stored.localFilePath)
+            require(source.isFile && sha256File(source) == stored.packageSha256) { "本机项目包副本已损坏" }
+            withContext(Dispatchers.IO) {
+                MobileProjectPackageWriter.rewriteImported(
+                    source = source,
+                    expectedSha256 = stored.packageSha256,
+                    idempotencyKey = UUID.fromString(stored.idempotencyKey),
+                    projectId = projectId,
+                    snapshot = snapshot,
+                    pendingDraft = draft,
+                    profile = normalized,
+                    destination = destination,
+                )
+            }
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                MobileProjectPackageWriter.write(projectId, snapshot, draft, normalized, destination)
+            }
+            null
+        }
+    }
+    val safeTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(80).ifBlank { "司命导出" }
+    val profileLabel = if (normalized == "full") "完整" else "结构"
+    return MobileExportFile(
+        filename = filename?.takeIf { it.endsWith(PROJECT_PACKAGE_EXTENSION, ignoreCase = true) }
+            ?: "${safeTitle}_${profileLabel}项目包$PROJECT_PACKAGE_EXTENSION",
+        mimeType = PROJECT_PACKAGE_MEDIA_TYPE,
+        sourceFilePath = destination.absolutePath,
+        deleteSourceAfterSave = true,
+    )
+}
+
     suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
         api.listChapterSnapshots(requireConnection(), projectId, chapterId)
 
@@ -991,10 +1161,105 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
     suspend fun worldTimeline(projectId: String, entryId: String): JsonObject =
         api.listWorldTimeline(requireConnection(), projectId, entryId)
 
+    private suspend fun uploadPendingProjectPackages(connection: GatewayConnection) {
+        dao.pendingProjectPackages().forEach { stored -> uploadStoredProjectPackage(connection, stored) }
+    }
+
+    private suspend fun uploadStoredProjectPackage(
+        connection: GatewayConnection,
+        stored: StoredProjectPackage,
+    ): JsonObject {
+        val source = File(stored.localFilePath)
+        require(source.isFile) { "待同步项目包的本地副本不存在：${stored.originalFilename}" }
+        require(source.length() <= MAX_PROJECT_PACKAGE_BYTES) { "待同步项目包超过 512 MiB 上限" }
+        require(withContext(Dispatchers.IO) { sha256File(source) } == stored.packageSha256) {
+            "待同步项目包的本地副本已损坏：${stored.originalFilename}"
+        }
+        dao.saveProjectPackage(stored.copy(syncState = "uploading", lastError = null))
+        try {
+            val result = api.importProjectPackage(
+                connection = connection,
+                filename = stored.originalFilename,
+                file = source,
+                idempotencyKey = stored.idempotencyKey,
+                newTitle = stored.requestedTitle,
+            )
+            require(result.string("project_id") == stored.projectId) {
+                "Gateway 返回的项目包作品 ID 与本机确定性 ID 不一致"
+            }
+            require(result.string("package_id") == stored.packageId) {
+                "Gateway 返回的项目包 ID 与本机副本不一致"
+            }
+            refreshUploadedProjectPackage(connection, stored.projectId)
+            dao.saveProjectPackage(
+                stored.copy(
+                    syncState = "succeeded",
+                    lastError = null,
+                    uploadedAt = System.currentTimeMillis(),
+                ),
+            )
+            return result
+        } catch (error: Exception) {
+            dao.saveProjectPackage(
+                stored.copy(
+                    syncState = "pending",
+                    lastError = error.toUserFacingMessage(),
+                ),
+            )
+            throw error
+        }
+    }
+
+    private suspend fun refreshUploadedProjectPackage(
+        connection: GatewayConnection,
+        projectId: String,
+    ) {
+        val response = api.bootstrap(connection, listOf(projectId))
+        database.withTransaction {
+            dao.deleteCleanProjectReplicas(projectId)
+            response.entities.filter { it.projectId == projectId }.forEach { snapshot ->
+                val key = ReplicaEntity.key(snapshot.projectId, snapshot.entityType, snapshot.entityId)
+                val current = dao.entity(key)
+                if (current?.dirty == true) {
+                    dao.saveEntity(
+                        current.copy(
+                            revision = snapshot.revision,
+                            serverModifiedAt = snapshot.serverModifiedAt,
+                        ),
+                    )
+                    dao.pendingMutation(snapshot.projectId, snapshot.entityType, snapshot.entityId)?.let { mutation ->
+                        dao.updateMutation(mutation.copy(baseRevision = snapshot.revision))
+                    }
+                } else {
+                    dao.saveEntity(
+                        ReplicaEntity(
+                            key = key,
+                            projectId = snapshot.projectId,
+                            entityType = snapshot.entityType,
+                            entityId = snapshot.entityId,
+                            revision = snapshot.revision,
+                            operation = snapshot.operation,
+                            payloadJson = snapshot.payload?.let(json::encodeToString),
+                            contentHash = snapshot.contentHash,
+                            serverModifiedAt = snapshot.serverModifiedAt,
+                        ),
+                    )
+                }
+            }
+            dao.saveCursor(
+                SyncCursor(
+                    cursor = response.cursor,
+                    lastSuccessfulSyncAt = System.currentTimeMillis(),
+                ),
+            )
+        }
+    }
+
     suspend fun syncNow(): SyncOutcome = syncMutex.withLock {
         val connection = requireConnection()
         val localProjectIds = dao.localProjectIds()
         try {
+            uploadPendingProjectPackages(connection)
             pushPending(connection)
             refreshConflicts(connection)
             if (localProjectIds.isNotEmpty()) pullAll(connection, localProjectIds)
@@ -1369,9 +1634,9 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
     suspend fun pendingChapterDraft(projectId: String): MobilePendingChapterDraft? {
         val connection = dao.connection()
         val value = if (connection != null) {
-            api.pendingChapterDraft(connection, projectId)
+            api.pendingChapterDraft(connection, projectId) ?: importedPendingChapterDraft(projectId)
         } else {
-            mobileWorkspaceAgent.pendingChapterDraft(projectId)
+            mobileWorkspaceAgent.pendingChapterDraft(projectId) ?: importedPendingChapterDraft(projectId)
         } ?: return null
         return MobilePendingChapterDraft.fromJson(projectId, value)
     }
@@ -1397,6 +1662,7 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
             val response = api.saveGeneratedChapter(connection, draft.projectId, payload)
             val chapterId = response.requiredId()
             saveCanonicalReplica(draft.projectId, "chapter", chapterId, response)
+            markChapterDraftConsumed(draft)
             SyncScheduler.enqueue(appContext)
             return chapterId
         }
@@ -1413,8 +1679,60 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
             draft.contextManifestId?.let { put("context_manifest_id", it) }
         }
         saveEntity(draft.projectId, "chapter", chapterId, payload)
-        mobileWorkspaceAgent.markChapterDraftSaved(draft.draftId)
+        markChapterDraftConsumed(draft)
         return chapterId
+    }
+
+    private suspend fun importedPendingChapterDraft(projectId: String): JsonObject? =
+        dao.projectSnapshot(projectId)
+            .asSequence()
+            .filter { it.entityType == "chapter_draft" && it.operation == "upsert" }
+            .mapNotNull { entity ->
+                val payload = entity.payloadJson
+                    ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+                    ?: return@mapNotNull null
+                if (payload.string("status") !in setOf("pending", "generated", "generating")) {
+                    return@mapNotNull null
+                }
+                buildJsonObject {
+                    put("draft_id", entity.entityId)
+                    put("project_id", projectId)
+                    put("content_ref", entity.entityId)
+                    put("title", payload.string("title").ifBlank { "未保存章节草稿" })
+                    payload.string("outline_node_id").takeIf(String::isNotBlank)?.let { put("outline_node_id", it) }
+                    put("draft_status", payload.string("status"))
+                    put("content", payload.string("content"))
+                    put("execution_route", "project_package")
+                }
+            }
+            .firstOrNull()
+
+    private suspend fun markChapterDraftConsumed(draft: MobilePendingChapterDraft) {
+        mobileWorkspaceAgent.markChapterDraftSaved(draft.draftId)
+        val key = ReplicaEntity.key(draft.projectId, "chapter_draft", draft.draftId)
+        val entity = dao.entity(key) ?: return
+        val payload = entity.payloadJson
+            ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+            ?: return
+        val now = Instant.now().toString()
+        val encoded = json.encodeToString(
+            JsonObject(
+                payload.toMutableMap().apply {
+                    put("status", JsonPrimitive("saved"))
+                    put("updated_at", JsonPrimitive(now))
+                },
+            ),
+        )
+        dao.saveEntity(
+            entity.copy(
+                payloadJson = encoded,
+                contentHash = sha256(encoded),
+                serverModifiedAt = now,
+                dirty = false,
+                conflicted = false,
+                localModifiedAt = System.currentTimeMillis(),
+            ),
+        )
     }
 
     suspend fun cancelAssistantRun(projectId: String, runId: String) {
@@ -2403,6 +2721,12 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
             api.revokeSelf(connection)
         }.isSuccess
         tokenStore.clear()
+        val packageFiles = if (clearOfflineData) {
+            dao.pendingProjectPackages().map { it.localFilePath } +
+                dao.localProjectIds().mapNotNull { dao.projectPackage(it)?.localFilePath }
+        } else {
+            emptyList()
+        }
         database.withTransaction {
             dao.deleteConnection()
             dao.clearCursor()
@@ -2410,8 +2734,10 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
                 dao.clearOutbox()
                 dao.clearConflicts()
                 dao.clearReplicas()
+                dao.clearProjectPackages()
             }
         }
+        packageFiles.distinct().forEach { File(it).delete() }
         SyncScheduler.cancel(appContext)
         return revokedRemotely
     }

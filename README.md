@@ -23,7 +23,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前源码版本 3.3.2** 统一了 API、本机 CLI、MCP、PC GUI 与 Android 的 Agent 工具和任务模型契约。每个 Agent 回合由模型先选择宽粒度工具类别；新章节始终先形成未保存草稿，保存、是否建档以及何时继续下一章均由作者决定。Android 现可独立完成新书立项、TXT / DOCX 导入、离线写作与手机模型调用。完整变化见 [3.3.2 发布说明](docs/release-notes-3.3.2.md)。
+> **当前源码版本 3.3.5** 收紧对话式立项的上下文边界：初始快照只给索引，Agent 按最新消息检索并复核目标对象，生成阶段只接收显式引用，不再把全部角色与各阶段正文反复带入模型。完整变化见 [3.3.5 发布说明](docs/release-notes-3.3.5.md)。
 
 ## 它解决什么问题
 
@@ -146,6 +146,8 @@ Windows Release 提供 `Siming-Setup.exe` 与 `Siming-Setup.sha256`；Android �
 ## 开发与贡献
 
 普通使用者只需要 `Siming-Setup.exe`。以下环境仅面向源码贡献者。
+
+社区贡献及补充致谢记录在 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 源码开发使用 CPython 3.11。前端工具链以 `build-toolchain.json` 为准，当前为 Node.js 24.14.1 与 npm 11.11.0；Android 构建使用 JDK 17。Windows 正式打包还需要 Inno Setup，完整固定版本见 [Windows 安装与发布](PACKAGING.md)。
 

@@ -10,7 +10,8 @@ Android 客户端位于 `mobile/android`，最低 Android 8.0（API 26），目�
 - 没有 Gateway 时，Android 直接调用手机保存的 API。`scripts/export-mobile-prompt-contract.py` 会从 PC `PromptSpec`、写作规则和工具注册表生成 `pc_workspace_prompt_contract.json`；手机运行同样的函数调用循环和章节/角色/大纲/世界观二级生成器，本地工具写入手机副本与 outbox。
 - “AI 立项”复用 PC `creation.novel.stage@3.0.0` 的预设、动态采访、8 阶段 PromptSpec、影响依赖、JSON 修复与数据契约。连接 Gateway 时，PC 线路和手机 Key 线路都调用原生 `/api/v1/novel-creation/...` 流程；无 Gateway 时才在 Android 上执行构建生成的同源契约和 PC 对齐的确定性基线/归一化。
 - 核心立项资料通过最终审阅后即可“建立正式作品档案”，前三章细纲与 PC 一样可以建档前确认，也可以稍后完善。Gateway 路线调用 PC `/apply`；纯手机路线按相同实体字段建立作品、角色关系、世界设定关系、卷纲以及已确认的章节/场景细纲，并进入离线同步队列。
-- 小说导入与 PC 共用 TXT / DOCX 格式边界和 20 MiB 上限。连接 Gateway 时上传原文件给 PC 权威导入服务；离线或手机独立模式在本机安全解码 TXT 或提取 DOCX 正文，再按与 PC 一致的章节标题识别规则原子建档，不会用错误编码替换字符强行导入。
+- 外部小说导入与 PC 共用 TXT / Markdown / DOCX 格式边界和 20 MiB 上限。连接 Gateway 时上传原文件给 PC 权威导入服务；离线或手机独立模式在本机安全解码文本或提取 DOCX 正文，再按与 PC 一致的章节标题识别规则原子建档，不会用错误编码替换字符强行导入。
+- 司命项目包使用独立 `.siming-project` 入口和磁盘流式处理，不经过小说 `ByteArray` 解析器。离线导入保留完整原包与幂等请求键；联网时先上传项目包，再回放该作品的普通 outbox。
 - `backend/tests/test_mobile_prompt_contract.py` 会重建并比较该资产。PC 提示词或工具 schema 改动后若没有重新导出，测试会失败，防止手机悄悄退化成简化提示词。
 
 ## 开发构建

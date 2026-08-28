@@ -278,7 +278,7 @@ If a tool returns `isError: true`, the error payload includes:
 
 ## Importing Local Novels
 
-When the user asks to import a local TXT/DOCX novel as a new Siming project,
+When the user asks to import a local TXT/Markdown/DOCX novel as a new Siming project,
 prefer `import_file_as_project` instead of reading the whole file and passing the
 full text through MCP arguments.
 
@@ -351,8 +351,8 @@ chapter summaries, character cards, outline nodes, worldbuilding, and links.
 | Tool | Description |
 |------|-------------|
 | `create_project` | Create a new Siming project |
-| `import_file_as_project` | Create a project from a local TXT/DOCX file and import chapters |
-| `import_file_as_chapters` | Import a local TXT/DOCX file into an existing project |
+| `import_file_as_project` | Create a project from a local TXT/Markdown/DOCX file and import chapters |
+| `import_file_as_chapters` | Import a local TXT/Markdown/DOCX file into an existing project |
 | `import_text_as_chapters` | Import pasted text into an existing project |
 | `start_cataloging_job` | Initialize project cards from imported chapters |
 | `export_project` | Export project content |

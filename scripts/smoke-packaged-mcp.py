@@ -190,8 +190,11 @@ def main() -> int:
                 "id": 6,
                 "method": "tools/call",
                 "params": {
-                    "name": "get_creation_session",
-                    "arguments": {"session_id": session_id},
+                    "name": "get_creation_artifact",
+                    "arguments": {
+                        "session_id": session_id,
+                        "artifact": "constraints",
+                    },
                 },
             },
         ], cwd=foreign_agent_dir)

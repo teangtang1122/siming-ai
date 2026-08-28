@@ -19,6 +19,7 @@ import {
   ArrowRightOutlined,
   DeleteOutlined,
   EditOutlined,
+  FileZipOutlined,
   FolderOpenOutlined,
   PlusOutlined,
   RocketOutlined,
@@ -70,35 +71,15 @@ interface ApiResponse<T> {
   data: T
 }
 
-interface UploadResult {
-  filename: string
-  format: string
-  text: string
-  word_count: number
-}
-
-interface SplitItem {
-  title: string
-  start_char: number
-  end_char: number
-  preview: string
-  needs_review?: boolean
-  review_reason?: string
-  source?: string
-  block_index?: number
-}
-
-interface SplitResult {
-  splits: SplitItem[]
+interface ExternalImportResult {
+  project_id: string
   total: number
-  method: string
-  needs_review: boolean
-  failed_blocks: number
 }
 
-interface ConfirmResult {
-  chapters: Array<{ id: string; title: string; word_count: number }>
-  total: number
+interface ProjectPackageImportResult {
+  project_id: string
+  project_title: string
+  replayed: boolean
 }
 
 function parseTags(value?: string) {
@@ -124,7 +105,17 @@ function tagsToFormValue(tagsStr?: string | null) {
 }
 
 function titleFromFile(file: File) {
-  return file.name.replace(/\.(txt|docx)$/i, '').trim()
+  return file.name.replace(/\.(txt|md|docx)$/i, '').trim()
+}
+
+function createIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const value = Math.floor(Math.random() * 16)
+    return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16)
+  })
 }
 
 function DashboardPage() {
@@ -142,8 +133,14 @@ function DashboardPage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [isExternalImportOpen, setIsExternalImportOpen] = useState(false)
+  const [isPackageImportOpen, setIsPackageImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [importStatus, setImportStatus] = useState('')
-  const [pendingImportFile, setPendingImportFile] = useState<File | null>(null)
+  const [externalImportFile, setExternalImportFile] = useState<File | null>(null)
+  const [packageImportFile, setPackageImportFile] = useState<File | null>(null)
+  const [packageTitle, setPackageTitle] = useState('')
+  const [packageRequestKey, setPackageRequestKey] = useState(createIdempotencyKey)
   const [creationDrafts, setCreationDrafts] = useState<NovelCreationDraftSummary[]>([])
   const [editingProject, setEditingProject] = useState<{
     id: string
@@ -168,14 +165,23 @@ function DashboardPage() {
 
   const needsModelSetup = Boolean(setupQuery.data?.needs_setup)
 
-  const pendingUploadList = useMemo<UploadFile[]>(() => {
-    if (!pendingImportFile) return []
+  const externalUploadList = useMemo<UploadFile[]>(() => {
+    if (!externalImportFile) return []
     return [{
-      uid: 'pending-import-file',
-      name: pendingImportFile.name,
+      uid: 'external-import-file',
+      name: externalImportFile.name,
       status: 'done',
     }]
-  }, [pendingImportFile])
+  }, [externalImportFile])
+
+  const packageUploadList = useMemo<UploadFile[]>(() => {
+    if (!packageImportFile) return []
+    return [{
+      uid: 'project-package-import-file',
+      name: packageImportFile.name,
+      status: 'done',
+    }]
+  }, [packageImportFile])
 
   const handleSearch = (value: string) => {
     setSearchKeyword(value)
@@ -185,27 +191,37 @@ function DashboardPage() {
   const closeCreateModal = () => {
     if (creating) return
     setIsCreateModalOpen(false)
-    setPendingImportFile(null)
-    setImportStatus('')
     form.resetFields()
   }
 
-  const openCreateModal = (draft?: Partial<ProjectFormValues>, file?: File) => {
+  const openCreateModal = (draft?: Partial<ProjectFormValues>) => {
     setIsCreateModalOpen(true)
-    setImportStatus('')
-    if (file) setPendingImportFile(file)
     if (draft) form.setFieldsValue(draft)
+  }
+
+  const openExternalImport = () => {
+    setExternalImportFile(null)
+    setImportStatus('')
+    setIsExternalImportOpen(true)
+  }
+
+  const openPackageImport = () => {
+    setPackageImportFile(null)
+    setPackageTitle('')
+    setPackageRequestKey(createIdempotencyKey())
+    setImportStatus('')
+    setIsPackageImportOpen(true)
   }
 
   useEffect(() => {
     if (searchParams.get('create') !== 'import') return
-    openCreateModal()
+    openExternalImport()
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
       next.delete('create')
       return next
     }, { replace: true })
-  // openCreateModal only updates local modal state; URL is the durable route contract.
+  // openExternalImport only updates local modal state; URL is the durable route contract.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, setSearchParams])
 
@@ -223,51 +239,79 @@ function DashboardPage() {
     }
   }
 
-  const attachImportFile = (file: File) => {
-    setPendingImportFile(file)
-    const currentTitle = form.getFieldValue('title')
-    if (!currentTitle) {
-      form.setFieldsValue({ title: titleFromFile(file) })
+  const attachExternalImportFile = (file: File) => {
+    if (!/\.(txt|md|docx)$/i.test(file.name)) {
+      message.error('导入外部小说仅支持 TXT、Markdown 和 DOCX')
+      return Upload.LIST_IGNORE
     }
+    setExternalImportFile(file)
     return false
   }
 
-  const importFileIntoProject = async (projectId: string, file: File) => {
-    setImportStatus('正在解析文件...')
+  const attachPackageImportFile = (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.siming-project')) {
+      message.error('这里只接受 .siming-project；文稿请使用“导入外部小说”')
+      return Upload.LIST_IGNORE
+    }
+    setPackageImportFile(file)
+    setPackageRequestKey(createIdempotencyKey())
+    return false
+  }
+
+  const handleExternalImport = async () => {
+    if (!externalImportFile) {
+      message.warning('请先选择要导入的外部小说文件')
+      return
+    }
+    setImporting(true)
+    setImportStatus('正在创建作品并识别章节...')
     const formData = new FormData()
-    formData.append('file', file)
-    const uploadRes = await fetch(`/api/v1/projects/${projectId}/import/file`, {
-      method: 'POST',
-      body: formData,
-    })
-    if (!uploadRes.ok) throw new Error('文件解析失败')
-    const uploadData = await uploadRes.json() as ApiResponse<UploadResult>
-    if (uploadData.code !== 0 || !uploadData.data?.text) {
-      throw new Error(uploadData.message || '文件解析失败')
+    formData.append('file', externalImportFile)
+    try {
+      const response = await apiClient.postForm<ApiResponse<ExternalImportResult>>(
+        '/import/project-file',
+        formData,
+      )
+      const result = response.data.data
+      message.success(`已创建作品并导入 ${result.total} 章`)
+      setIsExternalImportOpen(false)
+      setExternalImportFile(null)
+      setImportStatus('')
+      navigate(`/project/${result.project_id}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '外部小说导入失败')
+    } finally {
+      setImporting(false)
     }
+  }
 
-    let splits: SplitItem[] = []
-    if (uploadData.data.text.length >= 100) {
-      try {
-        setImportStatus('正在识别章节...')
-        const splitRes = await apiClient.post<ApiResponse<SplitResult>>(`/projects/${projectId}/import/preview`, {
-          text: uploadData.data.text,
-        })
-        splits = splitRes.data.data.splits || []
-      } catch {
-        splits = []
-      }
+  const handlePackageImport = async () => {
+    if (!packageImportFile) {
+      message.warning('请先选择司命项目包')
+      return
     }
-
-    setImportStatus('正在写入章节...')
-    const confirmRes = await apiClient.post<ApiResponse<ConfirmResult>>(`/projects/${projectId}/import/confirm`, {
-      text: uploadData.data.text,
-      splits,
-    })
-    return {
-      filename: uploadData.data.filename,
-      wordCount: uploadData.data.word_count,
-      chapterCount: confirmRes.data.data.total,
+    setImporting(true)
+    setImportStatus('正在校验并恢复司命项目包...')
+    const formData = new FormData()
+    formData.append('file', packageImportFile)
+    if (packageTitle.trim()) formData.append('new_title', packageTitle.trim())
+    try {
+      const response = await apiClient.postForm<ApiResponse<ProjectPackageImportResult>>(
+        '/projects/project-package/import',
+        formData,
+        { headers: { 'Idempotency-Key': packageRequestKey } },
+      )
+      const result = response.data.data
+      message.success(result.replayed ? '已恢复上次导入结果' : `项目包已导入：${result.project_title}`)
+      setIsPackageImportOpen(false)
+      setPackageImportFile(null)
+      setPackageTitle('')
+      setImportStatus('')
+      navigate(`/project/${result.project_id}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '司命项目包导入失败')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -279,34 +323,16 @@ function DashboardPage() {
     }
 
     setCreating(true)
-    setImportStatus(pendingImportFile ? '正在创建作品...' : '')
-    let createdProjectId: string | null = null
     try {
       const project = await createProjectMutation.mutateAsync(payload)
-      createdProjectId = project.id
-
-      if (pendingImportFile) {
-        try {
-          const imported = await importFileIntoProject(project.id, pendingImportFile)
-          message.success(`作品已创建，并导入 ${imported.chapterCount} 章`)
-        } catch (error: unknown) {
-          const detail = error instanceof Error ? error.message : '未知错误'
-          message.warning(`作品已创建，但文件导入失败：${detail}`)
-        }
-      } else {
-        message.success('作品创建成功')
-      }
-
+      message.success('作品创建成功')
       setIsCreateModalOpen(false)
-      setPendingImportFile(null)
-      setImportStatus('')
       form.resetFields()
       navigate(`/project/${project.id}`)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '创建作品失败')
     } finally {
       setCreating(false)
-      if (!createdProjectId) setImportStatus('')
     }
   }
 
@@ -381,10 +407,16 @@ function DashboardPage() {
           </p>
         </div>
         <Space wrap>
-          <Button icon={<UploadOutlined />} size="large" onClick={() => openCreateModal()}>
-            直接创建或导入
+          <Button icon={<UploadOutlined />} size="large" onClick={openExternalImport}>
+            导入外部小说
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} size="large" onClick={openNovelCreation}>
+          <Button icon={<FileZipOutlined />} size="large" onClick={openPackageImport}>
+            导入司命项目包
+          </Button>
+          <Button icon={<PlusOutlined />} size="large" onClick={() => openCreateModal()}>
+            直接创建
+          </Button>
+          <Button type="primary" icon={<RocketOutlined />} size="large" onClick={openNovelCreation}>
             创建新作品
           </Button>
         </Space>
@@ -547,7 +579,7 @@ function DashboardPage() {
         open={isCreateModalOpen}
         onCancel={closeCreateModal}
         onOk={() => form.submit()}
-        okText={pendingImportFile ? '创建并导入' : '创建'}
+        okText="创建"
         cancelText="取消"
         okButtonProps={{ autoInsertSpace: false, loading: creating }}
         cancelButtonProps={{ autoInsertSpace: false, disabled: creating }}
@@ -568,25 +600,107 @@ function DashboardPage() {
           <Form.Item name="tags" label="类型标签">
             <Input placeholder="多个标签用逗号分隔，如：玄幻，修仙，热血" />
           </Form.Item>
-          <Form.Item label="导入已有小说（可选）">
-            <Upload
-              accept=".txt,.docx"
-              maxCount={1}
-              fileList={pendingUploadList}
-              beforeUpload={(file) => attachImportFile(file as File)}
-              onRemove={() => {
-                setPendingImportFile(null)
-                return true
-              }}
-            >
-              <Button icon={<UploadOutlined />}>选择 TXT / DOCX 文件</Button>
-            </Upload>
-            <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-              创建成功后会自动解析章节并写入当前作品。若导入失败，作品仍会保留。
-            </Text>
-          </Form.Item>
-          {importStatus && <Alert type="info" showIcon message={importStatus} style={{ marginTop: 8 }} />}
         </Form>
+      </Modal>
+
+      <Modal
+        title="导入外部小说"
+        open={isExternalImportOpen}
+        onCancel={() => {
+          if (importing) return
+          setIsExternalImportOpen(false)
+          setExternalImportFile(null)
+          setImportStatus('')
+        }}
+        onOk={() => { void handleExternalImport() }}
+        okText="创建作品并导入"
+        cancelText="取消"
+        okButtonProps={{ loading: importing, disabled: !externalImportFile }}
+        cancelButtonProps={{ disabled: importing }}
+        closable={!importing}
+        maskClosable={!importing}
+        destroyOnHidden
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="只导入文稿"
+          description="TXT、Markdown 或 DOCX 会创建一个新作品和正式章节，不会猜测角色、世界观、自动任务或其他司命数据。"
+          style={{ marginBottom: 16 }}
+        />
+        <Upload
+          accept=".txt,.md,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          maxCount={1}
+          fileList={externalUploadList}
+          beforeUpload={(file) => attachExternalImportFile(file as File)}
+          onRemove={() => {
+            setExternalImportFile(null)
+            return true
+          }}
+        >
+          <Button icon={<UploadOutlined />}>选择 TXT / Markdown / DOCX</Button>
+        </Upload>
+        {externalImportFile && (
+          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+            将创建作品《{titleFromFile(externalImportFile) || '导入作品'}》
+          </Text>
+        )}
+        {importStatus && <Alert type="info" showIcon message={importStatus} style={{ marginTop: 16 }} />}
+      </Modal>
+
+      <Modal
+        title="导入司命项目包"
+        open={isPackageImportOpen}
+        onCancel={() => {
+          if (importing) return
+          setIsPackageImportOpen(false)
+          setPackageImportFile(null)
+          setPackageTitle('')
+          setImportStatus('')
+        }}
+        onOk={() => { void handlePackageImport() }}
+        okText="创建新作品"
+        cancelText="取消"
+        okButtonProps={{ loading: importing, disabled: !packageImportFile }}
+        cancelButtonProps={{ disabled: importing }}
+        closable={!importing}
+        maskClosable={!importing}
+        destroyOnHidden
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="仅接受司命项目包"
+          description="只接受 .siming-project。普通 ZIP、TXT、Markdown 和 DOCX 请使用“导入外部小说”；项目包始终创建新作品，不覆盖已有作品。"
+          style={{ marginBottom: 16 }}
+        />
+        <Upload
+          accept=".siming-project,application/vnd.siming.project+zip"
+          maxCount={1}
+          fileList={packageUploadList}
+          beforeUpload={(file) => attachPackageImportFile(file as File)}
+          onRemove={() => {
+            setPackageImportFile(null)
+            setPackageRequestKey(createIdempotencyKey())
+            return true
+          }}
+        >
+          <Button icon={<FileZipOutlined />}>选择 .siming-project</Button>
+        </Upload>
+        <div style={{ marginTop: 16 }}>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>新作品标题（可选）</Text>
+          <Input
+            value={packageTitle}
+            maxLength={200}
+            showCount
+            placeholder="留空时使用项目包中的原作品标题"
+            onChange={(event) => {
+              setPackageTitle(event.target.value)
+              setPackageRequestKey(createIdempotencyKey())
+            }}
+          />
+        </div>
+        {importStatus && <Alert type="info" showIcon message={importStatus} style={{ marginTop: 16 }} />}
       </Modal>
 
       <Modal

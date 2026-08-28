@@ -170,5 +170,40 @@ internal fun ProjectToolsPanel(
                 }
             }
         }
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Outlined.Download, null)
+                        Text("司命项目包", style = MaterialTheme.typography.titleMedium)
+                    }
+                    Text(
+                        "专用 .siming-project 与可读稿件分开。完整档位包含章节、独立草稿、快照和素材；结构档位只含写作设置、大纲、角色与世界观。两者都不包含自动任务、对话、RAG 或模型执行配置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (!ui.exportRunning) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    viewModel.prepareProjectPackageExport(project.projectId, "full", onExportReady)
+                                },
+                            ) { Text("完整项目包") }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.prepareProjectPackageExport(project.projectId, "structure", onExportReady)
+                                },
+                            ) { Text("结构项目包") }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

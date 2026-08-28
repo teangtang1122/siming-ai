@@ -128,7 +128,7 @@ async def import_file_as_chapters(db: Session, project_id: str, args: dict[str, 
 
 
 async def import_file_as_project(db: Session, project_id: str, args: dict[str, Any]) -> dict:
-    """Create a project and import a local TXT/DOCX file into it as chapters."""
+    """Create a project and import a local TXT/Markdown/DOCX file into it as chapters."""
     file_path = str(args.get("file_path") or args.get("path") or "").strip()
     if not file_path:
         return {"tool": "import_file_as_project", "status": "skipped", "detail": "缺少 file_path"}

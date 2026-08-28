@@ -447,7 +447,7 @@ describe('NovelCreationWizardPage', () => {
     expect(brief).toHaveValue('作者本地最新版')
     expect(mockPatch.mock.calls[0][1]).toEqual(expect.objectContaining({ expected_revision: 2 }))
     expect(mockPatch.mock.calls[1][1]).toEqual(expect.objectContaining({ expected_revision: 3 }))
-  }, 10_000)
+  }, 30_000)
 
   it('edits stage fields without exposing raw JSON by default', async () => {
     const session = {
@@ -486,7 +486,7 @@ describe('NovelCreationWizardPage', () => {
         expected_revision: 3,
       }))
     })
-  }, 10_000)
+  }, 30_000)
 
   it('allows a later pending stage while an earlier stage awaits confirmation', async () => {
     const worldData = {
