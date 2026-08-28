@@ -167,7 +167,7 @@ function ExportPage({ projectId }: ExportPageProps) {
       const fallback = `siming-project-${projectId.slice(0, 8)}-${packageProfile}.siming-project`
       const filename = responseFilename(response.headers['content-disposition'], fallback)
       downloadBlob(response.data, filename)
-      message.success(`司命项目包已导出：${filename}`)
+      message.success(`已请求保存司命项目包：${filename}`)
     } catch (err: any) {
       message.error(err.message || '司命项目包导出失败')
     } finally {
@@ -286,7 +286,7 @@ function ExportPage({ projectId }: ExportPageProps) {
             type="warning"
             showIcon
             message="用于司命之间迁移或备份"
-            description="生成专用 .siming-project 文件。它不是普通 ZIP，也不能作为 TXT、Markdown 或 DOCX 文稿导入。"
+            description="生成专用 .siming-project 文件。Windows 安装版会弹出“另存为”，浏览器模式使用浏览器下载位置。它不是普通 ZIP，也不能作为 TXT、Markdown 或 DOCX 文稿导入。"
           />
           <div>
             <Text strong style={{ display: 'block', marginBottom: 8 }}>项目包档位</Text>

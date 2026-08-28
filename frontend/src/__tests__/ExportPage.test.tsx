@@ -57,6 +57,7 @@ describe('ExportPage', () => {
     expect(screen.getByText('Word (.docx)')).toBeInTheDocument()
     expect(screen.getByText('PDF')).toBeInTheDocument()
     expect(screen.getByText('司命项目包')).toBeInTheDocument()
+    expect(screen.getByText(/Windows 安装版会弹出“另存为”/)).toBeInTheDocument()
     expect(screen.getByText(/不包含自动任务、对话、RAG 或模型配置/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByText('仅结构'))

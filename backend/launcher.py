@@ -747,6 +747,10 @@ def main() -> None:
             )
             return
 
+        # Blob-backed exports use the browser download pipeline. Pywebview
+        # cancels those downloads by default; enabling them keeps the response
+        # streamed and lets WebView2 present its native Save As dialog.
+        webview.settings["ALLOW_DOWNLOADS"] = True
         desktop_api = DesktopApi()
         window = webview.create_window(
             title=f"{APP_NAME}",

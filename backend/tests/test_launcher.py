@@ -228,6 +228,7 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         server.stop.return_value = True
         window = FakeWindow()
         webview = types.ModuleType("webview")
+        webview.settings = {}
         webview.FileDialog = types.SimpleNamespace(FOLDER="folder")
         webview.create_window = MagicMock(return_value=window)
         webview.start = MagicMock(side_effect=lambda callback: callback())
@@ -251,6 +252,7 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
 
         server.start.assert_called_once_with(browser_app.app)
         server.stop.assert_called_once_with(timeout=20.0)
+        self.assertTrue(webview.settings["ALLOW_DOWNLOADS"])
         self.assertEqual(window.loaded_url, "http://127.0.0.1:9876/gui")
         activation_handler = instance.set_activation_handler.call_args.args[0]
         activation_handler()
@@ -278,6 +280,7 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         server.stop.return_value = True
         window = FakeWindow()
         webview = types.ModuleType("webview")
+        webview.settings = {}
         webview.FileDialog = types.SimpleNamespace(FOLDER="folder")
         webview.create_window = MagicMock(return_value=window)
         webview.start = MagicMock(side_effect=lambda callback: callback())
