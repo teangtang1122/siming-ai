@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database.bootstrap import SCHEMA_EPOCH, bootstrap_database
 from app.database.models import AssistantRun, AssistantRunStep
 
-HEAD_REVISION = "300a24_character_change_version"
+HEAD_REVISION = "300a25_unique_pending_draft"
 
 
 def _database_url(path: Path) -> str:

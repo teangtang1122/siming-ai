@@ -1049,7 +1049,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
           <div className="writer-editor-head">
             <div className="writer-editor-heading">
               <Title level={4} className="writer-editor-title" title={editorTitle}>{editorTitle}</Title>
-              {(detail || pendingGeneratedDraft || creating) && (
+              {(detail || pendingGeneratedDraft || creating || saveStatus === 'error') && (
                 <Space size={8} wrap>
                   {detail && !creating && (
                     <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
