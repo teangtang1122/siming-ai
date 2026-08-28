@@ -90,7 +90,7 @@
 ## 真源文档
 
 - 当前产品入口与安装说明：[README](../README.md)
-- 当前发布变化：[3.3.2 Release Notes](release-notes-3.3.2.md)
+- 当前发布变化：[3.3.3 Release Notes](release-notes-3.3.3.md)
 - 当前运行架构：[架构说明](architecture/README.md)
 - Android/PC 能力状态：[跨端一致性契约](mobile-pc-parity.md)
 - 构建与资产规则：[Windows 安装与发布](../PACKAGING.md)

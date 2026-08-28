@@ -301,7 +301,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         input_schema={
             "file_path": {
                 "type": "string",
-                "description": "Local .txt or .docx path on the same machine as Siming",
+                "description": "Local .txt, .md, or .docx path on the same machine as Siming",
             },
             "splits": {
                 "type": "array",
@@ -333,7 +333,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         input_schema={
             "file_path": {
                 "type": "string",
-                "description": "Local .txt or .docx path on the same machine as Siming",
+                "description": "Local .txt, .md, or .docx path on the same machine as Siming",
             },
             "title": {
                 "type": "string",
