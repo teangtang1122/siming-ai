@@ -147,6 +147,8 @@ Windows Release 提供 `Siming-Setup.exe` 与 `Siming-Setup.sha256`；Android �
 
 普通使用者只需要 `Siming-Setup.exe`。以下环境仅面向源码贡献者。
 
+社区贡献及补充致谢记录在 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
+
 源码开发使用 CPython 3.11。前端工具链以 `build-toolchain.json` 为准，当前为 Node.js 24.14.1 与 npm 11.11.0；Android 构建使用 JDK 17。Windows 正式打包还需要 Inno Setup，完整固定版本见 [Windows 安装与发布](PACKAGING.md)。
 
 ```powershell
