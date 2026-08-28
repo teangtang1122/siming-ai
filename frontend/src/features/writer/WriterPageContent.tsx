@@ -577,7 +577,22 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
         message.success('章节已仅保存；完成建档前不能让 AI 继续下一章')
       }
     } catch (err: any) {
-      markSaveFailed(err.message || '保存章节失败')
+      const detail = err?.response?.data?.detail || err.message || '保存章节失败'
+      markSaveFailed(detail)
+      message.error(detail)
+      if (pendingGeneratedDraft) {
+        try {
+          const pending = await apiClient.get<ApiResponse<PendingChapterDraft | null>>(
+            `/projects/${projectId}/chapter-drafts/pending`,
+          )
+          if (pending.data.data?.draft_id !== pendingGeneratedDraft.draftId) {
+            updateGeneratedDraft({ status: 'superseded' })
+            fetchChapters()
+          }
+        } catch {
+          // Keep the editor draft when the authoritative state cannot be checked.
+        }
+      }
     } finally {
       setSaving(false)
     }
@@ -1034,9 +1049,11 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
           <div className="writer-editor-head">
             <div className="writer-editor-heading">
               <Title level={4} className="writer-editor-title" title={editorTitle}>{editorTitle}</Title>
-              {detail && !creating && (
+              {(detail || pendingGeneratedDraft || creating) && (
                 <Space size={8} wrap>
-                  <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
+                  {detail && !creating && (
+                    <Text type="secondary">{detail.word_count} 字 · v{detail.current_version} · {new Date(detail.updated_at).toLocaleString('zh-CN')}</Text>
+                  )}
                   <SaveStatusIndicator status={saveStatus} error={saveError} />
                 </Space>
               )}

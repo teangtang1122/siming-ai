@@ -23,7 +23,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前源码版本 3.3.3** 新增严格、版本化的司命项目包，可在 PC 与 Android 间迁移作者数据，同时明确排除自动任务、助手运行态和 RAG。外部小说继续通过独立入口导入 TXT / Markdown / DOCX；桌面、Gateway 与 Android 的导入、草稿和助手恢复语义保持一致。完整变化见 [3.3.3 发布说明](docs/release-notes-3.3.3.md)。
+> **当前源码版本 3.3.4** 修复同一作品并发或重试生成章节时，迟到草稿替换当前草稿、随后无法保存且继续写作被阻塞的问题。PC、Gateway 与 Android 现在共同遵循“每部作品仅一个作者可见待保存草稿”的确定性状态约束，并会自动释放已对应正式正文的旧草稿。完整变化见 [3.3.4 发布说明](docs/release-notes-3.3.4.md)。
 
 ## 它解决什么问题
 

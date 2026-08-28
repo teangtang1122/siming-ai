@@ -215,6 +215,46 @@ describe('WriterPage manual writing actions', () => {
     expect(api.put).not.toHaveBeenCalled()
   })
 
+  it('keeps a failed pending-draft save visible in the editor', async () => {
+    const pendingDraft = {
+      draft_id: 'draft-save-error',
+      project_id: 'project-1',
+      title: '第二章 迟到草稿',
+      outline_node_id: 'outline-2',
+      context_manifest_id: 'manifest-2',
+      saved_chapter_id: null,
+      draft_status: 'pending' as const,
+      content: '这份草稿的保存错误必须明确显示。',
+      word_count: 16,
+    }
+    api.get.mockImplementation((url: string) => {
+      if (url.endsWith('/chapter-drafts/pending')) return Promise.resolve(response(pendingDraft))
+      if (url.endsWith('/outline')) return Promise.resolve(response({ items: [], flat: [], total: 0 }))
+      if (url.endsWith('/chapters')) return Promise.resolve(response({ items: [chapter], total: 1 }))
+      if (url.endsWith('/snapshots')) return Promise.resolve(response({ items: [], total: 0 }))
+      if (url.endsWith('/chapters/chapter-1')) return Promise.resolve(response(chapter))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    const detail = '迟到草稿已释放，不会阻塞后续写作'
+    api.post.mockRejectedValue(Object.assign(new Error('保存失败'), {
+      response: { data: { detail } },
+    }))
+
+    render(
+      <AiPanelProvider>
+        <WriterPage projectId="project-1" />
+      </AiPanelProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '保存并建档' }))
+
+    expect(await screen.findByText('保存失败')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getAllByText(detail).length).toBeGreaterThan(0)
+    })
+    expect(await screen.findByLabelText('当前草稿：第二章 迟到草稿')).toBeInTheDocument()
+  })
+
   it('ignores a saved chapter detail response that arrives after the draft', async () => {
     const lateDraft = {
       draft_id: 'draft-late',

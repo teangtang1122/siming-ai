@@ -192,6 +192,19 @@ internal class MobileWorkspaceAgent(
                     onEvent(event("done", "章节草稿已生成，本轮已停止"))
                     return
                 }
+                if (call.name == "chapter_writer" && result.string("status") == "blocked") {
+                    pendingChapterDraft(projectId)?.let { draft ->
+                        onEvent(
+                            event(
+                                type = "chapter_draft",
+                                detail = result.string("detail"),
+                                data = draft,
+                            ),
+                        )
+                    }
+                    onEvent(event("done", result.string("detail")))
+                    return
+                }
             }
             iteration += 1
             if (iteration == MAX_ITERATIONS) {
@@ -494,11 +507,30 @@ internal class MobileWorkspaceAgent(
                 "outline_node_id 必须是当前作品的章级节点，不能使用卷级或场景级节点",
             )
         }
+        val chapterPayloads = all.asSequence()
+            .filter { it.entity.entityType == "chapter" }
+            .map(LocalRecord::payload)
+            .toList()
+        val pendingRun = chapterWriteStore.latestGenerated(projectId)
+        val activePendingRun = if (pendingRun == null) {
+            null
+        } else {
+            val pendingFormalChapterId = existingMobileChapterIdForOutline(
+                chapterPayloads,
+                pendingRun.manifest.request.outlineNodeId,
+            )
+            if (pendingFormalChapterId == null) {
+                pendingRun
+            } else {
+                chapterWriteStore.markSuperseded(
+                    pendingRun.id,
+                    "对应大纲已关联正式章节；旧草稿已释放。",
+                )
+                null
+            }
+        }
         val existingChapterId = existingMobileChapterIdForOutline(
-            all.asSequence()
-                .filter { it.entity.entityType == "chapter" }
-                .map(LocalRecord::payload)
-                .asIterable(),
+            chapterPayloads,
             request.outlineNodeId,
         )
         if (existingChapterId != null) {
@@ -508,6 +540,21 @@ internal class MobileWorkspaceAgent(
                 buildJsonObject {
                     put("outline_node_id", request.outlineNodeId)
                     put("existing_chapter_id", existingChapterId)
+                },
+            )
+        }
+        if (activePendingRun != null) {
+            return result(
+                "chapter_writer",
+                "blocked",
+                "当前章节草稿尚未保存并完成建档，本轮未生成下一章。",
+                buildJsonObject {
+                    put("blocking_draft_id", activePendingRun.id)
+                    put("outline_node_id", activePendingRun.manifest.request.outlineNodeId)
+                    put("allowed_actions", buildJsonArray {
+                        add(JsonPrimitive("save_and_catalog"))
+                        add(JsonPrimitive("save_only"))
+                    })
                 },
             )
         }

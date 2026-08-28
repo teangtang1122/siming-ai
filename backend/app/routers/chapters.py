@@ -34,6 +34,7 @@ from ..services.workspace.generated_drafts import (
     ensure_generated_draft_outline_is_unused,
     find_chapter_draft,
     latest_pending_chapter_draft,
+    lock_chapter_draft_project,
     mark_chapter_draft_saved,
     update_chapter_draft,
 )
@@ -113,6 +114,7 @@ async def create_chapter(
     db: Annotated[Session, Depends(get_db)],
 ):
     values = payload.model_dump()
+    lock_chapter_draft_project(db, project_id)
     draft_id = values.pop("draft_id", None)
     cataloging_mode = values.pop("cataloging_mode", "save_only")
     draft = None
@@ -127,6 +129,7 @@ async def create_chapter(
             db,
             project_id,
             values.get("outline_node_id"),
+            draft=existing_draft,
         )
         draft = update_chapter_draft(
             db,

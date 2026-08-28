@@ -496,6 +496,56 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     expect(lastPostPayload).not.toHaveProperty('target_chapter_id')
   })
 
+  it('shows a rejected chat draft save instead of failing silently', async () => {
+    const stream = createControlledResponse([conversationEvent + runEvent])
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    }))
+    const user = userEvent.setup()
+    renderChat()
+    await sendChapterRequest()
+
+    const draftAction = {
+      tool: 'chapter_writer',
+      status: 'ok',
+      detail: '第二章草稿已生成，尚未保存',
+      data: {
+        draft_id: 'draft-save-error',
+        project_id: 'project-1',
+        title: '第二章 夜雨',
+        outline_node_id: 'outline-2',
+        content: '夜雨落在山门外。',
+        draft_status: 'pending',
+      },
+    }
+    await act(async () => {
+      stream.push(
+        sse({
+          type: 'complete',
+          data: {
+            reply: '第二章草稿已生成，尚未保存。',
+            outcome: 'completed_with_reply',
+            actions: [draftAction],
+            applied_actions: [draftAction],
+            tool_logs: [draftAction],
+            run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+          },
+        }) + sse('[DONE]'),
+      )
+      stream.close()
+    })
+
+    const detail = '该大纲已在草稿生成期间关联正式章节；迟到草稿已释放'
+    mockPost.mockRejectedValueOnce(Object.assign(new Error('保存失败'), {
+      response: { data: { detail } },
+    }))
+    await user.click(await screen.findByRole('button', { name: '保存并建档' }))
+
+    expect(await screen.findByText(detail)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存并建档' })).toBeEnabled()
+  })
+
   it('connects OpenCode to the isolated one-turn MCP without a grant step', async () => {
     render(
       <MemoryRouter>

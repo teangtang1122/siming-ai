@@ -62,7 +62,7 @@ class MobileChapterWriteStoreTest {
             assertNotNull(recovered)
             assertEquals(MobileChapterWriteState.GENERATED, recovered.state)
             assertEquals(
-                setOf("generating", "generated", "cancelled", "failed", "saved"),
+                setOf("generating", "generated", "cancelled", "failed", "saved", "superseded"),
                 MobileChapterWriteState.ALL,
             )
             assertEquals(runId, store.latestGenerated("p1")?.id)
@@ -70,6 +70,36 @@ class MobileChapterWriteStoreTest {
             assertEquals(null, store.latestGenerated("p1"))
             assertEquals(runId, mobileChapterWriteRunId("p1", "deepseek-chat", manifest))
             assertNotEquals(runId, mobileChapterWriteRunId("p2", "deepseek-chat", manifest))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `stale standalone draft can be superseded without blocking a new write`() = runTest {
+        val directory = createTempDirectory("siming-mobile-write-").toFile()
+        try {
+            val manifest = manifest()
+            val runId = mobileChapterWriteRunId("p1", "deepseek-chat", manifest)
+            val store = MobileChapterWriteStore(directory)
+            store.save(
+                MobileChapterWriteRun(
+                    id = runId,
+                    projectId = "p1",
+                    model = "deepseek-chat",
+                    title = "断线重连",
+                    content = "已经存在的未保存草稿。",
+                    state = MobileChapterWriteState.GENERATED,
+                    manifest = manifest,
+                ),
+            )
+
+            assertEquals(runId, store.latestGenerated("p1")?.id)
+            val released = store.markSuperseded(runId, "对应大纲已有正式章节")
+
+            assertEquals(MobileChapterWriteState.SUPERSEDED, released?.state)
+            assertEquals("对应大纲已有正式章节", released?.error)
+            assertEquals(null, store.latestGenerated("p1"))
         } finally {
             directory.deleteRecursively()
         }

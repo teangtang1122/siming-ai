@@ -24,6 +24,8 @@ from ....services.cataloging.launcher import (
 )
 from ....services.context_orchestrator import ContextOrchestrator
 from ..generated_drafts import (
+    ChapterDraftOutlineConflict,
+    PendingChapterDraftConflict,
     find_pending_chapter_draft,
     pending_draft_block_result,
     store_chapter_draft,
@@ -233,14 +235,30 @@ async def chapter_writer(
         }
 
     context_orchestrator.mark_consumed(context_manifest)
-    draft_id = store_chapter_draft(
-        project_id=project_id,
-        content=content,
-        title=outline_title,
-        outline_node_id=outline_node_id,
-        context_manifest_id=manifest_id,
-        db=db,
-    )
+    try:
+        draft_id = store_chapter_draft(
+            project_id=project_id,
+            content=content,
+            title=outline_title,
+            outline_node_id=outline_node_id,
+            context_manifest_id=manifest_id,
+            db=db,
+        )
+    except PendingChapterDraftConflict as conflict:
+        return pending_draft_block_result("chapter_writer", conflict.draft)
+    except ChapterDraftOutlineConflict as conflict:
+        return {
+            "tool": "chapter_writer",
+            "status": "skipped",
+            "detail": (
+                "生成期间该大纲已保存为正式章节；"
+                "迟到结果未覆盖正文，也未创建无效草稿"
+            ),
+            "data": {
+                "outline_node_id": outline_node_id,
+                "existing_chapter_id": conflict.chapter.id,
+            },
+        }
 
     return apply_turn_directive({
         "tool": "chapter_writer",

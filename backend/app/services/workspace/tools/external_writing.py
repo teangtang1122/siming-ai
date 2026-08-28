@@ -222,6 +222,8 @@ async def save_external_chapter_draft(
         find_cataloging_required_chapter,
     )
     from app.services.workspace.generated_drafts import (
+        ChapterDraftOutlineConflict,
+        PendingChapterDraftConflict,
         find_pending_chapter_draft,
         pending_draft_block_result,
         store_chapter_draft,
@@ -327,14 +329,30 @@ async def save_external_chapter_draft(
                 },
             }
 
-    draft_id = store_chapter_draft(
-        project_id=project_id,
-        content=content,
-        title=title,
-        outline_node_id=outline_node_id,
-        context_manifest_id=context_manifest_id,
-        db=db,
-    )
+    try:
+        draft_id = store_chapter_draft(
+            project_id=project_id,
+            content=content,
+            title=title,
+            outline_node_id=outline_node_id,
+            context_manifest_id=context_manifest_id,
+            db=db,
+        )
+    except PendingChapterDraftConflict as conflict:
+        return pending_draft_block_result("save_external_chapter_draft", conflict.draft)
+    except ChapterDraftOutlineConflict as conflict:
+        return {
+            "tool": "save_external_chapter_draft",
+            "status": "skipped",
+            "detail": (
+                "The outline acquired a formal chapter before this draft was stored. "
+                "The late result was discarded without replacing prose or creating a stale draft."
+            ),
+            "data": {
+                "outline_node_id": outline_node_id,
+                "existing_chapter_id": conflict.chapter.id,
+            },
+        }
 
     return apply_turn_directive({
         "tool": "save_external_chapter_draft",

@@ -97,6 +97,11 @@ internal class MobileChapterWriteStore(
         return transition(run, MobileChapterWriteState.SAVED)
     }
 
+    suspend fun markSuperseded(runId: String, error: String? = null): MobileChapterWriteRun? {
+        val run = load(runId) ?: return null
+        return transition(run, MobileChapterWriteState.SUPERSEDED, error)
+    }
+
     private fun file(runId: String): File {
         require(runId.matches(RUN_ID_PATTERN)) { "无效的手机写章运行 ID" }
         return File(directory, "$runId.json")
@@ -182,7 +187,8 @@ internal object MobileChapterWriteState {
     const val CANCELLED = "cancelled"
     const val FAILED = "failed"
     const val SAVED = "saved"
-    val ALL = setOf(GENERATING, GENERATED, CANCELLED, FAILED, SAVED)
+    const val SUPERSEDED = "superseded"
+    val ALL = setOf(GENERATING, GENERATED, CANCELLED, FAILED, SAVED, SUPERSEDED)
 }
 
 internal fun mobileChapterWriteRunId(
