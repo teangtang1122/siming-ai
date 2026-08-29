@@ -92,6 +92,19 @@ internal fun AssistantWorkspace(projectId: String, viewModel: MainViewModel) {
     val gatewayMobile = connection != null && directApi != null && modelRoute == "mobile"
     val canUseAi = connection != null || directApi != null
 
+    LaunchedEffect(ui.pendingAssistantRequest, canUseAi, ui.assistantRunning) {
+        val queued = ui.pendingAssistantRequest
+        if (!queued.isNullOrBlank() && canUseAi && !ui.assistantRunning) {
+            val outgoing = viewModel.takePendingAssistantRequest() ?: return@LaunchedEffect
+            submittedPrompt = outgoing
+            viewModel.runAssistant(
+                projectId,
+                outgoing,
+                if (modelRoute == "mobile") AssistantModelRoute.MobileKey else AssistantModelRoute.Pc,
+            )
+        }
+    }
+
     LaunchedEffect(submittedPrompt, ui.assistantOutput, ui.assistantReasoning, ui.assistantActivity, ui.assistantRunning) {
         if (submittedPrompt.isNotBlank() || ui.assistantOutput.isNotBlank() || ui.assistantRunning) {
             runCatching { listState.animateScrollToItem(maxOf(0, listState.layoutInfo.totalItemsCount - 1)) }

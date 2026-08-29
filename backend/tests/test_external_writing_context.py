@@ -106,19 +106,24 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
         }
         orchestrator_class.return_value = orchestrator
 
-        result = asyncio.run(
-            prepare_external_writing_context(
-                db,
-                "p1",
-                {"outline_node_id": outline.id},
+        with patch(
+            "app.services.workspace.tools.external_writing.render_generation_context",
+            return_value=manifest.rendered_context,
+        ):
+            result = asyncio.run(
+                prepare_external_writing_context(
+                    db,
+                    "p1",
+                    {"outline_node_id": outline.id},
+                )
             )
-        )
 
         self.assertEqual(result["status"], "ok")
         data = result["data"]
         self.assertEqual(data["context_manifest_id"], "manifest-1")
-        self.assertEqual(data["writing_context"], manifest.rendered_context)
-        self.assertEqual(data["evidence_sources"], orchestrator.manifest_payload.return_value["items"])
+        self.assertEqual(data["task_context"], "")
+        self.assertEqual(data["baseline_context"], manifest.rendered_context)
+        self.assertEqual(data["baseline_sources"], orchestrator.manifest_payload.return_value["items"])
         self.assertEqual(
             set(data["prompt_pack"]),
             {"pack_id", "version", "title", "system_prompt"},
@@ -129,9 +134,9 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
         self.assertNotIn("selected_context", data)
         self.assertNotIn("context_manifest", data)
         next_tools = {item["tool"] for item in data["next_tool_suggestions"]}
-        self.assertEqual(next_tools, {"submit_context_evidence", "save_external_chapter_draft"})
+        self.assertEqual(next_tools, {"search_task_context", "submit_context_evidence"})
 
-    def test_real_context_exposes_complete_character_card_and_relationship(self):
+    def test_real_context_exposes_character_only_after_agent_search_and_selection(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
@@ -145,6 +150,10 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
             Project,
         )
         from app.services.workspace.tools.external_writing import prepare_external_writing_context
+        from app.services.workspace.tools.context_governance import (
+            search_task_context,
+            submit_context_evidence,
+        )
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -200,13 +209,42 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
             ))
 
             self.assertEqual(result["status"], "ok")
-            writing_context = result["data"]["writing_context"]
-            self.assertIn("姜尘", writing_context)
-            self.assertIn("保护边荒城", writing_context)
-            self.assertIn("brief", writing_context)
-            self.assertIn("警惕", writing_context)
-            self.assertIn("师友", writing_context)
-            self.assertIn("石翁", writing_context)
+            baseline = result["data"]["baseline_context"]
+            self.assertIn("姜尘向石翁求助", baseline)
+            self.assertNotIn("保护边荒城", baseline)
+            self.assertNotIn("brief", baseline)
+            self.assertNotIn("师友", baseline)
+            manifest_id = result["data"]["context_manifest_id"]
+            searched = asyncio.run(search_task_context(
+                db,
+                project.id,
+                {
+                    "context_manifest_id": manifest_id,
+                    "query": "姜尘 保护边荒城 辨骨",
+                    "source_types": ["character"],
+                },
+            ))
+            hero_result = next(
+                item for item in searched["data"]["items"]
+                if item["source_id"] == hero.id
+            )
+            submitted = asyncio.run(submit_context_evidence(
+                db,
+                project.id,
+                {
+                    "context_manifest_id": manifest_id,
+                    "sources": [{"item_id": hero_result["item_id"]}],
+                },
+            ))
+            self.assertEqual(submitted["status"], "ok")
+            self.assertTrue(submitted["data"]["context_selection_token"])
+            task_context = submitted["data"]["task_context"]
+            self.assertIn("姜尘", task_context)
+            self.assertIn("保护边荒城", task_context)
+            self.assertIn("brief", task_context)
+            self.assertIn("警惕", task_context)
+            self.assertIn("师友", task_context)
+            self.assertIn("石翁", task_context)
         finally:
             db.close()
             Base.metadata.drop_all(engine)

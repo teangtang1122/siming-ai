@@ -39,7 +39,7 @@ from app.prompts.packs.chapter_quality import PACK as CHAPTER_QUALITY_PACK  # no
 from app.services.workspace.registry import registry  # noqa: E402
 from app.services.workspace.tool_schemas import build_workspace_tool_schemas  # noqa: E402
 from app.services.workspace.tools.character_writer import CHARACTER_CARD_TOOL  # noqa: E402
-from app.services.workspace.tools.outline_writer import OUTLINE_NODES_TOOL  # noqa: E402
+from app.services.workspace.tools.outline_writer import OUTLINE_PROPOSAL_TOOL  # noqa: E402
 from app.services.workspace.tools.worldbuilding_writer import WORLDBUILDING_ENTRY_TOOL  # noqa: E402
 from app.services.novel_creation_authoring import _stage_contract  # noqa: E402
 from app.services.novel_creation_contract import (  # noqa: E402
@@ -81,7 +81,9 @@ MOBILE_TOOL_NAMES = [
     "search_outline",
     "search_outline_tree",
     "search_worldbuilding",
-    "preview_writing_context",
+    "prepare_task_context",
+    "search_task_context",
+    "submit_context_evidence",
     "chapter_writer",
     "character_writer",
     "outline_writer",
@@ -117,10 +119,7 @@ def _writer_systems() -> dict:
         existing_characters="暂无角色。",
     )[0]["content"]
     outline = build_outline_writer_messages(
-        style_context="{{style_context}}",
-        existing_outline="暂无大纲。",
-        world_context="暂无世界观设定。",
-        existing_characters="暂无角色。",
+        task_context="{{task_context}}",
     )[0]["content"]
     world = {
         dimension: build_worldbuilding_writer_messages(
@@ -155,27 +154,12 @@ def _writer_user_templates() -> dict:
                         role_hint="{{role_type}}" if role else "",
                     )[1]["content"]
 
-    outline: dict[str, str] = {}
-    for requirements in (False, True):
-        for parent in (False, True):
-            for world in (False, True):
-                for existing in (False, True):
-                    key = (
-                        f"requirements={str(requirements).lower()};"
-                        f"parent={str(parent).lower()};world={str(world).lower()};"
-                        f"existing={str(existing).lower()}"
-                    )
-                    outline[key] = build_outline_writer_messages(
-                        style_context="{{style_context}}",
-                        existing_outline="{{existing_outline}}",
-                        world_context="{{world_context}}" if world else "暂无世界观设定。",
-                        existing_characters=(
-                            "{{existing_characters}}" if existing else "暂无角色。"
-                        ),
-                        requirements="{{requirements}}" if requirements else "",
-                        parent_context="{{parent_context}}" if parent else "",
-                        batch_count="{{batch_count}}",
-                    )[1]["content"]
+    outline = {
+        "governed": build_outline_writer_messages(
+            task_context="{{task_context}}",
+            batch_count="{{batch_count}}",  # type: ignore[arg-type]
+        )[1]["content"]
+    }
 
     world: dict[str, str] = {}
     for requirements in (False, True):
@@ -393,7 +377,7 @@ def build_contract() -> dict:
         "writer_user_templates": _writer_user_templates(),
         "writer_output_tools": {
             "character": CHARACTER_CARD_TOOL,
-            "outline": OUTLINE_NODES_TOOL,
+            "outline": OUTLINE_PROPOSAL_TOOL,
             "world": WORLDBUILDING_ENTRY_TOOL,
         },
         "creation_agent": {

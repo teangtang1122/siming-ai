@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from ....database.models import AgentRun
 from ....services.context_orchestrator import ContextOrchestrator
+from ....services.task_context_selection import (
+    MODEL_SELECTED_TASK_TYPES,
+    render_generation_context,
+)
 
 
 def _manifest_id_from_args(db: Session, project_id: str, args: dict[str, Any]) -> str:
@@ -34,7 +38,7 @@ def _manifest_id_from_args(db: Session, project_id: str, args: dict[str, Any]) -
 
 
 async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any]) -> dict:
-    """Prepare a baseline manifest for a local CLI or MCP Agent task."""
+    """Prepare a compact baseline manifest for a local CLI or MCP Agent task."""
     orchestrator = ContextOrchestrator(db)
     task_type = str(args.get("task_type") or "writing").strip()
     run_id = str(args.get("run_id") or "").strip()
@@ -84,14 +88,32 @@ async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any
         )
     if run:
         run.context_manifest_id = manifest.id
+    payload = orchestrator.manifest_payload(manifest, include_content=False)
     return {
         "tool": "prepare_task_context",
         "status": manifest.status,
-        "detail": "Task context prepared." if manifest.status == "ready" else "Task context requires confirmation or rebuild completion.",
+        "detail": (
+            "Compact task anchors prepared; search as needed and finalize exact evidence before generation."
+            if manifest.status == "ready" and manifest.task_type in MODEL_SELECTED_TASK_TYPES
+            else "Task context prepared."
+            if manifest.status == "ready"
+            else "Task context requires confirmation or rebuild completion."
+        ),
         "data": {
             "manifest_id": manifest.id,
             "context_manifest_id": manifest.id,
-            "context_manifest": orchestrator.manifest_payload(manifest, include_content=True),
+            "context_manifest": payload,
+            "baseline_context": (
+                render_generation_context(manifest)
+                if manifest.task_type in MODEL_SELECTED_TASK_TYPES
+                else manifest.rendered_context
+            ),
+            "selection_required": manifest.task_type in MODEL_SELECTED_TASK_TYPES,
+            "next_tools": (
+                ["search_task_context", "submit_context_evidence"]
+                if manifest.task_type in MODEL_SELECTED_TASK_TYPES
+                else []
+            ),
         },
     }
 
@@ -108,7 +130,31 @@ async def search_task_context(db: Session, project_id: str, args: dict[str, Any]
     query = str(args.get("query") or "").strip()
     if not query:
         return {"tool": "search_task_context", "status": "skipped", "detail": "query is required", "data": {"items": []}}
-    rows = orchestrator.search_task_context(manifest, query=query, limit=max(1, min(int(args.get("limit") or 12), 40)))
+    usable, detail = orchestrator.validate(manifest)
+    if not usable:
+        return {
+            "tool": "search_task_context",
+            "status": manifest.status,
+            "detail": detail,
+            "data": {"manifest_id": manifest.id, "items": []},
+        }
+    source_types = (
+        [str(value).strip() for value in args.get("source_types", []) if str(value).strip()]
+        if isinstance(args.get("source_types"), list)
+        else []
+    )
+    rows = orchestrator.search_task_context(
+        manifest,
+        query=query,
+        limit=max(
+            1,
+            min(
+                int(args.get("limit") or 12),
+                20 if manifest.task_type in MODEL_SELECTED_TASK_TYPES else 40,
+            ),
+        ),
+        source_types=source_types,
+    )
     return {
         "tool": "search_task_context",
         "status": "ok",
@@ -126,12 +172,30 @@ async def submit_context_evidence(db: Session, project_id: str, args: dict[str, 
     manifest = orchestrator.get_manifest(manifest_id, project_id)
     if not manifest:
         return {"tool": "submit_context_evidence", "status": "skipped", "detail": "Context manifest not found", "data": {}}
+    usable, detail = orchestrator.validate(manifest)
+    if not usable:
+        return {
+            "tool": "submit_context_evidence",
+            "status": manifest.status,
+            "detail": detail,
+            "data": {"manifest_id": manifest.id},
+        }
     sources = args.get("sources") if isinstance(args.get("sources"), list) else []
     result = orchestrator.submit_evidence(manifest, sources)
-    status = "ok" if result["accepted_count"] else "needs_confirmation"
+    if manifest.task_type in MODEL_SELECTED_TASK_TYPES:
+        status = "ok" if result.get("selection_ready") else "needs_confirmation"
+        detail = (
+            f"Finalized {result['accepted_count']} exact task source(s). "
+            "Use the returned context_selection_token in the next model step."
+            if status == "ok"
+            else "The proposed task evidence was not finalized; narrow or refresh the selection."
+        )
+    else:
+        status = "ok" if result["accepted_count"] else "needs_confirmation"
+        detail = f"Verified {result['accepted_count']} context evidence source(s)."
     return {
         "tool": "submit_context_evidence",
         "status": status,
-        "detail": f"Verified {result['accepted_count']} context evidence source(s).",
+        "detail": detail,
         "data": {"manifest_id": manifest.id, **result},
     }

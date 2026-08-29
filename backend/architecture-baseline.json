@@ -41,7 +41,6 @@
     "backend/app/services/local_cli_agent_worker.py:start_local_cli_agent_worker": 153,
     "backend/app/services/story_granularity.py:inspect_candidate_coverage_items": 246,
     "backend/app/services/workspace/tools/chapter_writer.py:chapter_writer": 214,
-    "backend/app/services/workspace/tools/context_preview.py:preview_writing_context": 165,
     "backend/app/services/workspace/tools/external_cataloging.py:get_next_external_cataloging_chapter": 341,
     "backend/app/services/workspace/tools/external_cataloging.py:save_external_cataloging_candidates": 248,
     "backend/app/services/workspace/tools/external_cataloging.py:verify_external_cataloging_progress": 153,

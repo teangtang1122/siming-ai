@@ -11,6 +11,8 @@ import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.MobileNovelImportFile
 import com.siming.mobile.data.MobileProjectPackageFile
 import com.siming.mobile.data.MobilePendingChapterDraft
+import com.siming.mobile.data.MobilePendingOutlineDraft
+import com.siming.mobile.data.MobileOutlineDraftNode
 import com.siming.mobile.data.MobileAssistantConversation
 import com.siming.mobile.data.MobileAssistantMessage
 import com.siming.mobile.data.creation.CreationExecutionRoute
@@ -59,6 +61,8 @@ data class MobileUiState(
     val assistantMessages: List<MobileAssistantMessage> = emptyList(),
     val assistantToolLog: List<String> = emptyList(),
     val pendingChapterDraft: MobilePendingChapterDraft? = null,
+    val pendingOutlineDraft: MobilePendingOutlineDraft? = null,
+    val pendingAssistantRequest: String? = null,
     val directApi: DirectApiSummary? = null,
     val discoveredModels: List<String> = emptyList(),
     val activeCreationId: String? = null,
@@ -847,6 +851,9 @@ private fun updateCatalogingProgress(
                         }
                         else -> current.pendingChapterDraft
                     }
+                    val nextOutlineDraft = update.outlineDraftData
+                        ?.let { MobilePendingOutlineDraft.fromJson(projectId, it) }
+                        ?: current.pendingOutlineDraft
                     uiState.value = current.copy(
                         assistantOutput = when {
                             update.output == null -> current.assistantOutput
@@ -866,6 +873,7 @@ private fun updateCatalogingProgress(
                             (current.assistantToolLog + it).takeLast(100)
                         } ?: current.assistantToolLog,
                         pendingChapterDraft = nextDraft,
+                        pendingOutlineDraft = nextOutlineDraft,
                     )
                     val runId = uiState.value.assistantRunId
                     if (assistantCancelRequested && !runId.isNullOrBlank()) {
@@ -884,6 +892,8 @@ private fun updateCatalogingProgress(
                         AssistantRoute.DirectApi ->
                             if (uiState.value.pendingChapterDraft != null) {
                                 "章节草稿已交给正文编辑器，等待你明确保存"
+                            } else if (uiState.value.pendingOutlineDraft != null) {
+                                "大纲草稿已交给结构页，等待你审阅确认"
                             } else {
                                 "手机独立工作区任务已完成，本地产生的修改已写入手机副本"
                             }
@@ -1001,6 +1011,118 @@ private fun updateCatalogingProgress(
                 showError(error)
             }
         }
+    }
+
+    fun restorePendingOutlineDraft(projectId: String) {
+        if (uiState.value.pendingOutlineDraft?.projectId == projectId) return
+        viewModelScope.launch {
+            try {
+                val draft = repository.pendingOutlineDraft(projectId)
+                if (draft != null) uiState.value = uiState.value.copy(pendingOutlineDraft = draft)
+            } catch (error: Exception) {
+                showError(error)
+            }
+        }
+    }
+
+    fun updatePendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        nodes: List<MobileOutlineDraftNode>,
+        designNotes: String,
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在保存大纲草稿…", error = null)
+            try {
+                val updated = repository.updatePendingOutlineDraft(draft, nodes, designNotes)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = updated,
+                    notice = "大纲草稿修改已保存；正式大纲尚未改变",
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun confirmPendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        nodes: List<MobileOutlineDraftNode>,
+        designNotes: String,
+        writeAfterConfirm: Boolean,
+        onConfirmed: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在确认大纲草稿…", error = null)
+            try {
+                val updated = repository.updatePendingOutlineDraft(draft, nodes, designNotes)
+                val result = repository.confirmPendingOutlineDraft(updated, writeAfterConfirm)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = null,
+                    pendingAssistantRequest = result.nextAuthorMessage,
+                    notice = if (result.nextAuthorMessage != null) {
+                        "大纲已确认；将以新的作者请求发起写章"
+                    } else {
+                        "大纲已确认并写入正式结构"
+                    },
+                )
+                onConfirmed()
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun regeneratePendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        onRequested: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在释放旧大纲草稿…", error = null)
+            try {
+                val request = repository.regeneratePendingOutlineDraft(draft)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = null,
+                    pendingAssistantRequest = request,
+                    notice = "旧草稿已丢弃；将以新的作者请求重新规划",
+                )
+                onRequested()
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun discardPendingOutlineDraft(draft: MobilePendingOutlineDraft) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在丢弃大纲草稿…", error = null)
+            try {
+                repository.discardPendingOutlineDraft(draft)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = null,
+                    notice = "大纲草稿已丢弃；正式大纲未改变",
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun takePendingAssistantRequest(): String? {
+        val request = uiState.value.pendingAssistantRequest
+        if (request != null) uiState.value = uiState.value.copy(pendingAssistantRequest = null)
+        return request
     }
 
     fun refreshAssistantConversations(projectId: String, selectCurrent: Boolean = false) {
@@ -1162,6 +1284,15 @@ private fun updateCatalogingProgress(
                             action["status"]?.jsonPrimitive?.contentOrNull == "ok"
                     }
                     ?.get("data") as? JsonObject
+                val outlineDraft = (data?.get("applied_actions") as? JsonArray)
+                    .orEmpty()
+                    .mapNotNull { it as? JsonObject }
+                    .firstOrNull { action ->
+                        action["tool"]?.jsonPrimitive?.contentOrNull in
+                            setOf("outline_writer", "save_external_outline_draft") &&
+                            action["status"]?.jsonPrimitive?.contentOrNull in setOf("ok", "blocked")
+                    }
+                    ?.get("data") as? JsonObject
                 AssistantEventUpdate(
                     output = reply,
                     replaceOutput = true,
@@ -1169,6 +1300,7 @@ private fun updateCatalogingProgress(
                     replaceReasoning = reasoning != null,
                     activity = "",
                     draftData = draft,
+                    outlineDraftData = outlineDraft,
                 )
             }
             "chapter_draft" -> AssistantEventUpdate(
@@ -1179,6 +1311,10 @@ private fun updateCatalogingProgress(
                 activity = "章节正在正文编辑器中实时生成…",
                 draftData = event["data"] as? JsonObject,
                 draftDelta = delta,
+            )
+            "outline_draft" -> AssistantEventUpdate(
+                activity = detail ?: "大纲草稿已生成，等待作者审阅",
+                outlineDraftData = event["data"] as? JsonObject,
             )
             "conversation" -> {
                 val conversation = event["conversation"] as? JsonObject
@@ -1234,6 +1370,7 @@ private data class AssistantEventUpdate(
     val toolLog: String? = null,
     val draftData: JsonObject? = null,
     val draftDelta: String? = null,
+    val outlineDraftData: JsonObject? = null,
 )
 
 fun ReplicaEntity.payload(): JsonObject? = payloadJson?.let {

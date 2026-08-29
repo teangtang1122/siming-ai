@@ -29,17 +29,19 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="chapter_writer",
-        description="基于尚未关联正式章节的章级大纲、作品上下文和写作要求，一次生成一份独立的未入库新章草稿；不会改写已有章节，成功后本轮结束。",
+        description="使用模型已经检索、复核并由服务端精确校验的上下文，一次生成一份独立的未入库新章草稿；不会自动拼装作品资料。必须先 prepare_task_context、按需 search_task_context、submit_context_evidence，并在下一模型步骤携带返回的选择令牌。成功后本轮结束。",
         input_schema={
             "outline_node_id": {"type": "string", "description": "对应的大纲节点ID（必填）"},
-            "requirements": {"type": "string", "description": "写作要求或方向（可选）"},
-            "involved_characters": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "本章出场的角色名列表",
+            "context_manifest_id": {
+                "type": "string",
+                "description": "prepare_task_context 返回的写章清单ID",
+            },
+            "context_selection_token": {
+                "type": "string",
+                "description": "submit_context_evidence 成功后返回的一次性选择令牌；必须在后续模型步骤使用",
             },
         },
-        required=["outline_node_id"],
+        required=["outline_node_id", "context_manifest_id", "context_selection_token"],
         tool_type="generator",
         estimated_cost="high",
         handler_name="chapter_writer",
@@ -62,12 +64,22 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="outline_writer",
-        description="生成大纲节点。加载故事结构规则，根据已有大纲、角色和世界观设计有因果推进和节奏变化的大纲节点。创建大纲前应先调用此工具生成大纲。",
+        description="使用模型已检索、复核并由服务端精确校验的上下文，生成一份持久化但未写入正式大纲的提案；不会自动读取全量大纲、角色或世界观。必须先 prepare_task_context(task_type=outline_planning)、按需检索、submit_context_evidence，并携带一次性令牌。成功后本轮结束，由作者编辑、确认或丢弃。",
         input_schema={
             "parent_id": {"type": "string", "description": "父节点ID（可选）"},
+            "insert_after_id": {"type": "string", "description": "同级插入锚点ID（可选）"},
             "requirements": {"type": "string", "description": "用户对大纲的要求或方向（可选）"},
             "batch_count": {"type": "integer", "description": "生成节点数量，默认1，上限8"},
+            "context_manifest_id": {
+                "type": "string",
+                "description": "prepare_task_context 返回的大纲规划清单ID",
+            },
+            "context_selection_token": {
+                "type": "string",
+                "description": "submit_context_evidence 返回的一次性选择令牌",
+            },
         },
+        required=["context_manifest_id", "context_selection_token"],
         tool_type="generator",
         estimated_cost="high",
         handler_name="outline_writer",

@@ -98,7 +98,7 @@ class MCPPackDerivationTest(unittest.TestCase):
         self.assertEqual(pack, "readonly_collaboration")
 
     def test_api_free_analysis_tools_are_readonly(self):
-        td = registry.get("preview_writing_context")
+        td = registry.get("prepare_task_context")
         pack = registry._derive_mcp_pack(td)
         self.assertEqual(pack, "readonly_collaboration")
 

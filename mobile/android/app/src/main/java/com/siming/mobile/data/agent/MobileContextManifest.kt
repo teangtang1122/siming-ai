@@ -8,6 +8,7 @@ import kotlin.math.min
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -29,6 +30,7 @@ internal data class MobileContextCategoryPolicy(
 )
 
 internal data class MobileContextPolicy(
+    val taskType: String,
     val schemaVersion: Int,
     val policyVersion: Int,
     val indexVersion: Int,
@@ -39,21 +41,28 @@ internal data class MobileContextPolicy(
     val safetyMarginTokens: Int,
     val minimumOutputReserveTokens: Int,
     val outputRatio: Double,
+    val softInputTargetTokens: Int,
+    val searchExcerptChars: Int,
+    val searchSourceTypes: Set<String>,
     val categories: Map<String, MobileContextCategoryPolicy>,
     val lexicalWeight: Double,
     val recencyWeight: Double,
     val structuralWeight: Double,
 ) {
     companion object {
-        fun fromJson(root: JsonObject): MobileContextPolicy {
-            val contract = root.objectValue("contract")
-            val defaults = root.objectValue("model_defaults")
-            val categoryRoot = root.objectValue("categories")
-            val fallback = root.objectValue("ranking").objectValue("lexical_fallback")
+        fun fromJson(root: JsonObject, taskType: String = "writing"): MobileContextPolicy {
+            val embedded = root.objectValue("task_policies")[taskType] as? JsonObject
+            val policyRoot = embedded ?: root
+            val contract = policyRoot.objectValue("contract")
+            val defaults = policyRoot.objectValue("model_defaults")
+            val categoryRoot = policyRoot.objectValue("categories")
+            val fallback = policyRoot.objectValue("ranking").objectValue("lexical_fallback")
+            val selection = policyRoot.objectValue("selection")
             return MobileContextPolicy(
-                schemaVersion = root.intValue("schema_version", 1),
-                policyVersion = root.intValue("policy_version", 1),
-                indexVersion = root.intValue("index_version", 1),
+                taskType = policyRoot.stringValue("task_type").ifBlank { taskType },
+                schemaVersion = policyRoot.intValue("schema_version", 1),
+                policyVersion = policyRoot.intValue("policy_version", 1),
+                indexVersion = policyRoot.intValue("index_version", 1),
                 sourceHash = root.stringValue("source_sha256"),
                 requiredCategories = contract.stringList("required_categories").toSet(),
                 optionalCategories = contract.stringList("optional_categories").toSet(),
@@ -61,6 +70,9 @@ internal data class MobileContextPolicy(
                 safetyMarginTokens = defaults.intValue("safety_margin_tokens", 512),
                 minimumOutputReserveTokens = defaults.intValue("minimum_output_reserve_tokens", 2_048),
                 outputRatio = defaults.doubleValue("output_ratio", 0.45),
+                softInputTargetTokens = defaults.intValue("soft_input_target_tokens", 32_000),
+                searchExcerptChars = selection.intValue("search_excerpt_chars", 600),
+                searchSourceTypes = selection.stringList("search_source_types").toSet(),
                 categories = categoryRoot.mapValues { (_, raw) ->
                     val value = raw as? JsonObject ?: JsonObject(emptyMap())
                     MobileContextCategoryPolicy(
@@ -83,9 +95,12 @@ internal data class MobileContextPolicy(
 
 internal class PcContextManifestPolicy(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
-    val policy: MobileContextPolicy = context.assets.open(ASSET_NAME).bufferedReader(Charsets.UTF_8).use { reader ->
-        MobileContextPolicy.fromJson(json.parseToJsonElement(reader.readText()) as JsonObject)
+    private val root: JsonObject = context.assets.open(ASSET_NAME).bufferedReader(Charsets.UTF_8).use { reader ->
+        json.parseToJsonElement(reader.readText()) as JsonObject
     }
+    val policy: MobileContextPolicy get() = policy("writing")
+
+    fun policy(taskType: String): MobileContextPolicy = MobileContextPolicy.fromJson(root, taskType)
 
     companion object {
         private const val ASSET_NAME = "pc_context_manifest_policy.json"
@@ -96,17 +111,19 @@ internal data class MobileContextRequest(
     val outlineNodeId: String,
     val targetChapterId: String,
     val requirements: String,
-    val involvedCharacters: List<String>,
-    val characterLimit: Int,
-    val recentLimit: Int,
+    val taskType: String = "writing",
+    val parentId: String = "",
+    val insertAfterId: String = "",
+    val batchCount: Int = 1,
 ) {
     fun toJson(): JsonObject = buildJsonObject {
+        put("task_type", taskType)
         put("outline_node_id", outlineNodeId)
         put("target_chapter_id", targetChapterId)
         put("requirements", requirements)
-        put("involved_characters", JsonArray(involvedCharacters.map(::JsonPrimitive)))
-        put("character_limit", characterLimit)
-        put("recent_limit", recentLimit)
+        put("parent_id", parentId)
+        put("insert_after_id", insertAfterId)
+        put("batch_count", batchCount)
     }
 
     fun fingerprint(projectId: String): String = mobileSha256(
@@ -114,10 +131,11 @@ internal data class MobileContextRequest(
             "project=$projectId",
             "outline=$outlineNodeId",
             "chapter=$targetChapterId",
+            "task=$taskType",
+            "parent=$parentId",
+            "insert_after=$insertAfterId",
+            "batch_count=$batchCount",
             "requirements=$requirements",
-            "characters=${involvedCharacters.joinToString("\u001e")}",
-            "character_limit=$characterLimit",
-            "recent_limit=$recentLimit",
         ).joinToString("\u001f"),
     )
 
@@ -126,35 +144,26 @@ internal data class MobileContextRequest(
             outlineNodeId = root.stringValue("outline_node_id"),
             targetChapterId = root.stringValue("target_chapter_id"),
             requirements = root.stringValue("requirements"),
-            involvedCharacters = root.stringList("involved_characters"),
-            characterLimit = root.intValue("character_limit", 8).coerceAtLeast(1),
-            recentLimit = root.intValue("recent_limit", 3).coerceAtLeast(1),
+            taskType = root.stringValue("task_type").ifBlank { "writing" },
+            parentId = root.stringValue("parent_id"),
+            insertAfterId = root.stringValue("insert_after_id"),
+            batchCount = root.intValue("batch_count", 1).coerceIn(1, 8),
         )
 
-        fun fromArgs(args: JsonObject, policy: MobileContextPolicy): MobileContextRequest {
-            val maxCharacters = policy.categories["scene_character"]?.maxItems ?: 12
-            val maxSummaries = policy.categories["previous_summary"]?.maxItems ?: 3
-            return MobileContextRequest(
-                outlineNodeId = args.stringValue("outline_node_id")
-                    .ifBlank { args.stringValue("target_outline_node_id") },
-                targetChapterId = args.stringValue("chapter_id")
-                    .ifBlank { args.stringValue("target_chapter_id") },
-                requirements = args.stringValue("requirements")
-                    .ifBlank { args.stringValue("instruction") }
-                    .ifBlank { args.stringValue("request") }
-                    .trim(),
-                involvedCharacters = args.stringList("involved_characters")
-                    .ifEmpty { args.stringList("character_names") }
-                    .map(String::trim)
-                    .filter(String::isNotBlank)
-                    .distinct()
-                    .take(maxCharacters),
-                characterLimit = args.intValue("character_limit", min(8, maxCharacters))
-                    .coerceIn(1, maxCharacters),
-                recentLimit = args.intValue("recent_limit", maxSummaries)
-                    .coerceIn(1, maxSummaries),
-            )
-        }
+        fun fromArgs(taskType: String, args: JsonObject): MobileContextRequest = MobileContextRequest(
+            outlineNodeId = args.stringValue("outline_node_id")
+                .ifBlank { args.stringValue("target_outline_node_id") },
+            targetChapterId = args.stringValue("chapter_id")
+                .ifBlank { args.stringValue("target_chapter_id") },
+            requirements = args.stringValue("requirements")
+                .ifBlank { args.stringValue("instruction") }
+                .ifBlank { args.stringValue("request") }
+                .trim(),
+            taskType = taskType,
+            parentId = args.stringValue("parent_id"),
+            insertAfterId = args.stringValue("insert_after_id"),
+            batchCount = args.intValue("batch_count", 1).coerceIn(1, 8),
+        )
     }
 }
 
@@ -166,7 +175,6 @@ internal data class MobileContextInputs(
     val styleText: String,
     val primaryRecords: List<JsonObject>,
     val rawRecords: List<JsonObject>,
-    val orderedChapters: List<JsonObject>,
     val contextWindowTokens: Int? = null,
     val maxOutputTokens: Int? = null,
 )
@@ -211,10 +219,14 @@ internal data class MobileContextManifestItem(
     val sourceHash: String = mobileSha256(content),
 ) {
     val estimatedTokens: Int get() = estimateMobileTokens(content)
+    val itemId: String get() = mobileSha256(
+        listOf(sourceType, sourceId.orEmpty(), chunkId.orEmpty(), sourceHash).joinToString("\u001f"),
+    )
 
     fun identity(): String = listOf(sourceType, sourceId.orEmpty(), chunkId.orEmpty()).joinToString("\u001f")
 
     fun toJson(includeContent: Boolean): JsonObject = buildJsonObject {
+        put("item_id", itemId)
         put("category", category)
         put("source_type", sourceType)
         sourceId?.let { put("source_id", it) }
@@ -273,20 +285,24 @@ internal data class MobileContextManifest(
     val selectionFingerprint: String,
     val contextWindowTokens: Int,
     val inputBudgetTokens: Int,
+    val softInputTargetTokens: Int,
     val outputReserveTokens: Int,
     val safetyMarginTokens: Int,
     val items: List<MobileContextManifestItem>,
     val coverage: Map<String, MobileContextCoverage>,
     val warnings: List<String>,
+    val selectionToken: String? = null,
 ) {
-    val estimatedInputTokens: Int get() = items.sumOf(MobileContextManifestItem::estimatedTokens)
-    val estimatedInputChars: Int get() = items.sumOf { it.content.length }
+    val generationItems: List<MobileContextManifestItem>
+        get() = items.filter { it.category != "agent_search" }
+    val estimatedInputTokens: Int get() = generationItems.sumOf(MobileContextManifestItem::estimatedTokens)
+    val estimatedInputChars: Int get() = generationItems.sumOf { it.content.length }
 
     fun items(category: String): List<MobileContextManifestItem> = items.filter { it.category == category }
 
     fun renderedContext(): String {
         val grouped = linkedMapOf<String, MutableList<MobileContextManifestItem>>()
-        items.forEach { item -> grouped.getOrPut(item.category) { mutableListOf() } += item }
+        generationItems.forEach { item -> grouped.getOrPut(item.category) { mutableListOf() } += item }
         return buildList {
             add("# Governed Task Context")
             grouped.forEach { (category, values) ->
@@ -299,7 +315,7 @@ internal data class MobileContextManifest(
     fun toJson(includeContent: Boolean = false): JsonObject = buildJsonObject {
         put("id", id)
         put("project_id", projectId)
-        put("task_type", "writing")
+        put("task_type", request.taskType)
         put("model", model)
         put("execution_route", "android_standalone")
         put("policy_version", policyVersion)
@@ -308,9 +324,19 @@ internal data class MobileContextManifest(
         put("status", status)
         put("request_fingerprint", requestFingerprint)
         put("selection_fingerprint", selectionFingerprint)
+        put("selection", buildJsonObject {
+            put("status", if (selectionToken.isNullOrBlank()) "pending" else "ready")
+            selectionToken?.let { put("token", it) }
+            put(
+                "selected_item_ids",
+                JsonArray(items.filter { it.category == "agent_selected" }.map { JsonPrimitive(it.itemId) }),
+            )
+        })
         put("budget", buildJsonObject {
             put("context_window_tokens", contextWindowTokens)
             put("input_budget_tokens", inputBudgetTokens)
+            put("soft_input_target_tokens", softInputTargetTokens)
+            put("soft_target_exceeded", estimatedInputTokens > softInputTargetTokens)
             put("output_reserve_tokens", outputReserveTokens)
             put("safety_margin_tokens", safetyMarginTokens)
             put("estimated_input_tokens", estimatedInputTokens)
@@ -334,6 +360,7 @@ internal data class MobileContextManifest(
             val items = (root["items"] as? JsonArray).orEmpty().mapNotNull { value ->
                 (value as? JsonObject)?.let(MobileContextManifestItem::fromJson)
             }
+            val inputBudgetTokens = budget.intValue("input_budget_tokens", 8_000)
             return MobileContextManifest(
                 id = root.stringValue("id"),
                 projectId = root.stringValue("project_id"),
@@ -346,12 +373,17 @@ internal data class MobileContextManifest(
                 requestFingerprint = root.stringValue("request_fingerprint"),
                 selectionFingerprint = root.stringValue("selection_fingerprint"),
                 contextWindowTokens = budget.intValue("context_window_tokens", 1_000_000),
-                inputBudgetTokens = budget.intValue("input_budget_tokens", 8_000),
+                inputBudgetTokens = inputBudgetTokens,
+                softInputTargetTokens = budget.intValue(
+                    "soft_input_target_tokens",
+                    min(32_000, inputBudgetTokens),
+                ),
                 outputReserveTokens = budget.intValue("output_reserve_tokens", 2_048),
                 safetyMarginTokens = budget.intValue("safety_margin_tokens", 512),
                 items = items,
                 coverage = coverage,
                 warnings = root.stringList("warnings"),
+                selectionToken = root.objectValue("selection").stringValue("token").ifBlank { null },
             ).also { manifest ->
                 require(manifest.id.isNotBlank() && manifest.projectId.isNotBlank()) {
                     "持久化 ContextManifest 缺少标识"
@@ -372,31 +404,44 @@ internal data class MobileContextValidation(
     val ready: Boolean get() = status == "ready"
 }
 
-/** Deterministic Android projection of the PC writing ContextManifest policy. */
+internal data class MobileContextSearch(
+    val manifest: MobileContextManifest,
+    val items: List<MobileContextManifestItem>,
+)
+
+internal data class MobileContextSelection(
+    val manifest: MobileContextManifest,
+    val accepted: List<MobileContextManifestItem>,
+    val rejected: List<String>,
+) {
+    val ready: Boolean get() = rejected.isEmpty() && !manifest.selectionToken.isNullOrBlank()
+}
+
+/** Deterministic Android projection of a PC model-selected ContextManifest policy. */
 internal class MobileContextManifestEngine(
     private val policy: MobileContextPolicy,
 ) {
     fun prepare(inputs: MobileContextInputs, id: String = UUID.randomUUID().toString()): MobileContextManifest {
+        require(inputs.request.taskType == policy.taskType) {
+            "ContextManifest task_type 与加载的 PC 策略不一致"
+        }
         val requestFingerprint = inputs.request.fingerprint(inputs.projectId)
         val coverage = linkedMapOf<String, MobileContextCoverage>()
         val candidates = mutableListOf<MobileContextManifestItem>()
         val warnings = mutableListOf<String>()
 
         addStyle(inputs, candidates, coverage)
-        addTargetOutline(inputs, candidates, coverage)
-        addRequirements(inputs, candidates, coverage)
-        addPreviousSummaries(inputs, candidates, coverage)
-        val resolution = addSceneCharacters(inputs, candidates, coverage)
-        addGovernance(inputs, candidates, coverage)
-        addWorldRetrieval(inputs, candidates, coverage)
-
-        val requestedNames = inputs.request.involvedCharacters.toSet()
-        val matchedNames = resolution.characters.mapTo(mutableSetOf()) { it.stringValue("name") } +
-            resolution.resolvedAliases.keys
-        val missingNames = requestedNames - matchedNames
-        if (missingNames.isNotEmpty()) {
-            warnings += "部分指定角色未命中角色卡或别名：${missingNames.joinToString("、")}"
+        when (policy.taskType) {
+            "writing" -> addTargetOutline(inputs, candidates, coverage)
+            "outline_planning" -> addOutlinePosition(inputs, candidates, coverage)
         }
+        addRequirements(inputs, candidates, coverage)
+        coverage["agent_selection"] = MobileContextCoverage(
+            required = false,
+            status = "pending",
+            itemCount = 0,
+            reason = "The task Agent has not finalized task-specific evidence yet.",
+        )
 
         val window = max(1, inputs.contextWindowTokens ?: policy.contextWindowTokens)
         val ratioLimit = (window * policy.outputRatio).toInt()
@@ -411,7 +456,7 @@ internal class MobileContextManifestEngine(
         if (missingRequired.isNotEmpty()) {
             warnings += "Required context is missing: ${missingRequired.joinToString(", ")}"
         }
-        warnings += "手机独立模式使用与 PC 同源的模型容量预算和本地词法检索；未启用 PC FTS、向量检索或 pinned chunks。"
+        warnings += "手机独立模式只自动提供任务锚点、文风和作者要求；其余资料由模型通过本地词法检索选择。"
 
         val selectionFingerprint = mobileSha256(
             selected.joinToString("\u001e") { item ->
@@ -432,6 +477,7 @@ internal class MobileContextManifestEngine(
             selectionFingerprint = selectionFingerprint,
             contextWindowTokens = window,
             inputBudgetTokens = inputBudget,
+            softInputTargetTokens = min(policy.softInputTargetTokens, inputBudget),
             outputReserveTokens = outputReserve,
             safetyMarginTokens = policy.safetyMarginTokens,
             items = selected,
@@ -442,23 +488,330 @@ internal class MobileContextManifestEngine(
 
     fun validate(existing: MobileContextManifest, inputs: MobileContextInputs): MobileContextValidation {
         val current = prepare(inputs, id = existing.id)
+        val currentAnchors = current.items.associateBy(MobileContextManifestItem::identity)
+        val changedSelectedSource = existing.items
+            .filter { it.category == "agent_selected" }
+            .firstOrNull { selected ->
+                exactCandidate(inputs, selected.sourceType, selected.sourceId.orEmpty())
+                    ?.sourceHash != selected.sourceHash
+            }
+        val changedAnchor = existing.items
+            .filter { it.category !in setOf("agent_search", "agent_selected") }
+            .firstOrNull { anchor -> currentAnchors[anchor.identity()]?.sourceHash != anchor.sourceHash }
         val staleReason = when {
             existing.policyVersion != policy.policyVersion ||
                 existing.indexVersion != policy.indexVersion ||
                 existing.policySourceHash != policy.sourceHash -> "PC 上下文策略版本已变化，请重新预检。"
             existing.model != inputs.model -> "模型已从 ${existing.model} 切换为 ${inputs.model}，请重新预检。"
-            existing.requestFingerprint != current.requestFingerprint -> "写作目标、要求或角色选择已变化，请重新预检。"
-            existing.selectionFingerprint != current.selectionFingerprint -> "已选择的上下文来源发生变化，请重新预检。"
+            existing.requestFingerprint != current.requestFingerprint -> "任务目标、位置或作者要求已变化，请重新建立精简基线。"
+            changedAnchor != null -> "必选上下文来源发生变化：${changedAnchor.title}。"
+            changedSelectedSource != null -> "已选择的上下文来源发生变化：${changedSelectedSource.title}。"
             current.status != "ready" -> "当前必选上下文不完整，需要作者确认。"
             else -> ""
         }
         return if (staleReason.isBlank()) {
-            MobileContextValidation("ready", "ContextManifest 仍然有效。", current)
+            MobileContextValidation("ready", "ContextManifest 仍然有效。", existing)
         } else if (current.status == "needs_confirmation" && existing.requestFingerprint == current.requestFingerprint) {
             MobileContextValidation("needs_confirmation", staleReason, current.copy(status = "needs_confirmation"))
         } else {
-            MobileContextValidation("stale", staleReason, current.copy(status = "stale"))
+            MobileContextValidation("stale", staleReason, current.copy(status = "stale", selectionToken = null))
         }
+    }
+
+    fun search(
+        existing: MobileContextManifest,
+        inputs: MobileContextInputs,
+        query: String,
+        sourceTypes: Set<String> = emptySet(),
+        limit: Int = 12,
+    ): MobileContextSearch {
+        val candidates = queryCandidates(inputs, query, sourceTypes)
+            .take(limit.coerceIn(1, 20))
+        val retained = existing.items.filter { it.category != "agent_selected" }
+        val merged = (retained + candidates)
+            .distinctBy { listOf(it.category, it.sourceType, it.sourceId.orEmpty(), it.sourceHash).joinToString("\u001f") }
+        val coverage = existing.coverage.toMutableMap().apply {
+            this["agent_selection"] = MobileContextCoverage(
+                false,
+                "pending",
+                0,
+                "Retrieved candidates must be reviewed and finalized by the task Agent.",
+            )
+        }
+        val cleared = existing.copy(
+            items = merged,
+            coverage = coverage,
+            selectionToken = null,
+            selectionFingerprint = fingerprint(merged.filter { it.category != "agent_search" }),
+        )
+        return MobileContextSearch(cleared, candidates)
+    }
+
+    fun select(
+        existing: MobileContextManifest,
+        inputs: MobileContextInputs,
+        itemIds: List<String>,
+    ): MobileContextSelection {
+        val baseAndSearch = existing.items.filter { it.category != "agent_selected" }
+        val cleared = existing.copy(
+            items = baseAndSearch,
+            selectionToken = null,
+            selectionFingerprint = fingerprint(baseAndSearch.filter { it.category != "agent_search" }),
+        )
+        val candidates = baseAndSearch
+            .filter { it.category == "agent_search" }
+            .associateBy(MobileContextManifestItem::itemId)
+        val rejected = mutableListOf<String>()
+        val selected = itemIds.distinct().mapNotNull { itemId ->
+            val candidate = candidates[itemId]
+            if (candidate == null) {
+                rejected += "候选 $itemId 不属于当前检索结果。"
+                return@mapNotNull null
+            }
+            val exact = exactCandidate(inputs, candidate.sourceType, candidate.sourceId.orEmpty())
+            if (exact == null || exact.sourceHash != candidate.sourceHash) {
+                rejected += "来源 ${candidate.title} 已变化或无法精确读取，请重新检索。"
+                return@mapNotNull null
+            }
+            exact.copy(
+                category = "agent_selected",
+                tier = 3,
+                selectionReason = "Exact source selected by the task Agent after retrieval review.",
+            )
+        }.distinctBy { it.identity() }
+
+        var usedTokens = baseAndSearch
+            .filter { it.category != "agent_search" }
+            .sumOf(MobileContextManifestItem::estimatedTokens)
+        selected.forEach { item ->
+            if (usedTokens + item.estimatedTokens > existing.inputBudgetTokens) {
+                rejected += "来源 ${item.title} 会挤占模型预留的输出空间，请缩减资料或输出预留。"
+            } else {
+                usedTokens += item.estimatedTokens
+            }
+        }
+        if (rejected.isNotEmpty()) {
+            return MobileContextSelection(cleared, emptyList(), rejected.distinct())
+        }
+
+        val token = UUID.randomUUID().toString()
+        val finalItems = baseAndSearch + selected
+        val coverage = existing.coverage.toMutableMap().apply {
+            this["agent_selection"] = MobileContextCoverage(
+                false,
+                "covered",
+                selected.size,
+                "Exact sources were selected by the task Agent after retrieval review.",
+            )
+        }
+        val softWarningPrefix = "任务上下文超过软目标："
+        val warnings = existing.warnings
+            .filterNot { it.startsWith(softWarningPrefix) }
+            .toMutableList()
+        if (usedTokens > existing.softInputTargetTokens) {
+            warnings += "$softWarningPrefix$usedTokens/${existing.softInputTargetTokens} token；模型已明确选择，可继续生成。"
+        }
+        val finalized = existing.copy(
+            items = finalItems,
+            coverage = coverage,
+            warnings = warnings.distinct(),
+            selectionToken = token,
+            selectionFingerprint = fingerprint(finalItems.filter { it.category != "agent_search" }),
+        )
+        return MobileContextSelection(finalized, selected, emptyList())
+    }
+
+    private fun fingerprint(items: List<MobileContextManifestItem>): String = mobileSha256(
+        items.joinToString("\u001e") { item ->
+            listOf(item.category, item.sourceType, item.sourceId.orEmpty(), item.chunkId.orEmpty(), item.sourceHash)
+                .joinToString("\u001f")
+        },
+    )
+
+    private fun queryCandidates(
+        inputs: MobileContextInputs,
+        query: String,
+        sourceTypes: Set<String>,
+    ): List<MobileContextManifestItem> {
+        val normalizedTypes = sourceTypes.map(String::trim).filter(String::isNotBlank).toSet()
+        val selectedTypes = if (normalizedTypes.isEmpty()) {
+            policy.searchSourceTypes
+        } else {
+            normalizedTypes intersect policy.searchSourceTypes
+        }
+        if (selectedTypes.isEmpty()) return emptyList()
+        fun allows(type: String): Boolean = type in selectedTypes
+        val raw = mutableListOf<MobileContextManifestItem>()
+
+        if (allows("character")) {
+            inputs.rawRecords
+                .filter { it.mobileRecordType() == "character" }
+                .distinctBy { it.stringValue("id") }
+                .mapNotNullTo(raw) { exactCandidate(inputs, "character", it.stringValue("id")) }
+        }
+        if (allows("character_timeline")) {
+            inputs.rawRecords
+                .filter { it.mobileRecordType() == "character_timeline" }
+                .map { it.stringValue("character_id") }
+                .filter(String::isNotBlank)
+                .distinct()
+                .mapNotNullTo(raw) { exactCandidate(inputs, "character_timeline", it) }
+        }
+        if (allows("worldbuilding")) {
+            inputs.rawRecords
+                .filter { it.mobileRecordType() == "world_entry" }
+                .distinctBy { it.stringValue("id") }
+                .mapNotNullTo(raw) { exactCandidate(inputs, "worldbuilding", it.stringValue("id")) }
+        }
+        if (allows("outline")) {
+            inputs.rawRecords
+                .filter { it.mobileRecordType() == "outline_node" }
+                .distinctBy { it.stringValue("id") }
+                .mapNotNullTo(raw) { exactCandidate(inputs, "outline", it.stringValue("id")) }
+        }
+        if (allows("chapter_summary")) {
+            inputs.rawRecords
+                .filter { it.mobileRecordType() == "chapter" && it.stringValue("summary").isNotBlank() }
+                .distinctBy { it.stringValue("id") }
+                .mapNotNullTo(raw) { exactCandidate(inputs, "chapter_summary", it.stringValue("id")) }
+        }
+        if (allows("chapter")) {
+            inputs.rawRecords
+                .filter { it.mobileRecordType() == "chapter" && it.stringValue("content").isNotBlank() }
+                .distinctBy { it.stringValue("id") }
+                .mapNotNullTo(raw) { exactCandidate(inputs, "chapter", it.stringValue("id")) }
+        }
+        if (allows("assistant_memory")) {
+            inputs.rawRecords
+                .filter { it.mobileRecordType() == "assistant_memory" }
+                .distinctBy { it.stringValue("id") }
+                .mapNotNullTo(raw) { exactCandidate(inputs, "assistant_memory", it.stringValue("id")) }
+        }
+        if (allows("narrative_governance")) {
+            exactCandidate(inputs, "narrative_governance", inputs.projectId)?.let(raw::add)
+        }
+
+        val queryTokens = lexicalTokens(query)
+        if (queryTokens.isEmpty()) return emptyList()
+        val scored = raw.map { candidate ->
+            candidate to lexicalOverlap(
+                queryTokens,
+                lexicalTokens(listOf(candidate.title, candidate.content).joinToString("\n")),
+            )
+        }.filter { (_, score) -> score > 0.0 }
+        val maxScore = scored.maxOfOrNull { it.second } ?: return emptyList()
+        return scored.map { (candidate, score) ->
+            val lexical = score / maxScore
+            candidate.copy(
+                lexicalScore = lexical,
+                finalScore = lexical,
+                selectionReason = "Local lexical retrieval candidate chosen by the model's query.",
+            )
+        }.sortedWith(
+            compareByDescending<MobileContextManifestItem> { it.finalScore }
+                .thenBy { it.title },
+        )
+    }
+
+    private fun exactCandidate(
+        inputs: MobileContextInputs,
+        sourceType: String,
+        sourceId: String,
+    ): MobileContextManifestItem? {
+        val row = inputs.rawRecords.firstOrNull { value ->
+            value.stringValue("id") == sourceId && when (sourceType) {
+                "character" -> value.mobileRecordType() == "character"
+                "worldbuilding" -> value.mobileRecordType() == "world_entry"
+                "outline" -> value.mobileRecordType() == "outline_node"
+                "chapter", "chapter_summary" -> value.mobileRecordType() == "chapter"
+                "assistant_memory" -> value.mobileRecordType() == "assistant_memory"
+                else -> false
+            }
+        }
+        val (title, content) = when (sourceType) {
+            "character" -> {
+                if (row == null) return null
+                row.stringValue("name").ifBlank { "Character" } to
+                    cleanMobileText(pcExactCharacterArchive(inputs.rawRecords, row))
+            }
+            "character_timeline" -> {
+                val events = inputs.rawRecords
+                    .filter {
+                        it.mobileRecordType() == "character_timeline" &&
+                            it.stringValue("character_id") == sourceId
+                    }
+                    .sortedWith(
+                        compareBy<JsonObject> { it.intValue("sort_order", 0) }
+                            .thenBy { it.stringValue("created_at") },
+                    )
+                if (events.isEmpty()) return null
+                val characterName = inputs.rawRecords.firstOrNull {
+                    it.mobileRecordType() == "character" && it.stringValue("id") == sourceId
+                }?.stringValue("name").orEmpty().ifBlank { sourceId.take(8) }
+                "$characterName timeline" to cleanMobileText(
+                    events.joinToString("\n") { event ->
+                        buildString {
+                            append('[').append(event.stringValue("event_type")).append("] ")
+                            append(event.stringValue("event_description"))
+                            event.stringValue("emotional_state_change").takeIf(String::isNotBlank)?.let {
+                                append(" (emotional change: ").append(it).append(')')
+                            }
+                        }
+                    },
+                )
+            }
+            "worldbuilding" -> {
+                if (row == null) return null
+                row.stringValue("title").ifBlank { "Worldbuilding" } to buildString {
+                    append("Worldbuilding: ").append(row.stringValue("title")).append('\n')
+                    append("Dimension: ").append(row.stringValue("dimension")).append('\n')
+                    append(cleanMobileText(row.stringValue("content")))
+                }
+            }
+            "outline" -> {
+                if (row == null) return null
+                row.stringValue("title").ifBlank { "Outline" } to mobileOutlineText(row)
+            }
+            "chapter_summary" -> {
+                if (row == null || row.stringValue("summary").isBlank()) return null
+                row.stringValue("title").ifBlank { "Chapter summary" } to
+                    "Chapter summary: ${row.stringValue("title")}\n${cleanMobileText(row.stringValue("summary"))}"
+            }
+            "chapter" -> {
+                if (row == null || row.stringValue("content").isBlank()) return null
+                row.stringValue("title").ifBlank { "Chapter" } to buildString {
+                    append("Chapter: ").append(row.stringValue("title"))
+                    row.stringValue("summary").takeIf(String::isNotBlank)?.let { summary ->
+                        append("\nSummary: ").append(cleanMobileText(summary))
+                    }
+                    append("\nText:\n").append(cleanMobileText(row.stringValue("content")))
+                }
+            }
+            "assistant_memory" -> {
+                if (row == null) return null
+                row.stringValue("key").ifBlank { "Memory" } to cleanMobileText(
+                    row.stringValue("value"),
+                )
+            }
+            "narrative_governance" -> "Narrative governance ledger" to cleanMobileText(
+                pcGovernanceContext(inputs.rawRecords, limit = null).ifBlank {
+                    "Narrative governance: no due or high-risk items."
+                },
+            )
+            else -> return null
+        }
+        if (content.isBlank()) return null
+        return item(
+            category = "agent_search",
+            sourceType = sourceType,
+            sourceId = sourceId,
+            title = title,
+            content = content,
+            required = false,
+            score = 0.0,
+            reason = "Exact local source available for model-driven retrieval.",
+            sourceHash = mobileSha256(content),
+        )
     }
 
     private fun addStyle(
@@ -519,6 +872,95 @@ internal class MobileContextManifestEngine(
         coverage["target_outline"] = MobileContextCoverage(true, "covered", 1)
     }
 
+    private fun addOutlinePosition(
+        inputs: MobileContextInputs,
+        candidates: MutableList<MobileContextManifestItem>,
+        coverage: MutableMap<String, MobileContextCoverage>,
+    ) {
+        fun outline(id: String): JsonObject? = inputs.rawRecords.firstOrNull {
+            it.mobileRecordType() == "outline_node" && it.stringValue("id") == id
+        } ?: inputs.primaryRecords.firstOrNull {
+            it.mobileRecordType() == "outline_node" && it.stringValue("id") == id
+        }
+
+        val requestedParentId = inputs.request.parentId.trim()
+        val requestedInsertAfterId = inputs.request.insertAfterId.trim()
+        val parent = requestedParentId.takeIf(String::isNotBlank)?.let(::outline)
+        if (requestedParentId.isNotBlank() && parent == null) {
+            coverage["outline_position"] = MobileContextCoverage(
+                true,
+                "missing",
+                0,
+                "The requested outline parent does not exist in this project.",
+            )
+            return
+        }
+        val insertAfter = requestedInsertAfterId.takeIf(String::isNotBlank)?.let(::outline)
+        if (requestedInsertAfterId.isNotBlank() && insertAfter == null) {
+            coverage["outline_position"] = MobileContextCoverage(
+                true,
+                "missing",
+                0,
+                "The requested insertion anchor does not exist in this project.",
+            )
+            return
+        }
+        val resolvedParentId = requestedParentId.ifBlank {
+            insertAfter?.stringValue("parent_id").orEmpty()
+        }
+        if (
+            insertAfter != null &&
+            insertAfter.stringValue("parent_id") != resolvedParentId
+        ) {
+            coverage["outline_position"] = MobileContextCoverage(
+                true,
+                "missing",
+                0,
+                "The insertion anchor is not a child of the requested parent.",
+            )
+            return
+        }
+
+        if (parent != null) {
+            candidates += item(
+                category = "outline_parent",
+                sourceType = "outline",
+                sourceId = parent.stringValue("id"),
+                title = parent.stringValue("title").ifBlank { "Outline parent" },
+                content = mobileOutlineText(
+                    parent,
+                    policy.categories["outline_parent"]?.fieldLimitChars ?: 1_200,
+                ),
+                required = true,
+                score = 1.0,
+                reason = "Author-selected parent for the proposed outline nodes.",
+                sourceHash = mobileSha256(canonicalMobileJson(parent)),
+            )
+            coverage["outline_parent"] = MobileContextCoverage(true, "covered", 1)
+        } else {
+            coverage["outline_parent"] = MobileContextCoverage(false, "not_applicable", 0)
+        }
+
+        val position = buildJsonObject {
+            if (resolvedParentId.isBlank()) put("parent_id", JsonNull)
+            else put("parent_id", resolvedParentId)
+            if (requestedInsertAfterId.isBlank()) put("insert_after_id", JsonNull)
+            else put("insert_after_id", requestedInsertAfterId)
+            put("batch_count", inputs.request.batchCount.coerceIn(1, 8))
+        }.toString()
+        candidates += item(
+            category = "outline_position",
+            sourceType = "inline",
+            sourceId = "outline-position",
+            title = "Author-selected outline insertion position",
+            content = position,
+            required = true,
+            score = 1.0,
+            reason = "Exact parent and insertion anchor for this outline proposal.",
+        )
+        coverage["outline_position"] = MobileContextCoverage(true, "covered", 1)
+    }
+
     private fun addRequirements(
         inputs: MobileContextInputs,
         candidates: MutableList<MobileContextManifestItem>,
@@ -541,184 +983,6 @@ internal class MobileContextManifestEngine(
             reason = "Explicit request passed to this task.",
         )
         coverage["user_requirement"] = MobileContextCoverage(false, "covered", 1)
-    }
-
-    private fun addPreviousSummaries(
-        inputs: MobileContextInputs,
-        candidates: MutableList<MobileContextManifestItem>,
-        coverage: MutableMap<String, MobileContextCoverage>,
-    ) {
-        val limit = policy.categories["previous_summary"]?.contentLimitChars ?: 1_600
-        val rows = inputs.orderedChapters
-            .filter { inputs.request.targetChapterId.isBlank() || it.stringValue("id") != inputs.request.targetChapterId }
-            .filter { it.stringValue("summary").isNotBlank() }
-            .takeLast(inputs.request.recentLimit)
-        rows.forEachIndexed { index, chapter ->
-            val score = max(0.2, 0.9 - (rows.lastIndex - index) * 0.1)
-            candidates += item(
-                category = "previous_summary",
-                sourceType = "chapter_summary",
-                sourceId = chapter.stringValue("id"),
-                title = "Previous summary: ${chapter.stringValue("title")}",
-                content = cleanMobileText(chapter.stringValue("summary"), limit),
-                required = false,
-                score = score,
-                recency = max(0.2, 1.0 - (rows.lastIndex - index) * 0.15),
-                structural = 0.8,
-                reason = "Most recent confirmed chapter summary.",
-                sourceHash = mobileSha256(chapter.stringValue("summary")),
-            )
-        }
-        coverage["previous_summary"] = MobileContextCoverage(
-            required = false,
-            status = if (rows.isEmpty()) "not_applicable" else "covered",
-            itemCount = rows.size,
-        )
-    }
-
-    private fun addSceneCharacters(
-        inputs: MobileContextInputs,
-        candidates: MutableList<MobileContextManifestItem>,
-        coverage: MutableMap<String, MobileContextCoverage>,
-    ): PcCharacterResolution {
-        val resolution = resolvePcCharacters(
-            inputs.rawRecords,
-            inputs.request.outlineNodeId.takeIf(String::isNotBlank),
-            inputs.request.involvedCharacters,
-            inputs.request.characterLimit,
-        )
-        val limit = policy.categories["scene_character"]?.contentLimitChars ?: 12_000
-        resolution.characters.forEach { character ->
-            candidates += item(
-                category = "scene_character",
-                sourceType = "character",
-                sourceId = character.stringValue("id"),
-                title = character.stringValue("name").ifBlank { "Character" },
-                content = cleanMobileText(pcCharacterDetails(inputs.rawRecords, listOf(character)), limit),
-                required = false,
-                score = 0.95,
-                structural = 0.95,
-                reason = "Character explicitly selected or linked to the target outline.",
-                sourceHash = mobileSha256(
-                    buildString {
-                        append(canonicalMobileJson(character))
-                        inputs.rawRecords.asSequence()
-                            .filter { it.mobileRecordType() == "character_relationship" }
-                            .filter {
-                                it.stringValue("from") == character.stringValue("id") ||
-                                    it.stringValue("to") == character.stringValue("id")
-                            }
-                            .sortedBy { it.stringValue("id") }
-                            .forEach { append("\u001e").append(canonicalMobileJson(it)) }
-                    },
-                ),
-            )
-        }
-        val characterCount = inputs.rawRecords.count { it.mobileRecordType() == "character" }
-        coverage["scene_character"] = MobileContextCoverage(
-            required = false,
-            status = when {
-                resolution.characters.isNotEmpty() -> "covered"
-                characterCount == 0 -> "not_applicable"
-                else -> "missing"
-            },
-            itemCount = resolution.characters.size,
-            reason = if (characterCount > 0 && resolution.characters.isEmpty()) "No target character was resolved." else "",
-        )
-        return resolution
-    }
-
-    private fun addGovernance(
-        inputs: MobileContextInputs,
-        candidates: MutableList<MobileContextManifestItem>,
-        coverage: MutableMap<String, MobileContextCoverage>,
-    ) {
-        val category = policy.categories["narrative_governance"]
-        val content = pcGovernanceContext(inputs.rawRecords)
-            .ifBlank { category?.emptyLedgerText ?: "Narrative governance: no due or high-risk items." }
-        candidates += item(
-            category = "narrative_governance",
-            sourceType = "narrative_governance",
-            sourceId = inputs.request.targetChapterId.ifBlank { inputs.projectId },
-            title = "Narrative governance ledger",
-            content = cleanMobileText(content, category?.contentLimitChars ?: 5_000),
-            required = false,
-            score = 0.85,
-            structural = 0.85,
-            reason = "Current debts, foreshadowing, causal chains and state conflicts.",
-        )
-        coverage["narrative_governance"] = MobileContextCoverage(false, "covered", 1)
-    }
-
-    private fun addWorldRetrieval(
-        inputs: MobileContextInputs,
-        candidates: MutableList<MobileContextManifestItem>,
-        coverage: MutableMap<String, MobileContextCoverage>,
-    ) {
-        val outline = candidates.firstOrNull { it.category == "target_outline" }
-        val query = listOf(inputs.request.requirements, outline?.title.orEmpty(), outline?.content.orEmpty())
-            .filter(String::isNotBlank)
-            .joinToString("\n")
-            .take(12_000)
-        val queryTokens = lexicalTokens(query)
-        val rows = inputs.rawRecords
-            .filter { it.mobileRecordType() == "world_entry" }
-            .distinctBy { it.stringValue("id") }
-            .sortedWith(
-                compareByDescending<JsonObject> { it.stringValue("updated_at") }
-                    .thenByDescending { it.stringValue("created_at") }
-                    .thenBy { it.stringValue("title") },
-            )
-        if (queryTokens.isEmpty() || rows.isEmpty()) {
-            coverage["hybrid_retrieval"] = MobileContextCoverage(false, "not_applicable", 0)
-            return
-        }
-        val rawScores = rows.map { world ->
-            val text = listOf(
-                world.stringValue("dimension"),
-                world.stringValue("title"),
-                world.stringValue("content"),
-                world.stringValue("constraints"),
-                world.stringValue("plot_usage"),
-            ).joinToString("\n")
-            world to lexicalOverlap(queryTokens, lexicalTokens(text))
-        }
-        val maxLexical = rawScores.maxOfOrNull { it.second } ?: 0.0
-        val category = policy.categories["hybrid_retrieval"]
-        val ranked = rawScores.mapIndexedNotNull { index, (world, rawLexical) ->
-            if (rawLexical <= 0.0 || maxLexical <= 0.0) return@mapIndexedNotNull null
-            val lexical = rawLexical / maxLexical
-            val recency = max(0.05, 1.0 / (1.0 + index.toDouble() / 8.0))
-            val structural = 0.25
-            val final = lexical * policy.lexicalWeight +
-                recency * policy.recencyWeight +
-                structural * policy.structuralWeight
-            item(
-                category = "hybrid_retrieval",
-                sourceType = "worldbuilding",
-                sourceId = world.stringValue("id"),
-                title = world.stringValue("title").ifBlank { world.stringValue("dimension").ifBlank { "Worldbuilding" } },
-                content = cleanMobileText(
-                    "【${world.stringValue("dimension").ifBlank { "culture" }}·${world.stringValue("title")}】\n" +
-                        world.stringValue("content"),
-                    category?.contentLimitChars ?: 1_800,
-                ),
-                required = false,
-                score = final,
-                lexical = lexical,
-                recency = recency,
-                structural = structural,
-                reason = "Lexical fallback ranking: lexical 70%, recency 20%, structure 10%.",
-                sourceHash = mobileSha256(canonicalMobileJson(world)),
-            )
-        }.sortedWith(compareByDescending<MobileContextManifestItem> { it.finalScore }.thenBy { it.title })
-            .take(category?.maxItems ?: 24)
-        candidates += ranked
-        coverage["hybrid_retrieval"] = MobileContextCoverage(
-            required = false,
-            status = if (ranked.isEmpty()) "not_applicable" else "covered",
-            itemCount = ranked.size,
-        )
     }
 
     private fun budget(
@@ -813,7 +1077,7 @@ internal fun mobileSha256(value: String): String = MessageDigest.getInstance("SH
     .digest(value.toByteArray(Charsets.UTF_8))
     .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
-private fun mobileOutlineText(node: JsonObject, fieldLimit: Int): String = buildList {
+private fun mobileOutlineText(node: JsonObject, fieldLimit: Int? = null): String = buildList {
     add("Outline: ${node.stringValue("title")}")
     add("Node type: ${node.stringValue("node_type").ifBlank { "unknown" }}")
     listOf(
@@ -824,8 +1088,9 @@ private fun mobileOutlineText(node: JsonObject, fieldLimit: Int): String = build
     ).forEach { (label, value) -> if (value.isNotBlank()) add("$label: ${cleanMobileText(value, fieldLimit)}") }
 }.joinToString("\n")
 
-private fun cleanMobileText(value: String, limit: Int): String {
+private fun cleanMobileText(value: String, limit: Int? = null): String {
     val text = value.trim()
+    if (limit == null) return text
     if (text.length <= limit) return text
     if (limit <= 3) return text.take(limit)
     return text.take(limit - 3).trimEnd() + "..."
@@ -876,7 +1141,7 @@ private fun lexicalOverlap(query: Set<String>, source: Set<String>): Double {
     return query.count { it in source }.toDouble() / query.size.toDouble()
 }
 
-private fun canonicalMobileJson(element: JsonElement): String = when (element) {
+internal fun canonicalMobileJson(element: JsonElement): String = when (element) {
     is JsonObject -> element.entries.sortedBy { it.key }
         .joinToString(prefix = "{", postfix = "}", separator = ",") { (key, value) ->
             JsonPrimitive(key).toString() + ":" + canonicalMobileJson(value)

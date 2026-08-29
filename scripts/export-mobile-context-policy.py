@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the PC writing-context policy consumed by Android standalone mode."""
+"""Export PC model-selected context policies consumed by Android standalone mode."""
 from __future__ import annotations
 
 import argparse
@@ -32,6 +32,10 @@ def _canonical(data: dict[str, Any]) -> str:
 
 def build_policy() -> dict[str, Any]:
     payload = portable_context_policy("writing")
+    payload["task_policies"] = {
+        task_type: portable_context_policy(task_type)
+        for task_type in ("writing", "outline_planning")
+    }
     payload["source_sha256"] = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
     return payload
 

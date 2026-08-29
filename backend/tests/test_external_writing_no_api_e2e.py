@@ -25,6 +25,7 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
             prepare_external_writing_context,
             save_external_chapter_draft,
         )
+        from app.services.workspace.tools.context_governance import submit_context_evidence
 
         engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         Base.metadata.create_all(engine)
@@ -56,7 +57,15 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
             self.assertEqual(context_result["status"], "ok")
             manifest_id = context_result["data"]["context_manifest_id"]
             self.assertTrue(manifest_id)
-            self.assertIn("Governed Task Context", context_result["data"]["writing_context"])
+            self.assertIn("Governed Task Context", context_result["data"]["baseline_context"])
+            self.assertEqual(context_result["data"]["task_context"], "")
+            selection_result = asyncio.run(submit_context_evidence(
+                db,
+                project.id,
+                {"context_manifest_id": manifest_id, "sources": []},
+            ))
+            self.assertEqual(selection_result["status"], "ok")
+            selection_token = selection_result["data"]["context_selection_token"]
 
             with patch(
                 "app.services.workspace.generated_drafts.store_chapter_draft",
@@ -70,6 +79,7 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
                             "content": "The rain fell on the battlefield. Hero drew his sword.",
                             "outline_node_id": outline.id,
                             "context_manifest_id": manifest_id,
+                            "context_selection_token": selection_token,
                             "source_agent": "claude-code",
                             "_context_execution_route": "external_mcp",
                         },

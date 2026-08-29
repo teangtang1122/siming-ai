@@ -15,14 +15,13 @@ import kotlinx.serialization.json.put
 
 class MobileContextManifestTest {
     private val json = Json { ignoreUnknownKeys = true }
-    private val policy: MobileContextPolicy by lazy {
+    private val policyRoot: JsonObject by lazy {
         val file = listOf(
             File("app/src/main/assets/pc_context_manifest_policy.json"),
             File("src/main/assets/pc_context_manifest_policy.json"),
         ).first(File::isFile)
-        MobileContextPolicy.fromJson(json.parseToJsonElement(file.readText()) as JsonObject)
+        json.parseToJsonElement(file.readText()) as JsonObject
     }
-
     @Test
     fun `manifest keeps style and target outline as required anchors`() {
         val manifest = engine().prepare(inputs())
@@ -32,6 +31,8 @@ class MobileContextManifestTest {
         assertEquals("covered", manifest.coverage.getValue("style").status)
         assertEquals("covered", manifest.coverage.getValue("target_outline").status)
         assertTrue(manifest.inputBudgetTokens > manifest.estimatedInputTokens)
+        assertEquals(32_000, manifest.softInputTargetTokens)
+        assertTrue(manifest.inputBudgetTokens > manifest.softInputTargetTokens)
     }
 
     @Test
@@ -43,6 +44,72 @@ class MobileContextManifestTest {
         assertEquals("needs_confirmation", manifest.status)
         assertEquals("missing", manifest.coverage.getValue("target_outline").status)
         assertTrue(manifest.warnings.any { "target_outline" in it })
+    }
+
+    @Test
+    fun `outline planning baseline contains position and style but no story collections`() {
+        val planningRequest = MobileContextRequest(
+            taskType = "outline_planning",
+            parentId = "",
+            insertAfterId = "o1",
+            batchCount = 2,
+            requirements = "规划后续两章",
+        )
+
+        val manifest = engine("outline_planning").prepare(inputs(request = planningRequest))
+
+        assertEquals("ready", manifest.status)
+        assertEquals("covered", manifest.coverage.getValue("style").status)
+        assertEquals("covered", manifest.coverage.getValue("outline_position").status)
+        assertEquals(
+            setOf("style", "outline_position", "user_requirement"),
+            manifest.generationItems.mapTo(linkedSetOf()) { it.category },
+        )
+        assertTrue(manifest.items.none { it.sourceType in setOf("character", "worldbuilding", "chapter") })
+    }
+
+    @Test
+    fun `final selection has no fixed twenty four source limit`() {
+        val extras = (0 until 25).map { index ->
+            world(
+                id = "proof-$index",
+                title = "proof-${index.toString().padStart(2, '0')}",
+                content = if (index < 20) {
+                    "commonproof detail $index"
+                } else {
+                    "commonproof supplementproof detail $index"
+                },
+                updatedAt = "2026-08-18T00:00:00Z",
+            )
+        }
+        val base = inputs()
+        val expanded = base.copy(
+            primaryRecords = base.primaryRecords + extras,
+            rawRecords = base.rawRecords + extras,
+        )
+        val engine = engine()
+        val first = engine.search(
+            engine.prepare(expanded),
+            expanded,
+            "commonproof",
+            setOf("worldbuilding"),
+            limit = 20,
+        )
+        val second = engine.search(
+            first.manifest,
+            expanded,
+            "supplementproof",
+            setOf("worldbuilding"),
+            limit = 20,
+        )
+        val selectedIds = second.manifest.items
+            .filter { it.category == "agent_search" && it.sourceId.orEmpty().startsWith("proof-") }
+            .map { it.itemId }
+
+        val selection = engine.select(second.manifest, expanded, selectedIds)
+
+        assertTrue(selection.ready)
+        assertEquals(25, selection.accepted.size)
     }
 
     @Test
@@ -69,28 +136,99 @@ class MobileContextManifestTest {
     }
 
     @Test
-    fun `local lexical fallback selects relevant worldbuilding`() {
-        val manifest = engine().prepare(
-            inputs(request = request(requirements = "这一章要切断病毒网络并防止尸潮扩散")),
-        )
+    fun `local lexical search returns candidates without injecting them`() {
+        val engine = engine()
+        val inputs = inputs(request = request(requirements = "这一章要切断病毒网络并防止尸潮扩散"))
+        val manifest = engine.prepare(inputs)
+        val searched = engine.search(manifest, inputs, "病毒网络 尸潮", setOf("worldbuilding"))
 
-        val world = manifest.items.filter { it.sourceType == "worldbuilding" }
+        assertTrue(manifest.items.none { it.sourceType == "worldbuilding" })
+        val world = searched.items.filter { it.sourceType == "worldbuilding" }
         assertTrue(world.isNotEmpty())
         assertEquals("病毒网络", world.first().title)
         assertTrue((world.first().lexicalScore ?: 0.0) > 0.0)
-        assertTrue("Lexical fallback" in world.first().selectionReason)
+        assertEquals("agent_search", world.first().category)
+        assertTrue(searched.manifest.selectionToken.isNullOrBlank())
     }
 
     @Test
-    fun `alias resolution and directed relationships enter character source hash`() {
-        val manifest = engine().prepare(
-            inputs(request = request(involved = listOf("父亲"))),
-        )
+    fun `model selected character expands exact card and relationships`() {
+        val engine = engine()
+        val inputs = inputs()
+        val manifest = engine.prepare(inputs)
+        val searched = engine.search(manifest, inputs, "陆承宇 父亲", setOf("character"))
+        val candidate = searched.items.first { it.title == "陆承宇" }
+        val selection = engine.select(searched.manifest, inputs, listOf(candidate.itemId))
 
-        val character = manifest.items.first { it.category == "scene_character" && it.title == "陆承宇" }
+        assertTrue(selection.ready)
+        val character = selection.accepted.single()
+        assertEquals("agent_selected", character.category)
         assertEquals("陆承宇", character.title)
         assertTrue("陆糖: 父女" in character.content)
         assertEquals(64, character.sourceHash.length)
+    }
+
+    @Test
+    fun `selected exact source keeps content beyond old fixed character limit`() {
+        val marker = "世界观尾部不可丢失标记"
+        val base = inputs()
+        val longWorld = world(
+            "w-long",
+            "长篇世界观",
+            "长篇资料".repeat(2_100) + marker,
+            "2026-08-19T00:00:00Z",
+        )
+        val expanded = base.copy(
+            primaryRecords = base.primaryRecords + longWorld,
+            rawRecords = base.rawRecords + longWorld,
+        )
+        val engine = engine()
+        val searched = engine.search(
+            engine.prepare(expanded),
+            expanded,
+            marker,
+            setOf("worldbuilding"),
+        )
+        val candidate = searched.items.single { it.sourceId == "w-long" }
+
+        val selection = engine.select(searched.manifest, expanded, listOf(candidate.itemId))
+
+        assertTrue(selection.ready)
+        assertTrue(selection.accepted.single().content.length > 8_000)
+        assertTrue(marker in selection.accepted.single().content)
+    }
+
+    @Test
+    fun `default search can select the full governance ledger`() {
+        val marker = "第十三条低优先级治理项"
+        val governance = (1..13).map { index ->
+            buildJsonObject {
+                put("_record_type", "narrative_debt")
+                put("id", "governance-$index")
+                put("title", if (index == 13) marker else "高优先级债务$index")
+                put("status", "open")
+                put("priority", if (index == 13) "low" else "critical")
+            }
+        }
+        val base = inputs()
+        val expanded = base.copy(
+            primaryRecords = base.primaryRecords + governance,
+            rawRecords = base.rawRecords + governance,
+        )
+        val engine = engine()
+        val searched = engine.search(engine.prepare(expanded), expanded, marker)
+        val candidate = searched.items.single {
+            it.sourceType == "narrative_governance"
+        }
+
+        val selection = engine.select(
+            searched.manifest,
+            expanded,
+            listOf(candidate.itemId),
+        )
+
+        assertTrue(selection.ready)
+        assertTrue(marker in selection.accepted.single().content)
     }
 
     @Test
@@ -103,16 +241,33 @@ class MobileContextManifestTest {
         )
 
         assertEquals(440, manifest.inputBudgetTokens)
+        assertEquals(440, manifest.softInputTargetTokens)
         assertEquals("needs_confirmation", manifest.status)
         assertEquals("missing", manifest.coverage.getValue("style").status)
         assertTrue(manifest.estimatedInputTokens <= manifest.inputBudgetTokens)
     }
 
     @Test
+    fun `soft target warns without rejecting model approved context`() {
+        val engine = engine()
+        val inputs = inputs(styleText = "风".repeat(35_000))
+        val manifest = engine.prepare(inputs)
+
+        val selection = engine.select(manifest, inputs, emptyList())
+
+        assertTrue(selection.ready)
+        assertTrue(selection.manifest.estimatedInputTokens > 32_000)
+        assertTrue(selection.manifest.warnings.any { "超过软目标" in it })
+    }
+
+    @Test
     fun `selected source changes make a cached manifest stale`() {
         val engine = engine()
         val beforeInputs = inputs(request = request(requirements = "病毒网络"))
-        val before = engine.prepare(beforeInputs)
+        val baseline = engine.prepare(beforeInputs)
+        val searched = engine.search(baseline, beforeInputs, "病毒网络", setOf("worldbuilding"))
+        val candidate = searched.items.first { it.title == "病毒网络" }
+        val before = engine.select(searched.manifest, beforeInputs, listOf(candidate.itemId)).manifest
         val changedWorld = beforeInputs.rawRecords.map { row ->
             if (row.string("id") == "w-virus") {
                 buildJsonObject {
@@ -131,6 +286,20 @@ class MobileContextManifestTest {
         assertEquals("stale", validation.status)
         assertNotEquals(before.selectionFingerprint, validation.current.selectionFingerprint)
         assertTrue("来源发生变化" in validation.detail)
+    }
+
+    @Test
+    fun `new search invalidates a finalized selection token`() {
+        val engine = engine()
+        val inputs = inputs()
+        val firstSearch = engine.search(engine.prepare(inputs), inputs, "病毒网络", setOf("worldbuilding"))
+        val selected = engine.select(firstSearch.manifest, inputs, listOf(firstSearch.items.first().itemId)).manifest
+
+        assertTrue(!selected.selectionToken.isNullOrBlank())
+        val nextSearch = engine.search(selected, inputs, "陆承宇", setOf("character"))
+
+        assertTrue(nextSearch.manifest.selectionToken.isNullOrBlank())
+        assertTrue(nextSearch.manifest.generationItems.none { it.category == "agent_selected" })
     }
 
     @Test
@@ -164,19 +333,18 @@ class MobileContextManifestTest {
         assertEquals(4, estimateMobileTokens("天地abcdefgh"))
     }
 
-    private fun engine() = MobileContextManifestEngine(policy)
+    private fun policy(taskType: String): MobileContextPolicy =
+        MobileContextPolicy.fromJson(policyRoot, taskType)
+
+    private fun engine(taskType: String = "writing") = MobileContextManifestEngine(policy(taskType))
 
     private fun request(
         outlineNodeId: String = "o1",
         requirements: String = "寻找记忆城中的病毒线索",
-        involved: List<String> = listOf("陆糖"),
     ) = MobileContextRequest(
         outlineNodeId = outlineNodeId,
         targetChapterId = "",
         requirements = requirements,
-        involvedCharacters = involved,
-        characterLimit = 8,
-        recentLimit = 3,
     )
 
     private fun inputs(
@@ -232,7 +400,6 @@ class MobileContextManifestTest {
             styleText = styleText,
             primaryRecords = listOf(project, outline, protagonist, father, virus, market, chapter1, chapter2),
             rawRecords = raw,
-            orderedChapters = listOf(chapter1, chapter2),
             contextWindowTokens = contextWindowTokens,
         )
     }

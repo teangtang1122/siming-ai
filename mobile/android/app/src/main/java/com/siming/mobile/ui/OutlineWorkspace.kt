@@ -62,6 +62,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.MobileOutlineDraftNode
+import com.siming.mobile.data.MobilePendingOutlineDraft
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -182,9 +184,15 @@ internal fun MobileOutlineWorkspace(
     projectId: String,
     records: List<ReplicaEntity>,
     online: Boolean,
+    pendingDraft: MobilePendingOutlineDraft?,
+    busy: Boolean,
     onOpen: (ReplicaEntity) -> Unit,
     onAddChild: (ReplicaEntity) -> Unit,
     onReorder: (String?, List<String>) -> Unit,
+    onUpdateDraft: (MobilePendingOutlineDraft, List<MobileOutlineDraftNode>, String) -> Unit,
+    onConfirmDraft: (MobilePendingOutlineDraft, List<MobileOutlineDraftNode>, String, Boolean) -> Unit,
+    onRegenerateDraft: (MobilePendingOutlineDraft) -> Unit,
+    onDiscardDraft: (MobilePendingOutlineDraft) -> Unit,
 ) {
     val roots = remember(records) { buildOutlineTree(records) }
     val expanded = remember(projectId) { mutableStateMapOf<String, Boolean>() }
@@ -235,6 +243,19 @@ internal fun MobileOutlineWorkspace(
             }
         }
 
+        if (pendingDraft != null) {
+            item(key = "outline-draft-${pendingDraft.draftId}") {
+                MobileOutlineDraftReviewCard(
+                    draft = pendingDraft,
+                    busy = busy,
+                    onUpdate = onUpdateDraft,
+                    onConfirm = onConfirmDraft,
+                    onRegenerate = onRegenerateDraft,
+                    onDiscard = onDiscardDraft,
+                )
+            }
+        }
+
         if (records.isEmpty()) {
             item {
                 EmptyPanel(
@@ -261,6 +282,135 @@ internal fun MobileOutlineWorkspace(
                         )
                     },
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileOutlineDraftReviewCard(
+    draft: MobilePendingOutlineDraft,
+    busy: Boolean,
+    onUpdate: (MobilePendingOutlineDraft, List<MobileOutlineDraftNode>, String) -> Unit,
+    onConfirm: (MobilePendingOutlineDraft, List<MobileOutlineDraftNode>, String, Boolean) -> Unit,
+    onRegenerate: (MobilePendingOutlineDraft) -> Unit,
+    onDiscard: (MobilePendingOutlineDraft) -> Unit,
+) {
+    var nodes by remember(draft.draftId, draft.nodes) { mutableStateOf(draft.nodes) }
+    var designNotes by remember(draft.draftId, draft.designNotes) { mutableStateOf(draft.designNotes) }
+    val valid = nodes.isNotEmpty() && nodes.all { it.title.isNotBlank() }
+
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("AI 大纲草稿", fontWeight = FontWeight.Bold)
+                    Text(
+                        "未保存 · 确认前不会进入正式大纲",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SimingCinnabar,
+                    )
+                }
+                MicroTag("${nodes.size} 节点", SimingBlue)
+            }
+            nodes.forEachIndexed { index, node ->
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            listOf("volume", "chapter", "section").forEach { type ->
+                                AssistChip(
+                                    onClick = {
+                                        nodes = nodes.toMutableList().also {
+                                            it[index] = node.copy(nodeType = type)
+                                        }
+                                    },
+                                    label = {
+                                        Text(
+                                            if (type == node.nodeType) "✓ ${outlineTypeLabel(type)}" else outlineTypeLabel(type),
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = node.title,
+                            onValueChange = { value ->
+                                nodes = nodes.toMutableList().also { it[index] = node.copy(title = value) }
+                            },
+                            label = { Text("标题") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = node.summary,
+                            onValueChange = { value ->
+                                nodes = nodes.toMutableList().also { it[index] = node.copy(summary = value) }
+                            },
+                            label = { Text("剧情摘要") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 2,
+                        )
+                        if (node.nodeType == "section") {
+                            OutlinedTextField(
+                                value = node.parentTitle.orEmpty(),
+                                onValueChange = { value ->
+                                    nodes = nodes.toMutableList().also {
+                                        it[index] = node.copy(parentTitle = value.ifBlank { null })
+                                    }
+                                },
+                                label = { Text("本草稿中的父章标题") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                            )
+                        }
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = designNotes,
+                onValueChange = { designNotes = it },
+                label = { Text("设计说明") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { onUpdate(draft, nodes, designNotes) },
+                    enabled = valid && !busy,
+                ) { Text("保存修改") }
+                Button(
+                    onClick = { onConfirm(draft, nodes, designNotes, false) },
+                    enabled = valid && !busy,
+                ) { Text("确认大纲") }
+                Button(
+                    onClick = { onConfirm(draft, nodes, designNotes, true) },
+                    enabled = valid && !busy,
+                ) { Text("确认并写章") }
+                OutlinedButton(onClick = { onRegenerate(draft) }, enabled = !busy) {
+                    Text("重新规划")
+                }
+                TextButton(onClick = { onDiscard(draft) }, enabled = !busy) {
+                    Text("丢弃", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }

@@ -10,7 +10,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
 from fastapi.testclient import TestClient
 
-from app.database.models import Chapter, ChapterDraft, Character
+from app.database.models import Chapter, ChapterDraft, Character, OutlineNode
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
 from app.routers.ai_writer import _execute_workspace_action
@@ -145,6 +145,94 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         try:
             self.assertEqual(db.query(Chapter).count(), 0)
             self.assertEqual(db.query(Character).count(), 0)
+        finally:
+            db.close()
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
+    def test_outline_draft_is_the_only_business_operation_and_stops_before_formal_write(
+        self,
+        mock_execute,
+        mock_stream,
+        _mock_supports,
+    ):
+        project_id = self.create_project("Outline draft terminal")
+        existing_outline_id = self.create_outline(project_id, "第一章 山门")
+        draft_id = "outline-draft-terminal-1"
+        mock_execute.return_value = {
+            "tool": "outline_writer",
+            "status": "ok",
+            "detail": "大纲草稿已生成，等待作者确认",
+            "turn_directive": "end_after_outline_draft",
+            "turn_terminal": True,
+            "data": {
+                "draft_id": draft_id,
+                "project_id": project_id,
+                "insert_after_id": existing_outline_id,
+                "draft_status": "pending",
+                "nodes": [
+                    {
+                        "node_type": "chapter",
+                        "title": "第二章 夜雨",
+                        "summary": "夜雨袭城。",
+                    }
+                ],
+            },
+        }
+        mock_stream.side_effect = [
+            async_dict_chunks(
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": "call-categories",
+                    "name": "set_tool_categories",
+                    "arguments_delta": json.dumps({"enabled_categories": ["writing_context"]}),
+                },
+                {"type": "done", "finish_reason": "tool_calls", "usage": None},
+            ),
+            async_dict_chunks(
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": "call-formal",
+                    "name": "create_outline_nodes",
+                    "arguments_delta": json.dumps(
+                        {"nodes": [{"node_type": "chapter", "title": "不应写入"}]},
+                        ensure_ascii=False,
+                    ),
+                },
+                {
+                    "type": "tool_call_delta",
+                    "index": 1,
+                    "id": "call-draft",
+                    "name": "outline_writer",
+                    "arguments_delta": json.dumps(
+                        {"insert_after_id": existing_outline_id},
+                    ),
+                },
+                {"type": "done", "finish_reason": "tool_calls", "usage": None},
+            ),
+        ]
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "规划下一章并让我先确认",
+                "model": "openai:gpt-test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_execute.await_count, 1)
+        executed_action = mock_execute.await_args.args[2]
+        self.assertEqual(executed_action["tool"], "outline_writer")
+        self.assertIn("大纲草稿已生成并显示在大纲页", response.text)
+        self.assertIn(draft_id, response.text)
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.query(OutlineNode).count(), 1)
         finally:
             db.close()
 
@@ -288,6 +376,74 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["data"]["existing_chapter_id"], chapter_id)
         self.assertIn("不能覆盖", result["detail"])
+
+    @patch(
+        "app.services.workspace.tools.chapter_writer.LLMGateway.chat_completion",
+        new_callable=AsyncMock,
+    )
+    def test_chapter_writer_requires_prior_context_selection_token(self, mock_completion):
+        from app.services.context_orchestrator import ContextOrchestrator
+
+        project_id = self.create_project("Focused chapter context")
+        outline_id = self.create_outline(project_id, "第一章 城门")
+        db = SessionLocal()
+        try:
+            db.add(Character(
+                project_id=project_id,
+                name="不应自动注入的角色",
+                background="这是一张很长但与本章无关的角色卡。",
+            ))
+            db.commit()
+            orchestrator = ContextOrchestrator(db)
+            manifest = orchestrator.prepare(
+                project_id=project_id,
+                task_type="writing",
+                model="openai:gpt-test",
+                arguments={"outline_node_id": outline_id},
+            )
+            selection = orchestrator.submit_evidence(manifest, [])
+
+            denied = asyncio.run(_execute_workspace_action(
+                db,
+                project_id,
+                {
+                    "tool": "chapter_writer",
+                    "arguments": {
+                        "outline_node_id": outline_id,
+                        "context_manifest_id": manifest.id,
+                        "context_selection_token": "wrong-token",
+                    },
+                },
+            ))
+            self.assertEqual(denied["status"], "needs_confirmation")
+            mock_completion.assert_not_awaited()
+
+            mock_completion.return_value = {
+                "content": "城门在晨雾中缓缓打开。",
+                "model": "gpt-test",
+            }
+            generated = asyncio.run(_execute_workspace_action(
+                db,
+                project_id,
+                {
+                    "tool": "chapter_writer",
+                    "arguments": {
+                        "outline_node_id": outline_id,
+                        "context_manifest_id": manifest.id,
+                        "context_selection_token": selection["context_selection_token"],
+                    },
+                },
+            ))
+        finally:
+            db.close()
+
+        self.assertEqual(generated["status"], "ok")
+        mock_completion.assert_awaited_once()
+        prompt = json.dumps(
+            mock_completion.await_args.kwargs["messages"],
+            ensure_ascii=False,
+        )
+        self.assertNotIn("不应自动注入的角色", prompt)
 
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=False)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")

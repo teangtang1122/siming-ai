@@ -13,7 +13,7 @@ from .registry import registry
 _GOVERNED_TASKS: dict[str, str] = {
     "chapter_writer": "writing",
     "character_writer": "planning",
-    "outline_writer": "planning",
+    "outline_writer": "outline_planning",
     "worldbuilding_writer": "planning",
     "design_plot": "planning",
     "roleplay_character": "writing",
@@ -44,6 +44,12 @@ async def execute_workspace_action(
         return {"tool": tool, "status": "skipped", "detail": "未知工具"}
     task_type = _GOVERNED_TASKS.get(tool)
     if not task_type:
+        return await handler(db, project_id, args)
+
+    if tool in {"chapter_writer", "outline_writer"}:
+        # Both authoring generators validate an explicit, model-finalized manifest and its
+        # one-step selection token. Never recreate a default manifest here:
+        # doing so would bypass the Agent retrieval/review workflow.
         return await handler(db, project_id, args)
 
     from ..context_orchestrator import ContextOrchestrator, activate_context_manifest

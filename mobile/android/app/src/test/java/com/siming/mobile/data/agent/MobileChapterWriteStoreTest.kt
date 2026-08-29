@@ -149,9 +149,6 @@ class MobileChapterWriteStoreTest {
             outlineNodeId = "o1",
             targetChapterId = "",
             requirements = "切断病毒网络",
-            involvedCharacters = listOf("陆糖"),
-            characterLimit = 8,
-            recentLimit = 3,
         )
         val item = MobileContextManifestItem(
             category = "target_outline",
@@ -181,6 +178,7 @@ class MobileChapterWriteStoreTest {
             selectionFingerprint = mobileSha256(item.sourceHash),
             contextWindowTokens = 16_384,
             inputBudgetTokens = 8_000,
+            softInputTargetTokens = 8_000,
             outputReserveTokens = 4_000,
             safetyMarginTokens = 512,
             items = listOf(item),
@@ -188,6 +186,7 @@ class MobileChapterWriteStoreTest {
                 "target_outline" to MobileContextCoverage(true, "covered", 1),
             ),
             warnings = listOf("lexical fallback"),
+            selectionToken = "selection-token-1",
         )
     }
 }

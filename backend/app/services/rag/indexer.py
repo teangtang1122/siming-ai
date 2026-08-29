@@ -405,7 +405,6 @@ def _index_character_timeline(db: Session, project_id: str, character_id: str) -
         db.query(CharacterTimeline)
         .filter(CharacterTimeline.character_id == character_id)
         .order_by(CharacterTimeline.created_at.desc())
-        .limit(50)
         .all()
     )
     if not events:
@@ -554,8 +553,9 @@ def _index_prompt_pack(db: Session, project_id: str, pack_id: str) -> int:
 
 def _index_method_card(db: Session, project_id: str, card_id: str) -> int:
     """Index a method card as RAG chunks."""
-    from app.database.models import MethodCard
     import json
+
+    from app.database.models import MethodCard
 
     card = db.query(MethodCard).filter(
         MethodCard.card_id == card_id,
@@ -745,10 +745,19 @@ def _get_source_content_hash(db: Session, source_type: str, source_id: str) -> s
             db.query(CharacterTimeline)
             .filter(CharacterTimeline.character_id == source_id)
             .order_by(CharacterTimeline.created_at.desc())
-            .limit(50)
             .all()
         )
-        return _content_hash("\n".join(e.event_description or "" for e in events))
+        event_lines = []
+        for event in reversed(events):
+            emotional_change = (
+                f"（情感变化：{event.emotional_state_change}）"
+                if event.emotional_state_change
+                else ""
+            )
+            event_lines.append(
+                f"[{event.event_type}] {event.event_description}{emotional_change}"
+            )
+        return _content_hash("\n".join(event_lines))
     elif source_type == "worldbuilding":
         obj = db.query(WorldbuildingEntry).filter(WorldbuildingEntry.id == source_id).first()
         return _content_hash(obj.content or "") if obj else ""

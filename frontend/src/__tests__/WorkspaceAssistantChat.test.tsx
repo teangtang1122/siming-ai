@@ -617,6 +617,126 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     expect(screen.queryByRole('button', { name: '授权下一条代理操作' })).not.toBeInTheDocument()
   })
 
+  it('shows an editable outline draft card and confirms before any formal write', async () => {
+    const stream = createControlledResponse([conversationEvent + runEvent])
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    }))
+    const user = userEvent.setup()
+    renderChat()
+    await sendChapterRequest()
+    const action = {
+      tool: 'outline_writer',
+      status: 'ok',
+      detail: '大纲草稿已生成，等待作者确认',
+      data: {
+        draft_id: 'outline-draft-1',
+        project_id: 'project-1',
+        insert_after_id: 'outline-1',
+        draft_status: 'pending',
+        nodes: [{ node_type: 'chapter', title: '第二章 夜雨', summary: '夜雨袭城。', status: 'pending' }],
+      },
+    }
+    await act(async () => {
+      stream.push(sse({
+        type: 'complete',
+        data: {
+          reply: '大纲草稿已生成。',
+          applied_actions: [action],
+          actions: [action],
+          tool_logs: [action],
+          run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+        },
+      }) + sse('[DONE]'))
+      stream.close()
+    })
+
+    expect(await screen.findByText('大纲草稿已生成，等待作者确认')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /查看并编辑/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认并写章' })).toBeInTheDocument()
+
+    mockPost.mockResolvedValueOnce({
+      data: { data: { draft_status: 'confirmed', saved_outline_node_ids: ['outline-2'] } },
+    })
+    await user.click(screen.getByRole('button', { name: /确认大纲/ }))
+    expect(mockPost).toHaveBeenCalledWith(
+      '/projects/project-1/outline-drafts/outline-draft-1/confirm',
+      { write_after_confirm: false },
+    )
+  })
+
+  it('starts confirm-and-write as a separate author Agent request', async () => {
+    const first = createControlledResponse([conversationEvent + runEvent])
+    const second = createControlledResponse([
+      sse({
+        type: 'conversation',
+        conversation: { id: 'conversation-2', project_id: 'project-1', title: '写第二章' },
+        user_message: { id: 'user-2', role: 'user', content: '请根据真实大纲 ID 写章', status: 'completed' },
+        assistant_message: { id: 'assistant-2', role: 'assistant', content: '正在分析需求...', status: 'running' },
+      }),
+    ])
+    const fetchMock = vi.fn()
+      .mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+        first.bindSignal(init?.signal)
+        return Promise.resolve(first.response)
+      })
+      .mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+        second.bindSignal(init?.signal)
+        return Promise.resolve(second.response)
+      })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    renderChat()
+    await sendChapterRequest()
+    const action = {
+      tool: 'outline_writer',
+      status: 'ok',
+      data: {
+        draft_id: 'outline-draft-write',
+        project_id: 'project-1',
+        draft_status: 'pending',
+        nodes: [{ node_type: 'chapter', title: '第二章 夜雨', summary: '夜雨袭城。', status: 'pending' }],
+      },
+    }
+    await act(async () => {
+      first.push(sse({
+        type: 'complete',
+        data: {
+          reply: '请确认。',
+          applied_actions: [action],
+          actions: [action],
+          tool_logs: [action],
+          run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+        },
+      }) + sse('[DONE]'))
+      first.close()
+    })
+    mockPost.mockResolvedValueOnce({
+      data: {
+        data: {
+          draft_status: 'confirmed',
+          saved_outline_node_ids: ['outline-real-2'],
+          next_author_request: {
+            requires_new_agent_turn: true,
+            outline_node_id: 'outline-real-2',
+            message: '请根据刚确认的章级大纲（ID：outline-real-2）写这一章。',
+          },
+        },
+      },
+    })
+
+    await user.click(await screen.findByRole('button', { name: '确认并写章' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body))
+    expect(secondBody.message).toContain('outline-real-2')
+    expect(mockPost).toHaveBeenCalledWith(
+      '/projects/project-1/outline-drafts/outline-draft-write/confirm',
+      { write_after_confirm: true },
+    )
+    second.close()
+  })
+
   it('requires a separate one-turn read snapshot confirmation for a pasted path', async () => {
     const user = userEvent.setup()
     render(

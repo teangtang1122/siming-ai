@@ -1,7 +1,14 @@
 /* Message list rendering for the assistant chat. */
 import { useState } from 'react'
 import { Button, Dropdown, Empty, Space, Tag, Typography, message } from 'antd'
-import { DatabaseOutlined, DownOutlined, SaveOutlined } from '@ant-design/icons'
+import {
+  BranchesOutlined,
+  DatabaseOutlined,
+  DeleteOutlined,
+  DownOutlined,
+  ReloadOutlined,
+  SaveOutlined,
+} from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { ChapterVersionPanel } from '../ChapterVersionPanel'
 import { NarrativeLedgerPanel } from '../NarrativeLedgerPanel'
@@ -55,6 +62,58 @@ function chapterDraftActions(item: WorkspaceAssistantMessage): WorkspaceToolLog[
     && action.data?.draft_id
     && action.data?.content
   ))
+}
+
+function outlineDraftActions(item: WorkspaceAssistantMessage): WorkspaceToolLog[] {
+  return (item.data?.applied_actions || []).filter((action) => (
+    ['outline_writer', 'save_external_outline_draft'].includes(String(action.tool || ''))
+    && action.status === 'ok'
+    && action.data?.draft_id
+    && Array.isArray(action.data?.nodes)
+  ))
+}
+
+type OutlineDraftAction = 'open' | 'confirm' | 'confirm_and_write' | 'regenerate' | 'discard'
+
+function OutlineDraftReviewActions({
+  action,
+  activeDraftId,
+  activeDraftStatus,
+  onAction,
+}: {
+  action: WorkspaceToolLog
+  activeDraftId: string | null
+  activeDraftStatus: string | null
+  onAction: (action: WorkspaceToolLog, mode: OutlineDraftAction) => Promise<void>
+}) {
+  const [working, setWorking] = useState<OutlineDraftAction | null>(null)
+  const draftId = String(action.data?.draft_id || '')
+  const status = activeDraftId === draftId
+    ? activeDraftStatus
+    : String(action.data?.draft_status || 'pending')
+  const replaced = Boolean(activeDraftId && activeDraftId !== draftId)
+  const run = async (mode: OutlineDraftAction) => {
+    if (working) return
+    setWorking(mode)
+    try {
+      await onAction(action, mode)
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || error?.message || '处理大纲草稿失败')
+    } finally {
+      setWorking(null)
+    }
+  }
+  if (status === 'confirmed') return <Tag color="green">大纲已确认</Tag>
+  if (status === 'discarded' || replaced) return <Tag>草稿已失效</Tag>
+  return (
+    <Space size={4} wrap>
+      <Button size="small" icon={<BranchesOutlined />} onClick={() => void run('open')}>查看并编辑</Button>
+      <Button size="small" type="primary" icon={<SaveOutlined />} loading={working === 'confirm'} onClick={() => void run('confirm')}>确认大纲</Button>
+      <Button size="small" type="primary" loading={working === 'confirm_and_write'} onClick={() => void run('confirm_and_write')}>确认并写章</Button>
+      <Button size="small" icon={<ReloadOutlined />} loading={working === 'regenerate'} onClick={() => void run('regenerate')}>重新规划</Button>
+      <Button size="small" danger icon={<DeleteOutlined />} loading={working === 'discard'} onClick={() => void run('discard')}>丢弃</Button>
+    </Space>
+  )
 }
 
 function ChapterDraftSaveActions({
@@ -146,6 +205,12 @@ interface MessageListProps {
   ) => Promise<void>
   activeDraftId?: string | null
   activeDraftStatus?: string | null
+  onOutlineDraftAction?: (
+    action: WorkspaceToolLog,
+    mode: OutlineDraftAction,
+  ) => Promise<void>
+  activeOutlineDraftId?: string | null
+  activeOutlineDraftStatus?: string | null
 }
 
 export function MessageList({
@@ -161,6 +226,9 @@ export function MessageList({
   onSaveChapterDraft,
   activeDraftId = null,
   activeDraftStatus = null,
+  onOutlineDraftAction,
+  activeOutlineDraftId = null,
+  activeOutlineDraftStatus = null,
 }: MessageListProps) {
   return (
     <>
@@ -229,6 +297,16 @@ export function MessageList({
                   />
                 </div>
               ))}
+              {item.role === 'assistant' && onOutlineDraftAction && outlineDraftActions(item).map((action, actionIndex) => (
+                <div className="workspace-assistant-message-action" key={`outline-draft-${actionIndex}`}>
+                  <OutlineDraftReviewActions
+                    action={action}
+                    activeDraftId={activeOutlineDraftId}
+                    activeDraftStatus={activeOutlineDraftStatus}
+                    onAction={onOutlineDraftAction}
+                  />
+                </div>
+              ))}
               {item.role === 'assistant' && item.data?.outcome && PERSISTENT_OUTCOMES.has(item.data.outcome) && (
                 <PersistentOutcome
                   outcome={item.data.outcome as OperationOutcome}
@@ -236,22 +314,10 @@ export function MessageList({
                 />
               )}
 
-              {/* Context preview panels for chapter_writer / preview_writing_context */}
+              {/* Final model-selected context snapshot for chapter drafts */}
               {item.data?.applied_actions?.map((action, i) => {
                 if (action.tool === 'chapter_writer' && action.data?.context_snapshot) {
                   return <ContextPreviewPanel key={`ctx-${i}`} snapshot={action.data.context_snapshot as any} />
-                }
-                if (action.tool === 'preview_writing_context' && action.data?.rag_sections) {
-                  return (
-                    <ContextPreviewPanel
-                      key={`ctx-${i}`}
-                      ragSections={action.data.rag_sections as any}
-                      explanations={action.data.explanations as any}
-                      warnings={action.data.warnings as any}
-                      totalUsedChars={action.data.total_used_chars as number}
-                      ragUsed={action.data.rag_used as boolean}
-                    />
-                  )
                 }
                 return null
               })}

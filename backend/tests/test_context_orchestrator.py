@@ -2,6 +2,7 @@
 import asyncio
 import json
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -14,15 +15,19 @@ from app.database.models import (
     Character,
     CharacterAIConfig,
     CharacterRelationship,
+    CharacterTimeline,
     ContextManifest,
+    ContextManifestItem,
     LocalModel,
-    ModelTaskSetting,
     ModelContextProfile,
+    ModelTaskSetting,
+    NarrativeDebt,
     NovelCreationSession,
     OutlineNode,
     Project,
 )
-from app.services.context_orchestrator import ContextOrchestrator, TASK_CONTEXT_CONTRACTS
+from app.services.context_orchestrator import TASK_CONTEXT_CONTRACTS, ContextOrchestrator
+from app.services.task_context_sources import TaskContextSourceResolver
 
 
 class ContextOrchestratorTestCase(unittest.TestCase):
@@ -55,10 +60,188 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         )
         self.assertEqual(manifest.context_window_tokens, 1_000_000)
         self.assertEqual(manifest.output_reserve_tokens, 16_000)
-        self.assertEqual(manifest.input_budget_tokens, 983_488)
+        self.assertEqual(
+            manifest.input_budget_tokens,
+            manifest.context_window_tokens
+            - manifest.output_reserve_tokens
+            - manifest.safety_margin_tokens,
+        )
+        self.assertGreater(manifest.input_budget_tokens, 32_000)
         self.assertLessEqual(manifest.estimated_input_tokens, manifest.input_budget_tokens)
         self.assertEqual(manifest.status, "ready")
         self.assertTrue(any("platform 1M context default" in warning for warning in manifest.warnings_json))
+
+    def test_outline_planning_uses_only_position_style_and_model_selected_evidence(self):
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="outline_planning",
+            model="openai:test",
+            arguments={
+                "insert_after_id": "o1",
+                "batch_count": 3,
+                "requirements": "Plan the next three chapters.",
+            },
+        )
+
+        self.assertEqual(manifest.status, "ready")
+        self.assertEqual(
+            {item.category for item in manifest.items},
+            {"style", "outline_position", "user_requirement"},
+        )
+        position = next(item for item in manifest.items if item.category == "outline_position")
+        self.assertIn('"insert_after_id": "o1"', position.content_excerpt)
+        self.assertIn('"batch_count": 3', position.content_excerpt)
+
+        selected = self.service.submit_evidence(manifest, [])
+        self.assertTrue(selected["selection_ready"])
+        self.assertIn("outline_position", selected["task_context"])
+        usable, detail = self.service.validate_task_selection(
+            manifest,
+            task_type="outline_planning",
+            token=selected["context_selection_token"],
+            parent_id=None,
+            insert_after_id="o1",
+        )
+        self.assertTrue(usable, detail)
+
+    def test_outline_position_change_invalidates_planning_selection(self):
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="outline_planning",
+            model="openai:test",
+            arguments={"insert_after_id": "o1"},
+        )
+        selected = self.service.submit_evidence(manifest, [])
+        volume = OutlineNode(
+            id="volume-1",
+            project_id="p1",
+            title="Volume One",
+            node_type="volume",
+        )
+        self.db.add(volume)
+        self.db.flush()
+        outline = self.db.query(OutlineNode).filter(OutlineNode.id == "o1").one()
+        outline.parent_id = volume.id
+        self.db.flush()
+
+        usable, detail = self.service.validate_task_selection(
+            manifest,
+            task_type="outline_planning",
+            token=selected["context_selection_token"],
+            parent_id=None,
+            insert_after_id="o1",
+        )
+        self.assertFalse(usable)
+        self.assertIn("changed", detail.lower())
+
+    def test_context_selection_token_is_single_use_but_can_be_reselected(self):
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        selected = self.service.submit_evidence(manifest, [])
+        token = selected["context_selection_token"]
+        self.assertTrue(self.service.mark_consumed(manifest))
+
+        usable, detail = self.service.validate_task_selection(
+            manifest,
+            token=token,
+            task_type="writing",
+            outline_node_id="o1",
+        )
+        self.assertFalse(usable)
+        self.assertIn("consumed", detail)
+        self.assertFalse(self.service.mark_consumed(manifest))
+
+        reselection = self.service.submit_evidence(manifest, [])
+        self.assertTrue(reselection["selection_ready"])
+        self.assertNotEqual(reselection["context_selection_token"], token)
+        self.assertIsNone(manifest.consumed_at)
+
+    def test_model_can_select_more_than_twenty_four_small_sources_when_budget_allows(self):
+        self.db.add_all(
+            [
+                Character(
+                    id=f"character-{index}",
+                    project_id="p1",
+                    name=f"{'Alpha' if index < 20 else 'Beta'} Witness {index}",
+                    personality="brief witness record",
+                )
+                for index in range(25)
+            ]
+        )
+        self.db.commit()
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        resolver = TaskContextSourceResolver(self.db)
+        search_items = []
+        for index in range(25):
+            item = ContextManifestItem(
+                manifest_id=manifest.id,
+                project_id="p1",
+                category="agent_search",
+                source_type="character",
+                source_id=f"character-{index}",
+                chunk_id=f"test-character-{index}",
+                source_hash="pending",
+                title=f"Witness {index}",
+                content_excerpt=f"Verified candidate {index}",
+                sort_order=100 + index,
+            )
+            exact = resolver.exact_source(manifest, item)
+            self.assertIsNotNone(exact)
+            item.source_hash = exact.source_hash
+            manifest.items.append(item)
+            search_items.append(item)
+        self.db.flush()
+
+        selected = self.service.submit_evidence(
+            manifest,
+            [{"item_id": item.id} for item in search_items],
+        )
+        self.assertTrue(selected["selection_ready"])
+        self.assertEqual(selected["accepted_count"], 25)
+
+    def test_selected_exact_source_is_not_cut_by_a_fixed_character_limit(self):
+        marker = "正文末尾不可丢失标记"
+        chapter = Chapter(
+            id="long-exact-source",
+            project_id="p1",
+            title="长篇精确资料",
+            content="长篇资料" * 4_000 + marker,
+        )
+        self.db.add(chapter)
+        self.db.commit()
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        candidates = self.service.search_task_context(
+            manifest,
+            query=marker,
+            source_types=["chapter"],
+        )
+        candidate = next(item for item in candidates if item["source_id"] == chapter.id)
+
+        selected = self.service.submit_evidence(
+            manifest,
+            [{"item_id": candidate["item_id"]}],
+        )
+
+        self.assertTrue(selected["selection_ready"])
+        self.assertIn(marker, selected["task_context"])
+        exact_item = next(
+            item for item in manifest.items if item.category == "agent_selected"
+        )
+        self.assertGreater(len(exact_item.content_excerpt), 12_000)
 
     def test_deepseek_creation_budget_uses_registered_large_output_capacity(self):
         profile = self.service.resolve_model_profile(
@@ -228,7 +411,7 @@ class ContextOrchestratorTestCase(unittest.TestCase):
 
         self.assertEqual(profile.context_window_tokens, 16384)
 
-    def test_writing_manifest_consumes_full_character_card_and_relationships(self):
+    def test_writing_manifest_loads_full_character_only_after_model_selection(self):
         hero = Character(
             id="c-hero",
             project_id="p1",
@@ -274,10 +457,24 @@ class ContextOrchestratorTestCase(unittest.TestCase):
             project_id="p1",
             task_type="writing",
             model="openai:test",
-            arguments={"outline_node_id": "o1", "character_ids": [hero.id]},
+            arguments={"outline_node_id": "o1"},
+        )
+        self.assertFalse(any(item.source_type == "character" for item in manifest.items))
+        self.assertNotIn("姜尘", manifest.rendered_context)
+
+        candidates = self.service.search_task_context(
+            manifest,
+            query="姜尘 保护边荒城 辨骨",
+            source_types=["character"],
+        )
+        hero_candidate = next(item for item in candidates if item["source_id"] == hero.id)
+        selected = self.service.submit_evidence(
+            manifest,
+            [{"item_id": hero_candidate["item_id"]}],
         )
 
-        item = next(item for item in manifest.items if item.category == "scene_character")
+        self.assertTrue(selected["selection_ready"])
+        item = next(item for item in manifest.items if item.category == "agent_selected")
         self.assertIn("保护城中百姓", item.content_excerpt)
         self.assertIn("短句、少解释", item.content_excerpt)
         self.assertIn("沉静克制", item.content_excerpt)
@@ -289,17 +486,65 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         self.db.flush()
         self.assertEqual(manifest.status, "stale")
 
+    def test_writing_soft_target_warns_without_rejecting_selected_evidence(self):
+        chapters = [
+            Chapter(
+                id=f"soft-chapter-{index}",
+                project_id="p1",
+                title=f"资料章{index}",
+                content=f"唯一标记{index}" + "文" * 12_000,
+            )
+            for index in range(3)
+        ]
+        self.db.add_all(chapters)
+        self.db.commit()
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+
+        item_ids = []
+        for index, chapter in enumerate(chapters):
+            candidates = self.service.search_task_context(
+                manifest,
+                query=f"唯一标记{index}",
+                source_types=["chapter"],
+            )
+            candidate = next(item for item in candidates if item["source_id"] == chapter.id)
+            item_ids.append(candidate["item_id"])
+
+        result = self.service.submit_evidence(
+            manifest,
+            [{"item_id": item_id} for item_id in item_ids],
+        )
+
+        self.assertTrue(result["selection_ready"])
+        self.assertEqual(result["soft_target_tokens"], 32_000)
+        self.assertTrue(result["soft_target_exceeded"])
+        self.assertGreater(result["estimated_input_tokens"], 32_000)
+        self.assertTrue(any("soft target" in warning for warning in result["warnings"]))
+
     def test_new_character_relationship_invalidates_existing_writing_manifest(self):
-        first = Character(id="c-first", project_id="p1", name="甲")
-        second = Character(id="c-second", project_id="p1", name="乙")
+        first = Character(id="c-first", project_id="p1", name="甲方")
+        second = Character(id="c-second", project_id="p1", name="乙方")
         self.db.add_all([first, second])
         self.db.commit()
         manifest = self.service.prepare(
             project_id="p1",
             task_type="writing",
             model="openai:test",
-            arguments={"outline_node_id": "o1", "character_ids": [first.id]},
+            arguments={"outline_node_id": "o1"},
         )
+        candidates = self.service.search_task_context(
+            manifest,
+            query="甲方",
+            source_types=["character"],
+        )
+        selected = next(item for item in candidates if item["source_id"] == first.id)
+        result = self.service.submit_evidence(manifest, [{"item_id": selected["item_id"]}])
+        self.assertTrue(result["selection_ready"])
         self.assertEqual(manifest.status, "ready")
 
         self.db.add(CharacterRelationship(
@@ -312,6 +557,135 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         self.db.flush()
 
         self.assertEqual(manifest.status, "stale")
+
+    def test_writing_manifest_can_finalize_selected_character_timeline(self):
+        character = Character(id="c-timeline", project_id="p1", name="巡城使")
+        chapter = Chapter(
+            id="ch-timeline",
+            project_id="p1",
+            title="旧日巡城",
+            content="巡城使在旧城墙上负伤。",
+        )
+        self.db.add_all([character, chapter])
+        self.db.flush()
+        self.db.add(
+            CharacterTimeline(
+                id="timeline-event",
+                character_id=character.id,
+                chapter_id=chapter.id,
+                event_type="injury",
+                event_description="巡城时被箭矢擦伤左肩",
+                emotional_state_change="开始怀疑内应",
+            )
+        )
+        self.db.commit()
+
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        candidates = self.service.search_task_context(
+            manifest,
+            query="巡城使 左肩 内应",
+            source_types=["character_timeline"],
+        )
+        timeline = next(item for item in candidates if item["source_id"] == character.id)
+
+        result = self.service.submit_evidence(
+            manifest,
+            [{"item_id": timeline["item_id"]}],
+        )
+
+        self.assertTrue(result["selection_ready"])
+        self.assertIn("被箭矢擦伤左肩", result["task_context"])
+        self.assertIn("开始怀疑内应", result["task_context"])
+
+    def test_selected_character_timeline_includes_events_older_than_fifty(self):
+        character = Character(id="c-long-timeline", project_id="p1", name="长史官")
+        chapter = Chapter(
+            id="ch-long-timeline",
+            project_id="p1",
+            title="五十一年旧事",
+            content="时间线资料章。",
+        )
+        marker = "最早时间线事件不可丢失"
+        self.db.add_all([character, chapter])
+        self.db.flush()
+        self.db.add_all(
+            [
+                CharacterTimeline(
+                    id=f"long-timeline-{index}",
+                    character_id=character.id,
+                    chapter_id=chapter.id,
+                    event_type="key_decision",
+                    event_description=marker if index == 0 else f"后续事件 {index}",
+                    created_at=datetime(2026, 1, 1) + timedelta(days=index),
+                )
+                for index in range(51)
+            ]
+        )
+        self.db.commit()
+
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        candidates = self.service.search_task_context(
+            manifest,
+            query=marker,
+            source_types=["character_timeline"],
+        )
+        timeline = next(item for item in candidates if item["source_id"] == character.id)
+
+        selected = self.service.submit_evidence(
+            manifest,
+            [{"item_id": timeline["item_id"]}],
+        )
+
+        self.assertTrue(selected["selection_ready"])
+        self.assertIn(marker, selected["task_context"])
+
+    def test_selected_governance_source_includes_items_beyond_preview_limit(self):
+        marker = "低优先级但本章明确需要的治理项"
+        self.db.add_all(
+            [
+                NarrativeDebt(
+                    id=f"debt-{index}",
+                    project_id="p1",
+                    title=marker if index == 12 else f"高优先级债务 {index}",
+                    status="open",
+                    priority="low" if index == 12 else "critical",
+                    dedupe_key=f"debt-key-{index}",
+                )
+                for index in range(13)
+            ]
+        )
+        self.db.commit()
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        candidates = self.service.search_task_context(
+            manifest,
+            query=marker,
+        )
+        governance = next(
+            item for item in candidates if item["source_type"] == "narrative_governance"
+        )
+
+        selected = self.service.submit_evidence(
+            manifest,
+            [{"item_id": governance["item_id"]}],
+        )
+
+        self.assertTrue(selected["selection_ready"])
+        self.assertIn(marker, selected["task_context"])
 
     def test_missing_writing_anchor_requires_confirmation(self):
         manifest = self.service.prepare(
@@ -389,27 +763,116 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         usable, _ = self.service.validate(manifest, require_external_evidence=True)
         self.assertFalse(usable)
 
-        target = next(item for item in manifest.items if item.category == "target_outline")
-        partial = self.service.submit_evidence(manifest, [{
-            "source_type": target.source_type,
-            "source_id": target.source_id,
-            "source_hash": target.source_hash,
-        }])
-        self.assertEqual(partial["accepted_count"], 1)
-        self.assertFalse(self.service.validate(manifest, require_external_evidence=True)[0])
-
-        required_sources = [
-            {
-                "source_type": item.source_type,
-                "source_id": item.source_id,
-                "source_hash": item.source_hash,
-            }
-            for item in manifest.items
-            if item.required
-        ]
-        result = self.service.submit_evidence(manifest, required_sources)
-        self.assertEqual(result["accepted_count"], len(required_sources))
+        result = self.service.submit_evidence(manifest, [])
+        self.assertTrue(result["selection_ready"])
+        self.assertTrue(result["context_selection_token"])
         self.assertTrue(self.service.validate(manifest, require_external_evidence=True)[0])
+
+    def test_legacy_auto_context_categories_cannot_enter_writing_generation(self):
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        manifest.items.append(ContextManifestItem(
+            manifest_id=manifest.id,
+            project_id="p1",
+            category="scene_character",
+            source_type="inline",
+            source_id="legacy-auto-character",
+            source_hash="legacy",
+            title="Legacy auto-loaded character",
+            content_excerpt="THIS MUST NEVER ENTER THE WRITING PROMPT",
+            sort_order=99,
+        ))
+        self.db.flush()
+
+        selection = self.service.submit_evidence(manifest, [])
+
+        self.assertTrue(selection["selection_ready"])
+        self.assertNotIn("THIS MUST NEVER", selection["task_context"])
+        self.assertFalse(any(
+            item.category == "scene_character"
+            for item in self.service.task_generation_items(manifest)
+        ))
+
+    def test_previous_context_policy_manifest_must_be_reprepared(self):
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        manifest.policy_version = 2
+
+        usable, detail = self.service.validate(manifest)
+
+        self.assertFalse(usable)
+        self.assertEqual(manifest.status, "stale")
+        self.assertIn("policy changed", detail)
+
+    def test_new_search_invalidates_finalized_writing_selection(self):
+        character = Character(id="c-search", project_id="p1", name="守门人")
+        self.db.add(character)
+        self.db.commit()
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+        candidates = self.service.search_task_context(
+            manifest,
+            query="守门人",
+            source_types=["character"],
+        )
+        selected = self.service.submit_evidence(
+            manifest,
+            [{"item_id": candidates[0]["item_id"]}],
+        )
+        old_token = selected["context_selection_token"]
+        self.assertTrue(self.service.validate_task_selection(
+            manifest,
+            task_type="writing",
+            token=old_token,
+            outline_node_id="o1",
+        )[0])
+
+        self.service.search_task_context(
+            manifest,
+            query="城门 敌军",
+            source_types=["outline"],
+        )
+
+        payload = self.service.manifest_payload(manifest, include_content=False)
+        self.assertEqual(payload["selection"]["status"], "pending")
+        self.assertFalse(any(item.category == "agent_selected" for item in manifest.items))
+        usable, detail = self.service.validate_task_selection(
+            manifest,
+            task_type="writing",
+            token=old_token,
+            outline_node_id="o1",
+        )
+        self.assertFalse(usable)
+        self.assertIn("submit", detail)
+
+    def test_writing_selection_rejects_sources_not_returned_by_search(self):
+        manifest = self.service.prepare(
+            project_id="p1",
+            task_type="writing",
+            model="openai:test",
+            arguments={"outline_node_id": "o1"},
+        )
+
+        result = self.service.submit_evidence(
+            manifest,
+            [{"source_type": "character", "source_id": "invented-id"}],
+        )
+
+        self.assertFalse(result["selection_ready"])
+        self.assertEqual(result["accepted_count"], 0)
+        self.assertIn("verified result", result["rejected"][0]["reason"])
 
     def test_rebuild_is_resumable_and_does_not_require_semantic_runtime(self):
         job = self.service.create_rebuild_job(requested_by="test")

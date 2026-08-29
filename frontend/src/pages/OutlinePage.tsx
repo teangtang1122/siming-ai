@@ -11,6 +11,7 @@ import {
   Popconfirm,
   Select,
   Space,
+  Tag,
   Tooltip,
   Tree,
   Typography,
@@ -31,7 +32,12 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { SaveStatusIndicator } from '../components/interaction'
-import { useAiPanelContext } from '../contexts/AiPanelContext'
+import OutlineDraftReviewPanel from '../components/OutlineDraftReviewPanel'
+import {
+  useAiPanelContext,
+  type GeneratedOutlineDraft,
+  type GeneratedOutlineDraftNode,
+} from '../contexts/AiPanelContext'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import './OutlinePage.css'
 
@@ -107,6 +113,32 @@ interface SceneMetadata {
 
 interface OutlinePageProps {
   projectId: string
+}
+
+function outlineDraftFromPayload(
+  payload: Record<string, any>,
+  projectId: string,
+): GeneratedOutlineDraft | null {
+  const draftId = String(payload.draft_id || '')
+  const nodes = Array.isArray(payload.nodes)
+    ? payload.nodes.filter((node: unknown): node is GeneratedOutlineDraftNode => (
+      Boolean(node && typeof node === 'object' && 'title' in node && 'node_type' in node)
+    ))
+    : []
+  if (!draftId || nodes.length === 0) return null
+  return {
+    draftId,
+    projectId: String(payload.project_id || projectId),
+    contextManifestId: payload.context_manifest_id ? String(payload.context_manifest_id) : null,
+    parentId: payload.parent_id ? String(payload.parent_id) : null,
+    insertAfterId: payload.insert_after_id ? String(payload.insert_after_id) : null,
+    status: String(payload.draft_status || 'pending') as GeneratedOutlineDraft['status'],
+    nodes,
+    designNotes: String(payload.design_notes || ''),
+    savedOutlineNodeIds: Array.isArray(payload.saved_outline_node_ids)
+      ? payload.saved_outline_node_ids.map(String)
+      : [],
+  }
 }
 
 const NODE_TYPE_OPTIONS: Array<{ value: NodeType; label: string }> = [
@@ -187,6 +219,23 @@ function buildTree(flat: OutlineNode[]): OutlineNode[] {
   return roots
 }
 
+function insertDraftRoots(
+  siblings: DataNode[],
+  draftRoots: DataNode[],
+  insertAfterId: string | null,
+): DataNode[] {
+  if (draftRoots.length === 0) return siblings
+  const index = insertAfterId
+    ? siblings.findIndex((node) => String(node.key) === insertAfterId)
+    : -1
+  const insertionIndex = index >= 0 ? index + 1 : siblings.length
+  return [
+    ...siblings.slice(0, insertionIndex),
+    ...draftRoots,
+    ...siblings.slice(insertionIndex),
+  ]
+}
+
 function nextChildType(parent?: OutlineNode | null): NodeType {
   if (!parent) return 'volume'
   if (parent.node_type === 'volume') return 'chapter'
@@ -214,7 +263,15 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const { refreshKey } = useAiPanelContext()
+  const {
+    refreshKey,
+    generatedOutlineDraft,
+    openGeneratedOutlineDraft,
+  } = useAiPanelContext()
+  const pendingOutlineDraft = (
+    generatedOutlineDraft?.projectId === projectId
+    && generatedOutlineDraft.status === 'pending'
+  ) ? generatedOutlineDraft : null
   const {
     saveStatus,
     saveError,
@@ -276,18 +333,34 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     }
   }, [projectId])
 
+  const fetchPendingOutlineDraft = useCallback(async () => {
+    try {
+      const response = await apiClient.get<ApiResponse<Record<string, any> | null>>(
+        `/projects/${projectId}/outline-drafts/pending`,
+      )
+      const pending = response.data.data
+        ? outlineDraftFromPayload(response.data.data, projectId)
+        : null
+      if (pending) openGeneratedOutlineDraft(pending)
+    } catch (err: any) {
+      message.error(err.message || '获取大纲草稿失败')
+    }
+  }, [openGeneratedOutlineDraft, projectId])
+
   useEffect(() => {
     fetchOutline()
     fetchCharacters()
-  }, [fetchCharacters, fetchOutline])
+    fetchPendingOutlineDraft()
+  }, [fetchCharacters, fetchOutline, fetchPendingOutlineDraft])
 
   // Refresh data when AI applies changes
   useEffect(() => {
     if (refreshKey > 0) {
       fetchOutline()
       fetchCharacters()
+      fetchPendingOutlineDraft()
     }
-  }, [fetchCharacters, fetchOutline, refreshKey])
+  }, [fetchCharacters, fetchOutline, fetchPendingOutlineDraft, refreshKey])
 
   useEffect(() => {
     if (!creating && selectedNode) {
@@ -306,6 +379,12 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       form.resetFields()
     }
   }, [creating, form, selectedNode])
+
+  const visibleExpandedKeys = useMemo(() => {
+    const keys = filterActive ? collectTreeKeys(filteredTree) : expandedKeys
+    const parentId = pendingOutlineDraft?.parentId
+    return parentId && !keys.includes(parentId) ? [...keys, parentId] : keys
+  }, [expandedKeys, filterActive, filteredTree, pendingOutlineDraft?.parentId])
 
   const parentOptions = useMemo(
     () =>
@@ -344,8 +423,54 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       ),
       children: node.children.map(renderNode),
     })
-    return filteredTree.map(renderNode)
-  }, [filteredTree])
+    const formal = filteredTree.map(renderNode)
+    if (!pendingOutlineDraft) return formal
+
+    const draftByTitle = new Map<string, DataNode>()
+    const draftRoots: DataNode[] = []
+    pendingOutlineDraft.nodes.forEach((node, index) => {
+      const dataNode: DataNode = {
+        key: `outline-draft-${pendingOutlineDraft.draftId}-${index}`,
+        className: 'outline-tree-draft-node',
+        selectable: false,
+        title: (
+          <div className="outline-tree-title outline-tree-title-draft">
+            <span className="outline-tree-main">
+              <FileTextOutlined />
+              <span title={node.title}>{node.title}</span>
+            </span>
+            <span className="outline-tree-meta">
+              <Tag color="gold">未保存</Tag>
+            </span>
+          </div>
+        ),
+        children: [],
+      }
+      draftByTitle.set(node.title, dataNode)
+      const parentTitle = String(node.parent_title || '')
+      const draftParent = parentTitle ? draftByTitle.get(parentTitle) : null
+      if (draftParent) {
+        draftParent.children = [...(draftParent.children || []), dataNode]
+      } else {
+        draftRoots.push(dataNode)
+      }
+    })
+
+    const inject = (items: DataNode[]): DataNode[] => {
+      const copied = items.map((item) => ({
+        ...item,
+        children: item.children ? inject(item.children) : [],
+      }))
+      if (!pendingOutlineDraft.parentId) return copied
+      return copied.map((item) => (
+        String(item.key) === pendingOutlineDraft.parentId
+          ? { ...item, children: insertDraftRoots(item.children || [], draftRoots, pendingOutlineDraft.insertAfterId) }
+          : item
+      ))
+    }
+    if (pendingOutlineDraft.parentId) return inject(formal)
+    return insertDraftRoots(formal, draftRoots, pendingOutlineDraft.insertAfterId)
+  }, [filteredTree, pendingOutlineDraft])
 
   const startCreate = (parent?: OutlineNode | null) => {
     confirmLeave(() => {
@@ -553,7 +678,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               draggable
               treeData={treeData}
               selectedKeys={selectedId ? [selectedId] : []}
-              expandedKeys={filterActive ? collectTreeKeys(filteredTree) : expandedKeys}
+              expandedKeys={visibleExpandedKeys}
               onExpand={(keys) => setExpandedKeys(keys.map(String))}
               onSelect={(keys) => {
                 confirmLeave(() => {
@@ -633,6 +758,16 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               </Button>
             </Space>
           </div>
+
+          {pendingOutlineDraft && (
+            <div style={{ marginBottom: 16 }}>
+              <OutlineDraftReviewPanel
+                projectId={projectId}
+                draft={pendingOutlineDraft}
+                onFormalOutlineChanged={fetchOutline}
+              />
+            </div>
+          )}
 
           {!creating && !selectedNode && tree.length === 0 ? (
             <Alert type="info" showIcon message="先创建一个大纲节点" />

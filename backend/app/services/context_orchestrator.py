@@ -19,11 +19,11 @@ from typing import Any
 from sqlalchemy import event, or_
 from sqlalchemy.orm import Session
 
+from ..core.legacy_env import get_compatible_env
 from ..core.model_limits import (
     DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
     effective_model_limits,
 )
-from ..core.legacy_env import get_compatible_env
 from ..database.models import (
     APIConfig,
     AssistantMemory,
@@ -43,8 +43,8 @@ from ..database.models import (
     ContextRebuildProject,
     Foreshadowing,
     LocalModel,
-    ModelTaskSetting,
     ModelContextProfile,
+    ModelTaskSetting,
     NarrativeDebt,
     NovelCreationSession,
     OutlineNode,
@@ -65,19 +65,46 @@ from ..modules.context.application.runtime import (
 )
 from ..modules.model_runtime.application.runtime import resolve_model_identity
 from .character_archive import character_archive_text
+from .context_manifest_runtime import (
+    manifest_payload as serialize_manifest,
+)
+from .context_manifest_runtime import (
+    persist_search_candidates,
+    validate_manifest,
+)
 from .context_semantics import (
     LOCAL_EMBEDDING_MODEL,
     LocalSemanticRuntime,
+)
+from .context_semantics import (
     cosine_similarity as _cosine,
+)
+from .context_semantics import (
     normalise_score as _normalise_score,
+)
+from .context_semantics import (
     pack_float32 as _pack_float32,
+)
+from .context_semantics import (
     unpack_float32 as _unpack_float32,
 )
-from .rag.context_packer import ContextBudget, estimate_tokens
+from .rag.context_packer import ContextBudget
 from .rag.indexer import _get_source_content_hash, reindex_project
 from .rag.retriever import search_chunks
+from .task_context_baseline import (
+    ManifestCandidate,
+    collect_target_candidates,
+    outline_position_text,
+)
+from .task_context_selection import (
+    MODEL_SELECTED_TASK_TYPES,
+    TaskContextSelector,
+)
+from .task_context_selection import (
+    generation_items as task_generation_items,
+)
 
-CONTEXT_POLICY_VERSION = 1
+CONTEXT_POLICY_VERSION = 4
 CONTEXT_INDEX_VERSION = 1
 DEFAULT_CONTEXT_WINDOW_TOKENS = DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
 DEFAULT_LOCAL_CONTEXT_WINDOW_TOKENS = 16_384
@@ -108,14 +135,18 @@ def _clean_text(value: Any, limit: int) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
-def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if value else None
-
-
 def _task_key(task_type: str) -> str:
     value = (task_type or "").strip().lower().replace("-", "_")
     if value in {"chapter_writer", "write", "writing", "chapter_writing", "external_writing"}:
         return "writing"
+    if value in {
+        "outline_writer",
+        "outline_planning",
+        "outline_plan",
+        "plan_outline",
+        "new_chapter_outline",
+    }:
+        return "outline_planning"
     if value in {"cataloging", "catalogue", "archive", "build_archive"}:
         return "cataloging"
     if value in {"review", "evaluate", "evaluation", "chapter_review"}:
@@ -159,6 +190,22 @@ TASK_CONTEXT_CONTRACTS: dict[str, TaskContextContract] = {
         ),
         output_ratio=0.45,
     ),
+    "outline_planning": TaskContextContract(
+        task_type="outline_planning",
+        required_categories=("style", "outline_position"),
+        optional_categories=(
+            "outline_parent",
+            "user_requirement",
+            "previous_summary",
+            "scene_character",
+            "worldbuilding",
+            "narrative_governance",
+            "memory",
+            "skill",
+            "hybrid_retrieval",
+        ),
+        output_ratio=0.30,
+    ),
     "cataloging": TaskContextContract(
         task_type="cataloging",
         required_categories=("target_chapter",),
@@ -200,31 +247,6 @@ class ResolvedModelContextProfile:
     max_output_tokens: int | None
     safety_margin_tokens: int
     known: bool
-
-
-@dataclass
-class ManifestCandidate:
-    category: str
-    source_type: str
-    source_id: str | None
-    title: str
-    content: str
-    required: bool = False
-    pinned: bool = False
-    tier: int = 4
-    lexical_score: float | None = None
-    semantic_score: float | None = None
-    recency_score: float | None = None
-    structural_score: float | None = None
-    final_score: float = 0.0
-    selection_reason: str = ""
-    chunk_id: str | None = None
-    source_hash: str | None = None
-    applicable: bool = True
-
-    @property
-    def estimated_tokens(self) -> int:
-        return estimate_tokens(self.content)
 
 
 def _project_style_text(
@@ -276,29 +298,6 @@ def _character_text(db: Session, character: Character) -> str:
     )
 
 
-def _outline_text(node: OutlineNode) -> str:
-    values = [f"Outline: {node.title}", f"Node type: {node.node_type or 'unknown'}"]
-    for label, value in (
-        ("Summary", node.summary),
-        ("Planned", node.planned_summary),
-        ("Actual", node.actual_summary),
-        ("Status", node.status),
-    ):
-        if value:
-            values.append(f"{label}: {_clean_text(value, 1200)}")
-    return "\n".join(values)
-
-
-def _chapter_text(chapter: Chapter, *, max_chars: int = 12_000) -> str:
-    body = _clean_text(chapter.content, max_chars)
-    summary = chapter.summary.summary_text if chapter.summary else ""
-    values = [f"Chapter: {chapter.title}"]
-    if summary:
-        values.append(f"Summary: {_clean_text(summary, 1800)}")
-    values.append(f"Text:\n{body}")
-    return "\n".join(values)
-
-
 def _current_source_hash(db: Session, project_id: str | None, source_type: str, source_id: str | None, fallback_content: str) -> str | None:
     if source_type in {
         "chapter",
@@ -329,7 +328,7 @@ def _current_source_hash(db: Session, project_id: str | None, source_type: str, 
         try:
             from .narrative_governance import governance_context
 
-            return _sha256(governance_context(db, project_id, limit=12))
+            return _sha256(governance_context(db, project_id, limit=None))
         except Exception:
             return _sha256(fallback_content)
     if source_type in {"inline", "creation_session", "author_constraint", "confirmed_stage", "memory", "skill"}:
@@ -360,34 +359,6 @@ def _source_recency(db: Session, source_type: str, source_id: str | None) -> flo
         updated = updated.replace(tzinfo=UTC)
     age_days = max(0.0, (datetime.now(UTC) - updated).total_seconds() / 86_400)
     return max(0.05, min(1.0, 1.0 / (1.0 + age_days / 180)))
-
-
-def _manifest_item_payload(item: ContextManifestItem, *, include_content: bool = True) -> dict[str, Any]:
-    data: dict[str, Any] = {
-        "id": item.id,
-        "category": item.category,
-        "source_type": item.source_type,
-        "source_id": item.source_id,
-        "chunk_id": item.chunk_id,
-        "source_hash": item.source_hash,
-        "title": item.title,
-        "required": bool(item.required),
-        "pinned": bool(item.pinned),
-        "tier": item.tier,
-        "scores": {
-            "lexical": item.lexical_score,
-            "semantic": item.semantic_score,
-            "recency": item.recency_score,
-            "structural": item.structural_score,
-            "final": item.final_score,
-        },
-        "selection_reason": item.selection_reason,
-        "estimated_tokens": item.estimated_tokens,
-        "evidence_submitted_at": _iso(item.evidence_submitted_at),
-    }
-    if include_content:
-        data["content"] = item.content_excerpt
-    return data
 
 
 def _project_id_for_related_source(session: Session, model: type[Any], source_id: str | None) -> str | None:
@@ -543,6 +514,7 @@ class ContextOrchestrator:
             "new_project": "planning",
             "review": "evaluation",
             "rewrite": "writing",
+            "outline_planning": "planning",
         }.get(str(task_type or ""), str(task_type or "chat"))
 
     def _local_context_window(self, model_name: str, task_type: str | None) -> int | None:
@@ -742,11 +714,22 @@ class ContextOrchestrator:
                     "context_window_tokens": profile.context_window_tokens,
                     "max_output_tokens": profile.max_output_tokens,
                 },
+                "selection_mode": (
+                    "model_retrieval_then_exact_selection"
+                    if key in MODEL_SELECTED_TASK_TYPES
+                    else "orchestrated"
+                ),
             },
             query_json={
                 "arguments": self._safe_query_arguments(arguments),
                 "pinned_chunk_ids": [str(value) for value in (pinned_chunk_ids or []) if str(value)],
                 "pinned_source_ids": [str(value) for value in (pinned_source_ids or []) if str(value)],
+                "context_selection": {
+                    "status": "pending" if key in MODEL_SELECTED_TASK_TYPES else "not_required",
+                    "token": None,
+                    "selected_item_ids": [],
+                    "selected_at": None,
+                },
             },
             warnings_json=[blocked_reason] if blocked_reason else [],
         )
@@ -855,10 +838,32 @@ class ContextOrchestrator:
             ))
             coverage["style"] = {"required": "style" in required, "status": "covered", "item_count": 1}
 
-        self._collect_target_candidates(add, coverage, project_id, contract, arguments)
+        collect_target_candidates(
+            self.db,
+            add,
+            coverage,
+            project_id,
+            contract.task_type,
+            arguments,
+        )
         self._collect_author_requirement(add, coverage, arguments)
-        self._collect_current_state_candidates(add, coverage, project_id, contract, arguments)
         self._collect_pinned_candidates(add, coverage, project_id, pinned_chunk_ids, pinned_source_ids)
+
+        if contract.task_type in MODEL_SELECTED_TASK_TYPES:
+            # Model-selected generation baselines intentionally stop at immutable task
+            # anchors and explicit author pins. Characters, prior chapters,
+            # worldbuilding, governance and memories are discovered by the
+            # model through search_task_context and become generation context
+            # only after submit_context_evidence finalizes an exact selection.
+            coverage["agent_selection"] = {
+                "required": False,
+                "status": "pending",
+                "item_count": 0,
+                "reason": "The Agent has not finalized task-specific evidence yet.",
+            }
+            return candidates, coverage
+
+        self._collect_current_state_candidates(add, coverage, project_id, contract, arguments)
 
         # 2. Hybrid retrieval comes after hard anchors and pinned choices.
         query = self._retrieval_query(arguments, candidates)
@@ -935,106 +940,6 @@ class ContextOrchestrator:
                 selection_reason="Explicit constraints from the author.",
             ))
             coverage["author_constraint"] = {"required": False, "status": "covered", "item_count": 1}
-
-    def _collect_target_candidates(
-        self,
-        add,
-        coverage: dict[str, Any],
-        project_id: str,
-        contract: TaskContextContract,
-        arguments: dict[str, Any],
-    ) -> None:
-        target_outline_id = str(arguments.get("outline_node_id") or arguments.get("target_outline_node_id") or "").strip()
-        if contract.task_type in {"writing", "planning"}:
-            if target_outline_id:
-                node = (
-                    self.db.query(OutlineNode)
-                    .filter(OutlineNode.project_id == project_id, OutlineNode.id == target_outline_id)
-                    .first()
-                )
-                if node:
-                    add(ManifestCandidate(
-                        category="target_outline",
-                        source_type="outline",
-                        source_id=node.id,
-                        title=node.title or "Target outline",
-                        content=_outline_text(node),
-                        required=contract.task_type == "writing",
-                        tier=1,
-                        structural_score=1.0,
-                        final_score=1.0,
-                        selection_reason="Target outline/section required by the writing contract.",
-                    ))
-                    coverage["target_outline"] = {"required": contract.task_type == "writing", "status": "covered", "item_count": 1}
-                else:
-                    coverage["target_outline"] = {
-                        "required": contract.task_type == "writing",
-                        "status": "missing",
-                        "item_count": 0,
-                        "reason": "The selected outline node no longer exists.",
-                    }
-            else:
-                coverage["target_outline"] = {
-                    "required": contract.task_type == "writing",
-                    "status": "missing" if contract.task_type == "writing" else "not_applicable",
-                    "item_count": 0,
-                    "reason": "Writing needs a target outline or section." if contract.task_type == "writing" else "",
-                }
-
-        chapter_id = str(arguments.get("chapter_id") or arguments.get("target_chapter_id") or "").strip()
-        direct_text = str(arguments.get("content") or arguments.get("text") or arguments.get("chapter_text") or "").strip()
-        if contract.task_type == "cataloging":
-            if chapter_id:
-                chapter = self._chapter(project_id, chapter_id)
-                if chapter:
-                    add(ManifestCandidate(
-                        category="target_chapter",
-                        source_type="chapter",
-                        source_id=chapter.id,
-                        title=chapter.title or "Target chapter",
-                        content=_chapter_text(chapter),
-                        required=True,
-                        tier=1,
-                        structural_score=1.0,
-                        final_score=1.0,
-                        selection_reason="Source chapter required for cataloging.",
-                    ))
-                    coverage["target_chapter"] = {"required": True, "status": "covered", "item_count": 1}
-                else:
-                    coverage["target_chapter"] = {"required": True, "status": "missing", "item_count": 0, "reason": "Target chapter not found."}
-            else:
-                coverage["target_chapter"] = {"required": True, "status": "missing", "item_count": 0, "reason": "Cataloging needs chapter_id."}
-        elif contract.task_type in {"review", "rewrite"}:
-            if chapter_id and (chapter := self._chapter(project_id, chapter_id)):
-                add(ManifestCandidate(
-                    category="target_text",
-                    source_type="chapter",
-                    source_id=chapter.id,
-                    title=chapter.title or "Target text",
-                    content=_chapter_text(chapter),
-                    required=True,
-                    tier=1,
-                    structural_score=1.0,
-                    final_score=1.0,
-                    selection_reason="Target chapter required by the review/rewrite contract.",
-                ))
-                coverage["target_text"] = {"required": True, "status": "covered", "item_count": 1}
-            elif direct_text:
-                add(ManifestCandidate(
-                    category="target_text",
-                    source_type="inline",
-                    source_id="inline-target",
-                    title=str(arguments.get("title") or "Inline target text"),
-                    content=_clean_text(direct_text, 20_000),
-                    required=True,
-                    tier=1,
-                    structural_score=1.0,
-                    final_score=1.0,
-                    selection_reason="Inline target text supplied by the caller.",
-                ))
-                coverage["target_text"] = {"required": True, "status": "covered", "item_count": 1}
-            else:
-                coverage["target_text"] = {"required": True, "status": "missing", "item_count": 0, "reason": "A target chapter or text is required."}
 
     def _collect_author_requirement(self, add, coverage: dict[str, Any], arguments: dict[str, Any]) -> None:
         text = str(arguments.get("requirements") or arguments.get("instruction") or arguments.get("request") or "").strip()
@@ -1248,13 +1153,30 @@ class ContextOrchestrator:
                 values.append(_clean_text(candidate.content, 1200))
         return "\n".join(value for value in values if value.strip())[:12_000]
 
-    def _hybrid_candidates(self, project_id: str, query: str, arguments: dict[str, Any]) -> list[ManifestCandidate]:
+    def _hybrid_candidates(
+        self,
+        project_id: str,
+        query: str,
+        arguments: dict[str, Any],
+        source_types: Sequence[str] = (),
+    ) -> list[ManifestCandidate]:
+        normalized_source_types = {
+            str(value).strip()
+            for value in source_types
+            if str(value).strip()
+        }
         try:
             if not self.db.query(RagChunk.id).filter(RagChunk.project_id == project_id).first():
                 reindex_project(self.db, project_id)
         except Exception:
             pass
-        lexical_results = search_chunks(self.db, project_id, query, limit=48)
+        lexical_results = search_chunks(
+            self.db,
+            project_id,
+            query,
+            source_types=sorted(normalized_source_types) or None,
+            limit=48,
+        )
         lexical_values = [float(result.score or 0) for result in lexical_results]
         lexical_by_chunk = {
             result.chunk_id: _normalise_score(float(result.score or 0), lexical_values)
@@ -1265,11 +1187,13 @@ class ContextOrchestrator:
         chunk_ids = set(lexical_by_chunk) | set(semantic_by_chunk)
         if not chunk_ids:
             return []
-        chunks = (
-            self.db.query(RagChunk)
-            .filter(RagChunk.project_id == project_id, RagChunk.id.in_(chunk_ids))
-            .all()
+        chunk_query = self.db.query(RagChunk).filter(
+            RagChunk.project_id == project_id,
+            RagChunk.id.in_(chunk_ids),
         )
+        if normalized_source_types:
+            chunk_query = chunk_query.filter(RagChunk.source_type.in_(normalized_source_types))
+        chunks = chunk_query.all()
         target_sources = {
             str(arguments.get("outline_node_id") or ""),
             str(arguments.get("chapter_id") or ""),
@@ -1506,44 +1430,12 @@ class ContextOrchestrator:
             query = query.filter(ContextManifest.project_id == project_id)
         return query.first()
 
+    def task_generation_items(self, manifest: ContextManifest) -> list[ContextManifestItem]:
+        """Return only anchors and finalized evidence for model-selected tasks."""
+        return task_generation_items(manifest)
+
     def manifest_payload(self, manifest: ContextManifest, *, include_content: bool = True) -> dict[str, Any]:
-        input_budget_tokens = int(manifest.input_budget_tokens or 0)
-        estimated_input_tokens = int(manifest.estimated_input_tokens or 0)
-        estimated_input_chars = int(manifest.estimated_input_chars or 0)
-        return {
-            "id": manifest.id,
-            "project_id": manifest.project_id,
-            "session_id": manifest.session_id,
-            "task_type": manifest.task_type,
-            "model": manifest.model,
-            "provider": manifest.provider,
-            "execution_route": manifest.execution_route,
-            "policy_version": manifest.policy_version,
-            "status": manifest.status,
-            "budget": {
-                "context_window_tokens": int(manifest.context_window_tokens or 0),
-                "input_budget_tokens": input_budget_tokens,
-                "output_reserve_tokens": int(manifest.output_reserve_tokens or 0),
-                "safety_margin_tokens": int(manifest.safety_margin_tokens or 0),
-                "estimated_input_tokens": estimated_input_tokens,
-                "estimated_input_chars": estimated_input_chars,
-                "remaining_input_tokens": max(0, input_budget_tokens - estimated_input_tokens),
-            },
-            "coverage": manifest.coverage_json or {},
-            "warnings": manifest.warnings_json or [],
-            "contract": manifest.contract_json or {},
-            "override": {
-                "reason": manifest.override_reason,
-                "actor": manifest.override_actor,
-                "at": _iso(manifest.overridden_at),
-            },
-            "stale_reason": manifest.stale_reason,
-            "items": [_manifest_item_payload(item, include_content=include_content) for item in manifest.items],
-            "rendered_context": manifest.rendered_context if include_content else "",
-            "created_at": _iso(manifest.created_at),
-            "updated_at": _iso(manifest.updated_at),
-            "last_validated_at": _iso(manifest.last_validated_at),
-        }
+        return serialize_manifest(manifest, include_content)
 
     def explain(self, manifest: ContextManifest) -> dict[str, Any]:
         payload = self.manifest_payload(manifest, include_content=False)
@@ -1580,55 +1472,144 @@ class ContextOrchestrator:
         return manifest
 
     def validate(self, manifest: ContextManifest, *, require_external_evidence: bool = False) -> tuple[bool, str]:
-        if manifest.status == "blocked_rebuild":
-            return False, "Context rebuild is still in progress for this project."
-        if manifest.status == "needs_confirmation":
-            return False, "Required context is missing; confirm an override or narrow the task."
-        if manifest.status == "stale":
-            return False, manifest.stale_reason or "The context sources have changed."
-        if manifest.status not in {"ready", "overridden"}:
-            return False, f"Manifest is not usable: {manifest.status}."
-
-        for item in manifest.items:
-            expected = item.source_hash
-            current = _current_source_hash(
-                self.db,
-                manifest.project_id,
-                item.source_type,
-                item.source_id,
-                item.content_excerpt,
-            )
-            if expected and current and expected != current:
-                manifest.status = "stale"
-                manifest.stale_reason = f"Source changed: {item.title}"
-                manifest.last_validated_at = datetime.utcnow()
-                self.db.flush()
-                return False, manifest.stale_reason
-            if expected and current is None:
-                manifest.status = "stale"
-                manifest.stale_reason = f"Source is unavailable: {item.title}"
-                manifest.last_validated_at = datetime.utcnow()
-                self.db.flush()
-                return False, manifest.stale_reason
-
-        if require_external_evidence:
-            required_items = [item for item in manifest.items if item.required]
-            missing_evidence = [item.title for item in required_items if item.evidence_submitted_at is None]
-            if missing_evidence:
-                return (
-                    False,
-                    "External Agent must submit verified evidence for every required context anchor: "
-                    + ", ".join(missing_evidence[:6]),
+        if manifest.policy_version != CONTEXT_POLICY_VERSION:
+            manifest.status = "stale"
+            manifest.stale_reason = "The context policy changed; prepare a new task context."
+            manifest.last_validated_at = datetime.utcnow()
+            self.db.flush()
+            return False, manifest.stale_reason
+        if manifest.task_type == "outline_planning" and manifest.status in {
+            "ready",
+            "overridden",
+        }:
+            query = manifest.query_json if isinstance(manifest.query_json, dict) else {}
+            arguments = query.get("arguments") if isinstance(query.get("arguments"), dict) else {}
+            requested_parent_id = str(arguments.get("parent_id") or "")
+            insert_after_id = str(arguments.get("insert_after_id") or "")
+            parent = (
+                self.db.query(OutlineNode)
+                .filter(
+                    OutlineNode.project_id == manifest.project_id,
+                    OutlineNode.id == requested_parent_id,
                 )
-        manifest.last_validated_at = datetime.utcnow()
-        self.db.flush()
-        return True, ""
+                .first()
+                if requested_parent_id
+                else None
+            )
+            insert_after = (
+                self.db.query(OutlineNode)
+                .filter(
+                    OutlineNode.project_id == manifest.project_id,
+                    OutlineNode.id == insert_after_id,
+                )
+                .first()
+                if insert_after_id
+                else None
+            )
+            invalid_position = (
+                (requested_parent_id and parent is None)
+                or (insert_after_id and insert_after is None)
+            )
+            resolved_parent_id = requested_parent_id
+            if insert_after is not None:
+                inferred_parent_id = str(insert_after.parent_id or "")
+                if requested_parent_id and inferred_parent_id != requested_parent_id:
+                    invalid_position = True
+                if not requested_parent_id:
+                    resolved_parent_id = inferred_parent_id
+            position_item = next(
+                (
+                    item
+                    for item in task_generation_items(manifest)
+                    if item.category == "outline_position"
+                ),
+                None,
+            )
+            current_hash = (
+                None
+                if invalid_position
+                else _sha256(
+                    outline_position_text(
+                        resolved_parent_id or None,
+                        insert_after_id or None,
+                        int(arguments.get("batch_count") or 1),
+                    )
+                )
+            )
+            if position_item is None or position_item.source_hash != current_hash:
+                manifest.status = "stale"
+                manifest.stale_reason = (
+                    "The outline insertion position changed; prepare a new task context."
+                )
+                manifest.last_validated_at = datetime.utcnow()
+                self.db.flush()
+                return False, manifest.stale_reason
+        return validate_manifest(
+            self.db,
+            manifest,
+            require_external_evidence=require_external_evidence,
+            source_hash=lambda project_id, source_type, source_id, content: _current_source_hash(
+                self.db,
+                project_id,
+                source_type,
+                source_id,
+                content,
+            ),
+        )
 
-    def mark_consumed(self, manifest: ContextManifest) -> None:
-        manifest.consumed_at = datetime.utcnow()
+    def mark_consumed(self, manifest: ContextManifest) -> bool:
+        """Atomically claim a one-use model-selected evidence token."""
+        if manifest.consumed_at is not None:
+            return False
+        consumed_at = datetime.utcnow()
+        updated = (
+            self.db.query(ContextManifest)
+            .filter(
+                ContextManifest.id == manifest.id,
+                ContextManifest.consumed_at.is_(None),
+            )
+            .update(
+                {ContextManifest.consumed_at: consumed_at},
+                synchronize_session="fetch",
+            )
+        )
         self.db.flush()
+        return updated == 1
+
+    def _submit_task_evidence(
+        self,
+        manifest: ContextManifest,
+        sources: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return TaskContextSelector(self.db).submit(manifest, sources)
+
+    def validate_task_selection(
+        self,
+        manifest: ContextManifest,
+        *,
+        token: str,
+        task_type: str,
+        outline_node_id: str | None = None,
+        parent_id: str | None = None,
+        insert_after_id: str | None = None,
+    ) -> tuple[bool, str]:
+        if manifest.task_type not in MODEL_SELECTED_TASK_TYPES:
+            return False, "The supplied manifest is not a model-selected generation manifest."
+        usable, detail = self.validate(manifest)
+        if not usable:
+            return False, detail
+        return TaskContextSelector.validate_token(
+            manifest,
+            token,
+            task_type=task_type,
+            outline_node_id=outline_node_id,
+            parent_id=parent_id,
+            insert_after_id=insert_after_id,
+        )
 
     def submit_evidence(self, manifest: ContextManifest, sources: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        if manifest.task_type in MODEL_SELECTED_TASK_TYPES:
+            return self._submit_task_evidence(manifest, sources)
         accepted: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
         by_chunk = {item.chunk_id: item for item in manifest.items if item.chunk_id}
@@ -1665,45 +1646,41 @@ class ContextOrchestrator:
         self.db.flush()
         return {"accepted": accepted, "rejected": rejected, "accepted_count": len(accepted)}
 
-    def search_task_context(self, manifest: ContextManifest, *, query: str, limit: int = 12) -> list[dict[str, Any]]:
+    def search_task_context(
+        self,
+        manifest: ContextManifest,
+        *,
+        query: str,
+        limit: int = 12,
+        source_types: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
         if not manifest.project_id:
             return []
-        results = self._hybrid_candidates(manifest.project_id, query, {})[: max(1, min(limit, 40))]
-        # Append verified search results to the manifest. They retain tier 4 and
-        # do not mutate the already-rendered baseline, but they become valid
-        # evidence targets for an external Agent.
-        existing = {item.chunk_id for item in manifest.items if item.chunk_id}
-        next_order = max((item.sort_order for item in manifest.items), default=-1) + 1
-        payload: list[dict[str, Any]] = []
-        for candidate in results:
-            if candidate.chunk_id in existing:
-                item = next(item for item in manifest.items if item.chunk_id == candidate.chunk_id)
-            else:
-                item = ContextManifestItem(
-                    manifest_id=manifest.id,
-                    project_id=manifest.project_id,
-                    category="agent_search",
-                    source_type=candidate.source_type,
-                    source_id=candidate.source_id,
-                    chunk_id=candidate.chunk_id,
-                    source_hash=candidate.source_hash,
-                    title=candidate.title,
-                    content_excerpt=candidate.content,
-                    tier=4,
-                    lexical_score=candidate.lexical_score,
-                    semantic_score=candidate.semantic_score,
-                    recency_score=candidate.recency_score,
-                    structural_score=candidate.structural_score,
-                    final_score=candidate.final_score,
-                    selection_reason="Verified external Agent task-context search result. " + candidate.selection_reason,
-                    estimated_tokens=candidate.estimated_tokens,
-                    sort_order=next_order,
-                )
-                next_order += 1
-                self.db.add(item)
-                self.db.flush()
-            payload.append(_manifest_item_payload(item, include_content=True))
-        return payload
+        if manifest.task_type in MODEL_SELECTED_TASK_TYPES:
+            return TaskContextSelector(self.db).search(
+                manifest,
+                query=query,
+                limit=limit,
+                source_types=source_types,
+                hybrid_search=lambda effective_types: self._hybrid_candidates(
+                    manifest.project_id,
+                    query,
+                    {},
+                    source_types=effective_types,
+                ),
+            )
+        results = self._hybrid_candidates(
+            manifest.project_id,
+            query,
+            {},
+            source_types=source_types,
+        )
+        return persist_search_candidates(
+            self.db,
+            manifest,
+            results,
+            limit=limit,
+        )
 
     # ------------------------------------------------------------------
     # Semantic index and full rebuild jobs

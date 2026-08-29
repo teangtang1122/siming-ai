@@ -46,7 +46,7 @@ class ReadonlyAllowTest(unittest.TestCase):
             "suggest_conflicts", "design_plot",
             "detect_character_changes", "detect_new_worldbuilding",
             "detect_worldbuilding_conflicts", "detect_forbidden_patterns",
-            "preview_writing_context", "preview_rag_context",
+            "preview_rag_context",
             "explain_context_selection", "evaluate_chapter",
         ]
         for name in analysis_tools:
@@ -259,7 +259,7 @@ class FilterToolsTest(unittest.TestCase):
         readonly_names = {td.name for td in readonly}
 
         self.assertIn("detect_character_changes", readonly_names)
-        self.assertIn("preview_writing_context", readonly_names)
+        self.assertIn("prepare_task_context", readonly_names)
         self.assertIn("evaluate_chapter", readonly_names)
 
 

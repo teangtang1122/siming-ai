@@ -7,37 +7,6 @@ from app.architecture.tool_definition import ToolDef
 
 TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ToolDef(
-        name="preview_writing_context",
-        description="写作前上下文预检。显示本次章节写作将读取的大纲、近期摘要、角色当前状态、关系和世界观，并给出缺失/风险提示。质量模式创建或重写章节前应先调用。",
-        input_schema={
-            "outline_node_id": {"type": "string", "description": "目标大纲节点ID"},
-            "requirements": {
-                "type": "string",
-                "description": "用户的写作方向或额外要求，可用于筛选世界观",
-            },
-            "involved_characters": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "本章预计出场的角色名或别名列表",
-            },
-            "recent_limit": {
-                "type": "integer",
-                "description": "读取最近章节摘要数量，默认5，最大12",
-            },
-            "character_limit": {
-                "type": "integer",
-                "description": "返回角色状态数量，默认8，最大16",
-            },
-            "worldbuilding_limit": {
-                "type": "integer",
-                "description": "返回世界观条目数量，默认16，最大32",
-            },
-        },
-        tool_type="analysis",
-        estimated_cost="medium",
-        handler_name="preview_writing_context",
-    ),
-    ToolDef(
         name="search_context",
         description="全文检索项目中所有已索引的内容（章节、大纲、角色、世界观、记忆等）。返回相关度排序的结果列表。适用于跨类型模糊搜索。",
         input_schema={
@@ -56,7 +25,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="preview_rag_context",
-        description="预算感知的上下文打包预览。展示本次写作将使用的大纲、摘要、角色、世界观、记忆等上下文分区，每分区含选取原因、字符预算和相关性评分。与preview_writing_context不同，此工具使用RAG检索。",
+        description="预算感知的RAG检索分析预览。展示给定查询可能命中的大纲、摘要、角色、世界观和记忆分区；只用于分析，不会成为 chapter_writer 的已选证据。",
         input_schema={
             "outline_node_id": {"type": "string", "description": "目标大纲节点ID"},
             "requirements": {"type": "string", "description": "写作方向或额外要求"},
@@ -93,11 +62,11 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="prepare_task_context",
-        description="Prepare an auditable, budgeted baseline context manifest for an Agent task.",
+        description="为模型选定的任务建立可审计的精简上下文基线。写章和规划大纲都只返回目标/位置、文风、作者要求等硬锚点，不会自动带入角色、前文、世界观或检索结果；随后由模型按需检索并提交精确来源。",
         input_schema={
             "task_type": {
                 "type": "string",
-                "description": "writing|cataloging|review|rewrite|new_project|planning",
+                "description": "writing|outline_planning|cataloging|review|rewrite|new_project|planning",
             },
             "context_manifest_id": {
                 "type": "string",
@@ -133,12 +102,17 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="search_task_context",
-        description="Search a baseline task manifest and return source-hash verified evidence candidates.",
+        description="按模型自行提出的查询检索当前作品，返回带真实ID、哈希和短摘要的候选来源；结果只供复核，不会自动进入正文上下文。可多次从不同角度查询。",
         input_schema={
             "context_manifest_id": {"type": "string", "description": "Baseline manifest ID"},
             "run_id": {"type": "string", "description": "Agent run bound to a baseline manifest"},
             "query": {"type": "string", "description": "Task-specific retrieval query"},
-            "limit": {"type": "integer", "description": "Maximum verified sources; default 12"},
+            "source_types": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "可选范围：chapter|chapter_summary|outline|character|character_timeline|worldbuilding|assistant_memory|narrative_governance",
+            },
+            "limit": {"type": "integer", "description": "Maximum candidates on this search page; default 12, model-selected generation max 20"},
         },
         required=["query"],
         tool_type="read",
@@ -147,14 +121,14 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="submit_context_evidence",
-        description="Submit Agent-selected baseline/search sources for server-side hash verification before a formal write.",
+        description="提交模型复核后选中的 search_task_context 候选。服务端完整读取精确原文并校验归属与哈希，不设单条固定字符截断；32k token 只是可超过的精简软目标，实际容量按模型窗口扣除输出预留与安全余量，来源数量没有固定硬上限。返回的 context_selection_token 必须在下一模型步骤用于写章或规划；确实无需额外资料时可提交空数组。",
         input_schema={
             "context_manifest_id": {"type": "string", "description": "Baseline manifest ID"},
             "run_id": {"type": "string", "description": "Agent run bound to a baseline manifest"},
             "sources": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "chunk_id/source_type/source_id/source_hash evidence",
+                "description": "从检索结果复制 item_id（推荐）或 chunk_id/source_type/source_id/source_hash；仅受模型实际输入预算约束",
             },
         },
         required=["sources"],

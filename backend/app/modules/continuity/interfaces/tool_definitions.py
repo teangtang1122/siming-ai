@@ -378,7 +378,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="prepare_external_writing_context",
-        description="Build a complete writing context package for a model-selected chapter outline. API-free: does not call LLM. The outline_node_id must be a chapter node in the current project.",
+        description="Build the compact writing baseline for a model-selected chapter outline. API-free: does not call LLM and does not auto-load story data. Then use search_task_context and submit_context_evidence to obtain exact selected context and a selection token.",
         input_schema={
             "outline_node_id": {"type": "string", "description": "Target outline node ID"},
             "include_prompt_pack": {
@@ -388,7 +388,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "requirements": {"type": "string", "description": "Additional writing requirements"},
             "context_manifest_id": {
                 "type": "string",
-                "description": "Prepared governed baseline manifest ID",
+                "description": "Prepared governed baseline manifest ID; reuse after model-driven retrieval",
             },
             "model": {
                 "type": "string",
@@ -412,12 +412,16 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "string",
                 "description": "Prepared governed baseline manifest ID",
             },
+            "context_selection_token": {
+                "type": "string",
+                "description": "Token returned by submit_context_evidence after exact source selection",
+            },
             "source_agent": {
                 "type": "string",
                 "description": "Source agent name (e.g. claude-code)",
             },
         },
-        required=["content", "outline_node_id"],
+        required=["content", "outline_node_id", "context_manifest_id", "context_selection_token"],
         tool_type="write",
         estimated_cost="free",
         handler_name="save_external_chapter_draft",
@@ -433,6 +437,28 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         tool_type="read",
         estimated_cost="free",
         handler_name="get_external_chapter_draft",
+    ),
+    ToolDef(
+        name="save_external_outline_draft",
+        description="Save one author-visible, not-yet-formal outline proposal from exact model-selected context and end the turn. The author must confirm it before formal outline nodes exist.",
+        input_schema={
+            "nodes": {
+                "type": "array",
+                "items": {"type": "object"},
+                "minItems": 1,
+                "maxItems": 8,
+                "description": "One to eight proposed outline nodes",
+            },
+            "design_notes": {"type": "string"},
+            "parent_id": {"type": "string"},
+            "insert_after_id": {"type": "string"},
+            "context_manifest_id": {"type": "string"},
+            "context_selection_token": {"type": "string"},
+        },
+        required=["nodes", "context_manifest_id", "context_selection_token"],
+        tool_type="write",
+        estimated_cost="free",
+        handler_name="save_external_outline_draft",
     ),
     ToolDef(
         name="record_external_quality_review",

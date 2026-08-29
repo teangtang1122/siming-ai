@@ -188,7 +188,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         input_schema={
             "scenario": {
                 "type": "string",
-                "description": "quickstart|import_file|cataloging_no_api|cataloging_internal|writing_no_api|writing_internal",
+                "description": "quickstart|import_file|cataloging_no_api|cataloging_internal|writing_no_api|writing_internal|outline_no_api",
             },
             "no_api": {
                 "type": "boolean",

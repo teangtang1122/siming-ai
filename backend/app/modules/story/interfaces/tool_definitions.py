@@ -654,12 +654,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="create_outline_nodes",
-        description="批量创建新的大纲节点。通常用于保存 outline_writer 生成的一组节点。",
+        description="按作者明确指令直接创建正式大纲节点。outline_writer 的提案必须通过作者可见的大纲草稿确认接口保存，不能在同一 Agent 轮继续调用此工具。",
         input_schema={
             "nodes": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "大纲节点列表，每个节点可包含 title/node_type/summary/status/character_names/parent_id",
+                "maxItems": 8,
+                "description": "大纲节点列表（最多 8 个），每个节点可包含 title/node_type/summary/status/character_names/parent_id",
             },
             "parent_id": {"type": "string", "description": "可选，批量节点的默认父节点ID"},
         },

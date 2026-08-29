@@ -28,7 +28,7 @@ class McpToolListTest(unittest.TestCase):
             "search_worldbuilding",
             "search_outline",
             "search_context",
-            "preview_writing_context",
+            "prepare_task_context",
         }
         missing = required - names
         self.assertEqual(missing, set(), f"Missing required readonly tools: {missing}")

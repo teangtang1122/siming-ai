@@ -63,3 +63,29 @@ class OutlineReorderRequest(BaseModel):
     sort_order: Optional[list[str]] = None
 
 
+class OutlineDraftNode(BaseModel):
+    """Editable node inside an unsaved Agent outline proposal."""
+
+    title: str = Field(..., min_length=1, max_length=200)
+    node_type: OutlineNodeType = "chapter"
+    summary: str = ""
+    parent_title: Optional[str] = Field(None, max_length=200)
+    actual_summary: Optional[str] = None
+    planned_summary: Optional[str] = None
+    character_names: list[str] = Field(default_factory=list)
+    status: Literal["pending"] = "pending"
+    metadata: Optional[dict[str, Any]] = None
+
+
+class OutlineDraftUpdate(BaseModel):
+    """Author edits to a pending outline proposal."""
+
+    nodes: list[OutlineDraftNode] = Field(..., min_length=1, max_length=8)
+    design_notes: str = Field("", max_length=20_000)
+
+
+class OutlineDraftConfirmRequest(BaseModel):
+    """Confirm a proposal and optionally authorize a new write turn."""
+
+    write_after_confirm: bool = False
+

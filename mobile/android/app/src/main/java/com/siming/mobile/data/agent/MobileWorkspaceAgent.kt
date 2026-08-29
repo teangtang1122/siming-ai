@@ -37,9 +37,9 @@ internal class MobileWorkspaceAgent(
     private val saveEntity: suspend (String, String, String, JsonObject) -> String,
 ) {
     private val contract = PcPromptContract(context.applicationContext)
-    private val contextPolicy = PcContextManifestPolicy(context.applicationContext).policy
-    private val contextEngine = MobileContextManifestEngine(contextPolicy)
+    private val contextPolicies = PcContextManifestPolicy(context.applicationContext)
     private val chapterWriteStore = MobileChapterWriteStore(context.applicationContext)
+    private val outlineDraftStore = MobileOutlineDraftStore(context.applicationContext)
     private val json = Json { ignoreUnknownKeys = true }
     private val contextManifests = LinkedHashMap<String, MobileContextManifest>()
 
@@ -66,6 +66,32 @@ internal class MobileWorkspaceAgent(
     suspend fun markChapterDraftSaved(draftId: String) {
         chapterWriteStore.markSaved(draftId)
     }
+
+    suspend fun pendingOutlineDraft(projectId: String): JsonObject? =
+        outlineDraftStore.latestPending(projectId)?.let(::outlineDraftData)
+
+    suspend fun updateOutlineDraft(
+        draftId: String,
+        nodes: JsonArray,
+        designNotes: String,
+    ): JsonObject? {
+        val draft = outlineDraftStore.load(draftId) ?: return null
+        if (draft.state != MobileOutlineDraftState.PENDING || nodes.isEmpty()) return null
+        return outlineDraftData(
+            outlineDraftStore.save(
+                draft.copy(nodes = nodes, designNotes = designNotes),
+            ),
+        )
+    }
+
+    suspend fun markOutlineDraftConfirmed(draftId: String, savedIds: List<String>): JsonObject? =
+        outlineDraftStore.markConfirmed(draftId, savedIds)?.let(::outlineDraftData)
+
+    suspend fun discardOutlineDraft(draftId: String): JsonObject? =
+        outlineDraftStore.markDiscarded(draftId)?.let(::outlineDraftData)
+
+    suspend fun supersedeOutlineDraft(draftId: String): JsonObject? =
+        outlineDraftStore.markSuperseded(draftId)?.let(::outlineDraftData)
 
     suspend fun run(
         projectId: String,
@@ -205,6 +231,30 @@ internal class MobileWorkspaceAgent(
                     onEvent(event("done", result.string("detail")))
                     return
                 }
+                if (call.name == "outline_writer" && result.string("status") == "ok") {
+                    onEvent(
+                        event(
+                            type = "outline_draft",
+                            detail = result.string("detail"),
+                            data = result["data"],
+                        ),
+                    )
+                    onEvent(event("done", "大纲草稿已生成，本轮已停止"))
+                    return
+                }
+                if (call.name == "outline_writer" && result.string("status") == "blocked") {
+                    pendingOutlineDraft(projectId)?.let { draft ->
+                        onEvent(
+                            event(
+                                type = "outline_draft",
+                                detail = result.string("detail"),
+                                data = draft,
+                            ),
+                        )
+                    }
+                    onEvent(event("done", result.string("detail")))
+                    return
+                }
             }
             iteration += 1
             if (iteration == MAX_ITERATIONS) {
@@ -230,11 +280,9 @@ internal class MobileWorkspaceAgent(
         "search_outline" -> searchOutline(projectId, args)
         "search_outline_tree" -> searchOutlineTree(projectId, args)
         "search_worldbuilding" -> searchWorldbuilding(projectId, args)
-        "preview_writing_context" -> previewWritingContext(
-            projectId,
-            args,
-            config.forTask(DirectApiConfig.TASK_WRITING),
-        )
+        "prepare_task_context" -> prepareTaskContext(projectId, args, config)
+        "search_task_context" -> searchTaskContext(projectId, args, config)
+        "submit_context_evidence" -> submitContextEvidence(projectId, args, config)
         "chapter_writer" -> chapterWriter(
             projectId,
             args,
@@ -428,7 +476,7 @@ internal class MobileWorkspaceAgent(
         )
     }
 
-    private suspend fun previewWritingContext(
+    private suspend fun prepareTaskContext(
         projectId: String,
         args: JsonObject,
         config: DirectApiConfig,
@@ -436,55 +484,156 @@ internal class MobileWorkspaceAgent(
         val all = records(projectId)
         val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
         val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
-            ?: return skipped("preview_writing_context", "项目不存在", JsonObject(emptyMap()))
-        val request = MobileContextRequest.fromArgs(args, contextPolicy)
-        val inputs = manifestInputs(projectId, config.model, request, project, all, rawPayloads)
-        val manifest = contextEngine.prepare(inputs)
-        cacheManifest(manifestKey(projectId, request), manifest)
-
-        val resolved = resolvePcCharacters(
-            rawPayloads,
-            request.outlineNodeId.takeIf(String::isNotBlank),
-            request.involvedCharacters,
-            request.characterLimit,
-        )
-        val characters = resolved.characters.map(::clean)
-        val relationships = pcRelationshipPayloads(rawPayloads, resolved.characters)
-        val recent = orderedChapters(all).takeLast(request.recentLimit)
-            .map { select(it.payload, "id", "title", "outline_node_id", "word_count", "summary") }
-        val outline = manifest.categoryText("target_outline", "暂无当前大纲节点。")
-        val worldItems = manifest.items.filter { it.sourceType == "worldbuilding" }
-        val world = worldItems.joinToString("\n\n") { it.content }.ifBlank { "暂无世界观设定。" }
-        val governance = manifest.categoryText(
-            "narrative_governance",
-            "Narrative governance: no due or high-risk items.",
-        )
-        val summaries = manifest.categoryText("previous_summary", "暂无前文摘要。")
+            ?: return skipped("prepare_task_context", "项目不存在", JsonObject(emptyMap()))
+        val taskType = args.string("task_type").ifBlank { "writing" }
+        if (taskType !in setOf("writing", "outline_planning")) {
+            return skipped("prepare_task_context", "手机独立模式不支持该上下文任务：$taskType")
+        }
+        val taskArguments = args["arguments"] as? JsonObject ?: args
+        val request = MobileContextRequest.fromArgs(taskType, taskArguments)
+        val taskConfig = contextTaskConfig(config, taskType)
+        val inputs = manifestInputs(projectId, taskConfig.model, request, project, all, rawPayloads)
+        val manifest = contextEngine(taskType).prepare(inputs)
+        cacheManifest(manifest)
         val data = buildJsonObject {
-            put("outline_context", outline)
-            put("recent_chapters", JsonArray(recent))
-            put("recent_summaries_text", summaries)
-            put("characters", JsonArray(characters))
-            put("relationships", relationships)
-            put("world_context", world)
-            put("narrative_governance_context", governance)
-            put("warnings", JsonArray(manifest.warnings.map(::JsonPrimitive)))
-            put("requirements_preview", request.requirements.take(1_000))
-            put("resolved_aliases", jsonStringMap(resolved.resolvedAliases))
-            put("rag_sections", JsonArray(worldItems.map { it.toJson(includeContent = false) }))
-            put("total_used_chars", manifest.estimatedInputChars)
-            put("total_estimated_tokens", manifest.estimatedInputTokens)
-            put("rag_used", worldItems.isNotEmpty())
-            put("fts_available", false)
-            put("auto_indexed", false)
+            put("manifest_id", manifest.id)
+            put("context_manifest_id", manifest.id)
             put("context_manifest", manifest.toJson(includeContent = false))
+            put("baseline_context", manifest.renderedContext())
+            put("selection_required", true)
+            put("next_tools", buildJsonArray {
+                add(JsonPrimitive("search_task_context"))
+                add(JsonPrimitive("submit_context_evidence"))
+            })
         }
+        val taskLabel = if (taskType == "writing") "写章" else "大纲规划"
         val detail = if (manifest.status == "ready") {
-            "写作上下文预检通过：${characters.size} 个角色、${relationships.size} 条关系、${manifest.warnings.size} 条提示"
+            "已建立精简$taskLabel 基线；请由模型检索并复核本任务需要的资料"
         } else {
-            "写作上下文需要确认：必选大纲或文风锚点不完整"
+            "$taskLabel 基线缺少必选位置、目标或文风锚点"
         }
-        return ok("preview_writing_context", detail, data)
+        return result("prepare_task_context", manifest.status, detail, data)
+    }
+
+    private suspend fun searchTaskContext(
+        projectId: String,
+        args: JsonObject,
+        config: DirectApiConfig,
+    ): JsonObject {
+        val manifestId = args.string("context_manifest_id").ifBlank { args.string("manifest_id") }
+        val manifest = contextManifests[manifestId]
+            ?: return skipped("search_task_context", "context_manifest_id 不存在或已失效")
+        val taskConfig = contextTaskConfig(config, manifest.request.taskType)
+        val engine = contextEngine(manifest.request.taskType)
+        val policy = contextPolicies.policy(manifest.request.taskType)
+        val query = args.string("query").trim()
+        if (query.isBlank()) return skipped("search_task_context", "query 不能为空")
+        val all = records(projectId)
+        val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
+        val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
+            ?: return skipped("search_task_context", "项目不存在")
+        val inputs = manifestInputs(projectId, taskConfig.model, manifest.request, project, all, rawPayloads)
+        val validation = engine.validate(manifest, inputs)
+        if (!validation.ready) {
+            cacheManifest(validation.current)
+            return result(
+                "search_task_context",
+                validation.status,
+                validation.detail,
+                buildJsonObject { put("manifest_id", manifest.id) },
+            )
+        }
+        val sourceTypes = args.stringList("source_types").toSet()
+        val searched = engine.search(
+            validation.current,
+            inputs,
+            query,
+            sourceTypes,
+            args.int("limit").takeIf { it > 0 } ?: 12,
+        )
+        cacheManifest(searched.manifest)
+        val items = searched.items.map { item ->
+            buildJsonObject {
+                item.toJson(includeContent = false).forEach { (key, value) -> put(key, value) }
+                put("excerpt", item.content.take(policy.searchExcerptChars))
+                put("estimated_chunk_tokens", item.estimatedTokens)
+            }
+        }
+        return ok(
+            "search_task_context",
+            "本次模型查询返回 ${items.size} 个候选；这些资料尚未进入正文上下文",
+            buildJsonObject {
+                put("manifest_id", searched.manifest.id)
+                put("items", JsonArray(items))
+            },
+        )
+    }
+
+    private suspend fun submitContextEvidence(
+        projectId: String,
+        args: JsonObject,
+        config: DirectApiConfig,
+    ): JsonObject {
+        val manifestId = args.string("context_manifest_id").ifBlank { args.string("manifest_id") }
+        val manifest = contextManifests[manifestId]
+            ?: return skipped("submit_context_evidence", "context_manifest_id 不存在或已失效")
+        val taskConfig = contextTaskConfig(config, manifest.request.taskType)
+        val engine = contextEngine(manifest.request.taskType)
+        val all = records(projectId)
+        val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
+        val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
+            ?: return skipped("submit_context_evidence", "项目不存在")
+        val inputs = manifestInputs(projectId, taskConfig.model, manifest.request, project, all, rawPayloads)
+        val validation = engine.validate(manifest, inputs)
+        if (!validation.ready) {
+            cacheManifest(validation.current)
+            return result(
+                "submit_context_evidence",
+                validation.status,
+                validation.detail,
+                buildJsonObject { put("manifest_id", manifest.id) },
+            )
+        }
+        val sources = (args["sources"] as? JsonArray).orEmpty()
+            .mapNotNull { it as? JsonObject }
+        val itemIds = sources.mapNotNull { source ->
+            source.string("item_id").ifBlank { source.string("id") }.takeIf(String::isNotBlank)
+        }
+        val selection = engine.select(validation.current, inputs, itemIds)
+        cacheManifest(selection.manifest)
+        val data = buildJsonObject {
+            put("manifest_id", selection.manifest.id)
+            put("accepted_count", selection.accepted.size)
+            put("accepted", JsonArray(selection.accepted.map { it.toJson(includeContent = false) }))
+            put("rejected", JsonArray(selection.rejected.map(::JsonPrimitive)))
+            put("selection_ready", selection.ready)
+            if (selection.ready) {
+                put("context_selection_token", selection.manifest.selectionToken.orEmpty())
+                put("task_context", selection.manifest.renderedContext())
+                put("estimated_input_tokens", selection.manifest.estimatedInputTokens)
+                put("input_budget_tokens", selection.manifest.inputBudgetTokens)
+                put("soft_target_tokens", selection.manifest.softInputTargetTokens)
+                put(
+                    "soft_target_exceeded",
+                    selection.manifest.estimatedInputTokens > selection.manifest.softInputTargetTokens,
+                )
+                put("warnings", JsonArray(selection.manifest.warnings.map(::JsonPrimitive)))
+            }
+        }
+        return if (selection.ready) {
+            ok(
+                "submit_context_evidence",
+                "已复核并精确载入 ${selection.accepted.size} 个来源；请在下一模型步骤携带选择令牌执行任务",
+                data,
+            )
+        } else {
+            result(
+                "submit_context_evidence",
+                "needs_confirmation",
+                "所选资料未通过精确读取或模型动态容量校验，请调整后重新提交",
+                data,
+            )
+        }
     }
 
     private suspend fun chapterWriter(
@@ -497,7 +646,37 @@ internal class MobileWorkspaceAgent(
         val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
         val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
             ?: return skipped("chapter_writer", "项目不存在", JsonObject(emptyMap()))
-        val request = MobileContextRequest.fromArgs(args, contextPolicy)
+        val manifestId = args.string("context_manifest_id")
+        val selectionToken = args.string("context_selection_token")
+        val requestedOutlineId = args.string("outline_node_id")
+        val cachedManifest = contextManifests[manifestId]
+            ?: return result(
+                "chapter_writer",
+                "needs_confirmation",
+                "必须先建立精简基线，并让模型检索、复核本章资料",
+                buildJsonObject { put("next_tool", "prepare_task_context") },
+            )
+        val request = cachedManifest.request
+        if (request.taskType != "writing") {
+            return result(
+                "chapter_writer",
+                "needs_confirmation",
+                "context_manifest_id 不属于写章任务",
+                buildJsonObject { put("next_tool", "prepare_task_context") },
+            )
+        }
+        val engine = contextEngine("writing")
+        if (requestedOutlineId != request.outlineNodeId) {
+            return result(
+                "chapter_writer",
+                "needs_confirmation",
+                "上下文清单目标与本次章级大纲不一致",
+                buildJsonObject {
+                    put("context_manifest_id", manifestId)
+                    put("outline_node_id", requestedOutlineId)
+                },
+            )
+        }
         val targetOutline = all.firstOrNull {
             it.entity.entityType == "outline" && it.entity.entityId == request.outlineNodeId
         }
@@ -559,47 +738,51 @@ internal class MobileWorkspaceAgent(
             )
         }
         val inputs = manifestInputs(projectId, config.model, request, project, all, rawPayloads)
-        val key = manifestKey(projectId, request)
-        val cached = contextManifests[key]
-        val manifest = if (cached == null) {
-            contextEngine.prepare(inputs).also { cacheManifest(key, it) }
-        } else {
-            val validation = contextEngine.validate(cached, inputs)
-            if (!validation.ready) {
-                return skipped(
-                    "chapter_writer",
-                    validation.detail,
-                    buildJsonObject {
-                        put("context_status", validation.status)
-                        put("context_manifest", validation.current.toJson(includeContent = false))
-                        put("requires_preview", true)
-                    },
-                )
-            }
-            validation.current.also { cacheManifest(key, it) }
-        }
-        if (manifest.status != "ready") {
-            return skipped(
+        val validation = engine.validate(cachedManifest, inputs)
+        if (!validation.ready) {
+            cacheManifest(validation.current)
+            return result(
                 "chapter_writer",
-                "写作上下文缺少必选锚点，请先完成预检并确认目标大纲。",
+                validation.status,
+                validation.detail,
                 buildJsonObject {
-                    put("context_status", manifest.status)
-                    put("context_manifest", manifest.toJson(includeContent = false))
-                    put("requires_preview", true)
+                    put("context_status", validation.status)
+                    put("context_manifest", validation.current.toJson(includeContent = false))
                 },
             )
         }
+        val selectedManifest = validation.current
+        if (
+            selectedManifest.selectionToken.isNullOrBlank() ||
+            selectionToken.isBlank() ||
+            selectionToken != selectedManifest.selectionToken
+        ) {
+            return result(
+                "chapter_writer",
+                "needs_confirmation",
+                "context_selection_token 缺失或已失效；请使用 submit_context_evidence 在上一模型步骤返回的令牌",
+                buildJsonObject {
+                    put("context_manifest_id", selectedManifest.id)
+                    put("next_tool", "submit_context_evidence")
+                },
+            )
+        }
+        val manifest = selectedManifest.copy(selectionToken = null)
+        cacheManifest(manifest)
 
         val outlineTitle = targetOutline.payload.string("title")
         val runId = mobileChapterWriteRunId(projectId, config.model, manifest)
         val stored = chapterWriteStore.load(runId)
         var resumeContent = ""
         if (stored != null && stored.content.isNotBlank()) {
-            val validation = contextEngine.validate(stored.manifest, inputs)
+            val validation = engine.validate(stored.manifest, inputs)
             if (validation.ready) {
-                cacheManifest(key, validation.current)
+                val recoveredManifest = validation.current.copy(selectionToken = null)
+                cacheManifest(recoveredManifest)
                 if (stored.state == MobileChapterWriteState.GENERATED) {
-                    val recovered = chapterWriteStore.save(stored.copy(manifest = validation.current))
+                    val recovered = chapterWriteStore.save(
+                        stored.copy(manifest = recoveredManifest),
+                    )
                     return chapterDraftResult(
                         run = recovered,
                         outlineTitle = outlineTitle,
@@ -628,23 +811,33 @@ internal class MobileWorkspaceAgent(
                 manifest = manifest,
             ),
         )
-        val governance = manifest.categoryText(
-            "narrative_governance",
-            "Narrative governance: no due or high-risk items.",
-        )
-        val world = manifest.items.filter { it.sourceType == "worldbuilding" }
+        val selectedItems = manifest.generationItems.filter { it.category == "agent_selected" }
+        val supportingOutlines = selectedItems
+            .filter { it.sourceType == "outline" }
             .joinToString("\n\n") { it.content }
-            .ifBlank { "暂无世界观设定。" }
-        val worldAndGovernance = listOf(world, governance)
-            .filter(String::isNotBlank)
-            .joinToString("\n\n")
+        val outlineContext = listOf(
+            manifest.categoryText("target_outline", "暂无当前大纲节点。"),
+            supportingOutlines,
+        ).filter(String::isNotBlank).joinToString("\n\n")
+        val worldAndGovernance = selectedItems
+            .filter { it.sourceType !in setOf("outline", "chapter", "chapter_summary", "character", "character_timeline") }
+            .joinToString("\n\n") { it.content }
+            .ifBlank { "暂无额外世界观资料。" }
+        val characterProfiles = selectedItems
+            .filter { it.sourceType in setOf("character", "character_timeline") }
+            .joinToString("\n\n") { it.content }
+            .ifBlank { "未选择额外角色档案。" }
+        val recentSummaries = selectedItems
+            .filter { it.sourceType in setOf("chapter", "chapter_summary") }
+            .joinToString("\n\n") { it.content }
+            .ifBlank { "暂无模型选中的前文资料。" }
         val requirements = manifest.categoryText("user_requirement", request.requirements)
         val messages = contract.chapterMessages(
             project = project,
-            outlineContext = manifest.categoryText("target_outline", "暂无当前大纲节点。"),
+            outlineContext = outlineContext,
             worldContext = worldAndGovernance,
-            characterProfiles = manifest.categoryText("scene_character", "未指定角色。"),
-            recentSummaries = manifest.categoryText("previous_summary", "暂无前文摘要。"),
+            characterProfiles = characterProfiles,
+            recentSummaries = recentSummaries,
             requirements = requirements,
         )
         var checkpointContent = checkpointRun.content
@@ -751,16 +944,16 @@ internal class MobileWorkspaceAgent(
         recovered: Boolean,
     ): JsonObject {
         val request = run.manifest.request
-        val resolved = resolvePcCharacters(
-            rawPayloads,
-            request.outlineNodeId.takeIf(String::isNotBlank),
-            request.involvedCharacters,
-            request.characterLimit,
-        )
-        val governance = run.manifest.categoryText(
-            "narrative_governance",
-            "Narrative governance: no due or high-risk items.",
-        )
+        val selectedCharacterItems = run.manifest.generationItems.filter {
+            it.category == "agent_selected" && it.sourceType in setOf("character", "character_timeline")
+        }
+        val selectedCharacterIds = selectedCharacterItems.mapNotNull { it.sourceId }.toSet()
+        val selectedCharacters = rawPayloads.filter {
+            it.mobileRecordType() == "character" && it.stringValue("id") in selectedCharacterIds
+        }
+        val governanceUsed = run.manifest.generationItems.any {
+            it.category == "agent_selected" && it.sourceType == "narrative_governance"
+        }
         val data = buildJsonObject {
             put("draft_id", run.id)
             put("content_ref", run.id)
@@ -777,10 +970,10 @@ internal class MobileWorkspaceAgent(
             put("context_snapshot", buildJsonObject {
                 put("outline_node_id", request.outlineNodeId)
                 put("outline_title", outlineTitle)
-                put("involved_characters", JsonArray(request.involvedCharacters.map(::JsonPrimitive)))
-                put("resolved_aliases", jsonStringMap(resolved.resolvedAliases))
-                put("relationship_count", pcRelationshipPayloads(rawPayloads, resolved.characters).size)
-                put("narrative_governance_used", governance.isNotBlank())
+                put("involved_characters", JsonArray(selectedCharacterItems.map { JsonPrimitive(it.title) }))
+                put("resolved_aliases", JsonObject(emptyMap()))
+                put("relationship_count", pcRelationshipPayloads(rawPayloads, selectedCharacters).size)
+                put("narrative_governance_used", governanceUsed)
                 put("prompt_contract_sha256", contract.sourceHash)
                 put("context_manifest_id", run.manifest.id)
                 put("context_policy_version", run.manifest.policyVersion)
@@ -841,48 +1034,170 @@ internal class MobileWorkspaceAgent(
         config: DirectApiConfig,
     ): JsonObject {
         val all = records(projectId)
+        val rawPayloads = rawRecords(projectId).map(LocalRecord::payload)
         val project = all.firstOrNull { it.entity.entityType == "project" }?.payload
             ?: return skipped("outline_writer", "项目不存在", JsonObject(emptyMap()))
+        val manifestId = args.string("context_manifest_id")
+        val selectionToken = args.string("context_selection_token")
+        val cachedManifest = contextManifests[manifestId]
+            ?: return result(
+                "outline_writer",
+                "needs_confirmation",
+                "必须先建立精简规划基线，并让模型检索、复核本次需要的资料",
+                buildJsonObject { put("next_tool", "prepare_task_context") },
+            )
+        val request = cachedManifest.request
+        if (request.taskType != "outline_planning") {
+            return result(
+                "outline_writer",
+                "needs_confirmation",
+                "context_manifest_id 不属于大纲规划任务",
+                buildJsonObject { put("next_tool", "prepare_task_context") },
+            )
+        }
         val parentId = args.string("parent_id")
-        val parent = all.firstOrNull { it.entity.entityType == "outline" && it.entity.entityId == parentId }
-        if (parentId.isNotBlank() && parent == null) return skipped("outline_writer", "未找到指定父节点", JsonObject(emptyMap()))
-        val batchCount = args.int("batch_count", 1).coerceIn(1, 8)
-        val parentContext = parent?.payload?.let {
-            "父节点: [${it.string("node_type")}] ${it.string("title")}\n摘要: ${it.string("summary").ifBlank { "无" }}"
-        }.orEmpty()
+        val insertAfterId = args.string("insert_after_id")
+        if (parentId != request.parentId || insertAfterId != request.insertAfterId) {
+            return result(
+                "outline_writer",
+                "needs_confirmation",
+                "上下文清单中的大纲位置与本次调用不一致",
+                buildJsonObject { put("next_tool", "prepare_task_context") },
+            )
+        }
+        outlineDraftStore.latestPending(projectId)?.let { pending ->
+            return result(
+                "outline_writer",
+                "blocked",
+                "已有一份大纲草稿等待作者处理，本轮未生成新的规划。",
+                outlineDraftData(pending),
+            )
+        }
+        val inputs = manifestInputs(projectId, config.model, request, project, all, rawPayloads)
+        val engine = contextEngine("outline_planning")
+        val validation = engine.validate(cachedManifest, inputs)
+        if (!validation.ready) {
+            cacheManifest(validation.current)
+            return result(
+                "outline_writer",
+                validation.status,
+                validation.detail,
+                buildJsonObject {
+                    put("context_status", validation.status)
+                    put("context_manifest", validation.current.toJson(includeContent = false))
+                },
+            )
+        }
+        val selectedManifest = validation.current
+        if (
+            selectedManifest.selectionToken.isNullOrBlank() ||
+            selectionToken.isBlank() ||
+            selectionToken != selectedManifest.selectionToken
+        ) {
+            return result(
+                "outline_writer",
+                "needs_confirmation",
+                "context_selection_token 缺失或已失效；请使用上一模型步骤返回的令牌",
+                buildJsonObject { put("next_tool", "submit_context_evidence") },
+            )
+        }
+        val manifest = selectedManifest.copy(selectionToken = null)
+        cacheManifest(manifest)
+        val batchCount = request.batchCount.coerceIn(1, 8)
         val turn = directApi.agentTurn(
             config = config,
             messages = listOf(
-                message("system", contract.writerSystem("outline", contract.styleContext(project))),
+                message("system", contract.writerSystem("outline", "")),
                 message(
                     "user",
                     contract.outlineWriterUser(
-                        requirements = args.string("requirements"),
-                        parentContext = parentContext,
-                        existingOutline = existingOutlineList(all),
-                        worldContext = worldContext(all),
-                        existingCharacters = existingCharacterList(all, detailed = false),
+                        taskContext = manifest.renderedContext(),
                         batchCount = batchCount,
                     ),
                 ),
             ),
             tools = contract.writerOutputTool("outline"),
             toolChoice = "required",
-            maxOutputTokens = 4_000,
+            maxOutputTokens = manifest.outputReserveTokens.coerceAtLeast(1),
             temperature = 0.7,
         )
-        val parsed = structuredArguments(turn, "create_outline_nodes")
+        val parsed = structuredArguments(turn, "propose_outline_nodes")
             ?: return errorResult("outline_writer", "大纲生成结果解析失败")
         val nodes = parsed["nodes"] as? JsonArray
             ?: return errorResult("outline_writer", "大纲生成结果缺少 nodes")
+        if (nodes.isEmpty()) return errorResult("outline_writer", "大纲生成结果没有可审阅节点")
+        if (nodes.size > 8) return errorResult("outline_writer", "单次大纲草稿最多包含 8 个节点")
+        if (nodes.any { element -> element !is JsonObject }) {
+            return errorResult("outline_writer", "大纲生成结果包含无效节点")
+        }
+        val stored = try {
+            outlineDraftStore.save(
+                MobileOutlineDraftRun(
+                    id = mobileOutlineDraftId(projectId, config.model, manifest),
+                    projectId = projectId,
+                    model = config.model,
+                    parentId = request.parentId,
+                    insertAfterId = request.insertAfterId,
+                    nodes = nodes,
+                    designNotes = (parsed["design_notes"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+                    state = MobileOutlineDraftState.PENDING,
+                    manifest = manifest,
+                    baseOutlineHash = mobileOutlineTreeHash(
+                        rawPayloads.filter { it.string("_record_type") == "outline_node" },
+                    ),
+                ),
+            )
+        } catch (invalid: IllegalArgumentException) {
+            return errorResult(
+                "outline_writer",
+                invalid.message ?: "大纲生成结果不符合草稿约束",
+            )
+        } catch (conflict: MobilePendingOutlineDraftConflict) {
+            val pending = outlineDraftStore.latestPending(projectId)
+            return result(
+                "outline_writer",
+                "blocked",
+                "已有一份大纲草稿等待作者处理，本轮未生成新的规划。",
+                pending?.let(::outlineDraftData)
+                    ?: buildJsonObject { put("draft_id", conflict.draftId) },
+            )
+        }
         return ok(
             "outline_writer",
-            "已生成 ${nodes.size.coerceAtMost(8)} 个大纲节点",
-            buildJsonObject {
-                put("nodes", JsonArray(nodes.take(8)))
-                put("design_notes", parsed["design_notes"] ?: JsonPrimitive(""))
+            "已生成 ${stored.nodes.size} 个可编辑大纲草稿节点；确认前不会写入正式大纲",
+            outlineDraftData(stored),
+        )
+    }
+
+    private fun outlineDraftData(draft: MobileOutlineDraftRun): JsonObject = buildJsonObject {
+        put("draft_id", draft.id)
+        put("project_id", draft.projectId)
+        put("context_manifest_id", draft.manifest.id)
+        draft.parentId.takeIf(String::isNotBlank)?.let { put("parent_id", it) }
+        draft.insertAfterId.takeIf(String::isNotBlank)?.let { put("insert_after_id", it) }
+        put("draft_status", draft.state)
+        put("nodes", draft.nodes)
+        put("design_notes", draft.designNotes)
+        put("context_selection_digest", draft.manifest.selectionFingerprint)
+        put("base_outline_hash", draft.baseOutlineHash)
+        put("saved_outline_node_ids", JsonArray(draft.savedOutlineNodeIds.map(::JsonPrimitive)))
+        put("created_at", draft.createdAt)
+        put("updated_at", draft.updatedAt)
+        put(
+            "next_actions",
+            if (draft.state == MobileOutlineDraftState.PENDING) {
+                buildJsonArray {
+                    add(JsonPrimitive("edit"))
+                    add(JsonPrimitive("confirm"))
+                    add(JsonPrimitive("confirm_and_write"))
+                    add(JsonPrimitive("regenerate"))
+                    add(JsonPrimitive("discard"))
+                }
+            } else {
+                JsonArray(emptyList())
             },
         )
+        put("execution_route", "android_standalone")
     }
 
     private suspend fun worldbuildingWriter(
@@ -973,8 +1288,11 @@ internal class MobileWorkspaceAgent(
     }
 
     private suspend fun createOutlineNodes(projectId: String, args: JsonObject): JsonObject {
-        val rawNodes = (args["nodes"] as? JsonArray).orEmpty().take(8)
+        val rawNodes = (args["nodes"] as? JsonArray).orEmpty()
         if (rawNodes.isEmpty()) return skipped("create_outline_nodes", "大纲节点列表为空", JsonArray(emptyList()))
+        if (rawNodes.size > 8) {
+            return errorResult("create_outline_nodes", "单次最多创建 8 个大纲节点；本次未写入任何节点")
+        }
         val existing = records(projectId, "outline")
         var sortOrder = nextSortOrder(existing)
         val titleIds = existing.associate { it.payload.string("title") to it.entity.entityId }.toMutableMap()
@@ -1076,14 +1394,22 @@ internal class MobileWorkspaceAgent(
         styleText = contract.styleContext(project),
         primaryRecords = all.map(LocalRecord::payload),
         rawRecords = rawPayloads,
-        orderedChapters = orderedChapters(all).map(LocalRecord::payload),
     )
 
-    private fun manifestKey(projectId: String, request: MobileContextRequest): String =
-        "$projectId|${request.outlineNodeId.ifBlank { request.targetChapterId.ifBlank { "unscoped" } }}"
+    private fun contextTaskConfig(config: DirectApiConfig, taskType: String): DirectApiConfig =
+        config.forTask(
+            if (taskType == "outline_planning") {
+                DirectApiConfig.TASK_PLANNING
+            } else {
+                DirectApiConfig.TASK_WRITING
+            },
+        )
 
-    private fun cacheManifest(key: String, manifest: MobileContextManifest) {
-        contextManifests[key] = manifest
+    private fun contextEngine(taskType: String): MobileContextManifestEngine =
+        MobileContextManifestEngine(contextPolicies.policy(taskType))
+
+    private fun cacheManifest(manifest: MobileContextManifest) {
+        contextManifests[manifest.id] = manifest
         while (contextManifests.size > MAX_CONTEXT_MANIFESTS) {
             contextManifests.remove(contextManifests.keys.first())
         }

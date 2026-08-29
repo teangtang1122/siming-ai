@@ -115,40 +115,33 @@ def _prepare_chapter_writer_manifest(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    involved_names: list[str],
-    model: str | None,
+    outline_node_id: str,
 ) -> tuple[ContextOrchestrator, Any | None, dict | None]:
-    # Every model path starts with the same persisted manifest. Existing tool
-    # callers do not need to provide an id; missing anchors become a
-    # recoverable confirmation state instead of a blind model call.
+    # Writing never creates context implicitly. The outer Agent must first
+    # inspect the compact anchors, search focused gaps, and finalize exact
+    # evidence in a previous model step.
     orchestrator = ContextOrchestrator(db)
     requested_manifest_id = str(args.get("context_manifest_id") or "").strip()
-    if requested_manifest_id:
-        manifest = orchestrator.get_manifest(requested_manifest_id, project_id)
-        if not manifest:
-            return orchestrator, None, _writer_result(
-                "needs_confirmation",
-                "The requested context manifest was not found.",
-                {"context_manifest_id": requested_manifest_id},
-            )
-    else:
-        manifest = orchestrator.prepare(
-            project_id=project_id,
-            task_type="writing",
-            model=model,
-            execution_route=(
-                "internal_cli"
-                if is_local_cli_provider(_chapter_writer_provider(model))
-                else "internal_api"
-            ),
-            arguments={**args, "involved_characters": involved_names},
-            pinned_chunk_ids=(
-                args.get("pinned_chunk_ids")
-                if isinstance(args.get("pinned_chunk_ids"), list)
-                else ()
-            ),
+    selection_token = str(args.get("context_selection_token") or "").strip()
+    if not requested_manifest_id:
+        return orchestrator, None, _writer_result(
+            "needs_confirmation",
+            "必须先建立写章上下文基线，并让模型检索、复核所需资料。",
+            {"next_tool": "prepare_task_context"},
         )
-    manifest_ok, manifest_detail = orchestrator.validate(manifest)
+    manifest = orchestrator.get_manifest(requested_manifest_id, project_id)
+    if not manifest:
+        return orchestrator, None, _writer_result(
+            "needs_confirmation",
+            "The requested context manifest was not found.",
+            {"context_manifest_id": requested_manifest_id},
+        )
+    manifest_ok, manifest_detail = orchestrator.validate_task_selection(
+        manifest,
+        token=selection_token,
+        task_type="writing",
+        outline_node_id=outline_node_id,
+    )
     if not manifest_ok:
         status = (
             manifest.status
@@ -179,33 +172,57 @@ class _GeneratedChapterProse:
 async def _generate_chapter_prose(
     db: Session,
     project_id: str,
-    requirements: str,
-    involved_names: list[str],
     outline_node_id: str,
     model: str | None,
     orchestrator: ContextOrchestrator,
     manifest: Any,
 ) -> tuple[_GeneratedChapterProse | None, dict | None]:
+    generation_items = orchestrator.task_generation_items(manifest)
     outline_ctx = (
-        _manifest_section_text(manifest, "target_outline")
+        _manifest_item_text(
+            generation_items,
+            categories={"target_outline"},
+        )
         or "No target outline was selected."
     )
+    supporting_outlines = _manifest_item_text(
+        generation_items,
+        categories={"agent_selected", "pinned"},
+        source_types={"outline"},
+    )
+    if supporting_outlines:
+        outline_ctx = f"{outline_ctx}\n\n{supporting_outlines}"
     summaries = (
-        _manifest_section_text(manifest, "previous_summary")
+        _manifest_item_text(
+            generation_items,
+            categories={"agent_selected", "pinned"},
+            source_types={"chapter", "chapter_summary"},
+        )
         or "No previous chapter summary is available."
     )
     characters = (
-        _manifest_section_text(manifest, "scene_character")
+        _manifest_item_text(
+            generation_items,
+            categories={"agent_selected", "pinned"},
+            source_types={"character", "character_timeline"},
+        )
         or "No scene character was selected."
     )
-    world_ctx = _manifest_section_text(
-        manifest,
-        "worldbuilding",
-        "hybrid_retrieval",
-        "narrative_governance",
-        "pinned",
+    world_ctx = _manifest_item_text(
+        generation_items,
+        categories={"agent_selected", "pinned"},
+        excluded_source_types={
+            "outline", "chapter", "chapter_summary", "character", "character_timeline",
+        },
     ) or "No additional worldbuilding source was selected."
-    style_ctx = _manifest_section_text(manifest, "style") or "Use the project's established style."
+    style_ctx = _manifest_item_text(
+        generation_items,
+        categories={"style"},
+    ) or "Use the project's established style."
+    requirements = _manifest_item_text(
+        generation_items,
+        categories={"user_requirement"},
+    )
     messages = compose_chapter_writer_messages(
         pack=get_chapter_pack(),
         style_context=style_ctx,
@@ -250,7 +267,6 @@ async def _generate_chapter_prose(
             orchestrator,
             manifest,
             outline_node_id,
-            involved_names,
         ),
     ), None
 
@@ -262,12 +278,6 @@ async def chapter_writer(
 ) -> dict:
     """Generate an independent chapter draft for the model-selected outline."""
     outline_node_id = str(args.get("outline_node_id") or "").strip() or None
-    requirements = str(args.get("requirements") or "").strip()
-    involved_names = (
-        [str(name).strip() for name in args.get("involved_characters", []) if name]
-        if isinstance(args.get("involved_characters"), list)
-        else []
-    )
     target_outline, preflight_error = _chapter_writer_target(
         db,
         project_id,
@@ -281,16 +291,20 @@ async def chapter_writer(
         db,
         project_id,
         args,
-        involved_names,
-        model,
+        str(outline_node_id),
     )
     if manifest_error:
         return manifest_error
+    if not orchestrator.mark_consumed(manifest):
+        return _writer_result(
+            "needs_confirmation",
+            "context_selection_token 已使用；请重新检索并提交资料。",
+            {"context_manifest_id": manifest.id},
+        )
+    commit_session(db)
     generated, generation_error = await _generate_chapter_prose(
         db,
         project_id,
-        requirements,
-        involved_names,
         str(outline_node_id),
         model,
         orchestrator,
@@ -301,7 +315,6 @@ async def chapter_writer(
 
     content = generated.content
     outline_title = target_outline.title or ""
-    orchestrator.mark_consumed(manifest)
     manifest_id = manifest.id
 
     try:
@@ -351,13 +364,23 @@ async def chapter_writer(
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _manifest_section_text(context_manifest, *categories: str) -> str:
-    """Return exact selected manifest content for one or more categories."""
-    wanted = set(categories)
+def _manifest_item_text(
+    items: list[Any],
+    *,
+    categories: set[str],
+    source_types: set[str] | None = None,
+    excluded_source_types: set[str] | None = None,
+) -> str:
+    """Render only the Agent-finalized evidence requested by one prompt section."""
+    source_types = source_types or set()
+    excluded_source_types = excluded_source_types or set()
     return "\n\n".join(
         item.content_excerpt
-        for item in context_manifest.items
-        if item.category in wanted and item.content_excerpt
+        for item in items
+        if item.category in categories
+        and (not source_types or item.source_type in source_types)
+        and item.source_type not in excluded_source_types
+        and item.content_excerpt
     ).strip()
 
 
@@ -365,16 +388,25 @@ def _manifest_snapshot(
     orchestrator: ContextOrchestrator,
     context_manifest,
     outline_node_id: str | None,
-    involved_names: list[str],
 ) -> dict:
     """Compact, content-free UI snapshot generated from the manifest."""
     payload = orchestrator.manifest_payload(context_manifest, include_content=False)
+    generation_items = orchestrator.task_generation_items(context_manifest)
+    selected_items = [
+        item
+        for item in generation_items
+        if item.category == "agent_selected" or item.pinned
+    ]
     return {
         "manifest_id": context_manifest.id,
         "status": context_manifest.status,
         "outline_node_id": outline_node_id,
-        "involved_characters": involved_names,
-        "rag_used": any(item.chunk_id for item in context_manifest.items),
+        "involved_characters": [
+            item.title
+            for item in selected_items
+            if item.source_type in {"character", "character_timeline"}
+        ],
+        "rag_used": bool(selected_items),
         "total_used_chars": context_manifest.estimated_input_chars,
         "total_estimated_tokens": context_manifest.estimated_input_tokens,
         "input_budget_tokens": context_manifest.input_budget_tokens,
@@ -396,7 +428,12 @@ def _manifest_snapshot(
                 "pinned": item["pinned"],
             }
             for item in payload["items"]
+            if item["category"] not in {"agent_search"}
         ],
         "warnings": payload["warnings"],
-        "explanations": [item["selection_reason"] for item in payload["items"]],
+        "explanations": [
+            item["selection_reason"]
+            for item in payload["items"]
+            if item["category"] != "agent_search"
+        ],
     }

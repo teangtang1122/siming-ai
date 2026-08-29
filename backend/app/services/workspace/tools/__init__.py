@@ -6,7 +6,6 @@ from .chapters import (
     list_chapter_versions,
     restore_chapter_version,
 )
-from .context_preview import preview_writing_context
 from .character_writer import character_writer
 from .characters import create_character, delete_character, update_character
 from .character_merge import list_duplicate_characters, merge_duplicate_characters, preview_character_merge
@@ -32,6 +31,7 @@ from .memory import forget, list_memories, recall, remember
 from .web_search import web_search
 from .rag_tools import search_context, preview_rag_context, explain_context_selection
 from .context_governance import prepare_task_context, search_task_context, submit_context_evidence
+from .external_writing import save_external_outline_draft
 from .worldbuilding import (
     create_worldbuilding_entry,
     delete_worldbuilding_entry,
@@ -150,7 +150,6 @@ from .narrative_governance import (
 
 __all__ = [
     "chapter_writer",
-    "preview_writing_context",
     "character_writer",
     "outline_writer",
     "worldbuilding_writer",
@@ -306,4 +305,5 @@ __all__ = [
     "prepare_task_context",
     "search_task_context",
     "submit_context_evidence",
+    "save_external_outline_draft",
 ]

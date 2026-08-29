@@ -120,8 +120,11 @@ def get_api_free_mode_rules() -> str:
 API-free 工具（可以自由使用）：
 - 所有 search_*/list_* 查询工具
 - 非正文写作任务中明确授权的 create_*/update_*/delete_* 写入工具
-- prepare_external_writing_context → 获取写作上下文
-- save_external_chapter_draft → 保存一份未入库草稿；成功后立即结束本轮
+- prepare_external_writing_context → 建立只含目标、文风和作者要求的精简写作基线
+- search_task_context → 由你提出查询，只查看带真实ID和短摘要的候选来源
+- submit_context_evidence → 复核后提交必要来源，取得精确上下文和一次性选择令牌
+- save_external_chapter_draft → 携带选择令牌保存一份未入库草稿；成功后立即结束本轮
+- save_external_outline_draft → 携带规划令牌保存一份未写入正式大纲的提案；成功后立即结束本轮
 - record_external_quality_review → 可选的独立质量评审记录；基础写作任务不要调用
 - start_external_cataloging_job / get_next_external_cataloging_chapter(phase="facts") / save_external_cataloging_facts → 外部建档事实阶段
 - get_next_external_cataloging_chapter(phase="candidates") / list_cataloging_facts / save_external_cataloging_candidates / apply_pending_cataloging / verify_external_cataloging_progress → 外部建档候选、应用与验证阶段
@@ -133,18 +136,21 @@ API-free 工具（可以自由使用）：
 
 长内容处理规则：
 1. 不要在聊天回复里完整输出长正文、完整章节、完整角色档案、完整世界观档案或大量候选 JSON；聊天里只写摘要、数量、关键警告和下一步。
-2. 写章节正文时，只调用 save_external_chapter_draft 保存完整的未入库草稿，然后立即停止。不得在同一 AI 回合写入正式章节；作者会在界面选择“保存并建档”或“仅保存”。
+2. 写章节正文时，必须先建立精简基线，再按需检索并提交精确来源；看到 submit_context_evidence 返回的 task_context 与选择令牌后，才能在下一模型步骤生成正文并调用 save_external_chapter_draft。保存成功后立即停止。不得在同一 AI 回合写入正式章节；作者会在界面选择“保存并建档”或“仅保存”。
 3. 新章草稿只能关联尚未写入正式正文的章级大纲。已有正式章节的改写不走章节写作草稿路径；应由作者在编辑器中修改，或另行发起可审核的独立修订。
-4. 建档按章节顺序执行 facts → candidates → apply → verify：facts 阶段只读当前章并保存事实，candidates 阶段读取事实与当前档案并保存完整候选；不要把完整 facts 或 candidates 数组贴在聊天回复里。
-5. 前一章应用并验证完成后才能处理下一章；不要并行抽取后续章节，也不要跳过事实阶段直接保存候选。
-6. 如果需要让用户确认长内容，只展示摘要、差异点和可编辑字段；完整内容以 draft_id、chapter_id、candidate_id 或工具返回数据为准。
+4. 补写新章大纲时，使用 prepare_task_context(task_type="outline_planning") 建立位置与文风基线，再按需检索并提交精确来源；在下一模型步骤生成节点并调用 save_external_outline_draft。成功后立即停止，不得创建正式大纲或继续写正文。作者在界面编辑、确认或放弃提案。
+5. 建档按章节顺序执行 facts → candidates → apply → verify：facts 阶段只读当前章并保存事实，candidates 阶段读取事实与当前档案并保存完整候选；不要把完整 facts 或 candidates 数组贴在聊天回复里。
+6. 前一章应用并验证完成后才能处理下一章；不要并行抽取后续章节，也不要跳过事实阶段直接保存候选。
+7. 如果需要让用户确认长内容，只展示摘要、差异点和可编辑字段；完整内容以 draft_id、chapter_id、candidate_id 或工具返回数据为准。
 
 工作方式：
 1. 调用 get_prompt_pack 获取当前任务所需的方法提示词；不要把写作、去除 AI 味和质量评审合并执行
-2. 调用 prepare_external_writing_context 获取上下文
-3. 你自己按提示词要求完成分析/生成
-4. 调用工具保存结果
-5. 调用验证工具确认数据已保存"""
+2. 正文使用 prepare_external_writing_context；大纲提案使用 prepare_task_context(task_type="outline_planning") 建立精简基线
+3. 自行提出查询并调用 search_task_context；只选择当前任务需要的候选
+4. 调用 submit_context_evidence 获取精确上下文与选择令牌
+5. 在下一模型步骤只使用返回的 task_context，按提示词要求完成分析/生成
+6. 携带令牌调用对应草稿工具保存结果
+7. 非终止型任务再调用验证工具确认结果；save_external_chapter_draft 或 save_external_outline_draft 成功后立即停止"""
 
 
 def get_character_change_detection_prompt() -> str:

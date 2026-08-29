@@ -189,6 +189,66 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         return response.data as? JsonObject
     }
 
+    suspend fun pendingOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+    ): JsonObject? {
+        val response = request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.pendingOutlineDraft(projectId),
+        )
+        return response.data as? JsonObject
+    }
+
+    suspend fun updateOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection,
+        PcApiPaths.outlineDraft(projectId, draftId),
+        "PUT",
+        payload,
+    )
+
+    suspend fun confirmOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+        writeAfterConfirm: Boolean,
+    ): JsonObject = canonicalWrite(
+        connection,
+        PcApiPaths.confirmOutlineDraft(projectId, draftId),
+        "POST",
+        buildJsonObject { put("write_after_confirm", writeAfterConfirm) },
+    )
+
+    suspend fun regenerateOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+    ): JsonObject = canonicalWrite(
+        connection,
+        PcApiPaths.regenerateOutlineDraft(projectId, draftId),
+        "POST",
+        JsonObject(emptyMap()),
+    )
+
+    suspend fun discardOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+    ): JsonObject {
+        val response = request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.outlineDraft(projectId, draftId),
+            "DELETE",
+        )
+        return response.data as? JsonObject
+            ?: throw GatewayHttpException(502, "PC API 返回的大纲草稿结构无效")
+    }
+
     suspend fun saveGeneratedChapter(
         connection: GatewayConnection,
         projectId: String,

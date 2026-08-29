@@ -83,6 +83,45 @@ class MobileContextParityTest {
     }
 
     @Test
+    fun `exact character archive keeps full fields ai config and every relationship`() {
+        val marker = "最后一条关系不可丢失"
+        val protagonist = buildJsonObject {
+            character("c1", "陆糖").forEach { (key, value) -> put(key, value) }
+            put("background", "长背景".repeat(1_000) + "背景尾部标记")
+            put("profile", buildJsonObject { put("core_motivation", "守住记忆城") })
+        }
+        val others = (1..12).map { index -> character("other-$index", "关系人$index") }
+        val relationships = (1..12).map { index ->
+            buildJsonObject {
+                put("_record_type", "character_relationship")
+                put("id", "relation-$index")
+                put("from", "c1")
+                put("to", "other-$index")
+                put("relationship_type", "关系$index")
+                put("description", if (index == 12) marker else "关系说明$index")
+            }
+        }
+        val aiConfig = buildJsonObject {
+            put("_record_type", "character_ai_config")
+            put("id", "config-c1")
+            put("character_id", "c1")
+            put("tone_style", "克制")
+            put("catchphrases", JsonArray(listOf(JsonPrimitive("先看证据"))))
+        }
+
+        val archive = pcExactCharacterArchive(
+            listOf(protagonist, aiConfig) + others + relationships,
+            protagonist,
+        )
+
+        assertTrue(archive.length > 4_000)
+        assertTrue("背景尾部标记" in archive)
+        assertTrue("先看证据" in archive)
+        assertTrue(marker in archive)
+        assertEquals(12, Regex("relationship_type").findAll(archive).count())
+    }
+
+    @Test
     fun `governance context mirrors PC open statuses and priority ordering`() {
         val fulfilled = buildJsonObject {
             put("_record_type", "foreshadowing")
@@ -146,6 +185,23 @@ class MobileContextParityTest {
         assertTrue("切断病毒网络" in context)
         assertFalse("逃离青云宗" in context)
         assertEquals(1, Regex("角色动态/c1").findAll(context).count())
+    }
+
+    @Test
+    fun `exact governance context can include items beyond compact preview`() {
+        val marker = "第十三条低优先级治理项"
+        val records = (1..13).map { index ->
+            buildJsonObject {
+                put("_record_type", "narrative_debt")
+                put("id", "debt-$index")
+                put("title", if (index == 13) marker else "高优先级债务$index")
+                put("status", "open")
+                put("priority", if (index == 13) "low" else "critical")
+            }
+        }
+
+        assertFalse(marker in pcGovernanceContext(records))
+        assertTrue(marker in pcGovernanceContext(records, limit = null))
     }
 
     private fun character(id: String, name: String, aliases: List<String> = emptyList()): JsonObject =

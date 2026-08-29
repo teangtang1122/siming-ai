@@ -4258,6 +4258,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/outline-drafts/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Pending Outline Draft
+         * @description Restore the author-visible unsaved proposal after reload.
+         */
+        get: operations["get_pending_outline_draft_api_v1_projects__project_id__outline_drafts_pending_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Edit Outline Draft */
+        put: operations["edit_outline_draft_api_v1_projects__project_id__outline_drafts__draft_id__put"];
+        post?: never;
+        /** Discard Generated Outline Draft */
+        delete: operations["discard_generated_outline_draft_api_v1_projects__project_id__outline_drafts__draft_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Generated Outline Draft */
+        post: operations["confirm_generated_outline_draft_api_v1_projects__project_id__outline_drafts__draft_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Regenerate Outline Draft Request */
+        post: operations["regenerate_outline_draft_request_api_v1_projects__project_id__outline_drafts__draft_id__regenerate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/outline/reorder": {
         parameters: {
             query?: never;
@@ -7848,6 +7920,67 @@ export interface components {
              * @description Role in this outline node
              */
             role_in_scene?: string | null;
+        };
+        /**
+         * OutlineDraftConfirmRequest
+         * @description Confirm a proposal and optionally authorize a new write turn.
+         */
+        OutlineDraftConfirmRequest: {
+            /**
+             * Write After Confirm
+             * @default false
+             */
+            write_after_confirm: boolean;
+        };
+        /**
+         * OutlineDraftNode
+         * @description Editable node inside an unsaved Agent outline proposal.
+         */
+        OutlineDraftNode: {
+            /** Actual Summary */
+            actual_summary?: string | null;
+            /** Character Names */
+            character_names?: string[];
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Node Type
+             * @default chapter
+             * @enum {string}
+             */
+            node_type: "volume" | "chapter" | "section";
+            /** Parent Title */
+            parent_title?: string | null;
+            /** Planned Summary */
+            planned_summary?: string | null;
+            /**
+             * Status
+             * @default pending
+             * @constant
+             */
+            status: "pending";
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * OutlineDraftUpdate
+         * @description Author edits to a pending outline proposal.
+         */
+        OutlineDraftUpdate: {
+            /**
+             * Design Notes
+             * @default
+             */
+            design_notes: string;
+            /** Nodes */
+            nodes: components["schemas"]["OutlineDraftNode"][];
         };
         /**
          * OutlineNodeCreate
@@ -17729,6 +17862,173 @@ export interface operations {
                 "application/json": components["schemas"]["OutlineNodeCreate"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_pending_outline_draft_api_v1_projects__project_id__outline_drafts_pending_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_outline_draft_api_v1_projects__project_id__outline_drafts__draft_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutlineDraftUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    discard_generated_outline_draft_api_v1_projects__project_id__outline_drafts__draft_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_generated_outline_draft_api_v1_projects__project_id__outline_drafts__draft_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutlineDraftConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_outline_draft_request_api_v1_projects__project_id__outline_drafts__draft_id__regenerate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

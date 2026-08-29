@@ -41,6 +41,7 @@ WRITE_PROJECT_DATA = {
     "save_external_cataloging_facts",
     "save_external_cataloging_candidates",
     "save_external_chapter_draft",
+    "save_external_outline_draft",
     "write_project_file",
     "sync_project_files",
     "apply_narrative_governance_candidates",

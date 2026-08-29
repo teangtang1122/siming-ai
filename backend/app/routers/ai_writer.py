@@ -75,11 +75,9 @@ from ..services.workspace.assistant_response import (
     _workspace_outcome,
     finalize_workspace_assistant_turn,
 )
-from ..services.workspace.generated_drafts import (
-    chapter_draft_result_data,
-    find_new_pending_chapter_draft,
-    pending_chapter_draft_ids,
-)
+from ..services.workspace.generated_drafts import pending_chapter_draft_ids
+from ..services.workspace.outline_drafts import pending_outline_draft_ids
+from ..services.workspace.terminal_draft_detection import local_cli_terminal_draft
 from ..services.workspace.turn_control import (
     AssistantTurnDirective,
     apply_turn_directive,
@@ -648,6 +646,7 @@ async def workspace_assistant_stream(
             project_folder = str(ensure_project_folder(db, project))
             commit_session(db)
             pending_draft_ids_before = pending_chapter_draft_ids(db, project_id)
+            pending_outline_draft_ids_before = pending_outline_draft_ids(db, project_id)
             local_cli_extra_body = LLMGateway.local_cli_extra_body(
                 payload.model,
                 cwd=project_folder,
@@ -682,6 +681,9 @@ async def workspace_assistant_stream(
                             project_id if local_cli_mcp_enabled else ""
                         ),
                         "local_cli_terminal_draft_excluded_ids": sorted(pending_draft_ids_before),
+                        "local_cli_terminal_outline_draft_excluded_ids": sorted(
+                            pending_outline_draft_ids_before
+                        ),
                     }
                 )
             if assistant_run.operation_id:
@@ -990,24 +992,18 @@ async def workspace_assistant_stream(
                         # draft evidence is authoritative even when transport
                         # completion was lost.
                         db.expire_all()
-                        generated_draft = find_new_pending_chapter_draft(
+                        detected_draft = local_cli_terminal_draft(
                             db,
                             project_id,
                             pending_draft_ids_before,
+                            pending_outline_draft_ids_before,
                         )
-                        if generated_draft is not None:
-                            turn_terminal_result = apply_turn_directive(
-                                {
-                                    "tool": "save_external_chapter_draft",
-                                    "status": "ok",
-                                    "detail": "本机 CLI 已生成章节草稿，尚未保存",
-                                    "data": chapter_draft_result_data(generated_draft),
-                                },
-                                AssistantTurnDirective.END_AFTER_DRAFT,
-                            )
+                        if detected_draft is not None:
+                            turn_terminal_result, terminal_message = detected_draft
+                            draft_tool = str(turn_terminal_result["tool"])
                             applied_actions.append(turn_terminal_result)
                             tool_logs.append({
-                                "tool": "save_external_chapter_draft",
+                                "tool": draft_tool,
                                 "status": "ok",
                                 "detail": turn_terminal_result["detail"],
                             })
@@ -1016,14 +1012,14 @@ async def workspace_assistant_stream(
                             final_usage = None
                             yield _sse_event({
                                 "type": "write_result",
-                                "tool": "save_external_chapter_draft",
+                                "tool": draft_tool,
                                 "result": turn_terminal_result,
                                 "iteration": iteration,
                             })
                             yield _sse_event({
                                 "type": "iteration_end",
                                 "iteration": iteration,
-                                "message": "章节草稿已生成，已到达服务端回合终止边界",
+                                "message": terminal_message,
                             })
                             break
                     if stream_error is not None:
@@ -1094,11 +1090,12 @@ async def workspace_assistant_stream(
                             "模型没有调用本步骤唯一开放的 set_tool_categories，"
                             "本轮已终止，未执行模型虚构的其他工具调用"
                         )
-                    # A chapter draft is the sole business operation in its batch.
+                    # A generated author-review draft is the sole business operation in its batch.
                     draft_calls = [
                         call
                         for call in tool_calls
-                        if call["function"]["name"] in {"chapter_writer", "save_external_chapter_draft"}
+                        if call["function"]["name"]
+                        in {"chapter_writer", "outline_writer", "save_external_chapter_draft"}
                     ]
                     if draft_calls:
                         tool_calls = draft_calls[:1]

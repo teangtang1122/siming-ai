@@ -11,6 +11,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....core.utils import count_words
+from ....services.task_context_selection import (
+    TASK_CONTEXT_SOFT_TARGET_TOKENS,
+    render_generation_context,
+)
 
 
 def _load_external_writing_prompt_pack(
@@ -41,6 +45,72 @@ def _load_external_writing_prompt_pack(
             "{style_context}",
             build_style_context(project, include_anti_ai=False),
         ),
+    }
+
+
+def _external_writing_context_result(
+    db: Session,
+    project: Any,
+    target_outline: Any,
+    manifest: Any,
+    manifest_payload: dict[str, Any],
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    warnings = list(manifest_payload["warnings"])
+    prompt_pack = (
+        _load_external_writing_prompt_pack(db, project, warnings)
+        if args.get("include_prompt_pack", True)
+        else None
+    )
+    status = "needs_confirmation" if manifest.status == "needs_confirmation" else "ok"
+    selection = manifest_payload.get("selection") or {}
+    selection_ready = selection.get("status") == "ready" and bool(selection.get("token"))
+    safe_task_context = render_generation_context(manifest)
+    detail = (
+        f"Compact writing anchors prepared: {manifest.estimated_input_tokens}/"
+        f"{manifest.input_budget_tokens} available input tokens; "
+        f"{TASK_CONTEXT_SOFT_TARGET_TOKENS} is a non-blocking soft target"
+    )
+    if status == "needs_confirmation":
+        detail += ". Required context is missing; author confirmation is required before generation."
+    elif not selection_ready:
+        detail += ". The Agent must now search and finalize exact evidence before drafting."
+    next_tools = [
+        {"tool": "search_task_context", "description": "Ask focused model-chosen queries and inspect compact candidates."},
+        {"tool": "submit_context_evidence", "description": "Finalize only the exact sources needed for this chapter."},
+    ]
+    if selection_ready:
+        next_tools.append({
+            "tool": "save_external_chapter_draft",
+            "description": "Use the returned selection token, save one unsaved draft, and end the turn.",
+        })
+    return {
+        "tool": "prepare_external_writing_context",
+        "status": status,
+        "detail": detail,
+        "data": {
+            "project": {"id": project.id, "title": project.title},
+            "target": {"outline_node_id": target_outline.id, "title": target_outline.title},
+            "requirements": str(args.get("requirements") or "").strip(),
+            "prompt_pack": prompt_pack,
+            "context_manifest_id": manifest.id,
+            "context_manifest_status": manifest.status,
+            "requires_author_confirmation": status == "needs_confirmation",
+            "context_budget": manifest_payload["budget"],
+            "context_coverage": manifest_payload["coverage"],
+            "baseline_sources": manifest_payload["items"],
+            "baseline_context": safe_task_context,
+            "selection_required": not selection_ready,
+            "context_selection_token": selection.get("token") if selection_ready else None,
+            "task_context": safe_task_context if selection_ready else "",
+            "warnings": list(dict.fromkeys(warnings)),
+            "workflow_boundaries": {
+                "current_task": "base_chapter_writing",
+                "de_ai_revision": "separate_user_action",
+                "quality_review": "separate_user_action",
+            },
+            "next_tool_suggestions": next_tools,
+        },
     }
 
 
@@ -151,58 +221,14 @@ async def prepare_external_writing_context(
             },
         }
 
-    warnings = list(manifest_payload["warnings"])
-    prompt_pack = (
-        _load_external_writing_prompt_pack(db, project, warnings)
-        if args.get("include_prompt_pack", True)
-        else None
+    return _external_writing_context_result(
+        db,
+        project,
+        target_outline,
+        manifest,
+        manifest_payload,
+        args,
     )
-
-    status = "needs_confirmation" if manifest.status == "needs_confirmation" else "ok"
-    detail = (
-        f"Governed context prepared: {len(manifest_payload['items'])} selected sources, "
-        f"{manifest.estimated_input_tokens}/{manifest.input_budget_tokens} input tokens"
-    )
-    if status == "needs_confirmation":
-        detail += ". Required context is missing; author confirmation is required before generation."
-
-    return {
-        "tool": "prepare_external_writing_context",
-        "status": status,
-        "detail": detail,
-        "data": {
-            "project": {"id": project.id, "title": project.title},
-            "target": {
-                "outline_node_id": target_outline.id,
-                "title": target_outline.title,
-            },
-            "requirements": str(args.get("requirements") or "").strip(),
-            "prompt_pack": prompt_pack,
-            "context_manifest_id": manifest.id,
-            "context_manifest_status": manifest.status,
-            "requires_author_confirmation": status == "needs_confirmation",
-            "context_budget": manifest_payload["budget"],
-            "context_coverage": manifest_payload["coverage"],
-            "evidence_sources": manifest_payload["items"],
-            "writing_context": manifest.rendered_context,
-            "warnings": list(dict.fromkeys(warnings)),
-            "workflow_boundaries": {
-                "current_task": "base_chapter_writing",
-                "de_ai_revision": "separate_user_action",
-                "quality_review": "separate_user_action",
-            },
-            "next_tool_suggestions": [
-                {
-                    "tool": "submit_context_evidence",
-                    "description": "Submit required manifest sources before saving the draft.",
-                },
-                {
-                    "tool": "save_external_chapter_draft",
-                    "description": "Save one unsaved draft and end the model turn.",
-                },
-            ],
-        },
-    }
 
 
 def _external_draft_manifest_error(
@@ -212,9 +238,6 @@ def _external_draft_manifest_error(
     context_manifest_id: str | None,
     outline_node_id: str,
 ) -> dict | None:
-    route = str(args.get("_context_execution_route") or "").strip()
-    if route not in {"external_mcp", "local_cli_agent"}:
-        return None
     if not context_manifest_id:
         return {
             "tool": "save_external_chapter_draft",
@@ -225,7 +248,8 @@ def _external_draft_manifest_error(
 
     from ....services.context_orchestrator import ContextOrchestrator
 
-    manifest = ContextOrchestrator(db).get_manifest(context_manifest_id, project_id)
+    orchestrator = ContextOrchestrator(db)
+    manifest = orchestrator.get_manifest(context_manifest_id, project_id)
     if not manifest:
         return {
             "tool": "save_external_chapter_draft",
@@ -233,17 +257,25 @@ def _external_draft_manifest_error(
             "detail": "The supplied context manifest is unavailable for this project.",
             "data": {"context_manifest_id": context_manifest_id},
         }
-    manifest_outline_ids = {
-        str(item.source_id)
-        for item in manifest.items
-        if item.category == "target_outline" and item.source_id
-    }
-    if outline_node_id in manifest_outline_ids:
-        return None
+    selection_token = str(args.get("context_selection_token") or "").strip()
+    usable, detail = orchestrator.validate_task_selection(
+        manifest,
+        token=selection_token,
+        task_type="writing",
+        outline_node_id=outline_node_id,
+    )
+    if usable:
+        if not orchestrator.mark_consumed(manifest):
+            detail = "context_selection_token has already been consumed."
+        else:
+            from app.architecture.uow import commit_session
+
+            commit_session(db)
+            return None
     return {
         "tool": "save_external_chapter_draft",
         "status": "needs_confirmation",
-        "detail": "The context manifest target does not match the selected chapter outline.",
+        "detail": detail,
         "data": {
             "context_manifest_id": context_manifest_id,
             "outline_node_id": outline_node_id,
@@ -394,6 +426,113 @@ async def save_external_chapter_draft(
             "source_agent": source_agent,
         },
     }, AssistantTurnDirective.END_AFTER_DRAFT)
+
+
+async def save_external_outline_draft(
+    db: Session,
+    project_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist an external Agent's reviewed-context outline proposal."""
+    from ....services.context_orchestrator import ContextOrchestrator
+    from ....services.story_granularity import normalize_outline_batch
+    from ..outline_drafts import (
+        PendingOutlineDraftConflict,
+        latest_pending_outline_draft,
+        outline_draft_result_data,
+        pending_outline_draft_block_result,
+        store_outline_draft,
+    )
+    from ..turn_control import AssistantTurnDirective, apply_turn_directive
+
+    manifest_id = str(args.get("context_manifest_id") or "").strip()
+    token = str(args.get("context_selection_token") or "").strip()
+    parent_id = str(args.get("parent_id") or "").strip() or None
+    insert_after_id = str(args.get("insert_after_id") or "").strip() or None
+    pending = latest_pending_outline_draft(db, project_id)
+    if pending:
+        return pending_outline_draft_block_result(
+            "save_external_outline_draft",
+            pending,
+        )
+    manifest = ContextOrchestrator(db).get_manifest(manifest_id, project_id)
+    if manifest is None:
+        return {
+            "tool": "save_external_outline_draft",
+            "status": "needs_confirmation",
+            "detail": "Prepare outline_planning task context first.",
+            "data": {"context_manifest_id": manifest_id or None},
+        }
+    orchestrator = ContextOrchestrator(db)
+    usable, detail = orchestrator.validate_task_selection(
+        manifest,
+        token=token,
+        task_type="outline_planning",
+        parent_id=parent_id,
+        insert_after_id=insert_after_id,
+    )
+    if not usable:
+        return {
+            "tool": "save_external_outline_draft",
+            "status": "needs_confirmation",
+            "detail": detail,
+            "data": {"context_manifest_id": manifest.id},
+        }
+    if not orchestrator.mark_consumed(manifest):
+        return {
+            "tool": "save_external_outline_draft",
+            "status": "needs_confirmation",
+            "detail": "context_selection_token has already been consumed.",
+            "data": {"context_manifest_id": manifest.id},
+        }
+    from app.architecture.uow import commit_session
+
+    commit_session(db)
+    raw_nodes = args.get("nodes") if isinstance(args.get("nodes"), list) else []
+    if len(raw_nodes) > 8 or any(not isinstance(node, dict) for node in raw_nodes):
+        return {
+            "tool": "save_external_outline_draft",
+            "status": "error",
+            "detail": "Outline proposal must contain one to eight valid node objects.",
+            "data": {},
+        }
+    nodes = normalize_outline_batch(
+        [dict(node) for node in raw_nodes]
+    )
+    if not nodes:
+        return {
+            "tool": "save_external_outline_draft",
+            "status": "skipped",
+            "detail": "Outline proposal contains no valid nodes.",
+            "data": {},
+        }
+    for node in nodes:
+        node["status"] = "pending"
+    try:
+        draft = store_outline_draft(
+            db,
+            project_id=project_id,
+            context_manifest_id=manifest.id,
+            parent_id=parent_id,
+            insert_after_id=insert_after_id,
+            nodes=nodes,
+            design_notes=str(args.get("design_notes") or ""),
+            context_selection_token=token,
+        )
+    except PendingOutlineDraftConflict as conflict:
+        return pending_outline_draft_block_result(
+            "save_external_outline_draft",
+            conflict.draft,
+        )
+    return apply_turn_directive(
+        {
+            "tool": "save_external_outline_draft",
+            "status": "ok",
+            "detail": "大纲草稿已保存，等待作者确认",
+            "data": outline_draft_result_data(draft),
+        },
+        AssistantTurnDirective.END_AFTER_OUTLINE_DRAFT,
+    )
 
 
 async def get_external_chapter_draft(

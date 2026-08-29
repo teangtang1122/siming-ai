@@ -231,6 +231,39 @@ class ChapterDraft(Base):
     )
 
 
+class OutlineDraft(Base):
+    """Author-visible, unsaved outline proposal produced by the Agent."""
+
+    __tablename__ = "outline_drafts"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    context_manifest_id = Column(
+        String(36), ForeignKey("context_manifests.id", ondelete="SET NULL"), nullable=True
+    )
+    parent_id = Column(String(36), nullable=True)
+    insert_after_id = Column(String(36), nullable=True)
+    status = Column(String(20), nullable=False, default="pending")
+    nodes_json = Column(JSON, nullable=False, default=list)
+    design_notes = Column(Text, nullable=False, default="")
+    context_selection_digest = Column(String(64), nullable=False)
+    base_outline_hash = Column(String(64), nullable=False)
+    saved_outline_node_ids = Column(JSON, nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "uq_outline_drafts_project_pending",
+            "project_id",
+            unique=True,
+            sqlite_where=(status == "pending"),
+            postgresql_where=(status == "pending"),
+        ),
+    )
+
+
 class RagDocument(Base):
     __tablename__ = "rag_documents"
 
@@ -313,6 +346,7 @@ __all__ = [
     "AssistantRunStep",
     "AssistantMemory",
     "ChapterDraft",
+    "OutlineDraft",
     "RagDocument",
     "RagChunk",
     "RagLink",

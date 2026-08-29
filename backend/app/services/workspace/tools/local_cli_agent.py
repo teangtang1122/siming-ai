@@ -64,7 +64,7 @@ async def start_local_cli_agent_run(
             "data": None,
         }
     task_type = str(args.get("task_type") or "general").strip().lower()
-    if task_type not in {"general", "cataloging"}:
+    if task_type not in {"general", "cataloging", "writing", "outline_planning"}:
         task_type = "general"
     user_request = str(args.get("user_request") or args.get("request") or "").strip()
     provider = str(args.get("provider") or "").strip() or None
@@ -75,6 +75,10 @@ async def start_local_cli_agent_run(
 
     context_arguments = {
         "chapter_id": str(args.get("chapter_id") or "").strip(),
+        "outline_node_id": str(args.get("outline_node_id") or "").strip(),
+        "parent_id": str(args.get("parent_id") or "").strip(),
+        "insert_after_id": str(args.get("insert_after_id") or "").strip(),
+        "batch_count": max(1, min(8, int(args.get("batch_count") or 1))),
         "requirements": user_request,
         "pinned_chunk_ids": args.get("pinned_chunk_ids") if isinstance(args.get("pinned_chunk_ids"), list) else [],
         "pinned_source_ids": args.get("pinned_source_ids") if isinstance(args.get("pinned_source_ids"), list) else [],

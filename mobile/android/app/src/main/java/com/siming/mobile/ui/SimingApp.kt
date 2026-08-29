@@ -539,6 +539,7 @@ private fun ProjectScreen(
 
     LaunchedEffect(project.projectId, connection?.deviceId) {
         viewModel.restorePendingChapterDraft(project.projectId)
+        viewModel.restorePendingOutlineDraft(project.projectId)
         viewModel.refreshAssistantConversations(project.projectId)
     }
 
@@ -751,11 +752,29 @@ if (editor != null) {
                     projectId = project.projectId,
                     records = records,
                     online = connection != null,
+                    pendingDraft = ui.pendingOutlineDraft?.takeIf { it.projectId == project.projectId },
+                    busy = ui.busy,
                     onOpen = { outlineTarget = OutlineEditorTarget(it) },
                     onAddChild = { parent -> outlineTarget = OutlineEditorTarget(null, parent.entityId) },
                     onReorder = { parentId, nodeIds ->
                         viewModel.reorderOutline(project.projectId, parentId, nodeIds)
                     },
+                    onUpdateDraft = viewModel::updatePendingOutlineDraft,
+                    onConfirmDraft = { draft, nodes, notes, writeAfterConfirm ->
+                        viewModel.confirmPendingOutlineDraft(
+                            draft,
+                            nodes,
+                            notes,
+                            writeAfterConfirm,
+                            onConfirmed = {
+                                if (writeAfterConfirm) section = "assistant"
+                            },
+                        )
+                    },
+                    onRegenerateDraft = { draft ->
+                        viewModel.regeneratePendingOutlineDraft(draft) { section = "assistant" }
+                    },
+                    onDiscardDraft = viewModel::discardPendingOutlineDraft,
                 )
                 "foreshadowing", "governance" -> NarrativeWorkspace(
                     entityType = section,

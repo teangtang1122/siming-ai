@@ -78,13 +78,14 @@ TOOL_NAMES_BY_CATEGORY: dict[str, frozenset[str]] = {
         "restore_chapter_version", "diff_chapter_versions", "delete_chapter",
     }),
     "writing_context": frozenset({
-        "preview_writing_context", "search_context", "preview_rag_context",
+        "search_context", "preview_rag_context",
         "explain_context_selection", "prepare_task_context",
         "search_task_context", "submit_context_evidence", "design_plot",
         "chapter_writer", "character_writer", "outline_writer",
         "worldbuilding_writer", "rewrite_text", "expand_text", "continue_text",
         "roleplay_character", "dialogue_battle",
         "prepare_external_writing_context", "save_external_chapter_draft",
+        "save_external_outline_draft",
         "get_external_chapter_draft", "record_external_quality_review",
     }),
     "cataloging": frozenset({

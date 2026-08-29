@@ -12,7 +12,6 @@ LEGACY_HANDLER_MODULES = (
     "app.services.workspace.tools.character_writer",
     "app.services.workspace.tools.characters",
     "app.services.workspace.tools.context_governance",
-    "app.services.workspace.tools.context_preview",
     "app.services.workspace.tools.deconstruct",
     "app.services.workspace.tools.export",
     "app.services.workspace.tools.external_agent",

@@ -134,24 +134,12 @@ internal class PcPromptContract(context: Context) {
     }
 
     fun outlineWriterUser(
-        requirements: String,
-        parentContext: String,
-        existingOutline: String,
-        worldContext: String,
-        existingCharacters: String,
+        taskContext: String,
         batchCount: Int,
     ): String {
-        val world = worldContext.isNotBlank() && worldContext != "暂无世界观设定。"
-        val existing = existingCharacters.isNotBlank() && existingCharacters != "暂无角色。"
-        val key = "requirements=${requirements.isNotBlank()};parent=${parentContext.isNotBlank()};" +
-            "world=$world;existing=$existing"
         val templates = (root["writer_user_templates"] as JsonObject)["outline"] as JsonObject
-        return templates.string(key).fill(
-            "requirements" to requirements,
-            "parent_context" to parentContext,
-            "existing_outline" to existingOutline,
-            "world_context" to worldContext,
-            "existing_characters" to existingCharacters,
+        return templates.string("governed").fill(
+            "task_context" to taskContext,
             "batch_count" to batchCount.toString(),
         )
     }

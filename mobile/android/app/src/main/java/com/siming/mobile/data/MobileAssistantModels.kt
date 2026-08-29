@@ -1,8 +1,12 @@
 package com.siming.mobile.data
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 
 data class MobilePendingChapterDraft(
     val draftId: String,
@@ -37,6 +41,77 @@ data class MobilePendingChapterDraft(
         }
     }
 }
+
+data class MobileOutlineDraftNode(
+    val nodeType: String = "chapter",
+    val title: String,
+    val summary: String,
+    val parentTitle: String? = null,
+    val characterNames: List<String> = emptyList(),
+) {
+    fun toJson(): JsonObject = buildJsonObject {
+        put("node_type", nodeType)
+        put("title", title)
+        put("summary", summary)
+        parentTitle?.takeIf(String::isNotBlank)?.let { put("parent_title", it) }
+        put("character_names", buildJsonArray { characterNames.forEach { add(JsonPrimitive(it)) } })
+    }
+
+    companion object {
+        fun fromJson(value: JsonObject): MobileOutlineDraftNode = MobileOutlineDraftNode(
+            nodeType = value.string("node_type").ifBlank { "chapter" },
+            title = value.string("title"),
+            summary = value.string("summary"),
+            parentTitle = value.string("parent_title").ifBlank { null },
+            characterNames = (value["character_names"] as? JsonArray)
+                .orEmpty()
+                .mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim() }
+                .filter(String::isNotBlank),
+        )
+    }
+}
+
+data class MobilePendingOutlineDraft(
+    val draftId: String,
+    val projectId: String,
+    val nodes: List<MobileOutlineDraftNode>,
+    val designNotes: String = "",
+    val parentId: String? = null,
+    val insertAfterId: String? = null,
+    val contextManifestId: String? = null,
+    val contextSelectionDigest: String = "",
+    val baseOutlineHash: String = "",
+    val status: String = "pending",
+    val executionRoute: String = "gateway",
+) {
+    companion object {
+        fun fromJson(projectId: String, value: JsonObject): MobilePendingOutlineDraft? {
+            val id = value.string("draft_id")
+            if (id.isBlank()) return null
+            return MobilePendingOutlineDraft(
+                draftId = id,
+                projectId = value.string("project_id").ifBlank { projectId },
+                nodes = (value["nodes"] as? JsonArray)
+                    .orEmpty()
+                    .mapNotNull { (it as? JsonObject)?.let(MobileOutlineDraftNode::fromJson) },
+                designNotes = value.string("design_notes"),
+                parentId = value.string("parent_id").ifBlank { null },
+                insertAfterId = value.string("insert_after_id").ifBlank { null },
+                contextManifestId = value.string("context_manifest_id").ifBlank { null },
+                contextSelectionDigest = value.string("context_selection_digest"),
+                baseOutlineHash = value.string("base_outline_hash"),
+                status = value.string("draft_status").ifBlank { "pending" },
+                executionRoute = value.string("execution_route").ifBlank { "gateway" },
+            )
+        }
+    }
+}
+
+data class MobileOutlineDraftConfirmation(
+    val savedOutlineNodeIds: List<String>,
+    val chapterOutlineNodeIds: List<String>,
+    val nextAuthorMessage: String? = null,
+)
 
 data class MobileAssistantConversation(
     val id: String,

@@ -88,7 +88,7 @@ async def create_outline_node(
             "data": outline_node_payload(existing),
         }
 
-    from ..idempotency import generate_idempotency_key, check_idempotency
+    from ..idempotency import check_idempotency, generate_idempotency_key
     _idem_key = generate_idempotency_key(db, "create_outline_node", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)
@@ -155,12 +155,19 @@ async def create_outline_nodes(
         ]
     )
     nodes = normalize_outline_batch(nodes, chapter_number=chapter_number)
+    if len(nodes) > 8:
+        return {
+            "tool": "create_outline_nodes",
+            "status": "error",
+            "detail": "单次最多创建 8 个大纲节点；本次未写入任何节点",
+            "data": {"nodes": [], "skipped": []},
+        }
     parent_id = str(args.get("parent_id") or "").strip()
     created_title_to_id: dict[str, str] = {}
     created: list[dict] = []
     skipped: list[str] = []
     errors: list[str] = []
-    for index, item in enumerate(nodes[:8], start=1):
+    for index, item in enumerate(nodes, start=1):
         if not isinstance(item, dict):
             skipped.append(f"第 {index} 个节点格式无效")
             continue

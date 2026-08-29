@@ -37,7 +37,12 @@ import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
 import { useOperations } from '../shared/operations/queries'
 import { projectCatalogingMessages } from './assistant/catalogingNotifications'
-import { useAiPanelContext, type GeneratedChapterDraft } from '../contexts/AiPanelContext'
+import {
+  useAiPanelContext,
+  type GeneratedChapterDraft,
+  type GeneratedOutlineDraft,
+  type GeneratedOutlineDraftNode,
+} from '../contexts/AiPanelContext'
 import { createLatestRequestGate } from '../shared/latestRequest'
 import './WorkspaceAssistantChat.css'
 
@@ -143,6 +148,33 @@ function generatedDraftFromAction(action: WorkspaceToolLog, projectId: string): 
   }
 }
 
+function generatedOutlineDraftFromAction(
+  action: WorkspaceToolLog,
+  projectId: string,
+): GeneratedOutlineDraft | null {
+  if (!['outline_writer', 'save_external_outline_draft'].includes(String(action.tool || ''))) return null
+  const data = action.data || {}
+  const draftId = String(data.draft_id || '')
+  const rawNodes = Array.isArray(data.nodes) ? data.nodes : []
+  const nodes = rawNodes.filter((node): node is GeneratedOutlineDraftNode => (
+    Boolean(node && typeof node === 'object' && 'title' in node && 'node_type' in node)
+  ))
+  if (!draftId || nodes.length === 0) return null
+  return {
+    draftId,
+    projectId: String(data.project_id || projectId),
+    contextManifestId: data.context_manifest_id ? String(data.context_manifest_id) : null,
+    parentId: data.parent_id ? String(data.parent_id) : null,
+    insertAfterId: data.insert_after_id ? String(data.insert_after_id) : null,
+    status: String(data.draft_status || 'pending') as GeneratedOutlineDraft['status'],
+    nodes,
+    designNotes: String(data.design_notes || ''),
+    savedOutlineNodeIds: Array.isArray(data.saved_outline_node_ids)
+      ? data.saved_outline_node_ids.map(String)
+      : [],
+  }
+}
+
 function WorkspaceAssistantChat({
   projectId,
   selectedText,
@@ -159,6 +191,11 @@ function WorkspaceAssistantChat({
     generatedDraft,
     openGeneratedDraft,
     updateGeneratedDraft,
+    generatedOutlineDraft,
+    openGeneratedOutlineDraft,
+    updateGeneratedOutlineDraft,
+    pendingAuthorAgentRequest,
+    consumeAuthorAgentTurn,
     triggerRefresh,
   } = useAiPanelContext()
   const [conversations, setConversations] = useState<WorkspaceAssistantConversation[]>([])
@@ -429,7 +466,7 @@ function WorkspaceAssistantChat({
       const shouldExposeAction =
         log.status === 'ok'
         && !!log.data
-        && (log.tool === 'chapter_writer' || log.tool === 'preview_writing_context')
+        && log.tool === 'chapter_writer'
       return {
         ...item,
         content: content || item.content,
@@ -1173,6 +1210,16 @@ function WorkspaceAssistantChat({
             openGeneratedDraft(nextDraft)
             navigate(`/project/${encodeURIComponent(projectId)}`)
           }
+          const outlineDraftAction = [...(payload.applied_actions || [])]
+            .reverse()
+            .find((action) => generatedOutlineDraftFromAction(action, projectId) !== null)
+          const nextOutlineDraft = outlineDraftAction
+            ? generatedOutlineDraftFromAction(outlineDraftAction, projectId)
+            : null
+          if (nextOutlineDraft?.status === 'pending') {
+            openGeneratedOutlineDraft(nextOutlineDraft)
+            navigate(`/project/${encodeURIComponent(projectId)}?view=outline`)
+          }
           completed = true
           execution.terminalHandled = true
           if (payload.run) {
@@ -1240,6 +1287,87 @@ function WorkspaceAssistantChat({
       }
     }
   }
+  const sendMessageRef = useRef(sendMessage)
+  useEffect(() => {
+    sendMessageRef.current = sendMessage
+  })
+
+  const handleOutlineDraftAction = async (
+    action: WorkspaceToolLog,
+    mode: 'open' | 'confirm' | 'confirm_and_write' | 'regenerate' | 'discard',
+  ) => {
+    const actionDraft = generatedOutlineDraftFromAction(action, projectId)
+    const draft = generatedOutlineDraft?.draftId === actionDraft?.draftId
+      ? generatedOutlineDraft
+      : actionDraft
+    if (!draft) {
+      message.error('找不到可处理的大纲草稿，请重新规划')
+      return
+    }
+    if (mode === 'open') {
+      openGeneratedOutlineDraft(draft)
+      navigate(`/project/${encodeURIComponent(projectId)}?view=outline`)
+      return
+    }
+    if (draft.status !== 'pending') {
+      message.info('这份大纲草稿已经处理')
+      return
+    }
+    if (mode === 'discard') {
+      await apiClient.delete(`/projects/${projectId}/outline-drafts/${draft.draftId}`)
+      updateGeneratedOutlineDraft({ status: 'discarded' })
+      triggerRefresh()
+      message.success('大纲草稿已丢弃')
+      return
+    }
+    if (mode === 'regenerate') {
+      const response = await apiClient.post<ApiResponse<{
+        next_author_request?: { message?: string }
+      }>>(`/projects/${projectId}/outline-drafts/${draft.draftId}/regenerate`)
+      updateGeneratedOutlineDraft({ status: 'superseded' })
+      triggerRefresh()
+      const request = String(response.data.data.next_author_request?.message || '')
+      if (request) await sendMessage({ text: request })
+      return
+    }
+
+    const response = await apiClient.post<ApiResponse<{
+      draft_status?: string
+      saved_outline_node_ids?: string[]
+      next_author_request?: { message?: string }
+    }>>(
+      `/projects/${projectId}/outline-drafts/${draft.draftId}/confirm`,
+      { write_after_confirm: mode === 'confirm_and_write' },
+    )
+    updateGeneratedOutlineDraft({
+      status: 'confirmed',
+      savedOutlineNodeIds: response.data.data.saved_outline_node_ids || [],
+    })
+    triggerRefresh()
+    message.success(mode === 'confirm_and_write' ? '大纲已确认，正在开始新的写章任务' : '大纲已确认')
+    if (mode === 'confirm_and_write') {
+      const request = String(response.data.data.next_author_request?.message || '')
+      if (request) await sendMessage({ text: request })
+    }
+  }
+
+  useEffect(() => {
+    if (
+      !pendingAuthorAgentRequest
+      || pendingAuthorAgentRequest.projectId !== projectId
+      || generating
+      || historyLoading
+    ) return
+    const request = pendingAuthorAgentRequest
+    consumeAuthorAgentTurn()
+    void sendMessageRef.current({ text: request.message })
+  }, [
+    consumeAuthorAgentTurn,
+    generating,
+    historyLoading,
+    pendingAuthorAgentRequest,
+    projectId,
+  ])
 
   const modelUnavailable = !modelsLoading && modelOptions.length === 0
 
@@ -1454,6 +1582,9 @@ function WorkspaceAssistantChat({
         onSaveChapterDraft={saveChapterDraft}
         activeDraftId={generatedDraft?.draftId || null}
         activeDraftStatus={generatedDraft?.status || null}
+        onOutlineDraftAction={handleOutlineDraftAction}
+        activeOutlineDraftId={generatedOutlineDraft?.draftId || null}
+        activeOutlineDraftStatus={generatedOutlineDraft?.status || null}
         emptyDescription={modelUnavailable ? '模型准备好后，从这里开始第一次对话。' : undefined}
         onStorageRepaired={() => {
           onApplied?.()

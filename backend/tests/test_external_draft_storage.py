@@ -44,8 +44,13 @@ class SaveExternalDraftTest(unittest.TestCase):
     @patch("app.services.cataloging.launcher.find_blocking_chapter_cataloging_job", return_value=None)
     @patch("app.services.workspace.generated_drafts.find_pending_chapter_draft", return_value=None)
     @patch("app.services.workspace.generated_drafts.store_chapter_draft")
+    @patch(
+        "app.services.workspace.tools.external_writing._external_draft_manifest_error",
+        return_value=None,
+    )
     def test_saves_draft_for_model_selected_outline(
         self,
+        _mock_manifest_error,
         mock_store,
         _mock_pending,
         _mock_job,
@@ -75,6 +80,35 @@ class SaveExternalDraftTest(unittest.TestCase):
         self.assertNotIn("target_chapter_id", result["data"])
         mock_store.assert_called_once()
         self.assertNotIn("target_chapter_id", mock_store.call_args.kwargs)
+
+    @patch("app.services.cataloging.launcher.find_cataloging_required_chapter", return_value=None)
+    @patch("app.services.cataloging.launcher.find_blocking_chapter_cataloging_job", return_value=None)
+    @patch("app.services.workspace.generated_drafts.find_pending_chapter_draft", return_value=None)
+    def test_rejects_direct_save_without_reviewed_context_manifest(
+        self,
+        _mock_pending,
+        _mock_job,
+        _mock_required,
+    ):
+        from app.services.workspace.tools.external_writing import save_external_chapter_draft
+
+        db = MagicMock()
+        outline = MagicMock(id="o1", title="Chapter 2", node_type="chapter")
+        outline_query = MagicMock()
+        outline_query.filter.return_value = outline_query
+        outline_query.first.return_value = outline
+        chapter_query = MagicMock()
+        chapter_query.filter.return_value = chapter_query
+        chapter_query.first.return_value = None
+        db.query.side_effect = [outline_query, chapter_query]
+
+        result = asyncio.run(save_external_chapter_draft(db, "p1", {
+            "content": "Unreviewed prose must not become a pending draft.",
+            "outline_node_id": "o1",
+        }))
+
+        self.assertEqual(result["status"], "needs_confirmation")
+        self.assertIn("context_manifest_id", result["detail"])
 
     @patch("app.services.cataloging.launcher.find_cataloging_required_chapter", return_value=None)
     @patch("app.services.cataloging.launcher.find_blocking_chapter_cataloging_job", return_value=None)

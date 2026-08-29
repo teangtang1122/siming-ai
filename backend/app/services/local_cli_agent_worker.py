@@ -78,6 +78,24 @@ def _task_prompt(task_file: Path) -> str:
     return " ".join(part.strip() for part in prompt.splitlines() if part.strip())
 
 
+def _context_task_type(task_type: str) -> str:
+    return {
+        "cataloging": "cataloging",
+        "writing": "writing",
+        "outline_planning": "outline_planning",
+    }.get(task_type, "planning")
+
+
+def _needs_initial_context(
+    task_type: str,
+    context_manifest_id: str | None,
+    arguments: dict[str, Any],
+) -> bool:
+    return bool(context_manifest_id) or task_type == "general" or (
+        task_type == "cataloging" and bool(arguments.get("chapter_id"))
+    )
+
+
 def _workflow_section(task_type: str) -> str:
     if task_type == "cataloging":
         return """
@@ -91,6 +109,28 @@ def _workflow_section(task_type: str) -> str:
 7. Candidates: `get_next_external_cataloging_chapter(phase="candidates", include_content=false)` -> `list_cataloging_facts` -> read the current archive mirror -> `save_external_cataloging_candidates` -> `apply_pending_cataloging` -> `verify_external_cataloging_progress`.
 8. Finish applying and verifying the current chapter before fetching the next chapter.
 9. Never call `start_cataloging_job` unless the user explicitly allows Siming internal API usage.
+"""
+    if task_type == "writing":
+        return """
+## Required Workflow: Chapter Writing
+1. Call `get_mcp_permission_status` and `report_agent_plan`.
+2. Resolve a real chapter-level outline ID from current project data.
+3. Call `prepare_external_writing_context` to establish compact target/style/request anchors.
+4. Choose focused queries and call `search_task_context`; do not enumerate or read every role or setting.
+5. Review candidates and call `submit_context_evidence` with only necessary item IDs. If the selection exceeds budget, narrow it and resubmit.
+6. Only after observing the returned exact `task_context` and `context_selection_token`, write the chapter and pass both manifest ID and token to `save_external_chapter_draft`.
+7. Stop immediately after the draft is saved. Do not write formal chapters or derived archives in this turn.
+"""
+    if task_type == "outline_planning":
+        return """
+## Required Workflow: Outline Proposal
+1. Call `get_mcp_permission_status` and `report_agent_plan`.
+2. Resolve the real parent and insertion anchor from current project data.
+3. Call `prepare_task_context(task_type="outline_planning", arguments={...})`.
+4. Choose focused queries and call `search_task_context`; do not enumerate every role, chapter, or setting.
+5. Review candidates and call `submit_context_evidence`; an empty selection is valid when anchors suffice.
+6. Use only the returned exact `task_context` to propose nodes, then call `save_external_outline_draft` with the manifest and selection token.
+7. Stop immediately. Do not create formal outline nodes or start chapter writing in this turn.
 """
     return """
 ## Required Workflow: General Project Work
@@ -136,7 +176,7 @@ def write_task_file(
 - Direct mirror reads are not auditable evidence for a formal write.
 - Do not edit, delete, rename, or create files in canonical folders: `chapters`, `characters`, `worldbuilding`, `outline`, `relationships`.
 - Every write/delete/update must use Siming MCP tools with `project_id="{project.id}"`.
-- Long text must be stored through Siming tools such as `save_external_chapter_draft`, not printed to stdout.
+- Long content must be stored through Siming draft tools such as `save_external_chapter_draft` or `save_external_outline_draft`, not printed to stdout.
 
 ## Required Telemetry
 - First, call `report_agent_plan` with this `run_id`.
@@ -288,10 +328,10 @@ def start_local_cli_agent_worker(
     context_manifest_id: str | None = None,
     context_arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if task_type not in {"general", "cataloging"}:
+    if task_type not in {"general", "cataloging", "writing", "outline_planning"}:
         return {
             "status": "error",
-            "detail": "托管 CLI 不再提供章节写作路径；请在作品助手中直接选择 CLI 生成未保存草稿",
+            "detail": "Unsupported managed CLI task type.",
             "data": None,
         }
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -321,11 +361,11 @@ def start_local_cli_agent_worker(
     manifest = None
     requested_arguments = dict(context_arguments or {})
     requested_arguments.setdefault("requirements", user_request)
-    context_task_type = "cataloging" if task_type == "cataloging" else "planning"
+    context_task_type = _context_task_type(task_type)
     # A cataloging worker without a concrete chapter prepares one governed
     # manifest per chapter after it claims that chapter. General workers can
     # establish a baseline before the local CLI is launched.
-    needs_baseline_now = task_type != "cataloging" or bool(requested_arguments.get("chapter_id"))
+    needs_baseline_now = _needs_initial_context(task_type, context_manifest_id, requested_arguments)
     if needs_baseline_now:
         from app.services.context_orchestrator import ContextOrchestrator
 

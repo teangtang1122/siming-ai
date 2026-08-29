@@ -43,7 +43,7 @@ class ReadonlyCollaborationPackTest(unittest.TestCase):
             self.assertEqual(pack, "readonly_collaboration", f"{name}: pack is {pack}")
 
     def test_analysis_tools_in_readonly_pack(self):
-        analysis_tools = ["preview_writing_context", "detect_forbidden_patterns"]
+        analysis_tools = ["preview_rag_context", "detect_forbidden_patterns"]
         for name in analysis_tools:
             td = registry.get(name)
             self.assertIsNotNone(td)

@@ -185,6 +185,7 @@ class ToolRegistry(ToolSpecRegistryMixin):
             } | {
                 "prepare_external_writing_context",
                 "save_external_chapter_draft",
+                "save_external_outline_draft",
                 "report_agent_progress",
                 "report_context_selected",
             }
@@ -381,7 +382,6 @@ _TOOL_REGISTRATION_ORDER = (
     "detect_new_worldbuilding",
     "detect_worldbuilding_conflicts",
     "detect_forbidden_patterns",
-    "preview_writing_context",
     "search_context",
     "preview_rag_context",
     "explain_context_selection",
@@ -414,6 +414,7 @@ _TOOL_REGISTRATION_ORDER = (
     "wait_local_cli_agent_run",
     "prepare_external_writing_context",
     "save_external_chapter_draft",
+    "save_external_outline_draft",
     "get_external_chapter_draft",
     "record_external_quality_review",
     "update_narrative_ledger_entry",

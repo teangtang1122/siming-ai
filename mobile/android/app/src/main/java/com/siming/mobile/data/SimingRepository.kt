@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import com.siming.mobile.BuildConfig
 import com.siming.mobile.data.agent.MobileWorkspaceAgent
 import com.siming.mobile.data.agent.MobileAssistantConversationStore
+import com.siming.mobile.data.agent.mobileOutlineTreeHash
 import com.siming.mobile.data.creation.CreationExecutionRoute
 import com.siming.mobile.data.creation.CreationAgentProgressEvent
 import com.siming.mobile.data.creation.CreationStartInput
@@ -1581,12 +1582,14 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             val output = StringBuilder()
             val toolLogs = mutableListOf<String>()
             var draftProduced = false
+            var outlineDraftProduced = false
             val trackedEvent: suspend (String) -> Unit = { raw ->
                 runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()?.let { event ->
                     when (event.string("type")) {
                         "content_delta" -> output.append(event.string("delta"))
                         "tool" -> event.string("detail").takeIf(String::isNotBlank)?.let(toolLogs::add)
                         "chapter_draft" -> draftProduced = true
+                        "outline_draft" -> outlineDraftProduced = true
                         else -> Unit
                     }
                 }
@@ -1609,7 +1612,11 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                     projectId = projectId,
                     conversationId = turnContext.conversationId,
                     content = output.toString().trim().ifBlank {
-                        if (draftProduced) "章节草稿已交给正文编辑器，尚未保存。" else "本轮任务已完成。"
+                        when {
+                            draftProduced -> "章节草稿已交给正文编辑器，尚未保存。"
+                            outlineDraftProduced -> "大纲草稿已交给结构页，尚未确认。"
+                            else -> "本轮任务已完成。"
+                        }
                     },
                     status = "completed",
                     toolLogs = toolLogs,
@@ -1639,6 +1646,248 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             mobileWorkspaceAgent.pendingChapterDraft(projectId) ?: importedPendingChapterDraft(projectId)
         } ?: return null
         return MobilePendingChapterDraft.fromJson(projectId, value)
+    }
+
+    suspend fun pendingOutlineDraft(projectId: String): MobilePendingOutlineDraft? {
+        val connection = dao.connection()
+        val value = if (connection != null) {
+            api.pendingOutlineDraft(connection, projectId)
+        } else {
+            mobileWorkspaceAgent.pendingOutlineDraft(projectId)
+        } ?: return null
+        return MobilePendingOutlineDraft.fromJson(projectId, value)
+    }
+
+    suspend fun updatePendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        nodes: List<MobileOutlineDraftNode>,
+        designNotes: String,
+    ): MobilePendingOutlineDraft {
+        require(nodes.isNotEmpty()) { "大纲草稿至少需要一个节点" }
+        require(nodes.size <= 8) { "单次大纲草稿最多包含 8 个节点" }
+        val payload = buildJsonObject {
+            put("nodes", JsonArray(nodes.map(MobileOutlineDraftNode::toJson)))
+            put("design_notes", designNotes)
+        }
+        val connection = dao.connection()
+        val value = if (connection != null) {
+            api.updateOutlineDraft(connection, draft.projectId, draft.draftId, payload)
+        } else {
+            mobileWorkspaceAgent.updateOutlineDraft(
+                draft.draftId,
+                payload["nodes"] as JsonArray,
+                designNotes,
+            ) ?: error("大纲草稿不存在或已处理")
+        }
+        return MobilePendingOutlineDraft.fromJson(draft.projectId, value)
+            ?: error("大纲草稿返回结构无效")
+    }
+
+    suspend fun discardPendingOutlineDraft(draft: MobilePendingOutlineDraft) {
+        val connection = dao.connection()
+        if (connection != null) {
+            api.discardOutlineDraft(connection, draft.projectId, draft.draftId)
+        } else {
+            mobileWorkspaceAgent.discardOutlineDraft(draft.draftId)
+                ?: error("大纲草稿不存在")
+        }
+    }
+
+    suspend fun regeneratePendingOutlineDraft(draft: MobilePendingOutlineDraft): String {
+        val connection = dao.connection()
+        if (connection != null) {
+            val response = api.regenerateOutlineDraft(connection, draft.projectId, draft.draftId)
+            return (response["next_author_request"] as? JsonObject)
+                ?.string("message")
+                .orEmpty()
+                .ifBlank { "请重新规划刚才的大纲草稿，保留作者已指定的插入位置。" }
+        }
+        mobileWorkspaceAgent.supersedeOutlineDraft(draft.draftId)
+            ?: error("大纲草稿不存在")
+        return "请重新规划刚才的大纲草稿，保留作者已指定的插入位置。"
+    }
+
+    suspend fun confirmPendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        writeAfterConfirm: Boolean,
+    ): MobileOutlineDraftConfirmation {
+        val connection = dao.connection()
+        if (connection != null) {
+            val response = api.confirmOutlineDraft(
+                connection,
+                draft.projectId,
+                draft.draftId,
+                writeAfterConfirm,
+            )
+            syncNow()
+            return MobileOutlineDraftConfirmation(
+                savedOutlineNodeIds = response.stringList("saved_outline_node_ids"),
+                chapterOutlineNodeIds = response.stringList("chapter_outline_node_ids"),
+                nextAuthorMessage = (response["next_author_request"] as? JsonObject)
+                    ?.string("message")
+                    ?.takeIf(String::isNotBlank),
+            )
+        }
+
+        val current = mobileWorkspaceAgent.pendingOutlineDraft(draft.projectId)
+            ?.let { MobilePendingOutlineDraft.fromJson(draft.projectId, it) }
+            ?.takeIf { it.draftId == draft.draftId }
+            ?: error("大纲草稿不存在或已处理")
+        val existing = dao.projectSnapshot(draft.projectId)
+            .filter { it.entityType == "outline" && it.operation == "upsert" }
+            .mapNotNull { entity ->
+                val payload = entity.payloadJson
+                    ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+                    ?: return@mapNotNull null
+                entity to payload
+            }
+        val insertAfter = current.insertAfterId?.let { id ->
+            existing.firstOrNull { (entity, _) -> entity.entityId == id }
+        }
+        val resolvedParentId = current.parentId ?: insertAfter?.second?.string("parent_id")?.ifBlank { null }
+        require(current.parentId == null || existing.any { (entity, _) -> entity.entityId == current.parentId }) {
+            "大纲父节点已变化，请重新生成提案"
+        }
+        require(current.insertAfterId == null || insertAfter != null) {
+            "大纲插入位置已变化，请重新生成提案"
+        }
+        require(mobileOutlineTreeHash(existing.map { (_, payload) -> payload }) == current.baseOutlineHash) {
+            "正式大纲在提案生成后已变化，请重新生成后再确认"
+        }
+        require(current.nodes.size in 1..8) { "单次大纲草稿必须包含 1 至 8 个节点" }
+        val titles = current.nodes.map { it.title.trim() }
+        require(titles.all { it.isNotBlank() && it.length <= 200 }) {
+            "大纲节点标题必须为 1 至 200 个字符"
+        }
+        require(titles.distinct().size == titles.size) { "大纲节点标题不能重复" }
+        val nodesByTitle = current.nodes.associateBy { it.title.trim() }
+        val allowedChildTypes: Map<String?, Set<String>> = mapOf(
+            null to setOf("volume", "chapter"),
+            "volume" to setOf("chapter"),
+            "chapter" to setOf("section"),
+            "section" to emptySet(),
+        )
+        require(current.nodes.all { it.nodeType in setOf("volume", "chapter", "section") }) {
+            "大纲节点类型无效"
+        }
+        val visiting = mutableSetOf<String>()
+        val visited = mutableSetOf<String>()
+        val ordered = mutableListOf<MobileOutlineDraftNode>()
+        fun visit(node: MobileOutlineDraftNode) {
+            val title = node.title.trim()
+            if (title in visited) return
+            require(visiting.add(title)) { "大纲草稿父子关系形成循环" }
+            val parentTitle = node.parentTitle?.trim().orEmpty()
+            if (parentTitle.isNotBlank()) {
+                val draftParent = nodesByTitle[parentTitle]
+                    ?: error("大纲节点引用了本草稿中不存在的父标题：$parentTitle")
+                visit(draftParent)
+            }
+            visiting.remove(title)
+            visited += title
+            ordered += node
+        }
+        current.nodes.forEach(::visit)
+        val topLevel = ordered.filter { it.parentTitle.isNullOrBlank() }
+        require(topLevel.isNotEmpty()) { "大纲草稿没有可保存的顶层节点" }
+        val formalParentType = resolvedParentId
+            ?.let { id -> existing.firstOrNull { (entity, _) -> entity.entityId == id } }
+            ?.second
+            ?.string("node_type")
+            ?.ifBlank { null }
+        ordered.forEach { node ->
+            val parentTitle = node.parentTitle?.trim().orEmpty()
+            val parentType = if (parentTitle.isBlank()) {
+                formalParentType
+            } else {
+                nodesByTitle.getValue(parentTitle).nodeType
+            }
+            require(node.nodeType in allowedChildTypes[parentType].orEmpty()) {
+                "当前大纲位置不能创建 ${node.nodeType} 类型节点"
+            }
+        }
+        val existingTopTitles = existing.asSequence()
+            .filter { (_, payload) ->
+                payload.string("parent_id").ifBlank { null } == resolvedParentId
+            }
+            .map { (_, payload) -> payload.string("title") }
+            .toSet()
+        require(topLevel.none { it.title.trim() in existingTopTitles }) {
+            "正式大纲中已存在同名节点"
+        }
+        val firstSort = insertAfter?.second?.string("sort_order")?.toIntOrNull()?.plus(1)
+            ?: existing.asSequence()
+                .map { it.second }
+                .filter { it.string("parent_id").ifBlank { null } == resolvedParentId }
+                .mapNotNull { it.string("sort_order").toIntOrNull() }
+                .maxOrNull()
+                ?.plus(1)
+            ?: 0
+        val savedIds = mutableListOf<String>()
+        val chapterIds = mutableListOf<String>()
+        val idsByTitle = linkedMapOf<String, String>()
+        suspend fun saveNode(node: MobileOutlineDraftNode, parentId: String?, sortOrder: Int): String {
+            require(node.title.isNotBlank()) { "大纲节点标题不能为空" }
+            val id = UUID.randomUUID().toString()
+            val payload = buildJsonObject {
+                put("_record_type", "outline_node")
+                put("id", id)
+                put("project_id", draft.projectId)
+                put("node_type", node.nodeType)
+                put("title", node.title.trim())
+                put("summary", node.summary.trim())
+                put("status", "pending")
+                if (parentId == null) put("parent_id", JsonNull) else put("parent_id", parentId)
+                put("sort_order", sortOrder)
+                put("characters", JsonArray(node.characterNames.map(::JsonPrimitive)))
+            }
+            saveEntity(draft.projectId, "outline", id, payload)
+            savedIds += id
+            if (node.nodeType == "chapter") chapterIds += id
+            return id
+        }
+        database.withTransaction {
+            existing.asSequence()
+                .filter { (_, payload) ->
+                    payload.string("parent_id").ifBlank { null } == resolvedParentId &&
+                        (payload.string("sort_order").toIntOrNull() ?: 0) >= firstSort
+                }
+                .sortedByDescending { (_, payload) -> payload.string("sort_order").toIntOrNull() ?: 0 }
+                .forEach { (entity, payload) ->
+                    saveEntity(
+                        draft.projectId,
+                        "outline",
+                        entity.entityId,
+                        JsonObject(
+                            payload.toMutableMap().apply {
+                                put(
+                                    "sort_order",
+                                    JsonPrimitive(
+                                        (payload.string("sort_order").toIntOrNull() ?: 0) + topLevel.size,
+                                    ),
+                                )
+                            },
+                        ),
+                    )
+                }
+            topLevel.forEachIndexed { index, node ->
+                idsByTitle[node.title.trim()] = saveNode(node, resolvedParentId, firstSort + index)
+            }
+            val childSort = mutableMapOf<String, Int>()
+            ordered.filter { !it.parentTitle.isNullOrBlank() }.forEach { node ->
+                val parentId = requireNotNull(idsByTitle[node.parentTitle?.trim()])
+                val sortOrder = childSort.getOrDefault(parentId, 0)
+                idsByTitle[node.title.trim()] = saveNode(node, parentId, sortOrder)
+                childSort[parentId] = sortOrder + 1
+            }
+        }
+        mobileWorkspaceAgent.markOutlineDraftConfirmed(draft.draftId, savedIds)
+        val nextMessage = if (writeAfterConfirm && chapterIds.isNotEmpty()) {
+            "请根据刚确认的章级大纲（ID：${chapterIds.first()}）写这一章。"
+        } else {
+            null
+        }
+        return MobileOutlineDraftConfirmation(savedIds, chapterIds, nextMessage)
     }
 
     suspend fun savePendingChapterDraft(
@@ -2704,6 +2953,12 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     private fun JsonObject.stageData(stage: String): JsonObject = stageState(stage)["data"] as? JsonObject ?: JsonObject(emptyMap())
     private fun JsonObject.objectValue(name: String): JsonObject = get(name) as? JsonObject ?: JsonObject(emptyMap())
     private fun JsonObject.string(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+    private fun JsonObject.stringList(name: String): List<String> =
+        (get(name) as? JsonArray)
+            .orEmpty()
+            .mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim() }
+            .filter(String::isNotBlank)
     private fun JsonObject.int(name: String): Int = (get(name) as? JsonPrimitive)?.intOrNull ?: 0
 
     private suspend fun resolvedDirectConfig(taskType: String): DirectApiConfig {
