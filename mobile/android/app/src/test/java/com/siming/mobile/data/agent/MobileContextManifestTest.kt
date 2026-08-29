@@ -164,7 +164,11 @@ class MobileContextManifestTest {
         val character = selection.accepted.single()
         assertEquals("agent_selected", character.category)
         assertEquals("陆承宇", character.title)
-        assertTrue("陆糖: 父女" in character.content)
+        val archive = json.parseToJsonElement(character.content) as JsonObject
+        val relationship = (archive["relationships"] as JsonArray).single() as JsonObject
+        assertEquals("陆承宇", relationship.string("source_name"))
+        assertEquals("陆糖", relationship.string("target_name"))
+        assertEquals("父女", relationship.string("relationship_type"))
         assertEquals(64, character.sourceHash.length)
     }
 
