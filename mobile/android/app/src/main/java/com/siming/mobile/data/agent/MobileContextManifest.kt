@@ -108,8 +108,8 @@ internal class PcContextManifestPolicy(context: Context) {
 }
 
 internal data class MobileContextRequest(
-    val outlineNodeId: String,
-    val targetChapterId: String,
+    val outlineNodeId: String = "",
+    val targetChapterId: String = "",
     val requirements: String,
     val taskType: String = "writing",
     val parentId: String = "",
