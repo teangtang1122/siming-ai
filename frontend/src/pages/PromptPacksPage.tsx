@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -22,6 +22,7 @@ import {
   RollbackOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { createLatestRequestGate } from '../shared/latestRequest'
 
 const { Title, Text, Paragraph } = Typography
 const { TextArea } = Input
@@ -129,6 +130,11 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
   const [exporting, setExporting] = useState(false)
   const [contribution, setContribution] = useState<ContributionResult | null>(null)
   const [form] = Form.useForm<ContributionFormValues>()
+  const selectedPackIdRef = useRef('')
+  const listRequestGate = useRef(createLatestRequestGate<string>())
+  const detailRequestGate = useRef(createLatestRequestGate<string>())
+  const contributionRequestGate = useRef(createLatestRequestGate<string>())
+  const promptRevisionRef = useRef(0)
 
   const selectedListItem = useMemo(
     () => packs.find((pack) => pack.pack_id === selectedPackId) || null,
@@ -136,44 +142,84 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
   )
   const selectedModeNote = selectedPack ? PACK_MODE_NOTES[selectedPack.pack_id] : null
 
+  const selectPack = useCallback((packId: string) => {
+    detailRequestGate.current.invalidate()
+    contributionRequestGate.current.invalidate()
+    selectedPackIdRef.current = packId
+    promptRevisionRef.current += 1
+    setSelectedPackId(packId)
+    setSelectedPack(null)
+    setEditedPrompt('')
+    setContribution(null)
+    setDetailLoading(false)
+    setExporting(false)
+  }, [])
+
   const fetchPacks = useCallback(async () => {
+    const request = listRequestGate.current.begin(projectId)
     setLoading(true)
     try {
       const res = await apiClient.get<ApiResponse<{ items: PromptPack[]; total: number }>>(
         `/projects/${projectId}/prompt-packs`,
       )
       const items = res.data.data.items
+      if (!listRequestGate.current.isCurrent(request)) return
       setPacks(items)
-      if (!selectedPackId && items.length > 0) {
-        setSelectedPackId(items[0].pack_id)
+      if (!selectedPackIdRef.current && items.length > 0) {
+        selectPack(items[0].pack_id)
       }
     } catch (err: any) {
-      message.error(err.message || '获取提示词包失败')
+      if (listRequestGate.current.isCurrent(request)) message.error(err.message || '获取提示词包失败')
     } finally {
-      setLoading(false)
+      if (listRequestGate.current.isCurrent(request)) setLoading(false)
     }
-  }, [projectId, selectedPackId])
+  }, [projectId, selectPack])
 
   const fetchPackDetail = useCallback(async (packId: string) => {
     if (!packId) return
+    const request = detailRequestGate.current.begin(packId)
+    const promptRevision = promptRevisionRef.current
+    const ownsPack = () => (
+      detailRequestGate.current.isCurrent(request)
+      && selectedPackIdRef.current === packId
+      && promptRevisionRef.current === promptRevision
+    )
     setDetailLoading(true)
     setContribution(null)
     try {
       const res = await apiClient.get<ApiResponse<PromptPackDetail>>(
         `/projects/${projectId}/prompt-packs/${packId}`,
       )
+      if (!ownsPack()) return
       setSelectedPack(res.data.data)
       setEditedPrompt(res.data.data.system_prompt || '')
     } catch (err: any) {
-      message.error(err.message || '获取提示词详情失败')
+      if (ownsPack()) message.error(err.message || '获取提示词详情失败')
     } finally {
-      setDetailLoading(false)
+      if (ownsPack()) setDetailLoading(false)
     }
   }, [projectId])
 
   useEffect(() => {
-    fetchPacks()
-  }, [fetchPacks])
+    const listGate = listRequestGate.current
+    const detailGate = detailRequestGate.current
+    const contributionGate = contributionRequestGate.current
+    selectedPackIdRef.current = ''
+    listGate.invalidate()
+    detailGate.invalidate()
+    contributionGate.invalidate()
+    promptRevisionRef.current += 1
+    setSelectedPackId('')
+    setSelectedPack(null)
+    setEditedPrompt('')
+    setPacks([])
+    void fetchPacks()
+    return () => {
+      listGate.invalidate()
+      detailGate.invalidate()
+      contributionGate.invalidate()
+    }
+  }, [fetchPacks, projectId])
 
   useEffect(() => {
     if (selectedPackId) {
@@ -183,6 +229,8 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
 
   const resetPrompt = () => {
     if (!selectedPack) return
+    contributionRequestGate.current.invalidate()
+    promptRevisionRef.current += 1
     setEditedPrompt(selectedPack.system_prompt || '')
     setContribution(null)
   }
@@ -205,8 +253,17 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
       message.warning('修改后的提示词不能为空')
       return
     }
+    const packId = selectedPack.pack_id
+    const promptRevision = promptRevisionRef.current
+    const request = contributionRequestGate.current.begin(packId)
+    const ownsPack = () => (
+      contributionRequestGate.current.isCurrent(request)
+      && selectedPackIdRef.current === packId
+      && promptRevisionRef.current === promptRevision
+    )
     try {
       const values = await form.validateFields()
+      if (!ownsPack()) return
       setExporting(true)
       const res = await apiClient.post<ApiResponse<ContributionResult>>(
         `/projects/${projectId}/prompt-contributions/export`,
@@ -221,12 +278,14 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
           contact: values.contact || null,
         },
       )
-      setContribution(res.data.data)
-      message.success('已生成提示词投稿包')
+      if (ownsPack()) {
+        setContribution(res.data.data)
+        message.success('已生成提示词投稿包')
+      }
     } catch (err: any) {
-      if (err.message) message.error(err.message)
+      if (err.message && ownsPack()) message.error(err.message)
     } finally {
-      setExporting(false)
+      if (ownsPack()) setExporting(false)
     }
   }
 
@@ -274,7 +333,7 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
                     padding: '12px 16px',
                     background: pack.pack_id === selectedPackId ? 'var(--ant-color-fill-tertiary)' : undefined,
                   }}
-                  onClick={() => setSelectedPackId(pack.pack_id)}
+                  onClick={() => selectPack(pack.pack_id)}
                 >
                   <List.Item.Meta
                     title={
@@ -337,6 +396,9 @@ function PromptPacksPage({ projectId }: PromptPacksPageProps) {
                   <TextArea
                     value={editedPrompt}
                     onChange={(event) => {
+                      detailRequestGate.current.invalidate()
+                      contributionRequestGate.current.invalidate()
+                      promptRevisionRef.current += 1
                       setEditedPrompt(event.target.value)
                       setContribution(null)
                     }}

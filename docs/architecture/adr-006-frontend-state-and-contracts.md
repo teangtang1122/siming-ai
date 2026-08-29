@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for `3.0.0-beta.2`.
+Accepted for `3.0.0-beta.2`; amended for `3.3.6`.
 
 ## Context
 
@@ -32,6 +32,20 @@ backend interfaces by hand.
 - Generated request models may be wrapped by small feature-level draft types
   when a form intentionally omits backend defaults. The API adapter fills those
   defaults before sending the generated request contract.
+- Client editors represent initialization, empty, create, and persisted-object
+  targets as distinct states. A nullable selected ID cannot stand for more than
+  one of those author intents.
+- Page-local requests on legacy screens use one shared request-generation gate.
+  A response may update visible state only when both its generation and its
+  exact business target (for example character ID, conversation ID, or
+  `sessionId + artifact`) still match the current target.
+- Create, close, context switch, target switch, and unmount invalidate in-flight
+  read and write ownership immediately. Network cancellation remains an
+  optimization; correctness never depends on cancellation winning a race.
+- Saves freeze their target, expected server revision, and local edit revision.
+  A successful response may refresh the matching server summary, but it cannot
+  replace newer local input, reopen a closed editor, or switch another target
+  back into view.
 
 ## Consequences
 
@@ -44,3 +58,8 @@ through one status component and retain the existing SSE reconnection behavior.
 Legacy pages can migrate incrementally. Existing REST paths and payloads remain
 compatible, but new shared server state must enter through a feature query
 rather than a Zustand async action or an uncoordinated page effect.
+
+Slow or out-of-order responses are therefore harmless to the current author
+intent. Regression tests use manually resolved promises to exercise reverse
+completion order; timing delays and disabled navigation are not accepted as
+substitutes for target ownership checks.

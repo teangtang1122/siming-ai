@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -21,6 +21,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { createLatestRequestGate } from '../shared/latestRequest'
 
 const { Text, Title } = Typography
 
@@ -132,6 +133,8 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
   const [overrideTarget, setOverrideTarget] = useState<ContextManifest | null>(null)
   const [overrideReason, setOverrideReason] = useState('')
   const [submittingOverride, setSubmittingOverride] = useState(false)
+  const manifestRequestGate = useRef(createLatestRequestGate<string>())
+  const selectedManifestIdRef = useRef<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -152,15 +155,39 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
     }
   }, [projectId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const manifestGate = manifestRequestGate.current
+    manifestGate.invalidate()
+    selectedManifestIdRef.current = null
+    setSelected(null)
+    void load()
+    return () => manifestGate.invalidate()
+  }, [load])
 
   const openManifest = async (manifest: ContextManifest) => {
+    const request = manifestRequestGate.current.begin(manifest.id)
+    selectedManifestIdRef.current = manifest.id
+    setSelected(null)
     try {
       const response = await apiClient.get<ApiResponse<ContextManifest>>(`/projects/${projectId}/context-manifests/${manifest.id}`)
-      setSelected(response.data.data)
+      if (
+        manifestRequestGate.current.isCurrent(request)
+        && selectedManifestIdRef.current === manifest.id
+        && response.data.data.id === manifest.id
+      ) {
+        setSelected(response.data.data)
+      }
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载 Manifest 失败')
+      if (manifestRequestGate.current.isCurrent(request) && selectedManifestIdRef.current === manifest.id) {
+        message.error(error instanceof Error ? error.message : '加载 Manifest 失败')
+      }
     }
+  }
+
+  const closeManifest = () => {
+    manifestRequestGate.current.invalidate()
+    selectedManifestIdRef.current = null
+    setSelected(null)
   }
 
   const rebuildProject = async () => {
@@ -292,7 +319,7 @@ export default function ContextGovernancePage({ projectId }: { projectId: string
       <Drawer
         title={selected ? `Manifest · ${selected.task_type}` : 'Manifest'}
         open={Boolean(selected)}
-        onClose={() => setSelected(null)}
+        onClose={closeManifest}
         width={Math.min(760, window.innerWidth - 36)}
       >
         {selected && (

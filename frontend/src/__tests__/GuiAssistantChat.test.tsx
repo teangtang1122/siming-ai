@@ -37,6 +37,12 @@ vi.mock('react-router-dom', async () => {
 
 import GuiAssistantChat from '../components/GuiAssistantChat'
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => { resolve = next })
+  return { promise, resolve }
+}
+
 describe('GuiAssistantChat new-book handoff', () => {
   afterEach(() => {
     message.destroy()
@@ -728,6 +734,103 @@ describe('GuiAssistantChat new-book handoff', () => {
     expect(await screen.findByDisplayValue('灰港遗忘症')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /返回作品资料/ })).toBeInTheDocument()
     expect(panel).toBeInTheDocument()
+  })
+
+  it('does not reopen a structured editor after its detail response arrives late', async () => {
+    const artifactDetail = deferred<{ data: { data: {
+      artifact: string
+      label: string
+      status: string
+      source: string
+      revision: number
+      data: Record<string, unknown>
+    } } }>()
+    const baseGet = mockGet.getMockImplementation()
+    mockGet.mockImplementation((url: string, ...args: unknown[]) => {
+      if (url === '/novel-creation/sessions/session-1/artifacts/concepts') return artifactDetail.promise
+      return baseGet?.(url, ...args)
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
+    expect(await screen.findByRole('heading', { name: '创意方案' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /返回作品资料/ }))
+    expect(screen.queryByRole('heading', { name: '创意方案', level: 3 })).not.toBeInTheDocument()
+
+    await act(async () => {
+      artifactDetail.resolve({ data: { data: {
+        artifact: 'concepts', label: '创意方案', status: 'generated', source: 'model', revision: 7,
+        data: { options: [{ title: '迟到的旧方案' }] },
+      } } })
+      await artifactDetail.promise
+    })
+
+    expect(screen.queryByRole('heading', { name: '创意方案', level: 3 })).not.toBeInTheDocument()
+    expect(screen.queryByText('迟到的旧方案')).not.toBeInTheDocument()
+  })
+
+  it('keeps the structured editor open when saving before a new conversation fails', async () => {
+    localStorage.setItem('siming.gui.assistant.sidebarCollapsed', '0')
+    const user = userEvent.setup()
+    render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
+    await user.type(await screen.findByRole('textbox', { name: '给司命的消息' }), '我要创建新的小说')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    await user.click((await screen.findAllByRole('button', { name: /进入编辑器/ }))[0])
+    await user.click(await screen.findByRole('button', { name: /灰港遗忘症/ }))
+
+    const title = await screen.findByDisplayValue('灰港遗忘症')
+    await user.clear(title)
+    await user.type(title, '尚未保存的创意')
+    mockPatch.mockRejectedValueOnce(new Error('模拟保存失败'))
+
+    await user.click((await screen.findAllByRole('button', { name: '新对话' }))[0])
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledWith(
+      '/novel-creation/sessions/session-1/artifacts/concepts',
+      expect.objectContaining({ expected_revision: 7 }),
+    ))
+    expect(screen.getByRole('heading', { name: '创意方案' })).toBeInTheDocument()
+    expect(screen.getByDisplayValue('尚未保存的创意')).toBeInTheDocument()
+    expect(await screen.findByText('模拟保存失败')).toBeInTheDocument()
+  })
+
+  it('keeps a new conversation empty when the previous history response arrives late', async () => {
+    localStorage.setItem('siming.gui.assistant.sidebarCollapsed', '0')
+    const history = deferred<{ data: { data: {
+      conversation: { id: string; title: string; scope_type: string; creation_session_id?: string }
+      messages: Array<{ id: string; conversation_id: string; role: 'user' | 'assistant'; content: string }>
+    } } }>()
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/projects') return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      if (url === '/novel-creation/sessions') return Promise.resolve({ data: { data: { sessions: [{
+        id: 'session-old', user_brief: '旧立项', status: 'drafting', revision: 1,
+      }] } } })
+      if (url === '/ai/assistant/conversations') return Promise.resolve({ data: { data: { items: [{
+        id: 'conversation-old', title: '旧对话', scope_type: 'creation', creation_session_id: 'session-old', message_count: 1,
+      }], total: 1 } } })
+      if (url === '/ai/assistant/conversations/conversation-old') return history.promise
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/?conversation=conversation-old']}><GuiAssistantChat /></MemoryRouter>)
+    await waitFor(() => expect(mockGet).toHaveBeenCalledWith('/ai/assistant/conversations/conversation-old'))
+
+    await user.click((await screen.findAllByRole('button', { name: '新对话' }))[0])
+    await act(async () => {
+      history.resolve({ data: { data: {
+        conversation: { id: 'conversation-old', title: '旧对话', scope_type: 'creation', creation_session_id: 'session-old' },
+        messages: [{ id: 'old-message', conversation_id: 'conversation-old', role: 'assistant', content: '迟到的旧消息' }],
+      } } })
+      await history.promise
+    })
+
+    expect(screen.queryByText('迟到的旧消息')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '给司命的消息' })).toHaveValue('')
   })
 
   it('keeps the focused structured editor visible when the window becomes compact', async () => {

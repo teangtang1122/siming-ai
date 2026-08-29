@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Badge,
   Button,
@@ -31,6 +31,7 @@ import {
   RobotOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
+import { createLatestRequestGate } from '../shared/latestRequest'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -179,6 +180,8 @@ function SkillsPage({ projectId }: SkillsPageProps) {
   const [versions, setVersions] = useState<SkillVersion[]>([])
   const [versionSkillName, setVersionSkillName] = useState('')
   const [form] = Form.useForm<SkillFormValues>()
+  const versionRequestGate = useRef(createLatestRequestGate<string>())
+  const versionSkillIdRef = useRef<string | null>(null)
 
   const fetchSkills = useCallback(async () => {
     setLoading(true)
@@ -210,8 +213,15 @@ function SkillsPage({ projectId }: SkillsPageProps) {
   }, [projectId])
 
   useEffect(() => {
+    const versionGate = versionRequestGate.current
+    versionGate.invalidate()
+    versionSkillIdRef.current = null
+    setVersionDrawerOpen(false)
+    setVersionLoading(false)
+    setVersions([])
     fetchSkills()
     fetchSkillMeta()
+    return () => versionGate.invalidate()
   }, [fetchSkills, fetchSkillMeta])
 
   const resetAssistantState = () => {
@@ -364,19 +374,36 @@ function SkillsPage({ projectId }: SkillsPageProps) {
   }
 
   const openVersions = async (skill: Skill) => {
+    const request = versionRequestGate.current.begin(skill.id)
+    versionSkillIdRef.current = skill.id
     setVersionSkillName(skill.name)
     setVersionDrawerOpen(true)
+    setVersions([])
     setVersionLoading(true)
     try {
       const res = await apiClient.get<ApiResponse<SkillVersionsResponse>>(
         `/projects/${projectId}/skills/${skill.id}/versions`
       )
-      setVersions(res.data.data.items)
+      if (versionRequestGate.current.isCurrent(request) && versionSkillIdRef.current === skill.id) {
+        setVersions(res.data.data.items)
+      }
     } catch (err: any) {
-      message.error(err.message || '获取版本历史失败')
+      if (versionRequestGate.current.isCurrent(request) && versionSkillIdRef.current === skill.id) {
+        message.error(err.message || '获取版本历史失败')
+      }
     } finally {
-      setVersionLoading(false)
+      if (versionRequestGate.current.isCurrent(request) && versionSkillIdRef.current === skill.id) {
+        setVersionLoading(false)
+      }
     }
+  }
+
+  const closeVersions = () => {
+    versionRequestGate.current.invalidate()
+    versionSkillIdRef.current = null
+    setVersionDrawerOpen(false)
+    setVersionLoading(false)
+    setVersions([])
   }
 
   const columns: ColumnsType<Skill> = [
@@ -665,7 +692,7 @@ function SkillsPage({ projectId }: SkillsPageProps) {
       <Drawer
         title={`版本历史：${versionSkillName || '-'}`}
         open={versionDrawerOpen}
-        onClose={() => setVersionDrawerOpen(false)}
+        onClose={closeVersions}
         width={520}
       >
         <List

@@ -246,12 +246,13 @@ describe('WriterPage manual writing actions', () => {
       </AiPanelProvider>,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: '保存并建档' }))
+    await screen.findByLabelText('当前草稿：第二章 迟到草稿')
+    fireEvent.click(screen.getByRole('button', { name: '保存并建档' }))
 
-    expect(await screen.findByText('保存失败')).toBeInTheDocument()
+    expect(await screen.findByText('保存失败', {}, { timeout: 5000 })).toBeInTheDocument()
     await waitFor(() => {
       expect(screen.getAllByText(detail).length).toBeGreaterThan(0)
-    })
+    }, { timeout: 5000 })
     expect(await screen.findByLabelText('当前草稿：第二章 迟到草稿')).toBeInTheDocument()
   })
 

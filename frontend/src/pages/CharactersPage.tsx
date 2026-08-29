@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, Collapse, Descriptions, Divider, Empty, Form, Input, InputNumber, List, Modal,
   Popconfirm, Select, Space, Tag, Timeline, Typography, message,
@@ -12,6 +12,7 @@ import { SaveStatusIndicator } from '../components/interaction'
 import { useAiPanelContext } from '../contexts/AiPanelContext'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
+import { createLatestRequestGate } from '../shared/latestRequest'
 import './CharactersPage.css'
 
 const { Text, Title } = Typography
@@ -86,6 +87,12 @@ interface CharacterMergeFormValues {
 
 interface CharactersPageProps { projectId: string }
 
+type CharacterEditorTarget =
+  | { mode: 'initial' }
+  | { mode: 'empty' }
+  | { mode: 'create' }
+  | { mode: 'view'; characterId: string }
+
 const ROLE_OPTIONS = [
   { value: 'protagonist', label: '主角', desc: '故事核心人物，视角承载者' },
   { value: 'supporting', label: '配角', desc: '协助或衬托主角的重要角色' },
@@ -127,7 +134,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [mergeForm] = Form.useForm<CharacterMergeFormValues>()
 
   const [characters, setCharacters] = useState<Character[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [editorTarget, setEditorTarget] = useState<CharacterEditorTarget>({ mode: 'initial' })
   const [selectedDetail, setSelectedDetail] = useState<Character | null>(null)
   const [keyword, setKeyword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -145,9 +152,20 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const [mergePreview, setMergePreview] = useState<MergePreview | null>(null)
   const [mergePreviewLoading, setMergePreviewLoading] = useState(false)
   const [mergeApplying, setMergeApplying] = useState(false)
+  const keywordRef = useRef('')
+  const editorTargetRef = useRef<CharacterEditorTarget>({ mode: 'initial' })
+  const listRequestGate = useRef(createLatestRequestGate<string>())
+  const editorRequestGate = useRef(createLatestRequestGate<string>())
+  const saveRequestGate = useRef(createLatestRequestGate<string>())
+  const aiConfigSaveRequestGate = useRef(createLatestRequestGate<string>())
+  const versionRequestGate = useRef(createLatestRequestGate<string>())
+  const formRevisionRef = useRef(0)
+  const aiConfigRevisionRef = useRef(0)
+  const skipNextEditorLoadRef = useRef<string | null>(null)
   const { refreshKey } = useAiPanelContext()
   const { modelOptions, loading: modelsLoading } = useModelOptions('writing')
   const {
+    isDirty,
     saveStatus,
     saveError,
     markDirty,
@@ -157,16 +175,49 @@ function CharactersPage({ projectId }: CharactersPageProps) {
     confirmLeave,
   } = useUnsavedGuard()
 
+  const selectedId = editorTarget.mode === 'view' ? editorTarget.characterId : null
+
+  const changeEditorTarget = useCallback((target: CharacterEditorTarget) => {
+    skipNextEditorLoadRef.current = null
+    editorRequestGate.current.invalidate()
+    saveRequestGate.current.invalidate()
+    aiConfigSaveRequestGate.current.invalidate()
+    versionRequestGate.current.invalidate()
+    formRevisionRef.current += 1
+    aiConfigRevisionRef.current += 1
+    editorTargetRef.current = target
+    setEditorTarget(target)
+    setSelectedDetail(null)
+    setVersions([])
+    setAiConfig(null)
+    setVersionModalOpen(false)
+    setVersionSnapshot(null)
+    setSaving(false)
+    setAiConfigSaving(false)
+  }, [])
+
   const fetchCharacters = useCallback(async (q?: string) => {
+    const request = listRequestGate.current.begin(q || '')
     setLoading(true)
     try {
       const params = q ? { q } : undefined
       const res = await apiClient.get<ApiResponse<{ items: Character[]; total: number }>>(`/projects/${projectId}/characters`, params)
-      setCharacters(res.data.data.items)
-      if (!selectedId && res.data.data.items.length > 0) setSelectedId(res.data.data.items[0].id)
-    } catch (err: any) { message.error(err.message || '获取角色列表失败') }
-    finally { setLoading(false) }
-  }, [projectId, selectedId])
+      if (!listRequestGate.current.isCurrent(request)) return undefined
+      const items = res.data.data.items
+      setCharacters(items)
+      if (editorTargetRef.current.mode === 'initial') {
+        changeEditorTarget(items[0]
+          ? { mode: 'view', characterId: items[0].id }
+          : { mode: 'empty' })
+      }
+      return items
+    } catch (err: any) {
+      if (listRequestGate.current.isCurrent(request)) message.error(err.message || '获取角色列表失败')
+      return undefined
+    } finally {
+      if (listRequestGate.current.isCurrent(request)) setLoading(false)
+    }
+  }, [changeEditorTarget, projectId])
 
   const fetchNetwork = useCallback(async () => {
     try {
@@ -175,66 +226,133 @@ function CharactersPage({ projectId }: CharactersPageProps) {
     } catch { /* ignore */ }
   }, [projectId])
 
-  const fetchDetail = useCallback(async (characterId: string) => {
-    try {
-      const res = await apiClient.get<ApiResponse<Character>>(`/projects/${projectId}/characters/${characterId}`)
-      setSelectedDetail(res.data.data)
-      form.setFieldsValue({
-        name: res.data.data.name, role_type: canonicalRoleType(res.data.data.role_type), age: res.data.data.age,
-        appearance: res.data.data.appearance, personality: res.data.data.personality,
-        background: res.data.data.background, abilities: res.data.data.abilities || [],
-        aliases: res.data.data.aliases || [],
-        life_status: res.data.data.life_status,
-        current_location: res.data.data.current_location,
-        realm_or_level: res.data.data.realm_or_level,
-        physical_state: res.data.data.physical_state,
-        mental_state: res.data.data.mental_state,
-        current_goal: res.data.data.current_goal,
-        active_conflict: res.data.data.active_conflict,
-        abilities_state: res.data.data.abilities_state,
-        items_or_assets: res.data.data.items_or_assets,
-        profile: res.data.data.profile,
-        is_evolution_tracked: res.data.data.is_evolution_tracked,
+  const loadCharacterEditor = useCallback((characterId: string) => {
+    const request = editorRequestGate.current.begin(characterId)
+    const ownsEditor = () => (
+      editorRequestGate.current.isCurrent(request)
+      && editorTargetRef.current.mode === 'view'
+      && editorTargetRef.current.characterId === characterId
+    )
+
+    const detailRequest = apiClient
+      .get<ApiResponse<Character>>(`/projects/${projectId}/characters/${characterId}`)
+      .then((res) => {
+        if (!ownsEditor()) return
+        const detail = res.data.data
+        setSelectedDetail(detail)
+        form.setFieldsValue({
+          name: detail.name, role_type: canonicalRoleType(detail.role_type), age: detail.age,
+          appearance: detail.appearance, personality: detail.personality,
+          background: detail.background, abilities: detail.abilities || [],
+          aliases: detail.aliases || [],
+          life_status: detail.life_status,
+          current_location: detail.current_location,
+          realm_or_level: detail.realm_or_level,
+          physical_state: detail.physical_state,
+          mental_state: detail.mental_state,
+          current_goal: detail.current_goal,
+          active_conflict: detail.active_conflict,
+          abilities_state: detail.abilities_state,
+          items_or_assets: detail.items_or_assets,
+          profile: detail.profile,
+          is_evolution_tracked: detail.is_evolution_tracked,
+        })
+        markSaved()
       })
-      markSaved()
-    } catch (err: any) { message.error(err.message || '获取角色详情失败') }
-  }, [form, markSaved, projectId])
+      .catch((err: any) => {
+        if (ownsEditor()) message.error(err.message || '获取角色详情失败')
+      })
 
-  const fetchVersions = useCallback(async (characterId: string) => {
-    try {
-      const res = await apiClient.get<ApiResponse<{ items: VersionItem[]; total: number }>>(`/projects/${projectId}/characters/${characterId}/versions`)
-      setVersions(res.data.data.items)
-    } catch { /* ignore */ }
-  }, [projectId])
+    const versionsRequest = apiClient
+      .get<ApiResponse<{ items: VersionItem[]; total: number }>>(`/projects/${projectId}/characters/${characterId}/versions`)
+      .then((res) => {
+        if (ownsEditor()) setVersions(res.data.data.items)
+      })
+      .catch(() => undefined)
 
-  const fetchAIConfig = useCallback(async (characterId: string) => {
-    try {
-      const res = await apiClient.get<ApiResponse<AIConfig>>(`/projects/${projectId}/characters/${characterId}/ai-config`)
-      const cfg = res.data.data
-      setAiConfig(cfg)
-      aiConfigForm.setFieldsValue(cfg)
-    } catch { setAiConfig(null); aiConfigForm.resetFields() }
-  }, [aiConfigForm, projectId])
+    const aiConfigRequest = apiClient
+      .get<ApiResponse<AIConfig>>(`/projects/${projectId}/characters/${characterId}/ai-config`)
+      .then((res) => {
+        if (!ownsEditor()) return
+        setAiConfig(res.data.data)
+        aiConfigForm.setFieldsValue(res.data.data)
+      })
+      .catch(() => {
+        if (!ownsEditor()) return
+        setAiConfig(null)
+        aiConfigForm.resetFields()
+      })
 
-  useEffect(() => { fetchCharacters(); fetchNetwork() }, [fetchCharacters, fetchNetwork])
+    return Promise.allSettled([detailRequest, versionsRequest, aiConfigRequest])
+  }, [aiConfigForm, form, markSaved, projectId])
+
+  useEffect(() => {
+    const listGate = listRequestGate.current
+    const editorGate = editorRequestGate.current
+    const saveGate = saveRequestGate.current
+    const aiConfigSaveGate = aiConfigSaveRequestGate.current
+    const versionGate = versionRequestGate.current
+    const initialTarget: CharacterEditorTarget = { mode: 'initial' }
+    skipNextEditorLoadRef.current = null
+    editorTargetRef.current = initialTarget
+    editorGate.invalidate()
+    saveGate.invalidate()
+    aiConfigSaveGate.invalidate()
+    versionGate.invalidate()
+    listGate.invalidate()
+    setEditorTarget(initialTarget)
+    setCharacters([])
+    setSelectedDetail(null)
+    setVersions([])
+    setAiConfig(null)
+    form.resetFields()
+    aiConfigForm.resetFields()
+    markSaved()
+    void fetchCharacters()
+    void fetchNetwork()
+    return () => {
+      listGate.invalidate()
+      editorGate.invalidate()
+      saveGate.invalidate()
+      aiConfigSaveGate.invalidate()
+      versionGate.invalidate()
+    }
+  }, [aiConfigForm, fetchCharacters, fetchNetwork, form, markSaved, projectId])
 
   // Refresh data when AI applies changes
   useEffect(() => {
     if (refreshKey > 0) {
-      fetchCharacters(keyword)
-      fetchNetwork()
-      if (selectedId) {
-        fetchDetail(selectedId)
-        fetchVersions(selectedId)
-        fetchAIConfig(selectedId)
+      void fetchCharacters(keyword)
+      void fetchNetwork()
+      const target = editorTargetRef.current
+      if (target.mode === 'view' && !isDirty) {
+        void loadCharacterEditor(target.characterId)
       }
     }
-  }, [fetchAIConfig, fetchCharacters, fetchDetail, fetchNetwork, fetchVersions, keyword, refreshKey, selectedId])
+  }, [fetchCharacters, fetchNetwork, isDirty, keyword, loadCharacterEditor, refreshKey])
 
   useEffect(() => {
-    if (selectedId) { fetchDetail(selectedId); fetchVersions(selectedId); fetchAIConfig(selectedId) }
-    else { setSelectedDetail(null); setVersions([]); setAiConfig(null); form.resetFields(); aiConfigForm.resetFields() }
-  }, [fetchDetail, fetchVersions, fetchAIConfig, form, aiConfigForm, selectedId])
+    if (
+      editorTarget.mode === 'view'
+      && skipNextEditorLoadRef.current === editorTarget.characterId
+    ) {
+      skipNextEditorLoadRef.current = null
+      return
+    }
+    setSelectedDetail(null)
+    setVersions([])
+    setAiConfig(null)
+    form.resetFields()
+    aiConfigForm.resetFields()
+    if (editorTarget.mode === 'view') {
+      void loadCharacterEditor(editorTarget.characterId)
+      return
+    }
+    if (editorTarget.mode === 'create') {
+      form.setFieldsValue({ abilities: [], is_evolution_tracked: true, role_type: 'supporting' })
+      markDirty()
+    }
+  }, [aiConfigForm, editorTarget, form, loadCharacterEditor, markDirty])
 
   const selectedRelationships = useMemo(() => {
     if (!selectedId) return []
@@ -243,14 +361,30 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
   const startCreate = () => {
     confirmLeave(() => {
-      setSelectedId(null); setSelectedDetail(null); setVersions([]); setAiConfig(null)
-      form.resetFields(); aiConfigForm.resetFields()
-      form.setFieldsValue({ abilities: [], is_evolution_tracked: true, role_type: 'supporting' })
-      markSaved()
+      changeEditorTarget({ mode: 'create' })
     })
   }
 
+  const handleCharacterFormChange = () => {
+    editorRequestGate.current.invalidate()
+    formRevisionRef.current += 1
+    markDirty()
+  }
+
   const saveCharacter = async (values: CharacterFormValues) => {
+    const target = editorTargetRef.current
+    if (target.mode === 'initial') return
+    const targetKey = target.mode === 'view' ? `view:${target.characterId}` : target.mode
+    const request = saveRequestGate.current.begin(targetKey)
+    const submittedRevision = formRevisionRef.current
+    const ownsTarget = () => {
+      if (!saveRequestGate.current.isCurrent(request)) return false
+      const current = editorTargetRef.current
+      return target.mode === 'view'
+        ? current.mode === 'view' && current.characterId === target.characterId
+        : current.mode === target.mode
+    }
+    const ownsSnapshot = () => ownsTarget() && formRevisionRef.current === submittedRevision
     setSaving(true)
     markSaving()
     try {
@@ -261,21 +395,52 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         aliases: values.aliases || [],
         is_evolution_tracked: values.is_evolution_tracked ?? true,
       }
-      if (selectedId) {
-        const res = await apiClient.put<ApiResponse<Character>>(`/projects/${projectId}/characters/${selectedId}`, { ...payload, change_summary: '前端手动保存角色档案' })
-        setSelectedId(res.data.data.id)
+      if (target.mode === 'view') {
+        const res = await apiClient.put<ApiResponse<Character>>(`/projects/${projectId}/characters/${target.characterId}`, { ...payload, change_summary: '前端手动保存角色档案' })
+        if (ownsSnapshot()) {
+          setSelectedDetail(res.data.data)
+          markSaved()
+        }
       } else {
         const res = await apiClient.post<ApiResponse<Character>>(`/projects/${projectId}/characters`, payload)
-        setSelectedId(res.data.data.id)
+        if (ownsTarget()) {
+          const snapshotStillCurrent = ownsSnapshot()
+          const created = res.data.data
+          editorRequestGate.current.invalidate()
+          aiConfigSaveRequestGate.current.invalidate()
+          versionRequestGate.current.invalidate()
+          editorTargetRef.current = { mode: 'view', characterId: created.id }
+          skipNextEditorLoadRef.current = created.id
+          setEditorTarget({ mode: 'view', characterId: created.id })
+          setSelectedDetail(created)
+          setVersions([])
+          setAiConfig(null)
+          aiConfigForm.resetFields()
+          if (snapshotStillCurrent) markSaved()
+          else markDirty()
+        }
       }
-      markSaved()
-      fetchCharacters(keyword); fetchNetwork()
-    } catch (err: any) { markSaveFailed(err.message || '保存角色失败') }
-    finally { setSaving(false) }
+      void fetchCharacters(keywordRef.current)
+      void fetchNetwork()
+    } catch (err: any) {
+      if (ownsSnapshot()) markSaveFailed(err.message || '保存角色失败')
+    } finally {
+      if (saveRequestGate.current.isCurrent(request)) setSaving(false)
+    }
   }
 
   const saveAIConfig = async () => {
-    if (!selectedId) return
+    const target = editorTargetRef.current
+    if (target.mode !== 'view') return
+    const characterId = target.characterId
+    const request = aiConfigSaveRequestGate.current.begin(characterId)
+    const submittedRevision = aiConfigRevisionRef.current
+    const ownsEditor = () => (
+      aiConfigSaveRequestGate.current.isCurrent(request)
+      && aiConfigRevisionRef.current === submittedRevision
+      && editorTargetRef.current.mode === 'view'
+      && editorTargetRef.current.characterId === characterId
+    )
     setAiConfigSaving(true)
     try {
       const values = aiConfigForm.getFieldsValue()
@@ -287,19 +452,33 @@ function CharactersPage({ projectId }: CharactersPageProps) {
         model_override: values.model_override || null,
         custom_system_prompt: values.custom_system_prompt || null,
       }
-      const res = await apiClient.put<ApiResponse<AIConfig>>(`/projects/${projectId}/characters/${selectedId}/ai-config`, payload)
-      setAiConfig(res.data.data)
-      message.success('AI对话配置已保存')
-    } catch (err: any) { message.error(err.message || '保存AI配置失败') }
-    finally { setAiConfigSaving(false) }
+      const res = await apiClient.put<ApiResponse<AIConfig>>(`/projects/${projectId}/characters/${characterId}/ai-config`, payload)
+      if (ownsEditor()) {
+        setAiConfig(res.data.data)
+        message.success('AI对话配置已保存')
+      }
+    } catch (err: any) {
+      if (ownsEditor()) message.error(err.message || '保存AI配置失败')
+    } finally {
+      if (aiConfigSaveRequestGate.current.isCurrent(request)) setAiConfigSaving(false)
+    }
   }
 
   const deleteCharacter = async () => {
-    if (!selectedId) return
+    const target = editorTargetRef.current
+    if (target.mode !== 'view') return
+    const characterId = target.characterId
     try {
-      await apiClient.delete(`/projects/${projectId}/characters/${selectedId}`)
-      message.success('角色已删除'); setSelectedId(null); setSelectedDetail(null)
-      fetchCharacters(keyword); fetchNetwork()
+      await apiClient.delete(`/projects/${projectId}/characters/${characterId}`)
+      message.success('角色已删除')
+      if (editorTargetRef.current.mode === 'view' && editorTargetRef.current.characterId === characterId) {
+        changeEditorTarget({ mode: 'empty' })
+      }
+      const items = await fetchCharacters(keyword)
+      if (editorTargetRef.current.mode === 'empty' && items?.[0]) {
+        changeEditorTarget({ mode: 'view', characterId: items[0].id })
+      }
+      void fetchNetwork()
     } catch (err: any) { message.error(err.message || '删除角色失败') }
   }
 
@@ -326,11 +505,30 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   }
 
   const openVersion = async (version: VersionItem) => {
-    if (!selectedId) return
+    const target = editorTargetRef.current
+    if (target.mode !== 'view') return
+    const characterId = target.characterId
+    const request = versionRequestGate.current.begin(`${characterId}:${version.id}`)
+    const ownsEditor = () => (
+      versionRequestGate.current.isCurrent(request)
+      && editorTargetRef.current.mode === 'view'
+      && editorTargetRef.current.characterId === characterId
+    )
     try {
-      const res = await apiClient.get<ApiResponse<VersionItem & { snapshot_data: Record<string, unknown> }>>(`/projects/${projectId}/characters/${selectedId}/versions/${version.id}`)
-      setVersionSnapshot(res.data.data.snapshot_data); setVersionModalOpen(true)
-    } catch (err: any) { message.error(err.message || '获取版本详情失败') }
+      const res = await apiClient.get<ApiResponse<VersionItem & { snapshot_data: Record<string, unknown> }>>(`/projects/${projectId}/characters/${characterId}/versions/${version.id}`)
+      if (ownsEditor()) {
+        setVersionSnapshot(res.data.data.snapshot_data)
+        setVersionModalOpen(true)
+      }
+    } catch (err: any) {
+      if (ownsEditor()) message.error(err.message || '获取版本详情失败')
+    }
+  }
+
+  const closeVersionModal = () => {
+    versionRequestGate.current.invalidate()
+    setVersionModalOpen(false)
+    setVersionSnapshot(null)
   }
 
   const characterName = (id: string) => characters.find((item) => item.id === id)?.name || id.slice(0, 8)
@@ -412,11 +610,9 @@ function CharactersPage({ projectId }: CharactersPageProps) {
       setMergeModalOpen(false)
       setDuplicateModalOpen(false)
       setMergePreview(null)
-      setSelectedId(payload.primary_id)
-      fetchCharacters(keyword)
-      fetchNetwork()
-      fetchVersions(payload.primary_id)
-      fetchDetail(payload.primary_id)
+      changeEditorTarget({ mode: 'view', characterId: payload.primary_id })
+      void fetchCharacters(keyword)
+      void fetchNetwork()
     } catch (err: any) { message.error(err.message || '合并角色失败') }
     finally { setMergeApplying(false) }
   }
@@ -434,14 +630,17 @@ function CharactersPage({ projectId }: CharactersPageProps) {
               </Space>
             </div>
             <Input.Search placeholder="搜索角色" allowClear value={keyword}
-              onChange={(event) => setKeyword(event.target.value)} onSearch={(value) => fetchCharacters(value)} />
+              onChange={(event) => {
+                keywordRef.current = event.target.value
+                setKeyword(event.target.value)
+              }} onSearch={(value) => fetchCharacters(value)} />
           </div>
           <div className="characters-list-scroll">
             <List loading={loading} dataSource={characters}
               locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无角色" /> }}
               renderItem={(item) => (
                 <List.Item className={`characters-list-item${item.id === selectedId ? ' characters-list-item-active' : ''}`}
-                  onClick={() => confirmLeave(() => setSelectedId(item.id))}>
+                  onClick={() => confirmLeave(() => changeEditorTarget({ mode: 'view', characterId: item.id }))}>
                   <List.Item.Meta title={<span className="characters-name-text" title={item.name}>{item.name}</span>}
                     description={<Space size={6} wrap>
                       <Tag>{roleTypeLabel(item.role_type)}</Tag>
@@ -486,7 +685,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             </Space>
           </div>
 
-          <Form form={form} layout="vertical" onFinish={saveCharacter} onValuesChange={markDirty}>
+          <Form form={form} layout="vertical" onFinish={saveCharacter} onValuesChange={handleCharacterFormChange}>
             <section className="characters-form-section" aria-labelledby="character-basics-title">
             <Title level={5} id="character-basics-title">基础信息</Title>
             <div className="characters-two-col">
@@ -588,7 +787,12 @@ function CharactersPage({ projectId }: CharactersPageProps) {
           {!selectedId ? (
             <Alert type="info" showIcon message="保存角色后可配置AI对话参数" />
           ) : (
-            <Form form={aiConfigForm} layout="vertical" onFinish={saveAIConfig}>
+            <Form
+              form={aiConfigForm}
+              layout="vertical"
+              onFinish={saveAIConfig}
+              onValuesChange={() => { aiConfigRevisionRef.current += 1 }}
+            >
               <div className="characters-ai-grid">
                 <Form.Item name="tone_style" label="语气风格">
                   <Select options={TONE_OPTIONS} placeholder="选择语气风格" allowClear />
@@ -675,7 +879,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
 
       </div>
 
-      <Modal title="角色版本快照" open={versionModalOpen} onCancel={() => setVersionModalOpen(false)} footer={null} width={720}>
+      <Modal title="角色版本快照" open={versionModalOpen} onCancel={closeVersionModal} footer={null} width={720}>
         <pre className="characters-ai-result">{versionSnapshot ? JSON.stringify(versionSnapshot, null, 2) : ''}</pre>
       </Modal>
 

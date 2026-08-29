@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('../api/client', () => ({ apiClient: api }))
@@ -39,6 +39,12 @@ const manifest = {
     scores: { final: 1 },
     content: 'Use a restrained first-person voice.',
   }],
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => { resolve = next })
+  return { promise, resolve }
 }
 
 function mockLoad({ generationAllowed = true } = {}) {
@@ -83,6 +89,50 @@ describe('ContextGovernancePage', () => {
     expect(await screen.findByText('Project style')).toBeInTheDocument()
     expect(screen.getByText('Required style anchor.')).toBeInTheDocument()
     expect(screen.getByText(/hash: hash-1/)).toBeInTheDocument()
+  })
+
+  it('keeps the last selected manifest when detail responses arrive out of order', async () => {
+    const secondManifest = {
+      ...manifest,
+      id: 'm2',
+      task_type: 'editing',
+      items: [{ ...manifest.items[0], id: 'mi2', title: 'Second style' }],
+    }
+    const firstDetail = deferred<{ data: { data: typeof manifest } }>()
+    const secondDetail = deferred<{ data: { data: typeof secondManifest } }>()
+    api.get.mockImplementation((url: string) => {
+      if (url.includes('context-governance-status')) {
+        return Promise.resolve({ data: { data: { generation_allowed: true, reason: '', semantic: { available: false, reason: '' } } } })
+      }
+      if (url.endsWith('/context-manifests')) {
+        return Promise.resolve({ data: { data: { items: [manifest, secondManifest] } } })
+      }
+      if (url.endsWith('/context-manifests/m1')) return firstDetail.promise
+      if (url.endsWith('/context-manifests/m2')) return secondDetail.promise
+      return Promise.resolve({ data: { data: { items: [] } } })
+    })
+    render(<ContextGovernancePage projectId="p1" />)
+
+    await screen.findByText('editing')
+    const views = Array.from(document.querySelectorAll('.anticon-eye'))
+      .map((icon) => icon.closest('button'))
+      .filter((button): button is HTMLButtonElement => Boolean(button))
+    expect(views).toHaveLength(2)
+    fireEvent.click(views[0])
+    fireEvent.click(views[1])
+
+    await act(async () => {
+      secondDetail.resolve({ data: { data: secondManifest } })
+      await secondDetail.promise
+    })
+    expect(await screen.findByText('Manifest · editing')).toBeInTheDocument()
+
+    await act(async () => {
+      firstDetail.resolve({ data: { data: manifest } })
+      await firstDetail.promise
+    })
+    expect(screen.getByText('Manifest · editing')).toBeInTheDocument()
+    expect(screen.queryByText('Manifest · writing')).not.toBeInTheDocument()
   })
 
   it('requires and submits an override reason', async () => {
