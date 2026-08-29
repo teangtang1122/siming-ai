@@ -11,16 +11,19 @@ from sqlalchemy.orm import sessionmaker
 from app.core.exceptions import ValidationError
 from app.database.models import (
     Base,
+    CatalogingApplyLog,
     CatalogingCandidate,
     CatalogingChapterRun,
     CatalogingFact,
     CatalogingJob,
     Chapter,
     ChapterGovernanceReview,
+    ChapterSummary,
     Character,
     CharacterAIConfig,
     CharacterAlias,
     CharacterRelationship,
+    CharacterTimeline,
     CharacterVersion,
     Foreshadowing,
     NarrativeDebt,
@@ -28,6 +31,7 @@ from app.database.models import (
     OperationRun,
     Project,
     WorldbuildingEntry,
+    WorldbuildingTimeline,
 )
 from app.services.cataloging.applier import apply_candidates_for_run
 from app.services.cataloging.candidate_io import candidate_has_usable_summary, candidate_payload
@@ -108,6 +112,103 @@ class CatalogingServiceTestCase(unittest.TestCase):
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=self.engine)
         self.Session = sessionmaker(bind=self.engine)
+
+    def test_generated_target_ids_are_recorded_for_new_cataloging_rows(self):
+        db = self.Session()
+        try:
+            project = Project(title="Generated ID lifecycle")
+            db.add(project)
+            db.flush()
+            chapter = Chapter(
+                project_id=project.id,
+                title="Chapter One",
+                content="The role crosses the old border.",
+            )
+            character = Character(
+                project_id=project.id,
+                name="Timeline role",
+                role_type="supporting",
+            )
+            world = WorldbuildingEntry(
+                project_id=project.id,
+                dimension="geography",
+                title="Old border",
+                content="A disputed frontier.",
+            )
+            db.add_all([chapter, character, world])
+            db.commit()
+
+            job = create_cataloging_job(db, project.id, "auto", None, [chapter.id])
+            run = job.chapter_runs[0]
+            candidates = [
+                CatalogingCandidate(
+                    job_id=job.id,
+                    chapter_run_id=run.id,
+                    project_id=project.id,
+                    chapter_id=chapter.id,
+                    item_type="chapter_summary",
+                    raw_payload=json.dumps(
+                        {
+                            "summary_text": "The role crosses the old border.",
+                            "key_events": ["Crossed the border"],
+                        }
+                    ),
+                ),
+                CatalogingCandidate(
+                    job_id=job.id,
+                    chapter_run_id=run.id,
+                    project_id=project.id,
+                    chapter_id=chapter.id,
+                    item_type="character_timeline",
+                    raw_payload=json.dumps(
+                        {
+                            "name": character.name,
+                            "event_description": "Crossed the old border.",
+                        }
+                    ),
+                ),
+                CatalogingCandidate(
+                    job_id=job.id,
+                    chapter_run_id=run.id,
+                    project_id=project.id,
+                    chapter_id=chapter.id,
+                    item_type="worldbuilding_timeline",
+                    raw_payload=json.dumps(
+                        {
+                            "title": world.title,
+                            "event_description": "The border opened for one night.",
+                        }
+                    ),
+                ),
+            ]
+            db.add_all(candidates)
+            db.commit()
+
+            events = apply_candidates_for_run(db, job, run)
+
+            self.assertEqual(
+                [event["type"] for event in events],
+                ["candidate_applied"] * 3,
+            )
+            target_rows = {
+                "chapter_summary": db.query(ChapterSummary).one(),
+                "character_timeline": db.query(CharacterTimeline).one(),
+                "worldbuilding_timeline": db.query(WorldbuildingTimeline).one(),
+            }
+            for candidate in candidates:
+                with self.subTest(item_type=candidate.item_type):
+                    self.assertEqual(
+                        candidate.target_id,
+                        target_rows[candidate.item_type].id,
+                    )
+                    log = (
+                        db.query(CatalogingApplyLog)
+                        .filter(CatalogingApplyLog.candidate_id == candidate.id)
+                        .one()
+                    )
+                    self.assertEqual(log.target_id, target_rows[candidate.item_type].id)
+        finally:
+            db.close()
 
     def test_reconciles_completed_cataloging_job_into_task_center_projection(self):
         db = self.Session()

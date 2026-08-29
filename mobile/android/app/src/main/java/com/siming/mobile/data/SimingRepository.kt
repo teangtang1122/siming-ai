@@ -1733,13 +1733,26 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             ?.let { MobilePendingOutlineDraft.fromJson(draft.projectId, it) }
             ?.takeIf { it.draftId == draft.draftId }
             ?: error("大纲草稿不存在或已处理")
-        val existing = dao.projectSnapshot(draft.projectId)
+        val snapshot = dao.projectSnapshot(draft.projectId)
+        val existing = snapshot
             .filter { it.entityType == "outline" && it.operation == "upsert" }
             .mapNotNull { entity ->
                 val payload = entity.payloadJson
                     ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
                     ?: return@mapNotNull null
                 entity to payload
+            }
+        val characterIdsByReference = linkedMapOf<String, String>()
+        snapshot.asSequence()
+            .filter { it.entityType == "character" && it.operation == "upsert" }
+            .forEach { entity ->
+                val payload = entity.payloadJson
+                    ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+                    ?: return@forEach
+                characterIdsByReference.putIfAbsent(entity.entityId, entity.entityId)
+                payload.string("name").trim().takeIf(String::isNotBlank)?.let { name ->
+                    characterIdsByReference.putIfAbsent(name, entity.entityId)
+                }
             }
         val insertAfter = current.insertAfterId?.let { id ->
             existing.firstOrNull { (entity, _) -> entity.entityId == id }
@@ -1815,6 +1828,12 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         require(topLevel.none { it.title.trim() in existingTopTitles }) {
             "正式大纲中已存在同名节点"
         }
+        val characterLinksByTitle = ordered.associate { node ->
+            node.title.trim() to mobileOutlineCharacterLinks(
+                node.characterNames,
+                characterIdsByReference,
+            )
+        }
         val firstSort = insertAfter?.second?.string("sort_order")?.toIntOrNull()?.plus(1)
             ?: existing.asSequence()
                 .map { it.second }
@@ -1839,7 +1858,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 put("status", "pending")
                 if (parentId == null) put("parent_id", JsonNull) else put("parent_id", parentId)
                 put("sort_order", sortOrder)
-                put("characters", JsonArray(node.characterNames.map(::JsonPrimitive)))
+                put("characters", characterLinksByTitle.getValue(node.title.trim()))
             }
             saveEntity(draft.projectId, "outline", id, payload)
             savedIds += id

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -181,7 +182,7 @@ def _character_context(character: Character) -> dict:
     config = character.ai_config
     recent_events = sorted(
         character.timeline_events or [],
-        key=lambda event: event.created_at,
+        key=lambda event: (event.created_at or datetime.min, event.id or ""),
         reverse=True,
     )[:4]
     return {
@@ -258,7 +259,7 @@ def _relationship_context(db: Session, project_id: str, characters: list[Charact
 def _worldbuilding_context(entry: WorldbuildingEntry) -> dict:
     recent_events = sorted(
         entry.timeline_events or [],
-        key=lambda event: event.created_at,
+        key=lambda event: (event.created_at or datetime.min, event.id or ""),
         reverse=True,
     )[:3]
     return {

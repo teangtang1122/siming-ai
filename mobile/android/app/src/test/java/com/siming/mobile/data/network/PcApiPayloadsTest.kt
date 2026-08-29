@@ -144,6 +144,44 @@ class PcApiPayloadsTest {
     }
 
     @Test
+    fun `outline update preserves multiple links and explicit empty clearing`() {
+        val linked = JsonArray(
+            (1..4).map { index ->
+                buildJsonObject {
+                    put("id", "character-$index")
+                    put("name", "角色$index")
+                    put("role_in_scene", if (index == 1) "protagonist" else "supporting")
+                }
+            },
+        )
+        val populated = PcApiPayloads.authoring(
+            "outline",
+            buildJsonObject {
+                put("title", "四角色节点")
+                put("linked_characters", linked)
+            },
+            create = false,
+        )
+
+        assertEquals(
+            (1..4).map { "character-$it" },
+            populated.getValue("characters").jsonArray.map {
+                it.jsonObject.getValue("character_id").jsonPrimitive.content
+            },
+        )
+
+        val cleared = PcApiPayloads.authoring(
+            "outline",
+            buildJsonObject {
+                put("title", "四角色节点")
+                put("characters", JsonArray(emptyList()))
+            },
+            create = false,
+        )
+        assertEquals(JsonArray(emptyList()), cleared["characters"])
+    }
+
+    @Test
     fun `offline chapter mutation strips every PC response only field`() {
         val payload = PcApiPayloads.syncMutation(
             entityType = "chapter",

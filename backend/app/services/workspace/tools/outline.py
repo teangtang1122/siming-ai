@@ -15,11 +15,12 @@ from ....services.story_granularity import (
     normalize_outline_batch,
     normalize_outline_payload,
 )
+from ...outline_service import replace_character_links
 from ..utils import (
     find_outline_by_title_or_id,
     next_outline_sort_order,
+    outline_links_from_names,
     outline_node_payload,
-    replace_outline_links_by_names,
 )
 
 
@@ -94,6 +95,14 @@ async def create_outline_node(
         _existing = check_idempotency(db, project_id, _idem_key)
         if _existing:
             return _existing
+    character_names = args.get("character_names")
+    if character_names is None:
+        character_names = args.get("related_characters")
+    character_links = (
+        outline_links_from_names(db, project_id, character_names)
+        if character_names is not None
+        else []
+    )
     node = OutlineNode(
         project_id=project_id,
         parent_id=parent_id,
@@ -114,10 +123,7 @@ async def create_outline_node(
     )
     db.add(node)
     db.flush()
-    character_names = args.get("character_names")
-    if character_names is None:
-        character_names = args.get("related_characters")
-    replace_outline_links_by_names(db, project_id, node, character_names)
+    replace_character_links(db, project_id, node, character_links)
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
         queue_content_sync(
@@ -236,6 +242,13 @@ async def update_outline_node(
         node = find_outline_by_title_or_id(db, project_id, args.get("title"))
     if not node:
         return {"tool": "update_outline_node", "status": "skipped", "detail": "未找到当前作品内的大纲节点"}
+    character_links = None
+    if "character_names" in args:
+        character_links = outline_links_from_names(
+            db,
+            project_id,
+            args.get("character_names"),
+        )
     if args.get("title"):
         node.title = str(args.get("title")).strip()[:200]
     if "summary" in args:
@@ -244,8 +257,7 @@ async def update_outline_node(
         node.status = str(args.get("status"))
     if args.get("node_type") in {"volume", "chapter", "section"}:
         node.node_type = str(args.get("node_type"))
-    if "character_names" in args:
-        replace_outline_links_by_names(db, project_id, node, args.get("character_names"))
+    replace_character_links(db, project_id, node, character_links)
     if "source_chapter_id" in args:
         node.source_chapter_id = str(args.get("source_chapter_id") or "")[:36] or None
     if "actual_summary" in args:

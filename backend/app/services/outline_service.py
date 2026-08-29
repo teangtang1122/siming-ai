@@ -128,22 +128,40 @@ def replace_character_links(
     if links is None:
         return
 
+    normalized_links: list[tuple[str, Optional[str]]] = []
+    seen_character_ids: set[str] = set()
+    for character_id, role_in_scene in links:
+        if character_id in seen_character_ids:
+            continue
+        seen_character_ids.add(character_id)
+        normalized_links.append((character_id, role_in_scene))
+    links = normalized_links
+
     character_ids = [character_id for character_id, _role in links]
+    characters_by_id: dict[str, Character] = {}
     if character_ids:
-        count = (
+        characters = (
             db.query(Character)
             .filter(Character.project_id == project_id, Character.id.in_(character_ids))
-            .count()
+            .all()
         )
-        if count != len(character_ids):
+        characters_by_id = {character.id: character for character in characters}
+        if len(characters_by_id) != len(character_ids):
             raise ValidationError("关联角色必须属于当前作品")
 
     node.linked_characters.clear()
     db.flush()
     for character_id, role_in_scene in links:
         node.linked_characters.append(
-            OutlineNodeCharacter(character_id=character_id, role_in_scene=role_in_scene)
+            OutlineNodeCharacter(
+                character=characters_by_id[character_id],
+                role_in_scene=role_in_scene,
+            )
         )
+    # Materialize generated IDs/timestamps before any caller serializes this
+    # relationship collection. SessionLocal disables autoflush, so callers
+    # cannot rely on a later query to make pending association rows safe.
+    db.flush()
 
 
 def node_to_dict(node: OutlineNode) -> dict:
@@ -168,7 +186,11 @@ def node_to_dict(node: OutlineNode) -> dict:
             }
             for link in sorted(
                 node.linked_characters,
-                key=lambda item: item.created_at,
+                key=lambda item: (
+                    item.created_at is None,
+                    item.created_at or datetime.min,
+                    item.character_id or "",
+                ),
             )
             if link.character is not None
         ],

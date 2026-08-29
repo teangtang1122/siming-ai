@@ -15,7 +15,10 @@ from app.database.models import (
     Character,
     CharacterAlias,
     CharacterRelationship,
+    CharacterTimeline,
     Project,
+    WorldbuildingEntry,
+    WorldbuildingTimeline,
 )
 from app.services.cataloging.candidate_validation import (
     candidate_coverage_review_message,
@@ -25,12 +28,17 @@ from app.services.cataloging.character_ops import (
     apply_character_create,
     apply_character_relationship,
 )
+from app.services.cataloging.context import _worldbuilding_detail
 from app.services.cataloging.orchestrator import (
     _compact_local_runtime_context,
     create_cataloging_job,
 )
 from app.services.cataloging.snapshots import character_snapshot
-from app.services.cataloging.targeted_context import build_targeted_context
+from app.services.cataloging.targeted_context import (
+    _character_context,
+    _worldbuilding_context,
+    build_targeted_context,
+)
 
 
 def database():
@@ -74,6 +82,48 @@ def candidate(db, job, run, chapter, item_type, payload, sort_order=0):
     db.add(row)
     db.flush()
     return row
+
+
+def test_pending_timeline_rows_are_safe_to_sort_in_cataloging_contexts():
+    character = Character(
+        id="character-1",
+        project_id="project-1",
+        name="Pending role",
+        role_type="supporting",
+    )
+    character.timeline_events.extend(
+        [
+            CharacterTimeline(
+                character_id=character.id,
+                chapter_id=f"chapter-{index}",
+                event_description=f"Pending event {index}",
+                event_type="key_event",
+            )
+            for index in range(2)
+        ]
+    )
+    world = WorldbuildingEntry(
+        id="world-1",
+        project_id="project-1",
+        dimension="history",
+        title="Pending history",
+        content="Pending events.",
+    )
+    world.timeline_events.extend(
+        [
+            WorldbuildingTimeline(
+                entry_id=world.id,
+                chapter_id=f"chapter-{index}",
+                event_description=f"Pending world event {index}",
+                event_type="fact_change",
+            )
+            for index in range(2)
+        ]
+    )
+
+    assert len(_character_context(character)["recent_timeline"]) == 2
+    assert len(_worldbuilding_context(world)["recent_timeline"]) == 2
+    assert len(_worldbuilding_detail(world)["recent_timeline"]) == 2
 
 
 def test_fact_inventory_prevents_a_false_empty_manifest():

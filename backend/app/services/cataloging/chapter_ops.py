@@ -152,6 +152,7 @@ def apply_chapter_summary(
             payload=narrative_state,
         )
         ledger = record_narrative_ledger(db, candidate, chapter, narrative_state)
+    db.flush()
     return {
         "target_type": "chapter_summary",
         "target_id": summary.id,

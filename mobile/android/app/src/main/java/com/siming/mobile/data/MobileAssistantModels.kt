@@ -71,6 +71,32 @@ data class MobileOutlineDraftNode(
     }
 }
 
+internal fun mobileOutlineCharacterLinks(
+    characterNames: List<String>,
+    characterIdsByReference: Map<String, String>,
+): JsonArray {
+    val unresolved = mutableListOf<String>()
+    val seenIds = mutableSetOf<String>()
+    val links = characterNames.mapNotNull { rawReference ->
+        val reference = rawReference.trim()
+        val characterId = characterIdsByReference[reference]
+        if (reference.isBlank() || characterId == null) {
+            val label = reference.ifBlank { "<空名称>" }
+            if (label !in unresolved) unresolved += label
+            return@mapNotNull null
+        }
+        if (!seenIds.add(characterId)) return@mapNotNull null
+        buildJsonObject {
+            put("character_id", characterId)
+            put("role_in_scene", "AI关联")
+        }
+    }
+    require(unresolved.isEmpty()) {
+        "未找到当前作品内的关联角色：${unresolved.joinToString("、")}"
+    }
+    return JsonArray(links)
+}
+
 data class MobilePendingOutlineDraft(
     val draftId: String,
     val projectId: String,

@@ -423,7 +423,11 @@ function CharactersPage({ projectId }: CharactersPageProps) {
       void fetchCharacters(keywordRef.current)
       void fetchNetwork()
     } catch (err: any) {
-      if (ownsSnapshot()) markSaveFailed(err.message || '保存角色失败')
+      if (ownsTarget()) {
+        const detail = err.message || '保存角色失败'
+        markSaveFailed(detail)
+        message.error(detail)
+      }
     } finally {
       if (saveRequestGate.current.isCurrent(request)) setSaving(false)
     }
@@ -656,9 +660,11 @@ function CharactersPage({ projectId }: CharactersPageProps) {
           <div className="characters-editor-head">
             <div>
               <Title level={4} style={{ margin: 0 }}>{selectedDetail ? selectedDetail.name : '新角色'}</Title>
-              {selectedDetail && (
+              {(editorTarget.mode === 'create' || selectedDetail || saveStatus === 'error') && (
                 <Space size={8} wrap>
-                  <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>
+                  {selectedDetail && (
+                    <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>
+                  )}
                   <SaveStatusIndicator status={saveStatus} error={saveError} />
                 </Space>
               )}

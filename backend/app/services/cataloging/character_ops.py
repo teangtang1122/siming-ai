@@ -148,6 +148,7 @@ def apply_character_timeline(db: Session, candidate: CatalogingCandidate, chapte
         raise ValueError("角色时间线事件为空")
     db.add(event)
     link_chapter_character(db, chapter, character, "时间线")
+    db.flush()
     return {
         "target_type": "character_timeline",
         "target_id": event.id,

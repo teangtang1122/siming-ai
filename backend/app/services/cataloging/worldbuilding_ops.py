@@ -103,6 +103,7 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
         raise ValueError("世界观时间线事件为空")
     db.add(event)
     link_chapter_worldbuilding(db, chapter, entry, event.event_description)
+    db.flush()
     return {
         "target_type": "worldbuilding_timeline",
         "target_id": event.id,

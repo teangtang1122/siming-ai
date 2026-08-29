@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -147,7 +148,7 @@ def _character_detail(character: Character) -> dict:
 def _worldbuilding_detail(entry: WorldbuildingEntry) -> dict:
     recent_events = sorted(
         entry.timeline_events or [],
-        key=lambda event: event.created_at,
+        key=lambda event: (event.created_at or datetime.min, event.id or ""),
         reverse=True,
     )[:4]
     return {

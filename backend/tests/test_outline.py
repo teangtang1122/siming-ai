@@ -30,6 +30,7 @@ from app.database.models import (
 )
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
+from app.services.outline_service import node_to_dict
 from app.services.workspace.outline_drafts import (
     _outline_tree_hash,
     confirm_outline_draft,
@@ -128,6 +129,131 @@ class TestWorkspaceOutlineBatch(unittest.TestCase):
 
 class TestOutlineCRUD(OutlineTestCase):
     """Outline tree CRUD tests."""
+
+    def test_create_node_materializes_zero_one_two_and_four_character_links(self):
+        project_id = self.create_project()
+        characters = [
+            self.create_character(project_id, f"Character {index}")
+            for index in range(1, 5)
+        ]
+
+        for link_count in (0, 1, 2, 4):
+            with self.subTest(link_count=link_count):
+                expected = characters[:link_count]
+                response = self.client.post(
+                    f"{API_PREFIX}/projects/{project_id}/outline",
+                    json={
+                        "title": f"Linked Chapter {link_count}",
+                        "node_type": "chapter",
+                        "sort_order": link_count,
+                        "character_ids": [item["id"] for item in expected],
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200, response.text)
+                created = response.json()["data"]
+                self.assertEqual(
+                    [item["id"] for item in created["linked_characters"]],
+                    [item["id"] for item in expected],
+                )
+
+                listed = self.client.get(
+                    f"{API_PREFIX}/projects/{project_id}/outline"
+                ).json()["data"]["flat"]
+                persisted = next(item for item in listed if item["id"] == created["id"])
+                self.assertEqual(
+                    [item["id"] for item in persisted["linked_characters"]],
+                    [item["id"] for item in expected],
+                )
+
+                db = SessionLocal()
+                try:
+                    self.assertEqual(
+                        db.query(OutlineNodeCharacter)
+                        .filter(OutlineNodeCharacter.outline_node_id == created["id"])
+                        .count(),
+                        link_count,
+                    )
+                finally:
+                    db.close()
+
+    def test_create_node_deduplicates_character_ids_in_input_order(self):
+        project_id = self.create_project()
+        first = self.create_character(project_id, "First role")
+        second = self.create_character(project_id, "Second role")
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/outline",
+            json={
+                "title": "Deduplicated links",
+                "node_type": "chapter",
+                "character_ids": [first["id"], second["id"], first["id"]],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [item["id"] for item in response.json()["data"]["linked_characters"]],
+            [first["id"], second["id"]],
+        )
+
+    def test_create_node_with_foreign_character_rolls_back_node_and_links(self):
+        project_id = self.create_project("Owner project")
+        foreign_project_id = self.create_project("Foreign project")
+        foreign_character = self.create_character(foreign_project_id, "Foreign role")
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/outline",
+            json={
+                "title": "Must not persist",
+                "node_type": "chapter",
+                "character_ids": [foreign_character["id"]],
+            },
+        )
+
+        self.assertEqual(response.status_code, 400, response.text)
+        db = SessionLocal()
+        try:
+            self.assertEqual(
+                db.query(OutlineNode)
+                .filter(
+                    OutlineNode.project_id == project_id,
+                    OutlineNode.title == "Must not persist",
+                )
+                .count(),
+                0,
+            )
+            self.assertEqual(
+                db.query(OutlineNodeCharacter)
+                .filter(OutlineNodeCharacter.character_id == foreign_character["id"])
+                .count(),
+                0,
+            )
+        finally:
+            db.close()
+
+    def test_node_serializer_tolerates_multiple_pending_character_links(self):
+        node = OutlineNode(
+            id="pending-outline",
+            project_id="project-1",
+            title="Pending links",
+            node_type="chapter",
+        )
+        for index in range(2):
+            node.linked_characters.append(
+                OutlineNodeCharacter(
+                    character=Character(
+                        id=f"pending-character-{index}",
+                        project_id="project-1",
+                        name=f"Pending character {index}",
+                        role_type="supporting",
+                    )
+                )
+            )
+
+        payload = node_to_dict(node)
+
+        self.assertEqual(len(payload["linked_characters"]), 2)
 
     def test_create_three_level_tree_with_character_links(self):
         project_id = self.create_project()
@@ -258,6 +384,7 @@ class TestOutlineDraftReview(OutlineTestCase):
         *,
         parent_id: str | None = None,
         insert_after_id: str | None = None,
+        character_names: list[str] | None = None,
     ) -> str:
         db = SessionLocal()
         try:
@@ -271,7 +398,7 @@ class TestOutlineDraftReview(OutlineTestCase):
                         "node_type": "chapter",
                         "title": "Chapter Two",
                         "summary": "The counterattack begins.",
-                        "character_names": [],
+                        "character_names": list(character_names or []),
                         "status": "pending",
                     },
                     {
@@ -387,6 +514,37 @@ class TestOutlineDraftReview(OutlineTestCase):
             ).json()["data"]
         )
 
+    def test_confirmed_draft_returns_and_persists_linked_characters(self):
+        project_id = self.create_project()
+        character = self.create_character(project_id, "Draft role")
+        draft_id = self.create_draft(
+            project_id,
+            character_names=[character["name"]],
+        )
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/outline-drafts/{draft_id}/confirm",
+            json={"write_after_confirm": False},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["data"]
+        chapter = next(
+            item for item in result["nodes"] if item["node_type"] == "chapter"
+        )
+        self.assertEqual(
+            [item["id"] for item in chapter["linked_characters"]],
+            [character["id"]],
+        )
+
+        formal = self.client.get(
+            f"{API_PREFIX}/projects/{project_id}/outline"
+        ).json()["data"]["flat"]
+        persisted = next(item for item in formal if item["id"] == chapter["id"])
+        self.assertEqual(
+            [item["id"] for item in persisted["linked_characters"]],
+            [character["id"]],
+        )
     def test_regenerate_and_discard_only_return_new_author_work(self):
         project_id = self.create_project()
         draft_id = self.create_draft(project_id)
@@ -464,6 +622,128 @@ class TestOutlineDraftReview(OutlineTestCase):
             )
             draft = db.query(OutlineDraft).filter(OutlineDraft.id == draft_id).one()
             self.assertEqual(draft.status, "pending")
+        finally:
+            db.close()
+
+
+class TestWorkspaceOutlineLinks(OutlineTestCase):
+    def test_ai_outline_links_replace_clear_and_preserve_authoritatively(self):
+        from app.services.workspace.tools.outline import (
+            create_outline_node,
+            update_outline_node,
+        )
+
+        project_id = self.create_project()
+        first = self.create_character(project_id, "First role")
+        second = self.create_character(project_id, "Second role")
+        db = SessionLocal()
+        try:
+            created = asyncio.run(
+                create_outline_node(
+                    db,
+                    project_id,
+                    {
+                        "title": "AI linked chapter",
+                        "node_type": "chapter",
+                        "character_names": [first["name"], second["name"]],
+                    },
+                )
+            )
+            self.assertEqual(created["status"], "ok")
+            self.assertEqual(
+                [item["id"] for item in created["data"]["linked_characters"]],
+                [first["id"], second["id"]],
+            )
+            node_id = created["data"]["id"]
+
+            cleared = asyncio.run(
+                update_outline_node(
+                    db,
+                    project_id,
+                    {"id": node_id, "character_names": []},
+                )
+            )
+            self.assertEqual(cleared["data"]["linked_characters"], [])
+
+            replaced = asyncio.run(
+                update_outline_node(
+                    db,
+                    project_id,
+                    {"id": node_id, "character_names": [second["name"]]},
+                )
+            )
+            self.assertEqual(
+                [item["id"] for item in replaced["data"]["linked_characters"]],
+                [second["id"]],
+            )
+
+            preserved = asyncio.run(
+                update_outline_node(
+                    db,
+                    project_id,
+                    {"id": node_id, "summary": "Keep the existing links."},
+                )
+            )
+            self.assertEqual(
+                [item["id"] for item in preserved["data"]["linked_characters"]],
+                [second["id"]],
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    def test_ai_outline_unknown_character_is_rejected_before_any_mutation(self):
+        from app.services.workspace.tools.outline import (
+            create_outline_node,
+            update_outline_node,
+        )
+
+        project_id = self.create_project()
+        character = self.create_character(project_id, "Known role")
+        existing = self.create_node(
+            project_id,
+            "Existing chapter",
+            character_ids=[character["id"]],
+        )
+        db = SessionLocal()
+        try:
+            with self.assertRaisesRegex(ValidationError, "Unknown role"):
+                asyncio.run(
+                    create_outline_node(
+                        db,
+                        project_id,
+                        {
+                            "title": "Rejected AI chapter",
+                            "node_type": "chapter",
+                            "character_names": ["Unknown role"],
+                        },
+                    )
+                )
+            self.assertEqual(
+                db.query(OutlineNode)
+                .filter(OutlineNode.title == "Rejected AI chapter")
+                .count(),
+                0,
+            )
+
+            with self.assertRaisesRegex(ValidationError, "Unknown role"):
+                asyncio.run(
+                    update_outline_node(
+                        db,
+                        project_id,
+                        {
+                            "id": existing["id"],
+                            "summary": "Must not be applied",
+                            "character_names": [character["name"], "Unknown role"],
+                        },
+                    )
+                )
+            node = db.get(OutlineNode, existing["id"])
+            self.assertIsNone(node.summary)
+            self.assertEqual(
+                [link.character_id for link in node.linked_characters],
+                [character["id"]],
+            )
         finally:
             db.close()
 
