@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Col, Row, message } from 'antd'
 import { apiClient } from '../api/client'
 import { useModelOptions } from '../hooks/useModelOptions'
@@ -16,6 +16,7 @@ import type {
   ChapterItem,
 } from './catalogingTypes'
 import { safeStringify } from './catalogingTypes'
+import { createLatestRequestGate } from '../shared/latestRequest'
 
 interface CatalogingPageProps {
   projectId: string
@@ -51,6 +52,8 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   const [logs, setLogs] = useState<string[]>([])
   const [streaming, setStreaming] = useState(false)
   const [loading, setLoading] = useState(false)
+  const activeJobIdRef = useRef<string | null>(null)
+  const loadJobRequestGate = useRef(createLatestRequestGate<string>())
 
   const progress = useMemo(() => {
     if (!job || !job.total_chapters) return 0
@@ -80,22 +83,27 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
 
   const fetchJob = useCallback(async (jobId: string) => {
     const res = await apiClient.get<ApiResponse<{ job: CatalogingJob; runs: CatalogingRun[] }>>(`/projects/${projectId}/cataloging/${jobId}`)
-    setJob(res.data.data.job)
-    setMode(res.data.data.job.execution_mode)
-    setRuns(res.data.data.runs)
+    if (activeJobIdRef.current === jobId) {
+      setJob(res.data.data.job)
+      setMode(res.data.data.job.execution_mode)
+      setRuns(res.data.data.runs)
+    }
     return res.data.data
   }, [projectId])
 
   const fetchCandidates = useCallback(async (jobId: string, chapterRunId?: string) => {
     if (!chapterRunId) {
-      setCandidates([])
-      setCandidateDrafts({})
+      if (activeJobIdRef.current === jobId) {
+        setCandidates([])
+        setCandidateDrafts({})
+      }
       return
     }
     const res = await apiClient.get<ApiResponse<{ items: CatalogingCandidate[]; total: number }>>(
       `/projects/${projectId}/cataloging/${jobId}/candidates`,
       { chapter_run_id: chapterRunId },
     )
+    if (activeJobIdRef.current !== jobId) return
     setCandidates(res.data.data.items)
     setCandidateDrafts((current) => {
       const next = { ...current }
@@ -108,18 +116,29 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
 
   const fetchFacts = useCallback(async (jobId: string, chapterRunId?: string) => {
     if (!chapterRunId) {
-      setFacts([])
+      if (activeJobIdRef.current === jobId) setFacts([])
       return
     }
     const res = await apiClient.get<ApiResponse<{ items: CatalogingFact[]; total: number }>>(
       `/projects/${projectId}/cataloging/${jobId}/facts`,
       { chapter_run_id: chapterRunId },
     )
+    if (activeJobIdRef.current !== jobId) return
     setFacts(res.data.data.items || [])
   }, [projectId])
 
   const loadJob = useCallback(async (jobId: string) => {
+    const request = loadJobRequestGate.current.begin(jobId)
+    activeJobIdRef.current = jobId
+    setLoading(false)
+    setStreaming(false)
+    setJob(null)
+    setRuns([])
+    setCandidates([])
+    setCandidateDrafts({})
+    setFacts([])
     const data = await fetchJob(jobId)
+    if (!loadJobRequestGate.current.isCurrent(request) || activeJobIdRef.current !== jobId) return
     const runId = candidateRunId(data.job, data.runs)
     await Promise.all([fetchCandidates(jobId, runId), fetchFacts(jobId, runId)])
   }, [fetchCandidates, fetchFacts, fetchJob])
@@ -186,12 +205,16 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   }, [appendLog, fetchJobs])
 
   const streamJob = useCallback((jobId: string) => {
+    if (activeJobIdRef.current !== jobId) return
     setStreaming(true)
     apiClient.stream(
       `/projects/${projectId}/cataloging/${jobId}/stream`,
       {},
-      handleStreamEvent,
+      (raw: string) => {
+        if (activeJobIdRef.current === jobId) handleStreamEvent(raw)
+      },
       (err) => {
+        if (activeJobIdRef.current !== jobId) return
         setStreaming(false)
         message.error(err.message || '作品建档流式连接失败')
       },
@@ -203,6 +226,14 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       message.warning('请至少选择一个章节')
       return
     }
+    const request = loadJobRequestGate.current.begin(`start:${projectId}`)
+    activeJobIdRef.current = null
+    setJob(null)
+    setRuns([])
+    setCandidates([])
+    setCandidateDrafts({})
+    setFacts([])
+    setStreaming(false)
     setLoading(true)
     try {
       const res = await apiClient.post<ApiResponse<CatalogingJob>>(`/projects/${projectId}/cataloging/start`, {
@@ -210,6 +241,8 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
         model: selectedModel,
         chapter_ids: selectedChapterIds,
       })
+      if (!loadJobRequestGate.current.isCurrent(request)) return
+      activeJobIdRef.current = res.data.data.id
       setJob(res.data.data)
       setCandidates([])
       setCandidateDrafts({})
@@ -222,184 +255,213 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
       fetchJobs().catch(() => undefined)
       streamJob(res.data.data.id)
     } catch (err: any) {
-      message.error(err.message || '启动失败')
+      if (loadJobRequestGate.current.isCurrent(request)) message.error(err.message || '启动失败')
     } finally {
-      setLoading(false)
+      if (loadJobRequestGate.current.isCurrent(request)) setLoading(false)
     }
   }
 
   const updateMode = async (nextMode: CatalogingMode) => {
     setMode(nextMode)
     if (!job) return
-    const res = await apiClient.patch<ApiResponse<{ job: CatalogingJob; should_resume: boolean }>>(`/projects/${projectId}/cataloging/${job.id}/mode`, {
+    const jobId = job.id
+    const res = await apiClient.patch<ApiResponse<{ job: CatalogingJob; should_resume: boolean }>>(`/projects/${projectId}/cataloging/${jobId}/mode`, {
       execution_mode: nextMode,
     })
+    if (activeJobIdRef.current !== jobId) return
     setJob(res.data.data.job)
     appendLog(`已切换为${nextMode === 'auto' ? '自动' : '手动确认'}模式`)
     if (res.data.data.should_resume && !streaming) {
-      streamJob(job.id)
+      streamJob(jobId)
     }
   }
 
   const saveCandidate = async (candidate: CatalogingCandidate, status?: string) => {
+    const jobId = activeJobIdRef.current
+    if (!jobId) return
     try {
       const parsed = JSON.parse(candidateDrafts[candidate.id] || '{}')
       const res = await apiClient.patch<ApiResponse<CatalogingCandidate>>(`/projects/${projectId}/cataloging/candidates/${candidate.id}`, {
         payload: parsed,
         status,
       })
+      if (activeJobIdRef.current !== jobId) return
       setCandidates((current) => current.map((item) => item.id === candidate.id ? res.data.data : item))
       message.success('候选项已更新')
     } catch (err: any) {
-      message.error(err.message || '候选项 JSON 不合法')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '候选项 JSON 不合法')
     }
   }
 
   const applyPending = async () => {
     if (!job) return
+    const jobId = job.id
     setLoading(true)
     try {
-      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/apply-pending`)
+      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${jobId}/apply-pending`)
+      if (activeJobIdRef.current !== jobId) return
       setCandidates([])
       setCandidateDrafts({})
       setFacts([])
-      await fetchJob(job.id)
-      streamJob(job.id)
+      await fetchJob(jobId)
+      streamJob(jobId)
     } catch (err: any) {
-      message.error(err.message || '写入失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '写入失败')
     } finally {
-      setLoading(false)
+      if (activeJobIdRef.current === jobId) setLoading(false)
     }
   }
 
   const bulkUpdateCandidates = async (status: 'approved' | 'rejected') => {
     if (!job) return
+    const jobId = job.id
     try {
       const editableIds = visibleCandidates
         .filter((item) => !['applying', 'applied'].includes(item.status))
         .map((item) => item.id)
-      const res = await apiClient.patch<ApiResponse<{ items: CatalogingCandidate[]; total: number }>>(`/projects/${projectId}/cataloging/${job.id}/candidates/bulk`, {
+      const res = await apiClient.patch<ApiResponse<{ items: CatalogingCandidate[]; total: number }>>(`/projects/${projectId}/cataloging/${jobId}/candidates/bulk`, {
         candidate_ids: editableIds,
         status,
       })
+      if (activeJobIdRef.current !== jobId) return
       const byId = new Map(res.data.data.items.map((item) => [item.id, item]))
       setCandidates((current) => current.map((item) => byId.get(item.id) || item))
       message.success(status === 'approved' ? '已批量确认候选项' : '已批量拒绝候选项')
     } catch (err: any) {
-      message.error(err.message || '批量更新失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '批量更新失败')
     }
   }
 
   const retryCurrent = async () => {
     if (!job) return
+    const jobId = job.id
     setLoading(true)
     try {
-      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/retry-current`)
-      const data = await fetchJob(job.id)
+      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${jobId}/retry-current`)
+      if (activeJobIdRef.current !== jobId) return
+      const data = await fetchJob(jobId)
+      if (activeJobIdRef.current !== jobId) return
       const runId = candidateRunId(data.job, data.runs)
-      await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
-      streamJob(job.id)
+      await Promise.all([fetchCandidates(jobId, runId), fetchFacts(jobId, runId)])
+      streamJob(jobId)
     } catch (err: any) {
-      message.error(err.message || '重试失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '重试失败')
     } finally {
-      setLoading(false)
+      if (activeJobIdRef.current === jobId) setLoading(false)
     }
   }
 
   const rerunResolutionCurrent = async () => {
     if (!job) return
+    const jobId = job.id
     setLoading(true)
     try {
-      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/rerun-resolution-current`)
-      const data = await fetchJob(job.id)
+      await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${jobId}/rerun-resolution-current`)
+      if (activeJobIdRef.current !== jobId) return
+      const data = await fetchJob(jobId)
+      if (activeJobIdRef.current !== jobId) return
       const runId = candidateRunId(data.job, data.runs)
-      await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
-      streamJob(job.id)
+      await Promise.all([fetchCandidates(jobId, runId), fetchFacts(jobId, runId)])
+      streamJob(jobId)
     } catch (err: any) {
-      message.error(err.message || '重跑候选生成失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '重跑候选生成失败')
     } finally {
-      setLoading(false)
+      if (activeJobIdRef.current === jobId) setLoading(false)
     }
   }
 
   const recoverCurrent = async () => {
     if (!job) return
+    const jobId = job.id
     setLoading(true)
     try {
       const recovery = await apiClient.post<ApiResponse<unknown>>(
-        `/projects/${projectId}/cataloging/${job.id}/recover-current`,
+        `/projects/${projectId}/cataloging/${jobId}/recover-current`,
       )
-      const data = await fetchJob(job.id)
+      if (activeJobIdRef.current !== jobId) return
+      const data = await fetchJob(jobId)
+      if (activeJobIdRef.current !== jobId) return
       const runId = candidateRunId(data.job, data.runs)
-      await Promise.all([fetchCandidates(job.id, runId), fetchFacts(job.id, runId)])
+      await Promise.all([fetchCandidates(jobId, runId), fetchFacts(jobId, runId)])
       message.success(recovery.data.message || '当前章节已转入人工确认')
     } catch (err: any) {
-      message.error(err.message || '转入人工确认失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '转入人工确认失败')
     } finally {
-      setLoading(false)
+      if (activeJobIdRef.current === jobId) setLoading(false)
     }
   }
 
   const createManualCandidate = async () => {
     if (!job) return
+    const jobId = job.id
     try {
       const parsed = JSON.parse(newCandidatePayload || '{}')
-      const res = await apiClient.post<ApiResponse<CatalogingCandidate>>(`/projects/${projectId}/cataloging/${job.id}/candidates`, {
+      const res = await apiClient.post<ApiResponse<CatalogingCandidate>>(`/projects/${projectId}/cataloging/${jobId}/candidates`, {
         item_type: newCandidateType,
         payload: parsed,
         status: 'edited',
       })
+      if (activeJobIdRef.current !== jobId) return
       const candidate = res.data.data
       setCandidates((current) => [...current, candidate])
       setCandidateDrafts((current) => ({ ...current, [candidate.id]: safeStringify(candidate.payload) }))
       message.success('候选项已新增')
     } catch (err: any) {
-      message.error(err.message || '新增候选项失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '新增候选项失败')
     }
   }
 
   const pauseCurrentJob = async () => {
     if (!job) return
+    const jobId = job.id
     try {
-      const res = await apiClient.post<ApiResponse<{ job: CatalogingJob }>>(`/projects/${projectId}/cataloging/${job.id}/pause`)
+      const res = await apiClient.post<ApiResponse<{ job: CatalogingJob }>>(`/projects/${projectId}/cataloging/${jobId}/pause`)
+      if (activeJobIdRef.current !== jobId) return
       setJob(res.data.data.job)
       setStreaming(false)
       await fetchJobs()
     } catch (err: any) {
-      message.error(err.message || '暂停失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '暂停失败')
     }
   }
 
   const resumeCurrentJob = async () => {
     if (!job) return
+    const jobId = job.id
     try {
-      const res = await apiClient.post<ApiResponse<{ job: CatalogingJob }>>(`/projects/${projectId}/cataloging/${job.id}/resume`)
+      const res = await apiClient.post<ApiResponse<{ job: CatalogingJob }>>(`/projects/${projectId}/cataloging/${jobId}/resume`)
+      if (activeJobIdRef.current !== jobId) return
       setJob(res.data.data.job)
       await fetchJobs()
-      streamJob(job.id)
+      streamJob(jobId)
     } catch (err: any) {
-      message.error(err.message || '继续失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '继续失败')
     }
   }
 
   const cancelCurrentJob = async () => {
     if (!job) return
+    const jobId = job.id
     try {
-      const res = await apiClient.post<ApiResponse<{ job: CatalogingJob }>>(`/projects/${projectId}/cataloging/${job.id}/cancel`)
+      const res = await apiClient.post<ApiResponse<{ job: CatalogingJob }>>(`/projects/${projectId}/cataloging/${jobId}/cancel`)
+      if (activeJobIdRef.current !== jobId) return
       setJob(res.data.data.job)
       setStreaming(false)
       await fetchJobs()
     } catch (err: any) {
-      message.error(err.message || '取消失败')
+      if (activeJobIdRef.current === jobId) message.error(err.message || '取消失败')
     }
   }
 
   const skipCurrent = async () => {
     if (!job) return
-    await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${job.id}/skip-current`)
-    await fetchJob(job.id)
+    const jobId = job.id
+    await apiClient.post<ApiResponse<unknown>>(`/projects/${projectId}/cataloging/${jobId}/skip-current`)
+    if (activeJobIdRef.current !== jobId) return
+    await fetchJob(jobId)
+    if (activeJobIdRef.current !== jobId) return
     await fetchJobs()
-    streamJob(job.id)
+    streamJob(jobId)
   }
 
   const updateCandidateDraft = (candidateId: string, value: string) => {
@@ -407,8 +469,22 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   }
 
   useEffect(() => {
+    const loadGate = loadJobRequestGate.current
+    loadGate.invalidate()
+    activeJobIdRef.current = null
+    setJob(null)
+    setRuns([])
+    setCandidates([])
+    setCandidateDrafts({})
+    setFacts([])
+    setStreaming(false)
+    setLoading(false)
     fetchChapters().catch((err) => message.error(err.message || '获取章节失败'))
     fetchJobs().catch(() => undefined)
+    return () => {
+      loadGate.invalidate()
+      activeJobIdRef.current = null
+    }
   }, [fetchChapters, fetchJobs])
 
   return (

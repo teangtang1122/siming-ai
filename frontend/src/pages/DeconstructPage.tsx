@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -17,7 +17,6 @@ import {
   message,
   Row,
   Col,
-  Statistic,
   Spin,
 } from 'antd'
 import {
@@ -31,6 +30,8 @@ import {
 import { apiClient } from '../api/client'
 import { PersistentOutcome } from '../components/interaction'
 import { useModelOptions } from '../hooks/useModelOptions'
+import { createLatestRequestGate } from '../shared/latestRequest'
+import DeconstructOverview from './deconstruct/DeconstructOverview'
 import {
   type ApiResponse,
   type ChunkProgress,
@@ -68,6 +69,9 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
   const [reduceStreamText, setReduceStreamText] = useState('')
   const [reduceStreaming, setReduceStreaming] = useState(false)
   const [streamDisconnected, setStreamDisconnected] = useState(false)
+  const reportRequestGate = useRef(createLatestRequestGate<string>())
+  const activeReportIdRef = useRef<string | null>(null)
+  const analysisGenerationRef = useRef(0)
   const { modelOptions, defaultModel, loading: modelsLoading } = useModelOptions('deconstruct')
 
   const appendReduceStatus = (line: string) => {
@@ -105,39 +109,56 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
   }, [projectId])
 
   const loadReport = useCallback(async (reportId: string, silent = false) => {
+    analysisGenerationRef.current += 1
+    const request = reportRequestGate.current.begin(reportId)
+    activeReportIdRef.current = reportId
+    const ownsReport = () => reportRequestGate.current.isCurrent(request)
+      && activeReportIdRef.current === reportId
+    if (!silent) {
+      setAnalyzing(false); setResult(null); setProgressReport(null)
+      setReduceStreamText(''); setReduceStreaming(false)
+      setStreamDisconnected(false)
+    }
     try {
       const res = await apiClient.get<ApiResponse<DeconstructReport>>(`/projects/${projectId}/deconstruct/${reportId}`)
+      if (!ownsReport() || res.data.data.id !== reportId) return
       const report = res.data.data
       setResult(report.status === 'completed' ? report : null)
       setProgressReport(report)
       setReduceStreamText('')
       setReduceStreaming(false)
       setStreamDisconnected(false)
-      if (!silent) {
-        message.success('已加载持久化拆书报告')
-      }
+      if (!silent) message.success('已加载持久化拆书报告')
     } catch (err: any) {
-      message.error(err.message || '加载拆书报告失败')
+      if (ownsReport()) message.error(err.message || '加载拆书报告失败')
     }
   }, [projectId])
 
   useEffect(() => {
+    const reportGate = reportRequestGate.current
+    reportGate.invalidate()
+    activeReportIdRef.current = null
+    analysisGenerationRef.current += 1
+    setAnalyzing(false); setResult(null); setProgressReport(null)
+    setReduceStreamText(''); setReduceStreaming(false)
+    setStreamDisconnected(false)
     fetchPreview()
     fetchReports()
+    return () => {
+      reportGate.invalidate()
+      activeReportIdRef.current = null
+      analysisGenerationRef.current += 1
+    }
   }, [fetchPreview, fetchReports])
 
   useEffect(() => {
     if (result || progressReport || analyzing) return
     const latestCompleted = reports.find((report) => report.status === 'completed')
-    if (latestCompleted) {
-      loadReport(latestCompleted.id, true)
-    }
+    if (latestCompleted) loadReport(latestCompleted.id, true)
   }, [reports, result, progressReport, analyzing, loadReport])
 
   useEffect(() => {
-    if (!model && defaultModel) {
-      setModel(defaultModel)
-    }
+    if (!model && defaultModel) setModel(defaultModel)
   }, [model, defaultModel])
 
   useEffect(() => {
@@ -149,8 +170,9 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
     const poll = async () => {
       try {
         const res = await apiClient.get<ApiResponse<DeconstructReport>>(`/projects/${projectId}/deconstruct/${reportId}`)
-        if (cancelled) return
+        if (cancelled || activeReportIdRef.current !== reportId) return
         const report = res.data.data
+        if (report.id !== reportId) return
         setProgressReport(report)
         if (report.status === 'completed') {
           setResult(report)
@@ -172,8 +194,6 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
       window.clearInterval(timer)
     }
   }, [fetchReports, progressReport?.id, progressReport?.status, projectId, streamDisconnected])
-
-
   const selectedChapters = useMemo(() => {
     const ids = new Set(selectedChapterIds)
     return (preview?.chapters || []).filter((chapter) => ids.has(chapter.id))
@@ -211,6 +231,9 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
       return
     }
 
+    reportRequestGate.current.invalidate()
+    activeReportIdRef.current = null
+    const analysisGeneration = ++analysisGenerationRef.current
     setAnalyzing(true)
     setResult(null)
     setProgressReport(null)
@@ -249,11 +272,13 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
       `/projects/${projectId}/deconstruct/stream`,
       payload,
       (raw: string) => {
+        if (analysisGenerationRef.current !== analysisGeneration) return
         try {
           const event = JSON.parse(raw)
           switch (event.type) {
             case 'init':
               activeReportId = event.report_id
+              activeReportIdRef.current = event.report_id
               setProgressReport({
                 id: event.report_id,
                 title: event.title,
@@ -489,6 +514,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
         } catch { /* ignore parse errors for partial chunks */ }
       },
       (err) => {
+        if (analysisGenerationRef.current !== analysisGeneration) return
         setReduceStreaming(false)
         if (activeReportId) {
           setStreamDisconnected(true)
@@ -507,6 +533,9 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
       return
     }
 
+    reportRequestGate.current.invalidate()
+    activeReportIdRef.current = report.id
+    const analysisGeneration = ++analysisGenerationRef.current
     setAnalyzing(true)
     setReduceStreamText('')
     setReduceStreaming(false)
@@ -527,6 +556,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
       `/projects/${projectId}/deconstruct/${report.id}/rerun-failed/stream`,
       payload,
       (raw: string) => {
+        if (analysisGenerationRef.current !== analysisGeneration) return
         try {
           const event = JSON.parse(raw)
           switch (event.type) {
@@ -687,6 +717,7 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
         } catch { /* ignore */ }
       },
       () => {
+        if (analysisGenerationRef.current !== analysisGeneration) return
         setReduceStreaming(false)
         setStreamDisconnected(true)
       },
@@ -711,46 +742,14 @@ function DeconstructPage({ projectId }: DeconstructPageProps) {
         <ThunderboltOutlined /> 拆书分析
       </Title>
 
-      {reports.length > 0 && (
-        <Card title="已持久化拆书报告" size="small" style={{ marginBottom: 16 }}>
-          <Space wrap>
-            {reports.slice(0, 6).map((report) => (
-              <Button key={report.id} size="small" onClick={() => loadReport(report.id)}>
-                {report.status === 'completed' ? '已完成' : phaseLabel(report.phase)} · {(report.total_words || 0).toLocaleString()}字 · {new Date(report.created_at || '').toLocaleString('zh-CN')}
-              </Button>
-            ))}
-          </Space>
-        </Card>
-      )}
-
-      {preview && (
-        <Row gutter={16} style={{ marginBottom: 16 }}>
-          <Col xs={12} md={6}>
-            <Card size="small">
-              <Statistic title="已有章节" value={preview.total_chapters} suffix="章" />
-            </Card>
-          </Col>
-          <Col xs={12} md={6}>
-            <Card size="small">
-              <Statistic title="总字数" value={preview.total_words.toLocaleString()} suffix="字" />
-            </Card>
-          </Col>
-          <Col xs={12} md={6}>
-            <Card size="small">
-              <Statistic
-                title={sourceMode === 'chapters' ? '选中字数' : '文本长度'}
-                value={activeWordCount.toLocaleString()}
-                suffix="字"
-              />
-            </Card>
-          </Col>
-          <Col xs={12} md={6}>
-            <Card size="small">
-              <Statistic title="预计分析块数" value={estimatedChunks} suffix="块" />
-            </Card>
-          </Col>
-        </Row>
-      )}
+      <DeconstructOverview
+        reports={reports}
+        preview={preview}
+        sourceMode={sourceMode}
+        activeWordCount={activeWordCount}
+        estimatedChunks={estimatedChunks}
+        onLoadReport={(reportId) => void loadReport(reportId)}
+      />
 
       <Row gutter={16} align="top">
         <Col xs={24} xl={15}>

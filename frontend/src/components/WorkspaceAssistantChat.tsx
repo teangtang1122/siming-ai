@@ -38,6 +38,7 @@ import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
 import { useOperations } from '../shared/operations/queries'
 import { projectCatalogingMessages } from './assistant/catalogingNotifications'
 import { useAiPanelContext, type GeneratedChapterDraft } from '../contexts/AiPanelContext'
+import { createLatestRequestGate } from '../shared/latestRequest'
 import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
@@ -189,6 +190,9 @@ function WorkspaceAssistantChat({
   const cancelInFlightRef = useRef<Promise<boolean> | null>(null)
   const executionSequenceRef = useRef(0)
   const activeExecutionRef = useRef<ActiveAssistantExecution | null>(null)
+  const historyListRequestGate = useRef(createLatestRequestGate<string>())
+  const historyMessageRequestGate = useRef(createLatestRequestGate<string>())
+  const historyTargetRef = useRef<string | null>(null)
   const resumePersistedRunRef = useRef<(
     detail: WorkspaceAssistantRunDetail,
     conversationId: string,
@@ -220,6 +224,8 @@ function WorkspaceAssistantChat({
   )
 
   useEffect(() => {
+    const listGate = historyListRequestGate.current
+    const messageGate = historyMessageRequestGate.current
     mountedRef.current = true
     return () => {
       mountedRef.current = false
@@ -230,6 +236,9 @@ function WorkspaceAssistantChat({
       abortRef.current = null
       cancelRequestedRef.current = false
       cancelInFlightRef.current = null
+      listGate.invalidate()
+      messageGate.invalidate()
+      historyTargetRef.current = null
     }
   }, [])
 
@@ -374,13 +383,15 @@ function WorkspaceAssistantChat({
     })
   }
 
-  const refreshRunLogs = useCallback(async (runId: string) => {
+  const refreshRunLogs = useCallback(async (runId: string, shouldApply: () => boolean = () => true) => {
     const res = await apiClient.get<ApiResponse<WorkspaceAssistantRunDetail>>(
       `/projects/${projectId}/ai/assistant/runs/${runId}`,
     )
     const detail = res.data.data
-    setCurrentRun(detail.run || null)
-    setRunLogs((detail.steps || []).map(runStepToLog))
+    if (shouldApply()) {
+      setCurrentRun(detail.run || null)
+      setRunLogs((detail.steps || []).map(runStepToLog))
+    }
     return detail
   }, [projectId])
 
@@ -439,24 +450,39 @@ function WorkspaceAssistantChat({
   }
 
   const fetchConversations = useCallback(async () => {
+    const request = historyListRequestGate.current.begin(projectId)
     try {
       const res = await apiClient.get<ApiResponse<{ items: WorkspaceAssistantConversation[]; total: number }>>(
         `/projects/${projectId}/ai/assistant/conversations`,
       )
       const items = res.data.data.items || []
+      if (!historyListRequestGate.current.isCurrent(request)) return []
       setConversations(items)
       return items
     } catch {
+      if (historyListRequestGate.current.isCurrent(request)) setConversations([])
       return []
     }
   }, [projectId])
 
   const loadConversation = useCallback(async (conversationId: string) => {
+    const request = historyMessageRequestGate.current.begin(conversationId)
+    historyTargetRef.current = conversationId
+    const ownsConversation = () => (
+      historyMessageRequestGate.current.isCurrent(request)
+      && historyTargetRef.current === conversationId
+    )
     setHistoryLoading(true)
+    setActiveConversationId(conversationId)
+    setMessages([])
+    setRunLogs([])
+    setCurrentRun(null)
+    setShowAllRunLogs(false)
     try {
       const res = await apiClient.get<ApiResponse<{ conversation: WorkspaceAssistantConversation; messages: WorkspacePersistedMessage[] }>>(
         `/projects/${projectId}/ai/assistant/conversations/${conversationId}`,
       )
+      if (!ownsConversation() || res.data.data.conversation.id !== conversationId) return
       setActiveConversationId(res.data.data.conversation.id)
       // The backend already returns persisted messages in conversation order.
       // Re-sorting here can scramble older rows that share the same timestamp.
@@ -471,7 +497,8 @@ function WorkspaceAssistantChat({
       setRunLogs([])
       setShowAllRunLogs(false)
       if (lastRun) {
-        const detail = await refreshRunLogs(lastRun.id)
+        const detail = await refreshRunLogs(lastRun.id, ownsConversation)
+        if (!ownsConversation()) return
         if (detail.assistant_message && TERMINAL_RUN_STATUSES.has(detail.run.status)) {
           const persistedMessage = toWorkspaceMessage(detail.assistant_message)
           setMessages((current) => current.map((item) => (
@@ -491,14 +518,22 @@ function WorkspaceAssistantChat({
         setCurrentRun(null)
       }
     } catch (err: any) {
-      message.error(err.message || '加载对话失败')
+      if (ownsConversation()) message.error(err.message || '加载对话失败')
     } finally {
-      setHistoryLoading(false)
+      if (ownsConversation()) setHistoryLoading(false)
     }
   }, [projectId, refreshRunLogs])
 
   useEffect(() => {
     let mounted = true
+    historyListRequestGate.current.invalidate()
+    historyMessageRequestGate.current.invalidate()
+    historyTargetRef.current = null
+    setHistoryLoading(false)
+    setActiveConversationId(null)
+    setMessages([])
+    setRunLogs([])
+    setCurrentRun(null)
     fetchConversations().then((items) => {
       if (mounted && items[0]) {
         loadConversation(items[0].id)
@@ -515,6 +550,10 @@ function WorkspaceAssistantChat({
       message.info('请先停止或等待当前任务完成，再新建对话')
       return
     }
+    historyListRequestGate.current.invalidate()
+    historyMessageRequestGate.current.invalidate()
+    historyTargetRef.current = null
+    setHistoryLoading(false)
     setActiveConversationId(null)
     setMessages([])
     setInput('')
@@ -539,8 +578,7 @@ function WorkspaceAssistantChat({
           await apiClient.delete(`/projects/${projectId}/ai/assistant/conversations/${conversationId}`)
           setConversations((prev) => prev.filter((item) => item.id !== conversationId))
           if (activeConversationId === conversationId) {
-            setActiveConversationId(null)
-            setMessages([])
+            startNewConversation()
           }
           message.success('对话已删除')
         } catch (err: any) {
@@ -1224,6 +1262,7 @@ function WorkspaceAssistantChat({
               onClick={fetchConversations}
             />
             <Button
+              aria-label="新对话"
               size="small"
               type="primary"
               icon={<PlusOutlined />}

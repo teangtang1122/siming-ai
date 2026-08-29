@@ -26,6 +26,12 @@ function sse(payload: unknown) {
   return `data: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n\n`
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => { resolve = next })
+  return { promise, resolve }
+}
+
 function createControlledResponse(initialChunks: string[] = []) {
   const chunks = initialChunks.map((chunk) => encoder.encode(chunk))
   let closed = false
@@ -427,6 +433,50 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     const deleteButton = screen.getByRole('button', { name: '删除对话：旧对话' })
     expect(selectButton.contains(deleteButton)).toBe(false)
     expect(deleteButton.parentElement).toBe(selectButton.parentElement)
+  })
+
+  it('does not restore old history after the author starts a new conversation', async () => {
+    const oldHistory = deferred<{ data: { data: {
+      conversation: { id: string; project_id: string; title: string }
+      messages: Array<{
+        id: string
+        conversation_id: string
+        role: 'assistant'
+        content: string
+        status: string
+        payload: null
+      }>
+    } } }>()
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/projects/project-1/ai/assistant/conversations') {
+        return Promise.resolve({
+          data: { data: { items: [{ id: 'conversation-old', project_id: 'project-1', title: '旧对话' }], total: 1 } },
+        })
+      }
+      if (url === '/projects/project-1/ai/assistant/conversations/conversation-old') return oldHistory.promise
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    const user = userEvent.setup()
+    renderChat()
+    await waitFor(() => expect(mockGet).toHaveBeenCalledWith(
+      '/projects/project-1/ai/assistant/conversations/conversation-old',
+    ))
+
+    await user.click(screen.getByRole('button', { name: '新对话' }))
+    await act(async () => {
+      oldHistory.resolve({ data: { data: {
+        conversation: { id: 'conversation-old', project_id: 'project-1', title: '旧对话' },
+        messages: [{
+          id: 'old-assistant', conversation_id: 'conversation-old', role: 'assistant',
+          content: '迟到的项目对话', status: 'completed', payload: null,
+        }],
+      } } })
+      await oldHistory.promise
+    })
+
+    expect(screen.queryByText('迟到的项目对话')).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/告诉AI你想写什么/)).toHaveValue('')
   })
 
   it('always promotes a generated chapter draft through the chapter create endpoint', async () => {
