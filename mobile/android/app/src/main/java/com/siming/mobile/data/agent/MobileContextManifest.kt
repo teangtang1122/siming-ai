@@ -1150,11 +1150,11 @@ internal fun canonicalMobileJson(element: JsonElement): String = when (element) 
     else -> element.toString()
 }
 
-private fun JsonObject.mobileRecordType(): String = stringValue("_record_type")
+internal fun JsonObject.mobileRecordType(): String = stringValue("_record_type")
 
 private fun JsonObject.objectValue(name: String): JsonObject = get(name) as? JsonObject ?: JsonObject(emptyMap())
 
-private fun JsonObject.stringValue(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
+internal fun JsonObject.stringValue(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
 
 private fun JsonObject.intValue(name: String, fallback: Int): Int = (get(name) as? JsonPrimitive)?.intOrNull ?: fallback
 
