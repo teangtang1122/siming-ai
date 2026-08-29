@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.architecture.uow import SqlAlchemyUnitOfWork
 from app.database.session import Base
+from app.database.write_coordination import install_sqlite_write_coordination
 from app.modules.assistant.infrastructure.system_conversations import (
     SqlAlchemySystemConversationStore,
 )
@@ -70,12 +71,14 @@ def test_every_conversation_scope_requires_an_identifier(payload_type, payload):
 
 def test_concurrent_conversation_writes_do_not_deadlock_the_async_server(tmp_path):
     database = tmp_path / "system-assistant-concurrency.db"
+    database_url = f"sqlite:///{database.as_posix()}"
     engine = create_engine(
-        f"sqlite:///{database.as_posix()}",
+        database_url,
         connect_args={"check_same_thread": False},
         pool_size=20,
         max_overflow=0,
     )
+    install_sqlite_write_coordination(engine, database_url, timeout=2.0)
 
     @event.listens_for(engine, "connect")
     def configure_sqlite(connection, _record):
