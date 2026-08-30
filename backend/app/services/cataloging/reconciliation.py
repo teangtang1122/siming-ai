@@ -197,6 +197,52 @@ def _dedupe_links(
             seen.add(target_id)
 
 
+def _projection_link_targets(
+    db: Session,
+    run: CatalogingChapterRun,
+    applied: list[CatalogingCandidate],
+) -> tuple[set[str], set[str]]:
+    """Collect the exact chapter-level links represented by the current run."""
+    character_ids: set[str] = set()
+    world_ids: set[str] = set()
+    for row in applied:
+        payload = _payload(row)
+        if row.item_type in {
+            "character_create",
+            "character_update",
+            "character_state_update",
+        } and row.target_id:
+            character_ids.add(str(row.target_id))
+        if row.item_type == "character_timeline" and row.target_id:
+            event = db.get(CharacterTimeline, row.target_id)
+            if event:
+                character_ids.add(str(event.character_id))
+        if row.item_type == "character_relationship":
+            for name in (
+                payload.get("source_name") or payload.get("character_a"),
+                payload.get("target_name") or payload.get("character_b"),
+            ):
+                character = find_character_by_name_or_id(db, run.project_id, name)
+                if character:
+                    character_ids.add(str(character.id))
+        if row.item_type in {"worldbuilding_create", "worldbuilding_update"} and row.target_id:
+            world_ids.add(str(row.target_id))
+        if row.item_type == "worldbuilding_timeline" and row.target_id:
+            event = db.get(WorldbuildingTimeline, row.target_id)
+            if event:
+                world_ids.add(str(event.entry_id))
+        if row.item_type == "chapter_link":
+            for name in payload.get("character_names") or []:
+                character = find_character_by_name_or_id(db, run.project_id, name)
+                if character:
+                    character_ids.add(str(character.id))
+            for title in payload.get("worldbuilding_titles") or []:
+                entry = find_worldbuilding_by_title_or_id(db, run.project_id, title)
+                if entry:
+                    world_ids.add(str(entry.id))
+    return character_ids, world_ids
+
+
 def reconcile_successful_run(db: Session, run: CatalogingChapterRun) -> dict[str, int]:
     """Make replaceable derived collections equal the latest successful run."""
     current = (
@@ -281,49 +327,7 @@ def reconcile_successful_run(db: Session, run: CatalogingChapterRun) -> dict[str
         .delete(synchronize_session=False)
     )
 
-    character_ids: set[str] = set()
-    world_ids: set[str] = set()
-    for row in applied:
-        payload = _payload(row)
-        if (
-            row.item_type
-            in {
-                "character_create",
-                "character_update",
-                "character_state_update",
-                "character_timeline",
-            }
-            and row.target_id
-        ):
-            if row.item_type == "character_timeline":
-                event = db.get(CharacterTimeline, row.target_id)
-                if event:
-                    character_ids.add(str(event.character_id))
-            else:
-                character_ids.add(str(row.target_id))
-        if row.item_type == "character_relationship":
-            for name in (
-                payload.get("source_name") or payload.get("character_a"),
-                payload.get("target_name") or payload.get("character_b"),
-            ):
-                character = find_character_by_name_or_id(db, run.project_id, name)
-                if character:
-                    character_ids.add(str(character.id))
-        if row.item_type in {"worldbuilding_create", "worldbuilding_update"} and row.target_id:
-            world_ids.add(str(row.target_id))
-        if row.item_type == "worldbuilding_timeline" and row.target_id:
-            event = db.get(WorldbuildingTimeline, row.target_id)
-            if event:
-                world_ids.add(str(event.entry_id))
-        if row.item_type == "chapter_link":
-            for name in payload.get("character_names") or []:
-                character = find_character_by_name_or_id(db, run.project_id, name)
-                if character:
-                    character_ids.add(str(character.id))
-            for title in payload.get("worldbuilding_titles") or []:
-                entry = find_worldbuilding_by_title_or_id(db, run.project_id, title)
-                if entry:
-                    world_ids.add(str(entry.id))
+    character_ids, world_ids = _projection_link_targets(db, run, applied)
 
     _dedupe_links(db, ChapterCharacter, run.chapter_id, "character_id", character_ids)
     _dedupe_links(
