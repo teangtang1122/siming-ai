@@ -26,6 +26,7 @@ from ..story_granularity import inspect_candidate_coverage_items
 from .candidate_io import candidate_payload, candidate_to_dict
 from .chapter_link_ops import apply_chapter_link
 from .chapter_ops import apply_chapter_summary
+from .character_merge_ops import apply_character_merge_candidate
 from .character_ops import (
     apply_character_create,
     apply_character_relationship,
@@ -33,11 +34,13 @@ from .character_ops import (
     apply_character_timeline,
     apply_character_update,
 )
-from .character_merge_ops import apply_character_merge_candidate
 from .constants import APPLY_ORDER
 from .outline_ops import apply_outline
+from .reconciliation import (
+    prepare_reconciled_payload,
+    reconcile_successful_run,
+)
 from .worldbuilding_ops import apply_worldbuilding, apply_worldbuilding_timeline
-
 
 ApplyHandler = Callable[[Session, CatalogingCandidate, Chapter, dict[str, Any]], dict[str, Any]]
 
@@ -100,6 +103,10 @@ def apply_candidates_for_run(db: Session, job: CatalogingJob, run: CatalogingCha
                 else "作品建档已显式检查本章叙事状态，本版本未产生结构化治理线索。"
             ),
         )
+    # Reconciliation is part of applying a complete chapter projection.  Keep
+    # the public event stream backward-compatible: callers expect one event per
+    # candidate and do not need an extra synthetic candidate event here.
+    reconcile_successful_run(db, run)
     return events
 
 
@@ -117,7 +124,7 @@ def _candidate_apply_sort_key(candidate: CatalogingCandidate) -> tuple[Any, ...]
 
 
 def apply_candidate(db: Session, candidate: CatalogingCandidate) -> dict[str, Any]:
-    payload = candidate_payload(candidate)
+    payload = prepare_reconciled_payload(db, candidate, candidate_payload(candidate))
     chapter = db.query(Chapter).filter(Chapter.id == candidate.chapter_id).first()
     if not chapter:
         raise ValueError("章节不存在")

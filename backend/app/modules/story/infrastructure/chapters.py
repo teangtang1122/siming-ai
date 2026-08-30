@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ....architecture.uow import SqlAlchemyUnitOfWork
 from ....core.db_helpers import get_outline_node_or_404, get_project_or_404
-from ....core.exceptions import NotFoundError, ValidationError
+from ....core.exceptions import ConflictError, NotFoundError, ValidationError
 from ....core.utils import count_words
 from ....services.chapter_ordering import next_chapter_sort_order
 from ....services.chapter_service import (
@@ -176,6 +176,15 @@ class SqlAlchemyChapterWorkspace:
         chapter = self._chapter(project_id, chapter_id)
         data = dict(payload)
         trigger_type = data.pop("trigger_type", "manual_save")
+        expected_version = data.pop("expected_version", None)
+        if (
+            expected_version is not None
+            and int(expected_version) != int(chapter.current_version or 1)
+        ):
+            raise ConflictError(
+                f"章节已从 v{expected_version} 更新为 v{chapter.current_version or 1}；"
+                "已保留你的编辑内容，请重新载入并对比后再保存"
+            )
         if not data:
             raise ValidationError("未提供任何更新字段")
         ensure_current_snapshot(self._session, chapter, "manual_save")

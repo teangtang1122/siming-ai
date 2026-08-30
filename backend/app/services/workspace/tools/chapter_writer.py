@@ -26,6 +26,7 @@ from ....services.cataloging.launcher import (
 from ....services.context_orchestrator import ContextOrchestrator
 from ..generated_drafts import (
     ChapterDraftOutlineConflict,
+    ChapterDraftTargetConflict,
     PendingChapterDraftConflict,
     find_pending_chapter_draft,
     pending_draft_block_result,
@@ -62,12 +63,13 @@ def _chapter_writer_target(
     db: Session,
     project_id: str,
     outline_node_id: str | None,
-) -> tuple[Any | None, dict | None]:
+    target_chapter_id: str | None,
+) -> tuple[Any | None, Any | None, dict | None]:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
-        return None, _writer_result("skipped", "项目不存在")
+        return None, None, _writer_result("skipped", "项目不存在")
     if not outline_node_id:
-        return None, _writer_result(
+        return None, None, _writer_result(
             "skipped",
             "必须先根据用户当前消息确定章级大纲节点，再生成正文",
         )
@@ -77,7 +79,7 @@ def _chapter_writer_target(
         .first()
     )
     if not target_outline or target_outline.node_type != "chapter":
-        return None, _writer_result(
+        return None, None, _writer_result(
             "skipped",
             "outline_node_id 必须是当前作品的章级节点，不能使用卷级或场景级节点",
             {"outline_node_id": outline_node_id},
@@ -91,24 +93,32 @@ def _chapter_writer_target(
         .first()
     )
     if existing_chapter:
-        return None, _writer_result(
+        if not target_chapter_id or str(existing_chapter.id) != target_chapter_id:
+            return None, None, _writer_result(
+                "skipped",
+                "该章级大纲已关联正式章节，不能覆盖；如需修订，"
+                "必须明确提供该正式章节的 target_chapter_id",
+                {
+                    "outline_node_id": outline_node_id,
+                    "existing_chapter_id": existing_chapter.id,
+                },
+            )
+    elif target_chapter_id:
+        return None, None, _writer_result(
             "skipped",
-            "该章级大纲已关联正式章节；章节写作只能生成新章草稿，不能覆盖已有正文",
-            {
-                "outline_node_id": outline_node_id,
-                "existing_chapter_id": existing_chapter.id,
-            },
+            "target_chapter_id 与所选章级大纲不匹配，未生成修订候选",
+            {"outline_node_id": outline_node_id, "target_chapter_id": target_chapter_id},
         )
     pending_draft = find_pending_chapter_draft(db, project_id)
     if pending_draft:
-        return None, pending_draft_block_result("chapter_writer", pending_draft)
+        return None, None, pending_draft_block_result("chapter_writer", pending_draft)
     blocking_job = find_blocking_chapter_cataloging_job(db, project_id)
     if blocking_job:
-        return None, cataloging_block_result("chapter_writer", blocking_job)
+        return None, None, cataloging_block_result("chapter_writer", blocking_job)
     required_chapter = find_cataloging_required_chapter(db, project_id)
     if required_chapter:
-        return None, cataloging_required_block_result("chapter_writer", required_chapter)
-    return target_outline, None
+        return None, None, cataloging_required_block_result("chapter_writer", required_chapter)
+    return target_outline, existing_chapter, None
 
 
 def _prepare_chapter_writer_manifest(
@@ -278,13 +288,16 @@ async def chapter_writer(
 ) -> dict:
     """Generate an independent chapter draft for the model-selected outline."""
     outline_node_id = str(args.get("outline_node_id") or "").strip() or None
-    target_outline, preflight_error = _chapter_writer_target(
+    target_chapter_id = str(args.get("target_chapter_id") or "").strip() or None
+    target_outline, target_chapter, preflight_error = _chapter_writer_target(
         db,
         project_id,
         outline_node_id,
+        target_chapter_id,
     )
     if preflight_error:
         return preflight_error
+    base_chapter_version = int(target_chapter.current_version or 1) if target_chapter else None
 
     model = str(args.get("model") or "") or None
     orchestrator, manifest, manifest_error = _prepare_chapter_writer_manifest(
@@ -324,6 +337,8 @@ async def chapter_writer(
             title=outline_title,
             outline_node_id=outline_node_id,
             context_manifest_id=manifest_id,
+            target_chapter_id=target_chapter_id,
+            base_chapter_version=base_chapter_version,
             db=db,
         )
     except PendingChapterDraftConflict as conflict:
@@ -337,8 +352,14 @@ async def chapter_writer(
             ),
             {
                 "outline_node_id": outline_node_id,
-                "existing_chapter_id": conflict.chapter.id,
+                "existing_chapter_id": getattr(conflict.chapter, "id", target_chapter_id),
             },
+        )
+    except ChapterDraftTargetConflict as conflict:
+        return _writer_result(
+            "skipped",
+            "生成期间目标章节与所选大纲的绑定发生变化；候选未覆盖正文",
+            {"target_chapter_id": conflict.target_chapter_id},
         )
 
     return apply_turn_directive({
@@ -352,6 +373,9 @@ async def chapter_writer(
             "title": outline_title,
             "outline_node_id": outline_node_id,
             "draft_status": "pending",
+            "draft_kind": "revision" if target_chapter_id else "new",
+            "target_chapter_id": target_chapter_id,
+            "base_chapter_version": base_chapter_version,
             "next_actions": ["save_and_catalog", "save_only"],
             "word_count": count_words(content),
             "model": generated.model_result.get("model", ""),

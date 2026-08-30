@@ -57,12 +57,32 @@ def apply_worldbuilding(
     else:
         entry.dimension = dimension
         if content:
-            entry.content = merge_text(entry.content, content, chapter, limit=12000)
+            previous = payload.get("_cataloging_previous_payload")
+            previous = previous if isinstance(previous, dict) else {}
+            previous_content = str(
+                previous.get("content")
+                or previous.get("description")
+                or previous.get("evidence")
+                or ""
+            ).strip()
+            current_content = str(entry.content or "")
+            entry.content = (
+                current_content.replace(previous_content, content, 1)[:12000]
+                if previous_content and previous_content in current_content
+                else merge_text(current_content, content, chapter, limit=12000)
+            )
         entry.title = title[:200]
-        entry.last_updated_chapter_id = chapter.id
+        if _chapter_can_advance_world_state(db, entry, chapter):
+            entry.last_updated_chapter_id = chapter.id
         entry.confidence = float_or_none(candidate.confidence) or entry.confidence
-    ensure_worldbuilding_version(db, entry, chapter, payload)
-    link_chapter_worldbuilding(db, chapter, entry, str(payload.get("description") or payload.get("evidence") or ""))
+    if old is None or worldbuilding_snapshot(entry) != old:
+        ensure_worldbuilding_version(db, entry, chapter, payload)
+    link_chapter_worldbuilding(
+        db,
+        chapter,
+        entry,
+        str(payload.get("description") or payload.get("evidence") or ""),
+    )
     return {
         "target_type": "worldbuilding",
         "target_id": entry.id,
@@ -91,23 +111,63 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
         db.add(entry)
         db.flush()
         ensure_worldbuilding_version(db, entry, chapter, payload)
-    event = WorldbuildingTimeline(
-        entry_id=entry.id,
-        chapter_id=chapter.id,
-        event_description=str(payload.get("event_description") or payload.get("description") or "")[:4000],
-        event_type=str(payload.get("event_type") or "fact_change")[:50],
-        evidence=str(payload.get("evidence") or candidate.evidence or "")[:2000],
-        sort_order=int(payload.get("sort_order") or 0),
-    )
-    if not event.event_description:
+    description = str(payload.get("event_description") or payload.get("description") or "")[:4000]
+    if not description:
         raise ValueError("世界观时间线事件为空")
-    db.add(event)
+    event_type = str(payload.get("event_type") or "fact_change")[:50]
+    sort_order = int(payload.get("sort_order") or candidate.sort_order or 0)
+    preferred_id = str(payload.get("_cataloging_target_id") or "").strip()
+    event = (
+        db.query(WorldbuildingTimeline)
+        .filter(
+            WorldbuildingTimeline.id == preferred_id,
+            WorldbuildingTimeline.chapter_id == chapter.id,
+            WorldbuildingTimeline.entry_id == entry.id,
+        )
+        .first()
+        if preferred_id
+        else None
+    )
+    if not event:
+        event = (
+            db.query(WorldbuildingTimeline)
+            .filter(
+                WorldbuildingTimeline.entry_id == entry.id,
+                WorldbuildingTimeline.chapter_id == chapter.id,
+                WorldbuildingTimeline.event_type == event_type,
+                WorldbuildingTimeline.sort_order == sort_order,
+            )
+            .order_by(WorldbuildingTimeline.created_at.asc())
+            .first()
+        )
+    old = None
+    if event:
+        old = {
+            "event_description": event.event_description,
+            "event_type": event.event_type,
+            "evidence": event.evidence,
+            "sort_order": event.sort_order,
+        }
+        event.event_description = description
+        event.event_type = event_type
+        event.evidence = str(payload.get("evidence") or candidate.evidence or "")[:2000]
+        event.sort_order = sort_order
+    else:
+        event = WorldbuildingTimeline(
+            entry_id=entry.id,
+            chapter_id=chapter.id,
+            event_description=description,
+            event_type=event_type,
+            evidence=str(payload.get("evidence") or candidate.evidence or "")[:2000],
+            sort_order=sort_order,
+        )
+        db.add(event)
     link_chapter_worldbuilding(db, chapter, entry, event.event_description)
     db.flush()
     return {
         "target_type": "worldbuilding_timeline",
         "target_id": event.id,
-        "old_value": None,
+        "old_value": old,
         "new_value": payload,
         "detail": f"世界观时间线已写入: {entry.title}",
     }
@@ -116,6 +176,19 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
 def _is_placeholder_worldbuilding_title(title: str | None) -> bool:
     text = str(title or "").strip()
     return not text or text in PLACEHOLDER_WORLDBUILDING_TITLES or text.startswith("未命名")
+
+
+def _chapter_can_advance_world_state(
+    db: Session,
+    entry: WorldbuildingEntry,
+    chapter: Chapter,
+) -> bool:
+    if not entry.last_updated_chapter_id or entry.last_updated_chapter_id == chapter.id:
+        return True
+    latest = db.query(Chapter).filter(Chapter.id == entry.last_updated_chapter_id).first()
+    if not latest:
+        return True
+    return int(chapter.sort_order or 0) >= int(latest.sort_order or 0)
 
 
 def ensure_worldbuilding_version(

@@ -6006,6 +6006,16 @@ export interface components {
             content?: string | null;
             /** Context Manifest Id */
             context_manifest_id?: string | null;
+            /**
+             * Draft Id
+             * @description Reviewed AI revision draft being accepted
+             */
+            draft_id?: string | null;
+            /**
+             * Expected Version
+             * @description Optimistic concurrency guard for the chapter version loaded by the editor
+             */
+            expected_version?: number | null;
             /** Outline Node Id */
             outline_node_id?: string | null;
             /** Title */
@@ -6015,7 +6025,7 @@ export interface components {
              * @default manual_save
              * @enum {string}
              */
-            trigger_type: "manual_save" | "ai_insert" | "de_ai" | "restore";
+            trigger_type: "manual_save" | "ai_insert" | "ai_revision" | "de_ai" | "restore";
         };
         /**
          * CharacterAIConfigUpdate

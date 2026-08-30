@@ -16,16 +16,15 @@ from ...database.models import (
     CharacterTimeline,
     CharacterVersion,
 )
-from ..story_granularity import CHARACTER_PROFILE_FIELDS, CHARACTER_STATE_FIELDS
 from ..character_role_types import normalize_character_role_type
+from ..story_granularity import CHARACTER_PROFILE_FIELDS, CHARACTER_STATE_FIELDS
 from .alias_ops import ensure_character_alias
 from .background_compactor import merge_background
 from .links import link_chapter_character
 from .lookups import find_character_by_name_or_id
 from .merge import merge_json_list, merge_short_text, merge_text
 from .name_utils import derived_character_aliases, split_character_name
-from .snapshots import character_snapshot, chapter_change_title
-
+from .snapshots import chapter_change_title, character_snapshot
 
 CHARACTER_TEXT_FIELDS = ["personality", "background", "role_type"]
 
@@ -75,7 +74,11 @@ def apply_character_create(db: Session, candidate: CatalogingCandidate, chapter:
     name, aliases = _identity_from_payload(payload)
     if not name or _is_placeholder_character_name(name):
         raise ValueError("角色名为空")
-    character = _find_character_by_identity(db, chapter.project_id, [name, *aliases])
+    character = _find_character_by_identity(
+        db,
+        chapter.project_id,
+        [payload.get("id"), name, *aliases],
+    )
     old = character_snapshot(character) if character else None
     if not character:
         character = Character(project_id=chapter.project_id, name=name[:100], current_version=1, is_evolution_tracked=True)
@@ -87,7 +90,8 @@ def apply_character_create(db: Session, candidate: CatalogingCandidate, chapter:
         _rename_character_if_safe(db, character, name)
     fill_character_fields(db, character, chapter, payload)
     _write_character_aliases(db, character, chapter, aliases)
-    ensure_character_version(db, character, chapter, payload, old is None)
+    if old is None or character_snapshot(character) != old:
+        ensure_character_version(db, character, chapter, payload, old is None)
     link_chapter_character(db, chapter, character, str(payload.get("role_in_scene") or "出场"))
     return _character_result(character, old, f"角色已写入: {character.name}")
 
@@ -104,7 +108,8 @@ def apply_character_update(db: Session, candidate: CatalogingCandidate, chapter:
     _rename_character_if_safe(db, character, name)
     fill_character_fields(db, character, chapter, payload)
     _write_character_aliases(db, character, chapter, aliases)
-    ensure_character_version(db, character, chapter, payload, False)
+    if character_snapshot(character) != old:
+        ensure_character_version(db, character, chapter, payload, False)
     link_chapter_character(db, chapter, character, str(payload.get("role_in_scene") or "提及"))
     return _character_result(character, old, f"角色已更新: {character.name}")
 
@@ -116,14 +121,16 @@ def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: 
         raise ValueError("角色状态更新引用的角色不存在；必须先生成 character_create 或 character_update")
     old = character_snapshot(character)
     changed = False
-    for field in CHARACTER_STATE_FIELDS:
-        if field in payload and payload.get(field) not in (None, ""):
-            value = _replacement_text(payload.get(field), STATE_FIELD_LIMITS.get(field, 2000))
-            if getattr(character, field) != value:
-                setattr(character, field, value)
-                changed = True
-    character.last_seen_chapter_id = chapter.id
-    character.last_updated_chapter_id = chapter.id
+    can_advance = _chapter_can_advance_character_state(db, character, chapter)
+    if can_advance:
+        for field in CHARACTER_STATE_FIELDS:
+            if field in payload and payload.get(field) not in (None, ""):
+                value = _replacement_text(payload.get(field), STATE_FIELD_LIMITS.get(field, 2000))
+                if getattr(character, field) != value:
+                    setattr(character, field, value)
+                    changed = True
+        character.last_seen_chapter_id = chapter.id
+        character.last_updated_chapter_id = chapter.id
     character.updated_at = datetime.utcnow()
     _write_character_aliases(db, character, chapter, aliases)
     if changed:
@@ -136,23 +143,63 @@ def apply_character_timeline(db: Session, candidate: CatalogingCandidate, chapte
     character = find_character_by_name_or_id(db, chapter.project_id, payload.get("id") or payload.get("name"))
     if not character:
         raise ValueError("时间线关联角色不存在")
-    event = CharacterTimeline(
-        character_id=character.id,
-        chapter_id=chapter.id,
-        event_description=str(payload.get("event_description") or payload.get("description") or "")[:4000],
-        event_type=str(payload.get("event_type") or "key_event")[:50],
-        emotional_state_change=str(payload.get("emotional_state_change") or "")[:2000],
-        sort_order=int(payload.get("sort_order") or 0),
-    )
-    if not event.event_description:
+    description = str(payload.get("event_description") or payload.get("description") or "")[:4000]
+    if not description:
         raise ValueError("角色时间线事件为空")
-    db.add(event)
+    event_type = str(payload.get("event_type") or "key_event")[:50]
+    sort_order = int(payload.get("sort_order") or candidate.sort_order or 0)
+    preferred_id = str(payload.get("_cataloging_target_id") or "").strip()
+    event = (
+        db.query(CharacterTimeline)
+        .filter(
+            CharacterTimeline.id == preferred_id,
+            CharacterTimeline.chapter_id == chapter.id,
+            CharacterTimeline.character_id == character.id,
+        )
+        .first()
+        if preferred_id
+        else None
+    )
+    if not event:
+        event = (
+            db.query(CharacterTimeline)
+            .filter(
+                CharacterTimeline.character_id == character.id,
+                CharacterTimeline.chapter_id == chapter.id,
+                CharacterTimeline.event_type == event_type,
+                CharacterTimeline.sort_order == sort_order,
+            )
+            .order_by(CharacterTimeline.created_at.asc())
+            .first()
+        )
+    old = None
+    if event:
+        old = {
+            "event_description": event.event_description,
+            "event_type": event.event_type,
+            "emotional_state_change": event.emotional_state_change,
+            "sort_order": event.sort_order,
+        }
+        event.event_description = description
+        event.event_type = event_type
+        event.emotional_state_change = str(payload.get("emotional_state_change") or "")[:2000]
+        event.sort_order = sort_order
+    else:
+        event = CharacterTimeline(
+            character_id=character.id,
+            chapter_id=chapter.id,
+            event_description=description,
+            event_type=event_type,
+            emotional_state_change=str(payload.get("emotional_state_change") or "")[:2000],
+            sort_order=sort_order,
+        )
+        db.add(event)
     link_chapter_character(db, chapter, character, "时间线")
     db.flush()
     return {
         "target_type": "character_timeline",
         "target_id": event.id,
-        "old_value": None,
+        "old_value": old,
         "new_value": payload,
         "detail": f"角色时间线已写入: {character.name}",
     }
@@ -174,7 +221,18 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
 
     relationship_type = str(payload.get("relationship_type") or "关联")[:100]
     description = str(payload.get("description") or payload.get("evidence") or candidate.evidence or "")[:4000]
+    preferred_id = str(payload.get("_cataloging_target_id") or "").strip()
     relationship = (
+        db.query(CharacterRelationship)
+        .filter(
+            CharacterRelationship.id == preferred_id,
+            CharacterRelationship.project_id == chapter.project_id,
+        )
+        .first()
+        if preferred_id
+        else None
+    )
+    relationship = relationship or (
         db.query(CharacterRelationship)
         .filter(
             CharacterRelationship.project_id == chapter.project_id,
@@ -190,8 +248,20 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
             "relationship_type": relationship.relationship_type,
             "description": relationship.description,
         }
+        relationship.character_a_id = source.id
+        relationship.character_b_id = target.id
+        relationship.relationship_type = relationship_type
         if description:
-            relationship.description = merge_short_text(relationship.description, description, chapter, limit=4000)
+            previous = payload.get("_cataloging_previous_payload")
+            prior_description = previous.get("description") if isinstance(previous, dict) else None
+            relationship.description = _replace_previous_text(
+                relationship.description,
+                prior_description,
+                description,
+                chapter,
+                limit=4000,
+                short=True,
+            )
     else:
         relationship = CharacterRelationship(
             project_id=chapter.project_id,
@@ -220,26 +290,87 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
 
 
 def fill_character_fields(db: Session, character: Character, chapter: Chapter, payload: dict[str, Any]) -> None:
+    previous = payload.get("_cataloging_previous_payload")
+    previous = previous if isinstance(previous, dict) else {}
     for field in CHARACTER_TEXT_FIELDS:
         if field in payload and payload.get(field) not in (None, ""):
             if field == "role_type":
                 if not character.role_type or character.role_type == "other":
                     character.role_type = normalize_character_role_type(payload.get(field))
             elif field == "background":
-                character.background = merge_background(character.background, payload.get(field), chapter)
+                character.background = _replace_previous_text(
+                    character.background,
+                    previous.get(field),
+                    payload.get(field),
+                    chapter,
+                    limit=12000,
+                    background=True,
+                )
             else:
-                setattr(character, field, merge_text(getattr(character, field), payload.get(field), chapter, limit=8000))
+                setattr(
+                    character,
+                    field,
+                    _replace_previous_text(
+                        getattr(character, field),
+                        previous.get(field),
+                        payload.get(field),
+                        chapter,
+                        limit=8000,
+                    ),
+                )
     if isinstance(payload.get("abilities"), list):
         character.abilities = merge_json_list(character.abilities, payload["abilities"])
     _write_character_aliases(db, character, chapter, _aliases_from_payload(payload, character.name))
-    for field in CHARACTER_STATE_FIELDS:
-        if field in payload and payload.get(field) not in (None, ""):
-            setattr(character, field, _replacement_text(payload.get(field), STATE_FIELD_LIMITS.get(field, 2000)))
-    character.last_seen_chapter_id = chapter.id
-    character.last_updated_chapter_id = chapter.id
+    if _chapter_can_advance_character_state(db, character, chapter):
+        for field in CHARACTER_STATE_FIELDS:
+            if field in payload and payload.get(field) not in (None, ""):
+                setattr(
+                    character,
+                    field,
+                    _replacement_text(
+                        payload.get(field),
+                        STATE_FIELD_LIMITS.get(field, 2000),
+                    ),
+                )
+        character.last_seen_chapter_id = chapter.id
+        character.last_updated_chapter_id = chapter.id
     character.updated_at = datetime.utcnow()
     _update_character_profile(character, payload)
     _update_ai_config(db, character, payload)
+
+
+def _replace_previous_text(
+    current: Any,
+    previous: Any,
+    incoming: Any,
+    chapter: Chapter,
+    *,
+    limit: int,
+    short: bool = False,
+    background: bool = False,
+) -> str:
+    current_text = str(current or "")
+    previous_text = str(previous or "").strip()
+    incoming_text = str(incoming or "").strip()
+    if previous_text and previous_text in current_text:
+        return current_text.replace(previous_text, incoming_text, 1)[:limit]
+    if background:
+        return merge_background(current_text, incoming_text, chapter)[:limit]
+    merger = merge_short_text if short else merge_text
+    return merger(current_text, incoming_text, chapter, limit=limit)
+
+
+def _chapter_can_advance_character_state(
+    db: Session,
+    character: Character,
+    chapter: Chapter,
+) -> bool:
+    if not character.last_updated_chapter_id or character.last_updated_chapter_id == chapter.id:
+        return True
+    latest = db.query(Chapter).filter(Chapter.id == character.last_updated_chapter_id).first()
+    if not latest:
+        return True
+    return int(chapter.sort_order or 0) >= int(latest.sort_order or 0)
 
 
 def ensure_character_version(

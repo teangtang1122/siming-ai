@@ -17,6 +17,23 @@ import kotlinx.serialization.json.put
 
 class PcApiPayloadsTest {
     @Test
+    fun `chapter update carries the loaded formal version as a conflict guard`() {
+        val payload = PcApiPayloads.authoring(
+            "chapter",
+            buildJsonObject {
+                put("title", "第一章")
+                put("content", "作者在手机上修改后的正文。")
+                put("current_version", 4)
+            },
+            create = false,
+        )
+
+        assertEquals("manual_save", payload.getValue("trigger_type").jsonPrimitive.content)
+        assertEquals(4, payload.getValue("expected_version").jsonPrimitive.content.toInt())
+        assertFalse("current_version" in payload)
+    }
+
+    @Test
     fun `project payload converts stored tags and strips replica fields`() {
         val payload = PcApiPayloads.authoring(
             entityType = "project",

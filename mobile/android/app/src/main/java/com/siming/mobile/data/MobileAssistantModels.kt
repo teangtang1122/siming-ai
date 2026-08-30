@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 data class MobilePendingChapterDraft(
@@ -15,10 +16,22 @@ data class MobilePendingChapterDraft(
     val content: String,
     val outlineNodeId: String? = null,
     val contextManifestId: String? = null,
+    val draftKind: String = "new",
+    val targetChapterId: String? = null,
+    val baseChapterVersion: Int? = null,
+    val targetChapterCurrentVersion: Int? = null,
+    val targetChapterTitle: String? = null,
+    val targetChapterContent: String? = null,
     val status: String = "pending",
     val executionRoute: String = "gateway",
 ) {
     val generating: Boolean get() = status == "generating"
+    val revision: Boolean get() = draftKind == "revision"
+    val versionConflict: Boolean get() = revision && (
+        baseChapterVersion == null
+            || targetChapterCurrentVersion == null
+            || baseChapterVersion != targetChapterCurrentVersion
+    )
 
     companion object {
         fun fromJson(projectId: String, value: JsonObject): MobilePendingChapterDraft? {
@@ -33,6 +46,14 @@ data class MobilePendingChapterDraft(
                 contextManifestId = value.string("context_manifest_id").ifBlank {
                     (value["context_snapshot"] as? JsonObject)?.string("context_manifest_id").orEmpty()
                 }.ifBlank { null },
+                draftKind = value.string("draft_kind").ifBlank { "new" },
+                targetChapterId = value.string("target_chapter_id").ifBlank { null },
+                baseChapterVersion = (value["base_chapter_version"] as? JsonPrimitive)?.intOrNull,
+                targetChapterCurrentVersion = (
+                    value["target_chapter_current_version"] as? JsonPrimitive
+                )?.intOrNull,
+                targetChapterTitle = value.string("target_chapter_title").ifBlank { null },
+                targetChapterContent = value.string("target_chapter_content").ifBlank { null },
                 status = value.string("draft_status").ifBlank { "pending" },
                 executionRoute = value.string("execution_route").ifBlank {
                     (value["context_snapshot"] as? JsonObject)?.string("execution_route").orEmpty()

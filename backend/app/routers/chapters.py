@@ -102,7 +102,8 @@ def get_pending_chapter_draft(
 ):
     """Restore the latest author-visible unsaved draft after a page reload."""
     draft = latest_pending_chapter_draft(db, project_id)
-    return ApiResponse.success(data=chapter_draft_result_data(draft) if draft else None)
+    data = chapter_draft_result_data(draft, db=db) if draft else None
+    return ApiResponse.success(data=data)
 
 
 @router.post("/projects/{project_id}/chapters")
@@ -120,6 +121,8 @@ async def create_chapter(
     draft = None
     if draft_id:
         existing_draft = _draft_or_error(db, project_id, draft_id)
+        if str(existing_draft.draft_kind or "new") != "new":
+            raise ValidationError("修订候选不能新建为另一份章节；请在原章节中审阅并保存")
         if existing_draft.status == "saved" and existing_draft.saved_chapter_id:
             data = workspace.detail(project_id, existing_draft.saved_chapter_id)
             if cataloging_mode == "save_and_catalog" and data.get("cataloging_required"):
@@ -183,8 +186,40 @@ async def save_chapter(
 ):
     values = payload.model_dump(exclude_unset=True)
     cataloging_mode = values.pop("cataloging_mode", "save_only")
+    lock_chapter_draft_project(db, project_id)
+    draft_id = values.pop("draft_id", None)
+    draft = None
+    if draft_id:
+        draft = _draft_or_error(db, project_id, draft_id)
+        if str(draft.draft_kind or "new") != "revision":
+            raise ValidationError("新章草稿只能创建章节，不能覆盖现有章节")
+        if str(draft.target_chapter_id or "") != chapter_id:
+            raise ValidationError("修订候选与当前章节不匹配，未写入任何正文")
+        if draft.status == "saved" and draft.saved_chapter_id:
+            data = workspace.detail(project_id, draft.saved_chapter_id)
+            if cataloging_mode == "save_and_catalog" and data.get("cataloging_required"):
+                data = _start_chapter_cataloging(db, project_id, data)
+            return ApiResponse.success(data=data, message=_save_message(data))
+        if draft.status != "pending":
+            raise ValidationError("该修订候选已经失效，未写入任何正文")
+        supplied_version = values.get("expected_version")
+        base_version = int(draft.base_chapter_version or 0)
+        if supplied_version is not None and int(supplied_version) != base_version:
+            raise ValidationError("修订候选的基准版本与保存请求不一致")
+        values["expected_version"] = base_version
+        values["trigger_type"] = "ai_revision"
+        update_chapter_draft(
+            db,
+            project_id,
+            draft_id,
+            title=str(values.get("title") or draft.title or ""),
+            outline_node_id=values.get("outline_node_id", draft.outline_node_id),
+            content=str(values.get("content") if "content" in values else draft.content or ""),
+        )
     result = workspace.save(project_id, chapter_id, values)
     command.queue_all(result.sync_intents)
+    if draft is not None:
+        mark_chapter_draft_saved(db, draft, chapter_id)
     command.finish()
     data = result.data
     if data.get("narrative_content_changed"):

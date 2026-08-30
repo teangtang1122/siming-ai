@@ -10,17 +10,16 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
 from fastapi.testclient import TestClient
 
-from app.database.models import Chapter, ChapterDraft, Character, OutlineNode
+from app.database.models import Chapter, ChapterDraft, ChapterSnapshot, Character, OutlineNode
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
 from app.routers.ai_writer import _execute_workspace_action
+from app.services.tool_category_state import replace_tool_categories
 from app.services.workspace.generated_drafts import (
     ChapterDraftOutlineConflict,
     PendingChapterDraftConflict,
     store_chapter_draft,
 )
-from app.services.tool_category_state import replace_tool_categories
-
 
 API_PREFIX = "/api/v1"
 
@@ -376,6 +375,78 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["data"]["existing_chapter_id"], chapter_id)
         self.assertIn("不能覆盖", result["detail"])
+
+    @patch(
+        "app.services.workspace.tools.chapter_writer.LLMGateway.chat_completion",
+        new_callable=AsyncMock,
+    )
+    def test_chapter_writer_creates_revision_candidate_for_explicit_target(
+        self,
+        mock_completion,
+    ):
+        from app.services.context_orchestrator import ContextOrchestrator
+
+        project_id = self.create_project("Reviewable AI revision")
+        outline_id = self.create_outline(project_id, "第一章 山门")
+        db = SessionLocal()
+        try:
+            chapter = Chapter(
+                project_id=project_id,
+                title="第一章 山门",
+                outline_node_id=outline_id,
+                content="作者保存的正式正文 v1。",
+                word_count=12,
+                sort_order=1000,
+                current_version=1,
+                cataloging_required=False,
+            )
+            db.add(chapter)
+            db.commit()
+            chapter_id = str(chapter.id)
+            orchestrator = ContextOrchestrator(db)
+            manifest = orchestrator.prepare(
+                project_id=project_id,
+                task_type="writing",
+                model="openai:gpt-test",
+                arguments={"outline_node_id": outline_id},
+            )
+            selection = orchestrator.submit_evidence(manifest, [])
+            mock_completion.return_value = {
+                "content": "AI 独立生成、等待作者审阅的正文候选。",
+                "model": "gpt-test",
+            }
+
+            result = asyncio.run(_execute_workspace_action(
+                db,
+                project_id,
+                {
+                    "tool": "chapter_writer",
+                    "arguments": {
+                        "outline_node_id": outline_id,
+                        "target_chapter_id": chapter_id,
+                        "context_manifest_id": manifest.id,
+                        "context_selection_token": selection["context_selection_token"],
+                    },
+                },
+            ))
+
+            db.refresh(chapter)
+            draft = db.query(ChapterDraft).filter(
+                ChapterDraft.project_id == project_id,
+                ChapterDraft.status == "pending",
+            ).one()
+            self.assertEqual(chapter.content, "作者保存的正式正文 v1。")
+            self.assertEqual(draft.draft_kind, "revision")
+            self.assertEqual(draft.target_chapter_id, chapter_id)
+            self.assertEqual(draft.base_chapter_version, 1)
+            self.assertEqual(draft.content, "AI 独立生成、等待作者审阅的正文候选。")
+        finally:
+            db.close()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["draft_kind"], "revision")
+        self.assertEqual(result["data"]["target_chapter_id"], chapter_id)
+        mock_completion.assert_awaited_once()
 
     @patch(
         "app.services.workspace.tools.chapter_writer.LLMGateway.chat_completion",
@@ -890,11 +961,135 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 400)
         db = SessionLocal()
         try:
             self.assertEqual(db.get(Chapter, chapter_id).content, "这是已经保存的第一章。")
             self.assertEqual(db.get(ChapterDraft, draft_id).status, "pending")
+        finally:
+            db.close()
+
+    def test_reviewed_revision_draft_updates_its_target_and_creates_ai_snapshot(self):
+        project_id = self.create_project("Revision candidate")
+        outline_id = self.create_outline(project_id, "第一章 原文")
+        created = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/chapters",
+            json={
+                "title": "第一章 原文",
+                "outline_node_id": outline_id,
+                "content": "正式正文 v1。",
+                "cataloging_mode": "save_only",
+            },
+        )
+        chapter_id = created.json()["data"]["id"]
+        db = SessionLocal()
+        try:
+            draft = ChapterDraft(
+                project_id=project_id,
+                title="第一章 原文",
+                outline_node_id=outline_id,
+                draft_kind="revision",
+                target_chapter_id=chapter_id,
+                base_chapter_version=1,
+                content="作者审阅后的修订正文 v2。",
+                status="pending",
+            )
+            db.add(draft)
+            db.commit()
+            draft_id = str(draft.id)
+        finally:
+            db.close()
+
+        pending = self.client.get(f"{API_PREFIX}/projects/{project_id}/chapter-drafts/pending")
+        self.assertEqual(pending.status_code, 200)
+        self.assertEqual(pending.json()["data"]["draft_kind"], "revision")
+        self.assertEqual(pending.json()["data"]["target_chapter_current_version"], 1)
+        self.assertFalse(pending.json()["data"]["version_conflict"])
+
+        saved = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/chapters/{chapter_id}",
+            json={
+                "title": "第一章 原文",
+                "outline_node_id": outline_id,
+                "content": "作者审阅后的修订正文 v2。",
+                "draft_id": draft_id,
+                "expected_version": 1,
+                "cataloging_mode": "save_only",
+            },
+        )
+
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["data"]["id"], chapter_id)
+        self.assertEqual(saved.json()["data"]["current_version"], 2)
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.get(Chapter, chapter_id).content, "作者审阅后的修订正文 v2。")
+            stored_draft = db.get(ChapterDraft, draft_id)
+            self.assertEqual(stored_draft.status, "saved")
+            self.assertEqual(stored_draft.saved_chapter_id, chapter_id)
+            latest = db.query(ChapterSnapshot).filter(
+                ChapterSnapshot.chapter_id == chapter_id,
+                ChapterSnapshot.version_number == 2,
+            ).one()
+            self.assertEqual(latest.trigger_type, "ai_revision")
+        finally:
+            db.close()
+
+    def test_stale_revision_draft_returns_conflict_and_preserves_both_texts(self):
+        project_id = self.create_project("Revision conflict")
+        outline_id = self.create_outline(project_id, "第一章 原文")
+        created = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/chapters",
+            json={
+                "title": "第一章 原文",
+                "outline_node_id": outline_id,
+                "content": "正式正文 v1。",
+                "cataloging_mode": "save_only",
+            },
+        )
+        chapter_id = created.json()["data"]["id"]
+        db = SessionLocal()
+        try:
+            draft = ChapterDraft(
+                project_id=project_id,
+                title="第一章 原文",
+                outline_node_id=outline_id,
+                draft_kind="revision",
+                target_chapter_id=chapter_id,
+                base_chapter_version=1,
+                content="AI 基于 v1 的候选。",
+                status="pending",
+            )
+            db.add(draft)
+            db.commit()
+            draft_id = str(draft.id)
+        finally:
+            db.close()
+
+        manual = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/chapters/{chapter_id}",
+            json={"content": "作者先保存了另一版 v2。", "expected_version": 1},
+        )
+        self.assertEqual(manual.status_code, 200)
+        conflict = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/chapters/{chapter_id}",
+            json={
+                "title": "第一章 原文",
+                "outline_node_id": outline_id,
+                "content": "AI 基于 v1 的候选。",
+                "draft_id": draft_id,
+                "expected_version": 1,
+            },
+        )
+
+        self.assertEqual(conflict.status_code, 409)
+        self.assertIn("v1", conflict.json()["message"])
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.get(Chapter, chapter_id).content, "作者先保存了另一版 v2。")
+            stored_draft = db.get(ChapterDraft, draft_id)
+            self.assertEqual(stored_draft.status, "pending")
+            self.assertEqual(stored_draft.content, "AI 基于 v1 的候选。")
         finally:
             db.close()
 

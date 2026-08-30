@@ -1926,14 +1926,31 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 draft.contextManifestId?.let { put("context_manifest_id", it) }
                 put("draft_id", draft.draftId)
                 put("cataloging_mode", catalogingMode)
+                if (draft.revision) {
+                    put("expected_version", requireNotNull(draft.baseChapterVersion) {
+                        "修订候选缺少基准版本，不能安全保存"
+                    })
+                    put("trigger_type", "ai_revision")
+                }
             }
-            val response = api.saveGeneratedChapter(connection, draft.projectId, payload)
+            val response = if (draft.revision) {
+                require(!draft.versionConflict) { "正式章节版本已变化，请重新生成或人工合并修订候选" }
+                api.saveGeneratedChapterRevision(
+                    connection,
+                    draft.projectId,
+                    requireNotNull(draft.targetChapterId) { "修订候选缺少目标章节" },
+                    payload,
+                )
+            } else {
+                api.saveGeneratedChapter(connection, draft.projectId, payload)
+            }
             val chapterId = response.requiredId()
             saveCanonicalReplica(draft.projectId, "chapter", chapterId, response)
             markChapterDraftConsumed(draft)
             SyncScheduler.enqueue(appContext)
             return chapterId
         }
+        require(!draft.revision) { "修订已有章节需要连接 PC，以核对正式章节版本后保存" }
         require(catalogingMode == "save_only") { "手机独立模式需先仅保存；连接 PC Gateway 后才能启动建档" }
         val chapterId = UUID.randomUUID().toString()
         val payload = buildJsonObject {

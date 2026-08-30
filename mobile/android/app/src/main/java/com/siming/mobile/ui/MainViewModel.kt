@@ -881,9 +881,18 @@ private fun updateCatalogingProgress(
                         throw CancellationException("用户取消手机工作区任务")
                     }
                 }
+                val refreshedChapterDraft = if (
+                    uiState.value.pendingChapterDraft?.revision == true
+                ) {
+                    runCatching { repository.pendingChapterDraft(projectId) }.getOrNull()
+                } else {
+                    uiState.value.pendingChapterDraft
+                }
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
                     assistantActivity = "",
+                    pendingChapterDraft = refreshedChapterDraft
+                        ?: uiState.value.pendingChapterDraft,
                     notice = when (route) {
                         AssistantRoute.GatewayPc ->
                             "AI 任务已使用 PC 配置线路执行，相关修改已同步到手机"

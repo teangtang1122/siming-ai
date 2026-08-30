@@ -215,6 +215,13 @@ class ChapterDraft(Base):
     saved_chapter_id = Column(
         String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
     )
+    # ``new`` drafts are promoted with POST. ``revision`` drafts are review
+    # candidates for an existing chapter and can only be accepted with PUT.
+    draft_kind = Column(String(20), nullable=False, default="new")
+    target_chapter_id = Column(
+        String(36), ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
+    )
+    base_chapter_version = Column(Integer, nullable=True)
     status = Column(String(20), nullable=False, default="pending")
     content = Column(Text, nullable=False, default="")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

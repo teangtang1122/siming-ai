@@ -4,8 +4,13 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-
-SnapshotTrigger = Literal["manual_save", "ai_insert", "de_ai", "restore"]
+SnapshotTrigger = Literal[
+    "manual_save",
+    "ai_insert",
+    "ai_revision",
+    "de_ai",
+    "restore",
+]
 ChapterSaveMode = Literal["save_only", "save_and_catalog"]
 
 
@@ -28,6 +33,12 @@ class ChapterUpdate(BaseModel):
     content: Optional[str] = None
     trigger_type: SnapshotTrigger = "manual_save"
     context_manifest_id: Optional[str] = None
+    draft_id: Optional[str] = Field(None, description="Reviewed AI revision draft being accepted")
+    expected_version: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Optimistic concurrency guard for the chapter version loaded by the editor",
+    )
     cataloging_mode: ChapterSaveMode = "save_only"
 
     model_config = {"extra": "forbid"}

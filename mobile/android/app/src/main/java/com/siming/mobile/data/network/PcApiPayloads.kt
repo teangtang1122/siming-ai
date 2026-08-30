@@ -27,6 +27,7 @@ internal object PcApiPayloads {
         normalizeCore(entityType, source, values)
         if (!create && entityType == "chapter") {
             values["trigger_type"] = JsonPrimitive("manual_save")
+            source["current_version"]?.let { values["expected_version"] = it }
         }
         if (create && entityType == "character") {
             values.remove("change_summary")

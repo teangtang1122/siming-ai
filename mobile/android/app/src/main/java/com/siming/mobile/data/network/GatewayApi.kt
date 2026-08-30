@@ -260,6 +260,18 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         payload = payload,
     )
 
+    suspend fun saveGeneratedChapterRevision(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.authoringItem(projectId, "chapter", chapterId),
+        method = "PUT",
+        payload = payload,
+    )
+
     suspend fun assistantConversations(
         connection: GatewayConnection,
         projectId: String,

@@ -29,14 +29,15 @@ def get_language_rules() -> str:
 
 def get_outline_granularity_rules() -> str:
     return """【大纲粒度统一规则】
-1. 每章必须至少输出 1 条 outline_create，node_type 为 "chapter"，表示本章整体节点。
+1. 每章必须至少输出 1 条章级大纲候选，node_type 为 "chapter"，表示本章整体节点。章节已有绑定的大纲时，标题必须沿用该节点，系统会更新它的实际摘要，禁止另造同义章节点。
 2. 本章存在多个重要场景、连续行动段、视角切换、冲突阶段或明显转折时，必须额外输出 2-6 条 node_type="section" 的 outline_create。
 3. section 节点必须使用 parent_title 指向本章 chapter 节点；不要把 section 当成独立章节。
    不得把章节标题写进 parent_id，也不得自行猜测任何数据库 UUID；新节点只用 parent_title 表达父级，真实 ID 由司命解析。
 4. chapter 节点 summary 写整章目标、冲突、转折、结果和结尾钩子；section 节点 summary 写该场景的地点、参与角色、行动目标、冲突推进、信息揭示和场景结果。
 5. 如果章节非常短且只有单一场景，可以只输出 chapter 节点，但必须在 summary 中说明这是单场景章节。
 6. section 节点尽量补充 scene_number、purpose、location、timeline、pov_character、characters、entry_state、exit_state、emotional_residue、unresolved_actions，供写后归档和上下文打包使用。
-7. 内部建档、外部 MCP 建档、本机 CLI 建档都必须遵守同一套大纲粒度规则；不要因为调用方式不同降低粒度。"""
+7. scene_number 是同一章节内的稳定场景键。重新建档时，同一逻辑场景沿用原编号；正文已删除的场景不要继续输出，系统会退役旧的建档场景节点。
+8. 内部建档、外部 MCP 建档、本机 CLI 建档都必须遵守同一套大纲粒度规则；不要因为调用方式不同降低粒度。"""
 
 
 def get_fact_extraction_rules() -> str:
@@ -132,7 +133,12 @@ def get_cataloging_candidate_rules() -> str:
     - 写入 coverage_manifest.relationships（source_name、target_name、relationship_type）；
     - 输出一张同身份的 character_relationship 候选，description 写清依据和本章表现；
     - 关系双方都列入 coverage_manifest.characters，并已有角色档案或在本章先输出 character_create/update。
-    不得用地点、功法、组织、事件充当关系端点，也不得靠 character_relationship 顺带创建空白角色卡。"""
+    不得用地点、功法、组织、事件充当关系端点，也不得靠 character_relationship 顺带创建空白角色卡。
+
+11. 每次建档都是当前已保存章节版本的完整投影，不是向旧投影追加一份副本：
+    - 同名角色、设定、关系、章级大纲和同 scene_number 场景表示更新；确实不存在时才创建。
+    - 章节摘要、实际大纲摘要、章节关联和时间线写当前版本的完整值；不要保留正文已经删掉的旧事件。
+    - 不得为了表达“正文有修改”而给实体或场景改一个近义标题；稳定主名、设定标题和场景编号必须沿用。"""
 
 
 def get_incremental_cataloging_repair_rules() -> str:

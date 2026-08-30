@@ -215,6 +215,107 @@ describe('WriterPage manual writing actions', () => {
     expect(api.put).not.toHaveBeenCalled()
   })
 
+  it('keeps an AI revision separate until the author applies and saves it to the existing chapter', async () => {
+    const revisionDraft = {
+      draft_id: 'draft-revision-1',
+      project_id: 'project-1',
+      title: '第一章（修订）',
+      outline_node_id: null,
+      context_manifest_id: 'manifest-revision-1',
+      saved_chapter_id: null,
+      draft_kind: 'revision' as const,
+      target_chapter_id: 'chapter-1',
+      base_chapter_version: 1,
+      draft_status: 'pending' as const,
+      content: candidate,
+      word_count: candidate.length,
+    }
+    api.get.mockImplementation((url: string) => {
+      if (url.endsWith('/chapter-drafts/pending')) return Promise.resolve(response(revisionDraft))
+      if (url.endsWith('/outline')) return Promise.resolve(response({ items: [], flat: [], total: 0 }))
+      if (url.endsWith('/chapters')) return Promise.resolve(response({ items: [chapter], total: 1 }))
+      if (url.endsWith('/snapshots')) return Promise.resolve(response({ items: [], total: 0 }))
+      if (url.endsWith('/chapters/chapter-1')) return Promise.resolve(response(chapter))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+
+    render(
+      <AiPanelProvider>
+        <WriterPage projectId="project-1" />
+      </AiPanelProvider>,
+    )
+
+    expect(await screen.findByText('AI 已生成一份独立的章节修订候选')).toBeInTheDocument()
+    expect(document.querySelector<HTMLTextAreaElement>('.writer-content-input textarea')).toHaveValue(source)
+    expect(api.put).not.toHaveBeenCalled()
+    expect(api.post).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /对比候选/ }))
+    expect(await screen.findByText('正式正文与 AI 修订候选对比')).toBeInTheDocument()
+    expect(screen.getByText(candidate)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '应用到编辑器' }))
+    await waitFor(() => {
+      expect(document.querySelector<HTMLTextAreaElement>('.writer-content-input textarea')).toHaveValue(candidate)
+    })
+    expect(api.put).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '保存并建档' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
+      '/projects/project-1/chapters/chapter-1',
+      expect.objectContaining({
+        draft_id: 'draft-revision-1',
+        content: candidate,
+        trigger_type: 'ai_revision',
+        expected_version: 1,
+      }),
+    ))
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('preserves a stale AI revision for comparison and refuses to apply it', async () => {
+    const currentChapter = { ...chapter, current_version: 2, content: '作者已经保存了更新后的正式正文。' }
+    const revisionDraft = {
+      draft_id: 'draft-revision-stale',
+      project_id: 'project-1',
+      title: '第一章（旧候选）',
+      outline_node_id: null,
+      context_manifest_id: 'manifest-revision-stale',
+      saved_chapter_id: null,
+      draft_kind: 'revision' as const,
+      target_chapter_id: 'chapter-1',
+      base_chapter_version: 1,
+      draft_status: 'pending' as const,
+      content: candidate,
+      word_count: candidate.length,
+    }
+    api.get.mockImplementation((url: string) => {
+      if (url.endsWith('/chapter-drafts/pending')) return Promise.resolve(response(revisionDraft))
+      if (url.endsWith('/outline')) return Promise.resolve(response({ items: [], flat: [], total: 0 }))
+      if (url.endsWith('/chapters')) return Promise.resolve(response({ items: [currentChapter], total: 1 }))
+      if (url.endsWith('/snapshots')) return Promise.resolve(response({ items: [], total: 0 }))
+      if (url.endsWith('/chapters/chapter-1')) return Promise.resolve(response(currentChapter))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+
+    render(
+      <AiPanelProvider>
+        <WriterPage projectId="project-1" />
+      </AiPanelProvider>,
+    )
+
+    expect(await screen.findByText('AI 修订候选与当前章节版本冲突')).toBeInTheDocument()
+    expect(screen.getByText('候选基于 v1，当前为 v2。系统不会覆盖正文；请重新生成或人工合并。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '应用到编辑器' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /对比候选/ }))
+    expect(await screen.findByText(candidate)).toBeInTheDocument()
+    expect(document.querySelector<HTMLTextAreaElement>('.writer-content-input textarea'))
+      .toHaveValue(currentChapter.content)
+    expect(api.put).not.toHaveBeenCalled()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
   it('keeps a failed pending-draft save visible in the editor', async () => {
     const pendingDraft = {
       draft_id: 'draft-save-error',
@@ -341,6 +442,7 @@ describe('WriterPage manual writing actions', () => {
       content: candidate,
       cataloging_mode: 'save_and_catalog',
       trigger_type: 'de_ai',
+      expected_version: 1,
     })
   })
 

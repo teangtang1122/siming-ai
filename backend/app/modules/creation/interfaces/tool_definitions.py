@@ -29,9 +29,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="chapter_writer",
-        description="使用模型已经检索、复核并由服务端精确校验的上下文，一次生成一份独立的未入库新章草稿；不会自动拼装作品资料。必须先 prepare_task_context、按需 search_task_context、submit_context_evidence，并在下一模型步骤携带返回的选择令牌。成功后本轮结束。",
+        description="使用模型已经检索、复核并由服务端精确校验的上下文，生成一份未入库的新章或已有章节修订候选；不会自动覆盖正式正文。修订时必须传与所选大纲匹配的 target_chapter_id。必须先 prepare_task_context、按需 search_task_context、submit_context_evidence，并在下一模型步骤携带返回的选择令牌。成功后本轮结束。",
         input_schema={
             "outline_node_id": {"type": "string", "description": "对应的大纲节点ID（必填）"},
+            "target_chapter_id": {
+                "type": "string",
+                "description": "修订已有正式章节时必填；必须是所选大纲当前关联的章节ID",
+            },
             "context_manifest_id": {
                 "type": "string",
                 "description": "prepare_task_context 返回的写章清单ID",

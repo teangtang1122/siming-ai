@@ -142,6 +142,9 @@ function generatedDraftFromAction(action: WorkspaceToolLog, projectId: string): 
     outlineNodeId: data.outline_node_id ? String(data.outline_node_id) : null,
     contextManifestId: data.context_manifest_id ? String(data.context_manifest_id) : null,
     savedChapterId: data.saved_chapter_id ? String(data.saved_chapter_id) : null,
+    draftKind: data.draft_kind === 'revision' ? 'revision' : 'new',
+    targetChapterId: data.target_chapter_id ? String(data.target_chapter_id) : null,
+    baseChapterVersion: data.base_chapter_version == null ? null : Number(data.base_chapter_version),
     content,
     wordCount: Number(data.word_count || 0),
     status: String(data.draft_status || 'pending') as GeneratedChapterDraft['status'],
@@ -308,6 +311,13 @@ function WorkspaceAssistantChat({
     }
     if (draft.status !== 'pending') {
       message.info('这份草稿已经保存')
+      return
+    }
+    if (draft.draftKind === 'revision') {
+      if (generatedDraft?.draftId === draft.draftId) updateGeneratedDraft(draft)
+      else openGeneratedDraft(draft)
+      navigate(`/project/${encodeURIComponent(projectId)}`)
+      message.info('修订候选已打开；请先对比并应用到编辑器，再由作者明确保存')
       return
     }
     const payload = {

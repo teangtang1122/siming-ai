@@ -59,11 +59,26 @@ def find_worldbuilding_by_title_or_id(db: Session, project_id: str, value: Any) 
     text = str(value or "").strip()
     if not text:
         return None
-    return (
+    exact = (
         db.query(WorldbuildingEntry)
         .filter(WorldbuildingEntry.project_id == project_id)
         .filter((WorldbuildingEntry.id == text) | (WorldbuildingEntry.title == text))
         .first()
+    )
+    if exact:
+        return exact
+    normalized = normalize_lookup(text)
+    if not normalized:
+        return None
+    return next(
+        (
+            entry
+            for entry in db.query(WorldbuildingEntry).filter(
+                WorldbuildingEntry.project_id == project_id
+            ).all()
+            if normalize_lookup(entry.title) == normalized
+        ),
+        None,
     )
 
 

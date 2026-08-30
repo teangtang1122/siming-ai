@@ -5,6 +5,7 @@ import {
   BranchesOutlined,
   DatabaseOutlined,
   DeleteOutlined,
+  DiffOutlined,
   DownOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -132,6 +133,7 @@ function ChapterDraftSaveActions({
   const saved = activeDraftId === draftId && activeDraftStatus === 'saved'
   const superseded = activeDraftId === draftId && activeDraftStatus === 'superseded'
   const replaced = Boolean(activeDraftId && activeDraftId !== draftId)
+  const revision = action.data?.draft_kind === 'revision'
   const save = async (mode: 'save_only' | 'save_and_catalog') => {
     if (savingMode) return
     setSavingMode(mode)
@@ -150,6 +152,20 @@ function ChapterDraftSaveActions({
   if (saved) return <Tag color="green">草稿已保存</Tag>
   if (superseded) return <Tag>迟到草稿已释放</Tag>
   if (replaced) return <Tag>已被当前草稿替代</Tag>
+  if (revision) {
+    return (
+      <Button
+        type="primary"
+        size="small"
+        icon={<DiffOutlined />}
+        loading={savingMode !== null}
+        disabled={savingMode !== null}
+        onClick={() => void save('save_only')}
+      >
+        在正文页审阅修订
+      </Button>
+    )
+  }
   return (
     <Dropdown.Button
       type="primary"

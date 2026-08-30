@@ -14,10 +14,11 @@ from tempfile import TemporaryDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
-from app.database.bootstrap import SCHEMA_EPOCH, bootstrap_database
+from alembic import command
+from app.database.bootstrap import SCHEMA_EPOCH, alembic_config, bootstrap_database
 from app.database.models import AssistantRun, AssistantRunStep
 
-HEAD_REVISION = "300a26_outline_drafts"
+HEAD_REVISION = "300a27_chapter_revision_drafts"
 
 
 def _database_url(path: Path) -> str:
@@ -130,6 +131,44 @@ def test_current_database_bootstrap_is_idempotent():
             assert second.mode == "ready"
             assert second.backup_path is None
             assert second.schema_revision == first.schema_revision
+        finally:
+            engine.dispose()
+
+
+def test_300a26_database_adds_revision_draft_identity_and_target_fk():
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "chapter-revision-draft.db"
+        url = _database_url(database_path)
+        engine = create_engine(url)
+        try:
+            initialized = bootstrap_database(engine, database_url=url)
+            assert initialized.schema_revision == HEAD_REVISION
+            config = alembic_config(url)
+            with engine.begin() as connection:
+                config.attributes["connection"] = connection
+                command.downgrade(config, "300a26_outline_drafts")
+            before = inspect(engine)
+            assert {
+                "draft_kind",
+                "target_chapter_id",
+                "base_chapter_version",
+            }.isdisjoint({column["name"] for column in before.get_columns("chapter_drafts")})
+
+            migrated = bootstrap_database(engine, database_url=url)
+
+            inspector = inspect(engine)
+            assert migrated.mode == "migrated"
+            assert migrated.schema_revision == HEAD_REVISION
+            assert {
+                "draft_kind",
+                "target_chapter_id",
+                "base_chapter_version",
+            } <= {column["name"] for column in inspector.get_columns("chapter_drafts")}
+            assert any(
+                foreign_key.get("referred_table") == "chapters"
+                and foreign_key.get("constrained_columns") == ["target_chapter_id"]
+                for foreign_key in inspector.get_foreign_keys("chapter_drafts")
+            )
         finally:
             engine.dispose()
 

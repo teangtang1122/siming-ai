@@ -3,7 +3,9 @@ package com.siming.mobile.data
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -68,5 +70,45 @@ class MobileAssistantModelsTest {
         assertEquals("雨幕压住了街灯。", draft.content)
         assertEquals("manifest-1", draft.contextManifestId)
         assertEquals("android_standalone", draft.executionRoute)
+    }
+
+    @Test
+    fun `chapter revision keeps its formal target and detects a stale base version`() {
+        val current = MobilePendingChapterDraft.fromJson(
+            "project-1",
+            buildJsonObject {
+                put("draft_id", "revision-1")
+                put("title", "第一章（修订）")
+                put("content", "独立的修订候选。")
+                put("draft_kind", "revision")
+                put("target_chapter_id", "chapter-1")
+                put("base_chapter_version", 3)
+                put("target_chapter_current_version", 3)
+                put("target_chapter_title", "第一章")
+                put("target_chapter_content", "当前正式正文。")
+                put("draft_status", "pending")
+            },
+        )
+        val stale = MobilePendingChapterDraft.fromJson(
+            "project-1",
+            buildJsonObject {
+                put("draft_id", "revision-2")
+                put("title", "第一章（旧修订）")
+                put("content", "旧候选。")
+                put("draft_kind", "revision")
+                put("target_chapter_id", "chapter-1")
+                put("base_chapter_version", 2)
+                put("target_chapter_current_version", 3)
+                put("draft_status", "pending")
+            },
+        )
+
+        assertNotNull(current)
+        assertTrue(current.revision)
+        assertFalse(current.versionConflict)
+        assertEquals("chapter-1", current.targetChapterId)
+        assertEquals("当前正式正文。", current.targetChapterContent)
+        assertNotNull(stale)
+        assertTrue(stale.versionConflict)
     }
 }

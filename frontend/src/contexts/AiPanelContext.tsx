@@ -12,6 +12,9 @@ export interface GeneratedChapterDraft {
   outlineNodeId: string | null
   contextManifestId: string | null
   savedChapterId: string | null
+  draftKind: 'new' | 'revision'
+  targetChapterId: string | null
+  baseChapterVersion: number | null
   content: string
   wordCount: number
   status: 'pending' | 'saved' | 'superseded'

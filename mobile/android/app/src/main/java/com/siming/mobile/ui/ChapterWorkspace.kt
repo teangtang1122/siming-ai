@@ -155,6 +155,7 @@ internal fun PendingChapterDraftEditorScreen(
     var title by rememberSaveable(draft.draftId) { mutableStateOf(draft.title) }
     var content by rememberSaveable(draft.draftId) { mutableStateOf(draft.content) }
     var lastGeneratedContent by rememberSaveable(draft.draftId) { mutableStateOf(draft.content) }
+    var showingFormalText by rememberSaveable(draft.draftId) { mutableStateOf(false) }
 
     LaunchedEffect(draft.content, draft.status) {
         if (draft.generating || content == lastGeneratedContent) {
@@ -170,7 +171,11 @@ internal fun PendingChapterDraftEditorScreen(
             CenterAlignedTopAppBar(
                 title = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(if (draft.generating) "AI 正在写作" else "确认 AI 章节草稿")
+                        Text(
+                            if (draft.generating) "AI 正在写作"
+                            else if (draft.revision) "审阅 AI 修订候选"
+                            else "确认 AI 章节草稿",
+                        )
                         Text(
                             if (draft.executionRoute == "android_standalone") "手机独立草稿" else "PC 工作流草稿",
                             style = MaterialTheme.typography.labelSmall,
@@ -208,7 +213,8 @@ internal fun PendingChapterDraftEditorScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         OutlinedButton(
-                            enabled = !busy && title.isNotBlank(),
+                            enabled = !busy && title.isNotBlank()
+                                && !draft.versionConflict && !showingFormalText,
                             onClick = {
                                 viewModel.savePendingChapterDraft(
                                     draft, title, content, "save_only", onSaved,
@@ -217,7 +223,8 @@ internal fun PendingChapterDraftEditorScreen(
                             modifier = Modifier.weight(1f),
                         ) { Text("仅保存") }
                         Button(
-                            enabled = online && !busy && title.isNotBlank(),
+                            enabled = online && !busy && title.isNotBlank()
+                                && !draft.versionConflict && !showingFormalText,
                             onClick = {
                                 viewModel.savePendingChapterDraft(
                                     draft, title, content, "save_and_catalog", onSaved,
@@ -239,18 +246,36 @@ internal fun PendingChapterDraftEditorScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (draft.generating || busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (draft.revision) {
+                Text(
+                    if (draft.versionConflict) {
+                        "版本冲突：候选基于 v${draft.baseChapterVersion ?: "?"}，正式章节为 v${draft.targetChapterCurrentVersion ?: "?"}；系统不会覆盖正文。"
+                    } else {
+                        "候选基于正式章节 v${draft.baseChapterVersion}。只有你点击保存后，才会更新原章节并生成新快照。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (draft.versionConflict) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = { showingFormalText = !showingFormalText },
+                    enabled = !busy && !draft.generating,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (showingFormalText) "返回修订候选" else "对比当前正式正文")
+                }
+            }
             OutlinedTextField(
-                value = title,
+                value = if (showingFormalText) draft.targetChapterTitle.orEmpty() else title,
                 onValueChange = { title = it },
-                enabled = !draft.generating && !busy,
+                enabled = !draft.generating && !busy && !showingFormalText,
                 placeholder = { Text("章节标题") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
-                value = content,
+                value = if (showingFormalText) draft.targetChapterContent.orEmpty() else content,
                 onValueChange = { content = it },
-                enabled = !draft.generating && !busy,
+                enabled = !draft.generating && !busy && !showingFormalText,
                 placeholder = { Text(if (draft.generating) "模型正文会在这里实时出现…" else "检查并修改正文…") },
                 minLines = 16,
                 maxLines = Int.MAX_VALUE,
@@ -260,6 +285,9 @@ internal fun PendingChapterDraftEditorScreen(
             Text(
                 when {
                     draft.generating -> "${content.count { !it.isWhitespace() }} 字 · 正在流式生成，尚未保存"
+                    showingFormalText -> "当前正式正文 · 只读对比"
+                    draft.versionConflict -> "修订候选已保留，但版本冲突时禁止覆盖保存"
+                    draft.revision -> "${content.count { !it.isWhitespace() }} 字 · 修订候选，保存后更新原章节"
                     online -> "${content.count { !it.isWhitespace() }} 字 · 请选择仅保存，或保存并建档"
                     else -> "${content.count { !it.isWhitespace() }} 字 · 独立模式可仅保存；连接 PC 后可建档"
                 },

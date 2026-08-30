@@ -378,9 +378,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="prepare_external_writing_context",
-        description="Build the compact writing baseline for a model-selected chapter outline. API-free: does not call LLM and does not auto-load story data. Then use search_task_context and submit_context_evidence to obtain exact selected context and a selection token.",
+        description="Build the compact writing baseline for a model-selected new chapter or an explicitly identified existing chapter revision. API-free: does not call LLM and never overwrites prose. Then use search_task_context and submit_context_evidence to obtain exact selected context and a selection token.",
         input_schema={
             "outline_node_id": {"type": "string", "description": "Target outline node ID"},
+            "target_chapter_id": {
+                "type": "string",
+                "description": "Existing chapter ID when preparing a reviewable revision",
+            },
             "include_prompt_pack": {
                 "type": "boolean",
                 "description": "Include public prompt pack (default true)",
@@ -404,10 +408,18 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="save_external_chapter_draft",
-        description="Save one independent, not-yet-official new-chapter draft for a model-selected outline and end the model turn. The outline must not already have a formal chapter; this tool never creates rewrite drafts or overwrites saved prose.",
+        description="Save one not-yet-official new-chapter draft or reviewable existing-chapter revision and end the model turn. A revision requires the matching target_chapter_id and base_chapter_version; this tool never overwrites saved prose.",
         input_schema={
             "content": {"type": "string", "description": "Chapter content to save"},
             "outline_node_id": {"type": "string", "description": "Linked outline node ID"},
+            "target_chapter_id": {
+                "type": "string",
+                "description": "Existing chapter ID for a revision candidate",
+            },
+            "base_chapter_version": {
+                "type": "integer",
+                "description": "Version returned by prepare_external_writing_context for conflict protection",
+            },
             "context_manifest_id": {
                 "type": "string",
                 "description": "Prepared governed baseline manifest ID",

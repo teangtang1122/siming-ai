@@ -6,11 +6,14 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, Chapter, OutlineNode
-from ..story_granularity import chapter_outline_node, extract_chapter_number, normalize_section_scene_state
+from ..story_granularity import (
+    chapter_outline_node,
+    extract_chapter_number,
+    normalize_section_scene_state,
+)
 from .facts import record_cataloging_fact
 from .links import link_outline_characters
 from .lookups import find_outline_by_title_or_id, next_outline_sort_order, normalize_lookup
-from .merge import merge_text
 from .snapshots import outline_snapshot
 
 
@@ -73,23 +76,48 @@ def apply_outline(
             node.parent_id = parent_id
         if payload.get("node_type"):
             node.node_type = node_type
-        if payload.get("title"):
+        catalog_owned = bool(node.source_chapter_id) and node.cataloging_status == "cataloged"
+        if payload.get("title") and (node_type != "chapter" or catalog_owned):
             node.title = title[:200]
-        if payload.get("summary") or payload.get("actual_summary"):
-            node.summary = merge_text(node.summary, payload.get("summary") or payload.get("actual_summary"), chapter, limit=8000)
-            node.actual_summary = merge_text(node.actual_summary, payload.get("actual_summary") or payload.get("summary"), chapter, limit=8000)
-        if payload.get("planned_summary"):
-            node.planned_summary = merge_text(node.planned_summary, payload.get("planned_summary"), chapter, limit=8000)
+        actual_summary = str(payload.get("actual_summary") or payload.get("summary") or "")[:8000]
+        if actual_summary:
+            # The actual summary is a projection of this saved chapter version,
+            # not an append-only note. Keep author-owned planning text separate.
+            node.actual_summary = actual_summary
+            if node_type != "chapter" or catalog_owned:
+                node.summary = actual_summary
+        if payload.get("planned_summary") and not node.planned_summary:
+            node.planned_summary = str(payload.get("planned_summary"))[:8000]
         if payload.get("status"):
             node.status = str(payload.get("status"))[:20]
-        node.source_chapter_id = node.source_chapter_id or chapter.id
+        if node_type != "chapter" or catalog_owned:
+            node.source_chapter_id = node.source_chapter_id or chapter.id
         node.cataloging_status = "cataloged"
+
+    if node.node_type == "section":
+        metadata = dict(node.metadata_json or {})
+        metadata.update({
+            "source": "cataloging",
+            "source_chapter_id": chapter.id,
+            "scene_number": payload.get("scene_number"),
+        })
+        node.metadata_json = metadata
 
     if node.node_type == "chapter":
         chapter.outline_node_id = node.id
     elif parent_id and not chapter.outline_node_id:
         chapter.outline_node_id = parent_id
-    link_outline_characters(db, chapter.project_id, node, payload.get("related_characters"))
+    link_outline_characters(
+        db,
+        chapter.project_id,
+        node,
+        payload.get("related_characters"),
+        replace=(
+            node.node_type == "section"
+            and node.source_chapter_id == chapter.id
+            and node.cataloging_status == "cataloged"
+        ),
+    )
     scene_state = normalize_section_scene_state(payload)
     fact = None
     if scene_state:
@@ -135,6 +163,19 @@ def _find_outline_for_candidate(
     *,
     exact: bool,
 ) -> OutlineNode | None:
+    if node_type == "chapter" and chapter.outline_node_id:
+        linked = db.query(OutlineNode).filter(
+            OutlineNode.project_id == chapter.project_id,
+            OutlineNode.id == chapter.outline_node_id,
+            OutlineNode.node_type == "chapter",
+        ).first()
+        if linked:
+            return _repair_legacy_duplicate_chapter_outline(
+                db,
+                chapter,
+                linked,
+                value,
+            )
     node = (
         _find_exact_outline(db, chapter.project_id, value)
         if exact
@@ -166,6 +207,75 @@ def _find_outline_for_candidate(
         (candidate for candidate in candidates if normalize_lookup(candidate.title) == wanted),
         None,
     )
+
+
+def _repair_legacy_duplicate_chapter_outline(
+    db: Session,
+    chapter: Chapter,
+    linked: OutlineNode,
+    candidate_title: Any,
+) -> OutlineNode:
+    """Reattach a chapter from an old catalog duplicate to its planned node.
+
+    Older builds could replace ``chapter.outline_node_id`` with a newly
+    cataloged chapter node when punctuation in the extracted title differed
+    from the planned outline.  Repair only the unambiguous ownership shape:
+    the linked node is catalog-owned and exactly one author-owned chapter node
+    has the same normalized title.  Children and character links are moved
+    before the duplicate container is deleted.
+    """
+    if not linked.source_chapter_id or linked.cataloging_status != "cataloged":
+        return linked
+    wanted_titles = {
+        normalize_lookup(value)
+        for value in (chapter.title, linked.title, candidate_title)
+        if normalize_lookup(value)
+    }
+    if not wanted_titles:
+        return linked
+    candidates = (
+        db.query(OutlineNode)
+        .filter(
+            OutlineNode.project_id == chapter.project_id,
+            OutlineNode.node_type == "chapter",
+            OutlineNode.id != linked.id,
+        )
+        .order_by(OutlineNode.created_at.asc(), OutlineNode.id.asc())
+        .all()
+    )
+    planned = [
+        node
+        for node in candidates
+        if not node.source_chapter_id
+        and node.cataloging_status != "cataloged"
+        and normalize_lookup(node.title) in wanted_titles
+    ]
+    if len(planned) != 1:
+        return linked
+    planned_node = planned[0]
+    if db.query(Chapter).filter(
+        Chapter.project_id == chapter.project_id,
+        Chapter.id != chapter.id,
+        Chapter.outline_node_id == linked.id,
+    ).first():
+        return linked
+
+    for child in list(linked.children):
+        child.parent = planned_node
+    existing_character_ids = {
+        relation.character_id for relation in planned_node.linked_characters
+    }
+    for relation in list(linked.linked_characters):
+        if relation.character_id in existing_character_ids:
+            db.delete(relation)
+        else:
+            relation.outline_node = planned_node
+            existing_character_ids.add(relation.character_id)
+    chapter.outline_node_id = planned_node.id
+    db.flush()
+    db.delete(linked)
+    db.flush()
+    return planned_node
 
 
 def _resolve_requested_parent(db: Session, project_id: str, value: Any) -> OutlineNode | None:

@@ -42,6 +42,14 @@ class ChapterDraftOutlineConflict(RuntimeError):
         self.chapter = chapter
 
 
+class ChapterDraftTargetConflict(RuntimeError):
+    """The explicitly selected revision target disappeared or changed identity."""
+
+    def __init__(self, target_chapter_id: str):
+        super().__init__("the revision target no longer matches the selected outline")
+        self.target_chapter_id = target_chapter_id
+
+
 def _cache_chapter_draft(
     *,
     draft_id: str,
@@ -53,6 +61,9 @@ def _cache_chapter_draft(
     status: str,
     content: str,
     created_at: datetime,
+    draft_kind: str = "new",
+    target_chapter_id: str | None = None,
+    base_chapter_version: int | None = None,
 ) -> None:
     _CHAPTER_DRAFTS[draft_id] = {
         "project_id": project_id,
@@ -60,6 +71,9 @@ def _cache_chapter_draft(
         "outline_node_id": outline_node_id or "",
         "context_manifest_id": context_manifest_id or "",
         "saved_chapter_id": saved_chapter_id or "",
+        "draft_kind": draft_kind or "new",
+        "target_chapter_id": target_chapter_id or "",
+        "base_chapter_version": base_chapter_version,
         "status": status,
         "content": content,
         "created_at": created_at,
@@ -95,6 +109,8 @@ def store_chapter_draft(
     title: str = "",
     outline_node_id: str | None = None,
     context_manifest_id: str | None = None,
+    target_chapter_id: str | None = None,
+    base_chapter_version: int | None = None,
     db: Any = None,
 ) -> str:
     """Persist one author-visible draft without replacing an existing draft.
@@ -106,6 +122,7 @@ def store_chapter_draft(
     """
     draft_id = str(uuid4())
     created_at = datetime.utcnow()
+    draft_kind = "revision" if target_chapter_id else "new"
     if db is None:
         _cache_chapter_draft(
             draft_id=draft_id,
@@ -114,6 +131,9 @@ def store_chapter_draft(
             outline_node_id=outline_node_id,
             context_manifest_id=context_manifest_id,
             saved_chapter_id=None,
+            draft_kind=draft_kind,
+            target_chapter_id=target_chapter_id,
+            base_chapter_version=base_chapter_version,
             status="pending",
             content=content,
             created_at=created_at,
@@ -127,7 +147,22 @@ def store_chapter_draft(
     commit_session(db)
     lock_chapter_draft_project(db, project_id)
 
-    if outline_node_id:
+    target_chapter = None
+    if target_chapter_id:
+        target_chapter = db.query(Chapter).filter(
+            Chapter.project_id == project_id,
+            Chapter.id == target_chapter_id,
+        ).first()
+        if not target_chapter:
+            db.rollback()
+            raise ChapterDraftTargetConflict(target_chapter_id)
+        if outline_node_id and str(target_chapter.outline_node_id or "") != outline_node_id:
+            db.rollback()
+            raise ChapterDraftTargetConflict(target_chapter_id)
+        outline_node_id = str(target_chapter.outline_node_id or outline_node_id or "") or None
+        if base_chapter_version is None:
+            base_chapter_version = int(target_chapter.current_version or 1)
+    elif outline_node_id:
         existing_chapter = db.query(Chapter).filter(
             Chapter.project_id == project_id,
             Chapter.outline_node_id == outline_node_id,
@@ -155,6 +190,9 @@ def store_chapter_draft(
         title=title or "",
         outline_node_id=outline_node_id or None,
         context_manifest_id=context_manifest_id or None,
+        draft_kind=draft_kind,
+        target_chapter_id=target_chapter_id or None,
+        base_chapter_version=base_chapter_version,
         status="pending",
         content=content,
         created_at=created_at,
@@ -175,7 +213,7 @@ def store_chapter_draft(
         )
         if concurrent_draft:
             raise PendingChapterDraftConflict(concurrent_draft) from None
-        if outline_node_id:
+        if outline_node_id and not target_chapter_id:
             concurrent_chapter = db.query(Chapter).filter(
                 Chapter.project_id == project_id,
                 Chapter.outline_node_id == outline_node_id,
@@ -191,6 +229,9 @@ def store_chapter_draft(
         outline_node_id=outline_node_id,
         context_manifest_id=context_manifest_id,
         saved_chapter_id=None,
+        draft_kind=draft_kind,
+        target_chapter_id=target_chapter_id,
+        base_chapter_version=base_chapter_version,
         status="pending",
         content=content,
         created_at=row.created_at or created_at,
@@ -223,6 +264,9 @@ def get_chapter_draft(project_id: str, draft_id: str | None, *, db: Any = None) 
                     "outline_node_id": row.outline_node_id or "",
                     "context_manifest_id": row.context_manifest_id or "",
                     "saved_chapter_id": row.saved_chapter_id or "",
+                    "draft_kind": row.draft_kind or "new",
+                    "target_chapter_id": row.target_chapter_id or "",
+                    "base_chapter_version": row.base_chapter_version,
                     "status": row.status or "pending",
                     "content": content,
                     "created_at": row.created_at,
@@ -237,7 +281,12 @@ def get_chapter_draft(project_id: str, draft_id: str | None, *, db: Any = None) 
     return None
 
 
-def get_chapter_draft_meta(project_id: str, draft_id: str | None, *, db: Any = None) -> dict[str, Any] | None:
+def get_chapter_draft_meta(
+    project_id: str,
+    draft_id: str | None,
+    *,
+    db: Any = None,
+) -> dict[str, Any] | None:
     if not draft_id:
         return None
     entry = _CHAPTER_DRAFTS.get(str(draft_id))
@@ -247,6 +296,9 @@ def get_chapter_draft_meta(project_id: str, draft_id: str | None, *, db: Any = N
             "outline_node_id": str(entry.get("outline_node_id") or ""),
             "context_manifest_id": str(entry.get("context_manifest_id") or ""),
             "saved_chapter_id": str(entry.get("saved_chapter_id") or ""),
+            "draft_kind": str(entry.get("draft_kind") or "new"),
+            "target_chapter_id": str(entry.get("target_chapter_id") or ""),
+            "base_chapter_version": entry.get("base_chapter_version"),
             "status": str(entry.get("status") or "pending"),
             "content": str(entry.get("content") or ""),
         }
@@ -265,6 +317,9 @@ def get_chapter_draft_meta(project_id: str, draft_id: str | None, *, db: Any = N
                     "outline_node_id": row.outline_node_id or "",
                     "context_manifest_id": row.context_manifest_id or "",
                     "saved_chapter_id": row.saved_chapter_id or "",
+                    "draft_kind": row.draft_kind or "new",
+                    "target_chapter_id": row.target_chapter_id or "",
+                    "base_chapter_version": row.base_chapter_version,
                     "status": row.status or "pending",
                     "content": row.content or "",
                 }
@@ -327,6 +382,9 @@ def resolve_chapter_draft_content(
                         "outline_node_id": row.outline_node_id or "",
                         "context_manifest_id": row.context_manifest_id or "",
                         "saved_chapter_id": row.saved_chapter_id or "",
+                        "draft_kind": row.draft_kind or "new",
+                        "target_chapter_id": row.target_chapter_id or "",
+                        "base_chapter_version": row.base_chapter_version,
                         "status": row.status or "pending",
                         "content": content,
                         "created_at": row.created_at,
@@ -424,6 +482,7 @@ def release_stale_pending_chapter_drafts(db: Any, project_id: str) -> int:
     pending = db.query(ChapterDraft).filter(
         ChapterDraft.project_id == project_id,
         ChapterDraft.status == "pending",
+        ChapterDraft.target_chapter_id.is_(None),
         ChapterDraft.outline_node_id.isnot(None),
     ).all()
     outline_ids = {str(draft.outline_node_id) for draft in pending if draft.outline_node_id}
@@ -518,12 +577,23 @@ def update_chapter_draft(
         raise NotFoundError("章节草稿不存在")
     if row.status != "pending":
         raise ValidationError("该章节草稿已经保存或被新草稿替代，不能重复保存")
+    if (
+        str(row.draft_kind or "new") == "revision"
+        and str(row.outline_node_id or "") != str(outline_node_id or "")
+    ):
+        raise ValidationError("修订候选必须继续绑定生成时的正式章节，不能改挂到其他大纲")
     row.title = title
     row.outline_node_id = outline_node_id
     row.content = content
     cached = _CHAPTER_DRAFTS.get(draft_id)
     if cached:
-        cached.update({"title": title, "outline_node_id": outline_node_id or "", "content": content})
+        cached.update(
+            {
+                "title": title,
+                "outline_node_id": outline_node_id or "",
+                "content": content,
+            }
+        )
     return row
 
 
@@ -536,8 +606,8 @@ def mark_chapter_draft_saved(db: Any, draft: Any, chapter_id: str) -> None:
         cached["saved_chapter_id"] = chapter_id
 
 
-def chapter_draft_result_data(draft: Any) -> dict[str, Any]:
-    return {
+def chapter_draft_result_data(draft: Any, *, db: Any = None) -> dict[str, Any]:
+    data = {
         "draft_id": str(draft.id),
         "project_id": str(draft.project_id),
         "content_ref": str(draft.id),
@@ -545,8 +615,36 @@ def chapter_draft_result_data(draft: Any) -> dict[str, Any]:
         "outline_node_id": draft.outline_node_id,
         "context_manifest_id": draft.context_manifest_id,
         "saved_chapter_id": draft.saved_chapter_id,
+        "draft_kind": str(draft.draft_kind or "new"),
+        "target_chapter_id": draft.target_chapter_id,
+        "base_chapter_version": draft.base_chapter_version,
         "draft_status": str(draft.status or "pending"),
         "content": str(draft.content or ""),
         "word_count": count_words(str(draft.content or "")),
         "next_actions": ["save_and_catalog", "save_only"],
     }
+    if db is None or not draft.target_chapter_id:
+        return data
+
+    from ...database.models import Chapter
+
+    target = (
+        db.query(Chapter)
+        .filter(
+            Chapter.project_id == draft.project_id,
+            Chapter.id == draft.target_chapter_id,
+        )
+        .first()
+    )
+    if target:
+        current_version = int(target.current_version or 1)
+        data.update(
+            {
+                "target_chapter_title": target.title,
+                "target_chapter_content": target.content or "",
+                "target_chapter_current_version": current_version,
+                "version_conflict": current_version
+                != int(draft.base_chapter_version or 0),
+            }
+        )
+    return data
