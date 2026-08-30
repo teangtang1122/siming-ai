@@ -114,6 +114,7 @@ import com.siming.mobile.data.MobileNovelImportFile
 import com.siming.mobile.data.MobileProjectPackageFile
 import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
+import com.siming.mobile.data.network.MobileKnownModelCapacityCatalog
 import com.siming.mobile.data.network.PcAuthoringContract
 import com.siming.mobile.data.network.PcFieldKind
 import com.siming.mobile.R
@@ -1694,6 +1695,13 @@ private fun DirectApiSetupScreen(
     var safetyMarginTokens by rememberSaveable(existing?.baseUrl) {
         mutableStateOf((existing?.safetyMarginTokens ?: DirectApiConfig.DEFAULT_SAFETY_MARGIN_TOKENS).toString())
     }
+    var contextProfileIdentity by rememberSaveable(existing?.baseUrl) {
+        mutableStateOf(
+            existing?.contextWindowTokens?.let {
+                "${existing.baseUrl.trim()}\u001f${existing.model.trim()}"
+            },
+        )
+    }
     val taskModels = remember(existing?.baseUrl) {
         mutableStateMapOf<String, String>().apply {
             putAll(existing?.taskModels.orEmpty())
@@ -1709,9 +1717,32 @@ private fun DirectApiSetupScreen(
         .map(String::trim)
         .filter(String::isNotBlank)
         .distinct()
+    val documentedCapacity = remember(baseUrl, model) {
+        MobileKnownModelCapacityCatalog.resolve(baseUrl, model)
+    }
+    val selectedProfileIdentity = remember(baseUrl, model) {
+        "${baseUrl.trim()}\u001f${model.trim()}"
+    }
 
     LaunchedEffect(ui.discoveredModels) {
         if (model.isBlank()) model = ui.discoveredModels.firstOrNull().orEmpty()
+    }
+    LaunchedEffect(selectedProfileIdentity, documentedCapacity) {
+        if (documentedCapacity != null) {
+            val capacity = documentedCapacity
+            contextWindowTokens = capacity.contextWindowTokens.toString()
+            val currentOutput = maxOutputTokens.toIntOrNull()
+                ?: DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS
+            maxOutputTokens = minOf(currentOutput, capacity.maxOutputTokens).toString()
+            contextProfileIdentity = selectedProfileIdentity
+        } else if (contextProfileIdentity != selectedProfileIdentity) {
+            // A capacity profile belongs to one exact endpoint/model pair. Do
+            // not carry an old official or author-entered window to a newly
+            // selected custom deployment.
+            contextWindowTokens = ""
+            maxOutputTokens = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS.toString()
+            contextProfileIdentity = null
+        }
     }
 
     taskModelPicker?.let { taskType ->
@@ -1848,18 +1879,35 @@ private fun DirectApiSetupScreen(
             )
             Text("项目助手容量档案", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "容量必须来自模型服务商文档或你的部署配置；司命不会根据模型名猜测。UTF-8 保守计数只会低估可用空间，不会把未知容量伪装成安全。",
+                if (documentedCapacity != null) {
+                    "已按官方 API 端点和精确模型 ID 验证容量；切换模型时会同步更新。"
+                } else {
+                    "容量必须来自模型服务商文档或你的部署配置；司命不会根据模型名猜测。UTF-8 保守计数只会低估可用空间，不会把未知容量伪装成安全。"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
                 value = contextWindowTokens,
-                onValueChange = { contextWindowTokens = it.filter(Char::isDigit).take(9) },
+                onValueChange = {
+                    contextWindowTokens = it.filter(Char::isDigit).take(9)
+                    contextProfileIdentity = selectedProfileIdentity.takeIf {
+                        contextWindowTokens.isNotBlank()
+                    }
+                },
                 label = { Text("上下文窗口（tokens）") },
                 placeholder = { Text("例如 128000") },
-                supportingText = { Text("必填；留空时手机直连 Agent 会明确停止，不裁剪历史继续执行") },
+                supportingText = {
+                    Text(
+                        if (documentedCapacity != null) {
+                            "已由官方模型规格自动填写"
+                        } else {
+                            "必填；留空时手机直连 Agent 会明确停止，不裁剪历史继续执行"
+                        },
+                    )
+                },
                 singleLine = true,
-                enabled = !ui.busy,
+                enabled = !ui.busy && documentedCapacity == null,
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

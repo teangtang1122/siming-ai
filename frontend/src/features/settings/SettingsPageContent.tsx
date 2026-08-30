@@ -72,6 +72,7 @@ import {
   isDeepSeekModelSupported,
   isKnownProvider,
   isLocalCliProvider,
+  modelCapacityDefaults,
   normalizeDefaultModel,
   normalizeProviderModelOptions,
   providerColor,
@@ -102,14 +103,23 @@ type ModelConfig = SharedModelConfig
 const persistedModelOptions = (config?: ModelConfig): ModelOption[] => {
   if (!config) return []
   const defaultModel = normalizeDefaultModel(config.provider, config.default_model)
+  const otherModels = (config.available_models || [])
+    .filter((option) => normalizeDefaultModel(config.provider, option.id) !== defaultModel)
+    .map((option) => ({
+      ...option,
+      display_name: option.display_name || option.id,
+    }))
   return normalizeProviderModelOptions(
     config.provider,
     [
-      { id: defaultModel, display_name: defaultModel },
-      ...(config.available_models || []).map((option) => ({
-        id: option.id,
-        display_name: option.display_name || option.id,
-      })),
+      {
+        id: defaultModel,
+        display_name: defaultModel,
+        context_window_tokens: config.context_window_tokens || undefined,
+        safety_margin_tokens: config.context_safety_margin_tokens,
+        capacity_source: config.context_profile_source || undefined,
+      },
+      ...otherModels,
     ],
   )
 }
@@ -184,6 +194,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [form] = Form.useForm()
   const modalProvider = Form.useWatch('provider', form)
+  const contextProfileSource = Form.useWatch('context_profile_source', form)
 
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [modelDiscovery, setModelDiscovery] = useState<ModelDiscoveryState>({ status: 'idle' })
@@ -208,6 +219,28 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [cliScanLoading, setCliScanLoading] = useState(false)
   const [cliAction, setCliAction] = useState<string | null>(null)
   const [savingTaskModel, setSavingTaskModel] = useState<ModelTaskType>()
+
+  const optionForModel = (
+    provider: string | undefined,
+    model: string | undefined,
+    options: ModelOption[] = modelOptions,
+  ) => options.find((option) => (
+    normalizeDefaultModel(provider || '', option.id) === normalizeDefaultModel(provider || '', model || '')
+  ))
+
+  const applyCapacityForModel = (
+    provider: string | undefined,
+    model: string | undefined,
+    options: ModelOption[] = modelOptions,
+    baseUrlOverride: string | undefined = form.getFieldValue('base_url_override'),
+  ) => {
+    form.setFieldsValue(modelCapacityDefaults(
+      provider,
+      model,
+      optionForModel(provider, model, options),
+      baseUrlOverride,
+    ))
+  }
 
   const fetchConfigs = useCallback(async () => {
     const result = await modelConfigsQuery.refetch()
@@ -524,6 +557,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           cli_args: cfg.cli_args || DEFAULT_CLI_ARGS[cfg.provider] || '',
           api_key: '',
           max_output_tokens: cfg.max_output_tokens || cfg.effective_max_output_tokens || defaultOutputLimit(cfg.provider, defaultModel),
+          context_window_tokens: cfg.context_window_tokens || undefined,
+          context_safety_margin_tokens: cfg.context_safety_margin_tokens ?? 512,
+          context_profile_source: cfg.context_profile_source || undefined,
           deconstruct_input_char_limit: cfg.deconstruct_input_char_limit || cfg.effective_deconstruct_input_char_limit || defaultOutputLimit(cfg.provider, defaultModel),
           deconstruct_item_char_limit: cfg.deconstruct_item_char_limit || cfg.effective_deconstruct_item_char_limit || defaultOutputLimit(cfg.provider, defaultModel),
         })
@@ -574,6 +610,10 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         cli_command: isCli ? values.cli_command || DEFAULT_CLI_COMMANDS[provider] || null : null,
         cli_args: isCli ? values.cli_args || DEFAULT_CLI_ARGS[provider] || null : null,
         max_output_tokens: values.max_output_tokens || null,
+        context_window_tokens: contextProfileSource && contextProfileSource !== 'configured'
+          ? null
+          : values.context_window_tokens || null,
+        context_safety_margin_tokens: values.context_safety_margin_tokens ?? 512,
         deconstruct_input_char_limit: values.deconstruct_input_char_limit || null,
         deconstruct_item_char_limit: values.deconstruct_item_char_limit || null,
         available_models: modelOptions,
@@ -635,6 +675,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         )
         const options = normalizeProviderModelOptions(provider, res.data.data.models || [])
         setModelOptions(options)
+        if (form.getFieldValue('context_profile_source') !== 'configured') {
+          applyCapacityForModel(provider, form.getFieldValue('default_model'), options)
+        }
         setModelDiscovery({
           status: 'success',
           message: provider === 'opencode_cli'
@@ -683,6 +726,9 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       )
       const options = normalizeProviderModelOptions(provider, res.data.data.models || [])
       setModelOptions(options)
+      if (form.getFieldValue('context_profile_source') !== 'configured') {
+        applyCapacityForModel(provider, form.getFieldValue('default_model'), options)
+      }
       if (isCustom) {
         if (res.data.data.manual_entry_required || options.length === 0) {
           setModelDiscovery({
@@ -1303,18 +1349,26 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               disabled={!!editingProvider}
               onChange={(provider) => {
                 const fallback = fallbackModelOptions(provider)
+                const baseUrlOverride = isLocalCliProvider(provider)
+                  ? undefined
+                  : form.getFieldValue('base_url_override')
                 setModelOptions(fallback)
                 setModelDiscovery({ status: 'idle' })
                 setConnectionTestResult(null)
                 const nextModel = isCustomProviderSelection(provider) ? undefined : fallback[0]?.id
                 form.setFieldValue('default_model', nextModel)
                 form.setFieldsValue({
-                  ...defaultSafetyLimits(provider, nextModel),
+                  ...defaultSafetyLimits(
+                    provider,
+                    nextModel,
+                    fallback[0],
+                    baseUrlOverride,
+                  ),
                   provider_type: isLocalCliProvider(provider) ? 'local_cli' : 'api',
                   cli_command: isLocalCliProvider(provider) ? DEFAULT_CLI_COMMANDS[provider] || '' : undefined,
                   cli_args: isLocalCliProvider(provider) ? DEFAULT_CLI_ARGS[provider] || '' : undefined,
                   api_key: isLocalCliProvider(provider) ? undefined : form.getFieldValue('api_key'),
-                  base_url_override: isLocalCliProvider(provider) ? undefined : form.getFieldValue('base_url_override'),
+                  base_url_override: baseUrlOverride,
                   api_protocol: isLocalCliProvider(provider) ? 'chat_completions' : 'auto',
                 })
                 if (isLocalCliProvider(provider) || form.getFieldValue('api_key')) {
@@ -1382,6 +1436,15 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           >
             <Input
               placeholder="https://api.example.com/v1"
+              onChange={(event) => {
+                const provider = resolveProviderForSubmit(form.getFieldsValue())
+                applyCapacityForModel(
+                  provider,
+                  form.getFieldValue('default_model'),
+                  modelOptions,
+                  event.target.value,
+                )
+              }}
               onBlur={() => {
                 if (customModelSelection && form.getFieldValue('api_key')) {
                   void fetchModels()
@@ -1493,7 +1556,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 filterOption={false}
                 onChange={(modelName) => {
                   const provider = resolveProviderForSubmit(form.getFieldsValue())
-                  form.setFieldsValue(defaultSafetyLimits(provider, modelName))
+                  form.setFieldsValue(defaultSafetyLimits(
+                    provider,
+                    modelName,
+                    optionForModel(provider, modelName, defaultModelOptions),
+                    form.getFieldValue('base_url_override'),
+                  ))
                 }}
               />
             ) : customManualEntry ? (
@@ -1501,7 +1569,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 placeholder="例如 openai/gpt-4o-mini 或 vendor-model-name"
                 onChange={(event) => {
                   const provider = resolveProviderForSubmit(form.getFieldsValue())
-                  form.setFieldsValue(defaultSafetyLimits(provider, event.target.value))
+                  form.setFieldsValue(defaultSafetyLimits(
+                    provider,
+                    event.target.value,
+                    undefined,
+                    form.getFieldValue('base_url_override'),
+                  ))
                 }}
               />
             ) : (
@@ -1530,7 +1603,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 }
                 onChange={(modelName) => {
                   const provider = resolveProviderForSubmit(form.getFieldsValue())
-                  form.setFieldsValue(defaultSafetyLimits(provider, modelName))
+                  form.setFieldsValue(defaultSafetyLimits(
+                    provider,
+                    modelName,
+                    optionForModel(provider, modelName, defaultModelOptions),
+                    form.getFieldValue('base_url_override'),
+                  ))
                 }}
                 options={defaultModelOptions.map((m) => ({
                   value: m.id,
@@ -1538,6 +1616,42 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 }))}
               />
             )}
+          </Form.Item>
+
+          <Form.Item
+            name="context_window_tokens"
+            label="模型上下文窗口 tokens"
+            extra={contextProfileSource && contextProfileSource !== 'configured'
+              ? '已按服务商公开规格或模型接口自动验证；模型切换时会同步更新。'
+              : contextProfileSource === 'configured'
+                ? '这是你已确认并保存的容量档案，可按当前模型文档修改。'
+                : '未识别的自定义模型或 CLI 必须按模型文档填写一次，避免错误截断或超出容量。'}
+            rules={[
+              { required: true, message: '请填写模型上下文窗口' },
+              ({ getFieldValue }) => ({
+                validator: async (_, value) => {
+                  if (!value) return
+                  const output = Number(getFieldValue('max_output_tokens') || 0)
+                  const margin = Number(getFieldValue('context_safety_margin_tokens') || 0)
+                  if (output + margin >= Number(value)) {
+                    throw new Error('上下文窗口必须大于最大输出与保护余量之和')
+                  }
+                },
+              }),
+            ]}
+          >
+            <InputNumber
+              min={2048}
+              max={10000000}
+              disabled={Boolean(contextProfileSource && contextProfileSource !== 'configured')}
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+          <Form.Item name="context_safety_margin_tokens" initialValue={512} hidden>
+            <InputNumber />
+          </Form.Item>
+          <Form.Item name="context_profile_source" hidden>
+            <Input />
           </Form.Item>
 
           <Collapse

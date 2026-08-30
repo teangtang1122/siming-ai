@@ -363,6 +363,8 @@ describe('SettingsPage startup and update controls', () => {
         base_url_override: 'https://api.vendor.example', api_protocol: 'auto', provider_type: 'api',
         readiness_status: 'unverified', readiness_message: '待验证', is_usable: false,
         is_global_default: false, api_key_configured: true,
+        context_window_tokens: 96_000, context_safety_margin_tokens: 512,
+        context_profile_source: 'configured', context_profile_known: true,
       }] } } })
       if (url === '/config/global-model') return Promise.resolve({ data: { data: { provider: null, model: null } } })
       if (url === '/config/content-root') return Promise.resolve({ data: { data: { current_path: 'D:/Siming/projects', default_path: 'D:/Siming/projects', is_default: true, exists: true, is_empty: true } } })
@@ -386,6 +388,31 @@ describe('SettingsPage startup and update controls', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models', expect.objectContaining({ provider: 'vendor' })))
     const saveCall = api.post.mock.calls.find(([url]) => url === '/config/models')
     expect(saveCall?.[1]?.api_key).toBeFalsy()
+    expect(saveCall?.[1]?.context_window_tokens).toBe(96_000)
+  })
+
+  it('requires unknown custom models to declare capacity in the model dialog', async () => {
+    mockCustomModelConfig()
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/models/list') {
+        return Promise.resolve({ data: { data: { models: [
+          { id: 'legacy-model', display_name: 'Legacy Model' },
+        ] } } })
+      }
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    renderSettings()
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+
+    const capacity = await screen.findByLabelText('模型上下文窗口 tokens')
+    expect(capacity).not.toBeDisabled()
+    expect(screen.getByText(/未识别的自定义模型或 CLI 必须按模型文档填写一次/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/ }))
+
+    expect(await screen.findByText('请填写模型上下文窗口')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalledWith('/config/models', expect.anything())
   })
 
   it('asks OpenCode CLI itself for available models', async () => {

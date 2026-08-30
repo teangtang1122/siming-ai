@@ -5356,6 +5356,17 @@ export interface components {
              */
             cli_command?: string | null;
             /**
+             * Context Safety Margin Tokens
+             * @description Reserved context safety margin
+             * @default 512
+             */
+            context_safety_margin_tokens: number | null;
+            /**
+             * Context Window Tokens
+             * @description Author-confirmed context window for the default model
+             */
+            context_window_tokens?: number | null;
+            /**
              * Deconstruct Input Char Limit
              * @description Deconstruct merge input char limit
              */
@@ -8818,10 +8829,18 @@ export interface components {
          * @description One model identity returned by a configured provider.
          */
         ProviderModelOption: {
+            /** Capacity Source */
+            capacity_source?: string | null;
+            /** Context Window Tokens */
+            context_window_tokens?: number | null;
             /** Display Name */
             display_name?: string | null;
             /** Id */
             id: string;
+            /** Max Output Tokens */
+            max_output_tokens?: number | null;
+            /** Safety Margin Tokens */
+            safety_margin_tokens?: number | null;
         };
         /** QualificationRequest */
         QualificationRequest: {

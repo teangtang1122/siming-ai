@@ -17,6 +17,7 @@ from app.modules.model_runtime.infrastructure.verification import (
     DEFAULT_API_PROBE_TIMEOUT_SECONDS,
     ProviderModelVerification,
     _api_probe_timeout_seconds,
+    _list_anthropic,
     _list_openai,
     _openai_client,
     _probe_openai,
@@ -223,6 +224,43 @@ def test_custom_model_catalog_retries_with_v1_suffix():
     assert models == [{"id": "gpt-test", "display_name": "gpt-test"}]
     assert client_factory.call_args_list[0].kwargs["base_url"] == "https://proxy.example/codex"
     assert client_factory.call_args_list[1].kwargs["base_url"] == "https://proxy.example/codex/v1"
+
+
+def test_anthropic_model_catalog_preserves_provider_capacity_metadata():
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "data": [{
+            "id": "claude-provider-model",
+            "display_name": "Claude Provider Model",
+            "max_input_tokens": 200_000,
+            "max_tokens": 64_000,
+        }]
+    }
+    response.raise_for_status.return_value = None
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "app.modules.model_runtime.infrastructure.verification.httpx.AsyncClient",
+        return_value=context,
+    ):
+        models = asyncio.run(_list_anthropic(ModelProbeRequest(
+            provider="anthropic",
+            api_key="secret",
+            base_url="https://api.anthropic.com",
+        )))
+
+    assert models == [{
+        "id": "claude-provider-model",
+        "display_name": "Claude Provider Model",
+        "context_window_tokens": 200_000,
+        "max_output_tokens": 64_000,
+        "safety_margin_tokens": 512,
+        "capacity_source": "anthropic_models_api",
+    }]
 
 
 def test_loopback_model_probe_bypasses_system_proxy():

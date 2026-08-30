@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database.models import (
+    APIConfig,
     AgentRun,
     Base,
     Chapter,
@@ -27,6 +28,7 @@ from app.database.models import (
     Project,
 )
 from app.services.context_orchestrator import TASK_CONTEXT_CONTRACTS, ContextOrchestrator
+from app.services.conversation_context.assembly import resolve_generation_model_binding
 from app.services.task_context_sources import TaskContextSourceResolver
 
 
@@ -254,6 +256,133 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         self.assertEqual(profile.max_output_tokens, 384_000)
         self.assertEqual(budget.output_reserve_tokens, 300_000)
         self.assertEqual(budget.hard_input_budget_tokens, 699_488)
+
+    def test_documented_cloud_model_is_sendable_without_manual_profile(self):
+        self.db.add(APIConfig(
+            provider="openai",
+            api_key_encrypted="encrypted-placeholder",
+            default_model="gpt-4o",
+        ))
+        self.db.commit()
+
+        profile = self.service.resolve_model_profile("openai:gpt-4o", "writing")
+        binding, counter, margin = resolve_generation_model_binding(
+            orchestrator=self.service,
+            model="openai:gpt-4o",
+            task_type="writing",
+            protocol="chat_completions",
+            system_prompt="system",
+            current_tools=(),
+        )
+
+        self.assertTrue(profile.known)
+        self.assertEqual(profile.context_window_tokens, 128_000)
+        self.assertEqual(profile.max_output_tokens, 16_384)
+        self.assertEqual(binding.capacity_assurance.value, "conservative")
+        self.assertEqual(binding.context_window_tokens, 128_000)
+        self.assertEqual(counter.counter_id, "conservative.utf8_bytes.v1")
+        self.assertEqual(margin, 512)
+
+    def test_documented_model_name_on_custom_proxy_remains_unverified(self):
+        self.db.add(APIConfig(
+            provider="openai",
+            api_key_encrypted="encrypted-placeholder",
+            default_model="gpt-4o",
+            base_url_override="https://proxy.example/v1",
+        ))
+        self.db.commit()
+
+        profile = self.service.resolve_model_profile("openai:gpt-4o", "writing")
+
+        self.assertFalse(profile.known)
+
+    def test_manual_profile_overrides_documented_capacity(self):
+        self.db.add(ModelContextProfile(
+            provider="openai",
+            model_name="gpt-4o",
+            context_window_tokens=64_000,
+            max_output_tokens=4_000,
+            safety_margin_tokens=1_024,
+        ))
+        self.db.commit()
+
+        profile = self.service.resolve_model_profile("openai:gpt-4o", "writing")
+
+        self.assertTrue(profile.known)
+        self.assertEqual(profile.context_window_tokens, 64_000)
+        self.assertEqual(profile.max_output_tokens, 4_000)
+        self.assertEqual(profile.safety_margin_tokens, 1_024)
+
+    def test_provider_discovery_metadata_is_a_verified_exact_capacity(self):
+        self.db.add(APIConfig(
+            provider="custom_vendor",
+            api_key_encrypted="encrypted-placeholder",
+            default_model="writer-large",
+            available_models_json=[{
+                "id": "writer-large",
+                "display_name": "Writer Large",
+                "context_window_tokens": 96_000,
+                "max_output_tokens": 8_000,
+                "safety_margin_tokens": 1_024,
+                "capacity_source": "provider_models_api",
+            }],
+        ))
+        self.db.commit()
+
+        profile = self.service.resolve_model_profile(
+            "custom_vendor:writer-large",
+            "writing",
+        )
+
+        self.assertTrue(profile.known)
+        self.assertEqual(profile.context_window_tokens, 96_000)
+        self.assertEqual(profile.max_output_tokens, 8_000)
+        self.assertEqual(profile.safety_margin_tokens, 1_024)
+
+    def test_provider_metadata_output_is_capped_to_the_verified_window(self):
+        self.db.add(APIConfig(
+            provider="custom_vendor",
+            api_key_encrypted="encrypted-placeholder",
+            default_model="writer-small",
+            max_output_tokens=8_000,
+            available_models_json=[{
+                "id": "writer-small",
+                "context_window_tokens": 4_096,
+                "safety_margin_tokens": 512,
+                "capacity_source": "provider_models_api",
+            }],
+        ))
+        self.db.commit()
+
+        profile = self.service.resolve_model_profile(
+            "custom_vendor:writer-small",
+            "writing",
+        )
+
+        self.assertTrue(profile.known)
+        self.assertEqual(profile.context_window_tokens, 4_096)
+        self.assertEqual(profile.max_output_tokens, 3_583)
+
+    def test_implausible_provider_metadata_remains_unverified(self):
+        self.db.add(APIConfig(
+            provider="custom_vendor",
+            api_key_encrypted="encrypted-placeholder",
+            default_model="writer-impossible",
+            available_models_json=[{
+                "id": "writer-impossible",
+                "context_window_tokens": 100_000_000,
+                "max_output_tokens": 8_000,
+                "capacity_source": "provider_models_api",
+            }],
+        ))
+        self.db.commit()
+
+        profile = self.service.resolve_model_profile(
+            "custom_vendor:writer-impossible",
+            "writing",
+        )
+
+        self.assertFalse(profile.known)
 
     def test_formal_creation_brief_is_a_required_writing_style_anchor(self):
         creation = NovelCreationSession(

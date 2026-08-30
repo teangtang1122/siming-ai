@@ -43,6 +43,30 @@ class MobileConversationContextTest {
     }
 
     @Test
+    fun `legacy official config and exact task model recover documented capacity`() {
+        val config = DirectApiConfig(
+            displayName = "OpenAI",
+            baseUrl = "https://api.openai.com/v1",
+            apiKey = "secret",
+            model = "gpt-4o",
+            taskModels = mapOf(DirectApiConfig.TASK_WRITING to "gpt-4.1-mini"),
+            contextWindowTokens = null,
+            maxOutputTokens = 6_000,
+            safetyMarginTokens = 4_096,
+        )
+
+        val assistant = mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_ASSISTANT)
+        assertEquals("gpt-4o", assistant.model)
+        assertEquals(128_000, assistant.contextWindowTokens)
+        assertEquals(6_000, assistant.maxOutputTokens)
+
+        val writing = mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_WRITING)
+        assertEquals("gpt-4.1-mini", writing.model)
+        assertEquals(1_047_576, writing.contextWindowTokens)
+        assertEquals(6_000, writing.maxOutputTokens)
+    }
+
+    @Test
     fun `context state payload tolerates a missing cached budget`() {
         val conversation = MobileConversationSnapshot(
             conversationId = "conversation-empty-budget",

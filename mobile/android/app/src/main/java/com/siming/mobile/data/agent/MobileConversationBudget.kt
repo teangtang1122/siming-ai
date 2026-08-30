@@ -1,7 +1,7 @@
 package com.siming.mobile.data.agent
 
 import com.siming.mobile.data.network.DirectApiConfig
-import com.siming.mobile.data.network.DirectApiTaskCapacityUnknownException
+import com.siming.mobile.data.network.MobileKnownModelCapacityCatalog
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -14,26 +14,32 @@ internal object MobileCapacityAssurance {
     val ALL = setOf(EXACT, CONSERVATIVE, UNVERIFIED)
 }
 
-/** Resolves a task model only when its capacity profile is explicitly known. */
+/** Resolves a task model only from an author profile or an exact first-party fact. */
 internal fun mobileCapacityBoundTaskConfig(
     config: DirectApiConfig,
     taskType: String,
 ): DirectApiConfig {
-    val selected = try {
-        config.forTask(taskType)
-    } catch (error: DirectApiTaskCapacityUnknownException) {
+    val defaultModel = config.model.trim()
+    val selectedModel = config.modelForTask(taskType).trim()
+    val selected = if (selectedModel == defaultModel) {
+        config.copy(model = selectedModel)
+    } else {
+        // The author-confirmed default profile cannot be inherited by another
+        // task model.  An exact catalog entry may still bind the selected model.
+        config.copy(model = selectedModel, contextWindowTokens = null)
+    }
+    val bound = if (selected.contextWindowTokens != null) {
+        selected
+    } else {
+        MobileKnownModelCapacityCatalog.applyIfKnown(selected)
+    }
+    if (bound?.contextWindowTokens == null) {
         throw MobileConversationContextException(
             MobileConversationContextErrorCode.CAPACITY_UNKNOWN,
-            error.message.orEmpty(),
+            "任务 $taskType 的模型 $selectedModel 未配置独立容量档案",
         )
     }
-    if (selected.contextWindowTokens == null) {
-        throw MobileConversationContextException(
-            MobileConversationContextErrorCode.CAPACITY_UNKNOWN,
-            "任务 $taskType 的模型 ${selected.model} 未配置独立容量档案",
-        )
-    }
-    return selected
+    return bound
 }
 
 /** Immutable model/capacity identity. It never guesses a window from a model name. */

@@ -16,7 +16,6 @@ from app.architecture.uow import commit_session
 from ..ai.local_cli_adapter import (
     DEFAULT_CLI_ARGS,
     DEFAULT_CLI_COMMANDS,
-    DEFAULT_CLI_MODELS,
     is_local_cli_provider,
     local_cli_model_options,
 )
@@ -24,9 +23,9 @@ from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disa
 from ..core.config import get_settings
 from ..core.crypto import decrypt, encrypt
 from ..core.exceptions import AppException, LLMError, NotFoundError, ValidationError
+from ..core.model_capacity_catalog import uses_documented_model_catalog
 from ..core.model_limits import limits_payload
 from ..core.response import ApiResponse
-from ..version import APP_VERSION
 from ..database.session import get_db
 from ..modules.model_runtime.application.execution import model_executor as LLMGateway
 from ..modules.model_runtime.application.verification import (
@@ -35,11 +34,11 @@ from ..modules.model_runtime.application.verification import (
 )
 from ..modules.model_runtime.interfaces.config_dependencies import model_config_crud
 from ..schemas.config import (
+    TASK_MODEL_TYPES,
     APIConfigCreate,
     ConnectionTestRequest,
     GlobalModelSetting,
     ModelListRequest,
-    TASK_MODEL_TYPES,
     TaskModelSettingUpdate,
 )
 from ..services.content_store import content_root as resolve_content_root
@@ -48,15 +47,32 @@ from ..services.external_agent.mcp_auto_config import (
     restore_cli_integration,
     scan_cli_integrations,
 )
+from ..services.model_config_options import (
+    DEEPSEEK_SUPPORTED_MODELS,
+)
+from ..services.model_config_options import (
+    enriched_model_options as _enriched_model_options,
+)
+from ..services.model_config_options import (
+    normalize_model_for_provider as _normalize_model_for_provider,
+)
+from ..services.model_config_options import (
+    normalized_model_options as _normalized_model_options,
+)
+from ..services.model_context_profiles import (
+    configured_model_context_profile,
+    save_model_context_profile,
+)
 from ..services.model_readiness import (
     is_model_config_usable,
-    mark_model_verification_failure,
     mark_model_ready,
     mark_model_testing,
-    mark_model_verification_unavailable,
     mark_model_unverified,
+    mark_model_verification_failure,
+    mark_model_verification_unavailable,
     readiness_payload,
 )
+from ..version import APP_VERSION
 from .application_updates import (
     LauncherSettingsUpdateRequest,  # noqa: F401 - compatibility export
     update_launcher_settings,  # noqa: F401 - compatibility export
@@ -111,8 +127,6 @@ PROVIDER_LABELS: dict[str, str] = {
     "local_llama_cpp": "Siming Local AI",
 }
 
-DEEPSEEK_SUPPORTED_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash"}
-DEEPSEEK_MODEL_ALIASES = {"deepseek-v3": "deepseek-v4-flash"}
 LOCAL_CLI_PROVIDER_TYPE = "local_cli"
 LOCAL_CLI_PLACEHOLDER_KEY = "__local_cli__"
 LOCAL_RUNTIME_PROVIDER_TYPE = "local_runtime"
@@ -178,22 +192,6 @@ def _protocol_label(protocol: str) -> str:
     return "Responses API" if protocol == API_PROTOCOL_RESPONSES else "Chat Completions"
 
 
-def _normalize_model_for_provider(provider: str, model: str, *, strict: bool = True) -> str:
-    if is_local_cli_provider(provider):
-        return model or DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
-    if provider == "local_llama_cpp":
-        return model
-    if provider == "gemini":
-        return model.removeprefix("models/")
-    if provider != "deepseek":
-        return model
-    normalized = DEEPSEEK_MODEL_ALIASES.get(model, model)
-    if normalized not in DEEPSEEK_SUPPORTED_MODELS and strict:
-        supported = ", ".join(sorted(DEEPSEEK_SUPPORTED_MODELS))
-        raise ValidationError(f"DeepSeek currently supports: {supported}")
-    return normalized
-
-
 def _normalize_model_list_for_provider(
     provider: str,
     models: list[dict],
@@ -216,7 +214,11 @@ def _normalize_model_list_for_provider(
         for model in models:
             model_id = _normalize_model_for_provider(provider, model.get("id", ""), strict=False)
             if model_id:
-                normalized[model_id] = {"id": model_id, "display_name": model_id}
+                normalized[model_id] = {
+                    **model,
+                    "id": model_id,
+                    "display_name": model.get("display_name") or model_id,
+                }
         return list(normalized.values())
     if provider != "deepseek":
         return models
@@ -224,54 +226,18 @@ def _normalize_model_list_for_provider(
     for model in models:
         model_id = _normalize_model_for_provider(provider, model.get("id", ""), strict=False)
         if model_id in DEEPSEEK_SUPPORTED_MODELS:
-            normalized[model_id] = {"id": model_id, "display_name": model_id}
+            normalized[model_id] = {
+                **model,
+                "id": model_id,
+                "display_name": model.get("display_name") or model_id,
+            }
     return list(normalized.values()) or [
         {"id": model_id, "display_name": model_id}
         for model_id in sorted(DEEPSEEK_SUPPORTED_MODELS)
     ]
 
 
-def _normalized_model_options(
-    provider: str,
-    models: list[Any] | None,
-    *,
-    default_model: str,
-) -> list[dict[str, str]]:
-    """Normalize and de-duplicate models while keeping the configured default visible."""
-
-    by_id: dict[str, dict[str, str]] = {}
-    for raw in models or []:
-        if hasattr(raw, "model_dump"):
-            raw = raw.model_dump()
-        if isinstance(raw, str):
-            model_id = raw
-            display_name = raw
-        elif isinstance(raw, dict):
-            model_id = str(raw.get("id") or raw.get("model") or "")
-            display_name = str(raw.get("display_name") or raw.get("name") or model_id)
-        else:
-            continue
-        model_id = _normalize_model_for_provider(provider, model_id.strip(), strict=False)
-        if not model_id:
-            continue
-        by_id[model_id] = {
-            "id": model_id,
-            "display_name": display_name.strip() or model_id,
-        }
-
-    normalized_default = _normalize_model_for_provider(
-        provider,
-        default_model,
-        strict=False,
-    )
-    default_option = by_id.pop(normalized_default, None) or {
-        "id": normalized_default,
-        "display_name": normalized_default,
-    }
-    return [default_option, *by_id.values()]
-
-
-def _available_model_options(cfg: Any, db: Session | None = None) -> list[dict[str, str]]:
+def _available_model_options(cfg: Any, db: Session | None = None) -> list[dict[str, Any]]:
     models = list(getattr(cfg, "available_models_json", None) or [])
     if cfg.provider == "local_llama_cpp" and db is not None:
         models = [
@@ -283,6 +249,70 @@ def _available_model_options(cfg: Any, db: Session | None = None) -> list[dict[s
         cfg.provider,
         models,
         default_model=cfg.default_model,
+        use_documented_catalog=uses_documented_model_catalog(
+            cfg.provider,
+            getattr(cfg, "base_url_override", None),
+        ),
+    )
+
+
+def _default_model_capacity(cfg: Any, db: Session | None) -> dict[str, Any]:
+    provider = str(cfg.provider)
+    model_name = _normalize_model_for_provider(
+        provider,
+        str(cfg.default_model),
+        strict=False,
+    )
+    if db is not None:
+        profile = configured_model_context_profile(
+            db,
+            provider=provider,
+            model_name=model_name,
+        )
+        if profile is not None:
+            return {
+                "context_window_tokens": int(profile.context_window_tokens),
+                "context_safety_margin_tokens": int(profile.safety_margin_tokens),
+                "context_profile_source": "configured",
+                "context_profile_known": True,
+            }
+    for option in _available_model_options(cfg, db):
+        if option.get("id") != model_name or not option.get("context_window_tokens"):
+            continue
+        return {
+            "context_window_tokens": int(option["context_window_tokens"]),
+            "context_safety_margin_tokens": int(
+                option.get("safety_margin_tokens") or 512
+            ),
+            "context_profile_source": str(
+                option.get("capacity_source") or "provider_metadata"
+            ),
+            "context_profile_known": True,
+        }
+    return {
+        "context_window_tokens": None,
+        "context_safety_margin_tokens": 512,
+        "context_profile_source": None,
+        "context_profile_known": False,
+    }
+
+
+def _save_default_model_capacity(
+    db: Session,
+    *,
+    provider: str,
+    model_name: str,
+    context_window_tokens: int | None,
+    max_output_tokens: int | None,
+    safety_margin_tokens: int | None,
+) -> None:
+    save_model_context_profile(
+        db,
+        provider=provider,
+        model_name=model_name,
+        context_window_tokens=context_window_tokens,
+        max_output_tokens=max_output_tokens,
+        safety_margin_tokens=safety_margin_tokens,
     )
 
 
@@ -315,6 +345,7 @@ def _config_payload(
         deconstruct_input_char_limit=cfg.deconstruct_input_char_limit,
         deconstruct_item_char_limit=cfg.deconstruct_item_char_limit,
     ))
+    data.update(_default_model_capacity(cfg, db))
     data.update(readiness_payload(cfg))
     if include_masked_key:
         if is_local_cli_provider(cfg.provider):
@@ -535,6 +566,10 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         payload.provider,
         payload.available_models,
         default_model=default_model,
+        use_documented_catalog=uses_documented_model_catalog(
+            payload.provider,
+            base_url_override,
+        ),
     )
     encrypted_key = encrypt(api_key)
 
@@ -551,6 +586,14 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         existing.deconstruct_item_char_limit = payload.deconstruct_item_char_limit
         existing.available_models_json = available_models
         mark_model_unverified(existing, source="manual_edit")
+        _save_default_model_capacity(
+            db,
+            provider=payload.provider,
+            model_name=default_model,
+            context_window_tokens=payload.context_window_tokens,
+            max_output_tokens=payload.max_output_tokens,
+            safety_margin_tokens=payload.context_safety_margin_tokens,
+        )
         commit_session(db)
         db.refresh(existing)
         return ApiResponse.success(
@@ -573,6 +616,14 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         deconstruct_input_char_limit=payload.deconstruct_input_char_limit,
         deconstruct_item_char_limit=payload.deconstruct_item_char_limit,
         available_models_json=available_models,
+    )
+    _save_default_model_capacity(
+        db,
+        provider=payload.provider,
+        model_name=default_model,
+        context_window_tokens=payload.context_window_tokens,
+        max_output_tokens=payload.max_output_tokens,
+        safety_margin_tokens=payload.context_safety_margin_tokens,
     )
     commit_session(db)
     db.refresh(config)
@@ -666,7 +717,14 @@ async def list_provider_models(payload: ModelListRequest, db: Session = Depends(
         manual_entry_required = True
         warning = "该接口返回了空模型列表，请手动填写服务商支持的模型名"
 
-    models = _normalize_model_list_for_provider(payload.provider, models, db)
+    models = _enriched_model_options(
+        payload.provider,
+        _normalize_model_list_for_provider(payload.provider, models, db),
+        use_documented_catalog=uses_documented_model_catalog(
+            payload.provider,
+            base_url or None,
+        ),
+    )
     if saved:
         same_saved_connection = (
             not payload.api_key
@@ -689,6 +747,10 @@ async def list_provider_models(payload: ModelListRequest, db: Session = Depends(
                 payload.provider,
                 models,
                 default_model=saved.default_model,
+                use_documented_catalog=uses_documented_model_catalog(
+                    payload.provider,
+                    base_url or None,
+                ),
             )
             commit_session(db)
     return ApiResponse.success(

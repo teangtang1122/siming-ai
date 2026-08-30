@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from types import TracebackType
 from typing import Self
 
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from ..database.session import SessionLocal
@@ -147,10 +148,24 @@ def commit_session(session: Session) -> None:
         uow.commit()
 
 
+def commit_connection(connection: Connection) -> None:
+    """Complete a low-level infrastructure transaction at the UoW boundary."""
+
+    connection.commit()
+
+
+def rollback_connection(connection: Connection) -> None:
+    """Roll back a low-level infrastructure transaction at the UoW boundary."""
+
+    connection.rollback()
+
+
 __all__ = [
     "SqlAlchemyUnitOfWork",
     "UnitOfWork",
+    "commit_connection",
     "commit_session",
     "defer_session_commits",
+    "rollback_connection",
     "session_commits_deferred",
 ]

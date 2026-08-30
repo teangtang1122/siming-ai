@@ -43,7 +43,6 @@ from ..database.models import (
     ContextRebuildProject,
     Foreshadowing,
     LocalModel,
-    ModelContextProfile,
     ModelTaskSetting,
     NarrativeDebt,
     NovelCreationSession,
@@ -88,6 +87,11 @@ from .context_semantics import (
 )
 from .context_semantics import (
     unpack_float32 as _unpack_float32,
+)
+from .model_context_profiles import (
+    configured_model_context_profile,
+    local_context_task_type,
+    resolved_cloud_model_capacity,
 )
 from .rag.context_packer import ContextBudget
 from .rag.indexer import _get_source_content_hash, reindex_project
@@ -511,15 +515,6 @@ class ContextOrchestrator:
     # ------------------------------------------------------------------
     # Model profiles and global budgets
     # ------------------------------------------------------------------
-    @staticmethod
-    def _local_task_type(task_type: str | None) -> str:
-        return {
-            "new_project": "planning",
-            "review": "evaluation",
-            "rewrite": "writing",
-            "outline_planning": "planning",
-        }.get(str(task_type or ""), str(task_type or "chat"))
-
     def _local_context_window(self, model_name: str, task_type: str | None) -> int | None:
         """Resolve the context the managed runtime will actually launch with."""
 
@@ -529,7 +524,7 @@ class ContextOrchestrator:
             .first()
         )
         capacity = max(0, int(model.context_length or 0)) if model else 0
-        local_task = self._local_task_type(task_type)
+        local_task = local_context_task_type(task_type)
         setting = (
             self.db.query(ModelTaskSetting)
             .filter(
@@ -591,14 +586,10 @@ class ContextOrchestrator:
                 max_output_tokens=request_capacity.max_output_tokens,
                 safety_margin_tokens=request_capacity.safety_margin_tokens, known=True,
             )
-        profile = (
-            self.db.query(ModelContextProfile)
-            .filter(
-                ModelContextProfile.provider == provider,
-                ModelContextProfile.model_name == model_name,
-                ModelContextProfile.enabled == True,  # noqa: E712
-            )
-            .first()
+        profile = configured_model_context_profile(
+            self.db,
+            provider=provider,
+            model_name=model_name,
         )
         local_context = (
             self._local_context_window(model_name, task_type)
@@ -652,6 +643,21 @@ class ContextOrchestrator:
                 context_window_tokens=local_context,
                 max_output_tokens=output_limit(),
                 safety_margin_tokens=DEFAULT_SAFETY_MARGIN_TOKENS,
+                known=True,
+            )
+        cloud_capacity = resolved_cloud_model_capacity(
+            provider_config,
+            provider=provider,
+            model_name=model_name,
+            configured_output_limit=configured_output_limit,
+        )
+        if cloud_capacity is not None:
+            return ResolvedModelContextProfile(
+                provider=provider,
+                model_name=model_name,
+                context_window_tokens=cloud_capacity.context_window_tokens,
+                max_output_tokens=output_limit(cloud_capacity.max_output_tokens),
+                safety_margin_tokens=cloud_capacity.safety_margin_tokens,
                 known=True,
             )
         return ResolvedModelContextProfile(

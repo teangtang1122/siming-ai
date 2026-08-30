@@ -28,6 +28,10 @@ export interface SharedModelConfig {
   api_key_configured?: boolean
   max_output_tokens?: number | null
   effective_max_output_tokens?: number
+  context_window_tokens?: number | null
+  context_safety_margin_tokens?: number
+  context_profile_source?: string | null
+  context_profile_known?: boolean
   deconstruct_input_char_limit?: number | null
   effective_deconstruct_input_char_limit?: number
   deconstruct_item_char_limit?: number | null
@@ -35,6 +39,10 @@ export interface SharedModelConfig {
   available_models?: Array<{
     id: string
     display_name?: string | null
+    context_window_tokens?: number
+    max_output_tokens?: number
+    safety_margin_tokens?: number
+    capacity_source?: string
   }>
   created_at?: string
   updated_at?: string

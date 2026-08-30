@@ -4,8 +4,7 @@ from __future__ import annotations
 import re
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
-
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 PROVIDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 LOCAL_CLI_PROVIDER_IDS = {
@@ -54,6 +53,10 @@ class ProviderModelOption(BaseModel):
 
     id: str = Field(..., min_length=1, max_length=MODEL_IDENTIFIER_MAX_LENGTH)
     display_name: Optional[str] = Field(None, max_length=MODEL_IDENTIFIER_MAX_LENGTH)
+    context_window_tokens: Optional[int] = Field(None, ge=2048, le=10_000_000)
+    max_output_tokens: Optional[int] = Field(None, ge=1, le=1_000_000)
+    safety_margin_tokens: Optional[int] = Field(None, ge=0, le=100_000)
+    capacity_source: Optional[str] = Field(None, max_length=100)
 
     @field_validator("id", "display_name")
     @classmethod
@@ -77,6 +80,18 @@ class APIConfigCreate(BaseModel):
         description="Local CLI args as JSON array or shell-like text; may include {prompt} and {model}",
     )
     max_output_tokens: Optional[int] = Field(None, ge=1, le=1000000, description="Max output tokens")
+    context_window_tokens: Optional[int] = Field(
+        None,
+        ge=2048,
+        le=10_000_000,
+        description="Author-confirmed context window for the default model",
+    )
+    context_safety_margin_tokens: Optional[int] = Field(
+        512,
+        ge=0,
+        le=100_000,
+        description="Reserved context safety margin",
+    )
     deconstruct_input_char_limit: Optional[int] = Field(None, ge=1, le=1000000, description="Deconstruct merge input char limit")
     deconstruct_item_char_limit: Optional[int] = Field(None, ge=1, le=1000000, description="Deconstruct item char limit")
     available_models: list[ProviderModelOption] = Field(
@@ -89,6 +104,20 @@ class APIConfigCreate(BaseModel):
     @classmethod
     def _validate_provider(cls, provider: str) -> str:
         return validate_provider_id(provider)
+
+    @model_validator(mode="after")
+    def _validate_context_capacity(self):
+        if self.context_window_tokens is None:
+            return self
+        margin = int(self.context_safety_margin_tokens or 0)
+        if self.max_output_tokens is not None and (
+            int(self.max_output_tokens) + margin >= int(self.context_window_tokens)
+        ):
+            raise ValueError(
+                "max output tokens plus safety margin must be smaller than context window"
+            )
+        return self
+
 
 class GlobalModelSetting(BaseModel):
     """Schema for global default model setting."""

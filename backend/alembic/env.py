@@ -16,10 +16,20 @@ target_metadata = Base.metadata
 
 
 def _prepare_online_connection(connection) -> None:
-    """Verify SQLite FKs without leaving an implicit transaction open."""
+    """Verify the requested SQLite FK mode without leaving a transaction open."""
 
     already_in_transaction = connection.in_transaction()
-    require_sqlite_foreign_keys(connection)
+    migration_fk_disabled = bool(
+        config.attributes.get("sqlite_migration_foreign_keys_disabled")
+    )
+    if connection.dialect.name == "sqlite" and migration_fk_disabled:
+        enabled = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+        if int(enabled or 0) != 0:
+            raise RuntimeError(
+                "SQLite migration connection unexpectedly has foreign keys enabled"
+            )
+    else:
+        require_sqlite_foreign_keys(connection)
     if not already_in_transaction and connection.in_transaction():
         # PRAGMA reads trigger SQLAlchemy autobegin. Alembic must own the
         # standalone migration transaction or its version update is rolled

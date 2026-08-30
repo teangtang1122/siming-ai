@@ -18,7 +18,7 @@ from alembic import command
 from app.database.bootstrap import SCHEMA_EPOCH, alembic_config, bootstrap_database
 from app.database.models import AssistantRun, AssistantRunStep, Project
 
-HEAD_REVISION = "300a32_context_source_ids"
+HEAD_REVISION = "300a33_legacy_message_integrity"
 
 
 def _database_url(path: Path) -> str:
@@ -613,7 +613,11 @@ def test_failed_migration_returns_the_verified_backup(monkeypatch):
                 )
                 connection.execute(text("INSERT INTO projects VALUES ('p1', 'Preserve Me')"))
 
-            def fail_upgrade(*_args, **_kwargs):
+            def fail_upgrade(config, *_args, **_kwargs):
+                connection = config.attributes["connection"]
+                assert connection.exec_driver_sql(
+                    "PRAGMA foreign_keys"
+                ).scalar_one() == 0
                 raise RuntimeError("migration rehearsal failure")
 
             monkeypatch.setattr("app.database.bootstrap.command.upgrade", fail_upgrade)
@@ -630,6 +634,7 @@ def test_failed_migration_returns_the_verified_backup(monkeypatch):
                     connection.execute("SELECT title FROM projects").fetchone()[0] == "Preserve Me"
                 )
             with engine.connect() as connection:
+                assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
                 assert (
                     connection.execute(text("SELECT title FROM projects")).scalar_one()
                     == "Preserve Me"
