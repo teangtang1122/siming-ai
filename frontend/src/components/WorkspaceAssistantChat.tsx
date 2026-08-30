@@ -406,6 +406,35 @@ function WorkspaceAssistantChat({
     updateGeneratedDraft,
   ])
 
+  const discardChapterDraft = useCallback(async (action: WorkspaceToolLog) => {
+    const actionDraft = generatedDraftFromAction(action, projectId)
+    const draft = generatedDraft?.draftId === actionDraft?.draftId
+      ? generatedDraft
+      : actionDraft
+    if (!draft) {
+      message.error('找不到可丢弃的章节草稿，请重新生成')
+      return
+    }
+    if (draft.status !== 'pending') {
+      message.info('这份章节草稿已经处理')
+      return
+    }
+    await apiClient.delete(`/projects/${projectId}/chapter-drafts/${draft.draftId}`)
+    const discardedDraft = { ...draft, status: 'discarded' as const }
+    if (generatedDraft?.draftId === draft.draftId) updateGeneratedDraft(discardedDraft)
+    else openGeneratedDraft(discardedDraft)
+    triggerRefresh()
+    await Promise.resolve(onApplied?.())
+    message.success('章节草稿已丢弃；正式正文未改变')
+  }, [
+    generatedDraft,
+    onApplied,
+    openGeneratedDraft,
+    projectId,
+    triggerRefresh,
+    updateGeneratedDraft,
+  ])
+
   const handleMessagesScroll = useCallback(() => {
     const el = messagesRef.current
     if (!el) return
@@ -1811,6 +1840,7 @@ function WorkspaceAssistantChat({
         onScroll={handleMessagesScroll}
         projectId={projectId}
         onSaveChapterDraft={saveChapterDraft}
+        onDiscardChapterDraft={discardChapterDraft}
         activeDraftId={generatedDraft?.draftId || null}
         activeDraftStatus={generatedDraft?.status || null}
         onOutlineDraftAction={handleOutlineDraftAction}

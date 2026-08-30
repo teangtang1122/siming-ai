@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Modal, message } from 'antd'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
   get: vi.fn(),
@@ -75,6 +76,12 @@ const chapter = {
 const response = <T,>(data: T) => ({ data: { code: 0, message: 'ok', data } })
 
 describe('WriterPage manual writing actions', () => {
+  afterEach(() => {
+    Modal.destroyAll()
+    message.destroy()
+    vi.restoreAllMocks()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     window.sessionStorage.clear()
@@ -203,7 +210,7 @@ describe('WriterPage manual writing actions', () => {
         .toHaveValue(secondDraft.content)
     })
     fireEvent.click(screen.getByRole('button', { name: '打开章节：第一章' }))
-    expect(await screen.findByText('请先保存当前 AI 章节草稿；保存前草稿是正文编辑器的唯一内容'))
+    expect(await screen.findByText('请先保存或丢弃当前 AI 章节草稿；处理前草稿是正文编辑器的唯一内容'))
       .toBeInTheDocument()
     expect(document.querySelector<HTMLTextAreaElement>('.writer-content-input textarea'))
       .toHaveValue(secondDraft.content)
@@ -213,6 +220,64 @@ describe('WriterPage manual writing actions', () => {
       expect.objectContaining({ draft_id: 'draft-2', content: secondDraft.content }),
     ))
     expect(api.put).not.toHaveBeenCalled()
+  })
+
+  it('discards a pending AI draft and restores the formal chapter editor', async () => {
+    const pendingDraft = {
+      draft_id: 'draft-discard-1',
+      project_id: 'project-1',
+      title: '第二章 待丢弃',
+      outline_node_id: 'outline-2',
+      context_manifest_id: 'manifest-2',
+      saved_chapter_id: null,
+      draft_status: 'pending' as const,
+      content: '这份草稿不会进入正式正文。',
+      word_count: 14,
+    }
+    api.get.mockImplementation((url: string) => {
+      if (url.endsWith('/chapter-drafts/pending')) return Promise.resolve(response(pendingDraft))
+      if (url.endsWith('/outline')) return Promise.resolve(response({ items: [], flat: [], total: 0 }))
+      if (url.endsWith('/chapters')) return Promise.resolve(response({ items: [chapter], total: 1 }))
+      if (url.endsWith('/snapshots')) return Promise.resolve(response({ items: [], total: 0 }))
+      if (url.endsWith('/chapters/chapter-1')) return Promise.resolve(response(chapter))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    api.delete.mockResolvedValue(response({
+      draft_id: pendingDraft.draft_id,
+      draft_status: 'discarded',
+      next_actions: [],
+    }))
+    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation((config) => {
+      void config.onOk?.()
+      return { destroy: vi.fn(), update: vi.fn() } as unknown as ReturnType<typeof Modal.confirm>
+    })
+
+    render(
+      <AiPanelProvider>
+        <WriterPage projectId="project-1" />
+      </AiPanelProvider>,
+    )
+
+    await screen.findByLabelText('当前草稿：第二章 待丢弃')
+    await waitFor(() => {
+      expect(document.querySelector<HTMLTextAreaElement>('.writer-content-input textarea'))
+        .toHaveValue(pendingDraft.content)
+    })
+    fireEvent.click(screen.getByRole('button', { name: /丢弃草稿/ }))
+
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith(
+      '/projects/project-1/chapter-drafts/draft-discard-1',
+    ))
+    await waitFor(() => {
+      expect(document.querySelector<HTMLTextAreaElement>('.writer-content-input textarea'))
+        .toHaveValue(source)
+    })
+    expect(screen.queryByLabelText('当前草稿：第二章 待丢弃')).not.toBeInTheDocument()
+    expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({
+      title: '丢弃这份 AI 章节草稿？',
+      okText: '丢弃草稿',
+    }))
+    confirmSpy.mockRestore()
   })
 
   it('keeps an AI revision separate until the author applies and saves it to the existing chapter', async () => {
@@ -272,6 +337,64 @@ describe('WriterPage manual writing actions', () => {
       }),
     ))
     expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('discards an applied revision candidate and restores the prior unsaved edit', async () => {
+    const manualEdit = '这是作者在应用候选前尚未保存的编辑。'
+    const revisionDraft = {
+      draft_id: 'draft-revision-discard',
+      project_id: 'project-1',
+      title: '第一章（待丢弃修订）',
+      outline_node_id: null,
+      context_manifest_id: 'manifest-revision-discard',
+      saved_chapter_id: null,
+      draft_kind: 'revision' as const,
+      target_chapter_id: 'chapter-1',
+      base_chapter_version: 1,
+      draft_status: 'pending' as const,
+      content: candidate,
+      word_count: candidate.length,
+    }
+    api.get.mockImplementation((url: string) => {
+      if (url.endsWith('/chapter-drafts/pending')) return Promise.resolve(response(revisionDraft))
+      if (url.endsWith('/outline')) return Promise.resolve(response({ items: [], flat: [], total: 0 }))
+      if (url.endsWith('/chapters')) return Promise.resolve(response({ items: [chapter], total: 1 }))
+      if (url.endsWith('/snapshots')) return Promise.resolve(response({ items: [], total: 0 }))
+      if (url.endsWith('/chapters/chapter-1')) return Promise.resolve(response(chapter))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    api.delete.mockResolvedValue(response({
+      draft_id: revisionDraft.draft_id,
+      draft_status: 'discarded',
+      next_actions: [],
+    }))
+    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation((config) => {
+      void config.onOk?.()
+      return { destroy: vi.fn(), update: vi.fn() } as unknown as ReturnType<typeof Modal.confirm>
+    })
+
+    render(
+      <AiPanelProvider>
+        <WriterPage projectId="project-1" />
+      </AiPanelProvider>,
+    )
+
+    expect(await screen.findByText('AI 已生成一份独立的章节修订候选')).toBeInTheDocument()
+    const editor = document.querySelector<HTMLTextAreaElement>('.writer-content-input textarea')
+    expect(editor).toHaveValue(source)
+    fireEvent.change(editor as HTMLTextAreaElement, { target: { value: manualEdit } })
+    fireEvent.click(screen.getByRole('button', { name: '应用到编辑器' }))
+    await waitFor(() => expect(editor).toHaveValue(candidate))
+
+    fireEvent.click(screen.getByRole('button', { name: /丢弃草稿/ }))
+
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith(
+      '/projects/project-1/chapter-drafts/draft-revision-discard',
+    ))
+    await waitFor(() => expect(editor).toHaveValue(manualEdit))
+    expect(api.put).not.toHaveBeenCalled()
+    expect(api.post).not.toHaveBeenCalled()
+    expect(confirmSpy).toHaveBeenCalledTimes(2)
   })
 
   it('preserves a stale AI revision for comparison and refuses to apply it', async () => {

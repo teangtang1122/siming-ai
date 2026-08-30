@@ -212,6 +212,7 @@ class ProjectPackageExporter:
                 self.db.query(ChapterDraft)
                 .filter(
                     ChapterDraft.project_id == self.project_id,
+                    ChapterDraft.status == "pending",
                     ChapterDraft.saved_chapter_id.is_(None),
                 )
                 .order_by(ChapterDraft.created_at.asc())

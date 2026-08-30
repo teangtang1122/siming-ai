@@ -31,6 +31,7 @@ from ..services.chapter_quality import preview_chapter_quality
 from ..services.chapter_revision import preview_de_ai_revision
 from ..services.workspace.generated_drafts import (
     chapter_draft_result_data,
+    discard_chapter_draft,
     ensure_generated_draft_outline_is_unused,
     find_chapter_draft,
     latest_pending_chapter_draft,
@@ -47,6 +48,15 @@ def _draft_or_error(db: Session, project_id: str, draft_id: str):
     if not draft:
         raise ValidationError("章节草稿不存在")
     return draft
+
+
+def _bind_draft_manifest(values: dict, draft) -> None:
+    """Use server-owned draft provenance when promoting reviewed content."""
+    supplied = str(values.get("context_manifest_id") or "").strip()
+    authoritative = str(draft.context_manifest_id or "").strip()
+    if supplied and supplied != authoritative:
+        raise ValidationError("章节草稿的生成上下文与保存请求不一致")
+    values["context_manifest_id"] = authoritative or None
 
 
 def _save_message(data: dict) -> str:
@@ -106,6 +116,19 @@ def get_pending_chapter_draft(
     return ApiResponse.success(data=data)
 
 
+@router.delete("/projects/{project_id}/chapter-drafts/{draft_id}")
+def discard_generated_chapter_draft(
+    project_id: str,
+    draft_id: str,
+    db: Annotated[Session, Depends(get_db)],
+):
+    draft = discard_chapter_draft(db, project_id, draft_id)
+    return ApiResponse.success(
+        data=chapter_draft_result_data(draft, db=db),
+        message="章节草稿已丢弃；正式正文未改变",
+    )
+
+
 @router.post("/projects/{project_id}/chapters")
 async def create_chapter(
     project_id: str,
@@ -134,6 +157,7 @@ async def create_chapter(
             values.get("outline_node_id"),
             draft=existing_draft,
         )
+        _bind_draft_manifest(values, existing_draft)
         draft = update_chapter_draft(
             db,
             project_id,
@@ -208,6 +232,7 @@ async def save_chapter(
             raise ValidationError("修订候选的基准版本与保存请求不一致")
         values["expected_version"] = base_version
         values["trigger_type"] = "ai_revision"
+        _bind_draft_manifest(values, draft)
         update_chapter_draft(
             db,
             project_id,

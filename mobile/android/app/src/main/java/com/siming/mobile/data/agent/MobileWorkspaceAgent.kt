@@ -64,6 +64,7 @@ internal class MobileWorkspaceAgent(
             put("next_actions", buildJsonArray {
                 add(JsonPrimitive("save_only"))
                 add(JsonPrimitive("save_and_catalog"))
+                add(JsonPrimitive("discard"))
             })
         }
     }
@@ -71,6 +72,9 @@ internal class MobileWorkspaceAgent(
     suspend fun markChapterDraftSaved(draftId: String) {
         chapterWriteStore.markSaved(draftId)
     }
+
+    suspend fun discardChapterDraft(draftId: String): Boolean =
+        chapterWriteStore.markDiscarded(draftId) != null
 
     suspend fun pendingOutlineDraft(projectId: String): JsonObject? =
         outlineDraftStore.latestPending(projectId)?.let(::outlineDraftData)

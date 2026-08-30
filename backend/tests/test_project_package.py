@@ -66,6 +66,7 @@ from app.services.project_package_service import (
 
 CHAPTER_SENTINEL = "CHAPTER_BODY_SENTINEL_56_DO_NOT_LEAK"
 DRAFT_SENTINEL = "UNSAVED_DRAFT_SENTINEL_56_DO_NOT_LEAK"
+DISCARDED_DRAFT_SENTINEL = "DISCARDED_DRAFT_SENTINEL_56_DO_NOT_EXPORT"
 SNAPSHOT_SENTINEL = "SNAPSHOT_SENTINEL_56_DO_NOT_LEAK"
 SUMMARY_SENTINEL = "SUMMARY_SENTINEL_56_DO_NOT_LEAK"
 MATERIAL_SENTINEL = "MATERIAL_SENTINEL_56_DO_NOT_LEAK"
@@ -139,6 +140,14 @@ def _seed_project(db: Session, root: Path, *, project_id: str = "source-project"
         status="pending",
         title="第二章草稿",
         content=DRAFT_SENTINEL,
+    )
+    discarded_draft = ChapterDraft(
+        id="draft-discarded",
+        project_id=project_id,
+        saved_chapter_id=None,
+        status="discarded",
+        title="已丢弃草稿",
+        content=DISCARDED_DRAFT_SENTINEL,
     )
     character_a = Character(
         id="character-a",
@@ -301,6 +310,7 @@ def _seed_project(db: Session, root: Path, *, project_id: str = "source-project"
             snapshot,
             summary,
             draft,
+            discarded_draft,
             character_a,
             character_b,
             voice,
@@ -417,6 +427,7 @@ def test_full_and_structure_packages_have_strict_author_data_boundaries(seeded):
     full_plaintext = b"\n".join(full_entries.values()).decode("utf-8", errors="ignore")
     assert CHAPTER_SENTINEL in full_plaintext
     assert DRAFT_SENTINEL in full_plaintext
+    assert DISCARDED_DRAFT_SENTINEL not in full_plaintext
     assert MATERIAL_SENTINEL in full_plaintext
     for excluded in (RAG_SENTINEL, CONVERSATION_SENTINEL, TASK_SENTINEL, MODEL_OVERRIDE_SENTINEL):
         assert excluded not in full_plaintext

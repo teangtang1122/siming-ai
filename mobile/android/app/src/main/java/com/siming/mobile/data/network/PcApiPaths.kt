@@ -60,6 +60,9 @@ internal object PcApiPaths {
     fun pendingChapterDraft(projectId: String): String =
         "${project(projectId)}/chapter-drafts/pending"
 
+    fun chapterDraft(projectId: String, draftId: String): String =
+        "${project(projectId)}/chapter-drafts/${segment(draftId)}"
+
     fun pendingOutlineDraft(projectId: String): String =
         "${project(projectId)}/outline-drafts/pending"
 

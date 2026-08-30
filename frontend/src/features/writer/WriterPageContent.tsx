@@ -139,7 +139,7 @@ interface PendingChapterDraft {
   draft_kind?: 'new' | 'revision'
   target_chapter_id?: string | null
   base_chapter_version?: number | null
-  draft_status: 'pending' | 'saved' | 'superseded'
+  draft_status: 'pending' | 'saved' | 'discarded' | 'superseded'
   content: string
   word_count: number
 }
@@ -224,6 +224,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [discardingDraft, setDiscardingDraft] = useState(false)
   const [catalogingStartedChapterId, setCatalogingStartedChapterId] = useState<string | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
   const [fromSnapshotId, setFromSnapshotId] = useState<string | undefined>()
@@ -285,6 +286,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
   const watchedContent = Form.useWatch('content', form)
   const chapterIds = useMemo(() => chapters.map((chapter) => chapter.id), [chapters])
   const loadedDraftIdRef = useRef<string | null>(null)
+  const closedDraftIdRef = useRef<string | null>(null)
   const detailRequestVersionRef = useRef(0)
   const snapshotRequestVersionRef = useRef(0)
   const pendingNewDraftRef = useRef(pendingNewDraft)
@@ -386,7 +388,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
 
   const blockFormalChapterNavigation = useCallback(() => {
     if (!pendingNewDraftRef.current) return false
-    message.info('请先保存当前 AI 章节草稿；保存前草稿是正文编辑器的唯一内容')
+    message.info('请先保存或丢弃当前 AI 章节草稿；处理前草稿是正文编辑器的唯一内容')
     return true
   }, [])
 
@@ -511,6 +513,64 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
     setCreating(false)
     setSelectedId(generatedDraft.savedChapterId)
   }, [generatedDraft?.projectId, generatedDraft?.savedChapterId, generatedDraft?.status, projectId])
+
+  useEffect(() => {
+    if (
+      generatedDraft?.projectId !== projectId
+      || generatedDraft.status !== 'discarded'
+    ) return
+    if (closedDraftIdRef.current === generatedDraft.draftId) {
+      if (
+        generatedDraft.draftKind !== 'revision'
+        && !selectedId
+        && chapters[0]?.id
+      ) setSelectedId(chapters[0].id)
+      return
+    }
+    closedDraftIdRef.current = generatedDraft.draftId
+    loadedDraftIdRef.current = null
+    pendingNewDraftRef.current = null
+    setRevisionCompareOpen(false)
+
+    if (generatedDraft.draftKind === 'revision') {
+      if (appliedGeneratedRevision?.draftId === generatedDraft.draftId) {
+        form.setFieldsValue(appliedGeneratedRevision.before)
+        if (appliedGeneratedRevision.wasDirty) markDirty()
+        else markSaved()
+      }
+      setAppliedGeneratedRevision(null)
+      return
+    }
+
+    detailRequestVersionRef.current += 1
+    snapshotRequestVersionRef.current += 1
+    setAppliedDeAiRevision(null)
+    setAppliedGeneratedRevision(null)
+    setCatalogingStartedChapterId(null)
+    editorSelectionRef.current = null
+    setSelectedText('')
+    setSelectedTextChapterId(null)
+    markSaved()
+
+    setCreating(false)
+    const nextChapterId = chapters[0]?.id || null
+    setSelectedId(nextChapterId)
+    if (!nextChapterId) {
+      setDetail(null)
+      setSnapshots([])
+      setDiff(null)
+      form.resetFields()
+    }
+  }, [
+    appliedGeneratedRevision,
+    chapters,
+    form,
+    generatedDraft,
+    markDirty,
+    markSaved,
+    projectId,
+    selectedId,
+  ])
 
   // Sync selections to AI context
   useEffect(() => {
@@ -642,6 +702,36 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: deleteChapter,
+    })
+  }
+
+  const discardGeneratedChapterDraft = async () => {
+    const draft = pendingGeneratedDraft
+    if (!draft || discardingDraft) return
+    setDiscardingDraft(true)
+    try {
+      await apiClient.delete(`/projects/${projectId}/chapter-drafts/${draft.draftId}`)
+      updateGeneratedDraft({ status: 'discarded' })
+      fetchChapters()
+      message.success('章节草稿已丢弃；正式正文未改变')
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || err.message || '丢弃章节草稿失败')
+    } finally {
+      setDiscardingDraft(false)
+    }
+  }
+
+  const confirmDiscardGeneratedChapterDraft = () => {
+    if (!pendingGeneratedDraft) return
+    Modal.confirm({
+      title: '丢弃这份 AI 章节草稿？',
+      content: pendingGeneratedDraft.draftKind === 'revision'
+        ? '修订候选会被丢弃；如已应用，将恢复应用前的编辑内容。正式章节正文不会改变。'
+        : '这份草稿及当前编辑会被丢弃；已有正式章节和大纲不会改变。',
+      okText: '丢弃草稿',
+      cancelText: '继续编辑',
+      okButtonProps: { danger: true },
+      onOk: discardGeneratedChapterDraft,
     })
   }
 
@@ -1189,6 +1279,17 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
               )}
             </div>
             <Space>
+              {pendingGeneratedDraft && (
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={discardingDraft}
+                  disabled={saving}
+                  onClick={confirmDiscardGeneratedChapterDraft}
+                >
+                  丢弃草稿
+                </Button>
+              )}
               {canReviewCurrentText && (
                 <Tooltip title={modelOptions.length === 0 ? '请先启用一个可用模型' : '按编辑器中的当前整章评分；只读，不修改正文'}>
                   <Button
@@ -1233,10 +1334,10 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                 type="primary"
                 icon={<SaveOutlined />}
                 loading={saving}
-                disabled={
+                disabled={discardingDraft || (
                   (!creating && !isDirty && !detail?.cataloging_required)
                   || Boolean(catalogingStartedChapterId && catalogingStartedChapterId === selectedId)
-                }
+                )}
                 onClick={() => void submitChapterSave('save_and_catalog')}
                 menu={{
                   items: [{ key: 'save_only', label: '仅保存', disabled: !creating && !isDirty }],
@@ -1305,7 +1406,7 @@ function WriterPage({ projectId, focusChapterId, sourceLocatorKey }: WriterPageP
                   type="warning"
                   showIcon
                   message="AI 草稿尚未保存"
-                  description="评分和去除 AI 味会读取编辑器当前内容。请选择“保存并建档”或下拉菜单中的“仅保存”；建档完成前 AI 不会继续下一章。"
+                  description="评分和去除 AI 味会读取编辑器当前内容。你可以保存、仅保存或丢弃草稿；建档完成前 AI 不会继续下一章。"
                 />
               )}
               <Form form={form} layout="vertical" onFinish={saveChapter} onValuesChange={markDirty}>

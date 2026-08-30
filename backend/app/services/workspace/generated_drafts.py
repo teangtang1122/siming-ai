@@ -83,8 +83,9 @@ def _cache_chapter_draft(
         _CHAPTER_DRAFTS.popitem(last=False)
 
 
-def _set_chapter_draft_superseded(draft: Any, *, db: Any) -> None:
-    draft.status = "superseded"
+def _set_chapter_draft_status(draft: Any, status: str, *, db: Any) -> None:
+    draft.status = status
+    draft.updated_at = datetime.utcnow()
     if session_commits_deferred(db):
         # A cache miss is safe across either commit or rollback; retaining a
         # pre-transaction "pending" entry after commit is not.
@@ -92,7 +93,11 @@ def _set_chapter_draft_superseded(draft: Any, *, db: Any) -> None:
         return
     cached = _CHAPTER_DRAFTS.get(str(draft.id))
     if cached:
-        cached["status"] = "superseded"
+        cached["status"] = status
+
+
+def _set_chapter_draft_superseded(draft: Any, *, db: Any) -> None:
+    _set_chapter_draft_status(draft, "superseded", db=db)
 
 
 def lock_chapter_draft_project(db: Any, project_id: str) -> Any | None:
@@ -448,6 +453,25 @@ def find_chapter_draft(db: Any, project_id: str, draft_id: str) -> Any | None:
     ).first()
 
 
+def discard_chapter_draft(db: Any, project_id: str, draft_id: str) -> Any:
+    """Release an unsaved author draft without touching formal chapter prose."""
+    from ...core.exceptions import ValidationError
+
+    lock_chapter_draft_project(db, project_id)
+    draft = find_chapter_draft(db, project_id, draft_id)
+    if draft is None:
+        raise ValidationError("章节草稿不存在")
+    if draft.status == "saved":
+        raise ValidationError("该草稿已保存为正式章节；如需删除，请删除对应正式章节")
+    if draft.status == "discarded":
+        return draft
+    if draft.status != "pending":
+        raise ValidationError("该章节草稿已失效，不能再丢弃")
+    _set_chapter_draft_status(draft, "discarded", db=db)
+    commit_session(db)
+    return draft
+
+
 def release_stale_pending_chapter_drafts(db: Any, project_id: str) -> int:
     """Release legacy pending drafts whose outline already has formal prose."""
     from ...database.models import Chapter, ChapterDraft
@@ -522,7 +546,7 @@ def pending_draft_block_result(tool: str, draft: Any) -> dict[str, Any]:
             "data": {
                 "blocking_draft_id": draft.id,
                 "outline_node_id": draft.outline_node_id,
-                "allowed_actions": ["save_and_catalog", "save_only"],
+                "allowed_actions": ["save_and_catalog", "save_only", "discard"],
             },
         },
         AssistantTurnDirective.BLOCKED_ON_CATALOGING,
@@ -549,7 +573,7 @@ def update_chapter_draft(
     if not row:
         raise NotFoundError("章节草稿不存在")
     if row.status != "pending":
-        raise ValidationError("该章节草稿已经保存或被新草稿替代，不能重复保存")
+        raise ValidationError("该章节草稿已经处理或失效，不能重复保存")
     if (
         str(row.draft_kind or "new") == "revision"
         and str(row.outline_node_id or "") != str(outline_node_id or "")
@@ -594,7 +618,11 @@ def chapter_draft_result_data(draft: Any, *, db: Any = None) -> dict[str, Any]:
         "draft_status": str(draft.status or "pending"),
         "content": str(draft.content or ""),
         "word_count": count_words(str(draft.content or "")),
-        "next_actions": ["save_and_catalog", "save_only"],
+        "next_actions": (
+            ["save_and_catalog", "save_only", "discard"]
+            if draft.status == "pending"
+            else []
+        ),
     }
     if db is None or not draft.target_chapter_id:
         return data

@@ -66,26 +66,27 @@ class SqlAlchemyChapterWorkspace:
     def _outline_context(self, project_id: str) -> dict:
         return outline_sort_context(load_outline_nodes(self._session, project_id))
 
-    def _validate_manifest(self, project_id: str, manifest_id: str | None) -> None:
+    def _validate_manifest_reference(
+        self, project_id: str, manifest_id: str | None
+    ) -> None:
         if not manifest_id:
             return
-        from ....services.context_orchestrator import manifest_is_usable
+        from ....database.models import ContextManifest
 
-        valid, detail, manifest = manifest_is_usable(
-            self._session,
-            manifest_id,
-            project_id=project_id,
-            require_external_evidence=False,
-        )
-        if valid and manifest is not None and manifest.execution_route == "external_mcp":
-            valid, detail, _ = manifest_is_usable(
-                self._session,
-                manifest_id,
-                project_id=project_id,
-                require_external_evidence=True,
+        # Freshness is an execution-time guard: generation must not start from
+        # stale context. Once a draft has been generated and handed to the
+        # author, the manifest is immutable provenance for that draft. Later
+        # source edits must not prevent the author from promoting reviewed text.
+        manifest = (
+            self._session.query(ContextManifest)
+            .filter(
+                ContextManifest.id == manifest_id,
+                ContextManifest.project_id == project_id,
             )
-        if not valid:
-            raise ValidationError(detail)
+            .first()
+        )
+        if manifest is None:
+            raise ValidationError("上下文清单不存在或不属于当前作品")
 
     def create_narrative_checkpoint(
         self,
@@ -133,7 +134,7 @@ class SqlAlchemyChapterWorkspace:
     def create(self, project_id: str, payload: dict[str, Any]) -> StoryMutation:
         get_project_or_404(self._session, project_id)
         get_outline_node_or_404(self._session, project_id, payload.get("outline_node_id"))
-        self._validate_manifest(project_id, payload.get("context_manifest_id"))
+        self._validate_manifest_reference(project_id, payload.get("context_manifest_id"))
         content = payload.get("content") or ""
         chapter = Chapter(
             project_id=project_id,
@@ -207,7 +208,7 @@ class SqlAlchemyChapterWorkspace:
         if "content" in data:
             chapter.content = data["content"] or ""
         if "context_manifest_id" in data:
-            self._validate_manifest(project_id, data["context_manifest_id"])
+            self._validate_manifest_reference(project_id, data["context_manifest_id"])
             chapter.context_manifest_id = data["context_manifest_id"]
         chapter.word_count = count_words(chapter.content or "")
         chapter.current_version = (chapter.current_version or 1) + 1

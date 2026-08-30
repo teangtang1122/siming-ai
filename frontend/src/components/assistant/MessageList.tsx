@@ -1,6 +1,6 @@
 /* Message list rendering for the assistant chat. */
 import { useState } from 'react'
-import { Button, Dropdown, Empty, Space, Tag, Typography, message } from 'antd'
+import { Button, Dropdown, Empty, Popconfirm, Space, Tag, Typography, message } from 'antd'
 import {
   BranchesOutlined,
   DatabaseOutlined,
@@ -122,21 +122,25 @@ function ChapterDraftSaveActions({
   activeDraftId,
   activeDraftStatus,
   onSave,
+  onDiscard,
 }: {
   action: WorkspaceToolLog
   activeDraftId: string | null
   activeDraftStatus: string | null
   onSave: (action: WorkspaceToolLog, mode: 'save_only' | 'save_and_catalog') => Promise<void>
+  onDiscard: (action: WorkspaceToolLog) => Promise<void>
 }) {
-  const [savingMode, setSavingMode] = useState<'save_only' | 'save_and_catalog' | null>(null)
+  const [working, setWorking] = useState<'save_only' | 'save_and_catalog' | 'discard' | null>(null)
+  const [localStatus, setLocalStatus] = useState<string | null>(null)
   const draftId = String(action.data?.draft_id || '')
-  const saved = activeDraftId === draftId && activeDraftStatus === 'saved'
-  const superseded = activeDraftId === draftId && activeDraftStatus === 'superseded'
+  const status = localStatus || (activeDraftId === draftId
+    ? activeDraftStatus
+    : String(action.data?.draft_status || 'pending'))
   const replaced = Boolean(activeDraftId && activeDraftId !== draftId)
   const revision = action.data?.draft_kind === 'revision'
   const save = async (mode: 'save_only' | 'save_and_catalog') => {
-    if (savingMode) return
-    setSavingMode(mode)
+    if (working) return
+    setWorking(mode)
     try {
       await onSave(action, mode)
     } catch (error: any) {
@@ -146,43 +150,86 @@ function ChapterDraftSaveActions({
         || '保存章节草稿失败，请重试',
       )
     } finally {
-      setSavingMode(null)
+      setWorking(null)
     }
   }
-  if (saved) return <Tag color="green">草稿已保存</Tag>
-  if (superseded) return <Tag>迟到草稿已释放</Tag>
+  const discard = async () => {
+    if (working) return
+    setWorking('discard')
+    try {
+      await onDiscard(action)
+      setLocalStatus('discarded')
+    } catch (error: any) {
+      message.error(
+        error?.response?.data?.detail
+        || error?.message
+        || '丢弃章节草稿失败，请重试',
+      )
+    } finally {
+      setWorking(null)
+    }
+  }
+  if (status === 'saved') return <Tag color="green">草稿已保存</Tag>
+  if (status === 'discarded') return <Tag>草稿已丢弃</Tag>
+  if (status === 'superseded') return <Tag>迟到草稿已释放</Tag>
   if (replaced) return <Tag>已被当前草稿替代</Tag>
+  const discardButton = (
+    <Popconfirm
+      title="丢弃这份章节草稿？"
+      description="草稿会被释放，已有正式正文不会改变。"
+      okText="丢弃"
+      cancelText="取消"
+      okButtonProps={{ danger: true }}
+      onConfirm={() => discard()}
+    >
+      <Button
+        size="small"
+        danger
+        icon={<DeleteOutlined />}
+        loading={working === 'discard'}
+        disabled={working !== null}
+      >
+        丢弃
+      </Button>
+    </Popconfirm>
+  )
   if (revision) {
     return (
-      <Button
-        type="primary"
-        size="small"
-        icon={<DiffOutlined />}
-        loading={savingMode !== null}
-        disabled={savingMode !== null}
-        onClick={() => void save('save_only')}
-      >
-        在正文页审阅修订
-      </Button>
+      <Space size={4} wrap>
+        <Button
+          type="primary"
+          size="small"
+          icon={<DiffOutlined />}
+          loading={working === 'save_only'}
+          disabled={working !== null}
+          onClick={() => void save('save_only')}
+        >
+          在正文页审阅修订
+        </Button>
+        {discardButton}
+      </Space>
     )
   }
   return (
-    <Dropdown.Button
-      type="primary"
-      size="small"
-      icon={<SaveOutlined />}
-      loading={savingMode !== null}
-      disabled={savingMode !== null}
-      onClick={() => void save('save_and_catalog')}
-      menu={{
-        items: [{ key: 'save_only', label: '仅保存', disabled: savingMode !== null }],
-        onClick: ({ key }) => {
-          if (key === 'save_only') void save('save_only')
-        },
-      }}
-    >
-      保存并建档
-    </Dropdown.Button>
+    <Space size={4} wrap>
+      <Dropdown.Button
+        type="primary"
+        size="small"
+        icon={<SaveOutlined />}
+        loading={working === 'save_and_catalog' || working === 'save_only'}
+        disabled={working !== null}
+        onClick={() => void save('save_and_catalog')}
+        menu={{
+          items: [{ key: 'save_only', label: '仅保存', disabled: working !== null }],
+          onClick: ({ key }) => {
+            if (key === 'save_only') void save('save_only')
+          },
+        }}
+      >
+        保存并建档
+      </Dropdown.Button>
+      {discardButton}
+    </Space>
   )
 }
 
@@ -219,6 +266,7 @@ interface MessageListProps {
     action: WorkspaceToolLog,
     mode: 'save_only' | 'save_and_catalog',
   ) => Promise<void>
+  onDiscardChapterDraft?: (action: WorkspaceToolLog) => Promise<void>
   activeDraftId?: string | null
   activeDraftStatus?: string | null
   onOutlineDraftAction?: (
@@ -240,6 +288,7 @@ export function MessageList({
   onStorageRepaired,
   emptyDescription = '直接提出需求，AI会读取项目资料并决定是否调用工具。',
   onSaveChapterDraft,
+  onDiscardChapterDraft,
   activeDraftId = null,
   activeDraftStatus = null,
   onOutlineDraftAction,
@@ -304,13 +353,14 @@ export function MessageList({
                   />
                 </div>
               )}
-              {item.role === 'assistant' && onSaveChapterDraft && chapterDraftActions(item).map((action, actionIndex) => (
+              {item.role === 'assistant' && onSaveChapterDraft && onDiscardChapterDraft && chapterDraftActions(item).map((action, actionIndex) => (
                 <div className="workspace-assistant-message-action" key={`chapter-draft-${actionIndex}`}>
                   <ChapterDraftSaveActions
                     action={action}
                     activeDraftId={activeDraftId}
                     activeDraftStatus={activeDraftStatus}
                     onSave={onSaveChapterDraft}
+                    onDiscard={onDiscardChapterDraft}
                   />
                 </div>
               ))}

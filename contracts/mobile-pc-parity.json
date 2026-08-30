@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "2026-08-28",
+  "contract_version": "2026-08-30",
   "canonical_authority": "pc",
   "modes": {
     "pc": "桌面后端和前端所使用的权威领域实现。",
@@ -19,6 +19,7 @@
         "chapterReorder": "chapter.reorder",
         "chapterSnapshots": "chapter.history",
         "pendingChapterDraft": "authoring.chapter",
+        "chapterDraft": "authoring.chapter",
         "pendingOutlineDraft": "writer.outline",
         "outlineDraft": "writer.outline",
         "confirmOutlineDraft": "writer.outline",

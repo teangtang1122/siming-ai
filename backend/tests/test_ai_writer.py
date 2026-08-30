@@ -18,6 +18,7 @@ from app.database.models import (
     ChapterDraft,
     ChapterSnapshot,
     Character,
+    ContextManifest,
     ModelContextProfile,
     OutlineNode,
 )
@@ -2567,6 +2568,153 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
             first = db.query(Chapter).filter(Chapter.outline_node_id == first_outline_id).one()
             self.assertEqual(first.content, "旧井边的第一章正式正文。")
             self.assertEqual(db.get(ChapterDraft, draft_id).status, "saved")
+        finally:
+            db.close()
+
+    def test_reviewed_draft_can_be_saved_after_its_manifest_becomes_stale(self):
+        project_id = self.create_project("Stale provenance save")
+        outline_id = self.create_outline(project_id, "第二章 晨光")
+        db = SessionLocal()
+        try:
+            manifest = ContextManifest(
+                project_id=project_id,
+                task_type="writing",
+                execution_route="internal_api",
+                status="stale",
+                stale_reason="Source changed: character:character-1",
+            )
+            db.add(manifest)
+            db.flush()
+            draft = ChapterDraft(
+                project_id=project_id,
+                title="第二章 晨光",
+                outline_node_id=outline_id,
+                context_manifest_id=manifest.id,
+                content="这是作者已经审阅过的草稿正文。",
+                status="pending",
+            )
+            db.add(draft)
+            db.commit()
+            draft_id = str(draft.id)
+            manifest_id = str(manifest.id)
+        finally:
+            db.close()
+
+        saved = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/chapters",
+            json={
+                "title": "第二章 晨光",
+                "outline_node_id": outline_id,
+                "content": "这是作者已经审阅过的草稿正文。",
+                "context_manifest_id": manifest_id,
+                "draft_id": draft_id,
+                "cataloging_mode": "save_only",
+            },
+        )
+
+        self.assertEqual(saved.status_code, 200, saved.text)
+        db = SessionLocal()
+        try:
+            stored_draft = db.get(ChapterDraft, draft_id)
+            self.assertEqual(stored_draft.status, "saved")
+            chapter = db.get(Chapter, stored_draft.saved_chapter_id)
+            self.assertEqual(chapter.context_manifest_id, manifest_id)
+        finally:
+            db.close()
+
+    def test_draft_manifest_provenance_cannot_be_replaced_during_save(self):
+        project_id = self.create_project("Draft provenance")
+        db = SessionLocal()
+        try:
+            original = ContextManifest(project_id=project_id, task_type="writing")
+            replacement = ContextManifest(project_id=project_id, task_type="writing")
+            db.add_all([original, replacement])
+            db.flush()
+            draft = ChapterDraft(
+                project_id=project_id,
+                title="第一章",
+                context_manifest_id=original.id,
+                content="草稿正文。",
+                status="pending",
+            )
+            db.add(draft)
+            db.commit()
+            draft_id = str(draft.id)
+            replacement_id = str(replacement.id)
+        finally:
+            db.close()
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/chapters",
+            json={
+                "title": "第一章",
+                "content": "草稿正文。",
+                "context_manifest_id": replacement_id,
+                "draft_id": draft_id,
+                "cataloging_mode": "save_only",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.query(Chapter).count(), 0)
+            self.assertEqual(db.get(ChapterDraft, draft_id).status, "pending")
+        finally:
+            db.close()
+
+    def test_author_can_discard_pending_draft_and_reuse_editor_slot(self):
+        project_id = self.create_project("Discard draft")
+        db = SessionLocal()
+        try:
+            draft = ChapterDraft(
+                project_id=project_id,
+                title="不再需要的草稿",
+                content="不会进入正式正文。",
+                status="pending",
+            )
+            db.add(draft)
+            db.commit()
+            draft_id = str(draft.id)
+        finally:
+            db.close()
+
+        discarded = self.client.delete(
+            f"{API_PREFIX}/projects/{project_id}/chapter-drafts/{draft_id}"
+        )
+        repeated = self.client.delete(
+            f"{API_PREFIX}/projects/{project_id}/chapter-drafts/{draft_id}"
+        )
+        resurrected = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/chapters",
+            json={
+                "title": "不应复活的草稿",
+                "content": "这次保存必须被拒绝。",
+                "draft_id": draft_id,
+                "cataloging_mode": "save_only",
+            },
+        )
+        restored = self.client.get(
+            f"{API_PREFIX}/projects/{project_id}/chapter-drafts/pending"
+        )
+
+        self.assertEqual(discarded.status_code, 200, discarded.text)
+        self.assertEqual(discarded.json()["data"]["draft_status"], "discarded")
+        self.assertEqual(discarded.json()["data"]["next_actions"], [])
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(resurrected.status_code, 400, resurrected.text)
+        self.assertIsNone(restored.json()["data"])
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.get(ChapterDraft, draft_id).status, "discarded")
+            next_id = store_chapter_draft(
+                project_id=project_id,
+                title="新的草稿",
+                content="可以继续写作。",
+                db=db,
+            )
+            self.assertEqual(db.get(ChapterDraft, next_id).status, "pending")
+            self.assertEqual(db.query(Chapter).count(), 0)
         finally:
             db.close()
 

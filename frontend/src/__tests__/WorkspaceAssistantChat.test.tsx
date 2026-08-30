@@ -551,6 +551,60 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     expect(lastPostPayload).not.toHaveProperty('target_chapter_id')
   })
 
+  it('lets the author discard a generated chapter draft from its chat card', async () => {
+    const stream = createControlledResponse([conversationEvent + runEvent])
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    }))
+    const user = userEvent.setup()
+    renderChat()
+    await sendChapterRequest()
+    const draftAction = {
+      tool: 'chapter_writer',
+      status: 'ok',
+      detail: '第二章草稿已生成，尚未保存',
+      data: {
+        draft_id: 'draft-discard-chat',
+        project_id: 'project-1',
+        title: '第二章 夜雨',
+        content: '夜雨落在山门外。',
+        draft_status: 'pending',
+      },
+    }
+    await act(async () => {
+      stream.push(sse({
+        type: 'complete',
+        data: {
+          reply: '第二章草稿已生成，尚未保存。',
+          applied_actions: [draftAction],
+          actions: [draftAction],
+          tool_logs: [draftAction],
+          run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+        },
+      }) + sse('[DONE]'))
+      stream.close()
+    })
+    mockDelete.mockResolvedValueOnce({
+      data: { data: { draft_id: 'draft-discard-chat', draft_status: 'discarded' } },
+    })
+
+    await user.click(await screen.findByRole('button', { name: /丢弃/ }))
+    const confirmation = await screen.findByText('丢弃这份章节草稿？')
+    const popover = confirmation.closest('.ant-popover-inner')
+    expect(popover).not.toBeNull()
+    await user.click(within(popover as HTMLElement).getByRole('button', { name: /丢\s*弃/ }))
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith(
+      '/projects/project-1/chapter-drafts/draft-discard-chat',
+    ))
+    expect(await screen.findByText('草稿已丢弃')).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalledWith(
+      '/projects/project-1/chapters',
+      expect.anything(),
+    )
+  })
+
   it('shows a rejected chat draft save instead of failing silently', async () => {
     const stream = createControlledResponse([conversationEvent + runEvent])
     vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {

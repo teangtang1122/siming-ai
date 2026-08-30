@@ -189,6 +189,20 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         return response.data as? JsonObject
     }
 
+    suspend fun discardChapterDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+    ): JsonObject {
+        val response = request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.chapterDraft(projectId, draftId),
+            "DELETE",
+        )
+        return response.data as? JsonObject
+            ?: throw GatewayHttpException(502, "PC API 返回的章节草稿结构无效")
+    }
+
     suspend fun pendingOutlineDraft(
         connection: GatewayConnection,
         projectId: String,

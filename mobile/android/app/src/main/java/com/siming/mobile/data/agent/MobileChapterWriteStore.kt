@@ -97,6 +97,15 @@ internal class MobileChapterWriteStore(
         return transition(run, MobileChapterWriteState.SAVED)
     }
 
+    suspend fun markDiscarded(runId: String): MobileChapterWriteRun? {
+        val run = load(runId) ?: return null
+        return when (run.state) {
+            MobileChapterWriteState.GENERATED -> transition(run, MobileChapterWriteState.DISCARDED)
+            MobileChapterWriteState.DISCARDED -> run
+            else -> null
+        }
+    }
+
     suspend fun markSuperseded(runId: String, error: String? = null): MobileChapterWriteRun? {
         val run = load(runId) ?: return null
         return transition(run, MobileChapterWriteState.SUPERSEDED, error)
@@ -187,8 +196,9 @@ internal object MobileChapterWriteState {
     const val CANCELLED = "cancelled"
     const val FAILED = "failed"
     const val SAVED = "saved"
+    const val DISCARDED = "discarded"
     const val SUPERSEDED = "superseded"
-    val ALL = setOf(GENERATING, GENERATED, CANCELLED, FAILED, SAVED, SUPERSEDED)
+    val ALL = setOf(GENERATING, GENERATED, CANCELLED, FAILED, SAVED, DISCARDED, SUPERSEDED)
 }
 
 internal fun mobileChapterWriteRunId(

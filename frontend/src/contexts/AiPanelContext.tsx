@@ -17,7 +17,7 @@ export interface GeneratedChapterDraft {
   baseChapterVersion: number | null
   content: string
   wordCount: number
-  status: 'pending' | 'saved' | 'superseded'
+  status: 'pending' | 'saved' | 'discarded' | 'superseded'
 }
 
 export interface GeneratedOutlineDraftNode {

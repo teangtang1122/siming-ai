@@ -2142,6 +2142,22 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         return chapterId
     }
 
+    suspend fun discardPendingChapterDraft(draft: MobilePendingChapterDraft) {
+        when (draft.executionRoute) {
+            "android_standalone" -> require(
+                mobileWorkspaceAgent.discardChapterDraft(draft.draftId),
+            ) { "手机章节草稿不存在或已处理" }
+            "project_package" -> require(
+                markChapterDraftReplicaStatus(draft, "discarded"),
+            ) { "项目包章节草稿不存在或已处理" }
+            else -> {
+                val connection = dao.connection()
+                    ?: error("丢弃 PC 章节草稿需要恢复 Gateway 连接")
+                api.discardChapterDraft(connection, draft.projectId, draft.draftId)
+            }
+        }
+    }
+
     private suspend fun importedPendingChapterDraft(projectId: String): JsonObject? =
         dao.projectSnapshot(projectId)
             .asSequence()
@@ -2168,16 +2184,28 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
 
     private suspend fun markChapterDraftConsumed(draft: MobilePendingChapterDraft) {
         mobileWorkspaceAgent.markChapterDraftSaved(draft.draftId)
+        markChapterDraftReplicaStatus(draft, "saved")
+    }
+
+    private suspend fun markChapterDraftReplicaStatus(
+        draft: MobilePendingChapterDraft,
+        status: String,
+    ): Boolean {
         val key = ReplicaEntity.key(draft.projectId, "chapter_draft", draft.draftId)
-        val entity = dao.entity(key) ?: return
+        val entity = dao.entity(key) ?: return false
         val payload = entity.payloadJson
             ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
-            ?: return
+            ?: return false
+        if (status == "discarded") {
+            val currentStatus = payload.string("status")
+            if (currentStatus == status) return true
+            if (currentStatus !in setOf("pending", "generated", "generating")) return false
+        }
         val now = Instant.now().toString()
         val encoded = json.encodeToString(
             JsonObject(
                 payload.toMutableMap().apply {
-                    put("status", JsonPrimitive("saved"))
+                    put("status", JsonPrimitive(status))
                     put("updated_at", JsonPrimitive(now))
                 },
             ),
@@ -2192,6 +2220,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 localModifiedAt = System.currentTimeMillis(),
             ),
         )
+        return true
     }
 
     suspend fun cancelAssistantRun(projectId: String, runId: String) {

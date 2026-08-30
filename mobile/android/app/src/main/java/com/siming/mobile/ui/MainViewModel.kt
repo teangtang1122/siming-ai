@@ -1242,6 +1242,28 @@ private fun updateCatalogingProgress(
         }
     }
 
+    fun discardPendingChapterDraft(draft: MobilePendingChapterDraft) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                busy = true,
+                activity = "正在丢弃章节草稿…",
+                error = null,
+            )
+            try {
+                repository.discardPendingChapterDraft(draft)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingChapterDraft = null,
+                    notice = "章节草稿已丢弃；正式正文未改变",
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
     fun restorePendingOutlineDraft(projectId: String) {
         if (uiState.value.pendingOutlineDraft?.projectId == projectId) return
         viewModelScope.launch {

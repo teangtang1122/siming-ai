@@ -156,6 +156,7 @@ internal fun PendingChapterDraftEditorScreen(
     var content by rememberSaveable(draft.draftId) { mutableStateOf(draft.content) }
     var lastGeneratedContent by rememberSaveable(draft.draftId) { mutableStateOf(draft.content) }
     var showingFormalText by rememberSaveable(draft.draftId) { mutableStateOf(false) }
+    var showDiscardDialog by rememberSaveable(draft.draftId) { mutableStateOf(false) }
 
     LaunchedEffect(draft.content, draft.status) {
         if (draft.generating || content == lastGeneratedContent) {
@@ -188,6 +189,20 @@ internal fun PendingChapterDraftEditorScreen(
                         onBack()
                     }) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回")
+                    }
+                },
+                actions = {
+                    if (!draft.generating) {
+                        IconButton(
+                            onClick = { showDiscardDialog = true },
+                            enabled = !busy,
+                        ) {
+                            Icon(
+                                Icons.Outlined.DeleteOutline,
+                                contentDescription = "丢弃章节草稿",
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                 },
             )
@@ -295,6 +310,37 @@ internal fun PendingChapterDraftEditorScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+
+    if (showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { showDiscardDialog = false },
+            title = { Text("丢弃这份章节草稿？") },
+            text = {
+                Text(
+                    if (draft.revision) {
+                        "修订候选和当前编辑会被丢弃；正式章节正文不会改变。"
+                    } else {
+                        "草稿和当前编辑会被丢弃；已有正式章节和大纲不会改变。"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardDialog = false
+                        viewModel.discardPendingChapterDraft(draft)
+                    },
+                ) {
+                    Text("丢弃", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardDialog = false }) {
+                    Text("继续编辑")
+                }
+            },
+        )
     }
 }
 
