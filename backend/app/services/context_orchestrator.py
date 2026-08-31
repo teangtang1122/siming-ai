@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import event, or_
+from sqlalchemy import event, func, or_
 from sqlalchemy.orm import Session
 
 from ..core.legacy_env import get_compatible_env
@@ -24,6 +24,7 @@ from ..core.model_limits import (
     DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
     effective_model_limits,
 )
+from ..core.provider_model_identity import canonical_model_identity
 from ..database.models import (
     APIConfig,
     AssistantMemory,
@@ -65,9 +66,7 @@ from ..modules.context.application.runtime import (
 from ..modules.model_runtime.application.request_capacity import active_request_capacity
 from ..modules.model_runtime.application.runtime import resolve_model_identity
 from .character_archive import character_archive_text
-from .context_manifest_runtime import (
-    manifest_payload as serialize_manifest,
-)
+from .context_manifest_runtime import manifest_payload as serialize_manifest
 from .context_manifest_runtime import (
     persist_search_candidates,
     validate_manifest,
@@ -570,12 +569,12 @@ class ContextOrchestrator:
         provider = "unknown"
         model_name = raw or "unknown"
         if ":" in raw:
-            provider, model_name = raw.split(":", 1)
+            provider, model_name = canonical_model_identity(*raw.split(":", 1))
         elif raw:
             # Keep this resolution database-free. The gateway may have no
             # configured default while a caller is only previewing context.
             try:
-                provider, model_name = resolve_model_identity(raw)
+                provider, model_name = canonical_model_identity(*resolve_model_identity(raw))
             except Exception:
                 provider = "unknown"
         request_capacity = active_request_capacity(provider, model_name)
@@ -598,7 +597,7 @@ class ContextOrchestrator:
         )
         provider_config = (
             self.db.query(APIConfig)
-            .filter(APIConfig.provider == provider)
+            .filter(func.lower(func.trim(APIConfig.provider)) == provider)
             .first()
         )
         configured_output_limit = (

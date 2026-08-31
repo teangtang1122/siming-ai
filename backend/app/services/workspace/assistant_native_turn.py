@@ -83,7 +83,6 @@ class WorkspaceNativeTurn:
         # Provider streaming is an unbounded concurrency window.  Revalidate
         # the durable run before consuming protocol state or admitting calls.
         self.state.require_current_run()
-        self._mark_delivered_transactions_consumed()
         tool_calls = self._validated_tool_calls(capture, iteration, tool_schemas)
         transaction, admission_error = self._admit(capture, tool_calls, iteration)
         if admission_error is not None:
@@ -307,6 +306,7 @@ class WorkspaceNativeTurn:
         if transaction is None:
             raise AssertionError("rejected tool batch must not be empty")
         state = self.state
+        self._mark_delivered_transactions_consumed()
         for call in calls:
             name = str(call["function"]["name"])
             denied = error.model_error_result(name)
@@ -413,10 +413,21 @@ class WorkspaceNativeTurn:
         )
         if not calls:
             self._complete_text_only(capture.reply_text)
+            if state.loop_action != "synthesize":
+                self._mark_delivered_transactions_consumed()
             yield state.event(
-                {"type": "iteration_end", "iteration": iteration, "message": "Agent 判断任务完成"}
+                {
+                    "type": "iteration_end",
+                    "iteration": iteration,
+                    "message": (
+                        "模型未返回文字，进入无工具补偿"
+                        if state.loop_action == "synthesize"
+                        else "Agent 判断任务完成"
+                    ),
+                }
             )
             return
+        self._mark_delivered_transactions_consumed()
         if transaction is None:
             raise AssertionError("tool transaction must exist before execution")
         stop_reason = ""
@@ -639,11 +650,11 @@ class WorkspaceNativeTurn:
                 "本轮已终止，未接受模型伪造的等待或完成回复",
                 details={"reason": "missing_tool_category_controller"},
             )
-        self.state.final_reply = (
-            reply_text
-            if reply_text.strip()
-            else "当前模型没有返回文字或工具调用，本轮未执行任何操作。"
-        )
+        if not reply_text.strip():
+            self.state.final_reply = ""
+            self.state.loop_action = "synthesize"
+            return
+        self.state.final_reply = reply_text
         self.state.final_model = self.state.payload.model or ""
         self.state.final_usage = None
         self.state.loop_action = "break"

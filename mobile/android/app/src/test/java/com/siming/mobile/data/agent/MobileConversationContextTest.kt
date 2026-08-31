@@ -67,6 +67,22 @@ class MobileConversationContextTest {
     }
 
     @Test
+    fun `legacy deepseek model is canonicalized before capacity binding`() {
+        val config = DirectApiConfig(
+            displayName = "DeepSeek",
+            baseUrl = "https://api.deepseek.com/v1",
+            apiKey = "secret",
+            model = "deepseek-v3",
+            contextWindowTokens = 128_000,
+        )
+
+        val assistant = mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_ASSISTANT)
+
+        assertEquals("deepseek-v4-flash", assistant.model)
+        assertEquals(128_000, assistant.contextWindowTokens)
+    }
+
+    @Test
     fun `context state payload tolerates a missing cached budget`() {
         val conversation = MobileConversationSnapshot(
             conversationId = "conversation-empty-budget",

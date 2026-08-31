@@ -453,7 +453,7 @@ internal class MobileCreationConversationAgent(
                 "工具已关闭。根据服务端验证的本轮回执，用两到四句中文说明实际完成的读取或写入；" +
                 "不要声称失败的写入已保存，并提出一个基于当前数据缺口的后续问题。\n" +
                 "[/SERVER_RUNTIME_INSTRUCTION]"
-            val summaryExtraBody = if (config.isDeepSeek()) buildJsonObject {
+            val summaryExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
                 put("thinking", buildJsonObject { put("type", "disabled") })
             } else null
             val prepared = conversationContextRuntime.prepare(
@@ -1181,9 +1181,6 @@ internal class MobileCreationConversationAgent(
     private fun JsonObject.intOrNull(name: String): Int? = (get(name) as? JsonPrimitive)?.intOrNull
     private fun JsonObject.stageState(stage: String): JsonObject = objectValue("draft").objectValue("stages").objectValue(stage)
     private fun JsonObject.stageData(stage: String): JsonObject = stageState(stage)["data"] as? JsonObject ?: JsonObject(emptyMap())
-    private fun DirectApiConfig.isDeepSeek(): Boolean =
-        listOf(displayName, baseUrl, model).any { it.contains("deepseek", ignoreCase = true) }
-
     private data class ToolExecution(
         val session: JsonObject,
         val result: JsonObject,

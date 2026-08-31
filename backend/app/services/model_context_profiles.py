@@ -13,6 +13,7 @@ from ..core.model_capacity_catalog import (
     uses_documented_model_catalog,
 )
 from ..core.model_limits import default_output_token_limit
+from ..core.provider_model_identity import canonical_model_identity, canonical_model_name
 from ..modules.context.infrastructure.models import ModelContextProfile
 
 
@@ -38,16 +39,14 @@ def _provider_metadata_capacity(
     provider_config: Any,
     model_name: str,
 ) -> VerifiedModelCapacity | None:
-    provider = str(getattr(provider_config, "provider", "") or "")
-    normalized_model = (
-        model_name.removeprefix("models/") if provider == "gemini" else model_name
+    provider, normalized_model = canonical_model_identity(
+        getattr(provider_config, "provider", ""), model_name
     )
     for option in list(getattr(provider_config, "available_models_json", None) or []):
         if not isinstance(option, dict):
             continue
         option_id = str(option.get("id") or option.get("model") or "").strip()
-        if provider == "gemini":
-            option_id = option_id.removeprefix("models/")
+        option_id = canonical_model_name(provider, option_id)
         if option_id != normalized_model:
             continue
         try:
@@ -77,12 +76,19 @@ def resolved_cloud_model_capacity(
 ) -> VerifiedModelCapacity | None:
     """Resolve endpoint metadata before exact first-party documentation."""
 
-    if provider_config is None:
-        return None
-    capacity = _provider_metadata_capacity(provider_config, model_name)
+    capacity = (
+        _provider_metadata_capacity(provider_config, model_name)
+        if provider_config is not None
+        else None
+    )
+    configured_base_url = (
+        getattr(provider_config, "base_url_override", None) if provider_config is not None else None
+    )
+    if configured_base_url is None and provider_config is not None:
+        configured_base_url = getattr(provider_config, "base_url", None)
     if capacity is None and uses_documented_model_catalog(
         provider,
-        getattr(provider_config, "base_url_override", None),
+        configured_base_url,
     ):
         catalog = known_model_capacity(provider, model_name)
         if catalog is not None:
@@ -113,6 +119,7 @@ def configured_model_context_profile(
 ) -> ModelContextProfile | None:
     """Return the enabled author-confirmed profile for one exact model."""
 
+    provider, model_name = canonical_model_identity(provider, model_name)
     return (
         db.query(ModelContextProfile)
         .filter(
@@ -135,6 +142,7 @@ def save_model_context_profile(
 ) -> ModelContextProfile | None:
     """Validate and upsert one author-confirmed capacity profile."""
 
+    provider, model_name = canonical_model_identity(provider, model_name)
     if context_window_tokens is None:
         return None
     window = int(context_window_tokens)

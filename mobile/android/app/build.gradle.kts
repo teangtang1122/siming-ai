@@ -13,8 +13,8 @@ android {
         applicationId = "com.siming.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30311
-        versionName = "3.3.11"
+        versionCode = 30312
+        versionName = "3.3.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

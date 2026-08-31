@@ -18,7 +18,7 @@ from alembic import command
 from app.database.bootstrap import SCHEMA_EPOCH, alembic_config, bootstrap_database
 from app.database.models import AssistantRun, AssistantRunStep, Project
 
-HEAD_REVISION = "300a33_legacy_message_integrity"
+HEAD_REVISION = "300a34_canonical_model_identity"
 
 
 def _database_url(path: Path) -> str:

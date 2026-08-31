@@ -19,8 +19,15 @@ internal fun mobileCapacityBoundTaskConfig(
     config: DirectApiConfig,
     taskType: String,
 ): DirectApiConfig {
-    val defaultModel = config.model.trim()
-    val selectedModel = config.modelForTask(taskType).trim()
+    val defaultModel = MobileKnownModelCapacityCatalog.canonicalModelForOfficialEndpoint(
+        config.baseUrl,
+        config.model,
+    )
+    val requestedModel = config.modelForTask(taskType).trim()
+    val selectedModel = MobileKnownModelCapacityCatalog.canonicalModelForOfficialEndpoint(
+        config.baseUrl,
+        requestedModel,
+    )
     val selected = if (selectedModel == defaultModel) {
         config.copy(model = selectedModel)
     } else {
@@ -36,7 +43,7 @@ internal fun mobileCapacityBoundTaskConfig(
     if (bound?.contextWindowTokens == null) {
         throw MobileConversationContextException(
             MobileConversationContextErrorCode.CAPACITY_UNKNOWN,
-            "任务 $taskType 的模型 $selectedModel 未配置独立容量档案",
+            "任务 $taskType 的模型 $requestedModel 未配置独立容量档案",
         )
     }
     return bound

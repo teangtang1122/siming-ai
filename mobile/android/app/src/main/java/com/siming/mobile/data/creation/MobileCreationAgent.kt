@@ -123,7 +123,7 @@ internal class MobileCreationAgent(
     }
     val maxTokens = if (stage == "concepts") 3_200 else 6_000
     val temperature = if (stage == "concepts") 0.8 else 0.65
-    val creationExtraBody = if (config.isDeepSeek()) buildJsonObject {
+    val creationExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
         put("thinking", buildJsonObject { put("type", "disabled") })
     } else null
     val raw = directApi.complete(
@@ -1118,9 +1118,6 @@ internal class MobileCreationAgent(
     private fun JsonObject.string(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
     private fun JsonObject.int(name: String): Int = (get(name) as? JsonPrimitive)?.intOrNull ?: 0
     private fun JsonArray.takeArray(count: Int): JsonArray = JsonArray(take(count))
-    private fun DirectApiConfig.isDeepSeek(): Boolean =
-        listOf(displayName, baseUrl, model).any { it.contains("deepseek", ignoreCase = true) }
-
     private companion object {
         val ROLE_TYPES = setOf("protagonist", "supporting", "antagonist", "mentor", "other", "merged_alias")
     }

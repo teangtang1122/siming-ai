@@ -7,9 +7,12 @@ from typing import Any
 from ..ai.local_cli_adapter import DEFAULT_CLI_MODELS, is_local_cli_provider
 from ..core.exceptions import ValidationError
 from ..core.model_capacity_catalog import known_model_capacity
+from ..core.provider_model_identity import (
+    DEEPSEEK_MODEL_ALIASES,
+    DEEPSEEK_SUPPORTED_MODELS,
+    canonical_model_name,
+)
 
-DEEPSEEK_SUPPORTED_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash"}
-DEEPSEEK_MODEL_ALIASES = {"deepseek-v3": "deepseek-v4-flash"}
 MAX_CONTEXT_WINDOW_TOKENS = 10_000_000
 MAX_OUTPUT_TOKENS = 1_000_000
 MAX_SAFETY_MARGIN_TOKENS = 100_000
@@ -25,12 +28,8 @@ def normalize_model_for_provider(
         return model or DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
     if provider == "local_llama_cpp":
         return model
-    if provider == "gemini":
-        return model.removeprefix("models/")
-    if provider != "deepseek":
-        return model
-    normalized = DEEPSEEK_MODEL_ALIASES.get(model, model)
-    if normalized not in DEEPSEEK_SUPPORTED_MODELS and strict:
+    normalized = canonical_model_name(provider, model)
+    if provider == "deepseek" and normalized not in DEEPSEEK_SUPPORTED_MODELS and strict:
         supported = ", ".join(sorted(DEEPSEEK_SUPPORTED_MODELS))
         raise ValidationError(f"DeepSeek currently supports: {supported}")
     return normalized

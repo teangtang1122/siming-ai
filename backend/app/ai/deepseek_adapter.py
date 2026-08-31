@@ -4,6 +4,10 @@ from typing import AsyncGenerator, Optional
 from openai import APIConnectionError, APIError, APITimeoutError, AuthenticationError
 
 from ..core.exceptions import LLMError
+from ..core.provider_model_identity import (
+    DEEPSEEK_SUPPORTED_MODELS,
+    canonical_model_name,
+)
 from .base import BaseAdapter
 from .openai_adapter import (
     _extract_tool_calls,
@@ -38,8 +42,7 @@ class DeepSeekAdapter(BaseAdapter):
     """Adapter for DeepSeek API (OpenAI-compatible)."""
 
     DEFAULT_BASE_URL = "https://api.deepseek.com"
-    SUPPORTED_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash"}
-    LEGACY_MODEL_ALIASES = {"deepseek-v3": "deepseek-v4-flash"}
+    SUPPORTED_MODELS = DEEPSEEK_SUPPORTED_MODELS
 
     @property
     def provider_name(self) -> str:
@@ -52,7 +55,7 @@ class DeepSeekAdapter(BaseAdapter):
         )
 
     def _normalize_model(self, model: str) -> str:
-        normalized = self.LEGACY_MODEL_ALIASES.get(model, model)
+        normalized = canonical_model_name(self.provider_name, model)
         if normalized.startswith("deepseek-") and normalized not in self.SUPPORTED_MODELS:
             supported = "、".join(sorted(self.SUPPORTED_MODELS))
             raise LLMError(f"DeepSeek 当前支持的模型为 {supported}，请在系统设置中重新选择")

@@ -20,10 +20,7 @@ from app.architecture.tool_categories import (
 from app.architecture.uow import commit_session
 from app.core.db_helpers import get_project_or_404
 from app.core.exceptions import LLMError, NotFoundError, ValidationError
-from app.prompts.workspace_assistant import (
-    MAX_ITERATIONS,
-    build_workspace_assistant_runtime_system_prompt,
-)
+from app.prompts.workspace_assistant import build_workspace_assistant_runtime_system_prompt
 from app.services.agent.prompt_builder import build_system_prompt, get_workspace_pack
 from app.services.content_store import ensure_project_folder
 from app.services.context_orchestrator import ContextOrchestrator
@@ -94,6 +91,12 @@ from app.services.workspace.transcript_import import (
 
 _SCOPE = "project"
 _TIMEOUT_SECONDS = 300
+_FINAL_SYNTHESIS_ATTEMPTS = 2
+_FINAL_SYNTHESIS_INSTRUCTION = (
+    "业务工具阶段已经结束。禁止继续调用或建议调用任何工具；"
+    "只依据本轮已验证的工具结果，直接回答作者最新消息。"
+    "必须给出具体结论、依据和仍缺少的信息；不能只声称已分析、已完成或让作者等待。"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -471,14 +474,15 @@ class WorkspaceAssistantTurnRunner:
     ) -> AsyncGenerator[str, None]:
         native = WorkspaceNativeTurn(state, self.gateway, self.registry)
         direct = WorkspaceDirectMcpTurn(state, self.gateway)
-        for iteration in range(1, MAX_ITERATIONS + 1):
+        iteration = 1
+        while True:
             state.loop_action = "next"
             system_prompt, schemas, tool_choice = self._iteration_contract(state)
             yield state.event(
                 {
                     "type": "iteration_start",
                     "iteration": iteration,
-                    "message": f"第 {iteration}/{MAX_ITERATIONS} 轮推理",
+                    "message": f"第 {iteration} 轮推理",
                 }
             )
             context_events: list[dict[str, Any]] = []
@@ -507,10 +511,102 @@ class WorkspaceAssistantTurnRunner:
             else:
                 async for event in direct.run(messages=messages, iteration=iteration):
                     yield event
+            if state.loop_action == "synthesize":
+                async for event in self._run_final_synthesis(
+                    state,
+                    iteration=iteration,
+                ):
+                    yield event
+                return
             if state.loop_action == "break":
-                break
-        else:
-            state.final_reply = "已分析完毕。"
+                return
+            iteration += 1
+
+    async def _run_final_synthesis(
+        self,
+        state: WorkspaceAssistantTurnState,
+        *,
+        iteration: int,
+    ) -> AsyncGenerator[str, None]:
+        """Finish from persisted read results without replaying business tools."""
+
+        for attempt in range(1, _FINAL_SYNTHESIS_ATTEMPTS + 1):
+            state.require_current_run()
+            yield state.event(
+                {
+                    "type": "status",
+                    "message": (
+                        "模型未返回可用答复，正在进行无工具补偿…"
+                        if attempt == 1
+                        else "模型未返回结论，正在进行一次无工具补偿重试…"
+                    ),
+                    "tool": "final_synthesis",
+                }
+            )
+            system_prompt, _, _ = self._iteration_contract(state)
+            context_events: list[dict[str, Any]] = []
+            messages = await self._prepare_model_step(
+                state,
+                system_prompt=system_prompt,
+                tool_schemas=[],
+                tool_choice="none",
+                event_buffer=context_events,
+                extra_runtime_instruction=(
+                    _FINAL_SYNTHESIS_INSTRUCTION
+                    if attempt == 1
+                    else _FINAL_SYNTHESIS_INSTRUCTION
+                    + " 上一次无工具总结没有返回文字，本次必须输出可读的最终答复。"
+                ),
+                final_synthesis=True,
+            )
+            for event in context_events:
+                yield state.event(event)
+
+            chunks: list[str] = []
+
+            def on_resume(info: dict[str, Any]) -> None:
+                del info
+
+            try:
+                stream = self.gateway.stream_chat_completion(
+                    messages=messages,
+                    model=state.payload.model,
+                    temperature=state.payload.temperature
+                    if state.payload.temperature is not None
+                    else 0.3,
+                    max_tokens=state.payload.max_tokens,
+                    timeout=_TIMEOUT_SECONDS,
+                    retry=1,
+                    resume=2,
+                    on_resume=on_resume,
+                    extra_body=state.local_cli_extra_body,
+                )
+                async for chunk in stream:
+                    text = str(chunk or "")
+                    chunks.append(text)
+                    state.turn_telemetry.report_model_activity(state.assistant_run, text)
+                    yield state.event({"type": "content_delta", "delta": text})
+            except Exception:
+                if "".join(chunks).strip() or attempt >= _FINAL_SYNTHESIS_ATTEMPTS:
+                    raise
+                continue
+
+            reply = "".join(chunks).strip()
+            if reply:
+                state.final_reply = reply
+                state.final_model = state.payload.model or ""
+                state.final_usage = None
+                state.loop_action = "break"
+                yield state.event(
+                    {
+                        "type": "iteration_end",
+                        "iteration": iteration,
+                        "message": "已依据本轮工具结果生成最终结论",
+                    }
+                )
+                return
+
+        raise LLMError("没有收到模型的文字回复：无工具补偿重试后仍无最终结论")
 
     def _iteration_contract(
         self,
@@ -553,6 +649,8 @@ class WorkspaceAssistantTurnRunner:
         tool_schemas: list[dict[str, Any]],
         tool_choice: str,
         event_buffer: list[dict[str, Any]],
+        extra_runtime_instruction: str = "",
+        final_synthesis: bool = False,
     ) -> list[dict[str, Any]]:
         durable_conversation, context_input = self._load_context_input(state)
         durable_steps, trusted_ledger, source_hashes = self._execution_snapshot(
@@ -589,7 +687,7 @@ class WorkspaceAssistantTurnRunner:
         # The direct gateway still receives messages only (see
         # WorkspaceDirectMcpTurn); schemas are neither textualized nor passed
         # as native ``tools``.
-        actual_tools = tool_schemas
+        actual_tools = [] if final_synthesis else tool_schemas
         result_reserve = max_model_visible_result_tokens_for_open_tool_schemas(
             actual_tools, resolve_tool=self.registry.get
         )
@@ -610,16 +708,23 @@ class WorkspaceAssistantTurnRunner:
             delivered_transactions=delivered,
             trusted_execution_ledger=trusted_ledger,
             execution_source_hashes=source_hashes,
-            provider_wrapper=self._provider_wrapper(state, native),
+            provider_wrapper=self._provider_wrapper(
+                state,
+                native,
+                final_synthesis=final_synthesis,
+            ),
             provider_protocol_state={
                 "tool_choice": tool_choice if native else None,
                 "direct_mcp": state.local_cli_mcp_enabled,
                 "tool_transport": "native" if native else "process_mcp",
                 "mcp_server": None if native else "siming_turn",
             },
+            extra_runtime_instruction=extra_runtime_instruction,
             output_reserve_tokens=state.payload.max_tokens,
             max_model_visible_result_tokens_for_open_tools=result_reserve,
-            next_step_wrapper=max_native_tool_transaction_wrapper_tokens(),
+            next_step_wrapper=(
+                0 if final_synthesis else max_native_tool_transaction_wrapper_tokens()
+            ),
             model_capability=ModelToolCapability(
                 supports_native_tool_calling=native,
                 direct_mcp_validated=not native and state.local_cli_mcp_enabled,
@@ -635,7 +740,12 @@ class WorkspaceAssistantTurnRunner:
         return prepared.provider_messages
 
     @staticmethod
-    def _provider_wrapper(state: WorkspaceAssistantTurnState, native: bool) -> dict[str, Any]:
+    def _provider_wrapper(
+        state: WorkspaceAssistantTurnState,
+        native: bool,
+        *,
+        final_synthesis: bool = False,
+    ) -> dict[str, Any]:
         return {
             "transport": "stream",
             "temperature": state.payload.temperature
@@ -644,7 +754,10 @@ class WorkspaceAssistantTurnRunner:
             "max_tokens": state.payload.max_tokens,
             "timeout": _TIMEOUT_SECONDS,
             "retry": 1 if native else (0 if state.local_cli_mcp_enabled else 1),
-            "resume": 8 if native else (0 if state.local_cli_mcp_enabled else 8),
+            "resume": (
+                2 if final_synthesis else 8 if native else (0 if state.local_cli_mcp_enabled else 8)
+            ),
+            "tool_transport": "none" if final_synthesis else "native" if native else "process_mcp",
             "extra_body": state.local_cli_extra_body or {},
         }
 

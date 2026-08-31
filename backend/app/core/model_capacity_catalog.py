@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from .provider_model_identity import canonical_model_identity, canonical_provider
+
 
 @dataclass(frozen=True)
 class KnownModelCapacity:
@@ -181,10 +183,7 @@ def known_model_capacity(
     provider: str | None,
     model_name: str | None,
 ) -> KnownModelCapacity | None:
-    provider_key = str(provider or "").strip().lower()
-    model_key = str(model_name or "").strip()
-    if provider_key == "gemini":
-        model_key = model_key.removeprefix("models/")
+    provider_key, model_key = canonical_model_identity(provider, model_name)
     provider_key = _PROVIDER_MODEL_FAMILY.get(provider_key, provider_key)
     return _CAPACITIES.get((provider_key, model_key))
 
@@ -201,7 +200,7 @@ def uses_documented_model_catalog(
     vendor CLIs are already provider-bound and do not have an API URL here.
     """
 
-    provider_key = str(provider or "").strip().lower()
+    provider_key = canonical_provider(provider)
     if provider_key in _PROVIDER_MODEL_FAMILY:
         return True
     official_hosts = _OFFICIAL_API_HOSTS.get(provider_key)
@@ -211,7 +210,8 @@ def uses_documented_model_catalog(
     if not override:
         return True
     parsed = urlsplit(override)
-    return parsed.scheme.lower() == "https" and (parsed.hostname or "").lower() in official_hosts
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    return parsed.scheme.lower() == "https" and hostname in official_hosts
 
 
 __all__ = [

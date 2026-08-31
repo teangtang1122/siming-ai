@@ -72,13 +72,18 @@ internal object MobileKnownModelCapacityCatalog {
         "gemini-2.5-flash-lite",
     )
 
+    private val deepSeekDocumentedModels = setOf(
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    )
+
+    private val deepSeekLegacyAliases = mapOf(
+        "deepseek-v3" to "deepseek-v4-flash",
+    )
+
     fun resolve(baseUrl: String, model: String): MobileKnownModelCapacity? {
         val provider = providerForOfficialEndpoint(baseUrl) ?: return null
-        val normalizedModel = if (provider == "gemini") {
-            model.trim().removePrefix("models/")
-        } else {
-            model.trim()
-        }
+        val normalizedModel = canonicalModel(provider, model)
         return when {
             provider == "openai" && normalizedModel in openAi1050k ->
                 MobileKnownModelCapacity(1_050_000, 128_000, OPENAI_SOURCE)
@@ -88,10 +93,8 @@ internal object MobileKnownModelCapacityCatalog {
                 MobileKnownModelCapacity(1_047_576, 32_768, OPENAI_SOURCE)
             provider == "openai" && normalizedModel in openAi128k ->
                 MobileKnownModelCapacity(128_000, 16_384, OPENAI_SOURCE)
-            provider == "deepseek" && normalizedModel in setOf(
-                "deepseek-v4-pro",
-                "deepseek-v4-flash",
-            ) -> MobileKnownModelCapacity(1_000_000, 384_000, DEEPSEEK_SOURCE)
+            provider == "deepseek" && normalizedModel in deepSeekDocumentedModels ->
+                MobileKnownModelCapacity(1_000_000, 384_000, DEEPSEEK_SOURCE)
             provider == "gemini" && normalizedModel in gemini1048k ->
                 MobileKnownModelCapacity(1_048_576, 65_536, GEMINI_SOURCE)
             provider == "qwen" && normalizedModel == "qwen-max" ->
@@ -116,12 +119,19 @@ internal object MobileKnownModelCapacityCatalog {
         }
     }
 
+    fun canonicalModelForOfficialEndpoint(baseUrl: String, model: String): String {
+        val provider = providerForOfficialEndpoint(baseUrl) ?: return model.trim()
+        return canonicalModel(provider, model)
+    }
+
     fun applyIfKnown(config: DirectApiConfig, model: String = config.model): DirectApiConfig? {
-        val capacity = resolve(config.baseUrl, model) ?: return null
+        val provider = providerForOfficialEndpoint(config.baseUrl) ?: return null
+        val normalizedModel = canonicalModel(provider, model)
+        val capacity = resolve(config.baseUrl, normalizedModel) ?: return null
         val remainingOutput = capacity.contextWindowTokens - config.safetyMarginTokens - 1
         if (remainingOutput <= 0) return null
         return config.copy(
-            model = model.trim(),
+            model = normalizedModel,
             contextWindowTokens = capacity.contextWindowTokens,
             maxOutputTokens = minOf(
                 config.maxOutputTokens,
@@ -134,7 +144,7 @@ internal object MobileKnownModelCapacityCatalog {
     private fun providerForOfficialEndpoint(baseUrl: String): String? {
         val endpoint = runCatching { URI(baseUrl.trim()) }.getOrNull() ?: return null
         if (!endpoint.scheme.equals("https", ignoreCase = true)) return null
-        val host = endpoint.host?.lowercase() ?: return null
+        val host = endpoint.host?.lowercase()?.removeSuffix(".") ?: return null
         return when (host) {
             "api.openai.com" -> "openai"
             "api.deepseek.com" -> "deepseek"
@@ -144,6 +154,19 @@ internal object MobileKnownModelCapacityCatalog {
             "dashscope-us.aliyuncs.com",
             "dashscope-eu.aliyuncs.com" -> "qwen"
             else -> null
+        }
+    }
+
+    private fun canonicalModel(provider: String, model: String): String {
+        val normalized = if (provider == "gemini") {
+            model.trim().removePrefix("models/")
+        } else {
+            model.trim()
+        }
+        return if (provider == "deepseek") {
+            deepSeekLegacyAliases[normalized] ?: normalized
+        } else {
+            normalized
         }
     }
 }

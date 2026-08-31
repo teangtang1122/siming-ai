@@ -65,6 +65,9 @@ data class DirectApiConfig(
         ?.takeIf(String::isNotBlank)
         ?: model
 
+    fun isDeepSeekProvider(): Boolean = listOf(displayName, baseUrl, model)
+        .any { it.contains("deepseek", ignoreCase = true) }
+
     /**
      * A capacity profile belongs to the configured default model. Until Android
      * stores per-task profiles, selecting a different task model must fail closed

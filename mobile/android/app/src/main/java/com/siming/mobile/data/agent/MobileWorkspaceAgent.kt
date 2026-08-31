@@ -119,10 +119,9 @@ internal class MobileWorkspaceAgent(
         val initialRuntime = conversation.toolRuntimeState(turnContext.turnId)
         val deliveredTransactions = initialRuntime?.deliveredTransactions.orEmpty().toMutableList()
         val executionLedger = initialRuntime?.executionLedger.orEmpty().toMutableList()
-        var iteration = 0
         var activeCategories = emptyList<String>()
         var categorySelected = false
-        while (iteration < MAX_ITERATIONS) {
+        while (true) {
             val scopedTools = contract.toolSchemas(activeCategories)
             val requestToolChoice = if (categorySelected) "auto" else "required"
             val prepared = prepareConversationRequest(
@@ -164,18 +163,6 @@ internal class MobileWorkspaceAgent(
                     onEvent(event(type = "reasoning_delta", delta = delta))
                 },
             )
-            if (deliveredTransactions.isNotEmpty()) {
-                val consumed = conversationStore.markDeliveredToolTransactionsConsumed(
-                    projectId = projectId,
-                    turnContext = turnContext,
-                )
-                deliveredTransactions.clear()
-                deliveredTransactions += consumed.deliveredTransactions
-                executionLedger.clear()
-                executionLedger += consumed.executionLedger
-                currentConversation = conversationStore.snapshot(projectId, turnContext.conversationId)
-                    ?: error("工具事务消费状态保存后会话丢失")
-            }
             if (!streamedReasoning && turn.reasoningContent.isNotBlank()) {
                 onEvent(event(type = "reasoning_delta", delta = turn.reasoningContent))
             }
@@ -184,7 +171,27 @@ internal class MobileWorkspaceAgent(
                     "模型没有调用本步骤唯一开放的 set_tool_categories，本轮未接受文字回复"
                 }
                 val content = turn.content.trim()
-                require(content.isNotBlank()) { "模型既没有调用 PC 工具，也没有返回最终内容" }
+                if (content.isBlank()) {
+                    runFinalSynthesis(
+                        projectId = projectId,
+                        prompt = prompt,
+                        project = project,
+                        config = config,
+                        conversation = currentConversation,
+                        turnContext = turnContext,
+                        currentTurnLedger = executionLedger,
+                        pendingTransactions = deliveredTransactions,
+                        onEvent = onEvent,
+                    )
+                    return
+                }
+                currentConversation = consumeDeliveredTransactions(
+                    projectId = projectId,
+                    turnContext = turnContext,
+                    conversation = currentConversation,
+                    deliveredTransactions = deliveredTransactions,
+                    executionLedger = executionLedger,
+                )
                 if (!streamedContent) onEvent(event("content_delta", delta = content))
                 onEvent(event("done", "任务完成"))
                 return
@@ -231,6 +238,13 @@ internal class MobileWorkspaceAgent(
                 assistantPayload = turn.assistantMessage,
                 orderedToolNames = calledToolNames,
             )
+            currentConversation = consumeDeliveredTransactions(
+                projectId = projectId,
+                turnContext = turnContext,
+                conversation = currentConversation,
+                deliveredTransactions = deliveredTransactions,
+                executionLedger = executionLedger,
+            )
             if (!batchAdmission.accepted) {
                 val results = turn.toolCalls.map { call ->
                     rejectedNativeBatchResult(call.name, batchAdmission)
@@ -251,7 +265,6 @@ internal class MobileWorkspaceAgent(
                         onEvent(event(type = "tool", detail = result.string("detail")))
                     }
                 }
-                iteration += 1
                 continue
             }
 
@@ -289,7 +302,6 @@ internal class MobileWorkspaceAgent(
                         ),
                     )
                 }
-                iteration += 1
                 continue
             }
 
@@ -382,11 +394,125 @@ internal class MobileWorkspaceAgent(
             )
             deliveredTransactions.clear()
             deliveredTransactions += runtime.deliveredTransactions
-            iteration += 1
-            if (iteration == MAX_ITERATIONS) {
-                error("手机独立工作区达到 $MAX_ITERATIONS 轮工具上限，任务已安全停止")
-            }
         }
+    }
+
+    private suspend fun runFinalSynthesis(
+        projectId: String,
+        prompt: String,
+        project: JsonObject,
+        config: DirectApiConfig,
+        conversation: MobileConversationSnapshot,
+        turnContext: MobileAssistantTurnContext,
+        currentTurnLedger: MutableList<MobileToolExecutionReceipt>,
+        pendingTransactions: MutableList<MobileToolTransaction>,
+        onEvent: suspend (String) -> Unit,
+    ) {
+        var currentConversation = conversation
+        val extraBody = if (config.isDeepSeekProvider()) buildJsonObject {
+            put("thinking", buildJsonObject { put("type", "disabled") })
+        } else null
+        for (attempt in 1..FINAL_SYNTHESIS_ATTEMPTS) {
+            onEvent(event(
+                type = "status",
+                detail = when {
+                    attempt > 1 -> "模型未返回结论，正在进行一次无工具补偿重试…"
+                    else -> "模型未返回可用答复，正在进行无工具补偿…"
+                },
+            ))
+            val prepared = prepareConversationRequest(
+                projectId = projectId,
+                prompt = prompt,
+                project = project,
+                config = config,
+                conversation = currentConversation,
+                turnContext = turnContext,
+                scopedTools = JsonArray(emptyList()),
+                toolChoice = "none",
+                currentTurnLedger = currentTurnLedger,
+                pendingTransactions = pendingTransactions,
+                onEvent = onEvent,
+                extraRuntimeInstruction = FINAL_SYNTHESIS_INSTRUCTION + if (attempt > 1) {
+                    " 上一次无工具总结没有返回文字，本次必须输出可读的最终答复。"
+                } else "",
+                extraBody = extraBody,
+            )
+            currentConversation = prepared.conversation
+            MobileToolProtocolValidator.validate(
+                messages = prepared.rendered.messages,
+                supportsNativeToolCalling = true,
+                toolsOffered = false,
+                currentUserMessageId = prepared.rendered.currentUserMessageId,
+                checkpointMessageId = prepared.rendered.checkpointMessageId,
+            )
+            val streamedContent = StringBuilder()
+            val turn = try {
+                directApi.streamAgentTurn(
+                    config = config,
+                    messages = providerMessages(prepared.rendered.messages),
+                    tools = JsonArray(emptyList()),
+                    toolChoice = "none",
+                    maxOutputTokens = config.maxOutputTokens,
+                    temperature = 0.3,
+                    extraBody = extraBody,
+                    onContentDelta = { delta ->
+                        streamedContent.append(delta)
+                        onEvent(event(type = "content_delta", delta = delta))
+                    },
+                    onReasoningDelta = { delta ->
+                        onEvent(event(type = "reasoning_delta", delta = delta))
+                    },
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (streamedContent.toString().isNotBlank() || attempt == FINAL_SYNTHESIS_ATTEMPTS) {
+                    throw error
+                }
+                continue
+            }
+            if (turn.toolCalls.isNotEmpty()) {
+                throw MobileConversationContextException(
+                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                    "工具关闭后的最终总结不得返回函数调用",
+                )
+            }
+            val content = turn.content.trim()
+            if (content.isBlank()) continue
+            consumeDeliveredTransactions(
+                projectId = projectId,
+                turnContext = turnContext,
+                conversation = currentConversation,
+                deliveredTransactions = pendingTransactions,
+                executionLedger = currentTurnLedger,
+            )
+            if (streamedContent.toString().isBlank()) {
+                onEvent(event(type = "content_delta", delta = content))
+            }
+            onEvent(event("done", "已依据本轮工具结果生成最终结论"))
+            return
+        }
+        error("模型在两次无工具补偿后仍未返回最终文字；本轮工具结果已保留，可安全重试")
+    }
+
+    private suspend fun consumeDeliveredTransactions(
+        projectId: String,
+        turnContext: MobileAssistantTurnContext,
+        conversation: MobileConversationSnapshot,
+        deliveredTransactions: MutableList<MobileToolTransaction>,
+        executionLedger: MutableList<MobileToolExecutionReceipt>,
+    ): MobileConversationSnapshot {
+        if (deliveredTransactions.isEmpty()) return conversation
+        val consumed = conversationStore.markDeliveredToolTransactionsConsumed(
+            projectId = projectId,
+            turnContext = turnContext,
+        )
+        deliveredTransactions.clear()
+        deliveredTransactions += consumed.deliveredTransactions
+        executionLedger.clear()
+        executionLedger += consumed.executionLedger
+        return conversationStore.snapshot(projectId, turnContext.conversationId)
+            ?: error("工具事务消费状态保存后会话丢失")
     }
 
     private suspend fun prepareConversationRequest(
@@ -401,19 +527,28 @@ internal class MobileWorkspaceAgent(
         currentTurnLedger: List<MobileToolExecutionReceipt>,
         pendingTransactions: List<MobileToolTransaction>,
         onEvent: suspend (String) -> Unit,
+        extraRuntimeInstruction: String = "",
+        extraBody: JsonObject? = null,
     ): MobilePreparedConversationRequest {
+        val systemPrompt = listOf(
+            contract.workspaceRuntimeSystem(project),
+            extraRuntimeInstruction.trim().takeIf(String::isNotBlank)?.let { instruction ->
+                "[SERVER_RUNTIME_INSTRUCTION]\n$instruction\n[/SERVER_RUNTIME_INSTRUCTION]"
+            },
+        ).filterNotNull().joinToString("\n\n")
         val prepared = conversationContextRuntime.prepare(
             storageId = projectId,
             currentUserPrompt = prompt,
             config = config,
             conversation = conversation,
             turnContext = turnContext,
-            systemPrompt = contract.workspaceRuntimeSystem(project),
+            systemPrompt = systemPrompt,
             scopedTools = scopedTools,
             taskType = DirectApiConfig.TASK_ASSISTANT,
             maxOutputTokens = config.maxOutputTokens,
             toolChoice = toolChoice,
             temperature = 0.3,
+            extraBody = extraBody,
             currentTurnLedger = currentTurnLedger,
             pendingTransactions = pendingTransactions,
             onStatus = { status ->
@@ -1993,7 +2128,11 @@ internal class MobileWorkspaceAgent(
     private data class LocalRecord(val entity: ReplicaEntity, val payload: JsonObject)
 
     companion object {
-        private const val MAX_ITERATIONS = 12
+        private const val FINAL_SYNTHESIS_ATTEMPTS = 2
+        private const val FINAL_SYNTHESIS_INSTRUCTION =
+            "业务工具阶段已经结束。禁止继续调用或建议调用任何工具；" +
+                "只依据本轮已验证的工具结果，直接回答作者最新消息。" +
+                "必须给出具体结论、依据和仍缺少的信息；不能只声称已分析、已完成或让作者等待。"
         private const val MAX_CONTEXT_MANIFESTS = 20
         private val TERMINAL_DRAFT_TOOLS = setOf("chapter_writer", "outline_writer")
         private val STATUS_ONLY_RESULT_TOOLS = setOf(

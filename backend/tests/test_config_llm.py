@@ -1229,6 +1229,11 @@ class TestLLMGatewayModelParsing(unittest.TestCase):
         self.assertEqual(provider, "deepseek")
         self.assertEqual(model, "deepseek-v4-flash")
 
+    def test_parse_legacy_deepseek_alias_uses_the_adapter_identity(self):
+        provider, model = LLMGateway._parse_model("DeepSeek:deepseek-v3")
+        self.assertEqual(provider, "deepseek")
+        self.assertEqual(model, "deepseek-v4-flash")
+
     def test_parse_model_qwen_prefix(self):
         provider, model = LLMGateway._parse_model("qwen:qwen-max")
         self.assertEqual(provider, "qwen")

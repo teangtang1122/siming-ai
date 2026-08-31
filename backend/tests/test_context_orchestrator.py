@@ -246,16 +246,37 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         self.assertGreater(len(exact_item.content_excerpt), 12_000)
 
     def test_deepseek_creation_budget_uses_registered_large_output_capacity(self):
+        self.db.add(
+            APIConfig(
+                provider="deepseek",
+                api_key_encrypted="encrypted-placeholder",
+                default_model="deepseek-v3",
+                base_url_override="https://api.deepseek.com/v1",
+            )
+        )
+        self.db.commit()
         profile = self.service.resolve_model_profile(
-            "deepseek:deepseek-v4-flash",
+            "deepseek:deepseek-v3",
             "new_project",
         )
         budget = self.service.budget_for(TASK_CONTEXT_CONTRACTS["new_project"], profile)
 
+        self.assertTrue(profile.known)
+        self.assertEqual(profile.model_name, "deepseek-v4-flash")
         self.assertEqual(profile.context_window_tokens, 1_000_000)
         self.assertEqual(profile.max_output_tokens, 384_000)
         self.assertEqual(budget.output_reserve_tokens, 300_000)
         self.assertEqual(budget.hard_input_budget_tokens, 699_488)
+
+    def test_documented_deepseek_identity_is_known_before_config_lookup(self):
+        profile = self.service.resolve_model_profile(
+            "deepseek:deepseek-v4-flash",
+            "assistant",
+        )
+
+        self.assertTrue(profile.known)
+        self.assertEqual(profile.context_window_tokens, 1_000_000)
+        self.assertEqual(profile.max_output_tokens, 384_000)
 
     def test_documented_cloud_model_is_sendable_without_manual_profile(self):
         self.db.add(APIConfig(

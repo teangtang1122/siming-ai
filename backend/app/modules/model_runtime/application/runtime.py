@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ....core.exceptions import NotFoundError
+from ....core.provider_model_identity import canonical_model_identity, canonical_model_name
 from ..domain.configuration import ModelProviderConfig, TaskModelSelection
 from ..domain.policy import local_runtime_disabled, local_runtime_disabled_message
 from .ports import ModelConfigurationPort
@@ -21,26 +22,28 @@ class ModelRuntime:
             if not config:
                 raise NotFoundError("未配置可用的全局默认模型，请先在系统设置中测试并启用模型")
             self._ensure_provider_enabled(config.provider)
-            return config.provider, config.default_model
+            return canonical_model_identity(config.provider, config.default_model)
         if ":" in model:
             provider, model_name = model.split(":", 1)
-            return provider, model_name
+            return canonical_model_identity(provider, model_name)
         return self.resolve_provider(model)
 
     def resolve_provider(self, model_name: str) -> tuple[str, str]:
         for config in self._configurations.ready_providers():
-            if config.default_model == model_name and not local_runtime_disabled(config.provider):
-                return config.provider, config.default_model
+            configured_name = canonical_model_name(config.provider, config.default_model)
+            requested_name = canonical_model_name(config.provider, model_name)
+            if configured_name == requested_name and not local_runtime_disabled(config.provider):
+                return canonical_model_identity(config.provider, configured_name)
         lowered = model_name.lower()
         if "claude" in lowered:
-            return "anthropic", model_name
+            return canonical_model_identity("anthropic", model_name)
         if "deepseek" in lowered:
-            return "deepseek", model_name
+            return canonical_model_identity("deepseek", model_name)
         if "qwen" in lowered or "qwq" in lowered:
-            return "qwen", model_name
+            return canonical_model_identity("qwen", model_name)
         if "gemini" in lowered:
-            return "gemini", model_name
-        return "openai", model_name
+            return canonical_model_identity("gemini", model_name)
+        return canonical_model_identity("openai", model_name)
 
     def identity(self, model: str | None) -> tuple[str, str]:
         return self.parse_model(model)

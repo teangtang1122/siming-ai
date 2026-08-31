@@ -1759,9 +1759,205 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         finally:
             db.close()
 
-    @patch(
-        "app.services.conversation_context.preparation._default_checkpoint_completion"
-    )
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
+    def test_empty_native_reply_retries_as_text_without_replaying_tools(
+        self,
+        mock_execute,
+        mock_tool_stream,
+        mock_text_stream,
+        _mock_supports,
+    ):
+        project_id = self.create_project("Empty final reply recovery")
+        mock_execute.return_value = {
+            "tool": "search_chapters",
+            "status": "ok",
+            "detail": "找到第二章",
+            "data": {"items": [], "query": "第二章"},
+        }
+        mock_tool_stream.side_effect = [
+            async_dict_chunks(
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": "empty-recovery-categories",
+                    "name": "set_tool_categories",
+                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                },
+                {"type": "done", "finish_reason": "tool_calls", "usage": None},
+            ),
+            async_dict_chunks(
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": "empty-recovery-search",
+                    "name": "search_chapters",
+                    "arguments_delta": json.dumps({"query": "第二章"}, ensure_ascii=False),
+                },
+                {"type": "done", "finish_reason": "tool_calls", "usage": None},
+            ),
+            async_dict_chunks(
+                {"type": "done", "finish_reason": "stop", "usage": None},
+            ),
+        ]
+        final_answer = "第二章的核心冲突已建立，但转折缺少前置铺垫；建议补一处人物动机。"
+        mock_text_stream.return_value = async_chunks(final_answer)
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "检查第二章剧情",
+                "model": "openai:gpt-test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(final_answer, response.text)
+        self.assertNotIn("已分析完毕。", response.text)
+        self.assertEqual(mock_tool_stream.call_count, 3)
+        self.assertEqual(mock_text_stream.call_count, 1)
+        self.assertEqual(mock_execute.await_count, 1)
+        final_messages = mock_text_stream.call_args.kwargs["messages"]
+        self.assertIn("业务工具阶段已经结束", final_messages[0]["content"])
+        self.assertTrue(
+            any(
+                message.get("tool_call_id") == "empty-recovery-search" for message in final_messages
+            )
+        )
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
+    def test_tool_loop_continues_past_previous_limit_until_model_finishes(
+        self,
+        mock_execute,
+        mock_tool_stream,
+        mock_text_stream,
+        _mock_supports,
+    ):
+        project_id = self.create_project("Unbounded tool loop")
+        previous_iteration_limit = 12
+        mock_execute.return_value = {
+            "tool": "search_chapters",
+            "status": "ok",
+            "detail": "章节检索完成",
+            "data": {"items": [], "query": "第二章"},
+        }
+        tool_steps = [
+            async_dict_chunks(
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": "unbounded-categories",
+                    "name": "set_tool_categories",
+                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                },
+                {"type": "done", "finish_reason": "tool_calls", "usage": None},
+            )
+        ]
+        tool_steps.extend(
+            async_dict_chunks(
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": f"unbounded-search-{index}",
+                    "name": "search_chapters",
+                    "arguments_delta": json.dumps({"query": "第二章"}, ensure_ascii=False),
+                },
+                {"type": "done", "finish_reason": "tool_calls", "usage": None},
+            )
+            for index in range(1, previous_iteration_limit + 1)
+        )
+        final_answer = "综合现有资料：第二章目标明确，冲突升级成立，但结尾缺少下一章钩子。"
+        tool_steps.append(
+            async_dict_chunks(
+                {"type": "content_delta", "delta": final_answer},
+                {"type": "done", "finish_reason": "stop", "usage": None},
+            )
+        )
+        mock_tool_stream.side_effect = tool_steps
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "检查第二章剧情",
+                "model": "openai:gpt-test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(final_answer, response.text)
+        self.assertNotIn("已分析完毕。", response.text)
+        self.assertEqual(mock_tool_stream.call_count, previous_iteration_limit + 2)
+        self.assertEqual(mock_text_stream.call_count, 0)
+        self.assertEqual(mock_execute.await_count, previous_iteration_limit)
+
+    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion")
+    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
+    def test_two_empty_final_synthesis_attempts_are_not_marked_complete(
+        self,
+        mock_tool_stream,
+        mock_text_stream,
+        _mock_supports,
+    ):
+        project_id = self.create_project("Empty synthesis failure")
+        mock_tool_stream.side_effect = [
+            async_dict_chunks(
+                {
+                    "type": "tool_call_delta",
+                    "index": 0,
+                    "id": "empty-failure-categories",
+                    "name": "set_tool_categories",
+                    "arguments_delta": json.dumps({"enabled_categories": []}),
+                },
+                {"type": "done", "finish_reason": "tool_calls", "usage": None},
+            ),
+            async_dict_chunks(
+                {"type": "done", "finish_reason": "stop", "usage": None},
+            ),
+        ]
+        mock_text_stream.side_effect = [async_chunks(""), async_chunks("  ")]
+
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
+            json={
+                "scope": "project",
+                "message": "检查第二章剧情",
+                "model": "openai:gpt-test",
+            },
+        )
+
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        error = next(event for event in events if event.get("type") == "error")
+        self.assertEqual(error["code"], "model_empty_response")
+        self.assertTrue(error["details"]["retryable"])
+        self.assertFalse(any(event.get("type") == "complete" for event in events))
+        self.assertEqual(mock_text_stream.call_count, 2)
+        db = SessionLocal()
+        try:
+            run = db.query(AssistantRun).filter(AssistantRun.project_id == project_id).one()
+            message = (
+                db.query(AssistantMessage)
+                .filter(AssistantMessage.id == run.assistant_message_id)
+                .one()
+            )
+            self.assertEqual(run.status, "error")
+            self.assertEqual(message.status, "error")
+            self.assertNotEqual(message.content, "已分析完毕。")
+        finally:
+            db.close()
+
+    @patch("app.services.conversation_context.preparation._default_checkpoint_completion")
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
     @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)

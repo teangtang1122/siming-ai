@@ -8,8 +8,6 @@ from app.services.conversation_context import (
     render_reference_context_system_segment,
 )
 
-MAX_ITERATIONS = 12
-
 
 def build_workspace_assistant_runtime_system_prompt(
     *,
@@ -72,6 +70,5 @@ def build_workspace_assistant_runtime_system_prompt(
 
 
 __all__ = [
-    "MAX_ITERATIONS",
     "build_workspace_assistant_runtime_system_prompt",
 ]
