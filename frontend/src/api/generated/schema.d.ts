@@ -3354,7 +3354,7 @@ export interface paths {
         put?: never;
         /**
          * Quality Score Preview
-         * @description Return a manual quality review without changing chapter data.
+         * @description Return a manual quality review without changing the saved chapter.
          */
         post: operations["quality_score_preview_api_v1_projects__project_id__chapters__chapter_id__quality_score_preview_post"];
         delete?: never;
