@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from ..architecture.uow import SqlAlchemyUnitOfWork
 from ..core.config import get_settings
+from ..core.logging_setup import configure_logging
 from ..database.session import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,7 @@ def _schedule_context_rebuild() -> None:
             uow.commit()
         if job_id:
             asyncio.create_task(asyncio.to_thread(run_context_rebuild_job, job_id))
+            logger.info("Context rebuild job scheduled job_id=%s", job_id)
     except Exception as exc:
         logger.warning("Failed to schedule context rebuild: %s", exc)
 
@@ -177,7 +179,17 @@ async def _bootstrap_runtime(app: FastAPI) -> RuntimeBootstrapStatus:
     from ..database.bootstrap import bootstrap_database
 
     result = await asyncio.to_thread(bootstrap_database)
+    logger.info(
+        "Database bootstrap mode=%s schema_revision=%s",
+        result.mode,
+        result.schema_revision,
+    )
     if result.read_only:
+        logger.warning(
+            "Database bootstrap entered read-only recovery mode=%s message=%s",
+            result.mode,
+            result.message,
+        )
         return RuntimeBootstrapStatus(
             status="recovery",
             database_mode=result.mode,
@@ -187,7 +199,9 @@ async def _bootstrap_runtime(app: FastAPI) -> RuntimeBootstrapStatus:
         )
 
     await asyncio.to_thread(_run_legacy_startup_recovery)
+    logger.info("Legacy startup recovery finished")
     await asyncio.to_thread(_start_scheduler)
+    logger.info("Background scheduler started")
     settings = get_settings()
     if not settings.gateway_enabled:
         await asyncio.to_thread(_resume_local_runtime_jobs)
@@ -206,12 +220,14 @@ def _shutdown_runtime() -> None:
         from ..services.scheduler.engine import stop_scheduler
 
         stop_scheduler()
+        logger.info("Background scheduler stopped")
     except Exception as exc:
         logger.warning("Failed to stop scheduler: %s", exc)
     try:
         from ..services.local_runtime import get_runtime_manager
 
         get_runtime_manager().stop()
+        logger.info("Local runtime stopped")
     except Exception as exc:
         logger.warning("Failed to stop local runtime: %s", exc)
 
@@ -219,6 +235,10 @@ def _shutdown_runtime() -> None:
 @asynccontextmanager
 async def application_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run all stateful startup work in one observable lifecycle."""
+    # Uvicorn applies its own logging dictConfig before the lifespan starts;
+    # re-assert our console/file layout so every entry point produces the same
+    # logs regardless of the launcher that started the process.
+    configure_logging(force=True)
     loop = asyncio.get_running_loop()
     installed_handler, previous_handler = _install_windows_transport_exception_filter(loop)
     app.state.runtime_bootstrap = RuntimeBootstrapStatus()

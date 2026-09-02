@@ -161,13 +161,32 @@ class WorkspaceAssistantTurnRunner:
             self._bootstrap_canonical(state)
             for event in self._setup_records(state):
                 yield event
+            run_id = getattr(state.assistant_run, "id", None)
+            logger.info(
+                "Workspace assistant turn start run=%s project=%s provider=%s model=%s mode=%s",
+                run_id,
+                self.project_id,
+                self.selected_provider or "",
+                self.payload.model,
+                "native" if supports_native else ("direct_mcp" if direct_mcp else "unsupported"),
+            )
             for event in self._configure(state):
                 yield event
             async for event in self._run_iterations(state):
                 yield event
+            logger.info(
+                "Workspace assistant turn complete run=%s project=%s",
+                getattr(state.assistant_run, "id", None),
+                self.project_id,
+            )
             yield state.event({"type": "complete", "data": self._finalize(state)})
             yield state.event("[DONE]")
         except WorkspaceTurnSuperseded:
+            logger.info(
+                "Workspace assistant turn superseded run=%s project=%s",
+                getattr(state.assistant_run, "id", None),
+                self.project_id,
+            )
             yield state.event(
                 {
                     "type": "superseded",

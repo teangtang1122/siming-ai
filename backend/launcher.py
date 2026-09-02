@@ -699,11 +699,15 @@ def main() -> None:
             f"Gateway: {server_host == '0.0.0.0'}"
         )
 
+        access_log_enabled = (
+            os.environ.get("SIMING_LOG_HTTP_ACCESS", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
         server_controller = UvicornServerController(
             host=server_host,
             port=port,
             log_level="info",
-            access_log=False,
+            access_log=access_log_enabled,
         )
         instance.start_activation_listener(
             metadata={

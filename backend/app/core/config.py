@@ -93,7 +93,22 @@ class Settings(BaseSettings):
             "SIMING_SYNC_TOMBSTONE_RETENTION_DAYS", "SYNC_TOMBSTONE_RETENTION_DAYS"
         ),
     )
-    
+
+    # Logging: values are kept untyped on purpose so a bad environment value can
+    # never prevent the application from starting; configure_logging() normalizes.
+    log_level: str = Field(
+        default="info",
+        validation_alias=AliasChoices("SIMING_LOG_LEVEL", "LOG_LEVEL"),
+    )
+    log_file: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("SIMING_LOG_FILE", "LOG_FILE"),
+    )
+    log_http_access: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SIMING_LOG_HTTP_ACCESS", "LOG_HTTP_ACCESS"),
+    )
+
     def get_cors_origins(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""
         values = [origin.strip().rstrip("/") for origin in self.cors_origins.split(",")]

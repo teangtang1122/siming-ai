@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
@@ -27,6 +28,8 @@ from .hardware import detect_hardware
 from .paths import siming_home
 
 LOCAL_SERVER_PARALLEL_SLOTS = 1
+
+logger = logging.getLogger(__name__)
 
 
 def _hidden_process_kwargs(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) -> dict:
@@ -207,6 +210,14 @@ class LocalRuntimeManager:
                             if row:
                                 row.last_used_at = datetime.utcnow()
                                 commit_session(db)
+                        logger.info(
+                            "Local runtime ready model=%s port=%s attempt=%d context=%d task=%s",
+                            model.model_key,
+                            port,
+                            attempt + 1,
+                            attempt_context,
+                            task_type,
+                        )
                         return self.base_url or ""
                     if self._process.poll() is not None:
                         last_error = (
@@ -229,12 +240,20 @@ class LocalRuntimeManager:
                         last_error = f"{last_error}\n\nllama.cpp 日志尾部：\n{detail}"
                 self.stop()
             self._mark_runtime_error(last_error)
+            logger.error(
+                "Local runtime launch failed model=%s task=%s attempts=%d",
+                model.model_key,
+                task_type,
+                len(launch_profiles),
+            )
             raise RuntimeError(last_error)
 
     def stop(self) -> None:
         with self._lock:
             process = self._process
             port = self._port
+            stopped_model = self._model_key or "unknown"
+            stopped_pid = getattr(process, "pid", None)
             self._process = None
             self._port = None
             self._api_key = None
@@ -252,6 +271,12 @@ class LocalRuntimeManager:
                     process.kill()
             elif port:
                 self._kill_pid(self._pid_for_port(port))
+            logger.info(
+                "Local runtime stopped model=%s pid=%s port=%s",
+                stopped_model,
+                stopped_pid,
+                port,
+            )
             try:
                 with SessionLocal() as db:
                     runtime = db.query(LocalRuntimeInstallation).filter(

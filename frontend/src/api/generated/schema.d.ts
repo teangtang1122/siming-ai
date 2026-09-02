@@ -5243,7 +5243,7 @@ export interface paths {
         };
         /**
          * Get System Logs
-         * @description Read the last N lines of the launcher log file.
+         * @description Read the last N lines of the backend runtime or launcher log file.
          */
         get: operations["get_system_logs_api_v1_system_logs_get"];
         put?: never;

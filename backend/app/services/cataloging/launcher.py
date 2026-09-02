@@ -305,6 +305,14 @@ def create_and_queue_cataloging_job(
     if run_now and backend != "external_agent":
         queue_cataloging_job(job.id)
         queued = True
+        logger.info(
+            "Cataloging job queued job_id=%s project=%s chapters=%d source=%s backend=%s",
+            job.id,
+            project_id,
+            len(chapter_ids),
+            trigger_source,
+            backend,
+        )
     data = job_to_dict(job)
     data.update({
         "started": run_now,
@@ -328,6 +336,12 @@ async def run_cataloging_job(job_id: str) -> None:
         job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
         if not job or job.status in _TERMINAL_JOB_STATUSES:
             return
+        logger.info(
+            "Cataloging worker start job=%s project=%s backend=%s",
+            job.id,
+            job.project_id,
+            job.execution_backend,
+        )
         if job.execution_backend == "local_cli_agent":
             ensure_local_cli_cataloging_worker(db, job, provider=job.provider)
             return

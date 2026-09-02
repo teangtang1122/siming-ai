@@ -1,8 +1,13 @@
 """Global exception handling."""
+import logging
+
 from fastapi import Request
-from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
 from .response import ApiResponse
+
+logger = logging.getLogger(__name__)
 
 
 class AppException(Exception):
@@ -52,19 +57,40 @@ class LLMError(AppException):
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """Handle custom application exceptions."""
+    if exc.code >= 500:
+        logger.error(
+            "Request failed with app error code=%s path=%s message=%s",
+            exc.code,
+            request.url.path,
+            exc.message,
+        )
+    else:
+        logger.warning(
+            "Request rejected code=%s path=%s message=%s",
+            exc.code,
+            request.url.path,
+            exc.message,
+        )
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.error(code=exc.code, message=exc.message).model_dump()
     )
 
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """Handle request validation errors."""
     errors = []
     for error in exc.errors():
         loc = " -> ".join(str(x) for x in error.get("loc", []))
         errors.append(f"{loc}: {error.get('msg', '')}")
-    
+    logger.warning(
+        "Request validation failed path=%s details=%s",
+        request.url.path,
+        "; ".join(errors),
+    )
+
     return JSONResponse(
         status_code=422,
         content=ApiResponse.error(
@@ -76,6 +102,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle unhandled exceptions."""
+    logger.exception(
+        "Unhandled exception path=%s class=%s",
+        request.url.path,
+        type(exc).__name__,
+    )
     return JSONResponse(
         status_code=500,
         content=ApiResponse.error(

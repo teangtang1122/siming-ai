@@ -139,16 +139,35 @@ def pick_content_root_settings(db: Session = Depends(get_db)):
     return ApiResponse.success(data=_apply_content_root(db, str(selected)), message="小说数据目录已更新")
 
 
+def _system_log_path() -> Path:
+    """Resolve the log file shown by the GUI terminal page.
+
+    Application runtime logs (``siming.log``) are preferred once they exist;
+    the legacy startup-only ``launcher.log`` remains the fallback so boot-time
+    diagnostics stay reachable.
+    """
+    home = _app_home()
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        home / "logs" / "siming.log",
+        home / "logs" / "launcher.log",
+    ]
+    if local_app_data:
+        candidates.append(
+            Path(local_app_data) / "NovelWritingAgent" / "logs" / "launcher.log"
+        )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    # No log file yet (fresh install before first server run): keep reporting
+    # the location that will exist so the UI shows an actionable path.
+    return home / "logs" / "launcher.log"
+
+
 @router.get("/system/logs")
 def get_system_logs(lines: int = 200):
-    """Read the last N lines of the launcher log file."""
-    log_path = _app_home() / "logs" / "launcher.log"
-    if not log_path.exists():
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        if local_app_data:
-            legacy = Path(local_app_data) / "NovelWritingAgent" / "logs" / "launcher.log"
-            if legacy.exists():
-                log_path = legacy
+    """Read the last N lines of the backend runtime or launcher log file."""
+    log_path = _system_log_path()
     if not log_path.exists():
         return ApiResponse.success(data={"path": str(log_path), "content": "(log file not found)", "lines": 0})
 

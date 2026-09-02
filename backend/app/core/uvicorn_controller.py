@@ -43,7 +43,7 @@ class UvicornServerController:
                 return False
             if self._thread and self._thread.is_alive():
                 return True
-            config = uvicorn.Config(app, **self._config_options)
+            config = uvicorn.Config(app, log_config=None, **self._config_options)
             server = uvicorn.Server(config)
             thread = threading.Thread(
                 target=server.run,

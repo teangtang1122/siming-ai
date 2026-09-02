@@ -1,6 +1,7 @@
 /**
  * Terminal / Log viewer page for the desktop GUI.
- * Shows launcher.log output and provides quick actions like opening the home in a browser.
+ * Shows the backend runtime log (logs/siming.log, falling back to
+ * logs/launcher.log) and provides quick actions like opening the home in a browser.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Space, Switch, Typography, message } from 'antd'

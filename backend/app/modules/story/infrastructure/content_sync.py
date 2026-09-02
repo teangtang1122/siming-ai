@@ -365,6 +365,7 @@ def _dispatch_after_commit(session: Session) -> None:
     job_ids = list(session.info.pop(_SESSION_JOB_IDS, []))
     if not job_ids or session.info.get(_SKIP_AUTO_DISPATCH):
         return
+    logger.debug("Dispatching committed content sync jobs=%d", len(job_ids))
     try:
         ContentSyncProcessor(_session_factory_for(session)).process(job_ids)
         session.expire_all()

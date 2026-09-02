@@ -59,10 +59,17 @@ def _execute_task(task_id: str) -> None:
         task.last_run_status = "running"
         commit_session(db)
 
+        started_at = time.monotonic()
         try:
             result = _run_task_prompt(db, task)
             task.last_run_status = "completed"
             task.last_run_output = result[:10000] if result else "完成"
+            logger.info(
+                "Scheduled task completed name=%s task_id=%s duration=%.1fs",
+                task.name,
+                task_id,
+                time.monotonic() - started_at,
+            )
         except Exception as exc:
             logger.exception("Task %s failed: %s", task_id, exc)
             task.last_run_status = "error"

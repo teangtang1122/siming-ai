@@ -219,6 +219,7 @@ def _dispatch_after_commit(session: Session) -> None:
     job_ids = list(session.info.pop(_CAPTURE_JOB_IDS, []))
     if not job_ids:
         return
+    logger.debug("Dispatching Gateway sync capture jobs=%d", len(job_ids))
     try:
         SyncCaptureProcessor(_session_factory_for(session)).process(job_ids)
         session.expire_all()

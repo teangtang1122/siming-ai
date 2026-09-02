@@ -20,6 +20,7 @@ from ..core.exceptions import (
     general_exception_handler,
     validation_exception_handler,
 )
+from ..core.logging_setup import configure_logging
 from ..version import APP_VERSION
 from .composition import configure_application_services
 from .http_security import (
@@ -229,6 +230,7 @@ async def _no_op_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(*, run_startup: bool = True) -> FastAPI:
     """Build the web application; persistent work belongs to lifespan."""
+    configure_logging()
     settings = get_settings()
     configure_application_services()
     app = FastAPI(

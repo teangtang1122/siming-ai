@@ -49,6 +49,7 @@ class UvicornServerControllerTestCase(unittest.TestCase):
             port=9876,
             log_level="info",
             access_log=False,
+            log_config=None,
         )
 
     def test_close_during_app_import_prevents_late_server_start(self):
