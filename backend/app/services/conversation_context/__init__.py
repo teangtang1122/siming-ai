@@ -8,6 +8,7 @@ provider request.
 
 from .budget import (
     CallableTokenCounter,
+    FallbackUtf8ByteTokenCounter,
     RequestBudgetEnvelope,
     RequestTokenComponents,
     TokenCounter,
@@ -127,6 +128,7 @@ __all__ = [
     "ConversationMessage",
     "ConversationTurn",
     "ExecutionLedgerEntry",
+    "FallbackUtf8ByteTokenCounter",
     "GenerationModelBinding",
     "MandatoryExactTurnsOverCapacity",
     "ModelToolCapability",

@@ -53,14 +53,14 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
-    def test_unknown_remote_model_uses_large_platform_window_and_hard_budget(self):
+    def test_unknown_remote_model_uses_256k_fallback_and_hard_budget(self):
         manifest = self.service.prepare(
             project_id="p1",
             task_type="writing",
             model="unknown-provider:unknown-model",
             arguments={"outline_node_id": "o1", "requirements": "Write the opening."},
         )
-        self.assertEqual(manifest.context_window_tokens, 1_000_000)
+        self.assertEqual(manifest.context_window_tokens, 256_000)
         self.assertEqual(manifest.output_reserve_tokens, 16_000)
         self.assertEqual(
             manifest.input_budget_tokens,
@@ -71,7 +71,7 @@ class ContextOrchestratorTestCase(unittest.TestCase):
         self.assertGreater(manifest.input_budget_tokens, 32_000)
         self.assertLessEqual(manifest.estimated_input_tokens, manifest.input_budget_tokens)
         self.assertEqual(manifest.status, "ready")
-        self.assertTrue(any("platform 1M context default" in warning for warning in manifest.warnings_json))
+        self.assertTrue(any("temporary 256K fallback" in warning for warning in manifest.warnings_json))
 
     def test_outline_planning_uses_only_position_style_and_model_selected_evidence(self):
         manifest = self.service.prepare(

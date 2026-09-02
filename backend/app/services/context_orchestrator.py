@@ -659,15 +659,21 @@ class ContextOrchestrator:
                 safety_margin_tokens=cloud_capacity.safety_margin_tokens,
                 known=True,
             )
+        fallback_window = (
+            DEFAULT_LOCAL_CONTEXT_WINDOW_TOKENS
+            if provider == "local_llama_cpp"
+            else DEFAULT_CONTEXT_WINDOW_TOKENS
+        )
+        fallback_output = min(
+            output_limit(),
+            max(1, fallback_window // 4),
+            max(1, fallback_window - DEFAULT_SAFETY_MARGIN_TOKENS - 1),
+        )
         return ResolvedModelContextProfile(
             provider=provider,
             model_name=model_name,
-            context_window_tokens=(
-                DEFAULT_LOCAL_CONTEXT_WINDOW_TOKENS
-                if provider == "local_llama_cpp"
-                else DEFAULT_CONTEXT_WINDOW_TOKENS
-            ),
-            max_output_tokens=output_limit(),
+            context_window_tokens=fallback_window,
+            max_output_tokens=fallback_output,
             safety_margin_tokens=DEFAULT_SAFETY_MARGIN_TOKENS,
             known=False,
         )
@@ -1387,8 +1393,8 @@ class ContextOrchestrator:
             else:
                 warnings.append(
                     "No exact model context profile is configured; "
-                    "the platform 1M context default was used. "
-                    "Configure a profile when the provider exposes a lower limit."
+                    "the temporary 256K fallback was used. "
+                    "Configure the exact provider/model limit when available."
                 )
 
         for order, candidate in enumerate(selected):

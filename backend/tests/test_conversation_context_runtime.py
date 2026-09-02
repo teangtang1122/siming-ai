@@ -436,9 +436,9 @@ def test_runtime_instruction_is_rendered_in_system_not_as_second_user() -> None:
     }
 
 
-def test_unknown_profile_is_unverified_and_cannot_send() -> None:
+def test_unknown_profile_uses_bounded_fallback_and_can_send() -> None:
     binding, counter, _ = resolve_generation_model_binding(
-        orchestrator=_Orchestrator(known=False),
+        orchestrator=_Orchestrator(known=False, window=256_000),
         model="custom:test",
         task_type="assistant",
         protocol="chat_completions",
@@ -446,15 +446,15 @@ def test_unknown_profile_is_unverified_and_cannot_send() -> None:
         current_tools=(),
     )
     assert binding.capacity_assurance is CapacityAssurance.UNVERIFIED
+    assert counter.counter_id == "fallback.utf8_bytes.v1"
     budget = build_request_budget(
         binding=binding,
         counter=counter,
         components=RequestTokenComponents(current_user_tokens=1),
         safety_margin_tokens=0,
     )
-    with pytest.raises(ConversationContextError) as caught:
-        budget.require_sendable()
-    assert caught.value.code is ConversationContextErrorCode.CAPACITY_UNKNOWN
+    assert budget.bounded_fallback is True
+    budget.require_sendable()
 
 
 def test_prepare_generates_durable_segments_before_business_context() -> None:

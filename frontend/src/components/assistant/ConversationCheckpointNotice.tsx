@@ -30,7 +30,7 @@ const TRIGGER_LABELS: Record<string, string> = {
 const ASSURANCE_LABELS: Record<string, string> = {
   exact: '精确计数',
   conservative: '保守上界',
-  unverified: '未验证（不会继续执行当前任务）',
+  unverified: '未验证容量（已启用安全兜底窗口）',
 }
 
 type NavigationListKey = Exclude<keyof ConversationCheckpointSemanticNavigation, 'authority'>

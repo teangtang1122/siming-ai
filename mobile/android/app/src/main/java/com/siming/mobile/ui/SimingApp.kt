@@ -1687,7 +1687,7 @@ private fun DirectApiSetupScreen(
         mutableStateOf(existing?.protocol ?: DirectApiConfig.PROTOCOL_AUTO)
     }
     var contextWindowTokens by rememberSaveable(existing?.baseUrl) {
-        mutableStateOf(existing?.contextWindowTokens?.toString().orEmpty())
+        mutableStateOf((existing?.contextWindowTokens ?: DirectApiConfig.DEFAULT_CONTEXT_WINDOW_TOKENS).toString())
     }
     var maxOutputTokens by rememberSaveable(existing?.baseUrl) {
         mutableStateOf((existing?.maxOutputTokens ?: DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS).toString())
@@ -1739,7 +1739,7 @@ private fun DirectApiSetupScreen(
             // A capacity profile belongs to one exact endpoint/model pair. Do
             // not carry an old official or author-entered window to a newly
             // selected custom deployment.
-            contextWindowTokens = ""
+            contextWindowTokens = DirectApiConfig.DEFAULT_CONTEXT_WINDOW_TOKENS.toString()
             maxOutputTokens = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS.toString()
             contextProfileIdentity = null
         }
@@ -1882,7 +1882,7 @@ private fun DirectApiSetupScreen(
                 if (documentedCapacity != null) {
                     "已按官方 API 端点和精确模型 ID 验证容量；切换模型时会同步更新。"
                 } else {
-                    "容量必须来自模型服务商文档或你的部署配置；司命不会根据模型名猜测。UTF-8 保守计数只会低估可用空间，不会把未知容量伪装成安全。"
+                    "未取得官方或作者配置时，司命临时按 256K 上下文兜底，并继续使用 UTF-8 保守计数；服务商实际窗口更小时请按文档修改。"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1896,13 +1896,13 @@ private fun DirectApiSetupScreen(
                     }
                 },
                 label = { Text("上下文窗口（tokens）") },
-                placeholder = { Text("例如 128000") },
+                placeholder = { Text("例如 256000") },
                 supportingText = {
                     Text(
                         if (documentedCapacity != null) {
                             "已由官方模型规格自动填写"
                         } else {
-                            "必填；留空时手机直连 Agent 会明确停止，不裁剪历史继续执行"
+                            "未取得官方容量时默认按 256000 兜底；可按服务商实际窗口调整"
                         },
                     )
                 },

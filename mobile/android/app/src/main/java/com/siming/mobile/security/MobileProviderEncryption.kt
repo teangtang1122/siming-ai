@@ -54,24 +54,23 @@ object MobileProviderEncryption {
         config: DirectApiConfig,
         issuedAt: Long,
     ): JsonObject {
-        val contextWindow = requireNotNull(config.contextWindowTokens) {
-            "手机模型线路尚未配置上下文窗口，未创建 Gateway 凭据密文"
-        }
+        val effectiveConfig = config.withContextWindowFallback()
+        val contextWindow = requireNotNull(effectiveConfig.contextWindowTokens)
         return buildJsonObject {
-            put("base_url", config.baseUrl.trim().trimEnd('/'))
-            put("api_key", config.apiKey.trim())
-            put("model", config.model.trim())
+            put("base_url", effectiveConfig.baseUrl.trim().trimEnd('/'))
+            put("api_key", effectiveConfig.apiKey.trim())
+            put("model", effectiveConfig.model.trim())
             put(
                 "protocol",
-                if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+                if (effectiveConfig.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
                     DirectApiConfig.PROTOCOL_RESPONSES
                 } else {
                     DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS
                 },
             )
             put("context_window_tokens", contextWindow)
-            put("max_output_tokens", config.maxOutputTokens)
-            put("safety_margin_tokens", config.safetyMarginTokens)
+            put("max_output_tokens", effectiveConfig.maxOutputTokens)
+            put("safety_margin_tokens", effectiveConfig.safetyMarginTokens)
             put("issued_at", issuedAt)
         }
     }

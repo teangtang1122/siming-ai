@@ -9,10 +9,10 @@ from typing import Any
 from app.services.context_orchestrator import ContextOrchestrator
 
 from .budget import (
+    FallbackUtf8ByteTokenCounter,
     RequestBudgetEnvelope,
     RequestTokenComponents,
     TokenCounter,
-    UnverifiedEstimateTokenCounter,
     Utf8ByteTokenCounter,
     build_request_budget,
 )
@@ -65,14 +65,14 @@ def resolve_generation_model_binding(
     system_prompt: str,
     current_tools: Sequence[Mapping[str, Any]],
 ) -> tuple[GenerationModelBinding, TokenCounter, int]:
-    """Adapt the one authoritative model profile; never guess unknown capacity."""
+    """Adapt the model profile, using the bounded 256K fallback when it is unknown."""
 
     profile = orchestrator.resolve_model_profile(model, task_type)
     if profile.known:
         counter: TokenCounter = Utf8ByteTokenCounter()
         assurance = CapacityAssurance.CONSERVATIVE
     else:
-        counter = UnverifiedEstimateTokenCounter()
+        counter = FallbackUtf8ByteTokenCounter()
         assurance = CapacityAssurance.UNVERIFIED
     binding = GenerationModelBinding.from_resolved_profile(
         profile,

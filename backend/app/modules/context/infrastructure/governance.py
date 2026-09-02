@@ -65,11 +65,11 @@ class SqlAlchemyContextGovernance:
             "fallback": {
                 "context_window_tokens": DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
                 "capacity_assurance": "unverified",
-                "sendable_for_hard_budget": False,
+                "sendable_for_hard_budget": True,
                 "reason": (
-                    "The platform 1M value is an unverified preview estimate only. "
-                    "Agent requests that require a hard capacity guarantee need an enabled "
-                    "provider/model profile."
+                    "No exact capacity profile is configured. Siming temporarily binds a "
+                    "256K window, counts the full request with a conservative byte bound, "
+                    "and lets an exact provider/model profile override it."
                 ),
             },
             "semantic": ContextOrchestrator(session).semantic_status(),

@@ -9,6 +9,7 @@ from app.services.conversation_context import (
     CapacityAssurance,
     ConversationContextError,
     ConversationContextErrorCode,
+    FallbackUtf8ByteTokenCounter,
     GenerationModelBinding,
     RequestTokenComponents,
     UnverifiedEstimateTokenCounter,
@@ -147,6 +148,26 @@ def test_unverified_budget_cannot_be_used_as_hard_capacity() -> None:
     with pytest.raises(ConversationContextError) as caught:
         budget.require_sendable()
     assert caught.value.code is ConversationContextErrorCode.CAPACITY_UNKNOWN
+
+
+def test_bounded_256k_fallback_is_sendable_without_becoming_verified() -> None:
+    counter = FallbackUtf8ByteTokenCounter()
+    binding = _binding(
+        assurance=CapacityAssurance.UNVERIFIED,
+        counter_id=counter.counter_id,
+        context_window=256_000,
+        max_output=16_000,
+    )
+    budget = build_request_budget(
+        binding=binding,
+        counter=counter,
+        components=RequestTokenComponents(current_user_tokens=10),
+        safety_margin_tokens=512,
+    )
+
+    assert budget.verified is False
+    assert budget.bounded_fallback is True
+    budget.require_sendable()
 
 
 def test_budget_rejects_counter_that_does_not_match_binding() -> None:

@@ -602,7 +602,7 @@ internal fun conversationContextStatusLabel(status: String): String = when (stat
 internal fun conversationContextAssuranceLabel(assurance: String?): String = when (assurance) {
     "exact" -> "精确计数"
     "conservative" -> "保守上界"
-    "unverified" -> "未验证（当前任务不会继续）"
+    "unverified" -> "未验证容量（已启用安全兜底窗口）"
     null, "" -> "未提供"
     else -> assurance
 }

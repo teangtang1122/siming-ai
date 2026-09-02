@@ -3493,15 +3493,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     private fun creationConversationStorageId(sessionId: String): String =
         "creation-${sha256(sessionId).take(32)}"
 
-    private fun requireMobileProviderCapacity(config: DirectApiConfig): DirectApiConfig {
-        if (config.contextWindowTokens == null) {
-            throw MobileConversationContextException(
-                MobileConversationContextErrorCode.CAPACITY_UNKNOWN,
-                "手机模型线路尚未配置上下文窗口，未创建 Gateway 凭据密文",
-            )
-        }
-        return config
-    }
+    private fun requireMobileProviderCapacity(config: DirectApiConfig): DirectApiConfig =
+        config.withContextWindowFallback()
 
     companion object {
         private const val MAX_ENTITY_BYTES = 1024 * 1024

@@ -1,7 +1,6 @@
 package com.siming.mobile.data.agent
 
 import com.siming.mobile.data.network.DirectApiConfig
-import com.siming.mobile.data.network.MobileKnownModelCapacityCatalog
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -14,40 +13,11 @@ internal object MobileCapacityAssurance {
     val ALL = setOf(EXACT, CONSERVATIVE, UNVERIFIED)
 }
 
-/** Resolves a task model only from an author profile or an exact first-party fact. */
+/** Resolve every task model through DirectApiConfig's single capacity path. */
 internal fun mobileCapacityBoundTaskConfig(
     config: DirectApiConfig,
     taskType: String,
-): DirectApiConfig {
-    val defaultModel = MobileKnownModelCapacityCatalog.canonicalModelForOfficialEndpoint(
-        config.baseUrl,
-        config.model,
-    )
-    val requestedModel = config.modelForTask(taskType).trim()
-    val selectedModel = MobileKnownModelCapacityCatalog.canonicalModelForOfficialEndpoint(
-        config.baseUrl,
-        requestedModel,
-    )
-    val selected = if (selectedModel == defaultModel) {
-        config.copy(model = selectedModel)
-    } else {
-        // The author-confirmed default profile cannot be inherited by another
-        // task model.  An exact catalog entry may still bind the selected model.
-        config.copy(model = selectedModel, contextWindowTokens = null)
-    }
-    val bound = if (selected.contextWindowTokens != null) {
-        selected
-    } else {
-        MobileKnownModelCapacityCatalog.applyIfKnown(selected)
-    }
-    if (bound?.contextWindowTokens == null) {
-        throw MobileConversationContextException(
-            MobileConversationContextErrorCode.CAPACITY_UNKNOWN,
-            "任务 $taskType 的模型 $requestedModel 未配置独立容量档案",
-        )
-    }
-    return bound
-}
+): DirectApiConfig = config.forTask(taskType)
 
 /** Immutable model/capacity identity. It never guesses a window from a model name. */
 internal data class MobileGenerationModelBinding(

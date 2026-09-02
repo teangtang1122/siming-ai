@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from ...core.model_limits import DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
 from ..rag.context_packer import estimate_tokens
 from .canonical import canonical_json, canonical_value
 from .contracts import CapacityAssurance, GenerationModelBinding
@@ -65,6 +66,23 @@ class UnverifiedEstimateTokenCounter:
 
     def count_text(self, text: str) -> int:
         return estimate_tokens(str(text or ""))
+
+    def count_value(self, value: Any) -> int:
+        return self.count_text(canonical_json(value))
+
+
+FALLBACK_UTF8_BYTE_TOKEN_COUNTER_ID = "fallback.utf8_bytes.v1"
+
+
+@dataclass(frozen=True)
+class FallbackUtf8ByteTokenCounter:
+    """Conservative byte count paired with the bounded unverified fallback window."""
+
+    counter_id: str = FALLBACK_UTF8_BYTE_TOKEN_COUNTER_ID
+    assurance: CapacityAssurance = CapacityAssurance.UNVERIFIED
+
+    def count_text(self, text: str) -> int:
+        return len(str(text or "").encode("utf-8"))
 
     def count_value(self, value: Any) -> int:
         return self.count_text(canonical_json(value))
@@ -181,11 +199,19 @@ class RequestBudgetEnvelope:
             CapacityAssurance.CONSERVATIVE,
         }
 
+    @property
+    def bounded_fallback(self) -> bool:
+        return (
+            self.capacity_assurance is CapacityAssurance.UNVERIFIED
+            and self.token_counter_id == FALLBACK_UTF8_BYTE_TOKEN_COUNTER_ID
+            and 0 < self.context_window_tokens <= DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return canonical_value(self)
 
     def require_sendable(self) -> None:
-        if not self.verified:
+        if not self.verified and not self.bounded_fallback:
             raise ConversationContextError(
                 ConversationContextErrorCode.CAPACITY_UNKNOWN,
                 "当前模型缺少可验证的 Token 计数与容量档案。",
@@ -278,6 +304,7 @@ def build_request_budget(
 
 __all__ = [
     "CallableTokenCounter",
+    "FallbackUtf8ByteTokenCounter",
     "RequestBudgetEnvelope",
     "RequestTokenComponents",
     "TokenCounter",

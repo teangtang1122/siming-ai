@@ -1,12 +1,8 @@
 package com.siming.mobile.ui
 
-import com.siming.mobile.data.mobileAssistantContextFailureEvent
-import com.siming.mobile.data.agent.MobileConversationContextErrorCode
-import com.siming.mobile.data.agent.MobileConversationContextException
 import com.siming.mobile.data.agent.mobileCapacityBoundTaskConfig
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.network.DirectApiConfig
-import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -69,7 +65,7 @@ class ReferenceAssistantWorkspaceTest {
     }
 
     @Test
-    fun `assistant task model override emits typed capacity event for configuration action`() {
+    fun `assistant task model override uses bounded 256k fallback`() {
         val config = DirectApiConfig(
             displayName = "test",
             baseUrl = "https://example.test/v1",
@@ -78,26 +74,13 @@ class ReferenceAssistantWorkspaceTest {
             taskModels = mapOf(DirectApiConfig.TASK_ASSISTANT to "assistant-model"),
             contextWindowTokens = 128_000,
         )
-        val failure = try {
-            mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_ASSISTANT)
-            error("assistant task-model override should fail closed")
-        } catch (error: MobileConversationContextException) {
-            error
-        }
 
-        val event = mobileAssistantContextFailureEvent(
-            error = failure,
-            conversationId = "conversation-1",
-            model = config.modelForTask(DirectApiConfig.TASK_ASSISTANT),
-        )
-        assertEquals("conversation_context", event["type"]?.toString()?.trim('"'))
-        val contextState = mobileAssistantContextStateFromJson(
-            event["context_state"] as JsonObject,
-        )
-        assertEquals("failed", contextState.status)
-        assertEquals(MobileConversationContextErrorCode.CAPACITY_UNKNOWN, contextState.errorCode)
-        assertEquals("assistant-model", contextState.model)
-        assertTrue(requiresDirectContextCapacityConfiguration(contextState))
+        val resolved = mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_ASSISTANT)
+
+        assertEquals("assistant-model", resolved.model)
+        assertEquals(DirectApiConfig.DEFAULT_CONTEXT_WINDOW_TOKENS, resolved.contextWindowTokens)
+        assertEquals(DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS, resolved.maxOutputTokens)
+        assertEquals(128_000, config.contextWindowTokens)
     }
 
     private fun replica(entityType: String, entityId: String, payload: String) = ReplicaEntity(

@@ -19,7 +19,7 @@ import kotlinx.serialization.json.put
 
 class MobileConversationContextTest {
     @Test
-    fun `task model cannot inherit the default model capacity profile`() {
+    fun `task model uses 256k fallback without inheriting the default profile`() {
         val config = DirectApiConfig(
             displayName = "test",
             baseUrl = "https://example.com/v1",
@@ -31,11 +31,9 @@ class MobileConversationContextTest {
             safetyMarginTokens = 4_096,
         )
 
-        val error = assertFailsWith<MobileConversationContextException> {
-            mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_WRITING)
-        }
-        assertEquals(MobileConversationContextErrorCode.CAPACITY_UNKNOWN, error.code)
-        assertTrue(error.message.orEmpty().contains("writer-model"))
+        val writing = mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_WRITING)
+        assertEquals("writer-model", writing.model)
+        assertEquals(DirectApiConfig.DEFAULT_CONTEXT_WINDOW_TOKENS, writing.contextWindowTokens)
 
         val defaultTask = mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_ASSISTANT)
         assertEquals("general-model", defaultTask.model)
