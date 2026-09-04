@@ -30,8 +30,17 @@ def list_worldbuilding_entries(
     dimension: Annotated[
         WorldbuildingDimension | None, Query(description="按维度过滤")
     ] = None,
+    include_inactive: Annotated[
+        bool, Query(description="是否包含已废弃、归档或草稿条目")
+    ] = False,
 ):
-    return ApiResponse.success(data=workspace.list(project_id, dimension))
+    return ApiResponse.success(
+        data=workspace.list(
+            project_id,
+            dimension,
+            include_inactive=include_inactive,
+        )
+    )
 
 
 @router.post("/projects/{project_id}/worldbuilding")

@@ -1,6 +1,6 @@
 import { Button, Card, Checkbox, Progress, Space, Tag, Typography } from 'antd'
 import type { CatalogingJob, CatalogingRun, ChapterItem } from './catalogingTypes'
-import { catalogingStatusColor } from './catalogingTypes'
+import { catalogingStatusColor, catalogingStatusLabel } from './catalogingTypes'
 
 const { Text } = Typography
 
@@ -8,6 +8,11 @@ interface CatalogingSidebarProps {
   chapters: ChapterItem[]
   selectedChapterIds: string[]
   jobs: CatalogingJob[]
+  jobsTotal: number
+  jobsLoading: boolean
+  hasMoreJobs: boolean
+  onRefreshJobs: () => void
+  onLoadMoreJobs: () => void
   activeJob: CatalogingJob | null
   runs: CatalogingRun[]
   onSelectedChapterIdsChange: (ids: string[]) => void
@@ -18,6 +23,11 @@ function CatalogingSidebar({
   chapters,
   selectedChapterIds,
   jobs,
+  jobsTotal,
+  jobsLoading,
+  hasMoreJobs,
+  onRefreshJobs,
+  onLoadMoreJobs,
   activeJob,
   runs,
   onSelectedChapterIdsChange,
@@ -29,7 +39,9 @@ function CatalogingSidebar({
 
   return (
     <>
-      <Card title="历史任务" size="small" style={{ marginBottom: 16 }}>
+      <Card title="历史任务" size="small" style={{ marginBottom: 16 }} extra={
+        <Button size="small" loading={jobsLoading} onClick={onRefreshJobs}>刷新历史</Button>
+      }>
         <div style={{ maxHeight: 260, overflow: 'auto' }}>
           {jobs.length === 0 ? (
             <Text type="secondary">暂无历史任务</Text>
@@ -41,7 +53,9 @@ function CatalogingSidebar({
             >
               <Space direction="vertical" style={{ width: '100%' }}>
                 <Space style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Tag color={catalogingStatusColor[item.status] || 'default'}>{item.status}</Tag>
+                  <Tag color={catalogingStatusColor[item.status] || 'default'}>
+                    {catalogingStatusLabel[item.status] || item.status}
+                  </Tag>
                   <Text type="secondary">{item.completed_chapters || 0}/{item.total_chapters || 0}</Text>
                 </Space>
                 <Progress
@@ -53,6 +67,12 @@ function CatalogingSidebar({
             </Card>
           ))}
         </div>
+        <Text type="secondary">已显示 {jobs.length} / {jobsTotal} 条任务</Text>
+        {hasMoreJobs && (
+          <Button size="small" block loading={jobsLoading} onClick={onLoadMoreJobs} style={{ marginTop: 8 }}>
+            加载更早任务
+          </Button>
+        )}
       </Card>
 
       <Card title="章节范围" size="small">
@@ -84,7 +104,9 @@ function CatalogingSidebar({
               <span title={run.chapter_title} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {run.chapter_title}
               </span>
-              <Tag color={catalogingStatusColor[run.status] || 'default'}>{run.status}</Tag>
+              <Tag color={catalogingStatusColor[run.status] || 'default'}>
+                {catalogingStatusLabel[run.status] || run.status}
+              </Tag>
             </div>
           ))}
         </div>

@@ -72,6 +72,7 @@ class StartExternalCatalogingJobTest(unittest.TestCase):
         query_mock.filter.return_value = query_mock
         query_mock.order_by.return_value = query_mock
         query_mock.all.return_value = []
+        query_mock.count.return_value = 0
         db.query.return_value = query_mock
         result = asyncio.run(start_external_cataloging_job(db, "p1", {}))
         self.assertEqual(result["status"], "skipped")

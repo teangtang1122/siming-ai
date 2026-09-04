@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from types import TracebackType
 from typing import Self
 
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from ..database.session import SessionLocal
+
+_DEFERRED_COMMIT_DEPTH_KEY = "siming.deferred_commit_depth"
 
 
 class UnitOfWork(ABC):
@@ -91,6 +95,44 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.session.rollback()
 
 
+def _deferred_commit_depth(session: Session) -> int:
+    info = getattr(session, "info", None)
+    if not isinstance(info, dict):
+        return 0
+    value = info.get(_DEFERRED_COMMIT_DEPTH_KEY, 0)
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def session_commits_deferred(session: Session) -> bool:
+    """Return whether this session is inside an outer owned transaction."""
+
+    return _deferred_commit_depth(session) > 0
+
+
+@contextmanager
+def defer_session_commits(session: Session) -> Iterator[None]:
+    """Turn nested ``commit_session`` calls into flushes for one session.
+
+    The outer application command still owns the one real commit or rollback.
+    The depth marker lives on ``Session.info`` so nested scopes compose while
+    unrelated sessions remain completely independent.
+    """
+
+    info = getattr(session, "info", None)
+    if not isinstance(info, dict):
+        raise TypeError("defer_session_commits requires a SQLAlchemy Session")
+    previous_depth = _deferred_commit_depth(session)
+    info[_DEFERRED_COMMIT_DEPTH_KEY] = previous_depth + 1
+    try:
+        yield
+    finally:
+        current_depth = _deferred_commit_depth(session)
+        if current_depth <= 1:
+            info.pop(_DEFERRED_COMMIT_DEPTH_KEY, None)
+        else:
+            info[_DEFERRED_COMMIT_DEPTH_KEY] = current_depth - 1
+
+
 def commit_session(session: Session) -> None:
     """Commit a request-owned legacy session through the UoW boundary.
 
@@ -99,8 +141,31 @@ def commit_session(session: Session) -> None:
     New application commands should receive a UnitOfWork directly.
     """
 
+    if session_commits_deferred(session):
+        session.flush()
+        return
     with SqlAlchemyUnitOfWork.from_session(session) as uow:
         uow.commit()
 
 
-__all__ = ["SqlAlchemyUnitOfWork", "UnitOfWork", "commit_session"]
+def commit_connection(connection: Connection) -> None:
+    """Complete a low-level infrastructure transaction at the UoW boundary."""
+
+    connection.commit()
+
+
+def rollback_connection(connection: Connection) -> None:
+    """Roll back a low-level infrastructure transaction at the UoW boundary."""
+
+    connection.rollback()
+
+
+__all__ = [
+    "SqlAlchemyUnitOfWork",
+    "UnitOfWork",
+    "commit_connection",
+    "commit_session",
+    "defer_session_commits",
+    "rollback_connection",
+    "session_commits_deferred",
+]

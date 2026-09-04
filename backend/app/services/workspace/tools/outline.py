@@ -9,34 +9,14 @@ from sqlalchemy.orm import Session
 from ....database.models import OutlineNode, Project
 from ....modules.story.application.content_sync import queue_content_sync
 from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
-from ....services.story_granularity import (
-    extract_chapter_number,
-    normalize_node_type,
-    normalize_outline_batch,
-    normalize_outline_payload,
-)
+from ....modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from ...outline_service import replace_character_links
 from ..utils import (
     find_outline_by_title_or_id,
     next_outline_sort_order,
+    outline_links_from_names,
     outline_node_payload,
-    replace_outline_links_by_names,
 )
-
-
-def _chapter_number_arg(args: dict[str, Any]) -> int | None:
-    raw = args.get("chapter_number")
-    if raw not in (None, ""):
-        try:
-            number = int(raw)
-            return number if number > 0 else None
-        except (TypeError, ValueError):
-            pass
-    return extract_chapter_number(
-        args.get("requirements"),
-        args.get("title"),
-        args.get("chapter_title"),
-        args.get("parent_title"),
-    )
 
 
 async def create_outline_node(
@@ -44,7 +24,6 @@ async def create_outline_node(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    args = normalize_outline_payload(args, chapter_number=_chapter_number_arg(args))
     parent_id = str(args.get("parent_id") or "").strip() or None
     parent_title = str(args.get("parent_title") or "").strip()
     if not parent_id and parent_title:
@@ -59,7 +38,9 @@ async def create_outline_node(
         else:
             parent_id = None
             parent_warning = "；未找到当前作品内的父级大纲，已作为根节点创建"
-    node_type = normalize_node_type(args.get("node_type"))
+    node_type = str(args.get("node_type") or "chapter")
+    if node_type not in {"volume", "chapter", "section"}:
+        return {"tool": "create_outline_node", "status": "error", "detail": "大纲节点类型无效"}
     title = str(args.get("title") or "").strip()
     summary = str(args.get("summary") or "").strip()
     if not title:
@@ -88,12 +69,20 @@ async def create_outline_node(
             "data": outline_node_payload(existing),
         }
 
-    from ..idempotency import generate_idempotency_key, check_idempotency
+    from ..idempotency import check_idempotency, generate_idempotency_key
     _idem_key = generate_idempotency_key(db, "create_outline_node", project_id, args)
     if _idem_key:
         _existing = check_idempotency(db, project_id, _idem_key)
         if _existing:
             return _existing
+    character_names = args.get("character_names")
+    if character_names is None:
+        character_names = args.get("related_characters")
+    character_links = (
+        outline_links_from_names(db, project_id, character_names)
+        if character_names is not None
+        else []
+    )
     node = OutlineNode(
         project_id=project_id,
         parent_id=parent_id,
@@ -114,10 +103,7 @@ async def create_outline_node(
     )
     db.add(node)
     db.flush()
-    character_names = args.get("character_names")
-    if character_names is None:
-        character_names = args.get("related_characters")
-    replace_outline_links_by_names(db, project_id, node, character_names)
+    replace_character_links(db, project_id, node, character_links)
     project = db.query(Project).filter(Project.id == project_id).first()
     if project:
         queue_content_sync(
@@ -146,21 +132,22 @@ async def create_outline_nodes(
     if not isinstance(nodes, list) or not nodes:
         return {"tool": "create_outline_nodes", "status": "skipped", "detail": "没有可创建的大纲节点", "data": {"nodes": []}}
 
-    chapter_number = _chapter_number_arg(args) or extract_chapter_number(
-        *[
-            text
-            for item in nodes
-            if isinstance(item, dict)
-            for text in (item.get("title"), item.get("parent_title"), item.get("chapter_title"))
-        ]
-    )
-    nodes = normalize_outline_batch(nodes, chapter_number=chapter_number)
+    if len(nodes) > OUTLINE_PROPOSAL_MAX_NODES:
+        return {
+            "tool": "create_outline_nodes",
+            "status": "error",
+            "detail": (
+                f"单次最多创建 {OUTLINE_PROPOSAL_MAX_NODES} 个大纲节点；"
+                "本次未写入任何节点"
+            ),
+            "data": {"nodes": [], "skipped": []},
+        }
     parent_id = str(args.get("parent_id") or "").strip()
     created_title_to_id: dict[str, str] = {}
     created: list[dict] = []
     skipped: list[str] = []
     errors: list[str] = []
-    for index, item in enumerate(nodes[:8], start=1):
+    for index, item in enumerate(nodes, start=1):
         if not isinstance(item, dict):
             skipped.append(f"第 {index} 个节点格式无效")
             continue
@@ -229,6 +216,13 @@ async def update_outline_node(
         node = find_outline_by_title_or_id(db, project_id, args.get("title"))
     if not node:
         return {"tool": "update_outline_node", "status": "skipped", "detail": "未找到当前作品内的大纲节点"}
+    character_links = None
+    if "character_names" in args:
+        character_links = outline_links_from_names(
+            db,
+            project_id,
+            args.get("character_names"),
+        )
     if args.get("title"):
         node.title = str(args.get("title")).strip()[:200]
     if "summary" in args:
@@ -237,8 +231,7 @@ async def update_outline_node(
         node.status = str(args.get("status"))
     if args.get("node_type") in {"volume", "chapter", "section"}:
         node.node_type = str(args.get("node_type"))
-    if "character_names" in args:
-        replace_outline_links_by_names(db, project_id, node, args.get("character_names"))
+    replace_character_links(db, project_id, node, character_links)
     if "source_chapter_id" in args:
         node.source_chapter_id = str(args.get("source_chapter_id") or "")[:36] or None
     if "actual_summary" in args:

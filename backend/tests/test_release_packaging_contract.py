@@ -174,6 +174,18 @@ def test_gateway_smokes_every_published_architecture():
     assert "smoke_arch arm64" in workflow
 
 
+def test_gateway_release_image_is_published_directly_from_the_version_tag():
+    workflow = (ROOT / ".github" / "workflows" / "gateway-image.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'tags: ["v*"]' in workflow
+    assert "release:\n    types: [published]" not in workflow
+    assert workflow.count("if: github.ref_type == 'tag'") == 2
+    assert 'tag="${GITHUB_REF_NAME}"' in workflow
+    assert "Tag ${tag} must match frontend/backend/Android version" in workflow
+
+
 def test_android_release_verifies_version_code_and_trusted_certificate():
     script = (ROOT / "scripts" / "verify-android-release.ps1").read_text(encoding="utf-8")
 
@@ -224,6 +236,39 @@ def test_release_workflow_publishes_installer_and_signed_android_assets_only():
     assert "release/Siming.exe" not in upload_block
     assert "release/update.json" not in upload_block
     assert "release/sha256.txt" not in upload_block
+
+
+def test_tag_release_freshly_downloads_and_verifies_all_published_assets():
+    workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(
+        encoding="utf-8"
+    )
+    verifier = (ROOT / "scripts" / "verify-published-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    preflight = (ROOT / ".github" / "workflows" / "release-preflight.yml").read_text(
+        encoding="utf-8"
+    )
+
+    publish_index = workflow.index("Publish verified GitHub release")
+    direct_verify_index = workflow.index("Verify freshly published release assets")
+    assert publish_index < direct_verify_index
+    assert workflow.count("./scripts/verify-published-release.ps1") == 2
+    assert "github.event_name == 'push' && github.ref_type == 'tag'" in workflow
+    for asset in (
+        "Siming-Setup.exe",
+        "Siming-Setup.sha256",
+        "Siming.apk",
+        "Siming-apk-sha256.txt",
+    ):
+        assert asset in verifier
+    assert "gh release view" in verifier
+    assert "gh release download" in verifier
+    assert "Published release contains unexpected assets" in verifier
+    assert "Downloaded asset names do not match the four-file release contract" in verifier
+    assert "verify-windows-installer.ps1" in verifier
+    assert "verify-android-release.ps1" in verifier
+    assert '"scripts/verify-published-release.ps1"' in preflight
+    assert "Test-PowerShellSyntax scripts\\verify-published-release.ps1" in preflight
 
 
 def test_release_smoke_matches_runtime_to_update_manifest():

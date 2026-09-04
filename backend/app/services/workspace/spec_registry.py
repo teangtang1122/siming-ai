@@ -62,8 +62,12 @@ class ToolSpecRegistryMixin:
             expose_to_mcp=tool_def.expose_to_mcp,
             estimated_cost=tool_def.estimated_cost,
             writes_project_data=tool_def.writes_project_data,
+            ends_agent_turn=tool_def.ends_agent_turn,
             mcp_permission_pack=tool_def.mcp_permission_pack,
+            direct_mcp_project_scoped=tool_def.direct_mcp_project_scoped,
+            direct_mcp_transactional=tool_def.direct_mcp_transactional,
             input_schema_override=schema,
+            model_result_contract=tool_def.model_result_contract,
         )
 
 

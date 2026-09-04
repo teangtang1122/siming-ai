@@ -124,6 +124,33 @@ class TestWorldbuildingCRUD(WorldbuildingTestCase):
         self.assertEqual(data["content"], "更新后的内容")
         self.assertEqual(data["sort_order"], 3)
 
+    def test_superseded_entry_is_hidden_from_current_list_but_remains_auditable(self):
+        project_id = self.create_project()
+        create_resp = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/worldbuilding",
+            json={"dimension": "geography", "title": "旧站点", "content": "错误旧版"},
+        )
+        entry_id = create_resp.json()["data"]["id"]
+
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/worldbuilding/{entry_id}",
+            json={"status": "superseded"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["status"], "superseded")
+
+        current = self.client.get(f"{API_PREFIX}/projects/{project_id}/worldbuilding")
+        self.assertEqual(current.json()["data"]["total"], 0)
+
+        audit = self.client.get(
+            f"{API_PREFIX}/projects/{project_id}/worldbuilding?include_inactive=true"
+        )
+        self.assertEqual(audit.json()["data"]["total"], 1)
+        self.assertEqual(
+            audit.json()["data"]["grouped"]["geography"][0]["status"],
+            "superseded",
+        )
+
     def test_delete_worldbuilding_entry(self):
         project_id = self.create_project()
         create_resp = self.client.post(

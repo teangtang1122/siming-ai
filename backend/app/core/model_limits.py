@@ -4,8 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-
-DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 1_000_000
+DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 256_000
 DEFAULT_MODEL_OUTPUT_TOKEN_LIMIT = 16000
 MAX_CONFIGURABLE_LIMIT = 1000000
 

@@ -29,6 +29,13 @@ class ValidationError(AppException):
         super().__init__(code=400, message=message, status_code=400)
 
 
+class ConflictError(AppException):
+    """The requested write was based on stale authoritative state."""
+
+    def __init__(self, message: str = "Resource version conflict"):
+        super().__init__(code=409, message=message, status_code=409)
+
+
 class UnauthorizedError(AppException):
     """Unauthorized access."""
     

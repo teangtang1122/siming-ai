@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 from ....core.db_helpers import get_project_or_404
 from ....core.exceptions import NotFoundError, ValidationError
 from ....database.models import WorldbuildingTimeline, WorldbuildingVersion
+from ....database.query_filters import (
+    current_worldbuilding_clause,
+    normalized_worldbuilding_status,
+)
 from ..application.results import StoryMutation
 from ..domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from .entities import WorldbuildingEntry
@@ -56,11 +60,19 @@ class SqlAlchemyWorldbuildingWorkspace:
             raise NotFoundError("世界观条目不存在")
         return entry
 
-    def list(self, project_id: str, dimension: str | None = None) -> dict:
+    def list(
+        self,
+        project_id: str,
+        dimension: str | None = None,
+        *,
+        include_inactive: bool = False,
+    ) -> dict:
         get_project_or_404(self._session, project_id)
         query = self._session.query(WorldbuildingEntry).filter(
             WorldbuildingEntry.project_id == project_id
         )
+        if not include_inactive:
+            query = query.filter(current_worldbuilding_clause(WorldbuildingEntry.status))
         if dimension:
             query = query.filter(WorldbuildingEntry.dimension == dimension)
         entries = (
@@ -111,6 +123,8 @@ class SqlAlchemyWorldbuildingWorkspace:
         if not payload:
             raise ValidationError("未提供任何更新字段")
         for field, value in payload.items():
+            if field == "status":
+                value = normalized_worldbuilding_status(value)
             setattr(entry, field, value)
         self._session.flush()
         return StoryMutation(

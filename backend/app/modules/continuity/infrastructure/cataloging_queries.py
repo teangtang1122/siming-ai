@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .models import (
     CatalogingCandidate,
@@ -19,7 +19,9 @@ class SqlAlchemyCatalogingQueries:
         self.session = session
 
     def get_job(self, project_id: str, job_id: str):
-        return self.session.query(CatalogingJob).filter(
+        return self.session.query(CatalogingJob).options(
+            selectinload(CatalogingJob.operation),
+        ).filter(
             CatalogingJob.id == job_id,
             CatalogingJob.project_id == project_id,
         ).first()
@@ -30,10 +32,25 @@ class SqlAlchemyCatalogingQueries:
             CatalogingCandidate.project_id == project_id,
         ).first()
 
-    def list_jobs(self, project_id: str, *, limit: int = 20) -> Sequence[CatalogingJob]:
-        return self.session.query(CatalogingJob).filter(
-            CatalogingJob.project_id == project_id,
-        ).order_by(CatalogingJob.created_at.desc()).limit(limit).all()
+    def list_jobs(
+        self, project_id: str, *, limit: int = 20, offset: int = 0
+    ) -> Sequence[CatalogingJob]:
+        return (
+            self.session.query(CatalogingJob)
+            .options(selectinload(CatalogingJob.operation))
+            .filter(CatalogingJob.project_id == project_id)
+            .order_by(CatalogingJob.created_at.desc(), CatalogingJob.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+    def count_jobs(self, project_id: str) -> int:
+        return (
+            self.session.query(CatalogingJob)
+            .filter(CatalogingJob.project_id == project_id)
+            .count()
+        )
 
     def list_runs(self, job_id: str) -> Sequence[CatalogingChapterRun]:
         return self.session.query(CatalogingChapterRun).filter(
@@ -93,7 +110,14 @@ class SqlAlchemyCatalogingQueries:
         return self.session.query(CatalogingChapterRun).filter(
             CatalogingChapterRun.job_id == job_id,
             CatalogingChapterRun.status.in_(
-                ["extracting", "facts_saved", "awaiting_confirmation", "failed"]
+                [
+                    "extracting",
+                    "facts_saved",
+                    "awaiting_confirmation",
+                    "failed",
+                    "completed",
+                    "completed_with_warnings",
+                ]
             ),
         ).order_by(CatalogingChapterRun.chapter_order.asc()).first()
 

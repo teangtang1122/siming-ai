@@ -15,6 +15,7 @@ from sqlalchemy.engine import Engine
 
 from alembic import command
 
+from ..architecture.uow import commit_connection, rollback_connection
 from ..core.config import get_settings
 from ..version import APP_VERSION
 from .backup import backup_sqlite_database
@@ -32,6 +33,7 @@ KNOWN_CORE_COLUMNS = {
 RETIRED_DATA_ONLY_REVISIONS = {
     "300a19_runtime_readiness": "300a18_user_chapter_cataloging",
 }
+SQLITE_FK_RELAXED_REVISION = "300a28_conversation_context"
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,78 @@ def _record_schema_epoch(
             )
 
 
+def _set_sqlite_foreign_keys(connection, *, enabled: bool) -> None:
+    """Set one migration connection's SQLite FK mode outside a transaction."""
+
+    if connection.in_transaction():
+        commit_connection(connection)
+    expected = 1 if enabled else 0
+    connection.exec_driver_sql(
+        f"PRAGMA foreign_keys={'ON' if enabled else 'OFF'}"
+    )
+    if connection.in_transaction():
+        commit_connection(connection)
+    actual = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+    if connection.in_transaction():
+        commit_connection(connection)
+    if int(actual or 0) != expected:
+        state = "enabled" if enabled else "disabled"
+        raise RuntimeError(f"SQLite foreign keys could not be {state} for migration")
+
+
+def _migration_path_contains(
+    config: Config,
+    *,
+    current: str | None,
+    head: str,
+    revision: str,
+) -> bool:
+    scripts = ScriptDirectory.from_config(config)
+    return any(
+        candidate.revision == revision
+        for candidate in scripts.iterate_revisions(head, current)
+    )
+
+
+def _upgrade_schema(
+    target_engine: Engine,
+    config: Config,
+    *,
+    relax_sqlite_foreign_keys: bool,
+) -> None:
+    """Upgrade through one migration-only connection.
+
+    SQLite table rebuilds use ``DROP TABLE`` followed by ``RENAME``.  Keeping
+    foreign keys enabled while rebuilding a referenced parent table can either
+    reject legacy orphan rows or apply ``ON DELETE`` actions to otherwise valid
+    child rows.  Both happened in the 3.3.9 migration.  Disable enforcement
+    only on this connection, let the integrity migration repair legacy rows,
+    and restore enforcement before the pooled connection can be reused.
+    """
+
+    if target_engine.dialect.name != "sqlite" or not relax_sqlite_foreign_keys:
+        with target_engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+        return
+
+    with target_engine.connect() as connection:
+        config.attributes["connection"] = connection
+        config.attributes["sqlite_migration_foreign_keys_disabled"] = True
+        try:
+            _set_sqlite_foreign_keys(connection, enabled=False)
+            command.upgrade(config, "head")
+            if connection.in_transaction():
+                commit_connection(connection)
+        except Exception:
+            if connection.in_transaction():
+                rollback_connection(connection)
+            raise
+        finally:
+            config.attributes.pop("sqlite_migration_foreign_keys_disabled", None)
+            _set_sqlite_foreign_keys(connection, enabled=True)
+
+
 def bootstrap_database(
     target_engine: Engine = engine,
     *,
@@ -236,9 +310,20 @@ def bootstrap_database(
                 url,
                 reason=f"pre-{APP_VERSION}",
             )
-        with target_engine.begin() as connection:
-            config.attributes["connection"] = connection
-            command.upgrade(config, "head")
+        relax_sqlite_foreign_keys = (
+            target_engine.dialect.name == "sqlite"
+            and _migration_path_contains(
+                config,
+                current=current,
+                head=head,
+                revision=SQLITE_FK_RELAXED_REVISION,
+            )
+        )
+        _upgrade_schema(
+            target_engine,
+            config,
+            relax_sqlite_foreign_keys=relax_sqlite_foreign_keys,
+        )
         revision = _current_revision(target_engine)
         if revision != head:
             raise RuntimeError(f"Schema upgrade ended at {revision!r}, expected {head!r}.")

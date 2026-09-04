@@ -17,59 +17,78 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.architecture.tool_categories import (  # noqa: E402
+from app.architecture.tool_categories import (
     TOOL_CATEGORY_CONTROLLER,
     tool_category_contract,
     tool_category_controller_schema,
 )
-from app.modules.assistant.infrastructure.runtime import render_prompt  # noqa: E402
-from app.modules.creation.interfaces.agent_scope import (  # noqa: E402
+from app.database.models import NovelCreationSession
+from app.modules.assistant.infrastructure.runtime import render_prompt
+from app.modules.creation.interfaces.agent_scope import (
     CREATION_AGENT_REVISION_TOOL_NAMES,
     CREATION_AGENT_WRITE_TOOL_NAMES,
     CREATION_TURN_MAX_FAILED_WRITES,
     CREATION_TURN_MAX_SUCCESSFUL_WRITES,
+    MOBILE_CREATION_AGENT_TOOL_NAMES,
+    MOBILE_CREATION_UNSUPPORTED_TOOL_NAMES,
 )
-from app.prompts.character_writer_prompts import build_character_writer_messages  # noqa: E402
-from app.prompts.outline_writer_prompts import build_outline_writer_messages  # noqa: E402
-from app.prompts.style_prompts import build_style_context  # noqa: E402
-from app.prompts.worldbuilding_writer_prompts import build_worldbuilding_writer_messages  # noqa: E402
-from app.prompts.workspace_assistant import build_workspace_assistant_initial_user_message  # noqa: E402
-from app.services.agent.prompt_builder import compose_chapter_writer_messages  # noqa: E402
-from app.prompts.packs.chapter_quality import PACK as CHAPTER_QUALITY_PACK  # noqa: E402
-from app.services.workspace.registry import registry  # noqa: E402
-from app.services.workspace.tool_schemas import build_workspace_tool_schemas  # noqa: E402
-from app.services.workspace.tools.character_writer import CHARACTER_CARD_TOOL  # noqa: E402
-from app.services.workspace.tools.outline_writer import OUTLINE_NODES_TOOL  # noqa: E402
-from app.services.workspace.tools.worldbuilding_writer import WORLDBUILDING_ENTRY_TOOL  # noqa: E402
-from app.services.novel_creation_authoring import _stage_contract  # noqa: E402
-from app.services.novel_creation_contract import (  # noqa: E402
+from app.prompts.character_writer_prompts import (
+    build_character_writer_messages,
+)
+from app.prompts.outline_writer_prompts import (
+    build_outline_writer_messages,
+)
+from app.prompts.packs.chapter_quality import PACK as CHAPTER_QUALITY_PACK
+from app.prompts.style_prompts import build_style_context
+from app.prompts.worldbuilding_writer_prompts import (
+    build_worldbuilding_writer_messages,
+)
+from app.services.agent.prompt_builder import (
+    compose_chapter_writer_messages,
+)
+from app.services.novel_creation_agent import (
+    _domain_tool_schemas as creation_agent_domain_tool_schemas,
+)
+from app.services.novel_creation_agent import (
+    _system_prompt as creation_agent_system_prompt,
+)
+from app.services.novel_creation_authoring import _stage_contract
+from app.services.novel_creation_contract import (
     IMPACT_DEPENDENCIES,
     STAGE_LABELS,
     STAGE_ORDER,
 )
-from app.database.models import NovelCreationSession  # noqa: E402
-from app.services.novel_creation_workspace import (  # noqa: E402
-    derive_stage,
-    get_presets,
-    initialize_session_draft,
-)
-from app.services.novel_creation_prompting import (  # noqa: E402
+from app.services.novel_creation_prompting import (
     COMPACT_CONCEPT_SHAPE,
     CONCEPT_TASK_KINDS,
     CONCEPT_TASK_RULES,
     CONCEPT_USER_INTROS,
-    CREATION_STAGE_TASK_RULES,
-    CREATION_STAGE_USER_PREFIX,
     CREATION_REPAIR_SYSTEM_PROMPT,
     CREATION_REPAIR_USER_TEMPLATE,
+    CREATION_STAGE_TASK_RULES,
+    CREATION_STAGE_USER_PREFIX,
 )
-from app.services.novel_creation_agent import (  # noqa: E402
-    CREATION_AGENT_TOOLS,
-    _domain_tool_schemas as creation_agent_domain_tool_schemas,
-    _system_prompt as creation_agent_system_prompt,
+from app.services.novel_creation_workspace import (
+    derive_stage,
+    get_presets,
+    initialize_session_draft,
 )
-from app.services.workspace.tools.novel_creation_v2 import _normalize_stage_data  # noqa: E402
-
+from app.services.workspace.registry import registry
+from app.services.workspace.tool_schemas import (
+    build_workspace_tool_schemas,
+)
+from app.services.workspace.tools.character_writer import (
+    CHARACTER_CARD_TOOL,
+)
+from app.services.workspace.tools.novel_creation_v2 import (
+    _normalize_stage_data,
+)
+from app.services.workspace.tools.outline_writer import (
+    OUTLINE_PROPOSAL_TOOL,
+)
+from app.services.workspace.tools.worldbuilding_writer import (
+    WORLDBUILDING_ENTRY_TOOL,
+)
 
 MOBILE_TOOL_NAMES = [
     "get_project_info",
@@ -81,7 +100,9 @@ MOBILE_TOOL_NAMES = [
     "search_outline",
     "search_outline_tree",
     "search_worldbuilding",
-    "preview_writing_context",
+    "prepare_task_context",
+    "search_task_context",
+    "submit_context_evidence",
     "chapter_writer",
     "character_writer",
     "outline_writer",
@@ -117,10 +138,7 @@ def _writer_systems() -> dict:
         existing_characters="暂无角色。",
     )[0]["content"]
     outline = build_outline_writer_messages(
-        style_context="{{style_context}}",
-        existing_outline="暂无大纲。",
-        world_context="暂无世界观设定。",
-        existing_characters="暂无角色。",
+        task_context="{{task_context}}",
     )[0]["content"]
     world = {
         dimension: build_worldbuilding_writer_messages(
@@ -155,27 +173,12 @@ def _writer_user_templates() -> dict:
                         role_hint="{{role_type}}" if role else "",
                     )[1]["content"]
 
-    outline: dict[str, str] = {}
-    for requirements in (False, True):
-        for parent in (False, True):
-            for world in (False, True):
-                for existing in (False, True):
-                    key = (
-                        f"requirements={str(requirements).lower()};"
-                        f"parent={str(parent).lower()};world={str(world).lower()};"
-                        f"existing={str(existing).lower()}"
-                    )
-                    outline[key] = build_outline_writer_messages(
-                        style_context="{{style_context}}",
-                        existing_outline="{{existing_outline}}",
-                        world_context="{{world_context}}" if world else "暂无世界观设定。",
-                        existing_characters=(
-                            "{{existing_characters}}" if existing else "暂无角色。"
-                        ),
-                        requirements="{{requirements}}" if requirements else "",
-                        parent_context="{{parent_context}}" if parent else "",
-                        batch_count="{{batch_count}}",
-                    )[1]["content"]
+    outline = {
+        "governed": build_outline_writer_messages(
+            task_context="{{task_context}}",
+            batch_count="{{batch_count}}",  # type: ignore[arg-type]
+        )[1]["content"]
+    }
 
     world: dict[str, str] = {}
     for requirements in (False, True):
@@ -345,14 +348,6 @@ def build_contract() -> dict:
         "assistant.workspace.quality",
         outline_batch_count="{{outline_batch_count}}",
     )
-    initial_user = build_workspace_assistant_initial_user_message(
-        project_id="{{project_id}}",
-        project_title="{{project_title}}",
-        history_text="{{history_text}}",
-        explicit_context=["{{explicit_context}}"],
-        outline_batch_count=3,
-        user_message="{{user_message}}",
-    )
     chapter_messages = compose_chapter_writer_messages(
         pack=CHAPTER_QUALITY_PACK,
         style_context="{{style_context}}",
@@ -363,12 +358,18 @@ def build_contract() -> dict:
         requirements="{{requirements}}",
     )
     baseline_fixture = _creation_baseline_fixture()
+    mobile_creation_names = set(MOBILE_CREATION_AGENT_TOOL_NAMES)
+    mobile_creation_schemas = [
+        schema
+        for schema in creation_agent_domain_tool_schemas()
+        if schema.get("function", {}).get("name") in mobile_creation_names
+    ]
     contract = {
         "schema_version": 3,
         "source_versions": {
-            "workspace": "assistant.workspace.quality@3.1.0",
+            "workspace": "assistant.workspace.quality@3.2.5",
             "chapter_quality": "assistant.chapter.quality@3.1.0",
-            "novel_creation": "creation.novel.stage@3.0.0",
+            "novel_creation": "creation.novel.stage@3.1.0",
         },
         "tool_names": sorted({*tool_names, TOOL_CATEGORY_CONTROLLER}),
         "tool_schemas": [
@@ -377,7 +378,10 @@ def build_contract() -> dict:
         ],
         "tool_categories": tool_category_contract(),
         "workspace_system_template": workspace_system,
-        "workspace_initial_user_template": initial_user,
+        "workspace_current_user_contract": {
+            "source": "conversation_context_frame.current_user_message",
+            "content": "verbatim",
+        },
         "chapter": {
             "quality_system_template": chapter_messages[0]["content"],
             "user_template": chapter_messages[1]["content"],
@@ -393,21 +397,25 @@ def build_contract() -> dict:
         "writer_user_templates": _writer_user_templates(),
         "writer_output_tools": {
             "character": CHARACTER_CARD_TOOL,
-            "outline": OUTLINE_NODES_TOOL,
+            "outline": OUTLINE_PROPOSAL_TOOL,
             "world": WORLDBUILDING_ENTRY_TOOL,
         },
         "creation_agent": {
             "system_template": creation_agent_system_prompt("{{session_id}}"),
-            "tool_names": sorted({*CREATION_AGENT_TOOLS, TOOL_CATEGORY_CONTROLLER}),
-            "revision_tool_names": sorted(CREATION_AGENT_REVISION_TOOL_NAMES),
-            "write_tool_names": sorted(CREATION_AGENT_WRITE_TOOL_NAMES),
+            "tool_names": sorted({*mobile_creation_names, TOOL_CATEGORY_CONTROLLER}),
+            "excluded_pc_tool_names": sorted(MOBILE_CREATION_UNSUPPORTED_TOOL_NAMES),
+            "revision_tool_names": sorted(
+                set(CREATION_AGENT_REVISION_TOOL_NAMES) & mobile_creation_names
+            ),
+            "write_tool_names": sorted(
+                set(CREATION_AGENT_WRITE_TOOL_NAMES) & mobile_creation_names
+            ),
             "max_successful_writes_per_turn": CREATION_TURN_MAX_SUCCESSFUL_WRITES,
             "max_failed_writes_per_turn": CREATION_TURN_MAX_FAILED_WRITES,
             "tool_schemas": [
                 tool_category_controller_schema(),
-                *creation_agent_domain_tool_schemas(),
+                *mobile_creation_schemas,
             ],
-            "max_iterations": 6,
         },
         "creation": {
             "schema_version": 3,

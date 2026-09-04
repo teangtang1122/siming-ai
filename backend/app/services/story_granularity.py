@@ -7,6 +7,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..modules.continuity.domain.cataloging_contract import (
+    canonical_chapter_link_characters,
+    coverage_manifest_duplicate_relationship_pairs,
+)
+
 from sqlalchemy.orm import Session
 
 from ..core.numbers import (
@@ -188,16 +193,16 @@ class CandidateCoverage:
         """Return data-card gaps declared by the chapter summary itself."""
 
         missing = list(self.missing)
-        if self.scene_count > 1 and self.section_count < self.scene_count:
+        if self.scene_count > 1 and self.section_count != self.scene_count:
             missing.append(
                 f"section outlines for declared scenes ({self.section_count}/{self.scene_count})"
             )
-        if self.scene_count > 1 and self.scene_state_count < self.scene_count:
+        if self.scene_count > 1 and self.scene_state_count != self.scene_count:
             missing.append(
                 f"section scene states ({self.scene_state_count}/{self.scene_count})"
             )
         missing_character_states = set(self.declared_character_identities) - set(self.character_state_identities)
-        if missing_character_states or self.character_state_count < self.declared_character_count:
+        if missing_character_states or self.character_state_count != self.declared_character_count:
             missing.append(
                 "character_state_update for declared characters "
                 f"({self.character_state_count}/{self.declared_character_count})"
@@ -214,7 +219,7 @@ class CandidateCoverage:
             set(self.declared_worldbuilding_identities)
             - set(self.worldbuilding_candidate_identities)
         )
-        if missing_worldbuilding or self.worldbuilding_candidate_count < self.declared_worldbuilding_count:
+        if missing_worldbuilding or self.worldbuilding_candidate_count != self.declared_worldbuilding_count:
             missing.append(
                 "worldbuilding candidates for declared entries "
                 f"({self.worldbuilding_candidate_count}/{self.declared_worldbuilding_count})"
@@ -232,7 +237,7 @@ class CandidateCoverage:
             set(self.declared_relationship_identities)
             - set(self.relationship_candidate_identities)
         )
-        if missing_relationships or self.relationship_candidate_count < self.declared_relationship_count:
+        if missing_relationships or self.relationship_candidate_count != self.declared_relationship_count:
             missing.append(
                 "character_relationship candidates for declared changes "
                 f"({self.relationship_candidate_count}/{self.declared_relationship_count})"
@@ -250,7 +255,7 @@ class CandidateCoverage:
             set(self.declared_character_profile_identities)
             - set(self.character_profile_candidate_identities)
         )
-        if missing_profiles or self.character_profile_candidate_count < self.declared_character_profile_count:
+        if missing_profiles or self.character_profile_candidate_count != self.declared_character_profile_count:
             missing.append(
                 "character_create/update for declared profile changes "
                 f"({self.character_profile_candidate_count}/{self.declared_character_profile_count})"
@@ -798,9 +803,13 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
     has_summary = False
     has_chapter_outline = False
     section_count = 0
+    section_candidate_count = 0
+    section_scene_numbers: list[int] = []
+    invalid_section_scene_numbers = 0
     scene_count = 1
     character_state_count = 0
     scene_state_count = 0
+    scene_state_numbers: set[int] = set()
     event_count = 0
     foreshadowing_planted_count = 0
     foreshadowing_resolved_count = 0
@@ -827,6 +836,7 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
     chapter_link_count = 0
     governance_source_priority = {"": 0, "fallback": 1, "provided": 2, "llm": 3, "manual": 4}
     warnings: list[str] = []
+    duplicate_relationship_pairs: set[str] = set()
     for candidate in items:
         if _candidate_status(candidate) == "rejected":
             continue
@@ -880,6 +890,9 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
             declared_relationship_identities.update(
                 _relationship_identities(declared_relationships)
             )
+            duplicate_relationship_pairs.update(
+                coverage_manifest_duplicate_relationship_pairs(declared_relationships)
+            )
             declared_character_profile_identities.update(
                 _declared_identities(
                     declared_character_profiles,
@@ -926,10 +939,18 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
             if node_type == "chapter":
                 has_chapter_outline = True
             elif node_type == "section":
-                section_count += 1
+                section_candidate_count += 1
+                try:
+                    section_scene_number = int(payload.get("scene_number"))
+                except (TypeError, ValueError):
+                    section_scene_number = 0
+                if section_scene_number > 0:
+                    section_scene_numbers.append(section_scene_number)
+                else:
+                    invalid_section_scene_numbers += 1
                 scene_state = normalize_section_scene_state(payload)
-                if scene_state:
-                    scene_state_count += 1
+                if scene_state and section_scene_number > 0:
+                    scene_state_numbers.add(section_scene_number)
                     unresolved_action_count += len(_as_list(scene_state.get("unresolved_actions")))
         elif item_type == "character_state_update":
             identity = _manifest_identity(
@@ -948,7 +969,12 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
         elif item_type in {"worldbuilding_create", "worldbuilding_update", "worldbuilding_timeline"}:
             identity = _manifest_identity(
                 payload,
-                ("id", "entry_id", "title", "name", "entry_title", "target_name"),
+                # coverage_manifest.worldbuilding is a title contract.  An
+                # update candidate also carries a database ID, but preferring
+                # that ID here makes a correct title manifest look incomplete.
+                # Ownership/existence of the ID is validated separately at the
+                # write boundary.
+                ("title", "name", "entry_title", "target_name", "id", "entry_id"),
             )
             if identity:
                 worldbuilding_candidate_identities.add(identity)
@@ -960,7 +986,7 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
             chapter_link_count += 1
             chapter_link_character_identities.update(
                 _declared_identities(
-                    payload.get("character_names") or payload.get("characters"),
+                    canonical_chapter_link_characters(payload),
                     ("id", "character_id", "name", "character_name", "title"),
                 )
             )
@@ -978,6 +1004,29 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
             governance_findings_count += len(
                 [item for item in governance_candidates if isinstance(item, dict)]
             )
+    expected_scene_numbers = set(range(1, scene_count + 1))
+    observed_scene_numbers = set(section_scene_numbers)
+    section_count = len(observed_scene_numbers & expected_scene_numbers)
+    scene_state_count = len(scene_state_numbers & expected_scene_numbers)
+    duplicate_scene_numbers = sorted({
+        value for value in section_scene_numbers if section_scene_numbers.count(value) > 1
+    })
+    out_of_range_scene_numbers = sorted(
+        observed_scene_numbers - expected_scene_numbers
+    )
+    scene_number_integrity: list[str] = []
+    if invalid_section_scene_numbers:
+        scene_number_integrity.append(
+            f"missing_or_invalid={invalid_section_scene_numbers}"
+        )
+    if duplicate_scene_numbers:
+        scene_number_integrity.append(
+            "duplicate=" + ",".join(map(str, duplicate_scene_numbers))
+        )
+    if out_of_range_scene_numbers:
+        scene_number_integrity.append(
+            "out_of_range=" + ",".join(map(str, out_of_range_scene_numbers))
+        )
     if scene_count > 1 and section_count == 0:
         warnings.append("multi_scene_chapter_without_section_outline")
     if scene_count > 1 and scene_state_count == 0:
@@ -998,6 +1047,17 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
         warnings.append("no_narrative_governance_assessment")
     elif governance_review_source == "fallback":
         warnings.append("narrative_governance_requires_human_review")
+    persistence_missing: list[str] = []
+    if duplicate_relationship_pairs:
+        persistence_missing.append(
+            "coverage_manifest.relationships has multiple current types for one directed pair: "
+            + "、".join(sorted(duplicate_relationship_pairs))
+        )
+    if section_candidate_count and scene_number_integrity:
+        persistence_missing.append(
+            "section outline candidates require unique scene_number within "
+            f"1..{scene_count}: " + ", ".join(scene_number_integrity)
+        )
     return CandidateCoverage(
         total=len(items),
         has_chapter_summary=has_summary,
@@ -1037,6 +1097,7 @@ def inspect_candidate_coverage_items(candidates: Iterable[Any]) -> CandidateCove
         character_profile_candidate_identities=tuple(sorted(character_profile_candidate_identities)),
         chapter_link_character_identities=tuple(sorted(chapter_link_character_identities)),
         chapter_link_worldbuilding_identities=tuple(sorted(chapter_link_worldbuilding_identities)),
+        persistence_missing=tuple(persistence_missing),
         warnings=warnings,
     )
 
@@ -1233,7 +1294,9 @@ def granularity_contract_prompt() -> str:
         "character_actions, and relationship_changes. "
         "section outline payloads may include scene_number, purpose, location, timeline, "
         "pov_character, characters, entry_state, exit_state, emotional_residue, and unresolved_actions. "
-        "Every appearing character should receive character_state_update with "
+        "Every appearing character should receive character_state_update. Optional state fields are "
         + ", ".join(CHARACTER_STATE_FIELDS)
-        + "."
+        + ". Read the current full card first; omit unchanged or unmentioned fields so their stored values are preserved. "
+        "Do not rewrite age, appearance or possessions merely to satisfy appearance coverage. "
+        "When no state changed, repeat only one verified existing state value verbatim."
     )

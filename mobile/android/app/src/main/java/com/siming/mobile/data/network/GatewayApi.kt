@@ -189,6 +189,92 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         return response.data as? JsonObject
     }
 
+    suspend fun discardChapterDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+    ): JsonObject {
+        val response = request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.chapterDraft(projectId, draftId),
+            "DELETE",
+        )
+        return response.data as? JsonObject
+            ?: throw GatewayHttpException(502, "PC API 返回的章节草稿结构无效")
+    }
+
+    suspend fun updateChapterDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection,
+        PcApiPaths.chapterDraft(projectId, draftId),
+        "PUT",
+        payload,
+    )
+
+    suspend fun pendingOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+    ): JsonObject? {
+        val response = request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.pendingOutlineDraft(projectId),
+        )
+        return response.data as? JsonObject
+    }
+
+    suspend fun updateOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection,
+        PcApiPaths.outlineDraft(projectId, draftId),
+        "PUT",
+        payload,
+    )
+
+    suspend fun confirmOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+        writeAfterConfirm: Boolean,
+    ): JsonObject = canonicalWrite(
+        connection,
+        PcApiPaths.confirmOutlineDraft(projectId, draftId),
+        "POST",
+        buildJsonObject { put("write_after_confirm", writeAfterConfirm) },
+    )
+
+    suspend fun regenerateOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+    ): JsonObject = canonicalWrite(
+        connection,
+        PcApiPaths.regenerateOutlineDraft(projectId, draftId),
+        "POST",
+        JsonObject(emptyMap()),
+    )
+
+    suspend fun discardOutlineDraft(
+        connection: GatewayConnection,
+        projectId: String,
+        draftId: String,
+    ): JsonObject {
+        val response = request<ApiEnvelope<JsonElement>>(
+            connection.baseUrl,
+            PcApiPaths.outlineDraft(projectId, draftId),
+            "DELETE",
+        )
+        return response.data as? JsonObject
+            ?: throw GatewayHttpException(502, "PC API 返回的大纲草稿结构无效")
+    }
+
     suspend fun saveGeneratedChapter(
         connection: GatewayConnection,
         projectId: String,
@@ -197,6 +283,18 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
         connection = connection,
         path = PcApiPaths.authoringCollection(projectId, "chapter"),
         method = "POST",
+        payload = payload,
+    )
+
+    suspend fun saveGeneratedChapterRevision(
+        connection: GatewayConnection,
+        projectId: String,
+        chapterId: String,
+        payload: JsonObject,
+    ): JsonObject = canonicalWrite(
+        connection = connection,
+        path = PcApiPaths.authoringItem(projectId, "chapter", chapterId),
+        method = "PUT",
         payload = payload,
     )
 
@@ -215,6 +313,25 @@ class GatewayApi(private val tokenStore: SecureTokenStore) {
     ): JsonObject = request<ApiEnvelope<JsonObject>>(
         connection.baseUrl,
         PcApiPaths.assistantConversation(projectId, conversationId),
+    ).data
+
+    suspend fun assistantContextState(
+        connection: GatewayConnection,
+        projectId: String,
+        conversationId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.assistantContextState(projectId, conversationId),
+    ).data
+
+    suspend fun assistantCheckpoint(
+        connection: GatewayConnection,
+        projectId: String,
+        conversationId: String,
+        checkpointId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.assistantCheckpoint(projectId, conversationId, checkpointId),
     ).data
 
     suspend fun assistantRun(
@@ -651,6 +768,25 @@ suspend fun createProjectExport(
         PcApiPaths.novelCreationSession(sessionId),
     ).data
 
+    suspend fun novelCreationContextState(
+        connection: GatewayConnection,
+        sessionId: String,
+        conversationId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.novelCreationContextState(sessionId, conversationId),
+    ).data
+
+    suspend fun novelCreationCheckpoint(
+        connection: GatewayConnection,
+        sessionId: String,
+        conversationId: String,
+        checkpointId: String,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.novelCreationCheckpoint(sessionId, conversationId, checkpointId),
+    ).data
+
     suspend fun novelCreationAgentTurn(
         connection: GatewayConnection,
         payload: JsonObject,
@@ -935,6 +1071,22 @@ suspend fun downloadProjectExport(
         }
         throw GatewayHttpException(401, "设备授权已失效，请重新连接 Gateway")
     }
+
+    /**
+     * Imports one contiguous batch of closed standalone turns into the
+     * canonical server conversation. The caller owns cursor advancement and
+     * must persist the returned receipt before constructing the next batch.
+     */
+    suspend fun importAssistantTranscript(
+        connection: GatewayConnection,
+        projectId: String,
+        requestBody: JsonObject,
+    ): JsonObject = request<ApiEnvelope<JsonObject>>(
+        connection.baseUrl,
+        PcApiPaths.assistantTranscriptImport(projectId),
+        "POST",
+        requestBody.toString(),
+    ).data
 
     private suspend fun validAccessToken(baseUrl: String): String {
         val current = tokenStore.read() ?: throw GatewayHttpException(401, "设备尚未配对")

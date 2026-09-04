@@ -22,6 +22,8 @@ import {
   type WorkspacePersistedMessage,
   type WorkspaceRunLog,
   type WorkspaceToolLog,
+  type ConversationCheckpointDetail,
+  type ConversationContextState,
   type StepDetail,
   SCOPE_LABEL,
   assistantOutcomeToRunLog,
@@ -32,13 +34,29 @@ import {
   MessageList,
   Composer,
   StepDetailModal,
+  ConversationCheckpointNotice,
+  ModelContextCapacityAlert,
 } from './assistant'
 import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
 import { useOperations } from '../shared/operations/queries'
 import { projectCatalogingMessages } from './assistant/catalogingNotifications'
-import { useAiPanelContext, type GeneratedChapterDraft } from '../contexts/AiPanelContext'
+import {
+  useAiPanelContext,
+  type GeneratedChapterDraft,
+  type GeneratedOutlineDraft,
+  type GeneratedOutlineDraftNode,
+} from '../contexts/AiPanelContext'
 import { createLatestRequestGate } from '../shared/latestRequest'
+import {
+  cancelConversationCheckpoint,
+  checkpointIdForState,
+  checkpointFromEvent,
+  contextStateFromEvent,
+  getConversationCheckpoint,
+  getConversationContextState,
+} from '../services/conversationContext'
+import { modelContextCapacityIssueFrom } from '../services/conversationContextErrors'
 import './WorkspaceAssistantChat.css'
 
 const { Text } = Typography
@@ -137,9 +155,39 @@ function generatedDraftFromAction(action: WorkspaceToolLog, projectId: string): 
     outlineNodeId: data.outline_node_id ? String(data.outline_node_id) : null,
     contextManifestId: data.context_manifest_id ? String(data.context_manifest_id) : null,
     savedChapterId: data.saved_chapter_id ? String(data.saved_chapter_id) : null,
+    draftKind: data.draft_kind === 'revision' ? 'revision' : 'new',
+    targetChapterId: data.target_chapter_id ? String(data.target_chapter_id) : null,
+    baseChapterVersion: data.base_chapter_version == null ? null : Number(data.base_chapter_version),
     content,
     wordCount: Number(data.word_count || 0),
     status: String(data.draft_status || 'pending') as GeneratedChapterDraft['status'],
+  }
+}
+
+function generatedOutlineDraftFromAction(
+  action: WorkspaceToolLog,
+  projectId: string,
+): GeneratedOutlineDraft | null {
+  if (!['outline_writer', 'save_external_outline_draft'].includes(String(action.tool || ''))) return null
+  const data = action.data || {}
+  const draftId = String(data.draft_id || '')
+  const rawNodes = Array.isArray(data.nodes) ? data.nodes : []
+  const nodes = rawNodes.filter((node): node is GeneratedOutlineDraftNode => (
+    Boolean(node && typeof node === 'object' && 'title' in node && 'node_type' in node)
+  ))
+  if (!draftId || nodes.length === 0) return null
+  return {
+    draftId,
+    projectId: String(data.project_id || projectId),
+    contextManifestId: data.context_manifest_id ? String(data.context_manifest_id) : null,
+    parentId: data.parent_id ? String(data.parent_id) : null,
+    insertAfterId: data.insert_after_id ? String(data.insert_after_id) : null,
+    status: String(data.draft_status || 'pending') as GeneratedOutlineDraft['status'],
+    nodes,
+    designNotes: String(data.design_notes || ''),
+    savedOutlineNodeIds: Array.isArray(data.saved_outline_node_ids)
+      ? data.saved_outline_node_ids.map(String)
+      : [],
   }
 }
 
@@ -159,6 +207,11 @@ function WorkspaceAssistantChat({
     generatedDraft,
     openGeneratedDraft,
     updateGeneratedDraft,
+    generatedOutlineDraft,
+    openGeneratedOutlineDraft,
+    updateGeneratedOutlineDraft,
+    pendingAuthorAgentRequest,
+    consumeAuthorAgentTurn,
     triggerRefresh,
   } = useAiPanelContext()
   const [conversations, setConversations] = useState<WorkspaceAssistantConversation[]>([])
@@ -193,6 +246,8 @@ function WorkspaceAssistantChat({
   const historyListRequestGate = useRef(createLatestRequestGate<string>())
   const historyMessageRequestGate = useRef(createLatestRequestGate<string>())
   const historyTargetRef = useRef<string | null>(null)
+  const activeConversationIdRef = useRef<string | null>(null)
+  const generatedDraftRef = useRef(generatedDraft)
   const resumePersistedRunRef = useRef<(
     detail: WorkspaceAssistantRunDetail,
     conversationId: string,
@@ -204,6 +259,21 @@ function WorkspaceAssistantChat({
   const [canceling, setCanceling] = useState(false)
   const [cancelPending, setCancelPending] = useState(false)
   const [runtimeAnnouncement, setRuntimeAnnouncement] = useState('')
+  const [conversationContextState, setConversationContextState] = useState<ConversationContextState | null>(null)
+  const [conversationContextError, setConversationContextError] = useState<string | null>(null)
+  const [modelContextCapacityIssue, setModelContextCapacityIssue] = useState<ReturnType<typeof modelContextCapacityIssueFrom>>(null)
+  const [checkpointDetail, setCheckpointDetail] = useState<ConversationCheckpointDetail | null>(null)
+  const [checkpointModalOpen, setCheckpointModalOpen] = useState(false)
+  const [checkpointDetailLoading, setCheckpointDetailLoading] = useState(false)
+  const [checkpointActionLoading, setCheckpointActionLoading] = useState<'rebuild' | 'cancel' | null>(null)
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId
+  }, [activeConversationId])
+
+  useEffect(() => {
+    generatedDraftRef.current = generatedDraft
+  }, [generatedDraft])
 
   const selectedProvider = String(defaultModel || '').split(':', 1)[0]
   const isLocalCliModel = selectedProvider.endsWith('_cli')
@@ -273,6 +343,13 @@ function WorkspaceAssistantChat({
       message.info('这份草稿已经保存')
       return
     }
+    if (draft.draftKind === 'revision') {
+      if (generatedDraft?.draftId === draft.draftId) updateGeneratedDraft(draft)
+      else openGeneratedDraft(draft)
+      navigate(`/project/${encodeURIComponent(projectId)}`)
+      message.info('修订候选已打开；请先对比并应用到编辑器，再由作者明确保存')
+      return
+    }
     const payload = {
       title: draft.title.trim() || '未命名章节',
       outline_node_id: draft.outlineNodeId,
@@ -330,6 +407,35 @@ function WorkspaceAssistantChat({
     openGeneratedDraft,
     projectId,
     refetchCatalogingOperations,
+    triggerRefresh,
+    updateGeneratedDraft,
+  ])
+
+  const discardChapterDraft = useCallback(async (action: WorkspaceToolLog) => {
+    const actionDraft = generatedDraftFromAction(action, projectId)
+    const draft = generatedDraft?.draftId === actionDraft?.draftId
+      ? generatedDraft
+      : actionDraft
+    if (!draft) {
+      message.error('找不到可丢弃的章节草稿，请重新生成')
+      return
+    }
+    if (draft.status !== 'pending') {
+      message.info('这份章节草稿已经处理')
+      return
+    }
+    await apiClient.delete(`/projects/${projectId}/chapter-drafts/${draft.draftId}`)
+    const discardedDraft = { ...draft, status: 'discarded' as const }
+    if (generatedDraft?.draftId === draft.draftId) updateGeneratedDraft(discardedDraft)
+    else openGeneratedDraft(discardedDraft)
+    triggerRefresh()
+    await Promise.resolve(onApplied?.())
+    message.success('章节草稿已丢弃；正式正文未改变')
+  }, [
+    generatedDraft,
+    onApplied,
+    openGeneratedDraft,
+    projectId,
     triggerRefresh,
     updateGeneratedDraft,
   ])
@@ -395,6 +501,32 @@ function WorkspaceAssistantChat({
     return detail
   }, [projectId])
 
+  const refreshConversationContextState = useCallback(async (
+    conversationId: string,
+    shouldApply: () => boolean = () => true,
+  ) => {
+    try {
+      const nextState = await getConversationContextState(projectId, conversationId)
+      if (!shouldApply()) return null
+      setConversationContextState(nextState)
+      setConversationContextError(null)
+      const expectedCheckpointId = checkpointIdForState(nextState)
+      setCheckpointDetail((current) => (
+        current && expectedCheckpointId && current.id === expectedCheckpointId ? current : null
+      ))
+      return nextState
+    } catch (error: any) {
+      if (!shouldApply()) return null
+      if (error?.response?.status === 404) {
+        setConversationContextState(null)
+        setConversationContextError(null)
+        return null
+      }
+      setConversationContextError(error?.message || '读取上下文整理状态失败')
+      return null
+    }
+  }, [projectId])
+
   const isCurrentExecution = (execution: ActiveAssistantExecution) => (
     mountedRef.current && activeExecutionRef.current?.token === execution.token
   )
@@ -429,7 +561,7 @@ function WorkspaceAssistantChat({
       const shouldExposeAction =
         log.status === 'ok'
         && !!log.data
-        && (log.tool === 'chapter_writer' || log.tool === 'preview_writing_context')
+        && log.tool === 'chapter_writer'
       return {
         ...item,
         content: content || item.content,
@@ -473,11 +605,19 @@ function WorkspaceAssistantChat({
       && historyTargetRef.current === conversationId
     )
     setHistoryLoading(true)
+    activeConversationIdRef.current = conversationId
     setActiveConversationId(conversationId)
     setMessages([])
     setRunLogs([])
     setCurrentRun(null)
     setShowAllRunLogs(false)
+    setConversationContextState(null)
+    setConversationContextError(null)
+    setModelContextCapacityIssue(null)
+    setCheckpointDetail(null)
+    setCheckpointModalOpen(false)
+    setCheckpointDetailLoading(false)
+    setCheckpointActionLoading(null)
     try {
       const res = await apiClient.get<ApiResponse<{ conversation: WorkspaceAssistantConversation; messages: WorkspacePersistedMessage[] }>>(
         `/projects/${projectId}/ai/assistant/conversations/${conversationId}`,
@@ -488,6 +628,7 @@ function WorkspaceAssistantChat({
       // Re-sorting here can scramble older rows that share the same timestamp.
       const loadedMessages = (res.data.data.messages || []).map(toWorkspaceMessage)
       setMessages(loadedMessages)
+      void refreshConversationContextState(conversationId, ownsConversation)
       const lastRunMessage = [...loadedMessages]
         .reverse()
         .find((item) => item.role === 'assistant' && item.data?.run)
@@ -522,7 +663,7 @@ function WorkspaceAssistantChat({
     } finally {
       if (ownsConversation()) setHistoryLoading(false)
     }
-  }, [projectId, refreshRunLogs])
+  }, [projectId, refreshConversationContextState, refreshRunLogs])
 
   useEffect(() => {
     let mounted = true
@@ -530,10 +671,18 @@ function WorkspaceAssistantChat({
     historyMessageRequestGate.current.invalidate()
     historyTargetRef.current = null
     setHistoryLoading(false)
+    activeConversationIdRef.current = null
     setActiveConversationId(null)
     setMessages([])
     setRunLogs([])
     setCurrentRun(null)
+    setConversationContextState(null)
+    setConversationContextError(null)
+    setModelContextCapacityIssue(null)
+    setCheckpointDetail(null)
+    setCheckpointModalOpen(false)
+    setCheckpointDetailLoading(false)
+    setCheckpointActionLoading(null)
     fetchConversations().then((items) => {
       if (mounted && items[0]) {
         loadConversation(items[0].id)
@@ -554,12 +703,86 @@ function WorkspaceAssistantChat({
     historyMessageRequestGate.current.invalidate()
     historyTargetRef.current = null
     setHistoryLoading(false)
+    activeConversationIdRef.current = null
     setActiveConversationId(null)
     setMessages([])
     setInput('')
     setRunLogs([])
     setCurrentRun(null)
     setShowAllRunLogs(false)
+    setConversationContextState(null)
+    setConversationContextError(null)
+    setModelContextCapacityIssue(null)
+    setCheckpointDetail(null)
+    setCheckpointModalOpen(false)
+    setCheckpointDetailLoading(false)
+    setCheckpointActionLoading(null)
+  }
+
+  const openCheckpointDetails = async () => {
+    setCheckpointModalOpen(true)
+    const conversationId = activeConversationId
+    const checkpointId = checkpointIdForState(conversationContextState, checkpointDetail)
+    if (!conversationId || !checkpointId || checkpointDetail?.id === checkpointId) return
+    setCheckpointDetailLoading(true)
+    try {
+      const detail = await getConversationCheckpoint(projectId, conversationId, checkpointId)
+      if (activeConversationIdRef.current !== conversationId) return
+      setCheckpointDetail(detail)
+      setConversationContextError(null)
+    } catch (error: any) {
+      if (activeConversationIdRef.current === conversationId) {
+        message.error(error?.message || '读取 checkpoint 详情失败')
+      }
+    } finally {
+      if (activeConversationIdRef.current === conversationId) setCheckpointDetailLoading(false)
+    }
+  }
+
+  const guideCheckpointRetry = () => {
+    if (!activeConversationId || generating) return
+    const guidance = '请发送一条新消息；系统会结合最新任务按需重新整理较早上下文。'
+    setCheckpointModalOpen(false)
+    setRuntimeAnnouncement(guidance)
+    message.info(guidance)
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('.workspace-assistant-composer textarea')?.focus()
+    })
+  }
+
+  const cancelCheckpoint = async () => {
+    const conversationId = activeConversationId
+    const checkpointId = checkpointIdForState(conversationContextState, checkpointDetail)
+    if (!conversationId || !checkpointId || checkpointActionLoading) return
+    setCheckpointActionLoading('cancel')
+    try {
+      const nextState = await cancelConversationCheckpoint(projectId, conversationId, checkpointId)
+      if (activeConversationIdRef.current !== conversationId) return
+      setConversationContextState(nextState)
+      setConversationContextError(null)
+      setRuntimeAnnouncement('上下文整理已取消，当前任务尚未执行')
+    } catch (error: any) {
+      if (activeConversationIdRef.current === conversationId) {
+        message.error(error?.message || '取消上下文整理失败')
+      }
+    } finally {
+      if (activeConversationIdRef.current === conversationId) setCheckpointActionLoading(null)
+    }
+  }
+
+  const jumpToCheckpointSourceMessage = (messageId: string) => {
+    setCheckpointModalOpen(false)
+    window.requestAnimationFrame(() => {
+      const target = [...(messagesRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') || [])]
+        .find((element) => element.dataset.messageId === messageId)
+      if (!target) {
+        message.info('原消息不在当前已加载的会话中')
+        return
+      }
+      target.scrollIntoView?.({ block: 'center', behavior: motionAwareScrollBehavior() })
+      target.classList.add('workspace-assistant-message-source-highlight')
+      window.setTimeout(() => target.classList.remove('workspace-assistant-message-source-highlight'), 1800)
+    })
   }
 
   const deleteConversation = (conversationId: string) => {
@@ -954,6 +1177,7 @@ function WorkspaceAssistantChat({
     setCancelPending(false)
     setCanceling(false)
     setGenerating(true)
+    setModelContextCapacityIssue(null)
     setRuntimeAnnouncement('已恢复正在后台执行的任务，可继续等待或取消')
 
     void (async () => {
@@ -1018,7 +1242,29 @@ function WorkspaceAssistantChat({
     }
     const grantedReadPaths = isOpenCodeCliModel ? proposedReadPaths : []
 
+    const activeChapterDraft = (
+      generatedDraft
+      && generatedDraft.projectId === projectId
+      && generatedDraft.status === 'pending'
+    ) ? generatedDraft : null
+    if (activeChapterDraft) {
+      try {
+        await apiClient.put(
+          `/projects/${projectId}/chapter-drafts/${activeChapterDraft.draftId}`,
+          {
+            title: activeChapterDraft.title,
+            outline_node_id: activeChapterDraft.outlineNodeId,
+            content: activeChapterDraft.content,
+          },
+        )
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '同步当前未保存草稿失败')
+        return
+      }
+    }
+
     setGenerating(true)
+    setModelContextCapacityIssue(null)
     cancelRequestedRef.current = false
     setRunLogs([{ key: `${Date.now()}-start`, tool: agentRuntimeTool, status: 'running', message: '正在提交给AI助手' }])
     setCurrentRun(null)
@@ -1050,10 +1296,6 @@ function WorkspaceAssistantChat({
     if (options?.text === undefined) setInput('')
 
     try {
-      const history = messages.slice(-8).map((item) => ({
-        role: item.role,
-        content: item.content,
-      }))
       const res = await fetch(`/api/v1/projects/${projectId}/ai/workspace-assistant/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1063,22 +1305,36 @@ function WorkspaceAssistantChat({
           conversation_id: activeConversationId || undefined,
           selected_text: selectedText || undefined,
           selected_text_chapter_id: selectedTextChapterId || undefined,
+          active_chapter_draft_id: activeChapterDraft?.draftId || undefined,
           model: defaultModel || undefined,
           temperature: 0.3,
           max_tokens: undefined,
           local_cli_read_permission_grant: grantedReadPaths.length > 0 ? 'read_once' : 'none',
           local_cli_read_paths: grantedReadPaths,
-          history,
         }),
         signal: controller.signal,
       })
-      if (!res.ok || !res.body) throw new Error('请求失败')
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null)
+        const capacityIssue = modelContextCapacityIssueFrom(payload)
+        if (capacityIssue) setModelContextCapacityIssue(capacityIssue)
+        const detail = payload && typeof payload === 'object' && 'detail' in payload
+          ? (payload as { detail?: unknown }).detail
+          : null
+        const detailMessage = typeof detail === 'string'
+          ? detail
+          : detail && typeof detail === 'object' && 'message' in detail
+            ? String((detail as { message?: unknown }).message || '')
+            : ''
+        throw new Error(detailMessage || `请求失败（HTTP ${res.status}）`)
+      }
+      if (!res.body) throw new Error('请求失败：响应没有事件流')
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       let completed = false
-      const handleFrame = (frame: string) => {
+      const handleFrame = async (frame: string) => {
         const data = frame
           .split(/\r?\n/)
           .filter((line) => line.startsWith('data:'))
@@ -1101,6 +1357,7 @@ function WorkspaceAssistantChat({
           execution.conversationId = conversation.id
           execution.userMessageId = persistedUser.id
           execution.assistantMessageId = persistedAssistant.id
+          activeConversationIdRef.current = conversation.id
           setActiveConversationId(conversation.id)
           upsertConversation(conversation)
           setMessages((prev) => {
@@ -1116,6 +1373,48 @@ function WorkspaceAssistantChat({
               toWorkspaceMessage(persistedAssistant),
             ])
           })
+        } else if (event.type === 'conversation_context') {
+          const nextState = contextStateFromEvent(event)
+          if (!nextState) return
+          setConversationContextState(nextState)
+          setConversationContextError(null)
+          const expectedCheckpointId = checkpointIdForState(nextState)
+          setCheckpointDetail((current) => (
+            current && expectedCheckpointId && current.id === expectedCheckpointId ? current : null
+          ))
+          if (nextState.status === 'pending' || nextState.status === 'compressing') {
+            setRuntimeAnnouncement('正在整理较早上下文；当前任务尚未执行')
+          } else if (nextState.status === 'ready') {
+            setRuntimeAnnouncement('较早上下文已整理，正在继续当前任务')
+          } else if (nextState.status === 'failed') {
+            setRuntimeAnnouncement('较早上下文整理失败；当前任务尚未执行')
+          }
+        } else if (event.type === 'conversation_checkpoint') {
+          const nextState = contextStateFromEvent(event)
+          const nextCheckpoint = checkpointFromEvent(event)
+          if (nextCheckpoint) setCheckpointDetail(nextCheckpoint)
+          if (nextState) {
+            setConversationContextState(nextState)
+          } else if (nextCheckpoint) {
+            setConversationContextState((current) => ({
+              ...(current || { status: nextCheckpoint.status }),
+              ...nextCheckpoint,
+              status: nextCheckpoint.status,
+              active_checkpoint_id: nextCheckpoint.status === 'ready'
+                ? nextCheckpoint.id
+                : current?.active_checkpoint_id,
+              latest_checkpoint_id: nextCheckpoint.id,
+            }))
+          }
+          setConversationContextError(null)
+          const nextStatus = nextState?.status || nextCheckpoint?.status
+          if (nextStatus === 'ready') {
+            setRuntimeAnnouncement('较早上下文已整理，正在继续当前任务')
+          } else if (nextStatus === 'failed') {
+            setRuntimeAnnouncement('较早上下文整理失败；当前任务尚未执行')
+          } else if (nextStatus === 'cancelled') {
+            setRuntimeAnnouncement('较早上下文整理已取消；当前任务尚未执行')
+          }
         } else if (event.type === 'run') {
           const run = event.run as WorkspaceAssistantRun
           execution.run = run
@@ -1170,8 +1469,45 @@ function WorkspaceAssistantChat({
             .find((action) => generatedDraftFromAction(action, projectId) !== null)
           const nextDraft = draftAction ? generatedDraftFromAction(draftAction, projectId) : null
           if (nextDraft?.status === 'pending') {
-            openGeneratedDraft(nextDraft)
-            navigate(`/project/${encodeURIComponent(projectId)}`)
+            const currentEditorDraft = generatedDraftRef.current
+            const editorChangedWhileRunning = Boolean(
+              activeChapterDraft
+              && currentEditorDraft?.draftId === activeChapterDraft.draftId
+              && currentEditorDraft.status === 'pending'
+              && (
+                currentEditorDraft.title !== activeChapterDraft.title
+                || currentEditorDraft.outlineNodeId !== activeChapterDraft.outlineNodeId
+                || currentEditorDraft.content !== activeChapterDraft.content
+              ),
+            )
+            if (editorChangedWhileRunning && currentEditorDraft) {
+              try {
+                await apiClient.put(
+                  `/projects/${projectId}/chapter-drafts/${currentEditorDraft.draftId}`,
+                  {
+                    title: currentEditorDraft.title,
+                    outline_node_id: currentEditorDraft.outlineNodeId,
+                    content: currentEditorDraft.content,
+                  },
+                )
+                message.warning('AI 修改期间检测到新的手动编辑；编辑器保留手动版本，AI 结果仍可在本次对话中查看')
+              } catch (error) {
+                message.error(error instanceof Error ? error.message : '保留生成期间的手动编辑失败，请重试')
+              }
+            } else {
+              openGeneratedDraft(nextDraft)
+              navigate(`/project/${encodeURIComponent(projectId)}`)
+            }
+          }
+          const outlineDraftAction = [...(payload.applied_actions || [])]
+            .reverse()
+            .find((action) => generatedOutlineDraftFromAction(action, projectId) !== null)
+          const nextOutlineDraft = outlineDraftAction
+            ? generatedOutlineDraftFromAction(outlineDraftAction, projectId)
+            : null
+          if (nextOutlineDraft?.status === 'pending') {
+            openGeneratedOutlineDraft(nextOutlineDraft)
+            navigate(`/project/${encodeURIComponent(projectId)}?view=outline`)
           }
           completed = true
           execution.terminalHandled = true
@@ -1198,6 +1534,8 @@ function WorkspaceAssistantChat({
           void fetchConversations()
           Promise.resolve(onApplied?.()).catch(() => undefined)
         } else if (event.type === 'error') {
+          const capacityIssue = modelContextCapacityIssueFrom(event)
+          if (capacityIssue) setModelContextCapacityIssue(capacityIssue)
           throw new Error(event.message || 'AI助手执行失败')
         }
       }
@@ -1209,11 +1547,11 @@ function WorkspaceAssistantChat({
         const frames = buffer.split(/\r?\n\r?\n/)
         buffer = frames.pop() || ''
         for (const frame of frames) {
-          if (frame.trim()) handleFrame(frame)
+          if (frame.trim()) await handleFrame(frame)
         }
       }
       buffer += decoder.decode()
-      if (buffer.trim()) handleFrame(buffer)
+      if (buffer.trim()) await handleFrame(buffer)
       if (!completed && !controller.signal.aborted) {
         await reconcileDetachedRun(execution.run, execution)
       }
@@ -1240,6 +1578,87 @@ function WorkspaceAssistantChat({
       }
     }
   }
+  const sendMessageRef = useRef(sendMessage)
+  useEffect(() => {
+    sendMessageRef.current = sendMessage
+  })
+
+  const handleOutlineDraftAction = async (
+    action: WorkspaceToolLog,
+    mode: 'open' | 'confirm' | 'confirm_and_write' | 'regenerate' | 'discard',
+  ) => {
+    const actionDraft = generatedOutlineDraftFromAction(action, projectId)
+    const draft = generatedOutlineDraft?.draftId === actionDraft?.draftId
+      ? generatedOutlineDraft
+      : actionDraft
+    if (!draft) {
+      message.error('找不到可处理的大纲草稿，请重新规划')
+      return
+    }
+    if (mode === 'open') {
+      openGeneratedOutlineDraft(draft)
+      navigate(`/project/${encodeURIComponent(projectId)}?view=outline`)
+      return
+    }
+    if (draft.status !== 'pending') {
+      message.info('这份大纲草稿已经处理')
+      return
+    }
+    if (mode === 'discard') {
+      await apiClient.delete(`/projects/${projectId}/outline-drafts/${draft.draftId}`)
+      updateGeneratedOutlineDraft({ status: 'discarded' })
+      triggerRefresh()
+      message.success('大纲草稿已丢弃')
+      return
+    }
+    if (mode === 'regenerate') {
+      const response = await apiClient.post<ApiResponse<{
+        next_author_request?: { message?: string }
+      }>>(`/projects/${projectId}/outline-drafts/${draft.draftId}/regenerate`)
+      updateGeneratedOutlineDraft({ status: 'superseded' })
+      triggerRefresh()
+      const request = String(response.data.data.next_author_request?.message || '')
+      if (request) await sendMessage({ text: request })
+      return
+    }
+
+    const response = await apiClient.post<ApiResponse<{
+      draft_status?: string
+      saved_outline_node_ids?: string[]
+      next_author_request?: { message?: string }
+    }>>(
+      `/projects/${projectId}/outline-drafts/${draft.draftId}/confirm`,
+      { write_after_confirm: mode === 'confirm_and_write' },
+    )
+    updateGeneratedOutlineDraft({
+      status: 'confirmed',
+      savedOutlineNodeIds: response.data.data.saved_outline_node_ids || [],
+    })
+    triggerRefresh()
+    message.success(mode === 'confirm_and_write' ? '大纲已确认，正在开始新的写章任务' : '大纲已确认')
+    if (mode === 'confirm_and_write') {
+      const request = String(response.data.data.next_author_request?.message || '')
+      if (request) await sendMessage({ text: request })
+    }
+  }
+
+  useEffect(() => {
+    if (
+      !pendingAuthorAgentRequest
+      || pendingAuthorAgentRequest.projectId !== projectId
+      || generating
+      || historyLoading
+    ) return
+    const request = pendingAuthorAgentRequest
+    consumeAuthorAgentTurn()
+    void sendMessageRef.current({ text: request.message })
+  }, [
+    consumeAuthorAgentTurn,
+    generating,
+    historyLoading,
+    pendingAuthorAgentRequest,
+    projectId,
+  ])
 
   const modelUnavailable = !modelsLoading && modelOptions.length === 0
 
@@ -1313,12 +1732,17 @@ function WorkspaceAssistantChat({
         />
       )}
 
+      <ModelContextCapacityAlert
+        issue={modelContextCapacityIssue}
+        onConfigure={() => navigate('/settings?section=context-governance')}
+      />
+
       {isLocalCliModel && !modelUnavailable && (
         <Alert
           className="workspace-assistant-cli-permission"
           type="info"
           showIcon
-          message="本机 CLI 已连接本轮临时 Siming MCP"
+          message="本机 CLI 将使用本轮临时 Siming MCP"
           description={isOpenCodeCliModel
             ? '只开放当前作品范围的工具；本地路径仍需另行确认并只提供临时只读快照。'
             : '只开放当前作品范围的工具，启动参数已预先批准本轮 MCP；不会修改 CLI 的全局配置。'}
@@ -1354,6 +1778,24 @@ function WorkspaceAssistantChat({
           <Text type="secondary" style={{ fontSize: 12 }}>还没有历史对话。</Text>
         )}
       </div>
+
+      <ConversationCheckpointNotice
+        state={conversationContextState}
+        detail={checkpointDetail}
+        stateError={conversationContextError}
+        detailLoading={checkpointDetailLoading}
+        actionLoading={checkpointActionLoading}
+        modalOpen={checkpointModalOpen}
+        onOpen={() => { void openCheckpointDetails() }}
+        onClose={() => setCheckpointModalOpen(false)}
+        onRebuild={guideCheckpointRetry}
+        onCancel={() => { void cancelCheckpoint() }}
+        onNewConversation={() => {
+          setCheckpointModalOpen(false)
+          startNewConversation()
+        }}
+        onJumpToMessage={jumpToCheckpointSourceMessage}
+      />
 
       {runLogs.length > 0 && (
         <div className="workspace-assistant-run-log">
@@ -1452,8 +1894,12 @@ function WorkspaceAssistantChat({
         onScroll={handleMessagesScroll}
         projectId={projectId}
         onSaveChapterDraft={saveChapterDraft}
+        onDiscardChapterDraft={discardChapterDraft}
         activeDraftId={generatedDraft?.draftId || null}
         activeDraftStatus={generatedDraft?.status || null}
+        onOutlineDraftAction={handleOutlineDraftAction}
+        activeOutlineDraftId={generatedOutlineDraft?.draftId || null}
+        activeOutlineDraftStatus={generatedOutlineDraft?.status || null}
         emptyDescription={modelUnavailable ? '模型准备好后，从这里开始第一次对话。' : undefined}
         onStorageRepaired={() => {
           onApplied?.()
@@ -1468,7 +1914,6 @@ function WorkspaceAssistantChat({
         cancelPending={cancelPending || canceling}
         selectedText={selectedText}
         showSelectionTag={showSelectionTag}
-        messageCount={displayedMessages.length}
         onInputChange={setInput}
         onSend={sendMessage}
         onStop={stopGeneration}

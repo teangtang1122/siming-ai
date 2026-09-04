@@ -123,6 +123,14 @@ class PackContextTestCase(unittest.TestCase):
         self.assertGreater(len(outline_warnings), 0)
 
     def test_pack_pinned_chunks(self):
+        self.db.add(WorldbuildingEntry(
+            id="w1",
+            project_id="p1",
+            dimension="culture",
+            title="固定设定",
+            content="这是固定的世界观设定。",
+            status="active",
+        ))
         chunk = RagChunk(
             id="pin1", document_id="doc1", project_id="p1",
             source_type="worldbuilding", source_id="w1",

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import defaultdict
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -11,8 +12,6 @@ from ...database.models import (
     CatalogingFact,
     Chapter,
     Character,
-    CharacterAlias,
-    WorldbuildingEntry,
 )
 from .repair_identity import (
     candidate_payload as _candidate_payload,
@@ -114,6 +113,40 @@ def _fact_names(payload: dict[str, Any]) -> set[str]:
     return names
 
 
+def _fact_archive_identity(payload: dict[str, Any]) -> str:
+    return str(payload.get("archive_identity") or "").strip().casefold()
+
+
+def _fact_is_archival_character(payload: dict[str, Any]) -> bool:
+    """Honor the model's structured identity decision without guessing from names."""
+
+    return _fact_archive_identity(payload) == "stable_character"
+
+
+def _fact_is_archival_worldbuilding(payload: dict[str, Any]) -> bool:
+    """Honor the facts model's structured setting decision without heuristics."""
+
+    return _fact_archive_identity(payload) == "stable_setting"
+
+
+def _fact_character_names(fact_type: str, payload: dict[str, Any]) -> set[str]:
+    if fact_type == "character_fact" and not _fact_is_archival_character(payload):
+        return set()
+    if fact_type == "chapter_overview" and "cataloging_characters" in payload:
+        return _fact_names({"characters": payload.get("cataloging_characters")})
+    return _fact_names(payload)
+
+
+def _non_archival_fact_names(facts: list[tuple[str, dict[str, Any]]]) -> set[str]:
+    result: set[str] = set()
+    for fact_type, payload in facts:
+        if fact_type == "character_fact" and not _fact_is_archival_character(payload):
+            result.update(_fact_names(payload))
+        if fact_type == "chapter_overview":
+            result.update(_fact_names({"characters": payload.get("anonymous_participants")}))
+    return result
+
+
 def _display_identity_references_content(value: str, content: str) -> bool:
     raw = str(value or "").strip()
     if _contains_reference(content, raw):
@@ -146,9 +179,21 @@ def _grounded_fact_names(
     }
 
 
-def _fact_worldbuilding_titles(payload: dict[str, Any]) -> set[str]:
+def _fact_worldbuilding_titles(fact_type: str, payload: dict[str, Any]) -> set[str]:
+    if fact_type == "worldbuilding_fact" and not _fact_is_archival_worldbuilding(payload):
+        return set()
+    if fact_type == "chapter_overview" and "cataloging_worldbuilding_titles" in payload:
+        payload = {
+            "worldbuilding_titles": payload.get("cataloging_worldbuilding_titles")
+        }
     titles: set[str] = set()
-    for key in ("title", "entry_title", "worldbuilding", "worldbuilding_titles", "settings"):
+    for key in (
+        "title",
+        "entry_title",
+        "worldbuilding",
+        "worldbuilding_titles",
+        "settings",
+    ):
         for item in _value_items(payload.get(key)):
             if isinstance(item, dict):
                 item = item.get("title") or item.get("name") or item.get("entry_title")
@@ -198,14 +243,58 @@ def _worldbuilding_candidate_documents(items: list[Any]) -> dict[str, str]:
     return documents
 
 
+def _worldbuilding_candidate_source_resolutions(items: list[Any]) -> dict[str, str]:
+    """Return unambiguous model-declared source fact to archive mappings.
+
+    Facts are extracted before the archive is read, so their stable label may
+    differ from the active card title. The candidate model resolves that
+    semantic identity by attaching source_fact_titles to a candidate selected
+    with a real ID/title. The application only accepts an unambiguous mapping;
+    it does not infer one from wording.
+    """
+
+    targets: dict[str, set[str]] = defaultdict(set)
+    for item in items:
+        if _candidate_status(item) == "rejected":
+            continue
+        if _candidate_type(item) not in {
+            "worldbuilding_create",
+            "worldbuilding_update",
+            "worldbuilding_timeline",
+        }:
+            continue
+        payload = _candidate_payload(item)
+        target = _identity(
+            payload.get("title")
+            or payload.get("entry_title")
+            or payload.get("name")
+            or payload.get("target_name")
+        )
+        if not target:
+            continue
+        for value in _value_items(payload.get("source_fact_titles")):
+            source = _identity(value)
+            if source:
+                targets[source].add(target)
+    return {
+        source: next(iter(values))
+        for source, values in targets.items()
+        if len(values) == 1
+    }
+
+
 def _worldbuilding_term_is_covered(
     term: str,
     declared: set[str],
     documents: dict[str, str],
+    source_resolutions: dict[str, str] | None = None,
 ) -> bool:
     if not declared or not term:
         return False
     if term in declared:
+        return True
+    resolved = (source_resolutions or {}).get(term)
+    if resolved and resolved in declared and resolved in documents:
         return True
     for declared_title in declared:
         document = documents.get(declared_title, "")
@@ -223,13 +312,24 @@ def _worldbuilding_term_is_covered(
 
 
 def _worldbuilding_expectation_terms(fact_type: str, payload: dict[str, Any]) -> set[str]:
-    terms = _fact_worldbuilding_titles(payload)
+    if fact_type == "worldbuilding_fact" and not _fact_is_archival_worldbuilding(payload):
+        return set()
+    terms = _fact_worldbuilding_titles(fact_type, payload)
     if fact_type == "worldbuilding_fact" and not terms:
-        for key in ("title_hint", "title", "entry_title"):
+        # The facts contract and chapter_overview validation already use
+        # canonical_title_hint as the model-selected stable identity. Coverage
+        # must use the same field; preferring title_hint here made API and CLI
+        # validation disagree and could turn one document label into a second
+        # mandatory entry.
+        for key in ("canonical_title_hint", "title_hint"):
+            key_terms: set[str] = set()
             for item in _value_items(payload.get(key)):
                 identity = _identity(item)
                 if identity:
-                    terms.add(identity)
+                    key_terms.add(identity)
+            if key_terms:
+                terms.update(key_terms)
+                break
     return terms
 
 
@@ -252,6 +352,8 @@ def _worldbuilding_term_is_grounded(
 
 def _fact_has_character_profile_evidence(payload: dict[str, Any]) -> bool:
     """Identify facts that must update the stable character card."""
+    if payload.get("stable_profile_change") is False:
+        return False
     return any(
         _meaningful(payload.get(key))
         for key in (
@@ -377,6 +479,7 @@ def _source_expectations(
     expected_relationships: set[str] = set()
     expected_character_profiles: set[str] = set()
     run_id, chapter_id = _candidate_context(items)
+    source_facts = _source_fact_payloads(db, items) if run_id else []
     chapter_content = ""
 
     chapter = None
@@ -387,35 +490,16 @@ def _source_expectations(
         ).first()
     if chapter:
         chapter_content = str(chapter.content or "")
-        alias_query = db.query(CharacterAlias).filter(CharacterAlias.project_id == project_id)
-        if created_before is not None:
-            alias_query = alias_query.filter(CharacterAlias.created_at <= created_before)
-        aliases = alias_query.all()
-        alias_by_character: dict[str, list[str]] = {}
-        for alias in aliases:
-            alias_by_character.setdefault(alias.character_id, []).append(str(alias.alias or ""))
-        for character in characters:
-            references = [str(character.name or ""), *alias_by_character.get(character.id, [])]
-            if any(_contains_reference(chapter_content, reference) for reference in references):
-                canonical = _identity(character.name)
-                if canonical:
-                    expected_characters.add(canonical)
-        entry_query = db.query(WorldbuildingEntry).filter(
-            WorldbuildingEntry.project_id == project_id,
-        )
-        if created_before is not None:
-            entry_query = entry_query.filter(WorldbuildingEntry.created_at <= created_before)
-        entries = entry_query.all()
-        for entry in entries:
-            if _contains_reference(chapter_content, str(entry.title or "")):
-                title = _identity(entry.title)
-                if title:
-                    expected_worldbuilding.add(title)
 
-    if run_id:
-        for fact_type, payload in _source_fact_payloads(db, items):
+    if source_facts:
+        for fact_type, payload in source_facts:
             if fact_type in {"character_fact", "relationship_fact", "chapter_overview"}:
-                fact_names = _grounded_fact_names(payload, identity_map, chapter_content)
+                selected_names = _fact_character_names(fact_type, payload)
+                fact_names = {
+                    _canonical_display_identity(name, identity_map)
+                    for name in selected_names
+                    if _display_identity_references_content(name, chapter_content)
+                }
                 expected_characters.update(fact_names)
                 if fact_type == "character_fact" and _fact_has_grounded_character_profile_evidence(
                     payload,
@@ -455,5 +539,6 @@ __all__ = [
     "_source_fact_payloads",
     "_value_items",
     "_worldbuilding_candidate_documents",
+    "_worldbuilding_candidate_source_resolutions",
     "_worldbuilding_term_is_covered",
 ]

@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 /* Scheduled tasks management page. */
 import { useCallback, useEffect, useState } from 'react'
 import {
@@ -232,7 +233,7 @@ export function ScheduledTasksPage({ projectId }: ScheduledTasksPageProps) {
         if (!record.last_run_at) return <Text type="secondary">从未运行</Text>
         return (
           <Space direction="vertical" size={0}>
-            <Text>{new Date(record.last_run_at).toLocaleString()}</Text>
+            <Text>{(formatApiDateTime(record.last_run_at) || '时间未记录')}</Text>
             {record.last_run_status && (
               <Tag color={record.last_run_status === 'completed' ? 'green' : 'red'} style={{ fontSize: 11 }}>
                 {record.last_run_status}
@@ -247,7 +248,7 @@ export function ScheduledTasksPage({ projectId }: ScheduledTasksPageProps) {
       dataIndex: 'next_run_at',
       key: 'next_run',
       render: (nextRun: string | null) =>
-        nextRun ? new Date(nextRun).toLocaleString() : <Text type="secondary">-</Text>,
+        nextRun ? (formatApiDateTime(nextRun) || '时间未记录') : <Text type="secondary">-</Text>,
     },
     {
       title: '操作',
@@ -394,7 +395,7 @@ export function ScheduledTasksPage({ projectId }: ScheduledTasksPageProps) {
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
               <div>
                 <Text strong>上次运行时间：</Text>
-                <Text>{selectedTask.last_run_at ? new Date(selectedTask.last_run_at).toLocaleString() : '从未运行'}</Text>
+                <Text>{selectedTask.last_run_at ? (formatApiDateTime(selectedTask.last_run_at) || '时间未记录') : '从未运行'}</Text>
               </div>
               <div>
                 <Text strong>运行状态：</Text>

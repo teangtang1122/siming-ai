@@ -12,10 +12,11 @@ class PcCreationAgentContractTest {
     @Test
     fun currentPcCreationAgentPromptRequiresImmediateIncrementalWrites() {
         val contractFile = listOf(
-    java.io.File("app/src/main/assets/pc_workspace_prompt_contract.json"),
-    java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
-).firstOrNull { it.isFile } ?: error("pc_workspace_prompt_contract.json not found from ${System.getProperty("user.dir")}")
-val raw = contractFile.readText()
+            java.io.File("app/src/main/assets/pc_workspace_prompt_contract.json"),
+            java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
+        ).firstOrNull { it.isFile }
+            ?: error("pc_workspace_prompt_contract.json not found from ${System.getProperty("user.dir")}")
+        val raw = contractFile.readText()
         val contract = PcCreationAgentContract(raw)
         val prompt = contract.systemPrompt("session-test")
         assertTrue("立即增量写入" in prompt)
@@ -23,6 +24,23 @@ val raw = contractFile.readText()
         assertTrue("最多完成一次成功的写工具调用" in prompt)
         assertTrue("patch_creation_artifact" in contract.toolNames)
         assertTrue("generate_creation_artifact" in contract.toolNames)
+        assertEquals(
+            setOf(
+                "get_creation_operation",
+                "cancel_creation_operation",
+                "pause_creation_operation",
+                "resume_creation_operation",
+                "retry_creation_operation",
+                "undo_creation_artifact",
+                "list_creation_artifact_versions",
+                "get_creation_artifact_diff",
+                "restore_creation_artifact_version",
+                "preview_creation_import",
+                "apply_creation_import",
+            ),
+            contract.excludedPcToolNames,
+        )
+        assertTrue(contract.excludedPcToolNames.none(contract.toolNames::contains))
         assertTrue("confirm_creation_artifact" in contract.writeToolNames)
         assertTrue("patch_creation_artifact" in contract.revisionToolNames)
         assertEquals(1, contract.maxSuccessfulWritesPerTurn)

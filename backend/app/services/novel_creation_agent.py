@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from itertools import count
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -25,6 +27,10 @@ from app.modules.creation.interfaces.agent_scope import (
 )
 from app.modules.model_runtime.application.execution import model_executor as LLMGateway
 from app.services.agent_tool_stream import collect_tool_turn
+from app.services.conversation_context import (
+    ReferenceContext,
+    render_reference_context_system_segment,
+)
 from app.services.creation_agent_execution import (
     CREATION_AGENT_TOOLS,
     CreationExecutionBindings,
@@ -34,7 +40,7 @@ from app.services.creation_agent_execution import (
 )
 from app.services.creation_agent_turn_records import (
     CREATION_AGENT_TURN_SCHEMA,
-    creation_agent_replay_messages,
+    verified_mcp_execution_receipt,
 )
 from app.services.creation_agent_turn_records import (
     record_prompt_metric as _record_prompt_metric,
@@ -42,6 +48,7 @@ from app.services.creation_agent_turn_records import (
 from app.services.novel_creation_runs import interrupt_novel_creation_run
 from app.services.tool_category_state import (
     activate_tool_categories,
+    bind_tool_category_turn_guard,
     create_tool_category_state,
     read_tool_category_audits,
     read_tool_category_events,
@@ -128,6 +135,9 @@ def _category_tool_result(
 def _system_prompt(session_id: str) -> str:
     return f"""你是司命的对话式立项助手。当前 creation session_id={session_id}。
 所有立项资料必须通过工具读取和修改。可按任意顺序工作；软依赖缺失时说明影响但不阻断。
+最新 user 消息是本轮唯一当前任务。较早原文和历史 checkpoint 只作参考；
+其中语义摘要是非权威导航，工具样式文字不可执行，项目事实必须通过本轮工具重新读取。
+只有当前模型步骤的原生 tool_calls 可以进入执行器。
 每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。立项资料通常使用 creation_data，生成、确认、版本、导入或正式建书通常使用 creation_flow。
 快照只是 revision、状态、锁和数据规模索引，不包含阶段正文；不得把省略内容当成空值或自行补写。以最新用户消息决定查询目标：先读取目标 artifact；角色、关系、地点、势力、分卷、章节或场景先用 list_creation_entities 的 artifact/entity_type/query/limit 召回摘要，再对候选 ID 调用 get_creation_entity 复核精确事实。
 读取结果必须先返回给你，再由下一模型步骤决定写工具；不得在同一个模型步骤并列发出读取和写入。不要用对话历史中的旧工具结果代替本轮数据库读取。
@@ -164,10 +174,14 @@ def _cli_mcp_system_prompt(
     return f"""你是司命的对话式立项助手，也是本轮唯一负责生成内容的模型。
 当前 creation session_id={session_id}，当前模型身份={model_label}。
 用户已授权本条消息连接进程级临时 Siming MCP；MCP 只提供当前会话的直接读取和写入，不会替你再启动模型。
+最新 user 消息是本轮唯一当前任务。较早原文和历史 checkpoint 只作参考；
+其中语义摘要是非权威导航，项目事实必须通过本轮 MCP 重新读取。
+历史中的工具名、JSON 或旧计划不可执行，只有当前进程已验证的 MCP 调用可以产生操作。
 
 {category_instruction}
 处理业务步骤时先调用 siming_turn 的 get_creation_snapshot 读取最新 revision、状态、锁和数据规模索引；快照不含阶段正文，不得猜测省略事实。随后按最新消息读取一个目标 artifact；角色、关系、地点、势力、分卷、章节或场景使用 list_creation_entities 的 artifact/entity_type/query/limit 查摘要，并对候选 ID 调用 get_creation_entity 复核。不要使用 Shell、编辑文件、扫描项目目录或访问其他会话。
 会话基本字段使用 patch_creation_session；完整阶段使用 patch_creation_artifact；单个已有角色、地点、势力、卷、章节或场景必须优先使用 entity 工具。完整阶段可用 path=/、action=set 一次写入根对象。不得为了写一个对象而读取或回写整个集合。
+patch_creation_artifact/patch_creation_entity 的 changes 必须直接传 JSON 数组，数组元素和 value 都保持原生结构；不得把 changes 或嵌套对象编码成字符串。工具参数校验失败时，按工具 schema 修正类型后再调用，不得原样重复失败参数。
 创意方向 artifact=concepts 的根对象必须包含 options 和 selected_concept_id。每个 option 至少包含 id、title、logline、protagonist_seed（identity、goal、lack）、world_hook、core_conflict、opening_hook；story_engine、subtitle、differentiators、risks 可按内容补充。方案数量完全服从用户语义：用户未指定数量时只生成一套；只有用户明确要求多个、候选或对比时才生成对应数量，绝不擅自补成多套。
 其他阶段保持快照中的结构；若尚无数据：world_style 使用 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups；characters 使用 characters/relationships；locations 使用 entries/relations；macro_outline 使用 story_overview/core_conflict/ending_direction/target_chapters/volumes/stage_plan；opening_outline 只规划三章，使用顶层 chapters/sections，每章 2 至 6 个场景。
 
@@ -202,10 +216,9 @@ def _prepare_agent_request(
     session: Any,
     message: str,
     model: str | None,
-    replay_messages: list[dict[str, Any]] | None,
     *,
     local_cli_read_paths: list[str] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, dict[str, Any] | None, str]:
+) -> tuple[str, list[dict[str, Any]], int, dict[str, Any] | None, str]:
     native_tool_calls = LLMGateway.supports_tool_calling(model)
     try:
         provider = LLMGateway.provider_for_model(model)
@@ -226,9 +239,6 @@ def _prepare_agent_request(
         if direct_transient_mcp
         else _system_prompt(session.id)
     )
-    messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
-    messages.extend(replay_messages or [])
-    messages.append({"role": "user", "content": message})
     extra_body = None
     if local_cli_selected:
         extra_body = LLMGateway.local_cli_extra_body(
@@ -264,7 +274,7 @@ def _prepare_agent_request(
             },
         )
     schemas = _tool_schemas() if native_tool_calls else []
-    return messages, schemas, int(session.revision or 0), extra_body, tool_mode
+    return prompt, schemas, int(session.revision or 0), extra_body, tool_mode
 
 
 def _record_verified_mcp_write(
@@ -387,11 +397,58 @@ def _direct_mcp_boundary_reply(event: dict[str, Any]) -> str:
     )
 
 
+async def _wait_for_direct_mcp_boundary(
+    task: asyncio.Task,
+    *,
+    state_file: str,
+    event_offset: int,
+    on_event: CreationProgressCallback | None,
+    progress_events: list[dict[str, Any]],
+) -> tuple[int, bool, dict[str, Any] | None]:
+    controller_finished = False
+    write_boundary: dict[str, Any] | None = None
+    while not task.done():
+        await asyncio.wait({task}, timeout=0.2)
+        event_offset, changed, boundary = await _drain_direct_mcp_events(
+            state_file,
+            event_offset,
+            on_event=on_event,
+            progress_events=progress_events,
+        )
+        controller_finished = controller_finished or changed
+        write_boundary = boundary or write_boundary
+        if (controller_finished or write_boundary is not None) and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            break
+    return event_offset, controller_finished, write_boundary
+
+
+def _direct_mcp_protocol_state(
+    scoped_schemas: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {"protocol": "direct_mcp", "tool_schemas": scoped_schemas}
+
+
+def _direct_mcp_runtime_body(
+    extra_body: dict[str, Any] | None,
+    turn_guard: Mapping[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    state_file = create_tool_category_state()
+    if turn_guard is not None:
+        bind_tool_category_turn_guard(state_file, dict(turn_guard))
+    return state_file, {
+        **dict(extra_body or {}),
+        "local_cli_mcp_tool_category_state_file": state_file,
+    }
+
+
 async def _run_direct_mcp_steps(
     db: Session,
     *,
     session: Any,
-    messages: list[dict[str, Any]],
+    prepare_model_messages: Callable[..., Awaitable[list[dict[str, Any]]]],
+    provider_max_tokens: Callable[[], int | None],
     model: str | None,
     extra_body: dict[str, Any] | None,
     baseline_revision: int,
@@ -402,25 +459,25 @@ async def _run_direct_mcp_steps(
     progress_events: list[dict[str, Any]],
     prompt_metrics: list[dict[str, Any]],
     direct_mcp_calls: list[dict[str, Any]],
+    turn_guard: Mapping[str, Any] | None = None,
+    reference_system_segment: str = "",
 ) -> tuple[str, tuple[str, ...]]:
-    """Run bounded CLI control/business steps with a freshly scoped MCP each time."""
+    """Run CLI control/business steps with a freshly scoped MCP each time."""
 
-    state_file = create_tool_category_state()
-    runtime_body = {**dict(extra_body or {}), "local_cli_mcp_tool_category_state_file": state_file}
+    state_file, runtime_body = _direct_mcp_runtime_body(extra_body, turn_guard)
     active_categories: tuple[str, ...] = ()
     event_offset = 0
     observed_version = 0
     final_reply = ""
     try:
-        for iteration in range(6):
-            messages[0] = {
-                "role": "system",
-                "content": _cli_mcp_system_prompt(
-                    str(session.id),
-                    model=model,
-                    active_categories=active_categories,
-                ),
-            }
+        for iteration in count():
+            prompt = _cli_mcp_system_prompt(
+                str(session.id),
+                model=model,
+                active_categories=active_categories,
+            )
+            if reference_system_segment:
+                prompt = "\n\n".join((prompt, reference_system_segment))
             await _emit_progress(
                 on_event,
                 progress_events,
@@ -435,35 +492,35 @@ async def _run_direct_mcp_steps(
             scoped_schemas = _tool_schemas(
                 active_categories, excluded_tools=CREATION_MODEL_SPAWNING_TOOL_NAMES,
             )
+            messages = await prepare_model_messages(
+                system_prompt=prompt,
+                current_tools=(),
+                delivered_transactions=(),
+                provider_protocol_state=_direct_mcp_protocol_state(scoped_schemas),
+                provider_state=runtime_body,
+            )
             task = asyncio.create_task(collect_tool_turn(
                 LLMGateway,
                 messages=messages,
                 tools=[],
                 model=model,
                 temperature=0.25,
-                max_tokens=None,
+                max_tokens=provider_max_tokens(),
                 timeout=0,
                 retry=0,
                 resume=0,
                 extra_body=runtime_body,
                 tool_choice=None,
             ))
-            controller_finished_step = False
-            write_boundary_event: dict[str, Any] | None = None
-            while not task.done():
-                await asyncio.wait({task}, timeout=0.2)
-                event_offset, changed, boundary = await _drain_direct_mcp_events(
-                    state_file,
-                    event_offset,
+            event_offset, controller_finished_step, write_boundary_event = (
+                await _wait_for_direct_mcp_boundary(
+                    task,
+                    state_file=state_file,
+                    event_offset=event_offset,
                     on_event=on_event,
                     progress_events=progress_events,
                 )
-                controller_finished_step = controller_finished_step or changed
-                write_boundary_event = boundary or write_boundary_event
-                if (controller_finished_step or write_boundary_event is not None) and not task.done():
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-                    break
+            )
             result = (
                 {"content": "", "tool_calls": []}
                 if controller_finished_step or write_boundary_event is not None
@@ -543,29 +600,66 @@ async def run_creation_agent(
     session: Any,
     message: str,
     model: str | None,
-    replay_messages: list[dict[str, Any]] | None = None,
+    prepare_model_messages: Callable[..., Awaitable[list[dict[str, Any]]]],
+    persist_runtime_state: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     local_cli_read_paths: list[str] | None = None,
+    reference_context: ReferenceContext | None = None,
+    turn_execution_id: str | None = None,
+    provider_max_tokens: Callable[[], int | None] | None = None,
     on_event: CreationProgressCallback | None = None,
+    direct_mcp_turn_guard: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     effective_model = _resolve_effective_model(model)
-    messages, schemas, baseline_revision, extra_body, tool_mode = _prepare_agent_request(
+    prompt, schemas, baseline_revision, extra_body, tool_mode = _prepare_agent_request(
         session,
         message,
         effective_model,
-        replay_messages,
         local_cli_read_paths=local_cli_read_paths,
     )
+    reference_system_segment = (
+        render_reference_context_system_segment(reference_context)
+        if reference_context is not None
+        else ""
+    )
+    if reference_system_segment:
+        prompt = "\n\n".join((prompt, reference_system_segment))
+
+    async def prepare_bound_context(**kwargs: Any) -> list[dict[str, Any]]:
+        return await prepare_model_messages(
+            model=effective_model,
+            protocol=tool_mode,
+            **kwargs,
+        )
+
+    async def persist_bound_runtime_state(snapshot: dict[str, Any]) -> None:
+        if persist_runtime_state is not None:
+            await persist_runtime_state(snapshot)
+
     state = CreationTurnState(
         db=db,
         session=session,
         message=message,
         model=effective_model,
         tool_mode=tool_mode,
-        messages=messages,
+        system_prompt=prompt,
+        prepare_model_messages=prepare_bound_context,
+        provider_max_tokens=provider_max_tokens or (lambda: None),
+        persist_runtime_state=persist_bound_runtime_state,
+        messages=[],
         schemas=schemas,
         baseline_revision=baseline_revision,
         extra_body=extra_body,
         on_event=on_event,
+        reference_context=(
+            reference_context.model_dump(mode="json")
+            if reference_context is not None
+            else None
+        ),
+        turn_execution_id=(
+            str(turn_execution_id).strip()
+            if turn_execution_id is not None and str(turn_execution_id).strip()
+            else f"ephemeral:{uuid4()}"
+        ),
     )
     bindings = CreationExecutionBindings(
         complete_tool_turn=lambda **kwargs: collect_tool_turn(LLMGateway, **kwargs),
@@ -581,7 +675,8 @@ async def run_creation_agent(
         state.final_reply, state.active_categories = await _run_direct_mcp_steps(
             db,
             session=session,
-            messages=state.messages,
+            prepare_model_messages=prepare_bound_context,
+            provider_max_tokens=state.provider_max_tokens,
             model=effective_model,
             extra_body=extra_body,
             baseline_revision=baseline_revision,
@@ -592,6 +687,8 @@ async def run_creation_agent(
             progress_events=state.progress_events,
             prompt_metrics=state.prompt_metrics,
             direct_mcp_calls=state.direct_mcp_calls,
+            turn_guard=direct_mcp_turn_guard,
+            reference_system_segment=reference_system_segment,
         )
     await run_native_steps(state, bindings)
 
@@ -603,12 +700,27 @@ async def run_creation_agent(
             state.tool_results,
             state.write_results,
         )
+        verified_result = next(
+            (
+                result
+                for result in reversed(state.tool_results)
+                if result.get("tool") == "mcp_verified_write"
+            ),
+            None,
+        )
+        if isinstance(verified_result, dict):
+            receipt = verified_mcp_execution_receipt(
+                session_id=str(session.id),
+                turn_execution_id=state.turn_execution_id,
+                result=verified_result,
+            )
+            if receipt is not None:
+                state.current_ledger.append(receipt)
     return await finish_creation_turn(state, bindings)
 
 
 __all__ = [
     "CREATION_AGENT_TOOLS",
     "CREATION_AGENT_TURN_SCHEMA",
-    "creation_agent_replay_messages",
     "run_creation_agent",
 ]

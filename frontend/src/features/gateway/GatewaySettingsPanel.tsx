@@ -1,3 +1,4 @@
+import { parseApiDateTime } from '../../utils/dateTime'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
@@ -92,8 +93,8 @@ const ENTITY_LABELS: Record<string, string> = {
 
 const formatDateTime = (value?: string | null) => {
   if (!value) return '尚未记录'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
+  const parsed = parseApiDateTime(value)
+  if (!parsed) return '时间未记录'
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
     day: '2-digit',

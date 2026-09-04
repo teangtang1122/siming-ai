@@ -2,10 +2,10 @@
 import unittest
 from unittest.mock import MagicMock
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import Base, Project, Chapter, WorldbuildingEntry, Character, RagDocument, RagChunk
+from app.database.models import Base, Project, Chapter, WorldbuildingEntry, Character, OutlineNode, RagDocument, RagChunk
 from app.services.rag.indexer import (
     _chunk_text,
     _content_hash,
@@ -17,6 +17,7 @@ from app.services.rag.indexer import (
     ensure_indexed,
     project_has_chunks,
 )
+from app.services.rag.retriever import search_chunks
 
 
 class ChunkTextTestCase(unittest.TestCase):
@@ -169,6 +170,39 @@ class IndexDocumentTestCase(unittest.TestCase):
         chunks = self.db.query(RagChunk).filter(RagChunk.source_id == "w1").all()
         self.assertEqual(len(chunks), 1)
 
+    def test_superseded_worldbuilding_is_filtered_immediately_and_purged_on_reindex(self):
+        entry = WorldbuildingEntry(
+            id="w-stale",
+            project_id="p1",
+            dimension="geography",
+            title="错误龙巢",
+            content="旧版错误资料声称这里有龙族栖息。",
+            status="active",
+        )
+        self.db.add(entry)
+        self.db.commit()
+        index_document(self.db, "p1", "worldbuilding", entry.id)
+        self.db.commit()
+        self.assertEqual(self.db.query(RagChunk).filter_by(source_id=entry.id).count(), 1)
+
+        entry.status = "superseded"
+        self.db.commit()
+        self.assertEqual(
+            search_chunks(
+                self.db,
+                "p1",
+                "龙族栖息",
+                source_types=["worldbuilding"],
+                use_fts=False,
+            ),
+            [],
+        )
+
+        reindex_project(self.db, "p1")
+        self.db.commit()
+        self.assertEqual(self.db.query(RagChunk).filter_by(source_id=entry.id).count(), 0)
+        self.assertEqual(self.db.query(RagDocument).filter_by(source_id=entry.id).count(), 0)
+
     def test_index_chapter(self):
         chapter = Chapter(
             id="c1", project_id="p1", title="第一章 出发",
@@ -228,6 +262,49 @@ class ReindexProjectTestCase(unittest.TestCase):
         result = reindex_project(self.db, "p1")
         self.assertEqual(result["total_chunks"], 5)
         self.assertEqual(result["by_type"]["worldbuilding"], 5)
+
+
+def test_reindex_with_production_foreign_keys_and_explicit_flushes():
+    engine = create_engine("sqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "CREATE VIRTUAL TABLE rag_chunks_fts USING fts5("
+            "chunk_id UNINDEXED, project_id UNINDEXED, source_type UNINDEXED, "
+            "title, content, metadata_json, tokenize='unicode61')"
+        ))
+    with sessionmaker(bind=engine, autoflush=False)() as db:
+        db.add(Project(id="p1", title="Repeated project rebuild"))
+        db.commit()
+        db.add_all([
+            OutlineNode(id="o1", project_id="p1", title="潮声", node_type="chapter", summary="查证录音"),
+            WorldbuildingEntry(id="w1", project_id="p1", dimension="geography", title="档案馆", content="临汐市旧馆"),
+            Character(id="c1", project_id="p1", name="林澄", background="修复师"),
+        ])
+        db.commit()
+        for _ in range(2):
+            stats = reindex_project(db, "p1")
+            db.commit()
+            assert stats["total_chunks"] >= 3
+            assert db.query(RagChunk).count() == stats["total_chunks"]
+            assert db.execute(text("PRAGMA foreign_key_check")).all() == []
+            assert db.execute(text("SELECT count(*) FROM rag_chunks_fts")).scalar() == stats["total_chunks"]
+        original_documents = db.query(RagDocument).count()
+        original_chunks = db.query(RagChunk).count()
+        db.add(WorldbuildingEntry(id="w2", project_id="p1", dimension="geography", title="码头", content="海边"))
+        db.flush()
+        reindex_project(db, "p1")
+        db.rollback()
+        assert db.get(WorldbuildingEntry, "w2") is None
+        assert db.query(RagDocument).count() == original_documents
+        assert db.query(RagChunk).count() == original_chunks
+        assert db.execute(text("SELECT count(*) FROM rag_chunks_fts")).scalar() == original_chunks
+    engine.dispose()
 
 
 class MarkDirtyTestCase(unittest.TestCase):

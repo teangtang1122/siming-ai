@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.architecture.uow import SqlAlchemyUnitOfWork
 from app.database.session import Base
+from app.database.write_coordination import install_sqlite_write_coordination
 from app.modules.assistant.infrastructure.system_conversations import (
     SqlAlchemySystemConversationStore,
 )
@@ -70,12 +71,14 @@ def test_every_conversation_scope_requires_an_identifier(payload_type, payload):
 
 def test_concurrent_conversation_writes_do_not_deadlock_the_async_server(tmp_path):
     database = tmp_path / "system-assistant-concurrency.db"
+    database_url = f"sqlite:///{database.as_posix()}"
     engine = create_engine(
-        f"sqlite:///{database.as_posix()}",
+        database_url,
         connect_args={"check_same_thread": False},
         pool_size=20,
         max_overflow=0,
     )
+    install_sqlite_write_coordination(engine, database_url, timeout=2.0)
 
     @event.listens_for(engine, "connect")
     def configure_sqlite(connection, _record):
@@ -146,11 +149,41 @@ def test_system_conversation_persists_messages_and_creation_scope():
     detail = asyncio.run(get_system_conversation(conversation_id, conversations))
     assert detail.data["conversation"]["creation_session_id"] == "session-1"
     assert [item["role"] for item in detail.data["messages"]] == ["user", "assistant"]
+    assert [item["sequence_no"] for item in detail.data["messages"]] == [1, 2]
     assert detail.data["conversation"]["created_at"].endswith("+00:00")
     assert all(item["created_at"].endswith("+00:00") for item in detail.data["messages"])
     listing = asyncio.run(list_system_conversations(conversations))
     assert listing.data["total"] == 1
     assert listing.data["items"][0]["message_count"] == 2
+
+
+def test_system_conversation_assigns_contiguous_sequences_across_turns():
+    db = _db_session()
+    conversations = SqlAlchemySystemConversationStore(db)
+    conversation_id = conversations.create(
+        "立项顺序",
+        scope_type="creation",
+        scope_id="session-1",
+    )["conversation"]["id"]
+
+    conversations.append_turn(conversation_id, {
+        "user_content": "第一轮",
+        "assistant_content": "第一轮完成",
+        "scope_type": "creation",
+        "scope_id": "session-1",
+    })
+    conversations.start_turn(conversation_id, {
+        "user_content": "第二轮",
+        "scope_type": "creation",
+        "scope_id": "session-1",
+    })
+
+    detail = conversations.get(conversation_id)
+
+    assert [message["sequence_no"] for message in detail["messages"]] == [1, 2, 3, 4]
+    assert [message["role"] for message in detail["messages"]] == [
+        "user", "assistant", "user", "assistant",
+    ]
 
 
 def test_system_turn_persists_running_placeholder_before_completion():

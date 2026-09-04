@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...character_role_types import normalize_character_role_type
+from ...planned_character_links import resolve_planned_outline_character_links
 
 from ....database.models import Character, CharacterAIConfig, CharacterVersion, Project
 from ....modules.story.application.content_sync import queue_content_sync
@@ -63,6 +64,7 @@ async def create_character(
     )
     db.add(character)
     db.flush()
+    resolved_outline_ids = resolve_planned_outline_character_links(db, character)
     ai_config_data = args.get("ai_config") if isinstance(args.get("ai_config"), dict) else {}
     prompt = str(
         ai_config_data.get("custom_system_prompt")
@@ -89,6 +91,15 @@ async def create_character(
                 source="workspace_tool",
             ),
         )
+        if resolved_outline_ids:
+            queue_content_sync(
+                db,
+                ContentSyncIntent(
+                    project_id=project_id,
+                    target=ContentSyncTarget.OUTLINE,
+                    source="workspace_tool",
+                ),
+            )
     return {
         "tool": "create_character",
         "status": "ok",

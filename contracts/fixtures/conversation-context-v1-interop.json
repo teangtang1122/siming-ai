@@ -1,0 +1,431 @@
+{
+  "schema": "conversation_context_interop_fixture.v1",
+  "conversation_context_error_codes": [
+    "conversation_capacity_unknown",
+    "current_user_message_over_capacity",
+    "conversation_checkpoint_required",
+    "conversation_checkpoint_failed",
+    "conversation_checkpoint_cancelled",
+    "conversation_checkpoint_superseded",
+    "conversation_source_changed",
+    "conversation_required_state_over_capacity",
+    "conversation_protocol_invalid",
+    "orphan_tool_result",
+    "incomplete_tool_transaction",
+    "tool_capability_unavailable",
+    "tool_result_over_capacity",
+    "provider_message_mapping_failed",
+    "final_agent_request_over_capacity"
+  ],
+  "native_tool_budget": {
+    "schema": "native_tool_transaction_budget.v2",
+    "max_native_assistant_transaction_json_bytes": 16384,
+    "max_model_visible_tool_result_batch_json_bytes": 32768,
+    "next_step_wrapper_tokens": 32768,
+    "max_projected_transaction_growth_tokens": 65536,
+    "assistant_replay_fields": [
+      "content",
+      "tool_calls",
+      "reasoning_content",
+      "provider_state"
+    ],
+    "standalone_result_json_bytes_by_tool": {
+      "set_tool_categories": 4096,
+      "chapter_writer": 16384,
+      "outline_writer": 16384,
+      "character_writer": 16384,
+      "worldbuilding_writer": 16384,
+      "get_project_info": 16384,
+      "list_characters": 16384,
+      "list_chapters": 16384,
+      "list_worldbuilding": 16384,
+      "search_characters": 16384,
+      "search_chapters": 16384,
+      "search_outline": 16384,
+      "search_outline_tree": 16384,
+      "search_worldbuilding": 16384,
+      "prepare_task_context": 32768,
+      "search_task_context": 32768,
+      "submit_context_evidence": 24576,
+      "update_project_info": 4096,
+      "create_character": 4096,
+      "update_character": 4096,
+      "create_outline_node": 4096,
+      "create_outline_nodes": 12288,
+      "update_outline_node": 4096,
+      "create_worldbuilding_entry": 4096,
+      "update_worldbuilding_entry": 4096
+    },
+    "errors": {
+      "assistant_over_capacity": "native_assistant_transaction_over_capacity",
+      "assistant_invalid": "native_assistant_transaction_invalid",
+      "result_batch_over_capacity": "tool_result_batch_over_capacity"
+    }
+  },
+  "checkpoint_source": {
+    "messages": [
+      {
+        "message_id": "message-1",
+        "sequence_no": 1,
+        "role": "user",
+        "content": "问题 1",
+        "status": "completed"
+      },
+      {
+        "message_id": "message-2",
+        "sequence_no": 2,
+        "role": "assistant",
+        "content": "回答 1",
+        "status": "completed"
+      }
+    ],
+    "source_hash": "6ba732213ce62d143efc4cb3fef8e54b321ddad911092e5e2b7b53fc3a6f60db"
+  },
+  "frame": {
+    "schema": "conversation_context_frame.v1",
+    "conversation": {
+      "kind": "workspace",
+      "id": "conversation-1",
+      "revision": 5,
+      "project_id": "project-1",
+      "creation_session_id": null
+    },
+    "model_binding": {
+      "task_type": "assistant",
+      "provider": "openai",
+      "model_name": "test-model",
+      "normalized_model": "openai:test-model",
+      "protocol": "chat_completions",
+      "context_window_tokens": 1000,
+      "max_output_tokens": 200,
+      "token_counter_id": "conservative.utf8_bytes.v1",
+      "capacity_assurance": "conservative",
+      "prompt_contract_hash": "prompt-hash",
+      "tool_schema_hash": "tool-hash",
+      "config_fingerprint": "config-hash"
+    },
+    "system_contract": {
+      "prompt_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "active_tool_category_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "checkpoint": null,
+    "checkpoint_segments": [],
+    "recent_turns": [
+      {
+        "turn_id": "turn-1",
+        "status": "completed",
+        "messages": [
+          {
+            "message_id": "message-1",
+            "sequence_no": 1,
+            "role": "user",
+            "content": "问题 1",
+            "tool_call_id": null,
+            "tool_calls": []
+          },
+          {
+            "message_id": "message-2",
+            "sequence_no": 2,
+            "role": "assistant",
+            "content": "回答 1",
+            "tool_call_id": null,
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "current_user_message": {
+      "message_id": "message-5",
+      "sequence_no": 5,
+      "role": "user",
+      "content": "现在只修改标题",
+      "tool_call_id": null,
+      "tool_calls": []
+    },
+    "current_turn_ledger": [],
+    "pending_tool_transactions": [],
+    "budget": {
+      "schema": "request_budget_envelope.v1",
+      "model_binding_fingerprint": "c51ebc37c1d07baa515d6ac897e8e82ef1bd0c08ca4954a7c279dc5e103f735d",
+      "token_counter_id": "conservative.utf8_bytes.v1",
+      "capacity_assurance": "conservative",
+      "context_window_tokens": 1000,
+      "output_reserve_tokens": 200,
+      "safety_margin_tokens": 100,
+      "system_prompt_tokens": 0,
+      "generator_template_tokens": 0,
+      "tool_schema_tokens": 0,
+      "message_wrapper_tokens": 0,
+      "provider_protocol_tokens": 0,
+      "checkpoint_tokens": 0,
+      "recent_exact_turn_tokens": 0,
+      "current_user_tokens": 20,
+      "current_turn_ledger_tokens": 0,
+      "pending_tool_transaction_tokens": 0,
+      "provider_state_tokens": 0,
+      "extra_runtime_instruction_tokens": 0,
+      "max_model_visible_result_tokens_for_open_tools": 0,
+      "next_step_wrapper_tokens": 0,
+      "current_input_tokens": 20,
+      "request_input_limit": 700,
+      "projected_next_step_tokens": 20,
+      "fits_current": true,
+      "fits_projected": true
+    },
+    "integrity": {
+      "transcript_revision": 5,
+      "checkpoint_hash": null,
+      "frame_hash": "71e1726eb23add6db52ea7f721fdcbed49622050b06a42d0234cdac65801581e"
+    }
+  },
+  "segmented_frame": {
+    "schema": "conversation_context_frame.v1",
+    "conversation": {
+      "kind": "workspace",
+      "id": "conversation-1",
+      "revision": 11,
+      "project_id": "project-1",
+      "creation_session_id": null
+    },
+    "model_binding": {
+      "task_type": "assistant",
+      "provider": "openai",
+      "model_name": "test-model",
+      "normalized_model": "openai:test-model",
+      "protocol": "chat_completions",
+      "context_window_tokens": 1000,
+      "max_output_tokens": 200,
+      "token_counter_id": "conservative.utf8_bytes.v1",
+      "capacity_assurance": "conservative",
+      "prompt_contract_hash": "prompt-hash",
+      "tool_schema_hash": "tool-hash",
+      "config_fingerprint": "config-hash"
+    },
+    "system_contract": {
+      "prompt_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "active_tool_category_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "checkpoint": {
+      "scope": "workspace",
+      "conversation_id": "conversation-1",
+      "source_range": {
+        "first_sequence": 5,
+        "last_sequence": 6,
+        "message_count": 2,
+        "source_hash": "2b43730a6e517b071af1aaeaf68b9f844dc9d398d9a83500c1d96bf8e329009e"
+      },
+      "semantic_navigation": {
+        "authority": "non_authoritative_navigation",
+        "current_objectives": [],
+        "resolved_decisions": [],
+        "superseded_directions": [],
+        "unresolved_questions": [],
+        "next_context_needed": []
+      },
+      "author_quotes": [
+        {
+          "message_id": "message-1",
+          "start_char": 0,
+          "end_char": 4,
+          "exact_quote": "问题 1",
+          "quote_sha256": "2bbe8e8fb6fc983ca7a5935eab531f59fc09e4a1a3547c1cb0c878f646a1ad4d",
+          "purpose": "active_constraint",
+          "superseded": false
+        }
+      ],
+      "execution_ledger": [],
+      "project_refs": [],
+      "warnings": [],
+      "segment_ids": [
+        "checkpoint-1"
+      ],
+      "policy_version": 1,
+      "schema": "conversation_checkpoint.v1"
+    },
+    "checkpoint_segments": [
+      {
+        "scope": "workspace",
+        "conversation_id": "conversation-1",
+        "source_range": {
+          "first_sequence": 1,
+          "last_sequence": 2,
+          "message_count": 2,
+          "source_hash": "6ba732213ce62d143efc4cb3fef8e54b321ddad911092e5e2b7b53fc3a6f60db"
+        },
+        "semantic_navigation": {
+          "authority": "non_authoritative_navigation",
+          "current_objectives": [],
+          "resolved_decisions": [],
+          "superseded_directions": [],
+          "unresolved_questions": [],
+          "next_context_needed": []
+        },
+        "author_quotes": [
+          {
+            "message_id": "message-1",
+            "start_char": 0,
+            "end_char": 4,
+            "exact_quote": "问题 1",
+            "quote_sha256": "2bbe8e8fb6fc983ca7a5935eab531f59fc09e4a1a3547c1cb0c878f646a1ad4d",
+            "purpose": "active_constraint",
+            "superseded": false
+          }
+        ],
+        "execution_ledger": [],
+        "project_refs": [],
+        "warnings": [],
+        "segment_ids": [],
+        "policy_version": 1,
+        "schema": "conversation_checkpoint.v1"
+      },
+      {
+        "scope": "workspace",
+        "conversation_id": "conversation-1",
+        "source_range": {
+          "first_sequence": 5,
+          "last_sequence": 6,
+          "message_count": 2,
+          "source_hash": "2b43730a6e517b071af1aaeaf68b9f844dc9d398d9a83500c1d96bf8e329009e"
+        },
+        "semantic_navigation": {
+          "authority": "non_authoritative_navigation",
+          "current_objectives": [],
+          "resolved_decisions": [],
+          "superseded_directions": [],
+          "unresolved_questions": [],
+          "next_context_needed": []
+        },
+        "author_quotes": [
+          {
+            "message_id": "message-1",
+            "start_char": 0,
+            "end_char": 4,
+            "exact_quote": "问题 1",
+            "quote_sha256": "2bbe8e8fb6fc983ca7a5935eab531f59fc09e4a1a3547c1cb0c878f646a1ad4d",
+            "purpose": "active_constraint",
+            "superseded": false
+          }
+        ],
+        "execution_ledger": [],
+        "project_refs": [],
+        "warnings": [],
+        "segment_ids": [
+          "checkpoint-1"
+        ],
+        "policy_version": 1,
+        "schema": "conversation_checkpoint.v1"
+      }
+    ],
+    "recent_turns": [
+      {
+        "turn_id": "turn-2",
+        "status": "cancelled",
+        "messages": [
+          {
+            "message_id": "message-3",
+            "sequence_no": 3,
+            "role": "user",
+            "content": "问题 2",
+            "tool_call_id": null,
+            "tool_calls": []
+          },
+          {
+            "message_id": "message-4",
+            "sequence_no": 4,
+            "role": "assistant",
+            "content": "回答 2",
+            "tool_call_id": null,
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "turn_id": "turn-4",
+        "status": "error",
+        "messages": [
+          {
+            "message_id": "message-7",
+            "sequence_no": 7,
+            "role": "user",
+            "content": "问题 4",
+            "tool_call_id": null,
+            "tool_calls": []
+          },
+          {
+            "message_id": "message-8",
+            "sequence_no": 8,
+            "role": "assistant",
+            "content": "回答 4",
+            "tool_call_id": null,
+            "tool_calls": []
+          }
+        ]
+      },
+      {
+        "turn_id": "turn-5",
+        "status": "completed",
+        "messages": [
+          {
+            "message_id": "message-9",
+            "sequence_no": 9,
+            "role": "user",
+            "content": "问题 5",
+            "tool_call_id": null,
+            "tool_calls": []
+          },
+          {
+            "message_id": "message-10",
+            "sequence_no": 10,
+            "role": "assistant",
+            "content": "回答 5",
+            "tool_call_id": null,
+            "tool_calls": []
+          }
+        ]
+      }
+    ],
+    "current_user_message": {
+      "message_id": "message-11",
+      "sequence_no": 11,
+      "role": "user",
+      "content": "继续",
+      "tool_call_id": null,
+      "tool_calls": []
+    },
+    "current_turn_ledger": [],
+    "pending_tool_transactions": [],
+    "budget": {
+      "schema": "request_budget_envelope.v1",
+      "model_binding_fingerprint": "c51ebc37c1d07baa515d6ac897e8e82ef1bd0c08ca4954a7c279dc5e103f735d",
+      "token_counter_id": "conservative.utf8_bytes.v1",
+      "capacity_assurance": "conservative",
+      "context_window_tokens": 1000,
+      "output_reserve_tokens": 200,
+      "safety_margin_tokens": 100,
+      "system_prompt_tokens": 0,
+      "generator_template_tokens": 0,
+      "tool_schema_tokens": 0,
+      "message_wrapper_tokens": 0,
+      "provider_protocol_tokens": 0,
+      "checkpoint_tokens": 0,
+      "recent_exact_turn_tokens": 0,
+      "current_user_tokens": 20,
+      "current_turn_ledger_tokens": 0,
+      "pending_tool_transaction_tokens": 0,
+      "provider_state_tokens": 0,
+      "extra_runtime_instruction_tokens": 0,
+      "max_model_visible_result_tokens_for_open_tools": 0,
+      "next_step_wrapper_tokens": 0,
+      "current_input_tokens": 20,
+      "request_input_limit": 700,
+      "projected_next_step_tokens": 20,
+      "fits_current": true,
+      "fits_projected": true
+    },
+    "integrity": {
+      "transcript_revision": 11,
+      "checkpoint_hash": "92007182ff7855542a28858085f9c3d83a2da659b8fe7ebd7710a46ae0d7e6cf",
+      "frame_hash": "5e95b1eabe41b9e8337f469a2df10c8eca2dd81281d807a3962e816c8049c075"
+    }
+  }
+}

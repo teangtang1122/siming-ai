@@ -16,18 +16,27 @@ from ...database.models import (
     CharacterTimeline,
     CharacterVersion,
 )
-from ..story_granularity import CHARACTER_PROFILE_FIELDS, CHARACTER_STATE_FIELDS
 from ..character_role_types import normalize_character_role_type
+from ..character_relationships import collapse_directed_relationship_pair
+from ..planned_character_links import resolve_planned_outline_character_links
+from ..story_granularity import CHARACTER_PROFILE_FIELDS, CHARACTER_STATE_FIELDS
 from .alias_ops import ensure_character_alias
-from .background_compactor import merge_background
-from .links import link_chapter_character
+from .character_targets import (
+    validate_character_profile_target,
+    validate_character_state_target,
+)
 from .lookups import find_character_by_name_or_id
 from .merge import merge_json_list, merge_short_text, merge_text
-from .name_utils import derived_character_aliases, split_character_name
-from .snapshots import character_snapshot, chapter_change_title
-
+from .snapshots import chapter_change_title, character_snapshot
 
 CHARACTER_TEXT_FIELDS = ["personality", "background", "role_type"]
+AI_CONFIG_FIELDS = (
+    "custom_system_prompt",
+    "tone_style",
+    "catchphrases",
+    "verbosity",
+    "emotion_tendency",
+)
 
 STATE_FIELD_LIMITS = {
     "appearance": 8000,
@@ -72,63 +81,77 @@ CHARACTER_CHANGE_LABELS = {
 
 
 def apply_character_create(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
+    validate_character_profile_target(db, chapter.project_id, "character_create", payload)
     name, aliases = _identity_from_payload(payload)
     if not name or _is_placeholder_character_name(name):
         raise ValueError("角色名为空")
-    character = _find_character_by_identity(db, chapter.project_id, [name, *aliases])
-    old = character_snapshot(character) if character else None
-    if not character:
-        character = Character(project_id=chapter.project_id, name=name[:100], current_version=1, is_evolution_tracked=True)
-        db.add(character)
-        db.flush()
-    else:
-        if character.name != name:
-            aliases.append(character.name)
-        _rename_character_if_safe(db, character, name)
+    character = Character(project_id=chapter.project_id, name=name[:100], current_version=1, is_evolution_tracked=True)
+    db.add(character)
+    db.flush()
     fill_character_fields(db, character, chapter, payload)
     _write_character_aliases(db, character, chapter, aliases)
-    ensure_character_version(db, character, chapter, payload, old is None)
-    link_chapter_character(db, chapter, character, str(payload.get("role_in_scene") or "出场"))
-    return _character_result(character, old, f"角色已写入: {character.name}")
+    resolve_planned_outline_character_links(db, character)
+    ensure_character_version(db, character, chapter, payload, True)
+    return _character_result(character, None, f"角色已写入: {character.name}")
 
 
 def apply_character_update(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
+    character = validate_character_profile_target(db, chapter.project_id, "character_update", payload)
     name, aliases = _identity_from_payload(payload)
-    lookup_terms = [payload.get("id"), name, *aliases]
-    character = _find_character_by_identity(db, chapter.project_id, lookup_terms)
-    if not character:
-        return apply_character_create(db, candidate, chapter, payload)
+    assert character is not None
     old = character_snapshot(character)
-    if character.name != name:
+    payload, preserved_fields = _prepare_reconciled_character_update(
+        db, character, payload
+    )
+    if name and character.name != name:
         aliases.append(character.name)
-    _rename_character_if_safe(db, character, name)
+        character.name = name[:100]
     fill_character_fields(db, character, chapter, payload)
     _write_character_aliases(db, character, chapter, aliases)
-    ensure_character_version(db, character, chapter, payload, False)
-    link_chapter_character(db, chapter, character, str(payload.get("role_in_scene") or "提及"))
-    return _character_result(character, old, f"角色已更新: {character.name}")
+    if character_snapshot(character) != old:
+        ensure_character_version(db, character, chapter, payload, False)
+    result = _character_result(character, old, f"角色已更新: {character.name}")
+    if preserved_fields:
+        result["review_warning"] = (
+            f"角色“{character.name}”的旧版建档字段已被作者或后续章节修改，"
+            "系统保留当前值并跳过自动覆盖："
+            + "、".join(preserved_fields)
+        )
+    return result
 
 
 def apply_character_state(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
+    validate_character_state_target(
+        db,
+        chapter.project_id,
+        "character_state_update",
+        payload,
+        chapter_content=str(chapter.content or ""),
+    )
     name, aliases = _identity_from_payload(payload)
-    character = _find_character_by_identity(db, chapter.project_id, [payload.get("id"), name, *aliases])
+    target_id = payload.get("id")
+    character = db.query(Character).filter(
+        Character.project_id == chapter.project_id,
+        Character.id == target_id if target_id is not None else Character.name == name,
+    ).first()
     if not character:
         raise ValueError("角色状态更新引用的角色不存在；必须先生成 character_create 或 character_update")
     old = character_snapshot(character)
     changed = False
-    for field in CHARACTER_STATE_FIELDS:
-        if field in payload and payload.get(field) not in (None, ""):
-            value = _replacement_text(payload.get(field), STATE_FIELD_LIMITS.get(field, 2000))
-            if getattr(character, field) != value:
-                setattr(character, field, value)
-                changed = True
-    character.last_seen_chapter_id = chapter.id
-    character.last_updated_chapter_id = chapter.id
+    can_advance = _chapter_can_advance_character_state(db, character, chapter)
+    if can_advance:
+        for field in CHARACTER_STATE_FIELDS:
+            if field in payload and payload.get(field) not in (None, ""):
+                value = _replacement_text(payload.get(field), STATE_FIELD_LIMITS.get(field, 2000))
+                if getattr(character, field) != value:
+                    setattr(character, field, value)
+                    changed = True
+        character.last_seen_chapter_id = chapter.id
+        character.last_updated_chapter_id = chapter.id
     character.updated_at = datetime.utcnow()
     _write_character_aliases(db, character, chapter, aliases)
     if changed:
         ensure_character_version(db, character, chapter, payload, False)
-    link_chapter_character(db, chapter, character, "状态变化")
     return _character_result(character, old, f"角色状态已更新: {character.name}")
 
 
@@ -136,22 +159,62 @@ def apply_character_timeline(db: Session, candidate: CatalogingCandidate, chapte
     character = find_character_by_name_or_id(db, chapter.project_id, payload.get("id") or payload.get("name"))
     if not character:
         raise ValueError("时间线关联角色不存在")
-    event = CharacterTimeline(
-        character_id=character.id,
-        chapter_id=chapter.id,
-        event_description=str(payload.get("event_description") or payload.get("description") or "")[:4000],
-        event_type=str(payload.get("event_type") or "key_event")[:50],
-        emotional_state_change=str(payload.get("emotional_state_change") or "")[:2000],
-        sort_order=int(payload.get("sort_order") or 0),
-    )
-    if not event.event_description:
+    description = str(payload.get("event_description") or payload.get("description") or "")[:4000]
+    if not description:
         raise ValueError("角色时间线事件为空")
-    db.add(event)
-    link_chapter_character(db, chapter, character, "时间线")
+    event_type = str(payload.get("event_type") or "key_event")[:50]
+    sort_order = int(payload.get("sort_order") or candidate.sort_order or 0)
+    preferred_id = str(payload.get("_cataloging_target_id") or "").strip()
+    event = (
+        db.query(CharacterTimeline)
+        .filter(
+            CharacterTimeline.id == preferred_id,
+            CharacterTimeline.chapter_id == chapter.id,
+            CharacterTimeline.character_id == character.id,
+        )
+        .first()
+        if preferred_id
+        else None
+    )
+    if not event:
+        event = (
+            db.query(CharacterTimeline)
+            .filter(
+                CharacterTimeline.character_id == character.id,
+                CharacterTimeline.chapter_id == chapter.id,
+                CharacterTimeline.event_type == event_type,
+                CharacterTimeline.sort_order == sort_order,
+            )
+            .order_by(CharacterTimeline.created_at.asc())
+            .first()
+        )
+    old = None
+    if event:
+        old = {
+            "event_description": event.event_description,
+            "event_type": event.event_type,
+            "emotional_state_change": event.emotional_state_change,
+            "sort_order": event.sort_order,
+        }
+        event.event_description = description
+        event.event_type = event_type
+        event.emotional_state_change = str(payload.get("emotional_state_change") or "")[:2000]
+        event.sort_order = sort_order
+    else:
+        event = CharacterTimeline(
+            character_id=character.id,
+            chapter_id=chapter.id,
+            event_description=description,
+            event_type=event_type,
+            emotional_state_change=str(payload.get("emotional_state_change") or "")[:2000],
+            sort_order=sort_order,
+        )
+        db.add(event)
+    db.flush()
     return {
         "target_type": "character_timeline",
         "target_id": event.id,
-        "old_value": None,
+        "old_value": old,
         "new_value": payload,
         "detail": f"角色时间线已写入: {character.name}",
     }
@@ -173,15 +236,13 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
 
     relationship_type = str(payload.get("relationship_type") or "关联")[:100]
     description = str(payload.get("description") or payload.get("evidence") or candidate.evidence or "")[:4000]
-    relationship = (
-        db.query(CharacterRelationship)
-        .filter(
-            CharacterRelationship.project_id == chapter.project_id,
-            CharacterRelationship.character_a_id == source.id,
-            CharacterRelationship.character_b_id == target.id,
-            CharacterRelationship.relationship_type == relationship_type,
-        )
-        .first()
+    preferred_id = str(payload.get("_cataloging_target_id") or "").strip()
+    relationship, removed_relationship_ids = collapse_directed_relationship_pair(
+        db,
+        chapter.project_id,
+        source.id,
+        target.id,
+        preferred_id=preferred_id or None,
     )
     old = None
     if relationship:
@@ -189,8 +250,20 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
             "relationship_type": relationship.relationship_type,
             "description": relationship.description,
         }
+        relationship.character_a_id = source.id
+        relationship.character_b_id = target.id
+        relationship.relationship_type = relationship_type
         if description:
-            relationship.description = merge_short_text(relationship.description, description, chapter, limit=4000)
+            previous = payload.get("_cataloging_previous_payload")
+            prior_description = previous.get("description") if isinstance(previous, dict) else None
+            relationship.description = _replace_previous_text(
+                relationship.description,
+                prior_description,
+                description,
+                chapter,
+                limit=4000,
+                short=True,
+            )
     else:
         relationship = CharacterRelationship(
             project_id=chapter.project_id,
@@ -202,8 +275,6 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
         db.add(relationship)
         db.flush()
 
-    link_chapter_character(db, chapter, source, f"关系：{target.name} / {relationship_type}")
-    link_chapter_character(db, chapter, target, f"关系：{source.name} / {relationship_type}")
     return {
         "target_type": "character_relationship",
         "target_id": relationship.id,
@@ -215,6 +286,7 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
             "description": relationship.description,
         },
         "detail": f"角色关系已写入: {source.name} -> {target.name}",
+        "deduplicated_relationship_ids": removed_relationship_ids,
     }
 
 
@@ -225,20 +297,163 @@ def fill_character_fields(db: Session, character: Character, chapter: Chapter, p
                 if not character.role_type or character.role_type == "other":
                     character.role_type = normalize_character_role_type(payload.get(field))
             elif field == "background":
-                character.background = merge_background(character.background, payload.get(field), chapter)
+                # character_update defines background as a complete rewritten
+                # field.  Appending that cumulative profile duplicates earlier
+                # chapter history whenever the model paraphrases old facts.
+                character.background = _replacement_text(payload.get(field), 12000)
             else:
-                setattr(character, field, merge_text(getattr(character, field), payload.get(field), chapter, limit=8000))
+                # personality follows the same replacement contract.  Per
+                # chapter changes belong in character_state_update/timeline.
+                setattr(character, field, _replacement_text(payload.get(field), 8000))
     if isinstance(payload.get("abilities"), list):
         character.abilities = merge_json_list(character.abilities, payload["abilities"])
     _write_character_aliases(db, character, chapter, _aliases_from_payload(payload, character.name))
-    for field in CHARACTER_STATE_FIELDS:
-        if field in payload and payload.get(field) not in (None, ""):
-            setattr(character, field, _replacement_text(payload.get(field), STATE_FIELD_LIMITS.get(field, 2000)))
-    character.last_seen_chapter_id = chapter.id
-    character.last_updated_chapter_id = chapter.id
+    if _chapter_can_advance_character_state(db, character, chapter):
+        for field in CHARACTER_STATE_FIELDS:
+            if field in payload and payload.get(field) not in (None, ""):
+                setattr(
+                    character,
+                    field,
+                    _replacement_text(
+                        payload.get(field),
+                        STATE_FIELD_LIMITS.get(field, 2000),
+                    ),
+                )
+        character.last_seen_chapter_id = chapter.id
+        character.last_updated_chapter_id = chapter.id
     character.updated_at = datetime.utcnow()
     _update_character_profile(character, payload)
     _update_ai_config(db, character, payload)
+
+
+def _prepare_reconciled_character_update(
+    db: Session,
+    character: Character,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Replace the prior chapter contribution without overwriting later edits.
+
+    Apply logs provide the exact before/after snapshots for the previous saved
+    version.  When the live value still contains that exact projection it is
+    safe to remove it before merging the new one.  A mismatch means an author
+    or later chapter has changed the field, so the current value wins and the
+    run receives an explicit review warning.
+    """
+
+    previous_payload = payload.get("_cataloging_previous_payload")
+    previous_old = payload.get("_cataloging_previous_old_snapshot")
+    previous_new = payload.get("_cataloging_previous_new_snapshot")
+    if not all(
+        isinstance(value, dict)
+        for value in (previous_payload, previous_old, previous_new)
+    ):
+        return payload, []
+
+    prepared = dict(payload)
+    if isinstance(prepared.get("ai_config"), dict):
+        prepared["ai_config"] = dict(prepared["ai_config"])
+    preserved: list[str] = []
+
+    for field in ("personality", "background"):
+        if field not in prepared or field not in previous_payload:
+            continue
+        current_value = getattr(character, field)
+        old_value = previous_old.get(field)
+        new_value = previous_new.get(field)
+        if current_value == new_value:
+            setattr(character, field, old_value)
+            continue
+        # Any mismatch belongs to an author edit or a later chapter.  A full
+        # replacement from an older revised chapter must never erase it.
+        prepared.pop(field, None)
+        preserved.append(field)
+
+    profile_keys = {"profile", "profile_json", *CHARACTER_PROFILE_FIELDS}
+    incoming_has_profile = any(key in prepared for key in profile_keys)
+    previous_has_profile = any(key in previous_payload for key in profile_keys)
+    if (
+        incoming_has_profile
+        and previous_has_profile
+        and character.profile_json != previous_new.get("profile")
+    ):
+        for key in profile_keys:
+            prepared.pop(key, None)
+        preserved.append("profile")
+
+    config = character.ai_config or db.query(CharacterAIConfig).filter(
+        CharacterAIConfig.character_id == character.id
+    ).first()
+    for field in AI_CONFIG_FIELDS:
+        incoming_present, _incoming_value = _config_field(prepared, field)
+        previous_present, previous_value = _config_field(previous_payload, field)
+        if not incoming_present or not previous_present:
+            continue
+        current_value = getattr(config, field, None) if config is not None else None
+        if field == "catchphrases":
+            current_value = _json_list_value(current_value)
+            previous_value = _json_list_value(previous_value)
+        if current_value == previous_value:
+            continue
+        prepared.pop(field, None)
+        nested = prepared.get("ai_config")
+        if isinstance(nested, dict):
+            nested.pop(field, None)
+        preserved.append(field)
+
+    return prepared, list(dict.fromkeys(preserved))
+
+
+def _config_field(payload: dict[str, Any], field: str) -> tuple[bool, Any]:
+    if field in payload:
+        return True, payload.get(field)
+    nested = payload.get("ai_config")
+    if isinstance(nested, dict) and field in nested:
+        return True, nested.get(field)
+    return False, None
+
+
+def _json_list_value(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return [value]
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return []
+
+
+def _replace_previous_text(
+    current: Any,
+    previous: Any,
+    incoming: Any,
+    chapter: Chapter,
+    *,
+    limit: int,
+    short: bool = False,
+) -> str:
+    current_text = str(current or "")
+    previous_text = str(previous or "").strip()
+    incoming_text = str(incoming or "").strip()
+    if previous_text and previous_text in current_text:
+        return current_text.replace(previous_text, incoming_text, 1)[:limit]
+    merger = merge_short_text if short else merge_text
+    return merger(current_text, incoming_text, chapter, limit=limit)
+
+
+def _chapter_can_advance_character_state(
+    db: Session,
+    character: Character,
+    chapter: Chapter,
+) -> bool:
+    if not character.last_updated_chapter_id or character.last_updated_chapter_id == chapter.id:
+        return True
+    latest = db.query(Chapter).filter(Chapter.id == character.last_updated_chapter_id).first()
+    if not latest:
+        return True
+    return int(chapter.sort_order or 0) >= int(latest.sort_order or 0)
 
 
 def ensure_character_version(
@@ -325,14 +540,8 @@ def _update_character_profile(character: Character, payload: dict[str, Any]) -> 
 
 
 def _identity_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
-    raw_name = str(payload.get("name") or payload.get("primary_name") or payload.get("character_name") or "").strip()
-    parts = split_character_name(raw_name)
-    canonical = parts[0] if parts else raw_name
+    canonical = str(payload.get("name") or "").strip()
     aliases = _aliases_from_payload(payload, canonical)
-    if raw_name and raw_name != canonical:
-        aliases.append(raw_name)
-    aliases.extend(parts[1:])
-    aliases.extend(derived_character_aliases(canonical))
     return canonical, _dedupe_aliases(canonical, aliases)
 
 
@@ -342,20 +551,12 @@ def _is_placeholder_character_name(name: str | None) -> bool:
 
 
 def _aliases_from_payload(payload: dict[str, Any], canonical_name: str | None = None) -> list[str]:
-    aliases: list[str] = []
     raw_aliases = payload.get("aliases")
-    if isinstance(raw_aliases, list):
-        for item in raw_aliases:
-            aliases.extend(split_character_name(str(item)))
-            text = str(item or "").strip()
-            if text:
-                aliases.append(text)
-    elif raw_aliases:
-        aliases.extend(split_character_name(str(raw_aliases)))
-    if payload.get("alias"):
-        aliases.extend(split_character_name(str(payload.get("alias"))))
-    aliases.extend(derived_character_aliases(canonical_name))
-    return _dedupe_aliases(canonical_name, aliases)
+    if raw_aliases is None:
+        return []
+    if not isinstance(raw_aliases, list) or any(not isinstance(item, str) for item in raw_aliases):
+        raise ValueError("角色 aliases 必须是独立字符串数组，不拆分组合姓名")
+    return _dedupe_aliases(canonical_name, raw_aliases)
 
 
 def _dedupe_aliases(canonical_name: str | None, aliases: list[str]) -> list[str]:
@@ -371,14 +572,6 @@ def _dedupe_aliases(canonical_name: str | None, aliases: list[str]) -> list[str]
     return cleaned
 
 
-def _find_character_by_identity(db: Session, project_id: str, values: list[Any]) -> Character | None:
-    for value in values:
-        character = find_character_by_name_or_id(db, project_id, value)
-        if character:
-            return character
-    return None
-
-
 def _write_character_aliases(db: Session, character: Character, chapter: Chapter, aliases: list[str]) -> None:
     for alias in _dedupe_aliases(character.name, aliases):
         ensure_character_alias(
@@ -389,21 +582,6 @@ def _write_character_aliases(db: Session, character: Character, chapter: Chapter
             alias_type="alias",
             description=f"建档识别到的角色别名/称呼：{alias}",
         )
-
-
-def _rename_character_if_safe(db: Session, character: Character, canonical_name: str | None) -> None:
-    name = str(canonical_name or "").strip()
-    if not name or character.name == name:
-        return
-    existing = (
-        db.query(Character)
-        .filter(Character.project_id == character.project_id, Character.name == name, Character.id != character.id)
-        .first()
-    )
-    old_parts = split_character_name(character.name)
-    should_rename = len(old_parts) > 1 or character.name in derived_character_aliases(name)
-    if not existing and should_rename:
-        character.name = name[:100]
 
 
 def _replacement_text(value: Any, limit: int) -> str | None:

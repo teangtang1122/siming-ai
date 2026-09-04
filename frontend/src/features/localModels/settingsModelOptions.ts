@@ -1,6 +1,10 @@
 export interface ModelOption {
   id: string
   display_name?: string
+  context_window_tokens?: number
+  max_output_tokens?: number
+  safety_margin_tokens?: number
+  capacity_source?: string
 }
 
 export type ModelDiscoveryState = {
@@ -124,17 +128,43 @@ export const resolveProviderForSubmit = (values: {
 )
 
 const DEEPSEEK_MODEL_OPTIONS: ModelOption[] = [
-  { id: 'deepseek-v4-pro', display_name: 'deepseek-v4-pro' },
-  { id: 'deepseek-v4-flash', display_name: 'deepseek-v4-flash' },
+  {
+    id: 'deepseek-v4-pro',
+    display_name: 'deepseek-v4-pro',
+    context_window_tokens: 1_000_000,
+    max_output_tokens: 384_000,
+    safety_margin_tokens: 512,
+    capacity_source: 'deepseek_model_docs_2026_08_30',
+  },
+  {
+    id: 'deepseek-v4-flash',
+    display_name: 'deepseek-v4-flash',
+    context_window_tokens: 1_000_000,
+    max_output_tokens: 384_000,
+    safety_margin_tokens: 512,
+    capacity_source: 'deepseek_model_docs_2026_08_30',
+  },
 ]
 
 const GEMINI_MODEL_OPTIONS: ModelOption[] = [
-  { id: 'gemini-3-pro-preview', display_name: 'gemini-3-pro-preview' },
-  { id: 'gemini-3-flash-preview', display_name: 'gemini-3-flash-preview' },
-  { id: 'gemini-2.5-pro', display_name: 'gemini-2.5-pro' },
-  { id: 'gemini-2.5-flash', display_name: 'gemini-2.5-flash' },
-  { id: 'gemini-2.5-flash-lite', display_name: 'gemini-2.5-flash-lite' },
-]
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-pro-preview',
+  'gemini-3-flash-preview',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+].map((id) => ({
+  id,
+  display_name: id,
+  context_window_tokens: 1_048_576,
+  max_output_tokens: 65_536,
+  safety_margin_tokens: 512,
+  capacity_source: 'gemini_model_docs_2026_08_30',
+}))
 
 export const LOCAL_CLI_MODEL_OPTIONS: Record<string, ModelOption[]> = {
   claude_cli: [{ id: 'claude-code', display_name: 'claude-code' }],
@@ -211,6 +241,35 @@ const PROVIDER_OUTPUT_LIMITS: Record<string, number> = {
   gemini: 65536,
 }
 
+const OFFICIAL_API_HOSTS: Record<string, Set<string>> = {
+  openai: new Set(['api.openai.com']),
+  anthropic: new Set(['api.anthropic.com']),
+  deepseek: new Set(['api.deepseek.com']),
+  gemini: new Set(['generativelanguage.googleapis.com']),
+  qwen: new Set([
+    'dashscope.aliyuncs.com',
+    'dashscope-intl.aliyuncs.com',
+    'dashscope-us.aliyuncs.com',
+    'dashscope-eu.aliyuncs.com',
+  ]),
+}
+
+export const usesDocumentedModelCatalog = (
+  provider?: string,
+  baseUrlOverride?: string,
+) => {
+  if (provider === 'codex_cli' || provider === 'claude_cli') return true
+  const officialHosts = provider ? OFFICIAL_API_HOSTS[provider] : undefined
+  if (!officialHosts) return false
+  if (!baseUrlOverride?.trim()) return true
+  try {
+    const endpoint = new URL(baseUrlOverride)
+    return endpoint.protocol === 'https:' && officialHosts.has(endpoint.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
 export const fallbackModelOptions = (provider?: string): ModelOption[] => {
   if (provider === 'deepseek') return DEEPSEEK_MODEL_OPTIONS
   if (provider === 'gemini') return GEMINI_MODEL_OPTIONS
@@ -238,6 +297,7 @@ export const normalizeProviderModelOptions = (provider: string, options: ModelOp
     const normalized = options.map((option) => {
       const id = normalizeDefaultModel(provider, option.id)
       return {
+        ...option,
         id,
         display_name: normalizeDefaultModel(provider, option.display_name || id),
       }
@@ -248,6 +308,7 @@ export const normalizeProviderModelOptions = (provider: string, options: ModelOp
   if (provider !== 'deepseek') return options
   const normalized = options
     .map((option) => ({
+      ...option,
       id: normalizeDefaultModel(provider, option.id),
       display_name: normalizeDefaultModel(provider, option.display_name || option.id),
     }))
@@ -262,11 +323,40 @@ export const defaultOutputLimit = (provider?: string, model?: string) => {
   return MODEL_OUTPUT_LIMITS[key] || PROVIDER_OUTPUT_LIMITS[provider] || FALLBACK_OUTPUT_LIMIT
 }
 
-export const defaultSafetyLimits = (provider?: string, model?: string) => {
+export const modelCapacityDefaults = (
+  provider?: string,
+  model?: string,
+  option?: ModelOption,
+  baseUrlOverride?: string,
+) => {
+  const documentedCatalogAllowed = usesDocumentedModelCatalog(provider, baseUrlOverride)
+  const optionUsesDocumentedCatalog = option?.capacity_source?.includes('_model_docs_')
+  const eligibleOption = option && (!optionUsesDocumentedCatalog || documentedCatalogAllowed)
+    ? option
+    : undefined
+  const capacity = eligibleOption || (documentedCatalogAllowed
+    ? fallbackModelOptions(provider).find((item) => item.id === model)
+    : undefined)
+  return {
+    context_window_tokens: capacity?.context_window_tokens,
+    context_safety_margin_tokens: capacity?.safety_margin_tokens ?? 512,
+    context_profile_source: capacity?.context_window_tokens
+      ? capacity.capacity_source || 'provider_metadata'
+      : undefined,
+  }
+}
+
+export const defaultSafetyLimits = (
+  provider?: string,
+  model?: string,
+  option?: ModelOption,
+  baseUrlOverride?: string,
+) => {
   const limit = defaultOutputLimit(provider, model)
   return {
     max_output_tokens: limit,
     deconstruct_input_char_limit: limit,
     deconstruct_item_char_limit: limit,
+    ...modelCapacityDefaults(provider, model, option, baseUrlOverride),
   }
 }

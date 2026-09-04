@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 
 from ....core.exceptions import NotFoundError
 from ....core.utils import utc_isoformat
-from .models import SystemAssistantConversation, SystemAssistantMessage
+from .models import (
+    SystemAssistantConversation,
+    SystemAssistantMessage,
+    reserve_message_sequence_range,
+)
 
 
 def _title_from_message(message: str) -> str:
@@ -42,6 +46,7 @@ def _message_data(message: SystemAssistantMessage) -> dict[str, Any]:
     return {
         "id": message.id,
         "conversation_id": message.conversation_id,
+        "sequence_no": message.sequence_no,
         "role": message.role,
         "content": message.content,
         "run_id": message.run_id,
@@ -165,12 +170,7 @@ class SqlAlchemySystemConversationStore:
         messages = (
             self._session.query(SystemAssistantMessage)
             .filter(SystemAssistantMessage.conversation_id == conversation.id)
-            .order_by(
-                SystemAssistantMessage.created_at.asc(),
-                SystemAssistantMessage.role.desc(),
-                SystemAssistantMessage.updated_at.asc(),
-                SystemAssistantMessage.id.asc(),
-            )
+            .order_by(SystemAssistantMessage.sequence_no.asc())
             .all()
         )
         return {
@@ -194,15 +194,53 @@ class SqlAlchemySystemConversationStore:
             if payload.get(source) is not None:
                 setattr(conversation, field, payload.get(source) or None)
         self._apply_scope(conversation, payload)
+        user_sequence, assistant_sequence = reserve_message_sequence_range(
+            self._session,
+            conversation_model=SystemAssistantConversation,
+            message_model=SystemAssistantMessage,
+            conversation_id=conversation.id,
+            count=2,
+        )
+
+        # Starting a newer author turn supersedes every older running
+        # placeholder in this append-only conversation.  The older text stays
+        # durable as an explicit aborted turn, while its detached producer will
+        # observe the status and stop before any post-checkpoint model/tool work.
+        older_running = (
+            self._session.query(SystemAssistantMessage)
+            .filter(
+                SystemAssistantMessage.conversation_id == conversation.id,
+                SystemAssistantMessage.role == "assistant",
+                SystemAssistantMessage.status == "running",
+            )
+            .all()
+        )
+        now = datetime.utcnow()
+        for older in older_running:
+            older.status = "aborted"
+            older.content = "本轮已被更新的作者消息替换，未继续执行业务工具。"
+            older_payload = (
+                dict(older.payload_json) if isinstance(older.payload_json, dict) else {}
+            )
+            older_payload.update(
+                {
+                    "superseded": True,
+                    "superseded_by_sequence": user_sequence,
+                }
+            )
+            older.payload_json = older_payload
+            older.updated_at = now
 
         user_message = SystemAssistantMessage(
             conversation_id=conversation.id,
+            sequence_no=user_sequence,
             role="user",
             content=payload["user_content"],
             status="completed",
         )
         assistant_message = SystemAssistantMessage(
             conversation_id=conversation.id,
+            sequence_no=assistant_sequence,
             role="assistant",
             content="",
             run_id=payload.get("run_id"),
@@ -291,15 +329,24 @@ class SqlAlchemySystemConversationStore:
         if payload.get("user_brief") is not None:
             conversation.user_brief = payload.get("user_brief") or None
         self._apply_scope(conversation, payload)
+        user_sequence, assistant_sequence = reserve_message_sequence_range(
+            self._session,
+            conversation_model=SystemAssistantConversation,
+            message_model=SystemAssistantMessage,
+            conversation_id=conversation.id,
+            count=2,
+        )
 
         user_message = SystemAssistantMessage(
             conversation_id=conversation.id,
+            sequence_no=user_sequence,
             role="user",
             content=payload["user_content"],
             status="completed",
         )
         assistant_message = SystemAssistantMessage(
             conversation_id=conversation.id,
+            sequence_no=assistant_sequence,
             role="assistant",
             content=payload.get("assistant_content") or "",
             run_id=payload.get("run_id"),

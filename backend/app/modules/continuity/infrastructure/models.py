@@ -147,6 +147,7 @@ class CatalogingJob(Base):
     completed_at = Column(DateTime, nullable=True)
 
     project = relationship("Project", back_populates="cataloging_jobs")
+    operation = relationship("OperationRun", foreign_keys=[operation_id], uselist=False)
     chapter_runs = relationship(
         "CatalogingChapterRun", back_populates="job", cascade="all, delete-orphan"
     )

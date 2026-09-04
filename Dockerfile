@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=node:22-alpine
+ARG NODE_IMAGE=node:24.14.1-alpine
 ARG PYTHON_IMAGE=python:3.11-slim
 
 # Frontend output is architecture-neutral. Build it on the native runner so
@@ -7,6 +7,7 @@ FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS frontend-build
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --ignore-scripts
+COPY contracts/ /src/contracts/
 COPY frontend/ ./
 RUN npm run build
 

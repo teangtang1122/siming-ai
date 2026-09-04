@@ -224,4 +224,35 @@ describe('CharactersPage', () => {
     ))
     expect(api.post).toHaveBeenCalledTimes(1)
   })
+
+  it('keeps the new-character form and surfaces a rejected POST', async () => {
+    api.get.mockImplementation((url: string) => {
+      if (url === '/projects/project-1/characters') {
+        return Promise.resolve({ data: { data: { items: [characterSummary], total: 1 } } })
+      }
+      if (url === '/projects/project-1/characters/relationships') {
+        return Promise.resolve({ data: { data: { nodes: [], edges: [], total: 0 } } })
+      }
+      if (url === '/projects/project-1/characters/character-a') {
+        return Promise.resolve({ data: { data: characterDetail } })
+      }
+      if (url.endsWith('/versions')) return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      if (url.endsWith('/ai-config')) return Promise.reject(new Error('not configured'))
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    api.post.mockRejectedValue(new Error('角色创建失败'))
+
+    render(<CharactersPage projectId="project-1" />)
+    await screen.findByDisplayValue('角色甲')
+    fireEvent.click(document.querySelector('.anticon-plus')?.closest('button') as HTMLButtonElement)
+    fireEvent.change(screen.getByLabelText('姓名'), { target: { value: '未保存角色' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存角色/ }))
+
+    await waitFor(() => expect(unsaved.markSaveFailed).toHaveBeenCalledWith('角色创建失败'))
+    expect(await screen.findByText('角色创建失败')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '新角色' })).toBeInTheDocument()
+    expect(screen.getByLabelText('姓名')).toHaveValue('未保存角色')
+    expect(screen.getByRole('status')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /保存角色/ })).not.toBeDisabled())
+  })
 })

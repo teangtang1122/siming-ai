@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { formatApiDateTime } from '../utils/dateTime'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Button,
   Empty,
   Input,
   InputNumber,
   Space,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -26,8 +28,10 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SaveOutlined,
+  StopOutlined,
   TeamOutlined,
   ThunderboltOutlined,
+  UndoOutlined,
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { SaveStatusIndicator } from '../components/interaction'
@@ -38,6 +42,7 @@ import './WorldbuildingPage.css'
 const { Paragraph, Text, Title } = Typography
 
 type Dimension = 'geography' | 'history' | 'factions' | 'power_system' | 'races' | 'culture'
+type WorldbuildingStatus = 'active' | 'superseded' | 'archived' | 'draft'
 
 interface ApiResponse<T> {
   code: number
@@ -51,6 +56,7 @@ interface WorldbuildingEntry {
   dimension: Dimension
   title: string
   content: string
+  status?: WorldbuildingStatus | null
   sort_order: number
   created_at: string
   updated_at: string
@@ -73,6 +79,24 @@ interface WorldbuildingPageProps {
 
 const NEW_ROW_ID = '__new__'
 
+const STATUS_LABELS: Record<WorldbuildingStatus, string> = {
+  active: '当前',
+  superseded: '旧版',
+  archived: '已归档',
+  draft: '草稿',
+}
+
+const STATUS_COLORS: Record<WorldbuildingStatus, string> = {
+  active: 'green',
+  superseded: 'default',
+  archived: 'default',
+  draft: 'gold',
+}
+
+function entryStatus(entry: WorldbuildingEntry): WorldbuildingStatus {
+  return entry.status || 'active'
+}
+
 const DIMENSIONS: Array<{ key: Dimension; label: string; icon: JSX.Element; tooltip: string }> = [
   { key: 'geography', label: '地理', icon: <EnvironmentOutlined />, tooltip: '地图、地名、气候、地标、地理特征' },
   { key: 'history', label: '历史', icon: <HistoryOutlined />, tooltip: '重大事件、朝代更替、传说、历史人物' },
@@ -94,6 +118,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [includeInactive, setIncludeInactive] = useState(false)
   const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftEntry>({ title: '', content: '', sort_order: 0 })
@@ -110,20 +135,29 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
   } = useUnsavedGuard()
 
   const [contentModal, setContentModal] = useState<WorldbuildingEntry | null>(null)
+  const fetchRequestRef = useRef(0)
 
   const fetchEntries = useCallback(async () => {
+    const requestId = ++fetchRequestRef.current
     setLoading(true)
     try {
+      const query = includeInactive ? '?include_inactive=true' : ''
       const res = await apiClient.get<ApiResponse<WorldbuildingListResponse>>(
-        `/projects/${projectId}/worldbuilding`
+        `/projects/${projectId}/worldbuilding${query}`
       )
-      setEntriesByDimension({ ...EMPTY_GROUPED, ...res.data.data.grouped })
+      if (requestId === fetchRequestRef.current) {
+        setEntriesByDimension({ ...EMPTY_GROUPED, ...res.data.data.grouped })
+      }
     } catch (err: any) {
-      message.error(err.message || '获取世界观条目失败')
+      if (requestId === fetchRequestRef.current) {
+        message.error(err.message || '获取世界观条目失败')
+      }
     } finally {
-      setLoading(false)
+      if (requestId === fetchRequestRef.current) {
+        setLoading(false)
+      }
     }
-  }, [projectId])
+  }, [includeInactive, projectId])
 
   useEffect(() => {
     fetchEntries()
@@ -217,21 +251,48 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     }
   }
 
-  const dataSource = creating
-    ? [
-        {
-          id: NEW_ROW_ID,
-          project_id: projectId,
-          dimension: activeDimension,
-          title: '',
-          content: '',
-          sort_order: draft.sort_order,
-          created_at: '',
-          updated_at: '',
-        } as WorldbuildingEntry,
-        ...currentEntries,
-      ]
-    : currentEntries
+  const updateEntryStatus = async (
+    entry: WorldbuildingEntry,
+    status: Extract<WorldbuildingStatus, 'active' | 'superseded'>,
+  ) => {
+    try {
+      await apiClient.put(`/projects/${projectId}/worldbuilding/${entry.id}`, { status })
+      message.success(status === 'active' ? '世界观条目已恢复' : '已标记为旧版，不再用于后续创作')
+      if (contentModal?.id === entry.id) setContentModal(null)
+      await fetchEntries()
+    } catch (err: any) {
+      message.error(err.message || '更新世界观条目状态失败')
+    }
+  }
+
+  const changeHistoryVisibility = (checked: boolean) => {
+    confirmLeave(() => {
+      setCreating(false)
+      setEditingId(null)
+      setDraft({ title: '', content: '', sort_order: 0 })
+      markSaved()
+      setIncludeInactive(checked)
+    })
+  }
+
+  const dataSourceForDimension = (dimension: Dimension) => {
+    const entries = entriesByDimension[dimension] || []
+    if (!creating || dimension !== activeDimension) return entries
+    return [
+      {
+        id: NEW_ROW_ID,
+        project_id: projectId,
+        dimension,
+        title: '',
+        content: '',
+        status: 'active',
+        sort_order: draft.sort_order,
+        created_at: '',
+        updated_at: '',
+      } as WorldbuildingEntry,
+      ...entries,
+    ]
+  }
 
   const columns: ColumnsType<WorldbuildingEntry> = [
     {
@@ -278,6 +339,15 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
       },
     },
     {
+      title: '状态',
+      dataIndex: 'status',
+      width: 88,
+      render: (_value, record) => {
+        const status = entryStatus(record)
+        return <Tag color={STATUS_COLORS[status]}>{STATUS_LABELS[status]}</Tag>
+      },
+    },
+    {
       title: '排序',
       dataIndex: 'sort_order',
       width: 96,
@@ -305,7 +375,7 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
     {
       title: '操作',
       key: 'actions',
-      width: 150,
+      width: 200,
       render: (_value, record) => {
         const isEditing = editingId === record.id
         if (isEditing) {
@@ -322,14 +392,44 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
             </Space>
           )
         }
+        const status = entryStatus(record)
         return (
           <Space size={4}>
             <Button
               icon={<EditOutlined />}
               size="small"
               onClick={() => startEdit(record)}
-              disabled={!!editingId}
+              disabled={!!editingId || status !== 'active'}
+              aria-label={`编辑${record.title}`}
             />
+            {status === 'active' ? (
+              <Popconfirm
+                title="标记为旧版"
+                description="该条目会保留供审计，但不会再进入后续创作上下文。"
+                okText="标记旧版"
+                cancelText="取消"
+                onConfirm={() => updateEntryStatus(record, 'superseded')}
+              >
+                <Tooltip title="标记为旧版并停止用于创作">
+                  <Button
+                    icon={<StopOutlined />}
+                    size="small"
+                    disabled={!!editingId}
+                    aria-label={`标记${record.title}为旧版`}
+                  />
+                </Tooltip>
+              </Popconfirm>
+            ) : (
+              <Tooltip title="恢复为当前设定">
+                <Button
+                  icon={<UndoOutlined />}
+                  size="small"
+                  disabled={!!editingId}
+                  onClick={() => updateEntryStatus(record, 'active')}
+                  aria-label={`恢复${record.title}`}
+                />
+              </Tooltip>
+            )}
             <Popconfirm
               title="删除条目"
               description="确定删除这条世界观设定吗？"
@@ -357,6 +457,15 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
               {editingId && <SaveStatusIndicator status={saveStatus} error={saveError} />}
             </Space>
             <Space>
+              <Space size={6}>
+                <Switch
+                  size="small"
+                  checked={includeInactive}
+                  onChange={changeHistoryVisibility}
+                  aria-label="显示历史条目"
+                />
+                <Text type="secondary">显示历史条目</Text>
+              </Space>
               <Button icon={<ReloadOutlined />} onClick={fetchEntries} loading={loading}>
                 刷新
               </Button>
@@ -385,7 +494,10 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
                 <Table
                   rowKey="id"
                   columns={columns}
-                  dataSource={dataSource}
+                  dataSource={dataSourceForDimension(dimension.key)}
+                  rowClassName={(record) => (
+                    entryStatus(record) === 'active' ? '' : 'worldbuilding-row-inactive'
+                  )}
                   loading={loading}
                   pagination={{
                     pageSize: 10,
@@ -422,8 +534,11 @@ function WorldbuildingPage({ projectId }: WorldbuildingPageProps) {
                 <Tag icon={DIMENSIONS.find((d) => d.key === contentModal.dimension)?.icon}>
                   {DIMENSIONS.find((d) => d.key === contentModal.dimension)?.label}
                 </Tag>
+                <Tag color={STATUS_COLORS[entryStatus(contentModal)]}>
+                  {STATUS_LABELS[entryStatus(contentModal)]}
+                </Tag>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  更新于 {new Date(contentModal.updated_at).toLocaleString('zh-CN')}
+                  更新于 {(formatApiDateTime(contentModal.updated_at) || '时间未记录')}
                 </Text>
               </Space>
             </div>

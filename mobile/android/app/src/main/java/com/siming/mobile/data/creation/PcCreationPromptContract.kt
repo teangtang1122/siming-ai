@@ -93,6 +93,7 @@ internal class PcCreationPromptContract private constructor(
         stage: String,
         baseline: JsonObject,
         instruction: String = "",
+        entityTarget: JsonObject? = null,
     ): Pair<String, String> {
         val draft = session.draft()
         val label = stageLabels.getValue(stage)
@@ -108,11 +109,11 @@ internal class PcCreationPromptContract private constructor(
             put("form", draft.objectValue("form"))
             put("author_source", authorSource(draft))
             put("selected_concept_id", draft["selected_concept_id"] ?: JsonNull)
-            put("current_stage_data", draft.stages().objectValue(stage)["data"] ?: JsonNull)
+            put("current_stage_data", if (entityTarget != null) baseline else draft.stages().objectValue(stage)["data"] ?: JsonNull)
             put("confirmed_stages", confirmed)
             put("baseline", baseline)
             put("refinement_instruction", instruction)
-            put("entity_target", JsonNull)
+            put("entity_target", entityTarget ?: JsonNull)
         }
         val system = creation.string("stage_system_template").fill(
             "task_kind" to "深化阶段：$label",

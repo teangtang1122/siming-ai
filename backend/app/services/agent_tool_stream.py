@@ -16,12 +16,16 @@ async def collect_tool_turn(gateway: Any, **kwargs: Any) -> dict[str, Any]:
         )
 
     content: list[str] = []
+    reasoning_content: list[str] = []
     calls: dict[int, dict[str, str]] = {}
     usage: dict[str, int] | None = None
+    provider_state: list[dict[str, Any]] = []
     async for event in stream:
         event_type = event.get("type")
         if event_type == "content_delta":
             content.append(str(event.get("delta") or ""))
+        elif event_type == "reasoning_delta":
+            reasoning_content.append(str(event.get("delta") or ""))
         elif event_type == "tool_call_delta":
             index = int(event.get("index") or 0)
             call = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
@@ -37,16 +41,35 @@ async def collect_tool_turn(gateway: Any, **kwargs: Any) -> dict[str, Any]:
                 key: max(0, int(raw_usage.get(key) or 0))
                 for key in ("prompt_tokens", "completion_tokens", "total_tokens")
             }
+        raw_provider_state = event.get("provider_state")
+        if isinstance(raw_provider_state, list):
+            provider_state = [
+                dict(item)
+                for item in raw_provider_state
+                if isinstance(item, dict)
+            ]
     tool_calls = [
         {
-            "id": call["id"] or f"agent-tool-{index}",
+            # Preserve the provider's native identity exactly.  Missing IDs
+            # are protocol failures for the caller; inventing one would make
+            # an unverifiable tool result look executable.
+            "id": call["id"],
             "type": "function",
-            "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
+            # Preserve the provider's argument stream exactly as well.  An
+            # empty or malformed payload must reach the protocol validator and
+            # fail the whole batch; silently repairing it to ``{}`` can change
+            # the operation that is executed.
+            "function": {"name": call["name"], "arguments": call["arguments"]},
         }
-        for index, call in sorted(calls.items())
-        if call["name"]
+        for _, call in sorted(calls.items())
     ]
-    return {"content": "".join(content), "tool_calls": tool_calls, "usage": usage}
+    return {
+        "content": "".join(content),
+        "reasoning_content": "".join(reasoning_content),
+        "provider_state": provider_state,
+        "tool_calls": tool_calls,
+        "usage": usage,
+    }
 
 
 __all__ = ["collect_tool_turn"]

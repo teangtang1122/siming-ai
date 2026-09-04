@@ -23,6 +23,7 @@ from ..database.models import (
     OutlineNode,
     WorldbuildingEntry,
 )
+from ..database.query_filters import current_worldbuilding_clause
 
 EXPORT_ROOT = Path(__file__).resolve().parents[3] / "artifacts" / "exports"
 
@@ -119,7 +120,10 @@ def _build_characters_text(db: Session, project_id: str) -> str:
 def _build_worldbuilding_text(db: Session, project_id: str) -> str:
     entries = (
         db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        )
         .order_by(WorldbuildingEntry.dimension.asc(), WorldbuildingEntry.sort_order.asc())
         .all()
     )
@@ -321,7 +325,10 @@ def _generate_docx(
         doc.add_heading("世界观设定", level=1)
         entries = (
             db.query(WorldbuildingEntry)
-            .filter(WorldbuildingEntry.project_id == project_id)
+            .filter(
+                WorldbuildingEntry.project_id == project_id,
+                current_worldbuilding_clause(WorldbuildingEntry.status),
+            )
             .order_by(WorldbuildingEntry.dimension.asc(), WorldbuildingEntry.sort_order.asc())
             .all()
         )

@@ -13,6 +13,7 @@ from typing import Any, AsyncGenerator
 from sqlalchemy.orm import Session
 
 from ...ai.local_cli_adapter import is_local_cli_provider
+from ...core.utils import utc_isoformat
 from ...modules.model_runtime.application.execution import model_executor as LLMGateway
 from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob, Chapter, Project
 from ...database.session import SessionLocal
@@ -92,6 +93,12 @@ def _promote_legacy_review_warning(run: CatalogingChapterRun) -> bool:
 
 
 def job_to_dict(job: CatalogingJob) -> dict[str, Any]:
+    operation = job.operation if job.operation_id else None
+    process_metrics = (
+        operation.process_metrics_json
+        if operation is not None and isinstance(operation.process_metrics_json, dict)
+        else {}
+    )
     return {
         "id": job.id,
         "project_id": job.project_id,
@@ -113,6 +120,13 @@ def job_to_dict(job: CatalogingJob) -> dict[str, Any]:
         "provider": job.provider,
         "error": job.error,
         "review_warning": _job_review_warning(job),
+        "current_stage": operation.phase if operation is not None else None,
+        "current_message": operation.current_message if operation is not None else None,
+        "process_alive": process_metrics.get("alive"),
+        "heartbeat_at": utc_isoformat(operation.heartbeat_at) if operation is not None else None,
+        "last_activity_at": (
+            utc_isoformat(operation.last_activity_at) if operation is not None else None
+        ),
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -128,6 +142,7 @@ def run_to_dict(run: CatalogingChapterRun) -> dict[str, Any]:
         "chapter_title": chapter.title if chapter else "",
         "status": run.status,
         "chapter_order": run.chapter_order,
+        "chapter_version": run.chapter_version,
         "error": run.error,
         "review_warning": run.review_warning,
         "started_at": run.started_at.isoformat() if run.started_at else None,
@@ -329,7 +344,8 @@ def create_cataloging_job(
 
 
 async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[str, None]:
-    from ..operation_runtime import finish_operation, heartbeat_loop, iterate_with_operation
+    from ..operation_runtime import heartbeat_loop, iterate_with_operation
+    from .job_control import complete_cataloging_job
 
     db = SessionLocal()
     heartbeat_task: asyncio.Task | None = None
@@ -351,23 +367,7 @@ async def stream_cataloging_job(project_id: str, job_id: str) -> AsyncGenerator[
 
             run = _next_actionable_run(db, job)
             if not run:
-                job.status = "completed"
-                job.completed_at = datetime.utcnow()
-                job.updated_at = datetime.utcnow()
-                refresh_job_progress(db, job)
-                completed = int(job.completed_chapters or job.total_chapters or 0)
-                finish_operation(
-                    operation_id,
-                    message=f"作品建档完成，共处理 {completed} 章",
-                    outcome="completed_with_tools",
-                    result={
-                        "summary": f"作品建档完成，共处理 {completed} 章",
-                        "completed": [f"{completed} 章已完成"],
-                        "incomplete": [],
-                    },
-                    attention={},
-                    db=db,
-                )
+                complete_cataloging_job(db, job)
                 commit_session(db)
                 yield sse_event({"type": "completed", "job": job_to_dict(job)})
                 yield "data: [DONE]\n\n"
@@ -955,6 +955,7 @@ def _compact_local_runtime_context(context: dict[str, Any]) -> dict[str, Any]:
         ],
         "worldbuilding_title_index": [
             {
+                "id": item.get("id"),
                 "dimension": item.get("dimension"),
                 "title": item.get("title"),
             }

@@ -203,8 +203,11 @@ def test_outline_mobile_mutation_maps_pc_metadata_and_character_links(tmp_path):
             project = Project(title="大纲契约测试")
             db.add(project)
             db.flush()
-            character = Character(project_id=project.id, name="陆糖")
-            db.add(character)
+            characters = [
+                Character(project_id=project.id, name=name)
+                for name in ("陆糖", "陆承宇", "陆景珩", "阿梨")
+            ]
+            db.add_all(characters)
             db.flush()
 
             apply_domain_mutation(
@@ -221,7 +224,11 @@ def test_outline_mobile_mutation_maps_pc_metadata_and_character_links(tmp_path):
                     "sort_order": 2000,
                     "metadata": {"hook": "裂隙亮起"},
                     "characters": [
-                        {"character_id": character.id, "role_in_scene": "protagonist"},
+                        {
+                            "character_id": character.id,
+                            "role_in_scene": "protagonist" if index == 0 else "supporting",
+                        }
+                        for index, character in enumerate(characters)
                     ],
                     "created_at": "2000-01-01T00:00:00Z",
                 },
@@ -243,11 +250,46 @@ def test_outline_mobile_mutation_maps_pc_metadata_and_character_links(tmp_path):
             assert snapshot["linked_characters"] == [
                 {
                     "id": character.id,
-                    "name": "陆糖",
+                    "name": character.name,
                     "role_type": None,
-                    "role_in_scene": "protagonist",
+                    "role_in_scene": "protagonist" if index == 0 else "supporting",
                 }
+                for index, character in enumerate(characters)
             ]
+
+            apply_domain_mutation(
+                db,
+                project_id=project.id,
+                entity_type="outline",
+                entity_id=node.id,
+                operation="upsert",
+                payload={"title": "归墟待敌·修订"},
+            )
+            preserved = domain_snapshot_for_entity(
+                db,
+                project_id=project.id,
+                entity_type="outline",
+                entity_id=node.id,
+            )
+            assert preserved is not None
+            assert len(preserved["linked_characters"]) == 4
+
+            apply_domain_mutation(
+                db,
+                project_id=project.id,
+                entity_type="outline",
+                entity_id=node.id,
+                operation="upsert",
+                payload={"characters": []},
+            )
+            cleared = domain_snapshot_for_entity(
+                db,
+                project_id=project.id,
+                entity_type="outline",
+                entity_id=node.id,
+            )
+            assert cleared is not None
+            assert cleared["linked_characters"] == []
     finally:
         engine.dispose()
 

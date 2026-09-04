@@ -128,6 +128,13 @@ def _list(value: Any) -> list[Any]:
     return deepcopy(value) if isinstance(value, list) else []
 
 
+def _rule_lines(value: Any) -> list[Any]:
+    """Preserve author rule text without splitting or interpreting its meaning."""
+    if isinstance(value, str):
+        return [value] if value else []
+    return _list(value)
+
+
 def get_presets() -> dict[str, Any]:
     categories = []
     for preset_id, label, description, themes, defaults in _PRESET_ROWS:
@@ -456,18 +463,9 @@ def build_stage_flow(session: NovelCreationSession, draft_override: dict[str, An
 def serialize_session(session: NovelCreationSession, include_runs: bool = True) -> dict[str, Any]:
     projected_draft = deepcopy(initialize_session_draft(session, persist=False))
     projected_stages = _dict(projected_draft.get("stages"))
-    projected_final = _dict(projected_stages.get("final_review"))
-    if projected_final.get("data") is not None and projected_final.get("status") in {"generated", "confirmed"}:
-        try:
-            projected_final["data"] = derive_stage(session, "final_review", projected_draft)
-        except ValueError:
-            # Listing work contexts must remain available even when an old or
-            # partially imported draft contains a stale final-review snapshot
-            # without a selected concept. Validation can report that gap when
-            # the user opens the work; it must not erase the whole selector.
-            pass
-        projected_stages["final_review"] = projected_final
-        projected_draft["stages"] = projected_stages
+    # A read must expose the same authored/model artifact as its edit and
+    # single-artifact routes. Materialization validates current structure
+    # separately; it must not overwrite the review's warnings or conclusions.
     concepts = _dict(_dict(projected_stages.get("concepts")).get("data"))
     concept_options = _list(concepts.get("options"))
     selected_concept_id = _text(concepts.get("selected_concept_id"))
@@ -1379,8 +1377,8 @@ def build_project_materialization_payload(session: NovelCreationSession) -> dict
         "world_tone": _text(world.get("world_tone") or project_payload.get("world_tone")),
         "story_structure": _text(world.get("story_structure") or project_payload.get("story_structure")),
         "pacing": _text(world.get("pacing") or project_payload.get("pacing")),
-        "style_rules": _list(world.get("style_rules")) or _list(project_payload.get("style_rules")),
-        "forbidden_patterns": _list(world.get("forbidden_patterns")) or _list(project_payload.get("forbidden_patterns")),
+        "style_rules": _rule_lines(world.get("style_rules", project_payload.get("style_rules"))),
+        "forbidden_patterns": _rule_lines(world.get("forbidden_patterns", project_payload.get("forbidden_patterns"))),
         "worldbuilding": all_world,
         "worldbuilding_relations": _list(locations.get("relations")),
         "volume_outline": _list(macro.get("volumes")),

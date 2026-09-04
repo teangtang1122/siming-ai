@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -11,7 +10,6 @@ from app.database.models import AssistantRun, AssistantRunStep, Base
 from app.services.workspace.run_log import start_run_step, step_payload
 from app.services.workspace.run_recovery import retry_step
 from app.services.workspace.run_step_payloads import (
-    RUN_LOG_META_KEY,
     UnrecoverableStepRequest,
     deserialize_step_request,
     serialize_step_request,
@@ -33,19 +31,14 @@ def test_non_json_step_request_is_rejected_instead_of_changed() -> None:
         serialize_step_request({"value": object()})
 
 
-def test_large_step_result_uses_bounded_valid_json_envelope() -> None:
+def test_large_step_result_is_saved_losslessly() -> None:
     result = {"content": "\\\"\n" * 40_000}
-    original = json.dumps(result, ensure_ascii=False, default=str)
 
-    encoded = serialize_step_result(result, max_chars=512)
+    encoded = serialize_step_result(result)
     decoded = json.loads(encoded)
 
-    assert len(encoded) <= 512
-    assert decoded[RUN_LOG_META_KEY] == {"version": 1, "kind": "truncated_result"}
-    assert decoded["_truncated"] is True
-    assert decoded["original_chars"] == len(original)
-    assert decoded["sha256"] == hashlib.sha256(original.encode("utf-8")).hexdigest()
-    assert isinstance(decoded["preview"], str)
+    assert len(encoded) > 80_000
+    assert decoded == result
 
 
 def test_legacy_truncated_request_is_explicitly_unrecoverable() -> None:
@@ -105,6 +98,47 @@ def test_retry_replays_complete_large_request() -> None:
 
         assert result["status"] == "ok"
         assert execute.await_args.args[2]["arguments"] == request
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_direct_mcp_step_cannot_escape_lease_through_public_retry() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        run = AssistantRun(project_id="project-1", status="error", phase="tool")
+        db.add(run)
+        db.commit()
+        original = start_run_step(
+            db,
+            run,
+            step_type="write",
+            tool="create_character",
+            request={"project_id": "project-1", "name": "沈砚"},
+            direct_mcp_call_key="direct_mcp:run:1:call",
+            emit_operation_signal=False,
+        )
+        assert original is not None
+        original.status = "error"
+        db.commit()
+
+        payload = step_payload(original)
+        assert payload["can_retry"] is False
+        assert "原 lease" in payload["retry_block_reason"]
+
+        execute = AsyncMock()
+        with (
+            patch(
+                "app.services.workspace.run_recovery.execute_workspace_action",
+                new=execute,
+            ),
+            pytest.raises(ValueError, match="原 lease"),
+        ):
+            asyncio.run(retry_step(db, run.id, original.id))
+        execute.assert_not_awaited()
+        assert db.query(AssistantRunStep).count() == 1
     finally:
         db.close()
         engine.dispose()

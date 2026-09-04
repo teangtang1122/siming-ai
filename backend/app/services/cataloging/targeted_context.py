@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ from ...database.models import (
     OutlineNode,
     WorldbuildingEntry,
 )
+from ...database.query_filters import current_worldbuilding_clause
 from .facts import extract_fact_terms, facts_text
 from .context import ordered_chapters
 from .constants import (
@@ -29,7 +31,11 @@ def build_targeted_context(db: Session, project_id: str, chapter: Chapter, facts
     terms = extract_fact_terms(facts)
     fact_text = facts_text(facts, limit=CATALOGING_CONTEXT_FACT_MATCH_LIMIT)
     characters = _load_relevant_characters(db, project_id, terms["names"], fact_text)
-    world_entries = _load_relevant_worldbuilding(db, project_id, terms["titles"] | terms["keywords"], fact_text)
+    world_entries = worldbuilding_identity_review_candidates(
+        db,
+        project_id,
+        facts,
+    )
     chapters = ordered_chapters(db, project_id)
     index = next((idx for idx, item in enumerate(chapters) if item.id == chapter.id), 0)
     return {
@@ -52,7 +58,7 @@ def build_targeted_context(db: Session, project_id: str, chapter: Chapter, facts
         "relevant_characters": [_character_context(item) for item in characters],
         "relevant_relationships": _relationship_context(db, project_id, characters),
         "worldbuilding_title_index": [
-            {"dimension": item.dimension, "title": item.title}
+            {"id": item.id, "dimension": item.dimension, "title": item.title}
             for item in _load_worldbuilding_index(db, project_id)
         ],
         "relevant_worldbuilding": [_worldbuilding_context(item) for item in world_entries],
@@ -63,6 +69,29 @@ def build_targeted_context(db: Session, project_id: str, chapter: Chapter, facts
             "keywords": sorted(terms["keywords"])[:80],
         },
     }
+
+
+def worldbuilding_identity_review_candidates(
+    db: Session,
+    project_id: str,
+    facts: list[dict[str, Any]],
+) -> list[WorldbuildingEntry]:
+    """Return the retrieval candidates every new-card decision must review.
+
+    This is retrieval support, not an application identity decision.  The
+    model still decides whether the chapter describes an existing entity, but
+    it cannot claim to have reviewed one convenient card while ignoring other
+    relevant active cards that were delivered for the same saved facts.
+    """
+
+    terms = extract_fact_terms(facts)
+    fact_text = facts_text(facts, limit=CATALOGING_CONTEXT_FACT_MATCH_LIMIT)
+    return _load_relevant_worldbuilding(
+        db,
+        project_id,
+        terms["titles"] | terms["keywords"],
+        fact_text,
+    )
 
 
 def _load_character_index(db: Session, project_id: str) -> list[Character]:
@@ -78,7 +107,10 @@ def _load_character_index(db: Session, project_id: str) -> list[Character]:
 def _load_worldbuilding_index(db: Session, project_id: str) -> list[WorldbuildingEntry]:
     return (
         db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        )
         .order_by(WorldbuildingEntry.updated_at.desc())
         .limit(CATALOGING_WORLDBUILDING_INDEX_LIMIT)
         .all()
@@ -181,7 +213,7 @@ def _character_context(character: Character) -> dict:
     config = character.ai_config
     recent_events = sorted(
         character.timeline_events or [],
-        key=lambda event: event.created_at,
+        key=lambda event: (event.created_at or datetime.min, event.id or ""),
         reverse=True,
     )[:4]
     return {
@@ -258,7 +290,7 @@ def _relationship_context(db: Session, project_id: str, characters: list[Charact
 def _worldbuilding_context(entry: WorldbuildingEntry) -> dict:
     recent_events = sorted(
         entry.timeline_events or [],
-        key=lambda event: event.created_at,
+        key=lambda event: (event.created_at or datetime.min, event.id or ""),
         reverse=True,
     )[:3]
     return {

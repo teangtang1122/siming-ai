@@ -23,6 +23,7 @@ from app.database.models import (
     ChapterGovernanceReview,
     ChapterQualityMetric,
     ChapterSnapshot,
+    ChapterSummary,
     Foreshadowing,
     OutlineNode,
     Project,
@@ -59,6 +60,7 @@ class ChapterTestCase(unittest.TestCase):
             db.query(ChapterGovernanceReview).delete()
             db.query(Foreshadowing).delete()
             db.query(ChapterQualityMetric).delete()
+            db.query(ChapterSummary).delete()
             db.query(ChapterSnapshot).delete()
             db.query(Chapter).delete()
             db.query(OutlineNode).delete()
@@ -132,6 +134,63 @@ class TestChapterCRUD(ChapterTestCase):
         self.assertEqual(response.status_code, 200)
         detail = response.json()["data"]
         self.assertEqual(detail["content"], "林澈推开城门。")
+
+    def test_author_can_correct_summary_without_changing_body_version(self):
+        project_id = self.create_project()
+        chapter = self.create_chapter(project_id, content="林澈推开城门。")
+        detail_url = f"{API_PREFIX}/projects/{project_id}/chapters/{chapter['id']}"
+        before = self.client.get(detail_url).json()["data"]
+
+        response = self.client.put(
+            f"{detail_url}/summary",
+            json={
+                "summary_text": "林澈推开城门，但没有确认门外来者的身份。",
+                "key_events": ["林澈推开城门", "来者身份仍待核"],
+                "expected_version": before["current_version"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["data"]
+        self.assertEqual(result["source"], "author")
+        self.assertEqual(result["chapter_version"], 1)
+        after = self.client.get(detail_url).json()["data"]
+        self.assertEqual(after["summary_text"], result["summary_text"])
+        self.assertEqual(after["key_events"], ["林澈推开城门", "来者身份仍待核"])
+        self.assertEqual(after["content"], before["content"])
+        self.assertEqual(after["current_version"], before["current_version"])
+        self.assertEqual(after["snapshot_count"], before["snapshot_count"])
+        self.assertEqual(after["cataloging_required"], before["cataloging_required"])
+
+        db = SessionLocal()
+        try:
+            summary = db.query(ChapterSummary).filter_by(chapter_id=chapter["id"]).one()
+            self.assertEqual(summary.ai_model, "author")
+        finally:
+            db.close()
+
+    def test_author_summary_correction_rejects_stale_chapter_version(self):
+        project_id = self.create_project()
+        chapter = self.create_chapter(project_id, content="第一版正文。")
+        detail_url = f"{API_PREFIX}/projects/{project_id}/chapters/{chapter['id']}"
+        saved = self.client.put(
+            detail_url,
+            json={"content": "第二版正文。", "expected_version": 1},
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        response = self.client.put(
+            f"{detail_url}/summary",
+            json={
+                "summary_text": "基于旧正文的错误摘要。",
+                "key_events": [],
+                "expected_version": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("重新核对正文", response.json()["message"])
+        self.assertIsNone(self.client.get(detail_url).json()["data"]["summary_text"])
 
     @patch(
         "app.services.chapter_revision.LLMGateway.chat_completion",

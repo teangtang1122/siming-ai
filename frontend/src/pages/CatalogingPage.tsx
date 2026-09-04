@@ -41,6 +41,9 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   const [chapters, setChapters] = useState<ChapterItem[]>([])
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([])
   const [jobs, setJobs] = useState<CatalogingJob[]>([])
+  const [jobsTotal, setJobsTotal] = useState(0)
+  const [jobsNextOffset, setJobsNextOffset] = useState<number | null>(null)
+  const [jobsLoading, setJobsLoading] = useState(false)
   const [job, setJob] = useState<CatalogingJob | null>(null)
   const [runs, setRuns] = useState<CatalogingRun[]>([])
   const [candidates, setCandidates] = useState<CatalogingCandidate[]>([])
@@ -54,11 +57,20 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
   const [loading, setLoading] = useState(false)
   const activeJobIdRef = useRef<string | null>(null)
   const loadJobRequestGate = useRef(createLatestRequestGate<string>())
+  const jobsRequestGate = useRef(createLatestRequestGate<string>())
 
   const progress = useMemo(() => {
     if (!job || !job.total_chapters) return 0
     return Math.round(((job.completed_chapters || 0) / job.total_chapters) * 100)
   }, [job])
+
+  const currentRun = useMemo(() => {
+    if (!job) return undefined
+    if (job.current_chapter_id) {
+      return runs.find((run) => run.chapter_id === job.current_chapter_id)
+    }
+    return runs.find((run) => !finishedRunStatuses.has(run.status))
+  }, [job, runs])
 
   const visibleCandidates = useMemo(() => {
     if (candidateStatusFilter === 'all') return candidates
@@ -76,9 +88,21 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     setSelectedChapterIds(items.map((item) => item.id))
   }, [projectId])
 
-  const fetchJobs = useCallback(async () => {
-    const res = await apiClient.get<ApiResponse<{ items: CatalogingJob[]; total: number }>>(`/projects/${projectId}/cataloging/jobs`)
-    setJobs(res.data.data.items || [])
+  const fetchJobs = useCallback(async (offset = 0) => {
+    const request = jobsRequestGate.current.begin(projectId)
+    setJobsLoading(true)
+    try {
+      const res = await apiClient.get<ApiResponse<{ items: CatalogingJob[]; total: number; next_offset: number | null }>>(
+        `/projects/${projectId}/cataloging/jobs`, { limit: 20, offset },
+      )
+      if (!jobsRequestGate.current.isCurrent(request)) return
+      const items = res.data.data.items || []
+      setJobs((current) => offset === 0 ? items : Array.from(new Map([...current, ...items].map((item) => [item.id, item])).values()))
+      setJobsTotal(res.data.data.total)
+      setJobsNextOffset(res.data.data.next_offset ?? null)
+    } finally {
+      if (jobsRequestGate.current.isCurrent(request)) setJobsLoading(false)
+    }
   }, [projectId])
 
   const fetchJob = useCallback(async (jobId: string) => {
@@ -470,7 +494,9 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
 
   useEffect(() => {
     const loadGate = loadJobRequestGate.current
+    const historyGate = jobsRequestGate.current
     loadGate.invalidate()
+    historyGate.invalidate()
     activeJobIdRef.current = null
     setJob(null)
     setRuns([])
@@ -479,10 +505,14 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
     setFacts([])
     setStreaming(false)
     setLoading(false)
+    setJobs([])
+    setJobsTotal(0)
+    setJobsNextOffset(null)
     fetchChapters().catch((err) => message.error(err.message || '获取章节失败'))
-    fetchJobs().catch(() => undefined)
+    fetchJobs().catch((err) => message.error(err.message || '获取建档历史失败'))
     return () => {
       loadGate.invalidate()
+      historyGate.invalidate()
       activeJobIdRef.current = null
     }
   }, [fetchChapters, fetchJobs])
@@ -504,6 +534,9 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
 
       <CatalogingJobControlCard
         job={job}
+        currentRun={currentRun}
+        factCount={facts.length}
+        candidateCount={candidates.length}
         progress={progress}
         streaming={streaming}
         onApplyPending={applyPending}
@@ -523,6 +556,13 @@ function CatalogingPage({ projectId }: CatalogingPageProps) {
             chapters={chapters}
             selectedChapterIds={selectedChapterIds}
             jobs={jobs}
+            jobsTotal={jobsTotal}
+            jobsLoading={jobsLoading}
+            hasMoreJobs={jobsNextOffset !== null}
+            onRefreshJobs={() => { void fetchJobs().catch((err) => message.error(err.message || '获取建档历史失败')) }}
+            onLoadMoreJobs={() => {
+              if (jobsNextOffset !== null) void fetchJobs(jobsNextOffset).catch((err) => message.error(err.message || '获取建档历史失败'))
+            }}
             activeJob={job}
             runs={runs}
             onSelectedChapterIdsChange={setSelectedChapterIds}

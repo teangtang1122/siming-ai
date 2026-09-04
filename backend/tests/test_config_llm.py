@@ -44,7 +44,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database.session import Base, engine, SessionLocal
-from app.database.models import APIConfig, ModelTaskSetting
+from app.database.models import APIConfig, ModelContextProfile, ModelTaskSetting
 from app.core.crypto import encrypt, decrypt
 from app.ai.gateway import LLMGateway, ADAPTER_MAP
 from app.ai.openai_adapter import OpenAIAdapter
@@ -94,6 +94,7 @@ class TestAPIConfigListAPI(unittest.TestCase):
     def setUp(self):
         db = SessionLocal()
         try:
+            db.query(ModelContextProfile).delete()
             db.query(APIConfig).delete()
             db.commit()
         finally:
@@ -202,6 +203,7 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
     def setUp(self):
         db = SessionLocal()
         try:
+            db.query(ModelContextProfile).delete()
             db.query(APIConfig).delete()
             db.commit()
         finally:
@@ -250,6 +252,87 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
         models = response.json()["data"]["available_models"]
         self.assertEqual([item["id"] for item in models], ["gpt-4o", "gpt-4.1-mini"])
         self.assertEqual(models[1]["display_name"], "GPT 4.1 Mini")
+
+    def test_documented_default_model_returns_verified_capacity(self):
+        response = self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={
+                "provider": "openai",
+                "api_key": "sk-capacity-catalog",
+                "default_model": "gpt-4o",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertTrue(data["context_profile_known"])
+        self.assertEqual(data["context_window_tokens"], 128_000)
+        self.assertEqual(
+            data["context_profile_source"],
+            "openai_model_docs_2026_08_30",
+        )
+
+    def test_documented_model_name_on_custom_proxy_requires_its_own_capacity(self):
+        response = self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={
+                "provider": "openai",
+                "api_key": "sk-proxy-capacity",
+                "default_model": "gpt-4o",
+                "base_url_override": "https://proxy.example/v1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertFalse(data["context_profile_known"])
+        self.assertIsNone(data["context_window_tokens"])
+
+    def test_custom_model_capacity_is_saved_as_author_confirmed_profile(self):
+        response = self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={
+                "provider": "custom_vendor",
+                "api_key": "sk-custom-capacity",
+                "default_model": "writer-large",
+                "base_url_override": "https://models.example.test/v1",
+                "max_output_tokens": 8_000,
+                "context_window_tokens": 96_000,
+                "context_safety_margin_tokens": 1_024,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertTrue(data["context_profile_known"])
+        self.assertEqual(data["context_profile_source"], "configured")
+        self.assertEqual(data["context_window_tokens"], 96_000)
+
+        db = SessionLocal()
+        try:
+            profile = db.query(ModelContextProfile).one()
+            self.assertEqual(profile.provider, "custom_vendor")
+            self.assertEqual(profile.model_name, "writer-large")
+            self.assertEqual(profile.max_output_tokens, 8_000)
+            self.assertEqual(profile.safety_margin_tokens, 1_024)
+        finally:
+            db.close()
+
+    def test_custom_capacity_rejects_output_larger_than_window(self):
+        response = self.client.post(
+            f"{API_PREFIX}/config/models",
+            json={
+                "provider": "custom_vendor",
+                "api_key": "sk-invalid-capacity",
+                "default_model": "writer-small",
+                "base_url_override": "https://models.example.test/v1",
+                "max_output_tokens": 8_000,
+                "context_window_tokens": 8_192,
+                "context_safety_margin_tokens": 512,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
 
     # ------------------------------------------------------------------
     # TC-06: Create config for all supported providers
@@ -1143,6 +1226,11 @@ class TestLLMGatewayModelParsing(unittest.TestCase):
 
     def test_parse_model_deepseek_prefix(self):
         provider, model = LLMGateway._parse_model("deepseek:deepseek-v4-flash")
+        self.assertEqual(provider, "deepseek")
+        self.assertEqual(model, "deepseek-v4-flash")
+
+    def test_parse_legacy_deepseek_alias_uses_the_adapter_identity(self):
+        provider, model = LLMGateway._parse_model("DeepSeek:deepseek-v3")
         self.assertEqual(provider, "deepseek")
         self.assertEqual(model, "deepseek-v4-flash")
 

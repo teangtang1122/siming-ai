@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "contract": "Persisted ISO timestamps without an offset are UTC; display in the device timezone, preserving explicit offsets.",
+  "cases": [
+    {
+      "id": "legacy-microsecond",
+      "input": "2026-08-31T19:57:53.428588",
+      "zone": "Asia/Shanghai",
+      "display": "2026/09/01 03:57:53",
+      "epoch_ms": 1788206273428
+    },
+    {
+      "id": "utc-same-instant",
+      "input": "2026-08-31T19:57:53.428Z",
+      "zone": "Asia/Shanghai",
+      "display": "2026/09/01 03:57:53",
+      "epoch_ms": 1788206273428
+    },
+    {
+      "id": "positive-offset",
+      "input": "2026-09-01T03:57:53.428588+08:00",
+      "zone": "Asia/Shanghai",
+      "display": "2026/09/01 03:57:53",
+      "epoch_ms": 1788206273428
+    },
+    {
+      "id": "space-separated",
+      "input": "2026-08-31 19:57:53.428588",
+      "zone": "Asia/Shanghai",
+      "display": "2026/09/01 03:57:53",
+      "epoch_ms": 1788206273428
+    },
+    {
+      "id": "negative-offset",
+      "input": "2026-08-31T14:57:53.428-05:00",
+      "zone": "Asia/Shanghai",
+      "display": "2026/09/01 03:57:53",
+      "epoch_ms": 1788206273428
+    },
+    {
+      "id": "compact-offset",
+      "input": "2026-09-01T03:57:53.428+0800",
+      "zone": "Asia/Shanghai",
+      "display": "2026/09/01 03:57:53",
+      "epoch_ms": 1788206273428
+    },
+    {
+      "id": "dst-before",
+      "input": "2026-03-08T06:59:59Z",
+      "zone": "America/New_York",
+      "display": "2026/03/08 01:59:59",
+      "epoch_ms": 1772953199000
+    },
+    {
+      "id": "dst-after",
+      "input": "2026-03-08T07:00:00Z",
+      "zone": "America/New_York",
+      "display": "2026/03/08 03:00:00",
+      "epoch_ms": 1772953200000
+    },
+    {
+      "id": "fall-first",
+      "input": "2026-11-01T05:30:00Z",
+      "zone": "America/New_York",
+      "display": "2026/11/01 01:30:00",
+      "epoch_ms": 1793511000000
+    },
+    {
+      "id": "fall-second",
+      "input": "2026-11-01T06:30:00Z",
+      "zone": "America/New_York",
+      "display": "2026/11/01 01:30:00",
+      "epoch_ms": 1793514600000
+    },
+    {
+      "id": "utc-display",
+      "input": "2026-08-31T19:57:53",
+      "zone": "UTC",
+      "display": "2026/08/31 19:57:53",
+      "epoch_ms": 1788206273000
+    },
+    {
+      "id": "invalid",
+      "input": "not-a-date",
+      "zone": "Asia/Shanghai",
+      "display": null,
+      "epoch_ms": null
+    },
+    {
+      "id": "empty",
+      "input": "",
+      "zone": "UTC",
+      "display": null,
+      "epoch_ms": null
+    },
+    {
+      "id": "missing",
+      "input": null,
+      "zone": "Asia/Shanghai",
+      "display": null,
+      "epoch_ms": null
+    }
+  ]
+}

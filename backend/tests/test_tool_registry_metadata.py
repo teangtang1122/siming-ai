@@ -1,11 +1,11 @@
 """Tests for ToolRegistry metadata contract — Phase 9 extensions."""
-import sys
 import os
+import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.workspace.registry import registry, ToolDef
+from app.services.workspace.registry import ToolDef, registry
 
 
 class ToolDefNewFieldsTest(unittest.TestCase):
@@ -32,6 +32,49 @@ class ToolDefNewFieldsTest(unittest.TestCase):
         self.assertIsInstance(td.expose_to_internal_agent, bool)
         self.assertIsInstance(td.expose_to_scheduler, bool)
         self.assertIsInstance(td.expose_to_mcp, bool)
+
+    def test_turn_terminal_tools_are_declared_once_in_registry_metadata(self):
+        terminal_names = {
+            name
+            for name in registry.all_names()
+            if registry.get(name).ends_agent_turn
+        }
+        self.assertEqual(
+            terminal_names,
+            {
+                "chapter_writer",
+                "outline_writer",
+                "save_external_chapter_draft",
+                "save_external_outline_draft",
+            },
+        )
+        for name in terminal_names:
+            self.assertTrue(registry.get_spec(name).ends_agent_turn)
+
+    def test_direct_mcp_flags_have_one_definition_and_spec_contract(self):
+        for name in registry.all_names():
+            definition = registry.get(name)
+            spec = registry.get_spec(name)
+            self.assertIsNotNone(definition)
+            self.assertIsNotNone(spec)
+            self.assertEqual(
+                spec.direct_mcp_project_scoped,
+                definition.direct_mcp_project_scoped,
+                name,
+            )
+            self.assertEqual(
+                spec.direct_mcp_transactional,
+                definition.direct_mcp_transactional,
+                name,
+            )
+
+    def test_task_context_target_uses_one_explicit_flat_contract(self):
+        definition = registry.get("prepare_task_context")
+        self.assertIn("outline_node_id", definition.input_schema)
+        self.assertIn("chapter_id", definition.input_schema)
+        self.assertIn("parent_id", definition.input_schema)
+        self.assertNotIn("arguments", definition.input_schema)
+        self.assertIn("writing 必须提交 outline_node_id", definition.description)
 
     def test_read_tool_defaults(self):
         td = registry.get("list_projects")
@@ -98,7 +141,7 @@ class MCPPackDerivationTest(unittest.TestCase):
         self.assertEqual(pack, "readonly_collaboration")
 
     def test_api_free_analysis_tools_are_readonly(self):
-        td = registry.get("preview_writing_context")
+        td = registry.get("prepare_task_context")
         pack = registry._derive_mcp_pack(td)
         self.assertEqual(pack, "readonly_collaboration")
 

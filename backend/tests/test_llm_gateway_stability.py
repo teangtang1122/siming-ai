@@ -3,19 +3,20 @@
 import asyncio
 import os
 import unittest
+from contextlib import suppress
 from types import SimpleNamespace
-from typing import Optional
 from unittest.mock import AsyncMock, patch
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
 from app.ai.base import BaseAdapter
+from app.ai.capabilities import ToolCapabilityUnavailableError
 from app.ai.gateway import ADAPTER_MAP, LLMGateway
 from app.ai.local_cli_adapter import LOCAL_CLI_TIMEOUT_GRACE_SECONDS, LocalCLIAdapter
 from app.core.crypto import encrypt
 from app.core.exceptions import LLMError
-from app.database.models import APIConfig
 from app.database.migrations import ensure_runtime_schema
+from app.database.models import APIConfig
 from app.database.session import Base, SessionLocal, engine
 from app.modules.model_runtime.infrastructure.gateway import _apply_active_context_manifest
 
@@ -24,6 +25,7 @@ class FakeAdapter(BaseAdapter):
     last_tool_choice = object()
     calls = 0
     stream_calls = 0
+    tool_stream_calls = 0
     stream_errors: list[Exception] = []
     error: Exception | None = None
 
@@ -36,10 +38,10 @@ class FakeAdapter(BaseAdapter):
         messages: list[dict],
         model: str,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        extra_body: Optional[dict] = None,
-        tools: Optional[list[dict]] = None,
-        tool_choice: Optional[str | dict] = None,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> dict:
         FakeAdapter.calls += 1
         if FakeAdapter.error:
@@ -54,6 +56,7 @@ class FakeAdapter(BaseAdapter):
         yield "ok"
 
     async def stream_chat_completion_with_tools(self, *args, **kwargs):
+        FakeAdapter.tool_stream_calls += 1
         yield {"type": "done", "finish_reason": "stop", "usage": None}
 
 
@@ -66,10 +69,8 @@ class GatewayStabilityTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         Base.metadata.drop_all(bind=engine)
-        try:
+        with suppress(OSError):
             os.remove("test_novel_agent.db")
-        except OSError:
-            pass
 
     def setUp(self):
         db = SessionLocal()
@@ -88,6 +89,7 @@ class GatewayStabilityTestCase(unittest.TestCase):
             db.close()
         FakeAdapter.calls = 0
         FakeAdapter.stream_calls = 0
+        FakeAdapter.tool_stream_calls = 0
         FakeAdapter.stream_errors = []
         FakeAdapter.last_tool_choice = object()
         FakeAdapter.error = None
@@ -111,6 +113,73 @@ class GatewayStabilityTestCase(unittest.TestCase):
         self.assertIsNone(FakeAdapter.last_tool_choice)
         self.assertEqual(FakeAdapter.calls, 1)
         self.assertIn("tool_choice", result["request_meta"]["adjustments"][0])
+
+    def test_non_tool_provider_fails_before_adapter_chat_call(self):
+        old_adapter = ADAPTER_MAP.get("codex_cli")
+        ADAPTER_MAP["codex_cli"] = FakeAdapter
+        try:
+            with self.assertRaisesRegex(
+                ToolCapabilityUnavailableError,
+                r"^tool_capability_unavailable:",
+            ):
+                asyncio.run(
+                    LLMGateway.chat_completion(
+                        messages=[{"role": "user", "content": "hi"}],
+                        model="codex_cli:test",
+                        tools=[
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "x",
+                                    "parameters": {"type": "object"},
+                                },
+                            }
+                        ],
+                        tool_choice="required",
+                        retry=0,
+                    )
+                )
+        finally:
+            if old_adapter is not None:
+                ADAPTER_MAP["codex_cli"] = old_adapter
+
+        self.assertEqual(FakeAdapter.calls, 0)
+
+    def test_non_tool_provider_fails_before_adapter_stream_call(self):
+        old_adapter = ADAPTER_MAP.get("codex_cli")
+        ADAPTER_MAP["codex_cli"] = FakeAdapter
+
+        async def collect():
+            return [
+                chunk
+                async for chunk in LLMGateway.stream_chat_completion_with_tools(
+                    messages=[{"role": "user", "content": "hi"}],
+                    model="codex_cli:test",
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "x",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    tool_choice="required",
+                    retry=0,
+                )
+            ]
+
+        try:
+            with self.assertRaisesRegex(
+                ToolCapabilityUnavailableError,
+                r"^tool_capability_unavailable:",
+            ):
+                asyncio.run(collect())
+        finally:
+            if old_adapter is not None:
+                ADAPTER_MAP["codex_cli"] = old_adapter
+
+        self.assertEqual(FakeAdapter.tool_stream_calls, 0)
 
     def test_quota_errors_are_not_retried(self):
         FakeAdapter.error = LLMError(
@@ -221,6 +290,40 @@ class GatewayStabilityTestCase(unittest.TestCase):
         self.assertIn("base instructions", messages[0]["content"])
         self.assertIn("selected project evidence", messages[0]["content"])
         self.assertTrue(body["moshu_context_manifest_rendered"])
+
+    def test_isolated_checkpoint_call_never_inherits_active_task_manifest(self):
+        active = SimpleNamespace(
+            manifest_id="manifest-secret",
+            output_reserve_tokens=777,
+            rendered_context="PROJECT_SECRET_MUST_NOT_REACH_CHECKPOINT",
+        )
+        original_messages = [
+            {"role": "system", "content": "isolated checkpoint contract"},
+            {"role": "user", "content": "typed historical source"},
+        ]
+        original_body = {
+            "moshu_context_manifest_disabled": True,
+            "local_cli_isolated": True,
+            "local_cli_allow_mcp": False,
+        }
+        with patch(
+            "app.modules.model_runtime.infrastructure.gateway.active_context_manifest",
+            return_value=active,
+        ):
+            messages, body, output_limit = _apply_active_context_manifest(
+                original_messages,
+                original_body,
+                4_096,
+            )
+
+        self.assertIs(messages, original_messages)
+        self.assertIs(body, original_body)
+        self.assertEqual(output_limit, 4_096)
+        serialized = repr((messages, body))
+        self.assertNotIn(active.manifest_id, serialized)
+        self.assertNotIn(active.rendered_context, serialized)
+        self.assertNotIn("moshu_context_manifest_id", body)
+        self.assertNotIn("moshu_context_manifest_rendered", body)
 
 
 if __name__ == "__main__":

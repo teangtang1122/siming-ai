@@ -5,6 +5,7 @@ from app.architecture.uow import commit_session
 
 import json
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -22,13 +23,13 @@ from ..schemas.cataloging import (
     CatalogingModeUpdate,
     CatalogingStartRequest,
 )
-from ..services.cataloging.applier import apply_candidates_for_run
 from ..services.cataloging.candidate_io import candidate_payload, candidate_to_dict
 from ..services.cataloging.candidate_store import recover_candidates_from_raw_output
 from ..services.cataloging.candidate_validation import candidate_coverage_error_message
 from ..services.cataloging.job_control import (
     cancel_job,
     first_blocking_run,
+    first_retryable_run,
     mark_run_skipped,
     pause_job,
     refresh_job_progress,
@@ -39,18 +40,20 @@ from ..services.cataloging.job_control import (
 from ..services.cataloging.fact_store import fact_to_dict, load_facts_for_run
 from ..services.cataloging.lookups import find_character_by_name_or_id
 from ..services.cataloging.manual_ops import (
+    apply_pending_cataloging_run,
     candidate_coverage_for_run,
     create_manual_candidate,
     recover_failed_run_for_review,
 )
-from ..services.cataloging.model_selection import cataloging_model_selection
-from ..services.cataloging.orchestrator import create_cataloging_job, job_to_dict, run_to_dict, stream_cataloging_job
+from ..services.cataloging.launcher import (
+    create_and_queue_cataloging_job,
+    queue_managed_cataloging_job,
+)
+from ..services.cataloging.orchestrator import job_to_dict, run_to_dict, stream_cataloging_job
 from ..services.cataloging.local_cli_agent import (
     cancel_local_cli_cataloging_worker,
-    ensure_local_cli_cataloging_worker,
     stream_local_cli_cataloging_job,
 )
-from ..ai.local_cli_adapter import is_local_cli_provider
 from ..services.character_merge_service import build_character_merge_preview
 
 router = APIRouter(tags=["cataloging"])
@@ -73,36 +76,40 @@ def _get_candidate_or_404(db: Session, project_id: str, candidate_id: str):
 @router.post("/projects/{project_id}/cataloging/start")
 async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
-    selection = cataloging_model_selection(payload.model)
-    model = selection.model
-    provider = (selection.provider or (model or "").split(":", 1)[0]).lower()
-    local_cli = is_local_cli_provider(provider)
-    job = create_cataloging_job(
+    _job, launch = create_and_queue_cataloging_job(
         db,
         project_id,
-        payload.execution_mode,
-        model,
         payload.chapter_ids,
-        execution_backend="local_cli_agent" if local_cli else "internal_llm",
-        model_source=selection.source,
-        provider=provider or None,
+        execution_mode=payload.execution_mode,
+        model_override=payload.model,
+        trigger_source="manual",
+        run_now=True,
     )
-    if local_cli:
-        try:
-            ensure_local_cli_cataloging_worker(db, job, provider=provider)
-        except Exception as exc:
-            job.status = "paused_on_failure"
-            job.error = str(exc)
-            commit_session(db)
-            raise ValidationError(str(exc)) from exc
-    return ApiResponse.success(data=job_to_dict(job), message="作品建档任务已创建")
+    if launch.get("next_action") == "already_cataloged":
+        message = "当前章节版本已完成建档，已复用现有结果"
+    elif launch.get("idempotent_reuse"):
+        message = "当前章节版本正在建档，已复用现有任务"
+    else:
+        message = "作品建档任务已创建"
+    return ApiResponse.success(data=launch, message=message)
 
 
 @router.get("/projects/{project_id}/cataloging/jobs")
-def list_cataloging_jobs(project_id: str, db: Session = Depends(get_db)):
+def list_cataloging_jobs(
+    project_id: str,
+    db: Session = Depends(get_db),
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
     get_project_or_404(db, project_id)
-    jobs = cataloging_queries(db).list_jobs(project_id, limit=20)
-    return ApiResponse.success(data={"items": [job_to_dict(job) for job in jobs], "total": len(jobs)})
+    queries = cataloging_queries(db)
+    jobs = queries.list_jobs(project_id, limit=limit, offset=offset)
+    total = queries.count_jobs(project_id)
+    next_offset = offset + len(jobs)
+    return ApiResponse.success(data={
+        "items": [job_to_dict(job) for job in jobs], "total": total,
+        "limit": limit, "offset": offset, "next_offset": next_offset if next_offset < total else None,
+    })
 
 
 @router.get("/projects/{project_id}/cataloging/{job_id}")
@@ -295,27 +302,28 @@ def bulk_update_cataloging_candidates(
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/apply-pending")
-def apply_pending_cataloging(project_id: str, job_id: str, db: Session = Depends(get_db)):
+async def apply_pending_cataloging(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    run = cataloging_queries(db).first_awaiting_confirmation(job.id)
-    if not run:
-        raise ValidationError("当前没有等待确认的章节")
-    coverage = candidate_coverage_for_run(db, run)
-    if not coverage.is_complete:
-        raise ValidationError(candidate_coverage_error_message(coverage))
-    events = apply_candidates_for_run(db, job, run)
-    has_failed = any(event["type"] == "candidate_apply_failed" for event in events)
-    run.status = "completed_with_warnings" if has_failed else "completed"
-    run.completed_at = datetime.utcnow()
-    run.error = None
-    job.status = "running"
-    job.last_completed_chapter_id = run.chapter_id
-    job.blocked_chapter_id = None
-    job.error = None
-    refresh_job_progress(db, job)
+    try:
+        run, events = apply_pending_cataloging_run(db, job)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     commit_session(db)
-    return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run), "events": events}, message="候选项已写入")
+    worker_queued = False
+    if job.status == "running":
+        worker_queued = queue_managed_cataloging_job(job)
+    if run.status == "failed":
+        raise ValidationError(run.error or "关键候选未完成写入")
+    return ApiResponse.success(
+        data={
+            "job": job_to_dict(job),
+            "run": run_to_dict(run),
+            "events": events,
+            "worker_queued": worker_queued,
+        },
+        message="候选项已写入",
+    )
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/skip-current")
@@ -330,19 +338,28 @@ def skip_current_cataloging_chapter(project_id: str, job_id: str, db: Session = 
     return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已显式跳过")
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/retry-current")
-def retry_current_cataloging_chapter(project_id: str, job_id: str, db: Session = Depends(get_db)):
+async def retry_current_cataloging_chapter(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    run = first_blocking_run(db, job)
+    run = first_retryable_run(db, job)
     if not run:
         raise ValidationError("当前没有可重试的章节")
     reset_run_for_retry(db, job, run)
     commit_session(db)
-    return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="当前章节已重置，准备重试")
+    worker_queued = queue_managed_cataloging_job(job)
+    message = "当前章节已重置并开始重试" if worker_queued else "当前章节已重置，等待外部 Agent 重试"
+    return ApiResponse.success(
+        data={
+            "job": job_to_dict(job),
+            "run": run_to_dict(run),
+            "worker_queued": worker_queued,
+        },
+        message=message,
+    )
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/rerun-resolution-current")
-def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Session = Depends(get_db)):
+async def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
     run = first_blocking_run(db, job)
@@ -354,7 +371,16 @@ def rerun_current_cataloging_resolution(project_id: str, job_id: str, db: Sessio
         raise ValidationError("当前章节没有已保存事实，请使用完整重试")
     reset_run_for_resolution_retry(db, job, run)
     commit_session(db)
-    return ApiResponse.success(data={"job": job_to_dict(job), "run": run_to_dict(run)}, message="已保留事实并重置第二阶段")
+    worker_queued = queue_managed_cataloging_job(job)
+    message = "已保留事实并开始重跑第二阶段" if worker_queued else "已保留事实，等待外部 Agent 重跑第二阶段"
+    return ApiResponse.success(
+        data={
+            "job": job_to_dict(job),
+            "run": run_to_dict(run),
+            "worker_queued": worker_queued,
+        },
+        message=message,
+    )
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/recover-current")
@@ -412,12 +438,14 @@ def pause_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get
 
 
 @router.post("/projects/{project_id}/cataloging/{job_id}/resume")
-def resume_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
+async def resume_cataloging_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
     get_project_or_404(db, project_id)
     job = _get_job_or_404(db, project_id, job_id)
-    if job.status == "paused":
+    should_resume = job.status == "paused"
+    if should_resume:
         resume_job(job)
         commit_session(db)
+        queue_managed_cataloging_job(job)
     return ApiResponse.success(data={"job": job_to_dict(job)}, message="作品建档任务已继续")
 
 

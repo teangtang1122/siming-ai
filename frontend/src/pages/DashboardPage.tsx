@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 import { type KeyboardEvent, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -499,7 +500,7 @@ function DashboardPage() {
                       const item = attention ? draft.stage_flow?.items?.[attention] : undefined
                       const prefix = item?.status === 'generated' || item?.status === 'stale' ? '待你确认：' : ''
                       return `${prefix}${item?.label || draft.current_stage || '创作约束'}`
-                    })()} · {draft.updated_at ? new Date(draft.updated_at).toLocaleString('zh-CN') : '刚刚保存'}
+                    })()} · {draft.updated_at ? (formatApiDateTime(draft.updated_at) || '时间未记录') : '刚刚保存'}
                   </Text>
                   <Text className="dashboard-draft-continue">继续完善 <ArrowRightOutlined /></Text>
                 </Space>

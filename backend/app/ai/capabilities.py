@@ -4,10 +4,25 @@ The adapters intentionally stay thin. Provider quirks that affect request
 shape live here so caller code does not need to know which APIs reject which
 parameters.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+TOOL_CAPABILITY_UNAVAILABLE = "tool_capability_unavailable"
+TOOL_CAPABILITY_UNAVAILABLE_MESSAGE = (
+    f"{TOOL_CAPABILITY_UNAVAILABLE}: 当前模型不支持原生工具调用，本次请求未发送。"
+)
+
+
+class ToolCapabilityUnavailableError(RuntimeError):
+    """A caller required native tools that the selected provider cannot carry."""
+
+    reason_code = TOOL_CAPABILITY_UNAVAILABLE
+
+    def __init__(self) -> None:
+        super().__init__(TOOL_CAPABILITY_UNAVAILABLE_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -15,6 +30,13 @@ class ProviderCapabilities:
     supports_tools: bool = True
     supports_tool_choice: bool = True
     supports_streaming_tools: bool = True
+
+
+_NO_NATIVE_TOOLS = ProviderCapabilities(
+    supports_tools=False,
+    supports_tool_choice=False,
+    supports_streaming_tools=False,
+)
 
 
 PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
@@ -28,17 +50,17 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     "gemini": ProviderCapabilities(supports_tool_choice=False),
     # Agent CLIs do not emit OpenAI tool-call envelopes. Authorized workflows
     # attach Siming as a native MCP server inside the CLI process instead.
-    "claude_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "codex_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "opencode_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "mimocode_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "cursor_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "kilocode_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "qwen_code_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "hermes_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "openclaw_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "dsh_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
-    "custom_cli": ProviderCapabilities(supports_tools=False, supports_tool_choice=False, supports_streaming_tools=False),
+    "claude_cli": _NO_NATIVE_TOOLS,
+    "codex_cli": _NO_NATIVE_TOOLS,
+    "opencode_cli": _NO_NATIVE_TOOLS,
+    "mimocode_cli": _NO_NATIVE_TOOLS,
+    "cursor_cli": _NO_NATIVE_TOOLS,
+    "kilocode_cli": _NO_NATIVE_TOOLS,
+    "qwen_code_cli": _NO_NATIVE_TOOLS,
+    "hermes_cli": _NO_NATIVE_TOOLS,
+    "openclaw_cli": _NO_NATIVE_TOOLS,
+    "dsh_cli": _NO_NATIVE_TOOLS,
+    "custom_cli": _NO_NATIVE_TOOLS,
     # The managed llama.cpp server exposes OpenAI-compatible tool calls.  Do not
     # infer a model's capability from the fact that it runs locally: pass the
     # caller's tools through and let the selected model/template answer.  Agent
@@ -56,16 +78,14 @@ def sanitize_tool_request(
     tools: list[dict] | None,
     tool_choice: str | dict | None,
 ) -> tuple[list[dict] | None, str | dict | None, list[str]]:
-    """Return provider-safe tool arguments plus human-readable adjustments."""
+    """Return provider-safe tool arguments or fail before unsupported tool I/O."""
     caps = provider_capabilities(provider)
     notes: list[str] = []
     safe_tools = tools
     safe_tool_choice = tool_choice
 
     if tools and not caps.supports_tools:
-        safe_tools = None
-        safe_tool_choice = None
-        notes.append(f"{provider} 不支持工具调用，已改用普通对话")
+        raise ToolCapabilityUnavailableError()
     elif tool_choice is not None and not caps.supports_tool_choice:
         safe_tool_choice = None
         notes.append(f"{provider} 不支持当前 tool_choice 参数，已让模型自动选择工具")

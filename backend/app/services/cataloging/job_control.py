@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ...database.models import (
+    AgentRun,
     CatalogingApplyLog,
     CatalogingCandidate,
     CatalogingChapterRun,
@@ -17,6 +18,7 @@ from ...database.models import (
 )
 
 TERMINAL_RUN_STATUSES = {"completed", "completed_with_warnings", "skipped_by_user"}
+TERMINAL_AGENT_RUN_STATUSES = {"completed", "failed", "cancelled"}
 OPERATION_STATUS_BY_JOB_STATUS = {
     "queued": "queued",
     "running": "running",
@@ -199,11 +201,61 @@ def refresh_job_progress(db: Session, job: CatalogingJob) -> None:
             )
 
 
+def complete_cataloging_job(db: Session, job: CatalogingJob) -> None:
+    """Complete the authoritative job and its durable UI/Agent projections.
+
+    Callers own the transaction.  Keeping all three records in the same unit
+    of work prevents REST, workspace/MCP, and managed CLI completion from
+    drifting when a helper commits one sidecar before the others.
+    """
+
+    completed_at = job.completed_at or datetime.utcnow()
+    job.status = "completed"
+    job.current_chapter_id = None
+    job.blocked_chapter_id = None
+    job.error = None
+    job.completed_at = completed_at
+    job.updated_at = completed_at
+
+    if job.agent_run_id:
+        agent_run = db.query(AgentRun).filter(AgentRun.id == job.agent_run_id).first()
+        if agent_run and agent_run.status not in TERMINAL_AGENT_RUN_STATUSES:
+            agent_run.status = "completed"
+            agent_run.current_step = "作品建档完成"
+            agent_run.summary = "作品建档完成"
+            agent_run.updated_at = completed_at
+            agent_run.completed_at = completed_at
+
+    refresh_job_progress(db, job)
+
+
 def first_blocking_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun | None:
     return (
         db.query(CatalogingChapterRun)
         .filter(CatalogingChapterRun.job_id == job.id)
         .filter(CatalogingChapterRun.status.in_(["failed", "awaiting_confirmation"]))
+        .order_by(CatalogingChapterRun.chapter_order.asc())
+        .first()
+    )
+
+
+def first_retryable_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun | None:
+    """Return the current unit accepted by every full-retry transport.
+
+    A paused candidate turn remains ``facts_saved``.  Treating only failures
+    and confirmation waits as retryable made REST reject the same unit that
+    the workspace/MCP tool could reset, and forced users to preserve facts
+    they had explicitly chosen to discard.
+    """
+
+    return (
+        db.query(CatalogingChapterRun)
+        .filter(CatalogingChapterRun.job_id == job.id)
+        .filter(CatalogingChapterRun.status.in_([
+            "failed",
+            "awaiting_confirmation",
+            "facts_saved",
+        ]))
         .order_by(CatalogingChapterRun.chapter_order.asc())
         .first()
     )
@@ -233,6 +285,7 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
     run.review_warning = None
     run.raw_output = None
     job.status = "running"
+    job.completed_at = None
     job.current_chapter_id = run.chapter_id
     job.blocked_chapter_id = None
     job.error = None
@@ -242,6 +295,8 @@ def reset_run_for_retry(db: Session, job: CatalogingJob, run: CatalogingChapterR
 def reset_run_for_resolution_retry(
     db: Session, job: CatalogingJob, run: CatalogingChapterRun
 ) -> None:
+    from .fact_store import clear_derived_facts_for_run
+
     candidate_ids = [
         row.id
         for row in db.query(CatalogingCandidate.id)
@@ -255,11 +310,13 @@ def reset_run_for_resolution_retry(
         db.query(CatalogingCandidate).filter(CatalogingCandidate.id.in_(candidate_ids)).delete(
             synchronize_session=False
         )
+    clear_derived_facts_for_run(db, run)
     run.status = "facts_saved"
     run.completed_at = None
     run.error = None
     run.review_warning = None
     job.status = "running"
+    job.completed_at = None
     job.current_chapter_id = run.chapter_id
     job.blocked_chapter_id = None
     job.error = None

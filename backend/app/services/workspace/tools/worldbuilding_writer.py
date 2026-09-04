@@ -6,10 +6,14 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....database.models import Project
-from ....prompts.worldbuilding_writer_prompts import build_worldbuilding_writer_messages
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....prompts.style_prompts import build_style_context
+from ....prompts.worldbuilding_writer_prompts import build_worldbuilding_writer_messages
+from .native_structured_output import (
+    NativeStructuredOutputError,
+    required_tool_arguments,
+)
 
 WORLDBUILDING_ENTRY_TOOL = {
     "type": "function",
@@ -82,24 +86,17 @@ async def worldbuilding_writer(
     except Exception as exc:
         return {"tool": "worldbuilding_writer", "status": "error", "detail": f"世界观条目生成失败: {exc}", "data": {}}
 
-    tool_calls = result.get("tool_calls") or []
-    raw_for_error = str(result.get("content", ""))
     try:
-        if tool_calls:
-            raw_args = tool_calls[0]["function"]["arguments"]
-            raw_for_error = raw_args
-            parsed = _json.loads(raw_args)
-        else:
-            clean = raw_for_error.strip().removeprefix("```json").removesuffix("```").strip()
-            parsed = _json.loads(clean)
-            if isinstance(parsed, dict) and isinstance(parsed.get("entry"), dict):
-                parsed = parsed["entry"]
-    except (_json.JSONDecodeError, AttributeError, TypeError, KeyError):
+        parsed, raw_for_error = required_tool_arguments(
+            result,
+            expected_name="create_worldbuilding_entry",
+        )
+    except NativeStructuredOutputError as exc:
         return {
             "tool": "worldbuilding_writer",
             "status": "error",
             "detail": "世界观条目生成结果解析失败",
-            "data": {"raw": raw_for_error[:500]},
+            "data": {"protocol_error": exc.reason},
         }
 
     if not parsed.get("title"):

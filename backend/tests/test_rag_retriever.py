@@ -5,7 +5,7 @@ from unittest.mock import patch
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import Base, Project, RagChunk
+from app.database.models import Base, Project, RagChunk, WorldbuildingEntry
 from app.services.rag.retriever import (
     _extract_terms,
     _build_fts_query,
@@ -78,7 +78,17 @@ class SearchChunksTestCase(unittest.TestCase):
         Session = sessionmaker(bind=self.engine)
         self.db = Session()
         self.project = Project(id="p1", title="Test")
-        self.db.add(self.project)
+        self.db.add_all([
+            self.project,
+            WorldbuildingEntry(
+                id="w1",
+                project_id="p1",
+                title="当前世界设定",
+                dimension="geography",
+                content="检索测试使用的当前有效来源。",
+                status="active",
+            ),
+        ])
         self.db.commit()
 
     def tearDown(self):

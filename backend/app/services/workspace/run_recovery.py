@@ -5,21 +5,29 @@ Provides three layers:
 2. Resume: retry a step and continue with downstream failed steps
 3. Idempotency: prevent duplicate writes on retry
 """
+
 from __future__ import annotations
+
+import logging
+import uuid
 
 from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
 
 from ...database.models import AssistantRun, AssistantRunStep
+from .assistant_public_errors import safe_tool_execution_failure
 from .executor import execute_workspace_action
 from .idempotency import generate_idempotency_key
 from .run_log import finish_run_step, mark_assistant_run, start_run_step
-from .run_step_payloads import deserialize_step_request, deserialize_step_value_for_display
+from .run_step_payloads import DIRECT_MCP_RETRY_BLOCK_REASON, deserialize_step_request
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Retry
 # ---------------------------------------------------------------------------
+
 
 async def retry_step(
     db: Session,
@@ -34,10 +42,16 @@ async def retry_step(
     )
     if not original:
         raise ValueError("步骤不存在")
+    if original.direct_mcp_call_key:
+        raise ValueError(DIRECT_MCP_RETRY_BLOCK_REASON)
 
     # Concurrent retry guard: if already resolved, return the resolution
     if original.resolved_step_id:
-        resolved = db.query(AssistantRunStep).filter(AssistantRunStep.id == original.resolved_step_id).first()
+        resolved = (
+            db.query(AssistantRunStep)
+            .filter(AssistantRunStep.id == original.resolved_step_id)
+            .first()
+        )
         if resolved:
             return _enriched_step_payload(resolved)
 
@@ -58,9 +72,7 @@ async def retry_step(
 
     # Count existing retries
     attempt_no = (
-        db.query(AssistantRunStep)
-        .filter(AssistantRunStep.retry_of_step_id == original.id)
-        .count()
+        db.query(AssistantRunStep).filter(AssistantRunStep.retry_of_step_id == original.id).count()
     ) + 1
 
     idem_key = generate_idempotency_key(db, original.tool, original.project_id, args)
@@ -70,7 +82,15 @@ async def retry_step(
     try:
         result = await execute_workspace_action(db, original.project_id, action)
     except Exception as exc:
-        result = {"tool": original.tool, "status": "error", "detail": str(exc)}
+        error_id = uuid.uuid4().hex
+        logger.exception(
+            "Workspace retry tool failed error_id=%s run=%s tool=%s type=%s",
+            error_id,
+            run_id,
+            original.tool,
+            type(exc).__name__,
+        )
+        result = {"tool": original.tool, **safe_tool_execution_failure(error_id)}
 
     # Create a new retry step (preserves original)
     new_step = start_run_step(
@@ -126,6 +146,7 @@ async def retry_step(
 # Resume
 # ---------------------------------------------------------------------------
 
+
 def resolve_downstream_steps(
     db: Session,
     run: AssistantRun,
@@ -151,7 +172,7 @@ def resolve_downstream_steps(
 
     # Return unresolved failed/interrupted steps after this one
     downstream = []
-    for s in all_steps[target_idx + 1:]:
+    for s in all_steps[target_idx + 1 :]:
         if s.status in {"error", "interrupted"} and not s.resolved_step_id:
             downstream.append(s)
 
@@ -226,12 +247,9 @@ async def resume_run(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _enriched_step_payload(step: AssistantRunStep) -> dict:
-    """step_payload + request/result parsed from JSON."""
+    """Return the public step projection; exact replay data stays server-side."""
     from .run_log import step_payload as _sp
-    payload = _sp(step)
-    if step.request_json:
-        payload["request"] = deserialize_step_value_for_display(step.request_json)
-    if step.result_json:
-        payload["result"] = deserialize_step_value_for_display(step.result_json)
-    return payload
+
+    return _sp(step)

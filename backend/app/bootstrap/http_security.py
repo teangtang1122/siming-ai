@@ -113,6 +113,18 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     "/api/v1/novel-creation/start": frozenset({"POST"}),
     "/api/v1/novel-creation/finalize": frozenset({"POST"}),
     "/api/v1/novel-creation/sessions/{session_id}": frozenset({"GET", "PATCH", "DELETE"}),
+    (
+        "/api/v1/novel-creation/sessions/{session_id}/conversations/"
+        "{conversation_id}/context-state"
+    ): frozenset({"GET"}),
+    (
+        "/api/v1/novel-creation/sessions/{session_id}/conversations/"
+        "{conversation_id}/checkpoints"
+    ): frozenset({"GET"}),
+    (
+        "/api/v1/novel-creation/sessions/{session_id}/conversations/"
+        "{conversation_id}/checkpoints/{checkpoint_id}"
+    ): frozenset({"GET"}),
     "/api/v1/novel-creation/agent-turn": frozenset({"POST"}),
     "/api/v1/novel-creation/sessions/{session_id}/runs": frozenset({"POST"}),
     "/api/v1/novel-creation/runs/{run_id}": frozenset({"GET"}),
@@ -126,6 +138,7 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     "/api/v1/projects/{project_id}/project-package/export": frozenset({"POST"}),
     "/api/v1/projects/{project_id}/chapters": frozenset({"GET", "POST"}),
     "/api/v1/projects/{project_id}/chapter-drafts/pending": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/chapter-drafts/{draft_id}": frozenset({"DELETE"}),
     "/api/v1/projects/{project_id}/chapters/{chapter_id}": frozenset(
         {"GET", "PUT", "DELETE"}
     ),
@@ -146,12 +159,25 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
         {"POST"}
     ),
     "/api/v1/projects/{project_id}/outline": frozenset({"GET", "POST"}),
+    "/api/v1/projects/{project_id}/outline-drafts/pending": frozenset({"GET"}),
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}": frozenset(
+        {"PUT", "DELETE"}
+    ),
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/confirm": frozenset(
+        {"POST"}
+    ),
+    "/api/v1/projects/{project_id}/outline-drafts/{draft_id}/regenerate": frozenset(
+        {"POST"}
+    ),
     "/api/v1/projects/{project_id}/outline/reorder": frozenset({"PUT"}),
     "/api/v1/projects/{project_id}/outline/{node_id}": frozenset({"PUT", "DELETE"}),
     "/api/v1/projects/{project_id}/characters": frozenset({"GET", "POST"}),
     "/api/v1/projects/{project_id}/characters/relationships": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/characters/{character_id}": frozenset(
         {"GET", "PUT", "DELETE"}
+    ),
+    "/api/v1/projects/{project_id}/characters/{character_id}/appearances/{chapter_id}": frozenset(
+        {"PUT", "DELETE"}
     ),
     "/api/v1/projects/{project_id}/characters/{character_id}/relationships": frozenset(
         {"PUT"}
@@ -176,8 +202,47 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
         {"POST", "HEAD"}
     ),
     "/api/v1/projects/{project_id}/ai/assistant/conversations": frozenset({"GET"}),
+    # This literal action must precede the generic conversation-detail path.
+    (
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
+        "transcript-import"
+    ): frozenset(
+        {"POST"}
+    ),
     "/api/v1/projects/{project_id}/ai/assistant/conversations/{conversation_id}": frozenset(
         {"GET"}
+    ),
+    (
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
+        "{conversation_id}/context-state"
+    ): frozenset(
+        {"GET"}
+    ),
+    (
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
+        "{conversation_id}/checkpoints"
+    ): frozenset(
+        {"GET"}
+    ),
+    # Literal actions must precede the generic checkpoint-detail template:
+    # remote authorization intentionally accepts the first path match.
+    (
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
+        "{conversation_id}/checkpoints/rebuild"
+    ): frozenset(
+        {"POST"}
+    ),
+    (
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
+        "{conversation_id}/checkpoints/{checkpoint_id}/cancel"
+    ): frozenset(
+        {"POST"}
+    ),
+    (
+        "/api/v1/projects/{project_id}/ai/assistant/conversations/"
+        "{conversation_id}/checkpoints/{checkpoint_id}"
+    ): frozenset(
+        {"GET", "DELETE"}
     ),
     "/api/v1/projects/{project_id}/ai/assistant/runs": frozenset({"GET"}),
     "/api/v1/projects/{project_id}/ai/assistant/runs/{run_id}": frozenset({"GET"}),
@@ -431,6 +496,13 @@ class _StreamingBodyLimitExceeded(Exception):
 class GatewayRequestLimitMiddleware:
     """Bound sensitive Gateway requests before JSON parsing or authentication."""
 
+    # Transcript import is a bulk, attacker-controlled JSON endpoint even in
+    # desktop mode.  Keep its memory/rate boundary active on loopback too;
+    # ``enabled`` only controls the broader set of Gateway-only limits.
+    ALWAYS_LIMITED_SUFFIXES = (
+        "/ai/assistant/conversations/transcript-import",
+    )
+
     BODY_LIMITS = {
         "/api/v1/pairing/start": 16 * 1024,
         "/api/v1/pairing/complete": 64 * 1024,
@@ -472,6 +544,8 @@ class GatewayRequestLimitMiddleware:
             return exact
         if GatewayAuthenticationMiddleware.REMOTE_PROJECT_ASSISTANT.fullmatch(path):
             return (12, 60.0)
+        if path.endswith("/ai/assistant/conversations/transcript-import"):
+            return (30, 60.0)
         if path.startswith("/api/v1/novel-creation/") and (
             path.endswith("/agent-turn") or path.endswith("/runs")
         ):
@@ -484,6 +558,10 @@ class GatewayRequestLimitMiddleware:
         self._events: dict[tuple[str, str], deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
+    @classmethod
+    def _limit_is_enabled(cls, path: str, *, gateway_enabled: bool) -> bool:
+        return gateway_enabled or path.endswith(cls.ALWAYS_LIMITED_SUFFIXES)
+
     def _rate_limited(self, scope: Scope, path: str) -> tuple[bool, int]:
         limit = self._rate_limit(path)
         if limit is None:
@@ -491,9 +569,18 @@ class GatewayRequestLimitMiddleware:
         maximum, window = limit
         client = scope.get("client")
         host = str(client[0]).split("%", 1)[0] if client else "unknown"
+        # Dynamic project IDs must not create independent buckets for the
+        # bulk transcript-import endpoint.  Authentication runs in a separate
+        # middleware layer, so the stable pre-auth boundary available here is
+        # client host + route kind, not the attacker-controlled path value.
+        bucket = (
+            self.ALWAYS_LIMITED_SUFFIXES[0]
+            if path.endswith(self.ALWAYS_LIMITED_SUFFIXES[0])
+            else path
+        )
         now = time.monotonic()
         with self._lock:
-            events = self._events[(host, path)]
+            events = self._events[(host, bucket)]
             while events and now - events[0] >= window:
                 events.popleft()
             if len(events) >= maximum:
@@ -505,7 +592,11 @@ class GatewayRequestLimitMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         path = str(scope.get("path") or "")
         maximum = self._body_limit(path)
-        if not self.enabled or scope["type"] != "http" or maximum is None:
+        if (
+            scope["type"] != "http"
+            or maximum is None
+            or not self._limit_is_enabled(path, gateway_enabled=self.enabled)
+        ):
             await self.app(scope, receive, send)
             return
 

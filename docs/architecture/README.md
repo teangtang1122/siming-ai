@@ -64,6 +64,8 @@ SQLite 是唯一业务写入权威。Markdown/JSON 只作为可阅读镜像，�
 5. 长任务写入统一 Operation/AgentRun 状态。SSE 连接只是订阅者；浏览器断线不会等价于取消，只有显式取消操作才终止后台任务。
 6. 新章节生成成功后只保存为独立的未保存草稿并立即结束模型回合。作者确认后才能写入正式章节，并自行决定是否启动建档。
 
+Agent 会话的完整 transcript 与运行步骤始终保留。每次模型调用由统一 ContextFrame 动态选择最近原文；较早的闭合回合可形成可重建 checkpoint。checkpoint 只用于历史导航，项目事实仍通过当前业务工具重读，未消费的原生工具调用和结果必须成对保留。具体边界见 [ADR 007](adr-007-agent-conversation-context.md)。
+
 自然语言意图、目标实体和工具选择由模型结合真实数据完成。应用层只负责权限、项目归属、实体类型、结构校验、事务、幂等、并发和确定性的状态转换，不使用关键词或正则另建意图路由。
 
 ## 前端边界
@@ -107,6 +109,7 @@ npm run build
 - [ADR 004：运行时边界](adr-004-runtime-boundaries.md)
 - [ADR 005：Prompt 与 Tool 契约](adr-005-prompt-and-tool-contracts.md)
 - [ADR 006：前端状态与契约](adr-006-frontend-state-and-contracts.md)
+- [ADR 007：Agent 会话上下文与原生工具边界](adr-007-agent-conversation-context.md)
 - [数据库恢复](../operations/database-recovery.md)
 - [Android/PC 能力一致性](../mobile-pc-parity.md)
 - [Gateway 威胁模型](../security/gateway-threat-model.md)

@@ -175,10 +175,14 @@ async def import_project_package(
             GatewayService(db).enable_project(outcome.result["project_id"])
         command.finish()
         committed = True
-        return ApiResponse.success(
-            data=outcome.result,
-            message=f"项目包导入成功：已创建作品「{outcome.result['project_title']}」",
-        )
+        if outcome.replayed:
+            message = (
+                "项目包导入成功：已复用此前导入的作品"
+                f"「{outcome.result['project_title']}」"
+            )
+        else:
+            message = f"项目包导入成功：已创建作品「{outcome.result['project_title']}」"
+        return ApiResponse.success(data=outcome.result, message=message)
     except Exception:
         if not committed:
             command.rollback()

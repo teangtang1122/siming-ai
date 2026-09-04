@@ -89,3 +89,5 @@ video/**/captures/
 video/**/snapshots/
 video/**/qa/
 video/**/renders/
+
+.test/

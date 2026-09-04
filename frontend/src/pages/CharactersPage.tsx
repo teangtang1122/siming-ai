@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, Collapse, Descriptions, Divider, Empty, Form, Input, InputNumber, List, Modal,
@@ -423,7 +424,11 @@ function CharactersPage({ projectId }: CharactersPageProps) {
       void fetchCharacters(keywordRef.current)
       void fetchNetwork()
     } catch (err: any) {
-      if (ownsSnapshot()) markSaveFailed(err.message || '保存角色失败')
+      if (ownsTarget()) {
+        const detail = err.message || '保存角色失败'
+        markSaveFailed(detail)
+        message.error(detail)
+      }
     } finally {
       if (saveRequestGate.current.isCurrent(request)) setSaving(false)
     }
@@ -485,7 +490,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const addRelationship = async (values: { target_character_id: string; relationship_type: string; description?: string }) => {
     if (!selectedId) return
     const existing = selectedRelationships.filter((edge) => edge.from !== values.target_character_id && edge.to !== values.target_character_id)
-      .map((edge) => ({ target_character_id: edge.from === selectedId ? edge.to : edge.from, relationship_type: edge.relationship_type, description: edge.description }))
+      .map((edge) => ({ source_character_id: edge.from, target_character_id: edge.to, relationship_type: edge.relationship_type, description: edge.description }))
     try {
       const res = await apiClient.put<ApiResponse<RelationshipNetwork>>(`/projects/${projectId}/characters/${selectedId}/relationships`, {
         relationships: [...existing, { target_character_id: values.target_character_id, relationship_type: values.relationship_type, description: values.description }],
@@ -497,7 +502,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
   const removeRelationship = async (edgeId: string) => {
     if (!selectedId) return
     const remaining = selectedRelationships.filter((edge) => edge.id !== edgeId)
-      .map((edge) => ({ target_character_id: edge.from === selectedId ? edge.to : edge.from, relationship_type: edge.relationship_type, description: edge.description }))
+      .map((edge) => ({ source_character_id: edge.from, target_character_id: edge.to, relationship_type: edge.relationship_type, description: edge.description }))
     try {
       const res = await apiClient.put<ApiResponse<RelationshipNetwork>>(`/projects/${projectId}/characters/${selectedId}/relationships`, { relationships: remaining })
       setNetwork(res.data.data); message.success('关系已移除')
@@ -656,9 +661,11 @@ function CharactersPage({ projectId }: CharactersPageProps) {
           <div className="characters-editor-head">
             <div>
               <Title level={4} style={{ margin: 0 }}>{selectedDetail ? selectedDetail.name : '新角色'}</Title>
-              {selectedDetail && (
+              {(editorTarget.mode === 'create' || selectedDetail || saveStatus === 'error') && (
                 <Space size={8} wrap>
-                  <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>
+                  {selectedDetail && (
+                    <Text type="secondary">当前版本 v{selectedDetail.current_version}</Text>
+                  )}
                   <SaveStatusIndicator status={saveStatus} error={saveError} />
                 </Space>
               )}
@@ -860,7 +867,7 @@ function CharactersPage({ projectId }: CharactersPageProps) {
             <Title level={5}><HistoryOutlined /> 版本历史</Title>
             {versions.length === 0 ? <Text type="secondary">暂无版本快照，保存一次修改后会自动生成。</Text> : (
               <Timeline items={versions.map((version) => ({
-                children: <Button type="link" onClick={() => openVersion(version)}>v{version.version_number} · {version.change_summary || '角色更新'} · {new Date(version.created_at).toLocaleString('zh-CN')}</Button>,
+                children: <Button type="link" onClick={() => openVersion(version)}>v{version.version_number} · {version.change_summary || '角色更新'} · {(formatApiDateTime(version.created_at) || '时间未记录')}</Button>,
               }))} />
             )}
           </div>

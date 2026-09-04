@@ -54,9 +54,9 @@ def list_prompts() -> list[McpPrompt]:
         ),
         McpPrompt(
             name="moshu_writing_context",
-            description="Generate a compact writing context prompt for a chapter. "
-                        "Contains outline, recent summaries, character states, "
-                        "worldbuilding constraints, and risk warnings.",
+            description="Generate a governed chapter-writing baseline. It contains only "
+                        "the target, style, author request, and explicit pins; the Agent "
+                        "must retrieve and finalize any additional story evidence.",
             args=[
                 McpPromptArg(name="project_id", description="Project ID", required=True),
                 McpPromptArg(name="chapter_number", description="Chapter number (optional)"),
@@ -118,7 +118,10 @@ def render_quickstart(
         "get_prompt_pack(pack_id='cataloging_external_no_api') -> start_external_cataloging_job -> 逐章执行 facts / candidates / apply / verify -> get_project_archive_status。",
         "",
         "## 默认外部写作流程",
-        "prepare_external_writing_context -> 外部 Agent 一次生成正文 -> save_external_chapter_draft -> 立即停止。不得继续写入正式章节、角色/世界观或调用建档工具；作者会在界面选择“保存并建档”或“仅保存”。去除 AI 味和质量评分读取编辑器当前草稿，由用户另行发起。",
+        "prepare_external_writing_context -> 模型按需 search_task_context -> 模型复核候选并 submit_context_evidence -> 下一模型步骤使用精确 task_context 生成正文 -> 携带 context_selection_token 调用 save_external_chapter_draft -> 立即停止。不得继续写入正式章节、角色/世界观或调用建档工具；作者会在界面选择“保存并建档”或“仅保存”。去除 AI 味和质量评分读取编辑器当前草稿，由用户另行发起。",
+        "",
+        "## 默认外部大纲提案流程",
+        "prepare_task_context(task_type='outline_planning') -> 模型按需 search_task_context -> submit_context_evidence -> 下一模型步骤使用精确 task_context 生成节点 -> save_external_outline_draft -> 立即停止。不得创建正式大纲或继续写正文；作者在界面编辑、确认、重新生成或放弃提案。",
         "",
         "# Siming / 司命外部 Agent 快速入门",
         "",
@@ -145,19 +148,28 @@ def render_quickstart(
         "5. apply_pending_cataloging -> verify_external_cataloging_progress；逐章重复，最后 get_project_archive_status",
         "",
         "## 无 API 写章节",
-        "1. prepare_external_writing_context()",
-        "2. 外部 Agent 一次生成基础正文；不自动执行去除 AI 味或质量评审",
-        "3. 调用 save_external_chapter_draft 保存未入库草稿，然后立即停止；正式保存和启动建档只能由作者在界面操作",
+        "1. prepare_external_writing_context() 只建立目标大纲、文风与作者要求组成的精简基线",
+        "2. 模型自行提出聚焦查询并调用 search_task_context；候选短摘要不会自动进入正文上下文",
+        "3. 模型复核候选后调用 submit_context_evidence；确实不需额外资料时显式提交空数组",
+        "4. 看到返回的精确 task_context 与 context_selection_token 后，在下一模型步骤一次生成基础正文；不自动执行去除 AI 味或质量评审",
+        "5. 携带同一 manifest ID 和选择令牌调用 save_external_chapter_draft，然后立即停止；正式保存和启动建档只能由作者在界面操作",
+        "",
+        "## 无 API 规划大纲",
+        "1. 查询真实父节点与插入位置，再调用 prepare_task_context(task_type='outline_planning')",
+        "2. 模型自行检索并复核资料，调用 submit_context_evidence",
+        "3. 下一模型步骤只使用 task_context 生成可编辑节点并调用 save_external_outline_draft",
+        "4. 保存提案后立即停止；不得创建正式大纲或继续写正文",
     ]
     from app.prompts.cataloging_source import get_language_rules, get_project_binding_rules
 
     parts.extend([
         "",
         "## Context Governance (Required for Agent Tasks)",
-        "- Before writing, review, rewriting, or cataloging a concrete chapter, call prepare_task_context to obtain the baseline manifest.",
+        "- Before chapter writing or outline planning, call prepare_task_context to obtain the task-specific baseline manifest.",
         "- Use search_task_context for focused follow-up retrieval. Reading a project mirror directly remains allowed but is not auditable evidence.",
-        "- Before saving a generated draft, call submit_context_evidence for every required manifest item using its source hash.",
-        "- Pass context_manifest_id through prepare_external_writing_context and save_external_chapter_draft.",
+        "- Review only the compact search candidates, then call submit_context_evidence with the sources actually needed. An explicit empty list is valid when the hard anchors are sufficient.",
+        "- Generate only after observing the exact task_context and context_selection_token returned by submit_context_evidence in a prior model step.",
+        "- Pass both context_manifest_id and context_selection_token to the matching chapter or outline draft tool, then stop.",
         "",
         get_project_binding_rules(),
         "",
@@ -216,12 +228,21 @@ def _render_governed_task_prompt(
         return [McpPromptMessage(role="user", content="Error: a persisted context manifest could not be prepared.")]
     payload = orchestrator.manifest_payload(manifest, include_content=True)
     state = payload["status"]
+    is_outline_planning = task_type == "outline_planning"
+    final_tool = "save_external_outline_draft" if is_outline_planning else "save_external_chapter_draft"
+    task_label = "task-specific" if is_outline_planning else "chapter-specific"
+    final_boundary = (
+        "the author owns formal outline confirmation and any later writing"
+        if is_outline_planning
+        else "the author owns formal saving and cataloging"
+    )
     workflow = (
         "1. Call prepare_task_context with this manifest_id or your run_id.\n"
-        "2. Use search_task_context only for a focused gap.\n"
-        "3. Before save_external_chapter_draft, call submit_context_evidence for every required source.\n"
-        "4. After save_external_chapter_draft succeeds, stop immediately; the author owns formal saving and cataloging.\n"
-        "5. Direct project-mirror reads may inform exploration, but are not verified evidence."
+        f"2. Choose focused queries and call search_task_context until the {task_label} gaps are covered.\n"
+        "3. Review the compact candidates, then call submit_context_evidence with only the needed source IDs; an empty list is valid only when the hard anchors are sufficient.\n"
+        "4. Use the exact task_context and context_selection_token returned by that tool. The token must be observed before generation and cannot be guessed in the same model step.\n"
+        f"5. Pass the token to {final_tool}. After it succeeds, stop immediately; {final_boundary}.\n"
+        "6. Direct project-mirror reads may inform exploration, but are not verified generation evidence."
     )
     parts = [
         f"# Siming Governed Context: {title}",
@@ -233,7 +254,7 @@ def _render_governed_task_prompt(
     ]
     if state != "ready":
         parts.append("\n## Author Confirmation Required\n" + "\n".join(payload.get("warnings") or ["Required context is unavailable."]))
-    parts.append("\n## Governed Task Context\n" + (payload.get("rendered_context") or "No context could be rendered."))
+    parts.append("\n## Compact Task Anchors\n" + (payload.get("rendered_context") or "No context could be rendered."))
     return [McpPromptMessage(role="user", content="\n".join(parts))]
 
 

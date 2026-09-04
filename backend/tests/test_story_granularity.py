@@ -185,6 +185,62 @@ class StoryGranularityContractTest(unittest.TestCase):
         self.assertEqual(coverage.storyline_progress_count, 1)
         self.assertEqual(coverage.unresolved_action_count, 2)
 
+    def test_scene_cards_require_unique_numbers_within_declared_range(self):
+        base = [
+            {
+                "type": "chapter_summary",
+                "summary_text": "三个场景依次完成校准。",
+                "coverage_manifest": {
+                    "scene_count": 3,
+                    "characters": [],
+                    "worldbuilding": [],
+                    "relationships": [],
+                    "character_profiles": [],
+                },
+                "narrative_state": {"events": []},
+            },
+            {
+                "type": "outline_create",
+                "node_type": "chapter",
+                "title": "第三十八章",
+                "summary": "完成校准。",
+            },
+        ]
+        missing_numbers = inspect_candidate_coverage_items(base + [
+            {
+                "type": "outline_create",
+                "node_type": "section",
+                "title": f"第三十八章 / 场景{number}",
+                "summary": "核对。",
+                "purpose": "校准",
+            }
+            for number in range(1, 4)
+        ])
+        repeated_and_out_of_range = inspect_candidate_coverage_items(base + [
+            {
+                "type": "outline_create",
+                "node_type": "section",
+                "title": f"第三十八章 / 场景{index}",
+                "summary": "核对。",
+                "scene_number": scene_number,
+                "purpose": "校准",
+            }
+            for index, scene_number in enumerate((1, 1, 4), start=1)
+        ])
+
+        self.assertFalse(missing_numbers.is_complete)
+        self.assertEqual(missing_numbers.section_count, 0)
+        self.assertIn(
+            "section outline candidates require unique scene_number within 1..3: missing_or_invalid=3",
+            missing_numbers.persistence_missing,
+        )
+        self.assertFalse(repeated_and_out_of_range.is_complete)
+        self.assertEqual(repeated_and_out_of_range.section_count, 1)
+        self.assertIn(
+            "section outline candidates require unique scene_number within 1..3: duplicate=1, out_of_range=4",
+            repeated_and_out_of_range.persistence_missing,
+        )
+
     def test_duplicate_character_cards_cannot_satisfy_two_declared_identities(self):
         coverage = inspect_candidate_coverage_items([
             {

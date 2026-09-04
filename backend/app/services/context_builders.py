@@ -25,6 +25,7 @@ from ..database.models import (
     OutlineNodeCharacter,
     WorldbuildingEntry,
 )
+from ..database.query_filters import current_worldbuilding_clause
 from .character_archive import character_archive_payload
 
 DIMENSION_LABELS = {
@@ -154,7 +155,8 @@ def _build_world_context(
         try:
             from .rag.retriever import search_chunks
             entry_count = db.query(WorldbuildingEntry).filter(
-                WorldbuildingEntry.project_id == project_id
+                WorldbuildingEntry.project_id == project_id,
+                current_worldbuilding_clause(WorldbuildingEntry.status),
             ).count()
             if entry_count > 50:
                 results = search_chunks(
@@ -175,7 +177,10 @@ def _build_world_context(
 
     all_entries = (
         db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        )
         .order_by(WorldbuildingEntry.dimension.asc(), WorldbuildingEntry.sort_order.asc())
         .all()
     )

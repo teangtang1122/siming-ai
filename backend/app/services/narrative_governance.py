@@ -943,7 +943,7 @@ def governance_dashboard(db: Session, project_id: str, *, chapter_id: str = "", 
     }
 
 
-def governance_context(db: Session, project_id: str, *, chapter_id: str | None = None, limit: int = 12) -> str:
+def governance_context(db: Session, project_id: str, *, chapter_id: str | None = None, limit: int | None = 12) -> str:
     dashboard = governance_dashboard(db, project_id, chapter_id=chapter_id or "", view="all")
     items: list[tuple[int, str]] = []
     for row in dashboard["narrative_debts"]:
@@ -963,7 +963,7 @@ def governance_context(db: Session, project_id: str, *, chapter_id: str | None =
         if details:
             items.append((4, f"[角色动态/{row['character_id']}] {details}"))
     items.sort(key=lambda item: item[0], reverse=True)
-    return "叙事治理锁：\n" + "\n".join(text for _, text in items[:limit]) if items else ""
+    return "叙事治理锁：\n" + "\n".join(text for _, text in (items if limit is None else items[:limit])) if items else ""
 
 
 def _snapshot_state(db: Session, project_id: str) -> dict[str, Any]:

@@ -1,10 +1,29 @@
 package com.siming.mobile.data.creation
 
 import android.content.Context
+import com.siming.mobile.data.agent.MobileAssistantConversationStore
+import com.siming.mobile.data.agent.MobileAssistantTurnContext
+import com.siming.mobile.data.agent.MobileConversationContextErrorCode
+import com.siming.mobile.data.agent.MobileConversationContextException
+import com.siming.mobile.data.agent.MobileConversationSnapshot
+import com.siming.mobile.data.agent.MobileDirectConversationContextRuntime
+import com.siming.mobile.data.agent.MobileNativeToolBudgetContract
+import com.siming.mobile.data.agent.MobileToolCallRecord
+import com.siming.mobile.data.agent.MobileToolExecutionReceipt
+import com.siming.mobile.data.agent.MobileToolProtocolValidator
+import com.siming.mobile.data.agent.MobileToolResultRecord
+import com.siming.mobile.data.agent.MobileToolTransaction
+import com.siming.mobile.data.agent.MobileToolTransactionState
+import com.siming.mobile.data.agent.mobileCanonicalJson
+import com.siming.mobile.data.agent.mobileConversationContextStatePayload
+import com.siming.mobile.data.agent.persistRejectedMobileNativeToolBatch
+import com.siming.mobile.data.agent.providerMessages
+import com.siming.mobile.data.network.DirectAgentTurn
 import com.siming.mobile.data.network.DirectAgentToolCall
 import com.siming.mobile.data.network.DirectApiClient
 import com.siming.mobile.data.network.DirectApiConfig
 import java.time.Instant
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -39,6 +58,7 @@ internal class MobileCreationConversationAgent(
     private val contract: PcCreationAgentContract,
     private val stageAgent: MobileCreationAgent,
     private val directApi: DirectApiClient,
+    private val conversationStore: MobileAssistantConversationStore,
     private val persistSession: suspend (JsonObject) -> Unit,
     private val finalizeSession: suspend (JsonObject) -> Pair<JsonObject, String>,
 ) {
@@ -46,20 +66,29 @@ internal class MobileCreationConversationAgent(
         context: Context,
         stageAgent: MobileCreationAgent,
         directApi: DirectApiClient,
+        conversationStore: MobileAssistantConversationStore,
         persistSession: suspend (JsonObject) -> Unit,
         finalizeSession: suspend (JsonObject) -> Pair<JsonObject, String>,
     ) : this(
         PcCreationAgentContract(context.applicationContext),
         stageAgent,
         directApi,
+        conversationStore,
         persistSession,
         finalizeSession,
+    )
+
+    private val conversationContextRuntime = MobileDirectConversationContextRuntime(
+        directApi = directApi,
+        conversationStore = conversationStore,
     )
 
     suspend fun run(
         source: JsonObject,
         message: String,
-        turns: List<JsonObject>,
+        storageId: String,
+        conversation: MobileConversationSnapshot,
+        turnContext: MobileAssistantTurnContext,
         config: DirectApiConfig,
         onProgress: suspend (CreationAgentProgressEvent) -> Unit = {},
     ): MobileCreationConversationResult {
@@ -69,11 +98,11 @@ internal class MobileCreationConversationAgent(
         val toolResults = mutableListOf<JsonElement>()
         val turnProtocolMessages = mutableListOf<JsonElement>()
         val promptMetrics = mutableListOf<JsonElement>()
-        val messages = mutableListOf<JsonObject>()
-        messages += chatMessage("system", contract.systemPrompt(source.string("id")))
-        messages += CreationAgentTurnRecords.replayMessages(turns)
         val userMessage = chatMessage("user", message)
-        messages += userMessage
+        var currentConversation = conversation
+        val initialRuntime = conversation.toolRuntimeState(turnContext.turnId)
+        val deliveredTransactions = initialRuntime?.deliveredTransactions.orEmpty().toMutableList()
+        val executionLedger = initialRuntime?.executionLedger.orEmpty().toMutableList()
 
         var finalReply = ""
         var iteration = 0
@@ -92,7 +121,7 @@ internal class MobileCreationConversationAgent(
                 data = buildJsonObject { put("delta", delta) },
             ))
         }
-        while (iteration < contract.maxIterations && finalReply.isBlank()) {
+        while (finalReply.isBlank()) {
             onProgress(CreationAgentProgressEvent(
                 type = "model_step_started",
                 message = if (iteration == 0) "正在判断需要哪些立项能力…" else "正在根据真实工具结果继续处理…",
@@ -105,28 +134,83 @@ internal class MobileCreationConversationAgent(
             } else {
                 contract.toolSchemas(activeCategories)
             }
+            val requestToolChoice = when {
+                !categorySelected -> "required"
+                writesClosed -> null
+                else -> "auto"
+            }
+            val prepared = conversationContextRuntime.prepare(
+                storageId = storageId,
+                currentUserPrompt = message,
+                config = config,
+                conversation = currentConversation,
+                turnContext = turnContext,
+                systemPrompt = contract.systemPrompt(source.string("id")),
+                scopedTools = scopedTools,
+                taskType = DirectApiConfig.TASK_PLANNING,
+                maxOutputTokens = CREATION_OUTPUT_TOKENS,
+                toolChoice = requestToolChoice,
+                temperature = 0.25,
+                currentTurnLedger = executionLedger,
+                pendingTransactions = deliveredTransactions,
+                onStatus = { status ->
+                    onProgress(
+                        CreationAgentProgressEvent(
+                            type = "conversation_context",
+                            message = status.detail,
+                            status = status.status,
+                            data = mobileConversationContextStatePayload(
+                                status = status.status,
+                                detail = status.detail,
+                                conversation = status.conversation,
+                                budget = status.budget,
+                                checkpointId = status.checkpointId,
+                                recentExactTurnCount = status.recentExactTurnCount,
+                                provider = "android_direct_api",
+                                model = config.model,
+                            ),
+                        ),
+                    )
+                },
+            )
+            currentConversation = prepared.conversation
+            MobileToolProtocolValidator.validate(
+                messages = prepared.rendered.messages,
+                supportsNativeToolCalling = true,
+                toolsOffered = scopedTools.isNotEmpty(),
+                currentUserMessageId = prepared.rendered.currentUserMessageId,
+                checkpointMessageId = prepared.rendered.checkpointMessageId,
+            )
             val turn = directApi.streamAgentTurn(
                 config = config,
-                messages = messages,
+                messages = providerMessages(prepared.rendered.messages),
                 tools = scopedTools,
-                toolChoice = when {
-                    !categorySelected -> "required"
-                    writesClosed -> null
-                    else -> "auto"
-                },
+                toolChoice = requestToolChoice,
                 maxOutputTokens = 6_000,
                 temperature = 0.25,
                 onContentDelta = ::emitReplyDelta,
             )
+            if (deliveredTransactions.isNotEmpty()) {
+                val consumed = conversationStore.markDeliveredToolTransactionsConsumed(
+                    projectId = storageId,
+                    turnContext = turnContext,
+                )
+                deliveredTransactions.clear()
+                deliveredTransactions += consumed.deliveredTransactions
+                executionLedger.clear()
+                executionLedger += consumed.executionLedger
+                currentConversation = conversationStore.snapshot(storageId, turnContext.conversationId)
+                    ?: error("立项工具事务消费状态保存后会话丢失")
+            }
             promptMetrics += promptMetric(
                 iteration = iteration + 1,
                 phase = "standalone",
                 activeCategories = activeCategories,
-                messages = messages,
+                messages = prepared.rendered.messages,
                 tools = scopedTools,
                 promptTokens = turn.promptTokens,
             )
-            val calls = turn.toolCalls.take(12)
+            val calls = turn.toolCalls
             if (calls.isEmpty()) {
                 check(categorySelected) {
                     "模型没有调用本步骤唯一开放的 set_tool_categories，本轮未接受文字回复"
@@ -135,10 +219,84 @@ internal class MobileCreationConversationAgent(
                 break
             }
 
-            val categoryCall = calls.firstOrNull { it.name == contract.categoryController }
+            val offeredToolNames = scopedTools.mapTo(linkedSetOf()) { rawSchema ->
+                val function = (rawSchema as? JsonObject)?.get("function") as? JsonObject
+                    ?: throw MobileConversationContextException(
+                        MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                        "立项工具 Schema 缺少 function 对象",
+                    )
+                function.string("name").ifBlank {
+                    throw MobileConversationContextException(
+                        MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                        "立项工具 Schema 缺少 function.name",
+                    )
+                }
+            }
+            val ids = calls.map(DirectAgentToolCall::id)
+            if (ids.any(String::isBlank) || ids.distinct().size != ids.size) {
+                throw MobileConversationContextException(
+                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                    "立项原生工具调用 ID 为空或重复，整批未执行",
+                )
+            }
+            val undeclared = calls.map(DirectAgentToolCall::name).filterNot(offeredToolNames::contains)
+            if (undeclared.isNotEmpty()) {
+                throw MobileConversationContextException(
+                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                    "模型调用了本步骤未声明的立项工具，整批未执行：${undeclared.joinToString()}",
+                )
+            }
+            val categoryCalls = calls.filter { it.name == contract.categoryController }
+            if (categoryCalls.isNotEmpty() && calls.size != 1) {
+                throw MobileConversationContextException(
+                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                    "set_tool_categories 必须是模型步骤中唯一的原生调用，整批未执行",
+                )
+            }
+            if (categoryCalls.isEmpty() && !categorySelected) {
+                throw MobileConversationContextException(
+                    MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                    "模型没有调用本步骤唯一开放的 set_tool_categories，整批未执行",
+                )
+            }
+            val batchAdmission = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+                assistantPayload = turn.assistantMessage,
+                orderedToolNames = calls.map(DirectAgentToolCall::name),
+                resultJsonBytes = ::creationDeclaredResultBytes,
+            )
+            if (!batchAdmission.accepted) {
+                val rejectedResults = calls.map { call ->
+                    creationRejectedBatchResult(call.name, batchAdmission.reason.orEmpty())
+                }
+                persistRejectedMobileNativeToolBatch(
+                    conversationStore = conversationStore,
+                    projectId = storageId,
+                    turnContext = turnContext,
+                    transaction = deliveredTransaction(turn, calls, rejectedResults),
+                    admission = batchAdmission,
+                    overCapacityDetail = "立项原生 assistant 工具事务超过容量协议；整批业务处理器未执行",
+                ) { runtime ->
+                    deliveredTransactions.clear()
+                    deliveredTransactions += runtime.deliveredTransactions
+                    toolResults += rejectedResults
+                    rejectedResults.forEach { result ->
+                        onProgress(
+                            CreationAgentProgressEvent(
+                                type = "tool_completed",
+                                message = result.string("detail"),
+                                status = "denied",
+                                data = result["data"] as? JsonObject ?: JsonObject(emptyMap()),
+                            ),
+                        )
+                    }
+                }
+                iteration += 1
+                continue
+            }
+
+            val categoryCall = categoryCalls.firstOrNull()
             if (categoryCall != null) {
                 val assistantToolMessage = assistantToolMessage(turn.content, listOf(categoryCall))
-                messages += assistantToolMessage
                 turnProtocolMessages += assistantToolMessage
                 val selected = runCatching {
                     contract.normalizeCategories(
@@ -155,10 +313,20 @@ internal class MobileCreationConversationAgent(
                 val toolMessage = buildJsonObject {
                     put("role", "tool")
                     put("tool_call_id", categoryCall.id)
-                    put("content", categoryResult.toString().take(120_000))
+                    put("content", mobileCanonicalJson(categoryResult))
                 }
-                messages += toolMessage
                 turnProtocolMessages += toolMessage
+                val runtime = conversationStore.recordDeliveredToolTransaction(
+                    projectId = storageId,
+                    turnContext = turnContext,
+                    transaction = deliveredTransaction(
+                        turn = turn,
+                        calls = listOf(categoryCall),
+                        results = listOf(categoryResult),
+                    ),
+                )
+                deliveredTransactions.clear()
+                deliveredTransactions += runtime.deliveredTransactions
                 selected.getOrNull()?.let { categories ->
                     activeCategories = categories
                     categorySelected = true
@@ -174,10 +342,10 @@ internal class MobileCreationConversationAgent(
             }
 
             val assistantToolMessage = assistantToolMessage(turn.content, calls)
-            messages += assistantToolMessage
             turnProtocolMessages += assistantToolMessage
 
             val availableTools = contract.availableToolNames(activeCategories)
+            val modelVisibleResults = mutableListOf<JsonObject>()
             for (call in calls) {
                 var attemptedWrite = false
                 val execution = try {
@@ -256,14 +424,22 @@ internal class MobileCreationConversationAgent(
                         },
                     ))
                 }
+                val modelVisibleResult = creationModelVisibleResult(call.name, execution.result)
                 val toolMessage = buildJsonObject {
                     put("role", "tool")
                     put("tool_call_id", call.id)
-                    put("content", execution.result.toString().take(120_000))
+                    put("content", mobileCanonicalJson(modelVisibleResult))
                 }
-                messages += toolMessage
                 turnProtocolMessages += toolMessage
+                modelVisibleResults += modelVisibleResult
             }
+            val runtime = conversationStore.recordDeliveredToolTransaction(
+                projectId = storageId,
+                turnContext = turnContext,
+                transaction = deliveredTransaction(turn, calls, modelVisibleResults),
+            )
+            deliveredTransactions.clear()
+            deliveredTransactions += runtime.deliveredTransactions
             iteration += 1
         }
 
@@ -272,35 +448,61 @@ internal class MobileCreationConversationAgent(
                 type = "model_step_started",
                 message = "正在根据真实写入结果整理回复…",
             ))
-            val summaryMessages = messages + chatMessage(
-                "user",
-                "请根据以上真实工具结果，用两到四句中文说明本轮实际写入/读取了什么，然后提出一个基于当前数据缺口的后续问题。不要声称失败的写入已保存。",
-            )
-            // This is a text-only summary, matching the PC DeepSeek adapter's
-            // plain-text path. Tool-capable turns above keep thinking enabled.
-            val summaryExtraBody = if (config.isDeepSeek()) buildJsonObject {
+            val summarySystem = contract.systemPrompt(source.string("id")) +
+                "\n\n[SERVER_RUNTIME_INSTRUCTION]\n" +
+                "工具已关闭。根据服务端验证的本轮回执，用两到四句中文说明实际完成的读取或写入；" +
+                "不要声称失败的写入已保存，并提出一个基于当前数据缺口的后续问题。\n" +
+                "[/SERVER_RUNTIME_INSTRUCTION]"
+            val summaryExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
                 put("thinking", buildJsonObject { put("type", "disabled") })
             } else null
-            val summaryTurn = runCatching {
-                directApi.streamAgentTurn(
-                    config = config,
-                    messages = summaryMessages,
-                    tools = JsonArray(emptyList()),
-                    maxOutputTokens = 1_200,
-                    temperature = 0.2,
-                    extraBody = summaryExtraBody,
-                    onContentDelta = ::emitReplyDelta,
-                )
-            }.getOrNull()
+            val prepared = conversationContextRuntime.prepare(
+                storageId = storageId,
+                currentUserPrompt = message,
+                config = config,
+                conversation = currentConversation,
+                turnContext = turnContext,
+                systemPrompt = summarySystem,
+                scopedTools = JsonArray(emptyList()),
+                taskType = DirectApiConfig.TASK_PLANNING,
+                maxOutputTokens = 1_200,
+                temperature = 0.2,
+                extraBody = summaryExtraBody,
+                currentTurnLedger = executionLedger,
+                pendingTransactions = deliveredTransactions,
+            )
+            MobileToolProtocolValidator.validate(
+                messages = prepared.rendered.messages,
+                supportsNativeToolCalling = true,
+                toolsOffered = false,
+                currentUserMessageId = prepared.rendered.currentUserMessageId,
+                checkpointMessageId = prepared.rendered.checkpointMessageId,
+            )
+            val summaryTurn = directApi.streamAgentTurn(
+                config = config,
+                messages = providerMessages(prepared.rendered.messages),
+                tools = JsonArray(emptyList()),
+                maxOutputTokens = 1_200,
+                temperature = 0.2,
+                extraBody = summaryExtraBody,
+                onContentDelta = ::emitReplyDelta,
+            )
+            require(summaryTurn.toolCalls.isEmpty()) { "工具关闭后的立项总结不得返回函数调用" }
+            if (deliveredTransactions.isNotEmpty()) {
+                val consumed = conversationStore.markDeliveredToolTransactionsConsumed(storageId, turnContext)
+                deliveredTransactions.clear()
+                executionLedger.clear()
+                executionLedger += consumed.executionLedger
+            }
             promptMetrics += promptMetric(
                 iteration = promptMetrics.size + 1,
                 phase = "summary",
                 activeCategories = activeCategories,
-                messages = summaryMessages,
+                messages = prepared.rendered.messages,
                 tools = JsonArray(emptyList()),
-                promptTokens = summaryTurn?.promptTokens,
+                promptTokens = summaryTurn.promptTokens,
             )
-            finalReply = summaryTurn?.content?.trim().orEmpty()
+            finalReply = summaryTurn.content.trim()
         }
         if (createdProjectId != null) {
             finalReply = "正式作品已创建并进入作品库。请点击下方按钮进入正式作品；进入后项目助手会自动展开，后续正文与项目资料都在那里继续。"
@@ -332,6 +534,99 @@ internal class MobileCreationConversationAgent(
             status = "completed",
             createdProjectId = createdProjectId,
             promptMetrics = JsonArray(promptMetrics),
+        )
+    }
+
+    private fun deliveredTransaction(
+        turn: DirectAgentTurn,
+        calls: List<DirectAgentToolCall>,
+        results: List<JsonObject>,
+    ): MobileToolTransaction {
+        require(calls.size == results.size) { "立项工具调用与结果必须原子配对" }
+        return MobileToolTransaction(
+            transactionId = "creation-tool-transaction-${UUID.randomUUID()}",
+            assistantMessageId = "creation-tool-assistant-${UUID.randomUUID()}",
+            assistantContent = turn.assistantMessage.string("content"),
+            assistantReasoningContent = turn.assistantMessage.string("reasoning_content"),
+            assistantProviderState = (turn.assistantMessage["provider_state"] as? JsonArray)
+                .orEmpty()
+                .mapNotNull { it as? JsonObject },
+            state = MobileToolTransactionState.PENDING,
+            calls = calls.map { call ->
+                val exactCall = (turn.assistantMessage["tool_calls"] as? JsonArray)
+                    .orEmpty()
+                    .mapNotNull { it as? JsonObject }
+                    .firstOrNull { it.string("id").ifBlank { it.string("call_id") } == call.id }
+                    ?: throw MobileConversationContextException(
+                        MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                        "立项原生 assistant payload 缺少工具调用 ${call.id}",
+                    )
+                val function = exactCall["function"] as? JsonObject
+                    ?: throw MobileConversationContextException(
+                        MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                        "立项原生 assistant payload 缺少 function 对象",
+                    )
+                MobileToolCallRecord(
+                    id = call.id,
+                    name = call.name,
+                    argumentsJson = function.string("arguments"),
+                )
+            },
+            results = emptyList(),
+        ).let { transaction ->
+            calls.zip(results).fold(transaction) { current, (call, result) ->
+                current.addResult(
+                    MobileToolResultRecord(
+                        toolCallId = call.id,
+                        content = mobileCanonicalJson(result),
+                    ),
+                )
+            }.markDelivered()
+        }
+    }
+
+    private fun creationDeclaredResultBytes(tool: String): Int = when {
+        tool == contract.categoryController || tool in contract.writeToolNames -> CREATION_STATUS_RESULT_BYTES
+        tool in CREATION_LARGE_READ_TOOLS -> CREATION_LARGE_READ_RESULT_BYTES
+        else -> CREATION_STANDARD_RESULT_BYTES
+    }
+
+    private fun creationRejectedBatchResult(tool: String, reason: String): JsonObject = result(
+        tool = tool,
+        status = "denied",
+        detail = when (reason) {
+            MobileNativeToolBudgetContract.NATIVE_ASSISTANT_TRANSACTION_OVER_CAPACITY ->
+                "立项原生 assistant 工具事务超过 16KiB；整批未执行。请缩小参数。"
+            else -> "立项工具批次超过 32KiB 声明结果上限；整批未执行。请减少并行调用。"
+        },
+        data = buildJsonObject { put("reason", reason) },
+    )
+
+    private fun creationModelVisibleResult(tool: String, raw: JsonObject): JsonObject {
+        val projected = if (tool == contract.categoryController || tool in contract.writeToolNames) {
+            buildJsonObject {
+                put("tool", raw.string("tool").ifBlank { tool })
+                put("status", raw.string("status"))
+                put("detail", raw.string("detail"))
+                val data = raw["data"] as? JsonObject
+                put("data", buildJsonObject {
+                    CREATION_RECEIPT_FIELDS.forEach { field -> data?.get(field)?.let { put(field, it) } }
+                })
+            }
+        } else {
+            raw
+        }
+        val maxBytes = creationDeclaredResultBytes(tool)
+        if (mobileCanonicalJson(projected).toByteArray(Charsets.UTF_8).size <= maxBytes) return projected
+        return result(
+            tool = tool,
+            status = "error",
+            detail = "立项工具结果超过声明的模型可见 JSON 上限；结果未进入下一模型步骤，请缩小读取范围。",
+            data = buildJsonObject {
+                put("error_code", MobileConversationContextErrorCode.TOOL_RESULT_OVER_CAPACITY)
+                put("retryable", true)
+                put("declared_max_json_bytes", maxBytes)
+            },
         )
     }
 
@@ -475,20 +770,6 @@ internal class MobileCreationConversationAgent(
                     )
                 }
             }
-            "get_creation_operation", "cancel_creation_operation", "pause_creation_operation",
-            "resume_creation_operation", "retry_creation_operation" -> ToolExecution(
-                source,
-                result(tool, "skipped", "手机独立模式的单轮立项工具同步完成，不存在独立后台 Operation"),
-            )
-            "undo_creation_artifact", "list_creation_artifact_versions", "get_creation_artifact_diff",
-            "restore_creation_artifact_version" -> ToolExecution(
-                source,
-                result(tool, "skipped", "手机独立草稿当前不提供跨版本工具；现有内容未修改"),
-            )
-            "preview_creation_import", "apply_creation_import" -> ToolExecution(
-                source,
-                result(tool, "skipped", "手机独立对话式立项暂不在 Agent 内执行文件导入"),
-            )
             else -> ToolExecution(source, result(tool, "skipped", "手机独立模式暂未实现该立项工具"))
         }
     }
@@ -593,27 +874,64 @@ internal class MobileCreationConversationAgent(
         val instruction = args.string("instruction")
         val entityId = args.string("entity_id")
         val entityType = args.string("entity_type")
+        if (entityId.isNotBlank() && entityType.isNotBlank()) {
+            return ToolExecution(source, result(tool, "error", "entity_id 和 entity_type 不能同时指定"))
+        }
+        val target = if (entityId.isNotBlank()) resolveEntity(source, entityId) else null
+        if (entityId.isNotBlank() && (target == null || target.artifact != artifact)) {
+            return ToolExecution(source, result(tool, "error", "目标实体不存在或不属于当前立项对象"))
+        }
+        val mapping = if (entityType.isNotBlank()) entityFieldMapping(artifact, entityType) else null
+        if (entityType.isNotBlank() && mapping == null) {
+            return ToolExecution(source, result(tool, "error", "目标实体类型不属于当前立项对象"))
+        }
+        val targetField = target?.field ?: mapping?.first
+        val entityTarget = targetField?.let { field ->
+            buildJsonObject {
+                put("field", field)
+                put("entity_type", target?.type ?: entityType)
+                put("mode", if (target == null) "new" else "existing")
+                target?.let {
+                    put("id", it.id)
+                    put("entity_key", entityKey(it.data))
+                }
+            }
+        }
+        val entityBaseline = targetField?.let { field ->
+            JsonObject(source.stageData(artifact).toMutableMap().apply {
+                ENTITY_FIELDS[artifact].orEmpty().forEach { (collection, _) ->
+                    put(collection, JsonArray(emptyList()))
+                }
+                put(field, JsonArray(listOfNotNull(target?.data)))
+            })
+        }
         val generated = try {
-            stageAgent.generateStage(source, artifact, instruction, config)
+            stageAgent.generateStage(source, artifact, instruction, config, entityTarget, entityBaseline)
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             return ToolExecution(source, result(tool, "error", error.message ?: "${stageLabel(artifact)}生成失败"))
         }
         var updated = generated
-        if (entityId.isNotBlank()) {
-            val target = resolveEntity(source, entityId)
-            if (target != null) {
-                val oldArtifact = source.stageData(target.artifact).toMutableMap()
-                val oldRows = (oldArtifact[target.field] as? JsonArray).orEmpty().toMutableList()
-                val generatedRows = (generated.stageData(target.artifact)[target.field] as? JsonArray).orEmpty()
-                val replacement = generatedRows.getOrNull(target.index) as? JsonObject
-                if (replacement != null && target.index in oldRows.indices) {
-                    oldRows[target.index] = replacement
-                    oldArtifact[target.field] = JsonArray(oldRows)
-                    updated = stageAgent.replaceArtifact(source, target.artifact, JsonObject(oldArtifact), "model")
-                }
+        if (target != null) {
+            val oldArtifact = source.stageData(target.artifact).toMutableMap()
+            val oldRows = (oldArtifact[target.field] as? JsonArray).orEmpty().toMutableList()
+            val generatedRows = (generated.stageData(target.artifact)[target.field] as? JsonArray).orEmpty()
+            val replacement = generatedRows.singleOrNull() as? JsonObject
+            if (replacement != null && target.index in oldRows.indices) {
+                oldRows[target.index] = replacement
+                oldArtifact[target.field] = JsonArray(oldRows)
+                updated = stageAgent.replaceArtifact(
+                    source, target.artifact, JsonObject(oldArtifact), generated.stageState(artifact).string("source"),
+                )
+            } else {
+                return ToolExecution(source, result(tool, "error", "模型没有返回唯一目标实体，原资料未修改"))
             }
         } else if (entityType.isNotBlank()) {
             updated = mergeOnlyNewEntities(source, generated, artifact, entityType)
+            if (updated == source) {
+                return ToolExecution(source, result(tool, "error", "模型没有生成新的目标实体，原资料未修改"))
+            }
         }
         return ToolExecution(
             updated,
@@ -860,7 +1178,7 @@ internal class MobileCreationConversationAgent(
                     put("type", "function")
                     put("function", buildJsonObject {
                         put("name", call.name)
-                        put("arguments", call.arguments.toString())
+                        put("arguments", call.rawArgumentsJson)
                     })
                 })
             }
@@ -886,9 +1204,6 @@ internal class MobileCreationConversationAgent(
     private fun JsonObject.intOrNull(name: String): Int? = (get(name) as? JsonPrimitive)?.intOrNull
     private fun JsonObject.stageState(stage: String): JsonObject = objectValue("draft").objectValue("stages").objectValue(stage)
     private fun JsonObject.stageData(stage: String): JsonObject = stageState(stage)["data"] as? JsonObject ?: JsonObject(emptyMap())
-    private fun DirectApiConfig.isDeepSeek(): Boolean =
-        listOf(displayName, baseUrl, model).any { it.contains("deepseek", ignoreCase = true) }
-
     private data class ToolExecution(
         val session: JsonObject,
         val result: JsonObject,
@@ -907,6 +1222,29 @@ internal class MobileCreationConversationAgent(
     )
 
     private companion object {
+        const val CREATION_OUTPUT_TOKENS = 6_000
+        const val CREATION_STATUS_RESULT_BYTES = 4 * 1024
+        const val CREATION_STANDARD_RESULT_BYTES = 16 * 1024
+        const val CREATION_LARGE_READ_RESULT_BYTES = 32 * 1024
+        val CREATION_LARGE_READ_TOOLS = setOf(
+            "get_creation_session",
+            "get_creation_snapshot",
+            "get_creation_artifact",
+            "list_creation_artifacts",
+            "get_creation_entity",
+            "list_creation_entities",
+        )
+        val CREATION_RECEIPT_FIELDS = setOf(
+            "session_id",
+            "revision",
+            "artifact",
+            "artifact_id",
+            "entity_id",
+            "operation_id",
+            "created_project_id",
+            "stage",
+            "status",
+        )
         val ENTITY_FIELDS = mapOf(
             "world_style" to listOf("worldbuilding" to "worldbuilding"),
             "characters" to listOf("characters" to "character", "relationships" to "relationship"),

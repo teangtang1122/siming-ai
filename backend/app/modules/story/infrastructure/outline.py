@@ -51,6 +51,8 @@ class SqlAlchemyOutlineWorkspace:
             node_type=payload["node_type"],
             title=payload["title"],
             summary=payload.get("summary"),
+            actual_summary=payload.get("actual_summary"),
+            planned_summary=payload.get("planned_summary"),
             status=payload.get("status"),
             sort_order=payload.get("sort_order", 0),
             metadata_json=payload.get("metadata"),
@@ -122,8 +124,17 @@ class SqlAlchemyOutlineWorkspace:
             setattr(node, field, value)
         replace_character_links(self._session, project_id, node, links)
         self._session.flush()
+        # ``node_to_dict`` deliberately starts with an empty ``children`` list;
+        # returning it directly makes a successful update look as if persisted
+        # descendants were deleted.  Rebuild the authoritative tree projection
+        # and return this node from it so PUT and the following GET agree.
+        updated_node = next(
+            item
+            for item in outline_payload(self._session, project_id)["flat"]
+            if item["id"] == node.id
+        )
         return StoryMutation(
-            data=node_to_dict(node),
+            data=updated_node,
             sync_intents=[
                 ContentSyncIntent(
                     project_id=project_id,

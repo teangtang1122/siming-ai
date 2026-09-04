@@ -49,6 +49,11 @@ _SKIP_DIRS = {
     "dist",
     "release",
     "backups",
+    # Runtime/user artifacts are not repository source. They may preserve raw
+    # model audit text verbatim and are validated by project-data audits rather
+    # than this source-encoding guard.
+    "artifacts",
+    "siming-projects",
     "video",
     ".venv",
     "venv",

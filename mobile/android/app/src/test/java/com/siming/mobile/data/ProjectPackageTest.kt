@@ -259,6 +259,53 @@ class ProjectPackageTest {
         }
     }
 
+    @Test
+    fun importedFullPackageAcceptsStaleNarrativeCheckpointReferences() {
+        val projectId = "33333333-3333-4333-8333-333333333333"
+        val source = kotlin.io.path.createTempFile("mobile-stale-full-", PROJECT_PACKAGE_EXTENSION).toFile()
+        val rewritten = kotlin.io.path.createTempFile("mobile-stale-rewritten-", PROJECT_PACKAGE_EXTENSION).toFile()
+        try {
+            MobileProjectPackageWriter.write(
+                projectId,
+                listOf(
+                    replica(projectId, "project", projectId, """{"id":"$projectId","title":"本机作品"}"""),
+                ),
+                pendingDraft = null,
+                profile = "full",
+                destination = source,
+            )
+            val stale = addStaleCheckpointToFullPackage(source, projectId)
+            val validated = MobileProjectPackageValidator(stale).validate()
+
+            val requestKey = UUID.fromString("66666666-6666-4666-8666-666666666666")
+            val (newProjectId, _) = MobileProjectPackageMaterializer.materialize(validated, requestKey, null)
+            MobileProjectPackageWriter.rewriteImported(
+                source = stale,
+                expectedSha256 = sha256File(stale),
+                idempotencyKey = requestKey,
+                projectId = newProjectId,
+                snapshot = listOf(
+                    replica(newProjectId, "project", newProjectId, """{"id":"$newProjectId","title":"重写后"}"""),
+                ),
+                pendingDraft = null,
+                profile = "full",
+                destination = rewritten,
+            )
+            val rewrittenValidator = MobileProjectPackageValidator(rewritten).validate()
+            val checkpointLine = ZipFile(rewritten).use { archive ->
+                archive.getInputStream(archive.getEntry("data/narrative_checkpoints.jsonl")!!)
+                    .bufferedReader().readLines().single()
+            }
+            val checkpoint = Json.parseToJsonElement(checkpointLine) as JsonObject
+            assertTrue(checkpoint["chapter_id"] is JsonNull)
+            assertTrue(checkpoint["chapter_snapshot_id"] is JsonNull)
+            assertTrue(rewrittenValidator.sourceProjectId == newProjectId)
+        } finally {
+            source.delete()
+            rewritten.delete()
+        }
+    }
+
     private fun buildStructurePackage(
         extraProjectField: Boolean = false,
         corruptProjectHash: Boolean = false,
@@ -439,6 +486,70 @@ class ProjectPackageTest {
             originalManifest.toMutableMap().apply { put("entries", JsonArray(declarations)) },
         )
         val destination = kotlin.io.path.createTempFile("mobile-import-material-", PROJECT_PACKAGE_EXTENSION).toFile()
+        ZipOutputStream(destination.outputStream().buffered()).use { archive ->
+            originalEntries.forEach { (path, bytes) ->
+                archive.putNextEntry(ZipEntry(path))
+                archive.write(bytes)
+                archive.closeEntry()
+            }
+            archive.putNextEntry(ZipEntry("manifest.json"))
+            archive.write((Json.encodeToString(manifest) + "\n").toByteArray())
+            archive.closeEntry()
+        }
+        return destination
+    }
+
+    private fun addStaleCheckpointToFullPackage(source: File, projectId: String): File {
+        val checkpoint = JsonObject(
+            mapOf(
+                "id" to JsonPrimitive("stale-checkpoint-1"),
+                "project_id" to JsonPrimitive(projectId),
+                "chapter_id" to JsonPrimitive("missing-chapter"),
+                "chapter_snapshot_id" to JsonPrimitive("missing-snapshot"),
+                "sequence" to JsonPrimitive(1),
+                "label" to JsonPrimitive("陈旧检查点"),
+                "trigger_type" to JsonPrimitive("post_write"),
+                "state_json" to JsonObject(emptyMap()),
+                "created_at" to JsonPrimitive("2026-08-28T00:00:00Z"),
+            ),
+        )
+        val checkpointPath = "data/narrative_checkpoints.jsonl"
+        val checkpointBytes = (Json.encodeToString(checkpoint) + "\n").toByteArray()
+        val originalEntries = linkedMapOf<String, ByteArray>()
+        val originalManifest = ZipFile(source).use { archive ->
+            val entries = archive.entries()
+            var manifest: JsonObject? = null
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                val bytes = archive.getInputStream(entry).use { it.readBytes() }
+                if (entry.name == "manifest.json") {
+                    manifest = Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)) as JsonObject
+                } else {
+                    originalEntries[entry.name] = bytes
+                }
+            }
+            requireNotNull(manifest)
+        }
+        originalEntries[checkpointPath] = checkpointBytes
+        val declarations = (originalManifest["entries"] as JsonArray).map { raw ->
+            val declaration = raw as JsonObject
+            val entryPath = declaration.string("path")
+            if (entryPath != checkpointPath) {
+                declaration
+            } else {
+                JsonObject(
+                    declaration.toMutableMap().apply {
+                        put("size", JsonPrimitive(checkpointBytes.size))
+                        put("sha256", JsonPrimitive(sha256(checkpointBytes)))
+                        put("records", JsonPrimitive(1))
+                    },
+                )
+            }
+        }
+        val manifest = JsonObject(
+            originalManifest.toMutableMap().apply { put("entries", JsonArray(declarations)) },
+        )
+        val destination = kotlin.io.path.createTempFile("mobile-stale-checkpoint-", PROJECT_PACKAGE_EXTENSION).toFile()
         ZipOutputStream(destination.outputStream().buffered()).use { archive ->
             originalEntries.forEach { (path, bytes) ->
                 archive.putNextEntry(ZipEntry(path))

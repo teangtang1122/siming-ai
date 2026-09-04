@@ -7,7 +7,21 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import CatalogingCandidate, CatalogingChapterRun, CatalogingJob
+from ...database.models import (
+    CatalogingCandidate,
+    CatalogingChapterRun,
+    CatalogingJob,
+    WorldbuildingEntry,
+)
+from ...database.query_filters import (
+    current_worldbuilding_clause,
+    is_current_worldbuilding_status,
+)
+from ...modules.continuity.domain.cataloging_contract import (
+    CHAPTER_LINK_REPLACE_FIELDS,
+    CHAPTER_LINK_REPLACE_LIST_FIELDS,
+    validate_coverage_manifest_relationships,
+)
 from ..story_granularity import (
     CHARACTER_STABLE_FIELDS,
     CHARACTER_STATE_FIELDS,
@@ -15,7 +29,15 @@ from ..story_granularity import (
     has_chapter_narrative_state,
 )
 from .candidate_io import float_or_none
-from .candidate_validation import inspect_candidate_coverage
+from .fact_store import load_facts_for_run
+from .candidate_validation import (
+    inspect_candidate_coverage,
+    validate_candidate_source_character_grounding,
+)
+from .character_targets import (
+    validate_character_profile_target,
+    validate_character_state_target,
+)
 from .constants import VALID_ITEM_TYPES
 from .jsonl import (
     candidate_response_attempts,
@@ -26,6 +48,7 @@ from .jsonl import (
     parse_json_line,
 )
 from .repair_identity import has_stable_profile_evidence, is_anonymous_character
+from .targeted_context import worldbuilding_identity_review_candidates
 from ..character_role_types import normalize_character_role_type
 
 _SIGNATURE_PAYLOAD_KEYS = (
@@ -67,6 +90,17 @@ _WORLDBUILDING_DETAIL_KEYS = {
     "constraints",
     "plot_usage",
     "summary",
+}
+
+_WORLDBUILDING_IDENTITY_KEYS = {
+    "id",
+    "title",
+    "entry_title",
+    "source_fact_titles",
+    "item_type",
+    "operation",
+    "type",
+    "action",
 }
 
 
@@ -145,6 +179,97 @@ def _ensure_outline_identity(
         normalized["target_name"] = normalized.get("target_name") or title
 
 
+def ensure_outline_section_scene_number(
+    db: Session,
+    run: CatalogingChapterRun,
+    normalized: dict[str, Any],
+) -> None:
+    """Give every staged section a stable, positive number before identity matching.
+
+    Cataloging providers sometimes return ordered section cards without the
+    redundant ``scene_number`` field. The order of those cards is already a
+    deterministic protocol fact, so persistence can fill the omitted ordinal
+    without interpreting prose. Existing editable rows are normalized first
+    so retries reuse their run-local identity instead of creating new cards.
+    """
+
+    if normalized.get("item_type") not in {"outline_create", "outline_update"}:
+        return
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict):
+        return
+    node_type = str(payload.get("node_type") or "chapter").strip().lower()
+    if node_type not in {"section", "scene"}:
+        return
+
+    rows = (
+        db.query(CatalogingCandidate)
+        .filter(
+            CatalogingCandidate.chapter_run_id == run.id,
+            CatalogingCandidate.item_type.in_(("outline_create", "outline_update")),
+            CatalogingCandidate.status != "rejected",
+        )
+        .order_by(
+            CatalogingCandidate.sort_order.asc(),
+            CatalogingCandidate.created_at.asc(),
+            CatalogingCandidate.id.asc(),
+        )
+        .all()
+    )
+    section_rows: list[tuple[CatalogingCandidate, dict[str, Any]]] = []
+    used_numbers: set[int] = set()
+    for row in rows:
+        existing_payload = _payload_from_candidate(row)
+        existing_type = str(
+            existing_payload.get("node_type") or "chapter"
+        ).strip().lower()
+        if existing_type not in {"section", "scene"}:
+            continue
+        section_rows.append((row, existing_payload))
+        existing_number = _positive_int(existing_payload.get("scene_number"))
+        if existing_number:
+            used_numbers.add(existing_number)
+
+    next_number = 1
+    for row, existing_payload in section_rows:
+        if _positive_int(existing_payload.get("scene_number")):
+            continue
+        if row.status in {"applying", "applied"}:
+            continue
+        while next_number in used_numbers:
+            next_number += 1
+        existing_payload["scene_number"] = next_number
+        encoded = json.dumps(existing_payload, ensure_ascii=False)
+        if row.edited_payload is not None:
+            row.edited_payload = encoded
+        else:
+            row.raw_payload = encoded
+        used_numbers.add(next_number)
+        next_number += 1
+
+    incoming_number = _positive_int(payload.get("scene_number"))
+    if incoming_number:
+        payload["scene_number"] = incoming_number
+        return
+
+    incoming_title = _signature_text(
+        payload.get("title") or normalized.get("target_name")
+    )
+    if incoming_title:
+        for row, existing_payload in section_rows:
+            existing_title = _signature_text(
+                existing_payload.get("title") or row.target_name
+            )
+            existing_number = _positive_int(existing_payload.get("scene_number"))
+            if existing_title == incoming_title and existing_number:
+                payload["scene_number"] = existing_number
+                return
+
+    while next_number in used_numbers:
+        next_number += 1
+    payload["scene_number"] = next_number
+
+
 def _signature_text(value: Any) -> str:
     if isinstance(value, list):
         text = " ".join(_signature_text(item) for item in value)
@@ -209,6 +334,101 @@ def _candidate_identity(normalized: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _run_local_candidate_identity(normalized: dict[str, Any]) -> str:
+    """Return the deterministic one-per-run identity for replaceable cards.
+
+    Provider retries may rewrite descriptive text or titles while referring to
+    the same structured entity.  Those presentation changes must update the
+    staged candidate instead of creating a second projection row.
+    """
+
+    item_type = str(normalized.get("item_type") or "")
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    if item_type == "chapter_summary":
+        return "chapter_summary"
+    if item_type == "chapter_link":
+        source = _candidate_identity(
+            normalized,
+            "source_id",
+            "source_name",
+            "source",
+        )
+        target = _candidate_identity(
+            normalized,
+            "target_id",
+            "target_name",
+            "target",
+        )
+        source_type = _clean_value(payload.get("source_type"))
+        target_type = _clean_value(payload.get("target_type"))
+        if source or target or source_type or target_type:
+            return ":".join((
+                "chapter_link",
+                _signature_text(source_type),
+                _signature_text(source),
+                _signature_text(target_type),
+                _signature_text(target),
+            ))
+        return "chapter_link:aggregate"
+    if item_type in {"outline_create", "outline_update"}:
+        node_type = str(payload.get("node_type") or "chapter").strip().lower()
+        if node_type in {"section", "scene"}:
+            scene_number = _positive_int(payload.get("scene_number"))
+            return f"outline:section:{scene_number}" if scene_number else ""
+        return f"outline:{node_type}"
+    if item_type in {"character_create", "character_update"}:
+        identity = _candidate_identity(
+            normalized,
+            "name",
+            "character_name",
+            "target_name",
+            "id",
+            "target_id",
+        )
+        return f"character_profile:{_signature_text(identity)}" if identity else ""
+    if item_type == "character_state_update":
+        identity = _candidate_identity(
+            normalized,
+            "name",
+            "character_name",
+            "target_name",
+            "id",
+            "target_id",
+        )
+        return f"character_state:{_signature_text(identity)}" if identity else ""
+    if item_type == "character_relationship":
+        source = _candidate_identity(
+            normalized,
+            "source_name",
+            "source",
+            "from_name",
+            "character_a",
+        )
+        target = _candidate_identity(
+            normalized,
+            "target_name",
+            "target",
+            "to_name",
+            "character_b",
+        )
+        if source and target:
+            return (
+                "character_relationship:"
+                f"{_signature_text(source)}:{_signature_text(target)}"
+            )
+    return ""
+
+
+def _run_local_identity_item_types(item_type: str) -> tuple[str, ...]:
+    if item_type in {"outline_create", "outline_update"}:
+        return ("outline_create", "outline_update")
+    if item_type in {"character_create", "character_update"}:
+        return ("character_create", "character_update")
+    return (item_type,)
+
+
 def _skip_reason_for_candidate(normalized: dict[str, Any]) -> str | None:
     item_type = str(normalized.get("item_type") or "")
     payload = normalized.get("payload", {})
@@ -244,6 +464,10 @@ def _skip_reason_for_candidate(normalized: dict[str, Any]) -> str | None:
             return f"关系候选 {source}-{target} 缺少关系内容，已跳过"
 
     if item_type in {"worldbuilding_create", "worldbuilding_update", "worldbuilding_timeline"}:
+        if item_type == "worldbuilding_update" and not _clean_value(
+            normalized.get("target_id") or payload.get("id")
+        ):
+            return "世界观更新缺少已有条目的精确 ID，已跳过，避免按近义标题创建重复条目"
         title = _candidate_identity(normalized, "id", "target_id", "target_name", "title", "entry_title")
         if _is_placeholder_name(title):
             return "世界观候选缺少标题或ID，已跳过，避免生成未命名设定"
@@ -254,6 +478,12 @@ def _skip_reason_for_candidate(normalized: dict[str, Any]) -> str | None:
             return f"世界观候选 {title} 没有内容，已跳过"
 
     if item_type == "chapter_summary":
+        if (
+            str(payload.get("coverage_manifest_mode") or "").strip().lower()
+            == "replace"
+            and isinstance(payload.get("coverage_manifest"), dict)
+        ):
+            return None
         if not _clean_value(payload.get("summary_text") or payload.get("summary") or payload.get("content")) and not has_chapter_narrative_state(payload):
             return "章节摘要候选为空，已跳过"
 
@@ -275,6 +505,49 @@ def _payload_from_candidate(candidate: CatalogingCandidate) -> dict[str, Any]:
         return {}
 
 
+def _worldbuilding_body_signature(payload: dict[str, Any]) -> str:
+    """Return an exact, non-semantic signature excluding only identity fields."""
+
+    body = {
+        key: value
+        for key, value in payload.items()
+        if key not in _WORLDBUILDING_IDENTITY_KEYS
+    }
+    if not _has_any_text(body, _WORLDBUILDING_DETAIL_KEYS):
+        return ""
+    return json.dumps(
+        body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _validate_worldbuilding_source_fact_titles(
+    normalized: dict[str, Any],
+) -> str | None:
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict) or "source_fact_titles" not in payload:
+        return None
+    if normalized.get("item_type") not in {
+        "worldbuilding_create",
+        "worldbuilding_update",
+        "worldbuilding_timeline",
+    }:
+        return "source_fact_titles 只能用于世界观候选"
+    values = payload.get("source_fact_titles")
+    if (
+        not isinstance(values, list)
+        or any(not isinstance(value, str) or not value.strip() for value in values)
+    ):
+        return "source_fact_titles 必须是非空字符串数组"
+    payload["source_fact_titles"] = list(
+        dict.fromkeys(value.strip() for value in values)
+    )
+    return None
+
+
 def _matching_candidate(
     db: Session,
     job: CatalogingJob,
@@ -282,6 +555,81 @@ def _matching_candidate(
     normalized: dict[str, Any],
 ) -> CatalogingCandidate | None:
     item_type = normalized["item_type"]
+    if item_type in {"worldbuilding_create", "worldbuilding_update"}:
+        family_query = db.query(CatalogingCandidate).filter(
+            CatalogingCandidate.chapter_run_id == run.id,
+            CatalogingCandidate.item_type.in_(
+                ("worldbuilding_create", "worldbuilding_update")
+            ),
+            CatalogingCandidate.status != "rejected",
+        )
+        incoming_payload = normalized["payload"]
+        incoming_id = _clean_value(
+            normalized.get("target_id") or incoming_payload.get("id")
+        )
+        incoming_title = _signature_text(
+            incoming_payload.get("title")
+            or incoming_payload.get("entry_title")
+            or normalized.get("target_name")
+        )
+        incoming_body = _worldbuilding_body_signature(incoming_payload)
+        rows = family_query.order_by(CatalogingCandidate.sort_order.asc()).all()
+        if incoming_id:
+            for existing in rows:
+                existing_payload = _payload_from_candidate(existing)
+                existing_id = _clean_value(
+                    existing.target_id or existing_payload.get("id")
+                )
+                if existing_id and existing_id == incoming_id:
+                    return existing
+        if incoming_title:
+            for existing in rows:
+                existing_payload = _payload_from_candidate(existing)
+                existing_id = _clean_value(
+                    existing.target_id or existing_payload.get("id")
+                )
+                if incoming_id and existing_id and incoming_id != existing_id:
+                    continue
+                existing_title = _signature_text(
+                    existing_payload.get("title")
+                    or existing_payload.get("entry_title")
+                    or existing.target_name
+                )
+                if existing_title == incoming_title:
+                    return existing
+        if incoming_body:
+            for existing in rows:
+                existing_payload = _payload_from_candidate(existing)
+                existing_id = _clean_value(
+                    existing.target_id or existing_payload.get("id")
+                )
+                if incoming_id and existing_id and incoming_id != existing_id:
+                    continue
+                if _worldbuilding_body_signature(existing_payload) == incoming_body:
+                    return existing
+    run_identity = _run_local_candidate_identity(normalized)
+    if run_identity:
+        identity_rows = (
+            db.query(CatalogingCandidate)
+            .filter(
+                CatalogingCandidate.chapter_run_id == run.id,
+                CatalogingCandidate.item_type.in_(
+                    _run_local_identity_item_types(item_type)
+                ),
+                CatalogingCandidate.status != "rejected",
+            )
+            .order_by(CatalogingCandidate.sort_order.asc())
+            .all()
+        )
+        for existing in identity_rows:
+            existing_identity = _run_local_candidate_identity({
+                "item_type": existing.item_type,
+                "target_id": existing.target_id,
+                "target_name": existing.target_name,
+                "payload": _payload_from_candidate(existing),
+            })
+            if existing_identity == run_identity:
+                return existing
     signature = _candidate_signature(
         item_type=item_type,
         target_name=str(normalized.get("target_name") or "") or None,
@@ -331,6 +679,107 @@ def _matching_candidate(
     return None
 
 
+def _validate_worldbuilding_existing_target(
+    db: Session,
+    project_id: str,
+    normalized: dict[str, Any],
+) -> str | None:
+    item_type = str(normalized.get("item_type") or "")
+    if item_type not in {"worldbuilding_update", "worldbuilding_timeline"}:
+        return None
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict):
+        return "世界观候选 payload 不是对象"
+    target_id = _clean_value(normalized.get("target_id") or payload.get("id"))
+    if not target_id:
+        if item_type == "worldbuilding_update":
+            return "世界观更新缺少已有条目的精确 ID"
+        return None
+    entry = db.get(WorldbuildingEntry, target_id)
+    if entry is None or entry.project_id != project_id:
+        return "世界观目标 ID 不存在或不属于当前作品"
+    if not is_current_worldbuilding_status(entry.status):
+        return (
+            "世界观目标 ID 已停用，不能作为建档候选或被重新激活；"
+            "请从 active worldbuilding_title_index 选择当前条目"
+        )
+    payload["id"] = entry.id
+    normalized["target_id"] = entry.id
+    return None
+
+
+def _validate_worldbuilding_create_identity_review(
+    db: Session,
+    project_id: str,
+    run: CatalogingChapterRun,
+    normalized: dict[str, Any],
+) -> str | None:
+    """Require the model to make the new-vs-existing semantic decision explicit.
+
+    The application validates only structured IDs and ownership.  It does not
+    guess whether two natural-language titles mean the same thing.
+    """
+
+    if normalized.get("item_type") != "worldbuilding_create":
+        return None
+    active_ids = {
+        str(identity)
+        for (identity,) in db.query(WorldbuildingEntry.id)
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        )
+        .all()
+    }
+    if not active_ids:
+        return None
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict):
+        return "世界观新建 payload 不是对象"
+    review = payload.get("identity_resolution")
+    if not isinstance(review, dict):
+        return (
+            "世界观新建缺少 identity_resolution；请由模型对照 worldbuilding_title_index，"
+            "决定应更新哪个真实 ID 还是确属新设定"
+        )
+    if str(review.get("decision") or "").strip() != "create":
+        return "世界观新建的 identity_resolution.decision 必须为 create；若命中旧设定请改用 worldbuilding_update"
+    reviewed = review.get("reviewed_existing_ids")
+    if (
+        not isinstance(reviewed, list)
+        or not reviewed
+        or any(not isinstance(value, str) or not value.strip() for value in reviewed)
+    ):
+        return "世界观新建必须列出模型已比较的 reviewed_existing_ids"
+    reviewed_ids = list(dict.fromkeys(value.strip() for value in reviewed))
+    invalid = [identity for identity in reviewed_ids if identity not in active_ids]
+    if invalid:
+        return "世界观新建比较的 ID 不存在、不属于当前作品或已停用：" + "、".join(invalid)
+    required_rows = worldbuilding_identity_review_candidates(
+        db,
+        project_id,
+        load_facts_for_run(db, run),
+    )
+    missing_required = [
+        row for row in required_rows if str(row.id) not in set(reviewed_ids)
+    ]
+    if missing_required:
+        return (
+            "世界观新建的 identity_resolution.reviewed_existing_ids 未覆盖本章已交付的"
+            "相关 active 候选："
+            + "、".join(f"{row.id}（{row.title}）" for row in missing_required)
+        )
+    reason = str(review.get("reason") or "").strip()
+    if not reason:
+        return "世界观新建必须说明与已比较条目不同、因此确需新建的 reason"
+    payload["identity_resolution"] = {
+        "decision": "create",
+        "reviewed_existing_ids": reviewed_ids,
+        "reason": reason,
+    }
+    return None
+
+
 def _merge_unique_values(existing: list[Any], incoming: list[Any]) -> list[Any]:
     merged = list(existing)
     signatures = {
@@ -377,10 +826,69 @@ def _merge_candidate_payload(
     *,
     item_type: str = "",
 ) -> dict[str, Any]:
+    coverage_manifest_mode = (
+        str(incoming.get("coverage_manifest_mode") or "").strip().lower()
+        if item_type == "chapter_summary"
+        else ""
+    )
+    if coverage_manifest_mode == "replace":
+        # A managed retry may discover that the first summary listed two names
+        # for one logical entity. Treat the explicit replacement as a narrow
+        # control operation: keep the accepted prose and narrative ledger, and
+        # replace only the complete manifest. The workspace tool validates the
+        # full shape and source scene count before this reaches the store.
+        merged = dict(existing)
+        old_manifest = existing.get("coverage_manifest")
+        new_manifest = incoming.get("coverage_manifest")
+        if isinstance(new_manifest, dict):
+            replacement = dict(new_manifest)
+            if isinstance(old_manifest, dict):
+                old_scene_count = _positive_int(old_manifest.get("scene_count"))
+                new_scene_count = _positive_int(replacement.get("scene_count"))
+                if old_scene_count or new_scene_count:
+                    replacement["scene_count"] = max(old_scene_count, new_scene_count)
+            merged["coverage_manifest"] = replacement
+        merged.pop("coverage_manifest_mode", None)
+        return merged
+
+    chapter_link_mode = (
+        str(incoming.get("chapter_link_mode") or "").strip().lower()
+        if item_type == "chapter_link"
+        else ""
+    )
+    if chapter_link_mode == "replace":
+        # The workspace tool accepts this only for a one-record managed repair
+        # containing every aggregate collection. Clear all identity-bearing
+        # link fields first so an earlier alias or wrong endpoint cannot remain
+        # active after the model explicitly corrects the record.
+        if not all(key in incoming for key in CHAPTER_LINK_REPLACE_LIST_FIELDS):
+            raise ValueError(
+                "chapter_link replacement requires all aggregate list fields"
+            )
+        merged = dict(existing)
+        for key in CHAPTER_LINK_REPLACE_FIELDS:
+            merged.pop(key, None)
+        for key, value in incoming.items():
+            if key != "chapter_link_mode":
+                merged[key] = value
+        merged.pop("chapter_link_mode", None)
+        return merged
+
     merged = dict(existing)
     for key, value in incoming.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _merge_candidate_payload(merged[key], value)
+            continue
+        if (
+            item_type == "chapter_link"
+            and isinstance(value, list)
+            and isinstance(merged.get(key), list)
+        ):
+            # One run owns one aggregate chapter link, but managed CLI turns
+            # send candidates in small batches.  A later repair must be able
+            # to add identities that the completeness gate reports missing
+            # without creating a second link or erasing fields already staged.
+            merged[key] = _merge_unique_values(merged[key], value)
             continue
         # Explicit empty arrays/objects still matter when the old payload did
         # not declare the field.  Do not let a later empty value erase richer
@@ -399,6 +907,11 @@ def _merge_candidate_payload(
         new_scene_count = _positive_int(incoming.get("scene_count"))
         if old_scene_count or new_scene_count:
             merged["scene_count"] = max(old_scene_count, new_scene_count)
+        # This is a write-control marker, never archival chapter metadata.
+        merged.pop("coverage_manifest_mode", None)
+    if item_type == "chapter_link":
+        # This is a write-control marker, never chapter metadata.
+        merged.pop("chapter_link_mode", None)
     return merged
 
 
@@ -553,8 +1066,13 @@ def recover_candidates_from_response_text(
         source_task=source_task,
     )
     existing = _existing_recovery_candidates(db, run)
-    proposed = [*existing, *preview]
-    coverage = inspect_candidate_coverage(
+    preview_coverage = inspect_candidate_coverage(
+        preview,
+        db=db,
+        project_id=job.project_id,
+    )
+    proposed = preview if preview_coverage.is_complete else [*existing, *preview]
+    coverage = preview_coverage if preview_coverage.is_complete else inspect_candidate_coverage(
         proposed,
         db=db,
         project_id=job.project_id,
@@ -669,12 +1187,16 @@ def create_candidate_from_raw(
     *,
     source_task: str | None = None,
 ) -> dict[str, Any]:
-    normalized = normalize_candidate(raw)
+    try:
+        normalized = normalize_candidate(raw)
+    except ValueError as exc:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
     _normalize_character_role_payload(normalized)
     _ensure_narrative_assessment_contract(
         normalized,
         source_task=source_task or normalized.get("source_task"),
     )
+    ensure_outline_section_scene_number(db, run, normalized)
     _ensure_outline_identity(normalized, run)
     if normalized["item_type"] not in VALID_ITEM_TYPES:
         return {
@@ -684,25 +1206,96 @@ def create_candidate_from_raw(
     skip_reason = _skip_reason_for_candidate(normalized)
     if skip_reason:
         return {"skipped": True, "reason": skip_reason}
+    source_titles_error = _validate_worldbuilding_source_fact_titles(normalized)
+    if source_titles_error:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": source_titles_error}
+    target_error = _validate_worldbuilding_existing_target(
+        db,
+        job.project_id,
+        normalized,
+    )
+    if target_error:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": target_error}
+    try:
+        validate_coverage_manifest_relationships(normalized["payload"])
+        validate_character_state_target(
+            db,
+            job.project_id,
+            normalized["item_type"],
+            normalized["payload"],
+            chapter_content=str(run.chapter.content or "") if run.chapter is not None else "",
+        )
+        validate_candidate_source_character_grounding(
+            db,
+            job.project_id,
+            run,
+            normalized,
+        )
+    except ValueError as exc:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
     matching = _matching_candidate(db, job, run, normalized)
+    if matching is None:
+        identity_review_error = _validate_worldbuilding_create_identity_review(
+            db,
+            job.project_id,
+            run,
+            normalized,
+        )
+        if identity_review_error:
+            return {
+                "bad_line": json.dumps(raw, ensure_ascii=False),
+                "error": identity_review_error,
+            }
+    if matching and _payload_from_candidate(matching) == normalized["payload"]:
+        return {"duplicate": True}
+    try:
+        validate_character_profile_target(
+            db, job.project_id, normalized["item_type"], normalized["payload"],
+        )
+    except ValueError as exc:
+        return {"bad_line": json.dumps(raw, ensure_ascii=False), "error": str(exc)}
     if matching:
         old_payload = _payload_from_candidate(matching)
+        preserve_worldbuilding_create_identity = (
+            matching.item_type == "worldbuilding_create"
+            and normalized["item_type"] == "worldbuilding_create"
+            and bool(_worldbuilding_body_signature(old_payload))
+            and _worldbuilding_body_signature(old_payload)
+            == _worldbuilding_body_signature(normalized["payload"])
+        )
+        merged_item_type = (
+            "worldbuilding_update"
+            if {
+                matching.item_type,
+                normalized["item_type"],
+            }
+            <= {"worldbuilding_create", "worldbuilding_update"}
+            and "worldbuilding_update"
+            in {matching.item_type, normalized["item_type"]}
+            else normalized["item_type"]
+        )
         merged_payload = _merge_candidate_payload(
             old_payload,
             normalized["payload"],
-            item_type=normalized["item_type"],
+            item_type=merged_item_type,
         )
+        if preserve_worldbuilding_create_identity:
+            for key in ("title", "entry_title"):
+                if key in old_payload:
+                    merged_payload[key] = old_payload[key]
         if merged_payload == old_payload:
             return {"duplicate": True}
         matching.raw_payload = json.dumps(merged_payload, ensure_ascii=False)
         matching.edited_payload = None
+        matching.item_type = merged_item_type
         matching.operation = normalized["operation"] or matching.operation
         matching.target_type = normalized.get("target_type") or matching.target_type
         matching.target_id = normalized.get("target_id") or matching.target_id
-        matching.target_name = (
-            str(normalized.get("target_name") or "")[:200]
-            or matching.target_name
-        )
+        if not preserve_worldbuilding_create_identity:
+            matching.target_name = (
+                str(normalized.get("target_name") or "")[:200]
+                or matching.target_name
+            )
         matching.confidence = float_or_none(normalized.get("confidence")) or matching.confidence
         matching.evidence = (
             str(normalized.get("evidence") or "")[:2000]

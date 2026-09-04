@@ -7,8 +7,12 @@ from sqlalchemy.orm import Session
 
 from ....architecture.uow import SqlAlchemyUnitOfWork
 from ....core.db_helpers import get_outline_node_or_404, get_project_or_404
-from ....core.exceptions import NotFoundError, ValidationError
+from ....core.exceptions import ConflictError, NotFoundError, ValidationError
 from ....core.utils import count_words
+from ....services.cataloging.chapter_rollback import (
+    pop_delete_rollback_result,
+    rollback_cataloging_from_chapter,
+)
 from ....services.chapter_ordering import next_chapter_sort_order
 from ....services.chapter_service import (
     chapter_to_detail,
@@ -19,19 +23,15 @@ from ....services.chapter_service import (
     restore_chapter_from_snapshot,
     snapshot_to_item,
 )
-from ....services.narrative_governance import (
-    create_narrative_checkpoint,
-    mark_governance_items_stale_for_chapter,
-)
-from ....services.narrative_ledger import restore_ledger_checkpoint
+from ....services.narrative_governance import create_narrative_checkpoint
 from ....services.outline_service import load_outline_nodes, outline_sort_context
 from ..application.results import StoryMutation
 from ..domain.content_sync import ContentSyncIntent, ContentSyncTarget
-from .entities import Chapter, ChapterSnapshot
+from .entities import Chapter, ChapterSnapshot, OutlineNode
 
 
 class SqlAlchemyChapterWorkspace:
-    """Keep chapter persistence, snapshots, ledger restore and mirror intent atomic."""
+    """Keep chapter persistence, snapshots, cataloging rollback and mirror intents atomic."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -66,26 +66,39 @@ class SqlAlchemyChapterWorkspace:
     def _outline_context(self, project_id: str) -> dict:
         return outline_sort_context(load_outline_nodes(self._session, project_id))
 
-    def _validate_manifest(self, project_id: str, manifest_id: str | None) -> None:
+    def chapter_outline_exists(self, project_id: str, outline_node_id: str) -> bool:
+        return (
+            self._session.query(OutlineNode.id)
+            .filter(
+                OutlineNode.id == outline_node_id,
+                OutlineNode.project_id == project_id,
+                OutlineNode.node_type == "chapter",
+            )
+            .first()
+            is not None
+        )
+
+    def _validate_manifest_reference(
+        self, project_id: str, manifest_id: str | None
+    ) -> None:
         if not manifest_id:
             return
-        from ....services.context_orchestrator import manifest_is_usable
+        from ....database.models import ContextManifest
 
-        valid, detail, manifest = manifest_is_usable(
-            self._session,
-            manifest_id,
-            project_id=project_id,
-            require_external_evidence=False,
-        )
-        if valid and manifest is not None and manifest.execution_route == "external_mcp":
-            valid, detail, _ = manifest_is_usable(
-                self._session,
-                manifest_id,
-                project_id=project_id,
-                require_external_evidence=True,
+        # Freshness is an execution-time guard: generation must not start from
+        # stale context. Once a draft has been generated and handed to the
+        # author, the manifest is immutable provenance for that draft. Later
+        # source edits must not prevent the author from promoting reviewed text.
+        manifest = (
+            self._session.query(ContextManifest)
+            .filter(
+                ContextManifest.id == manifest_id,
+                ContextManifest.project_id == project_id,
             )
-        if not valid:
-            raise ValidationError(detail)
+            .first()
+        )
+        if manifest is None:
+            raise ValidationError("上下文清单不存在或不属于当前作品")
 
     def create_narrative_checkpoint(
         self,
@@ -133,7 +146,7 @@ class SqlAlchemyChapterWorkspace:
     def create(self, project_id: str, payload: dict[str, Any]) -> StoryMutation:
         get_project_or_404(self._session, project_id)
         get_outline_node_or_404(self._session, project_id, payload.get("outline_node_id"))
-        self._validate_manifest(project_id, payload.get("context_manifest_id"))
+        self._validate_manifest_reference(project_id, payload.get("context_manifest_id"))
         content = payload.get("content") or ""
         chapter = Chapter(
             project_id=project_id,
@@ -176,18 +189,47 @@ class SqlAlchemyChapterWorkspace:
         chapter = self._chapter(project_id, chapter_id)
         data = dict(payload)
         trigger_type = data.pop("trigger_type", "manual_save")
+        expected_version = data.pop("expected_version", None)
+        cataloging_impact = str(
+            data.pop("cataloging_impact", "semantic") or "semantic"
+        ).strip().lower()
+        if cataloging_impact not in {"semantic", "style_only"}:
+            raise ValidationError("cataloging_impact 必须是 semantic 或 style_only")
+        if (
+            expected_version is not None
+            and int(expected_version) != int(chapter.current_version or 1)
+        ):
+            raise ConflictError(
+                f"章节已从 v{expected_version} 更新为 v{chapter.current_version or 1}；"
+                "已保留你的编辑内容，请重新载入并对比后再保存"
+            )
         if not data:
             raise ValidationError("未提供任何更新字段")
+
         ensure_current_snapshot(self._session, chapter, "manual_save")
-        narrative_content_changed = any(
-            (
-                key == "content" and (data.get(key) or "") != (chapter.content or "")
-            )
-            or (key == "title" and data.get(key) != chapter.title)
-            or (key == "outline_node_id" and data.get(key) != chapter.outline_node_id)
-            for key in ("content", "title", "outline_node_id")
-            if key in data
+        content_changed = (
+            "content" in data
+            and (data.get("content") or "") != (chapter.content or "")
         )
+        title_changed = "title" in data and data.get("title") != chapter.title
+        outline_changed = (
+            "outline_node_id" in data
+            and data.get("outline_node_id") != chapter.outline_node_id
+        )
+        chapter_text_changed = content_changed or title_changed or outline_changed
+        if cataloging_impact == "style_only" and (title_changed or outline_changed):
+            raise ValidationError("仅润色模式只能修改正文表达，不能修改章节标题或大纲关联")
+
+        rollback = None
+        semantic_change = chapter_text_changed and cataloging_impact == "semantic"
+        if semantic_change:
+            rollback = rollback_cataloging_from_chapter(
+                self._session,
+                project_id,
+                chapter.id,
+                reason=f"《{chapter.title}》发生剧情或事实修改；该章及后续章节的旧建档投影已回退",
+            )
+
         if "outline_node_id" in data:
             get_outline_node_or_404(
                 self._session, project_id, data["outline_node_id"]
@@ -198,22 +240,14 @@ class SqlAlchemyChapterWorkspace:
         if "content" in data:
             chapter.content = data["content"] or ""
         if "context_manifest_id" in data:
-            self._validate_manifest(project_id, data["context_manifest_id"])
+            self._validate_manifest_reference(project_id, data["context_manifest_id"])
             chapter.context_manifest_id = data["context_manifest_id"]
         chapter.word_count = count_words(chapter.content or "")
         chapter.current_version = (chapter.current_version or 1) + 1
-        if narrative_content_changed:
-            chapter.cataloging_required = True
+        if semantic_change:
+            chapter.cataloging_required = bool((chapter.content or "").strip())
+
         self._session.add(create_snapshot(chapter, trigger_type))
-        stale_count = 0
-        if narrative_content_changed:
-            stale_count = mark_governance_items_stale_for_chapter(
-                self._session,
-                project_id,
-                chapter.id,
-                reason=f"{chapter.title} 已保存为 v{chapter.current_version}，旧治理结论需要复检",
-                actor=trigger_type,
-            )
         create_narrative_checkpoint(
             self._session,
             project_id,
@@ -224,18 +258,32 @@ class SqlAlchemyChapterWorkspace:
         self._session.flush()
         self._session.refresh(chapter)
         detail = chapter_to_detail(chapter, self._outline_context(project_id))
-        detail["governance_invalidated_count"] = stale_count
-        detail["narrative_content_changed"] = narrative_content_changed
-        return StoryMutation(
-            data=detail,
-            sync_intents=[
+        detail["chapter_text_changed"] = chapter_text_changed
+        detail["narrative_content_changed"] = semantic_change
+        detail["cataloging_impact"] = cataloging_impact
+        detail["cataloging_rollback"] = rollback
+        detail["recatalog_required_chapter_ids"] = (
+            rollback.get("recatalog_required_chapter_ids", []) if rollback else []
+        )
+        detail["governance_invalidated_count"] = (
+            rollback.get("governance_invalidated_count", 0) if rollback else 0
+        )
+        sync_intents = [
+            ContentSyncIntent(
+                project_id=project_id,
+                target=ContentSyncTarget.CHAPTER,
+                entity_id=chapter.id,
+            )
+        ]
+        if rollback:
+            sync_intents.append(
                 ContentSyncIntent(
                     project_id=project_id,
-                    target=ContentSyncTarget.CHAPTER,
-                    entity_id=chapter.id,
+                    target=ContentSyncTarget.PROJECT,
+                    source="chapter_cataloging_rollback",
                 )
-            ],
-        )
+            )
+        return StoryMutation(data=detail, sync_intents=sync_intents)
 
     def reorder(self, project_id: str, chapter_ids: list[str]) -> StoryMutation:
         get_project_or_404(self._session, project_id)
@@ -271,9 +319,23 @@ class SqlAlchemyChapterWorkspace:
         project = get_project_or_404(self._session, project_id)
         chapter = self._chapter(project_id, chapter_id)
         content_file_path = chapter.content_file_path
+        title = chapter.title
         self._session.delete(chapter)
         self._session.flush()
+        rollback = pop_delete_rollback_result(self._session, chapter_id) or {
+            "affected_chapter_ids": [chapter_id],
+            "recatalog_required_chapter_ids": [],
+            "warnings": [],
+        }
         return StoryMutation(
+            data={
+                "deleted_chapter_id": chapter_id,
+                "deleted_chapter_title": title,
+                "cataloging_rollback": rollback,
+                "recatalog_required_chapter_ids": rollback.get(
+                    "recatalog_required_chapter_ids", []
+                ),
+            },
             sync_intents=[
                 ContentSyncIntent(
                     project_id=project_id,
@@ -283,8 +345,13 @@ class SqlAlchemyChapterWorkspace:
                         "folder_path": project.folder_path,
                         "relative_path": content_file_path,
                     },
-                )
-            ]
+                ),
+                ContentSyncIntent(
+                    project_id=project_id,
+                    target=ContentSyncTarget.PROJECT,
+                    source="chapter_cataloging_rollback",
+                ),
+            ],
         )
 
     def snapshots(self, project_id: str, chapter_id: str) -> dict:
@@ -329,27 +396,33 @@ class SqlAlchemyChapterWorkspace:
         get_project_or_404(self._session, project_id)
         chapter = self._chapter(project_id, chapter_id)
         snapshot = self._snapshot(project_id, chapter_id, snapshot_id)
-        restore_chapter_from_snapshot(self._session, chapter, snapshot)
-        chapter.cataloging_required = True
-        ledger_restore = restore_ledger_checkpoint(
-            self._session, project_id, chapter, snapshot.id
-        )
-        stale_count = mark_governance_items_stale_for_chapter(
+        rollback = rollback_cataloging_from_chapter(
             self._session,
             project_id,
             chapter.id,
-            reason=f"{chapter.title} 已恢复历史版本，原治理结论需要复检",
-            actor="chapter_restore",
+            reason=f"《{chapter.title}》恢复了历史正文；该章及后续章节的旧建档投影已回退",
+        )
+        restore_chapter_from_snapshot(self._session, chapter, snapshot)
+        chapter.cataloging_required = bool((chapter.content or "").strip())
+        create_narrative_checkpoint(
+            self._session,
+            project_id,
+            chapter=chapter,
+            label=f"{chapter.title} 恢复历史版本",
+            trigger_type="restore",
         )
         self._session.flush()
         self._session.refresh(chapter)
         data = chapter_to_detail(chapter, self._outline_context(project_id))
         data.update(
             {
-                "ledger_checkpoint_id": ledger_restore["ledger_checkpoint_id"],
-                "ledger_restored_count": ledger_restore["restored_count"],
-                "ledger_conflicts": ledger_restore["conflicts"],
-                "governance_invalidated_count": stale_count,
+                "cataloging_rollback": rollback,
+                "recatalog_required_chapter_ids": rollback.get(
+                    "recatalog_required_chapter_ids", []
+                ),
+                "governance_invalidated_count": rollback.get(
+                    "governance_invalidated_count", 0
+                ),
             }
         )
         return StoryMutation(
@@ -359,7 +432,12 @@ class SqlAlchemyChapterWorkspace:
                     project_id=project_id,
                     target=ContentSyncTarget.CHAPTER,
                     entity_id=chapter.id,
-                )
+                ),
+                ContentSyncIntent(
+                    project_id=project_id,
+                    target=ContentSyncTarget.PROJECT,
+                    source="chapter_cataloging_rollback",
+                ),
             ],
         )
 

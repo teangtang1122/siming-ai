@@ -14,10 +14,11 @@ from tempfile import TemporaryDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
-from app.database.bootstrap import SCHEMA_EPOCH, bootstrap_database
-from app.database.models import AssistantRun, AssistantRunStep
+from alembic import command
+from app.database.bootstrap import SCHEMA_EPOCH, alembic_config, bootstrap_database
+from app.database.models import AssistantRun, AssistantRunStep, Project
 
-HEAD_REVISION = "300a25_unique_pending_draft"
+HEAD_REVISION = "300a36_outline_projection_identity"
 
 
 def _database_url(path: Path) -> str:
@@ -50,6 +51,10 @@ def test_fresh_database_is_initialized_and_versioned():
                 "content_sync_jobs",
                 "gateway_devices",
                 "sync_changes",
+                "assistant_conversation_replicas",
+                "assistant_transcript_import_receipts",
+                "data_integrity_quarantine",
+                "data_integrity_quarantine_batches",
             } <= tables
             assert "sort_order" in {
                 column["name"] for column in inspect(engine).get_columns("chapters")
@@ -134,6 +139,44 @@ def test_current_database_bootstrap_is_idempotent():
             engine.dispose()
 
 
+def test_300a26_database_adds_revision_draft_identity_and_target_fk():
+    with TemporaryDirectory() as temp_dir:
+        database_path = Path(temp_dir) / "chapter-revision-draft.db"
+        url = _database_url(database_path)
+        engine = create_engine(url)
+        try:
+            initialized = bootstrap_database(engine, database_url=url)
+            assert initialized.schema_revision == HEAD_REVISION
+            config = alembic_config(url)
+            with engine.begin() as connection:
+                config.attributes["connection"] = connection
+                command.downgrade(config, "300a26_outline_drafts")
+            before = inspect(engine)
+            assert {
+                "draft_kind",
+                "target_chapter_id",
+                "base_chapter_version",
+            }.isdisjoint({column["name"] for column in before.get_columns("chapter_drafts")})
+
+            migrated = bootstrap_database(engine, database_url=url)
+
+            inspector = inspect(engine)
+            assert migrated.mode == "migrated"
+            assert migrated.schema_revision == HEAD_REVISION
+            assert {
+                "draft_kind",
+                "target_chapter_id",
+                "base_chapter_version",
+            } <= {column["name"] for column in inspector.get_columns("chapter_drafts")}
+            assert any(
+                foreign_key.get("referred_table") == "chapters"
+                and foreign_key.get("constrained_columns") == ["target_chapter_id"]
+                for foreign_key in inspector.get_foreign_keys("chapter_drafts")
+            )
+        finally:
+            engine.dispose()
+
+
 def test_stamped_300a23_database_repairs_missing_character_change_log_version():
     """A shipped model field was missing from the corresponding migration."""
 
@@ -145,6 +188,23 @@ def test_stamped_300a23_database_repairs_missing_character_change_log_version():
             initialized = bootstrap_database(engine, database_url=url)
             assert initialized.schema_revision == HEAD_REVISION
             with engine.begin() as connection:
+                connection.execute(text(
+                    "INSERT INTO projects (id, title, created_at, updated_at) "
+                    "VALUES ('project-1', 'Legacy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO chapters "
+                    "(id, project_id, title, content, cataloging_required, sort_order, "
+                    "created_at, updated_at) VALUES "
+                    "('chapter-1', 'project-1', 'Chapter', '', 0, 1, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO characters "
+                    "(id, project_id, name, created_at, updated_at) VALUES "
+                    "('character-1', 'project-1', 'Character', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ))
                 connection.execute(text(
                     "INSERT INTO character_change_logs "
                     "(id, character_id, chapter_id, chapter_version, change_type, "
@@ -263,6 +323,7 @@ def test_legacy_truncated_run_step_json_is_repaired_before_retry():
 
             Session = sessionmaker(bind=engine)
             with Session() as db:
+                db.add(Project(id="project-1", title="Project"))
                 run = AssistantRun(project_id="project-1", status="error", phase="tool")
                 db.add(run)
                 db.flush()
@@ -552,7 +613,11 @@ def test_failed_migration_returns_the_verified_backup(monkeypatch):
                 )
                 connection.execute(text("INSERT INTO projects VALUES ('p1', 'Preserve Me')"))
 
-            def fail_upgrade(*_args, **_kwargs):
+            def fail_upgrade(config, *_args, **_kwargs):
+                connection = config.attributes["connection"]
+                assert connection.exec_driver_sql(
+                    "PRAGMA foreign_keys"
+                ).scalar_one() == 0
                 raise RuntimeError("migration rehearsal failure")
 
             monkeypatch.setattr("app.database.bootstrap.command.upgrade", fail_upgrade)
@@ -569,6 +634,7 @@ def test_failed_migration_returns_the_verified_backup(monkeypatch):
                     connection.execute("SELECT title FROM projects").fetchone()[0] == "Preserve Me"
                 )
             with engine.connect() as connection:
+                assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
                 assert (
                     connection.execute(text("SELECT title FROM projects")).scalar_one()
                     == "Preserve Me"

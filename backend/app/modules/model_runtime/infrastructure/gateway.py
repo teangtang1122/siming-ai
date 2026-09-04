@@ -186,8 +186,10 @@ def _tool_delta_events_complete(events: list[dict]) -> bool:
     for call in calls.values():
         if not call["name"]:
             return False
+        if not call["arguments"]:
+            return False
         try:
-            arguments = json.loads(call["arguments"] or "{}")
+            arguments = json.loads(call["arguments"])
         except (TypeError, ValueError, json.JSONDecodeError):
             return False
         if not isinstance(arguments, dict):
@@ -305,6 +307,16 @@ def _apply_active_context_manifest(
     max_tokens: int | None,
 ) -> tuple[list[dict], dict | None, int | None]:
     """Inject the executor-selected manifest for every governed gateway call."""
+    # Checkpoint generation and other explicitly isolated runtime calls must
+    # not inherit a task manifest from the surrounding ContextVar.  In
+    # particular, a checkpoint request may execute while a chapter/planning
+    # manifest is active; injecting that project evidence would silently turn
+    # the isolated history compressor into another business-model request.
+    # Keep the marker in ``extra_body`` so provider adapters can strip it with
+    # the other internal ``moshu_*`` keys, but do not bind the active manifest,
+    # its output limit, or its rendered project context.
+    if bool((extra_body or {}).get("moshu_context_manifest_disabled")):
+        return messages, extra_body, max_tokens
     active = active_context_manifest()
     if active is None:
         return messages, extra_body, max_tokens
@@ -340,8 +352,9 @@ class LLMGateway:
     """Single entry point for all LLM calls.
 
     The gateway owns cross-provider behavior: resolving configured models,
-    stripping incompatible request parameters, applying timeouts, and retrying
-    transient failures. Adapters only translate one request to one provider.
+    rejecting unsupported tool requests, stripping compatible optional
+    parameters, applying timeouts, and retrying transient failures. Adapters
+    only translate one request to one provider.
     """
 
     @staticmethod
@@ -544,6 +557,7 @@ class LLMGateway:
         provider, model_name = cls._parse_model(model)
         if local_runtime_disabled(provider):
             raise LLMError(local_runtime_disabled_message())
+        safe_tools, safe_tool_choice, notes = sanitize_tool_request(provider, tools, tool_choice)
         config = cls._load_config(provider)
         adapter_cls = cls._get_adapter(provider)
         adapter = adapter_cls(
@@ -560,7 +574,6 @@ class LLMGateway:
             timeout_seconds,
         )
         attempts = normalize_retry_count(retry)
-        safe_tools, safe_tool_choice, notes = sanitize_tool_request(provider, tools, tool_choice)
 
         async def _call() -> dict:
             return await adapter.chat_completion(
@@ -754,6 +767,11 @@ class LLMGateway:
         provider, model_name = cls._parse_model(model)
         if local_runtime_disabled(provider):
             raise LLMError(local_runtime_disabled_message())
+        safe_tools, safe_tool_choice, notes = sanitize_tool_request(
+            provider,
+            tools,
+            tool_choice,
+        )
         config = cls._load_config(provider)
         adapter_cls = cls._get_adapter(provider)
         adapter = adapter_cls(
@@ -770,11 +788,6 @@ class LLMGateway:
             timeout_seconds,
         )
         attempts = normalize_retry_count(retry)
-        safe_tools, safe_tool_choice, notes = sanitize_tool_request(
-            provider,
-            tools,
-            tool_choice,
-        )
         return (
             messages, model_name, provider, adapter, max_tokens, timeout_seconds,
             call_extra_body, wait_timeout_seconds, attempts,

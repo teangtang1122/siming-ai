@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Badge,
@@ -705,7 +706,7 @@ function SkillsPage({ projectId }: SkillsPageProps) {
                 title={
                   <Space>
                     <Text strong>{version.title}</Text>
-                    <Text type="secondary">{new Date(version.created_at).toLocaleString()}</Text>
+                    <Text type="secondary">{(formatApiDateTime(version.created_at) || '时间未记录')}</Text>
                   </Space>
                 }
                 description={

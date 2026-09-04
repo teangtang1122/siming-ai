@@ -548,6 +548,24 @@ async def _generate_compact_concepts(
             ) from repair_error
 
 
+def _validate_generated_entity(
+    stage: str,
+    data: dict[str, Any],
+    target: dict[str, Any] | None,
+) -> None:
+    if not target:
+        return
+    target_type = _text(target.get("entity_type"))
+    candidates = [
+        record for record in _extract_records(stage, data)
+        if record["entity_type"] == target_type
+    ]
+    if not candidates:
+        raise ValueError(f"模型没有在阶段集合中返回可用的 {target_type} 实体；不能用旧资料代替生成结果")
+    if target.get("mode") == "existing" and len(candidates) != 1:
+        raise ValueError("指定实体修订必须恰好返回一个目标对象")
+
+
 async def _enhance_with_model(
     session: NovelCreationSession,
     stage: str,
@@ -606,15 +624,9 @@ async def _enhance_with_model(
         if not isinstance(parsed, dict):
             raise ValueError("模型返回的阶段 JSON 格式不合法")
         data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+        _validate_generated_entity(stage, data, entity_target)
         data = _normalize_stage_data(stage, data, baseline)
-        if entity_target:
-            target_type = _text(entity_target.get("entity_type"))
-            if not any(
-                record["entity_type"] == target_type
-                for record in _extract_records(stage, data)
-            ):
-                raise ValueError(f"模型没有返回可用的 {target_type} 实体")
-        else:
+        if not entity_target:
             _validate_stage(stage, data)
         metadata = {"attempt": attempt, "result_mode": "model", "warning": None}
         if parse_method != "direct":
@@ -646,15 +658,9 @@ async def _enhance_with_model(
                 raise ValueError("结构修复没有返回 JSON 对象")
             data = repaired.get("data") if isinstance(repaired.get("data"), dict) else repaired
             _raise_if_task_cancelled()
+            _validate_generated_entity(stage, data, entity_target)
             data = _normalize_stage_data(stage, data, baseline)
-            if entity_target:
-                target_type = _text(entity_target.get("entity_type"))
-                if not any(
-                    record["entity_type"] == target_type
-                    for record in _extract_records(stage, data)
-                ):
-                    raise ValueError(f"模型没有返回可用的 {target_type} 实体")
-            else:
+            if not entity_target:
                 _validate_stage(stage, data)
             metadata = {
                 "attempt": attempt + repair_attempt,
@@ -804,7 +810,7 @@ def _revision_error(tool: str, session: NovelCreationSession) -> dict[str, Any]:
         "tool": tool,
         "status": "error",
         "detail": "Novel creation session revision conflict",
-        "data": {"failure_class": "revision_conflict", "current_revision": int(session.revision or 0)},
+        "data": {"reason": "revision_conflict", "current_revision": int(session.revision or 0)},
     }
 
 
@@ -823,7 +829,19 @@ async def patch_creation_artifact_tool(db: Session, project_id: str, args: dict[
             validator=_validate_stage,
         )
         commit_session(db)
-        return {"tool": "patch_creation_artifact", "status": "ok", "detail": "Artifact patched", "data": result}
+        # Writes return a receipt; the complete artifact remains available via
+        # get_creation_artifact. Echoing it in the status envelope can exceed
+        # model capacity after the database has already committed the write.
+        return {
+            "tool": "patch_creation_artifact", "status": "ok", "detail": "Artifact patched",
+            "data": {
+                "session_id": str(session.id),
+                "artifact": _text(args.get("artifact")),
+                "revision": int(session.revision or 0),
+                "changes": result["changes"],
+                "affected_artifacts": result["affected_artifacts"],
+            },
+        }
     except Exception as exc:
         db.rollback()
         return {"tool": "patch_creation_artifact", "status": "error", "detail": str(exc), "data": None}

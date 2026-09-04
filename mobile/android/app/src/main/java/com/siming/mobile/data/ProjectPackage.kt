@@ -698,6 +698,14 @@ internal class MobileProjectPackageValidator(
                     REFERENCE_TARGETS[spec.key].orEmpty().forEach reference@{ (field, target) ->
                         val value = row[field]
                         if (value == null || value is JsonNull) return@reference
+                        if (
+                            spec.key == "narrative_checkpoints" &&
+                            (field == "chapter_id" || field == "chapter_snapshot_id")
+                        ) {
+                            // 旧包可能残留指向已删除章节/快照的检查点引用，导出端会清洗为 null；
+                            // 此处与后端一致放行，导入时由 materialize 的引用映射置为 null。
+                            return@reference
+                        }
                         val sourceId = (value as? JsonPrimitive)?.contentOrNull
                         require(sourceId != null && sourceId in identifiers[target].orEmpty()) {
                             "${spec.key}.$field 引用了项目包外的实体"
@@ -761,7 +769,8 @@ internal object MobileProjectPackageMaterializer {
     private fun mapReference(value: JsonElement, identifierMap: Map<String, String>): JsonElement {
         if (value is JsonNull) return value
         val sourceId = (value as? JsonPrimitive)?.contentOrNull ?: return value
-        return JsonPrimitive(identifierMap[sourceId] ?: sourceId)
+        val mapped = identifierMap[sourceId] ?: return JsonNull
+        return JsonPrimitive(mapped)
     }
 
     private fun mapNested(value: JsonElement, identifierMap: Map<String, String>): JsonElement = when (value) {

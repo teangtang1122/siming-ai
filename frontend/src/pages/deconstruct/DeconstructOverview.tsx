@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../../utils/dateTime'
 import { Button, Card, Col, Row, Space, Statistic } from 'antd'
 
 import { phaseLabel } from './constants'
@@ -27,7 +28,7 @@ export default function DeconstructOverview({
           <Space wrap>
             {reports.slice(0, 6).map((report) => (
               <Button key={report.id} size="small" onClick={() => onLoadReport(report.id)}>
-                {report.status === 'completed' ? '已完成' : phaseLabel(report.phase)} · {(report.total_words || 0).toLocaleString()}字 · {new Date(report.created_at || '').toLocaleString('zh-CN')}
+                {report.status === 'completed' ? '已完成' : phaseLabel(report.phase)} · {(report.total_words || 0).toLocaleString()}字 · {(formatApiDateTime(report.created_at || '') || '时间未记录')}
               </Button>
             ))}
           </Space>

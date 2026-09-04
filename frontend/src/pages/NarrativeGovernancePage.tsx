@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -323,7 +324,7 @@ export default function NarrativeGovernancePage({ projectId }: { projectId: stri
       <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} items={[
         { key: 'source', label: '来源章节', children: item.source_chapter_id ? `${chapterTitle.get(item.source_chapter_id) || item.source_chapter_id} · v${item.source_chapter_version || '?'}` : '未绑定' },
         { key: 'resolved', label: '修订章节', children: item.resolved_chapter_id ? `${chapterTitle.get(item.resolved_chapter_id) || item.resolved_chapter_id} · v${item.resolved_chapter_version || '?'}` : '尚未提交修订' },
-        { key: 'verified', label: '最后复检', children: item.verified_at ? new Date(item.verified_at).toLocaleString() : '尚未复检' },
+        { key: 'verified', label: '最后复检', children: item.verified_at ? (formatApiDateTime(item.verified_at) || '时间未记录') : '尚未复检' },
         { key: 'evidence', label: '发现依据', children: item.evidence || '未记录', span: 3 },
         { key: 'resolution_evidence', label: '修复证据', children: item.resolution_evidence || '尚未提交', span: 3 },
         { key: 'resolution', label: '解决说明', children: item.resolution_note || '未记录', span: 3 },
@@ -337,7 +338,7 @@ export default function NarrativeGovernancePage({ projectId }: { projectId: stri
             children: (
               <Space direction="vertical" size={0}>
                 <Text>{event.from_status ? `${statusLabel[event.from_status] || event.from_status} → ` : ''}{statusLabel[event.to_status] || event.to_status}</Text>
-                <Text type="secondary">{event.note || '状态更新'}{event.created_at ? ` · ${new Date(event.created_at).toLocaleString()}` : ''}</Text>
+                <Text type="secondary">{event.note || '状态更新'}{event.created_at ? ` · ${(formatApiDateTime(event.created_at) || '时间未记录')}` : ''}</Text>
               </Space>
             ),
           }))}
@@ -454,7 +455,7 @@ export default function NarrativeGovernancePage({ projectId }: { projectId: stri
             { key: 'coverage', label: `治理覆盖 ${coverage.assessed_chapters}/${coverage.total_chapters}`, children: <Table rowKey={(item) => `${item.chapter_id}:${item.chapter_version}`} loading={loading} size="small" pagination={{ pageSize: 15 }} dataSource={chapterReviews} columns={coverageColumns} /> },
             { key: 'characters', label: `角色动态 ${data?.character_states.length || 0}`, children: <List locale={{ emptyText: <Empty description="暂无角色动态" /> }} dataSource={data?.character_states || []} renderItem={(item) => <List.Item><Descriptions size="small" column={3} style={{ width: '100%' }} items={Object.entries(item).filter(([key, value]) => value && !['id', 'project_id', 'created_at'].includes(key)).slice(0, 9).map(([key, value]) => ({ key, label: fieldLabels[key] || key, children: String(value) }))} /></List.Item>} /> },
             { key: 'quality', label: `质量曲线 ${metricRows.length}`, children: <Table rowKey="key" scroll={{ x: 980 }} size="small" dataSource={metricRows} columns={[{ title: '章节', dataIndex: 'chapter_id', width: 160, render: (value: string, item?: Record<string, unknown>) => <Space direction="vertical" size={0}><Text>{chapterTitle.get(value) || value}</Text><Text type="secondary">v{String(item?.chapter_version || '?')}</Text></Space> }, { title: '总分', dataIndex: 'total_score', width: 88, render: (value?: number, item?: Record<string, unknown>) => value == null ? '—' : `${Math.round(value)} / ${String(item?.max_score || 80)}` }, ...scoreColumns]} /> },
-            { key: 'checkpoints', label: `世界线 ${data?.checkpoints.length || 0}`, children: <List loading={loading} locale={{ emptyText: <Empty description="暂无叙事检查点" /> }} dataSource={data?.checkpoints || []} renderItem={(item) => <List.Item actions={[<Button key="diff" size="small" onClick={() => showDiff(item)}>查看影响</Button>, <Popconfirm key="restore" title="回滚章节与结构化叙事状态？" description="系统会先自动创建回滚前安全点，仍建议确认目标检查点无误。" okText="确认回滚" cancelText="取消" onConfirm={() => restore(item)}><Button size="small" danger icon={<RollbackOutlined />}>回滚</Button></Popconfirm>]}><List.Item.Meta title={<Space><Text strong>#{item.sequence} {item.label}</Text>{item.review_summary && <Tag color="blue">含治理覆盖</Tag>}</Space>} description={`${triggerLabels[item.trigger_type] || '叙事更新'}${item.created_at ? ` · ${new Date(item.created_at).toLocaleString()}` : ''}`} /></List.Item>} /> },
+            { key: 'checkpoints', label: `世界线 ${data?.checkpoints.length || 0}`, children: <List loading={loading} locale={{ emptyText: <Empty description="暂无叙事检查点" /> }} dataSource={data?.checkpoints || []} renderItem={(item) => <List.Item actions={[<Button key="diff" size="small" onClick={() => showDiff(item)}>查看影响</Button>, <Popconfirm key="restore" title="回滚章节与结构化叙事状态？" description="系统会先自动创建回滚前安全点，仍建议确认目标检查点无误。" okText="确认回滚" cancelText="取消" onConfirm={() => restore(item)}><Button size="small" danger icon={<RollbackOutlined />}>回滚</Button></Popconfirm>]}><List.Item.Meta title={<Space><Text strong>#{item.sequence} {item.label}</Text>{item.review_summary && <Tag color="blue">含治理覆盖</Tag>}</Space>} description={`${triggerLabels[item.trigger_type] || '叙事更新'}${item.created_at ? ` · ${(formatApiDateTime(item.created_at) || '时间未记录')}` : ''}`} /></List.Item>} /> },
           ]} />
         </>
       )}

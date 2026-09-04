@@ -1,6 +1,6 @@
 """Pydantic schemas for character management."""
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -102,6 +102,20 @@ class CharacterVersionItem(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CharacterChapterAppearanceUpsert(BaseModel):
+    """Author-owned chapter appearance correction."""
+
+    appearance_type: Literal["出场", "提及", "回忆"] = Field(
+        ...,
+        description="本章中的确定性人物出现类型",
+    )
+    description: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="作者确认的本章人物关联说明",
+    )
 
 
 class RelationshipInput(BaseModel):

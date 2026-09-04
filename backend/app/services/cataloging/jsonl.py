@@ -5,6 +5,9 @@ import json
 import re
 from typing import Any
 
+from ...modules.continuity.domain.cataloging_contract import (
+    canonical_chapter_link_characters,
+)
 from ..story_granularity import (
     CHARACTER_STABLE_FIELDS,
     CHARACTER_STATE_FIELDS,
@@ -58,6 +61,14 @@ _AGGREGATE_CANDIDATE_KEYS = {
     "narrative_ledger",
 }
 _RESPONSE_COLLECTION_KEYS = ("candidates", "items", "results", "output", "response")
+_CHARACTER_STATE_GUARD_FIELDS = {
+    "background_before",
+    "appearance_before",
+    "appearance_evidence",
+    "age_before",
+    "age_evidence",
+    "items_or_assets_before",
+}
 _CANDIDATE_ATTEMPT_MARKER = re.compile(
     r"(?m)^=== CANDIDATE RESOLUTION(?: RETRY \d+)? ===\s*$"
 )
@@ -149,7 +160,8 @@ def expand_candidate_records(raw: dict[str, Any]) -> list[dict[str, Any]]:
             key: value
             for key, value in item.items()
             if key in {*CHARACTER_STABLE_FIELDS, *CHARACTER_STATE_FIELDS}
-            or key in {"character_name", "primary_name", "role_in_scene", "evidence"}
+            or key in _CHARACTER_STATE_GUARD_FIELDS
+            or key in {"id", "character_name", "primary_name", "role_in_scene", "evidence"}
         }
         has_profile = any(
             profile_payload.get(key) not in (None, "", [], {})
@@ -935,6 +947,9 @@ def _normalize_payload_fields(
                 or ""
             )
         _normalize_dimension_alias(payload)
+    if item_type == "chapter_link":
+        payload["characters"] = canonical_chapter_link_characters(payload)
+        payload.pop("character_names", None)
     if item_type.startswith("outline_"):
         raw_parent_id = str(payload.get("parent_id") or "").strip()
         if raw_parent_id and not _looks_like_uuid(raw_parent_id):

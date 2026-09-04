@@ -23,13 +23,20 @@ from app.ai.local_cli_adapter import (
     DEFAULT_CLI_MODELS,
     OPENCODE_FAMILY_PROVIDERS,
     CLILaunch,
+    CLITurnTerminal,
     CLIQuotaLimitError,
+    LocalCLIAdapter,
     communicate_with_cli_quota_detection,
     detect_cli_quota_error,
     effective_local_cli_model,
     ensure_opencode_logging_args,
     hidden_subprocess_kwargs,
     parse_cli_launch,
+)
+from app.ai.local_cli_prompt import (
+    prepare_direct_mcp_launch,
+    prepare_opencode_mcp_environment,
+    supports_direct_mcp,
 )
 from app.architecture.uow import commit_session
 from app.core.legacy_env import set_compatible_env
@@ -47,10 +54,9 @@ from app.modules.story.application.content_sync import ensure_chapter_mirror
 from app.prompts.cataloging_source import get_external_cataloging_system_prompt
 from app.services.cataloging.candidate_io import candidate_to_dict
 from app.services.cataloging.fact_store import fact_to_dict
-from app.services.cataloging.job_control import refresh_job_progress
+from app.services.cataloging.job_control import complete_cataloging_job, refresh_job_progress
 from app.services.cataloging.local_cli_mcp import (
     opencode_cataloging_permission_env,
-    preflight_opencode_cataloging,
 )
 from app.services.cataloging.local_cli_result import (
     agent_tool_event_count,
@@ -59,8 +65,14 @@ from app.services.cataloging.local_cli_result import (
 )
 from app.services.cataloging.orchestrator import job_to_dict, run_to_dict, sse_event
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
+from app.services.tool_category_state import (
+    activate_tool_categories,
+    create_tool_category_state,
+    read_tool_category_audits,
+    read_tool_category_state,
+    remove_tool_category_state,
+)
 from app.services.operation_runtime import (
-    finish_operation,
     record_operation_signal,
     register_operation_actions,
     unregister_operation_actions,
@@ -186,14 +198,6 @@ def ensure_local_cli_cataloging_worker(
     if not config:
         raise RuntimeError("未找到可用的本机 CLI 配置")
     provider = config.provider
-    mcp_preflight = None
-    if provider == "opencode_cli":
-        mcp_preflight = preflight_opencode_cataloging(config.cli_command)
-        if not mcp_preflight.get("ready"):
-            raise RuntimeError(
-                "OpenCode 无法开始 MCP 建档："
-                + str(mcp_preflight.get("detail") or "MCP 启动检查未通过")
-            )
     run = _active_agent_run(db, job, provider)
     job.execution_backend = "local_cli_agent"
     if job.status not in _TERMINAL_JOBS and job.status != "waiting_confirmation":
@@ -220,7 +224,6 @@ def ensure_local_cli_cataloging_worker(
         "agent_run_id": run.id,
         "provider": provider,
         "job_id": job.id,
-        "mcp_preflight": mcp_preflight,
     }
 
 
@@ -299,14 +302,14 @@ async def _cancel_cataloging_operation(job_id: str) -> None:
 
 
 async def _retry_cataloging_operation(job_id: str, provider: str) -> None:
-    from app.services.cataloging.job_control import first_blocking_run, refresh_job_progress, reset_run_for_retry
+    from app.services.cataloging.job_control import first_retryable_run, refresh_job_progress, reset_run_for_retry
 
     db = SessionLocal()
     try:
         job = db.query(CatalogingJob).filter(CatalogingJob.id == job_id).first()
         if not job or job.status in _TERMINAL_JOBS:
             return
-        run = first_blocking_run(db, job)
+        run = first_retryable_run(db, job)
         if run:
             reset_run_for_retry(db, job, run)
         else:
@@ -359,7 +362,7 @@ async def stream_local_cli_cataloging_job(project_id: str, job_id: str):
             ensure_local_cli_cataloging_worker(db, job)
         yield sse_event({
             "type": "cataloging_stage",
-            "message": "本机 CLI Agent 已连接，Siming MCP 建档工具已通过启动检查",
+            "message": "本机 CLI 建档任务状态已加载；实际工具执行进度以本轮回执为准",
             "job": job_to_dict(job),
         })
 
@@ -545,6 +548,7 @@ def _task_text(
     stage: str,
 ) -> str:
     shared_prompt = get_external_cataloging_system_prompt()
+    managed_override = ""
     if stage == "apply":
         stage_steps = f"""
 ## 本轮唯一任务
@@ -572,16 +576,25 @@ def _task_text(
 3. 调用 `report_agent_progress` 说明正在读取章节文件；随后裸读章节文件。
 4. 按共享提示词抽取不限数量的事实；调用 `save_external_cataloging_facts` 保存。
    事实必须充分覆盖章节，不得为了缩短 JSON 而漏信息。
+   工具参数 `facts` 必须直接传原生 JSON 数组，数组元素直接传对象；禁止先序列化成 JSON 字符串。
 5. 调用 `verify_external_cataloging_progress`，然后结束本轮。
 6. 本轮禁止调用 `save_external_cataloging_candidates`、`apply_pending_cataloging`，
    禁止处理下一章；候选阶段必须由司命启动下一次 CLI 回合。
 """
         else:
             phase = "candidates"
+            chapter_outline_type = (
+                "outline_update" if chapter.outline_node_id else "outline_create"
+            )
+            chapter_outline_target = (
+                f'，并逐字携带 id="{chapter.outline_node_id}"'
+                if chapter.outline_node_id
+                else ""
+            )
             fact_steps = """
 3. 本章事实已经保存。调用 `report_agent_progress` 说明正在恢复第二阶段。
-4. 调用 `list_cataloging_facts`，使用本任务中的 chapter_run_id
-   读取事实，再结合相关角色、世界观和大纲镜像生成候选。
+4. 调用 `list_cataloging_facts`，使用本任务中的 chapter_run_id；
+   has_more=true 时逐页使用 next_arguments，读完全部事实后再结合相关档案生成候选。
 """
             stage_steps = f"""
 ## 本轮执行步骤
@@ -596,17 +609,24 @@ def _task_text(
    - `run_id="{agent_run_id}"`
 2. 工具返回的 chapter_id 必须是 `{chapter.id}`。若不一致，立即停止并说明阻塞。
 {fact_steps}
-6. 直接读取本作品镜像中与事实有关的角色、世界观、大纲文件，合并旧信息后生成候选；
-   首次调用 `save_external_cataloging_candidates` 时，candidates 数组开头必须同时包含 chapter_summary、章级大纲，不能只保存摘要后结束；chapter_summary 必须包含非空 summary_text、完整 narrative_state、narrative_review，以及 `coverage_manifest={{"scene_count": 独立场景数, "characters": [全部连续性角色名], "worldbuilding": [全部关键设定标题], "relationships": [明确且影响连续性的关系对象], "character_profiles": [本章新建或稳定档案变化的角色名]}}`，所有空项也显式写 []，不得虚构补卡。系统按角色名、设定标题和关系端点逐项验收，不接受重复候选凑数。
-   同一角色必须统一使用稳定主名；别名和称谓只写 aliases，不得使用“主名（别名）”组合展示名或在同批候选里切换身份写法。
-   每个清单角色都要有 character_state_update，每项清单设定都要有 worldbuilding 候选并分别建立 chapter_link；每个独立场景都要创建含场景状态字段的 section 大纲。
-   解决伏笔或叙事债务时必须引用已有治理项的 resolves_item_id 或 resolves_dedupe_key；找不到稳定引用时标记待复核，不得按标题猜测关闭。
-   每个本章出场或状态变化的角色，都必须保存 `character_state_update`；其中 `appearance` 与 `age` 是逐章状态字段，即使只是沿用上一章当前值也要填写，发生时间线变化时必须改成新状态。
-7. 读取保存返回值；不完整时只补齐 missing_required_items 并再次保存，补交时不得重复 chapter_summary、章级大纲或其他已通过候选；auto_applied=true 时禁止再次 save/apply；等待确认时立即停止。
+6. 直接读取本作品镜像中与事实有关的角色、世界观、大纲文件，合并旧信息后分小批保存候选。
+7. 读取每次保存返回值；不完整时只补齐 missing_required_items；若清单漏项，可单独重发一条 chapter_summary 作幂等增补；若清单误把同一身份的别名或近义标题列成多个实体，则单独重发一条带 coverage_manifest_mode="replace" 的 chapter_summary，并给出五个字段齐全的纠正清单；若章节关联只缺少项目，可重发聚合 chapter_link 增补同一条记录；若既有 chapter_link 含清单外别名、误称或错误端点，则单独重发一条带 chapter_link_mode="replace" 的 chapter_link，并完整提供 characters、worldbuilding_titles、locations、items、events 五个数组；不得重发章级大纲；auto_applied=true 时禁止再次 save/apply；等待确认时立即停止。
 8. 仅在 auto_applied=true 后调用一次 `verify_external_cataloging_progress`，然后结束本轮。
 9. 验证完成后必须立即结束当前 CLI 回合。禁止重复保存、重复应用，禁止再次领取章节。
-10. 验证完成后必须立即结束当前 CLI 回合。禁止再次调用
-    `get_next_external_cataloging_chapter`，禁止处理下一章；下一章由司命启动全新的 CLI 回合。
+"""
+            managed_override = f"""
+## 司命托管候选事务约束（优先于共享提示词）
+1. `candidates` 必须是原生 JSON 数组，不得传 JSON 字符串或聚合包装对象。每次调用最多 3 个候选；首次调用必须恰好 2 个并依次为：
+   - 一条完整、实质性的 `chapter_summary`；
+   - 一条 node_type="chapter" 的 `{chapter_outline_type}`{chapter_outline_target}。
+   首次不得夹带其他候选；后续不得重复章级大纲。只有 missing_required_items 明确要求修正 coverage_manifest 时，才可单独重发一条 chapter_summary，系统会更新同一张摘要卡而不是新增重复卡。漏项直接增补；若误列别名或近义标题，设置 coverage_manifest_mode="replace" 并提交完整的 scene_count、characters、worldbuilding、relationships、character_profiles，替换操作不得与任何其他候选同批。既有聚合 chapter_link 含清单外别名、误称或错误端点时，单独提交 chapter_link_mode="replace"，并完整给出 characters、worldbuilding_titles、locations、items、events 五个数组；系统替换同一条关联候选，不新增第二条。
+2. chapter_summary.coverage_manifest.scene_count 必须逐字采用 `chapter_overview.payload.scenes` 的数组长度，不得按 outline_fact 数量、段落或主观判断重算。section 节点总数必须恰好等于这个 scene_count；多个 outline_fact 属于同一场景时合并进同一个 section。
+3. coverage_manifest.characters 只列稳定、可持续识别的人物。未具名岗位、临时称谓或泛指参与者只写进摘要、场景与章节事件，不得创建或更新角色、状态、关系、档案或角色章节关联。`栏目负责人`、`综合科记录人` 这类未具名岗位不是角色卡。
+4. 先读当前 worldbuilding 镜像。coverage_manifest.worldbuilding 只使用当前 active 设定的精确标题；UUID 只能放在 `id` 字段，不能当标题；别名、近义词和同一设定的拆分说法不能重复列入。事实中的 canonical_title_hint 是事实标签；应根据编号、正文和现有内容解析到 active 条目的精确 id/title。两者不同时，在承接该事实的世界观候选用 source_fact_titles 列出原事实标签，显式声明映射。已有设定使用精确 id 的 update/timeline，确有全新稳定规则时才 create。
+5. 全章只保存一条聚合 `chapter_link`，一次列全稳定角色、世界观标题、章级大纲、地点、物件和事件；不得按角色、设定或事件各建一条 link。characters 中每个角色只出现一次，由你选择一个 appearance_type。
+6. character_relationship 仅用于正文明确确认或改变、且会持续影响后文的稳定关系；同一有向角色对只能选择一个当前 relationship_type，不得同时声明近义类型。本章没有这种变化时 relationships=[] 且不生成关系候选。character_profiles 仅列全新角色或本章确有稳定档案变化的角色；普通出场、提及和当前状态变化不要求 character_update。
+7. character_state_update 只使用已读角色卡中的稳定主名；只提交本章有依据的变化字段。电话或消息参与者未明示实时地点时省略 current_location，不得把通话另一端的场景地点写给该人物。appearance 或 age 仅在正文明确变化时提交；修改已有值必须附逐字复制当前值的 appearance_before/age_before，以及本章正文逐字摘录的 appearance_evidence/age_evidence，否则省略。items_or_assets 是整字段替换：已有非空值且本章确需更新时，必须用 items_or_assets_before 逐字复制当前完整值，新值也必须逐字包含旧值并在其后追加本章状态；不得把同场其他人物经手的物件归给当前角色。已有角色必须用真实 id 更新，禁止同名 character_create。解决叙事治理项必须带真实 resolves_item_id 或 resolves_dedupe_key；找不到就保留待复核，不得按标题猜测关闭。
+8. 每次保存后只根据返回的 missing_required_items 组织下一批，仍然最多 3 个。除用于补充 coverage_manifest 的单条 chapter_summary 或补充遗漏关联的单条聚合 chapter_link 外，已通过候选不得重发；auto_applied=true 后只验证一次并结束。托管自动模式会在候选完整时由工具事务内应用，禁止调用 apply_pending_cataloging。
 """
 
     return f"""# 司命本机 CLI 作品建档任务
@@ -636,10 +656,18 @@ def _task_text(
 - 每个 MCP 调用都必须带 `project_id="{job.project_id}"` 和 `run_id="{agent_run_id}"`。
 - 不要创建 candidates.jsonl、临时档案或其他旁路数据文件。
 
+## 工具类别
+每个新模型回合最初只有 `set_tool_categories`。先根据本轮任务选择类别，
+例如建档工具属于 cataloging，上报计划和进度属于 agent_runtime。
+类别切换会立即结束当前模型步骤；下一步骤使用已经开放的工具，不要再次选择相同类别。
+下方“立即调用”的业务步骤均在所需类别已开放后执行。
+
 {stage_steps}
 
 ## 共享建档提示词
 {shared_prompt}
+
+{managed_override}
 
 ## 输出约束
 不要在最终回复里复制章节、完整事实或完整候选。只简短说明本章处理结果；正式数据必须已经通过 MCP 保存。
@@ -659,7 +687,8 @@ def _task_prompt(
         "你是司命本机作品建档 Agent。本轮是全新的单章任务，禁止沿用任何旧会话或旧章节绑定。\n"
         f"当前阶段={stage}；job_id={job.id}；agent_run_id={agent_run_id}；"
         f"chapter_run_id={run.id}；chapter_id={chapter.id}；章节={chapter.title}。\n"
-        "第一步必须调用 report_agent_plan，然后严格按附件任务文件执行 MCP 工具链。"
+        "首先按当前开放类别调用 set_tool_categories；类别已开放时直接调用 report_agent_plan，"
+        "然后严格按附件任务文件执行 MCP 工具链。"
         "不得回答“请告知章节”“是否沿用任务”或任何澄清问题。\n"
         "唯一允许读取的任务文件如下；缓存、历史或目录里的其他任务文件全部忽略：\n"
         f"{task_file}\n"
@@ -747,15 +776,8 @@ async def _run_cli_turn(
         raise RuntimeError(f"未找到本机 CLI 命令：{command}")
     model = effective_local_cli_model(
         config.provider,
-        config.default_model or DEFAULT_CLI_MODELS.get(config.provider, config.provider),
-    )
-    launch = _build_cataloging_cli_launch(
-        config=config,
-        prompt=_task_prompt(task_file, job, run, chapter, agent_run_id, stage),
-        model=model,
-        task_file=task_file,
-        project_folder=project_folder,
-        run=run,
+        (job.model.split(":", 1)[1] if job.model and ":" in job.model else job.model)
+        or config.default_model or DEFAULT_CLI_MODELS.get(config.provider, config.provider),
     )
     env = os.environ.copy()
     env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")
@@ -770,10 +792,67 @@ async def _run_cli_turn(
     }
     for suffix, value in managed_env.items():
         set_compatible_env(f"SIMING_{suffix}", value, target=env)
-    if config.provider == "opencode_cli":
-        # OpenCode supports a runtime-only permission override. Keep the managed
-        # cataloging child read-only except for the ten Siming cataloging tools.
-        env["OPENCODE_PERMISSION"] = opencode_cataloging_permission_env()
+
+    category_file = create_tool_category_state()
+    try:
+        for _step in range(8):
+            state = read_tool_category_state(category_file)
+            prompt = _task_prompt(task_file, job, run, chapter, agent_run_id, stage)
+            prompt += "\n当前已经开放的工具类别：" + json.dumps(
+                state["active_categories"], ensure_ascii=False,
+            ) + "。已开放时直接执行本阶段业务，不要重复选择相同类别。"
+            launch = _build_cataloging_cli_launch(
+                config=config, prompt=prompt, model=model, task_file=task_file,
+                project_folder=project_folder, run=run,
+            )
+            step_env = dict(env)
+            if config.provider in OPENCODE_FAMILY_PROVIDERS:
+                step_env = prepare_opencode_mcp_environment(
+                    provider=config.provider, cwd=str(run_dir), base_env=step_env,
+                    permission_pack="cataloging_worker", project_id=job.project_id,
+                    tool_category_state_file=category_file,
+                    permissions=json.loads(opencode_cataloging_permission_env()),
+                )
+            elif supports_direct_mcp(config.provider):
+                launch, step_env = prepare_direct_mcp_launch(
+                    LocalCLIAdapter(api_key="", base_url=config.provider), launch,
+                    cwd=str(run_dir), env=step_env,
+                    permission_pack="cataloging_worker", project_id=job.project_id,
+                    tool_category_state_file=category_file,
+                )
+            try:
+                result = await _execute_cataloging_cli_step(
+                    resolved=resolved, launch=launch, env=step_env,
+                    project_folder=project_folder, job=job, run=run, chapter=chapter,
+                    model=model, agent_run_id=agent_run_id, stage=stage,
+                    category_file=category_file,
+                )
+            except CLITurnTerminal as exc:
+                if not str(exc).startswith("set_tool_categories:"):
+                    raise
+                result = (0, exc.stdout, exc.stderr)
+            latest = read_tool_category_state(category_file)
+            if latest["version"] > latest["active_version"]:
+                activate_tool_categories(category_file)
+                continue
+            return result
+        raise RuntimeError("建档 Agent 工具类别切换次数达到上限，未完成当前章节")
+    finally:
+        try:
+            (run_dir / f"{run.chapter_order + 1:04d}-{stage}-category-audit.json").write_text(
+                json.dumps(read_tool_category_audits(category_file), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        finally:
+            remove_tool_category_state(category_file)
+
+
+async def _execute_cataloging_cli_step(
+    *, resolved: str, launch: CLILaunch, env: dict[str, str], project_folder: Path,
+    job: CatalogingJob, run: CatalogingChapterRun, chapter: Chapter, model: str,
+    agent_run_id: str, stage: str, category_file: str,
+) -> tuple[int, str, str]:
+    """Execute one model step; a committed category change stops its process."""
     process = await asyncio.create_subprocess_exec(
         resolved,
         *launch.args,
@@ -813,8 +892,18 @@ async def _run_cli_turn(
             timeout_seconds=None,
             operation_id=job.operation_id,
             external_activity_probe=lambda: _latest_agent_event_at(agent_run_id),
+            terminal_probe=LocalCLIAdapter._terminal_turn_probe({
+                "local_cli_mcp_authorized": True,
+                "local_cli_mcp_tool_category_state_file": category_file,
+            }),
             poll_seconds=poll_seconds,
-            stop_on_permission_request=True,
+            # This worker owns an explicitly authorized, process-scoped MCP
+            # configuration. Its stdout/stderr may contain arbitrary novel
+            # prose read from disk, including sentences such as "是否允许摘录".
+            # Treating those words as a transport approval prompt corrupts
+            # story data into process control. Real MCP denial is returned by
+            # the structured tool result; liveness remains monitor-owned.
+            stop_on_permission_request=False,
         )
     except CLIQuotaLimitError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -835,29 +924,8 @@ async def _run_cli_turn(
 def _finalize_completed_sidecars(db: Session, job: CatalogingJob) -> None:
     """Close the Agent/operation records after MCP finishes the last chapter."""
 
-    # CatalogingJob is the authoritative state.  Project it first, then commit
-    # the AgentRun and OperationRun sidecars together.  Previously the AgentRun
-    # helper committed before finish_operation(), leaving the latter update to
-    # be rolled back when this worker session closed.
-    refresh_job_progress(db, job)
-    if job.agent_run_id:
-        agent_run = db.query(AgentRun).filter(AgentRun.id == job.agent_run_id).first()
-        if agent_run and agent_run.status != "completed":
-            update_run_status(db, agent_run.id, "completed", summary="作品建档完成")
+    complete_cataloging_job(db, job)
     if job.operation_id:
-        completed = int(job.completed_chapters or job.total_chapters or 0)
-        finish_operation(
-            job.operation_id,
-            message=f"作品建档完成，共处理 {completed} 章",
-            outcome="completed_with_tools",
-            result={
-                "summary": f"作品建档完成，共处理 {completed} 章",
-                "completed": [f"{completed} 章已完成"],
-                "incomplete": [],
-            },
-            attention={},
-            db=db,
-        )
         unregister_operation_actions(job.operation_id)
     commit_session(db)
 

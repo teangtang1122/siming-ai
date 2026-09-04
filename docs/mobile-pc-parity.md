@@ -26,7 +26,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 | `character.ai_config` | GET/PUT /characters/{character_id}/ai-config | 调用 PC 权威接口 | 修订队列回放 | 尚未支持 | 部分对齐 |
 | `character.relationships` | GET /characters/relationships; PUT /characters/{character_id}/relationships | 调用 PC 权威接口 | 修订队列回放 | 明确降级实现 | 部分对齐 |
 | `character.versions` | GET /characters/{character_id}/versions[/{version_id}] | 调用 PC 只读接口 | 明确阻止 | 尚未支持 | 部分对齐 |
-| `context.preview` | preview_writing_context | 调用 PC 权威接口 | 明确阻止 | 明确降级实现 | 部分对齐 |
+| `context.selection` | prepare_task_context -> search_task_context -> submit_context_evidence | 调用 PC 权威接口 | 明确阻止 | 明确降级实现 | 部分对齐 |
 | `governance.items` | /narrative-governance/items[/{type}/{id}] | 调用 PC 权威接口 | 修订队列回放 | 明确降级实现 | 部分对齐 |
 | `novel_creation.session` | /api/v1/novel-creation/* | 调用 PC 权威接口 | 本地副本 | 明确降级实现 | 部分对齐 |
 | `sync.conflicts` | POST /api/v1/sync/conflicts/{conflict_id}/resolve | 调用 PC 权威接口 | 明确阻止 | 不适用 | 已对齐 |
@@ -235,18 +235,18 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **已知缺口：**
   - Android 当前只读查看，尚未提供角色历史恢复。
 
-### `context.preview` — 写章前上下文预检
+### `context.selection` — 模型驱动的正文/大纲上下文检索与复核
 
-- **权威入口：** `preview_writing_context`（`pc_workspace_tool`）
+- **权威入口：** `prepare_task_context -> search_task_context -> submit_context_evidence`（`pc_workspace_tool`）
 - **状态：** 部分对齐
 - **副作用：** 无写入副作用
 - **幂等策略：** `read_only`；只读或无需防重
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口：通过 PC workspace assistant 调用同一工具。
-- **Android 离线：** 明确阻止：没有模型执行路由时只保留资料缓存，不运行上下文预检。
-- **Android 独立 Agent：** 明确降级实现：已共享版本化策略、必选 coverage、全局 token 预算、source hash、选择指纹和 stale 校验；写章实际消费的完整清单会随运行持久化。Android 独立模式仍以本地词法检索替代 PC FTS/向量检索，不支持 pinned chunks，也不写入 PC 数据库级 ContextManifest 审计。
+- **Android 离线：** 明确阻止：没有模型执行路由时只保留资料缓存，不运行模型检索与选择流程。
+- **Android 独立 Agent：** 明确降级实现：正文与大纲规划共享 PC 导出的任务策略、精简基线、模型检索、精确来源复核、动态模型容量、source hash、一次性不可猜测选择令牌和 stale 校验。模型选中的精确来源不设固定单条字符或来源数量上限，仅受当前模型可用输入容量约束。Android 独立模式以模型发起的本地词法检索替代 PC 混合检索，不支持 pinned chunks，也不写入 PC 数据库级 ContextManifest 审计。
 - **已知缺口：**
-  - 手机独立预检尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计；实际写章清单已在本机运行日志中持久化。
+  - 手机独立检索尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计；实际写章清单已在本机运行日志中持久化。
 
 ### `governance.items` — 伏笔、叙事债务及生命周期状态操作
 
@@ -331,7 +331,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 明确阻止：无模型执行路由时只编辑资料，不生成正文。
-- **Android 独立 Agent：** 明确降级实现：写章前创建或校验 ContextManifest，生成前持久化运行、成功后原子保存草稿与完整清单；同一请求使用确定性 run ID，应用重启和断流恢复到同一未保存草稿。正式保存与建档由作者操作。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。
+- **Android 独立 Agent：** 明确降级实现：写章前创建或校验 ContextManifest，并在生成开始前一次性消费选择令牌；生成前持久化运行、成功后原子保存草稿与完整清单。同一请求使用确定性 run ID，应用重启和断流恢复到同一未保存草稿。正式保存与建档由作者操作。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。
 - **已知缺口：**
   - 手机独立写章已具备持久 ContextManifest、取消状态和跨重启防重；仍缺 PC 语义检索和数据库级 AgentRun 审计。
 
@@ -348,7 +348,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **已知缺口：**
   - 手机独立生成器尚未绑定 PC ContextManifest 和运行审计。
 
-### `writer.outline` — 生成结构化大纲节点
+### `writer.outline` — 生成并由作者确认结构化大纲提案
 
 - **权威入口：** `outline_writer`（`pc_workspace_tool`）
 - **状态：** 部分对齐
@@ -357,9 +357,9 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 明确阻止：没有手机直连模型时不运行生成器。
-- **Android 独立 Agent：** 明确降级实现：提示词和输出工具共享，批次限制与本地上下文选择仍由 Kotlin 实现。
+- **Android 独立 Agent：** 明确降级实现：使用 PC 导出的提示词、输出工具和 outline_planning 策略，生成开始前一次性消费选择令牌，并持久化单一 pending 提案；支持跨重启恢复、编辑、确认、确认后新回合写作、重新生成和放弃。提案超量或结构非法时整体拒绝，不静默截断；确认时按卷、章、节的依赖顺序写入。确认前不写正式大纲，并以正式大纲指纹拒绝过期提案。
 - **已知缺口：**
-  - 手机独立生成器尚未绑定 PC ContextManifest 和运行审计。
+  - 手机独立检索使用本地词法索引，且 ContextManifest/OutlineDraft 审计保存在本机而不是 PC 数据库；连接 Gateway 时使用 PC 权威实现。
 
 ### `writer.worldbuilding` — 生成结构化世界观条目
 

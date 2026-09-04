@@ -189,7 +189,7 @@ def test_existing_fifteen_chapter_opening_outline_remains_usable_after_upgrade()
     assert final["ready"] is True
 
 
-def test_final_review_uses_actual_chapter_ids_and_self_heals_stale_contract_results():
+def test_structure_validation_uses_actual_ids_without_replacing_saved_review():
     db = _db()
     session = _ready_session(db)
     draft = deepcopy(session.draft_json)
@@ -214,7 +214,39 @@ def test_final_review_uses_actual_chapter_ids_and_self_heals_stale_contract_resu
     assert final["blocking"] == []
 
     serialized = serialize_session(session)
-    assert serialized["draft"]["stages"]["final_review"]["data"]["ready"] is True
+    assert serialized["draft"]["stages"]["final_review"]["data"] == draft["stages"]["final_review"]["data"]
+    assert build_project_materialization_payload(session)["outline"]
+
+
+@pytest.mark.parametrize("source", ["author", "model"])
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_saved_final_review_round_trips_through_artifact_and_session(source, confirmed):
+    db = _db()
+    session = _ready_session(db)
+    review = {
+        "ready": True,
+        "blocking": [],
+        "warnings": ["真实模型曾超时，不能算作完成", "原始证据未校准，作者要求继续复核"],
+        "counts": {"saved_chapters": 8, "cataloged_chapters": 8},
+    }
+    save_stage(session, "final_review", review, source=source, confirm=confirmed)
+    db.commit()
+    identity = session.id
+    db.expire_all()
+    session = db.get(NovelCreationSession, identity)
+    before = deepcopy(session.draft_json)
+    revision = session.revision
+
+    artifact = serialize_creation_artifact(session, "final_review")
+    whole_session = serialize_session(session)
+
+    assert artifact["data"] == review
+    assert whole_session["draft"]["stages"]["final_review"]["data"] == review
+    assert whole_session["draft"]["stages"]["final_review"]["source"] == source
+    assert session.draft_json == before
+    assert session.revision == revision
+    # Live structural validation is still used at materialization, without
+    # laundering the saved author's observations into a generated review.
     assert build_project_materialization_payload(session)["outline"]
 
 
@@ -503,7 +535,7 @@ def test_serialize_incomplete_work_keeps_context_selector_available():
 
     assert serialized["id"] == session.id
     assert serialized["display_title"] == "旧立项草稿"
-    assert serialized["draft"]["stages"]["final_review"]["data"]["ready"] is True
+    assert serialized["draft"]["stages"]["final_review"]["data"]["ready"] is False
 
 
 def test_artifact_undo_restores_latest_checkpoint_and_keeps_dependents_stale():
@@ -655,6 +687,25 @@ def test_project_materialization_keeps_macro_only_and_first_three_detailed():
     assert project_payload["forbidden_patterns"] == ["禁止无证据反转"]
 
 
+@pytest.mark.parametrize("rules", ["保持限知\n先核实证据", ["保持限知", "先核实证据"], "", []])
+def test_finalization_preserves_author_style_rules_as_text_or_lines(rules):
+    db = _db()
+    session = _ready_session(db)
+    draft = deepcopy(session.draft_json)
+    draft["stages"]["world_style"]["data"].update({
+        "style_rules": rules,
+        "forbidden_patterns": rules,
+    })
+    session.draft_json = draft
+    with patch("app.services.workspace.tools.novel_creation._is_real_session", return_value=False):
+        result = asyncio.run(finalize_creation_session(db, "", {"session_id": session.id}))
+    assert result["status"] == "ok"
+    project = db.query(Project).one()
+    expected = ("\n".join(rules) if isinstance(rules, list) else rules) or None
+    assert project.rhetoric_guidelines == expected
+    assert project.forbidden_sentence_patterns == expected
+
+
 def test_v2_apply_is_idempotent_and_persists_profiles_relations_and_sections():
     db = _db()
     session = _ready_session(db)
@@ -729,7 +780,7 @@ def test_creation_snapshot_and_session_patch_are_revision_protected():
         "changes": {"user_brief": "不应覆盖"},
     }))
     assert conflict["status"] == "error"
-    assert conflict["data"]["failure_class"] == "revision_conflict"
+    assert conflict["data"]["reason"] == "revision_conflict"
 
     snapshot = asyncio.run(get_creation_snapshot(db, "", {"session_id": session.id}))
     assert snapshot["status"] == "ok"
@@ -867,6 +918,52 @@ def test_entity_generation_prompt_uses_only_target_and_explicit_references():
         for item in session.draft_json["stages"]["characters"]["data"]["characters"]
     }
     assert "未召回角色-079" in saved_names
+    # Read the entity directly after a fresh session load, without a list call
+    # that would rebuild its projection from the artifact and hide lost writes.
+    from app.services.novel_creation_entities import get_creation_entity
+    db.expire_all()
+    saved_entity = get_creation_entity(db, target_id)
+    assert saved_entity.data_json["goal"] == "找到母亲并保护周渡"
+    assert saved_entity.revision == session.revision
+
+
+@pytest.mark.parametrize("bad_payload", [
+    {"world_style": {"worldbuilding": [{"title": "失落的修改", "content": "新生成内容"}]}},
+    {"worldbuilding": []},
+])
+def test_entity_generation_cannot_report_old_baseline_as_new_model_output(bad_payload):
+    db = _db()
+    session = _ready_session(db)
+    from app.services.novel_creation_entities import list_creation_entities
+    entities = list_creation_entities(session, artifact="world_style")
+    db.commit()
+    target = entities[0]
+    before = deepcopy(session.draft_json["stages"]["world_style"]["data"])
+    before_revision = session.revision
+
+    def invalid_stream(**_kwargs):
+        async def generate():
+            yield json.dumps({"data": bad_payload}, ensure_ascii=False)
+        return generate()
+
+    with patch(
+        "app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion",
+        new=MagicMock(side_effect=invalid_stream),
+    ):
+        result = asyncio.run(run_creation_artifact_generation(db, "", {
+            "session_id": session.id,
+            "stage": "world_style",
+            "entity_id": target["id"],
+            "operation": "refine",
+            "instruction": "修改所选设定",
+            "expected_revision": before_revision,
+            "model": "openai:test",
+            "use_model": True,
+        }))
+    db.refresh(session)
+    assert result["status"] == "error"
+    assert session.revision == before_revision
+    assert session.draft_json["stages"]["world_style"]["data"] == before
 
 
 def test_generation_does_not_auto_select_the_first_concept():

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.bootstrap.composition import configure_application_services
@@ -66,6 +66,7 @@ from app.services.project_package_service import (
 
 CHAPTER_SENTINEL = "CHAPTER_BODY_SENTINEL_56_DO_NOT_LEAK"
 DRAFT_SENTINEL = "UNSAVED_DRAFT_SENTINEL_56_DO_NOT_LEAK"
+DISCARDED_DRAFT_SENTINEL = "DISCARDED_DRAFT_SENTINEL_56_DO_NOT_EXPORT"
 SNAPSHOT_SENTINEL = "SNAPSHOT_SENTINEL_56_DO_NOT_LEAK"
 SUMMARY_SENTINEL = "SUMMARY_SENTINEL_56_DO_NOT_LEAK"
 MATERIAL_SENTINEL = "MATERIAL_SENTINEL_56_DO_NOT_LEAK"
@@ -82,6 +83,16 @@ def _database(path: Path):
     )
     Base.metadata.create_all(bind=engine)
     return engine, sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+
+def _enable_sqlite_foreign_keys(engine) -> None:
+    """Enable SQLite foreign-key enforcement for one engine (matches production)."""
+
+    @event.listens_for(engine, "connect")
+    def _set_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 def _seed_project(db: Session, root: Path, *, project_id: str = "source-project") -> Path:
@@ -104,6 +115,7 @@ def _seed_project(db: Session, root: Path, *, project_id: str = "source-project"
         summary="开篇结构",
         actual_summary=SUMMARY_SENTINEL,
         status="in_progress",
+        cataloging_status="cataloged",
     )
     chapter = Chapter(
         id="chapter-1",
@@ -139,6 +151,14 @@ def _seed_project(db: Session, root: Path, *, project_id: str = "source-project"
         status="pending",
         title="第二章草稿",
         content=DRAFT_SENTINEL,
+    )
+    discarded_draft = ChapterDraft(
+        id="draft-discarded",
+        project_id=project_id,
+        saved_chapter_id=None,
+        status="discarded",
+        title="已丢弃草稿",
+        content=DISCARDED_DRAFT_SENTINEL,
     )
     character_a = Character(
         id="character-a",
@@ -301,6 +321,7 @@ def _seed_project(db: Session, root: Path, *, project_id: str = "source-project"
             snapshot,
             summary,
             draft,
+            discarded_draft,
             character_a,
             character_b,
             voice,
@@ -417,6 +438,7 @@ def test_full_and_structure_packages_have_strict_author_data_boundaries(seeded):
     full_plaintext = b"\n".join(full_entries.values()).decode("utf-8", errors="ignore")
     assert CHAPTER_SENTINEL in full_plaintext
     assert DRAFT_SENTINEL in full_plaintext
+    assert DISCARDED_DRAFT_SENTINEL not in full_plaintext
     assert MATERIAL_SENTINEL in full_plaintext
     for excluded in (RAG_SENTINEL, CONVERSATION_SENTINEL, TASK_SENTINEL, MODEL_OVERRIDE_SENTINEL):
         assert excluded not in full_plaintext
@@ -445,6 +467,19 @@ def test_full_roundtrip_cross_database_restores_author_data_and_rebuilds_indexes
     tmp_path: Path,
 ):
     source_db, _factory, content = seeded
+    source_db.add(
+        OutlineNode(
+            id="planning-section-old",
+            project_id="source-project",
+            parent_id="outline-1",
+            node_type="section",
+            title="立项旧场景",
+            summary="已经被正文建档替换的规划",
+            status="pending",
+            sort_order=1000,
+        )
+    )
+    source_db.commit()
     payload = _export_bytes(source_db, "source-project", "full")
     source_path = _write_package(tmp_path / f"book{PACKAGE_EXTENSION}", payload)
 
@@ -469,6 +504,18 @@ def test_full_roundtrip_cross_database_restores_author_data_and_rebuilds_indexes
         assert chapter.id == str(uuid.uuid5(PACKAGE_ID_NAMESPACE, f"{key}:chapters:chapter-1"))
         assert destination.query(ChapterSnapshot).one().content == SNAPSHOT_SENTINEL
         assert destination.query(ChapterSummary).one().summary_text == SUMMARY_SENTINEL
+        restored_outline = destination.query(OutlineNode).filter_by(
+            project_id=project_id,
+            node_type="chapter",
+        ).one()
+        assert restored_outline.cataloging_status == "cataloged"
+        assert restored_outline.summary == SUMMARY_SENTINEL
+        assert restored_outline.actual_summary == SUMMARY_SENTINEL
+        assert restored_outline.source_chapter_id == chapter.id
+        assert destination.query(OutlineNode).filter_by(
+            project_id=project_id,
+            node_type="section",
+        ).count() == 0
         draft = destination.query(ChapterDraft).one()
         assert draft.content == DRAFT_SENTINEL
         assert draft.saved_chapter_id is None
@@ -491,6 +538,122 @@ def test_full_roundtrip_cross_database_restores_author_data_and_rebuilds_indexes
         assert destination.query(ScheduledTask).count() == 0
         assert destination.query(NovelCreationStageRun).count() == 0
         assert destination.query(ProjectPackageImportReceipt).count() == 1
+    finally:
+        validated.cleanup()
+        destination.close()
+        Base.metadata.drop_all(bind=destination_engine)
+        destination_engine.dispose()
+
+
+def test_full_package_import_with_foreign_keys_rebuilds_rag_index(seeded, tmp_path: Path):
+    """Foreign-key enabled import rebuilds the RAG index without UOW ordering failures."""
+    source_db, _factory, _content = seeded
+    payload = _export_bytes(source_db, "source-project", "full")
+    source_path = _write_package(tmp_path / f"fk-full{PACKAGE_EXTENSION}", payload)
+
+    engine = create_engine(
+        f"sqlite:///{(tmp_path / 'fk-destination.db').as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+    _enable_sqlite_foreign_keys(engine)
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    destination = factory()
+    validated = ProjectPackageValidator(source_path).validate()
+    try:
+        outcome = ProjectPackageImporter(
+            destination,
+            validated,
+            idempotency_key=uuid.uuid4(),
+            new_title="fk-import",
+        ).restore()
+        destination.commit()
+        project_id = outcome.result["project_id"]
+        assert destination.query(RagDocument).filter_by(project_id=project_id).count() > 0
+        assert destination.query(RagChunk).filter_by(project_id=project_id).count() > 0
+    finally:
+        validated.cleanup()
+        destination.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_full_package_accepts_stale_narrative_checkpoint_references(seeded, tmp_path: Path):
+    source_db, _factory, _content = seeded
+    checkpoint = source_db.query(NarrativeCheckpoint).one()
+    checkpoint.chapter_id = "missing-chapter"
+    checkpoint.chapter_snapshot_id = "missing-snapshot"
+    source_db.commit()
+
+    payload = _export_bytes(source_db, "source-project", "full")
+    source_path = _write_package(tmp_path / f"stale{PACKAGE_EXTENSION}", payload)
+    validated = ProjectPackageValidator(source_path).validate()
+
+    checkpoint_row = validated.rows["narrative_checkpoints"][0]
+    assert checkpoint_row["chapter_id"] is None
+    assert checkpoint_row["chapter_snapshot_id"] is None
+
+    destination_engine, destination_factory = _database(tmp_path / "destination.db")
+    destination = destination_factory()
+    try:
+        outcome = ProjectPackageImporter(
+            destination,
+            validated,
+            idempotency_key=uuid.uuid4(),
+            new_title="清理后导入",
+        ).restore()
+        destination.commit()
+        assert outcome.result["project_id"]
+    finally:
+        validated.cleanup()
+        destination.close()
+        Base.metadata.drop_all(bind=destination_engine)
+        destination_engine.dispose()
+
+
+def test_legacy_full_package_with_stale_narrative_checkpoint_references_imports_cleaned(
+    seeded,
+    tmp_path: Path,
+):
+    """旧备份包内已含指向包外的检查点引用，验证放行并导入后置空。"""
+    source_db, _factory, _content = seeded
+    payload = _export_bytes(source_db, "source-project", "full")
+    entries = _archive_entries(payload)
+    checkpoint_line = next(
+        line
+        for line in entries["data/narrative_checkpoints.jsonl"].decode("utf-8").splitlines()
+        if line.strip()
+    )
+    checkpoint_row = json.loads(checkpoint_line)
+    checkpoint_row["chapter_id"] = "missing-chapter"
+    checkpoint_row["chapter_snapshot_id"] = "missing-snapshot"
+    entries["data/narrative_checkpoints.jsonl"] = (
+        json.dumps(checkpoint_row, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    _update_manifest_entry(entries, "data/narrative_checkpoints.jsonl")
+    source_path = _write_package(
+        tmp_path / f"legacy-stale{PACKAGE_EXTENSION}", _repack(entries)
+    )
+
+    validated = ProjectPackageValidator(source_path).validate()
+    stale_row = validated.rows["narrative_checkpoints"][0]
+    assert stale_row["chapter_id"] == "missing-chapter"
+    assert stale_row["chapter_snapshot_id"] == "missing-snapshot"
+
+    destination_engine, destination_factory = _database(tmp_path / "destination.db")
+    destination = destination_factory()
+    try:
+        outcome = ProjectPackageImporter(
+            destination,
+            validated,
+            idempotency_key=uuid.uuid4(),
+            new_title="旧包导入",
+        ).restore()
+        destination.commit()
+        assert outcome.result["project_id"]
+        restored = destination.query(NarrativeCheckpoint).one()
+        assert restored.chapter_id is None
+        assert restored.chapter_snapshot_id is None
     finally:
         validated.cleanup()
         destination.close()
@@ -536,7 +699,9 @@ def test_real_fastapi_routes_stream_export_and_idempotently_import(seeded):
             headers={"Idempotency-Key": key},
         )
         assert first.status_code == 200, first.text
-        project_id = first.json()["data"]["project_id"]
+        first_payload = first.json()
+        project_id = first_payload["data"]["project_id"]
+        assert first_payload["message"] == "项目包导入成功：已创建作品「API 导入副本」"
         replay = client.post(
             "/api/v1/projects/project-package/import",
             files=files,
@@ -544,8 +709,12 @@ def test_real_fastapi_routes_stream_export_and_idempotently_import(seeded):
             headers={"Idempotency-Key": key},
         )
         assert replay.status_code == 200
-        assert replay.json()["data"]["project_id"] == project_id
-        assert replay.json()["data"]["replayed"] is True
+        replay_payload = replay.json()
+        assert replay_payload["data"]["project_id"] == project_id
+        assert replay_payload["data"]["replayed"] is True
+        assert replay_payload["message"] == (
+            "项目包导入成功：已复用此前导入的作品「API 导入副本」"
+        )
         conflict = client.post(
             "/api/v1/projects/project-package/import",
             files=files,

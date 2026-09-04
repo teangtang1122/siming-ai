@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest'
+import sharedTimestamps from '../../../contracts/fixtures/api-timestamps-v1-interop.json'
 
 import {
   apiDateTimeIso,
+  formatApiDateTime,
   formatAssistantTimestamp,
   normalizeApiDateTime,
   parseApiDateTime,
 } from '../utils/dateTime'
 
-describe('assistant API datetime handling', () => {
+describe('API datetime handling', () => {
+  it.each(sharedTimestamps.cases)('matches the PC/mobile timestamp contract: $id', (testCase) => {
+    expect(parseApiDateTime(testCase.input)?.getTime() ?? null).toBe(testCase.epoch_ms)
+    expect(formatApiDateTime(testCase.input, testCase.zone)).toBe(testCase.display)
+  })
+
   it('treats legacy timezone-less database values as UTC', () => {
     expect(normalizeApiDateTime('2026-08-14T15:30:00')).toBe('2026-08-14T15:30:00Z')
     expect(apiDateTimeIso('2026-08-14 15:30:00.123456')).toBe('2026-08-14T15:30:00.123Z')

@@ -10,7 +10,10 @@ from typing import Any
 
 import yaml
 
-from app.services.external_agent.mcp_server_spec import resolve_siming_mcp_server
+from app.services.external_agent.mcp_server_spec import (
+    managed_mcp_environment,
+    resolve_siming_mcp_server,
+)
 
 TRANSIENT_MCP_NAME = "siming_turn"
 TRANSIENT_MCP_TIMEOUT_MS = 12 * 60 * 60 * 1000
@@ -66,6 +69,39 @@ def _toml_string(value: object) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def _replace_codex_approval_options(args: list[str]) -> list[str]:
+    """Remove saved approval/sandbox flags before applying the managed mode.
+
+    ``--approve-for-me`` cannot be combined with an explicit ``--sandbox``
+    option.  A provider config may contain either spelling, so the Direct-MCP
+    launch owns this boundary and replaces every conflicting option.
+    """
+
+    value_options = {"--sandbox", "-s", "--ask-for-approval", "-a"}
+    standalone_options = {
+        "--approve-for-me",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+    }
+    result: list[str] = []
+    index = 0
+    while index < len(args):
+        token = str(args[index])
+        lowered = token.lower()
+        if lowered in standalone_options:
+            index += 1
+            continue
+        if lowered in value_options:
+            index += 2
+            continue
+        if any(lowered.startswith(option + "=") for option in value_options):
+            index += 1
+            continue
+        result.append(token)
+        index += 1
+    return result
+
+
 def prepare_direct_mcp_launch(
     adapter: Any,
     launch: Any,
@@ -76,6 +112,7 @@ def prepare_direct_mcp_launch(
     project_id: str = "",
     creation_session_id: str = "",
     tool_category_state_file: str = "",
+    direct_mcp_lease_token: str = "",
 ) -> tuple[Any, dict[str, str]]:
     """Inject exactly one authorized Siming MCP into a known Agent CLI."""
     provider = adapter._provider
@@ -86,10 +123,13 @@ def prepare_direct_mcp_launch(
         project_id=project_id,
         creation_session_id=creation_session_id,
         tool_category_state_file=tool_category_state_file,
+        direct_mcp_lease_token=direct_mcp_lease_token,
     )
     server_config = _mcp_server_config(server)
     args = list(launch.args)
     env = _without_mcp_disable_flags(env)
+    managed_env = managed_mcp_environment()
+    env.update(managed_env)
     root = Path(cwd)
 
     if provider == "claude_cli":
@@ -105,18 +145,47 @@ def prepare_direct_mcp_launch(
             "--disable-slash-commands",
         ])
     elif provider == "codex_cli":
+        args = _replace_codex_approval_options(args)
+        # Codex intentionally filters the ambient environment inherited by an
+        # MCP subprocess.  Put Siming's owning runtime paths in the server
+        # definition itself; otherwise a source MCP can silently reopen an old
+        # installed database and reject the current run lease as superseded.
+        # Managed-turn bindings are also process-scoped authority: without
+        # them a cataloging MCP sees the right database but mistakes an
+        # automatic worker for a generic client, stages complete candidates,
+        # and then cannot perform the owning transaction.
+        from ..core.legacy_env import compatible_env_prefixes
+
+        managed_prefixes = tuple(
+            f"{prefix}_MANAGED_" for prefix in compatible_env_prefixes()
+        )
+        turn_binding_env = {
+            name: value
+            for name, value in env.items()
+            if name.startswith(managed_prefixes)
+        }
+        server_env = {
+            **managed_env,
+            **turn_binding_env,
+            "SIMING_LOCAL_CLI_MCP_SCOPE": "one_turn",
+        }
+        server_env_toml = "{" + ",".join(
+            f"{name}={_toml_string(value)}"
+            for name, value in sorted(server_env.items())
+        ) + "}"
         server_toml = (
             "{" + TRANSIENT_MCP_NAME + "={"
             f"command={_toml_string(server['command'])},"
             "args=[" + ",".join(_toml_string(item) for item in server.get("args") or []) + "],"
             f"cwd={_toml_string(server.get('cwd') or cwd)},"
-            'enabled=true,default_tools_approval_mode="approve",'
+            f"env={server_env_toml},"
+            'enabled=true,required=true,default_tools_approval_mode="writes",'
             "startup_timeout_sec=30,tool_timeout_sec=600}}"
         )
         adapter._insert_before_prompt(args, [
             "--ignore-user-config",
             "--ignore-rules",
-            "--sandbox", "read-only",
+            "--approve-for-me",
             "-c", f"mcp_servers={server_toml}",
         ])
     elif provider == "qwen_code_cli":
@@ -251,6 +320,7 @@ def prepare_opencode_launch(
     mcp_project_id: str = "",
     mcp_creation_session_id: str = "",
     mcp_tool_category_state_file: str = "",
+    mcp_direct_mcp_lease_token: str = "",
 ) -> tuple[Any, str, dict[str, str]]:
     launch, prompt_file = adapter._opencode_family_launch(
         prompt=prompt,
@@ -263,52 +333,84 @@ def prepare_opencode_launch(
     )
     base_env = os.environ.copy()
     if allow_mcp:
-        server = resolve_siming_mcp_server(
+        base_env = prepare_opencode_mcp_environment(
+            provider=adapter._provider,
+            cwd=cwd,
+            base_env=base_env,
             permission_pack=mcp_permission_pack,
             project_id=mcp_project_id,
             creation_session_id=mcp_creation_session_id,
             tool_category_state_file=mcp_tool_category_state_file,
+            direct_mcp_lease_token=mcp_direct_mcp_lease_token,
         )
-        prefix = {
-            "opencode_cli": "OPENCODE",
-            "mimocode_cli": "MIMOCODE",
-            "kilocode_cli": "KILO",
-        }[adapter._provider]
-        config_root = str((Path(cwd) / f".siming-{prefix.lower()}-config").resolve())
-        Path(config_root).mkdir(parents=True, exist_ok=True)
-        base_env.update({
-            "XDG_CONFIG_HOME": config_root,
-            f"{prefix}_CONFIG_DIR": config_root,
-            f"{prefix}_DISABLE_PROJECT_CONFIG": "1",
-            f"{prefix}_PURE": "1",
-            "SIMING_LOCAL_CLI_MCP_SCOPE": "one_turn",
-            f"{prefix}_CONFIG_CONTENT": json.dumps({
-                "$schema": "https://opencode.ai/config.json",
-                "share": "disabled",
-                "mcp": {
-                    TRANSIENT_MCP_NAME: {
-                        "type": "local",
-                        "command": [server["command"], *server["args"]],
-                        "cwd": server.get("cwd") or cwd,
-                        "enabled": True,
-                        "timeout": TRANSIENT_MCP_TIMEOUT_MS,
-                    },
-                },
-                "permission": {
-                    "*": "deny",
-                    "read": "allow",
-                    "external_directory": "deny",
-                    f"{TRANSIENT_MCP_NAME}_*": "allow",
-                },
-            }, ensure_ascii=False),
-        })
-        if adapter._provider == "mimocode_cli":
-            base_env["MIMOCODE_DISABLE_CLAUDE_CODE_MCP"] = "1"
-            base_env["MIMOCODE_DISABLE_CLAUDE_IMPORT"] = "1"
         return launch, prompt_file, base_env
     if adapter._provider == "opencode_cli":
         base_env = adapter._opencode_env(cwd)
     return launch, prompt_file, adapter._isolated_environment(base_env, isolated)
+
+
+def prepare_opencode_mcp_environment(
+    *,
+    provider: str,
+    cwd: str,
+    base_env: dict[str, str],
+    permission_pack: str,
+    project_id: str = "",
+    creation_session_id: str = "",
+    tool_category_state_file: str = "",
+    direct_mcp_lease_token: str = "",
+    permissions: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Use the same isolated MCP connection for every managed OpenCode task."""
+    env = _without_mcp_disable_flags(base_env)
+    env.update(managed_mcp_environment())
+    server = resolve_siming_mcp_server(
+        permission_pack=permission_pack,
+        project_id=project_id,
+        creation_session_id=creation_session_id,
+        tool_category_state_file=tool_category_state_file,
+        direct_mcp_lease_token=direct_mcp_lease_token,
+    )
+    prefix = {
+        "opencode_cli": "OPENCODE",
+        "mimocode_cli": "MIMOCODE",
+        "kilocode_cli": "KILO",
+    }[provider]
+    config_root = str((Path(cwd) / f".siming-{prefix.lower()}-config").resolve())
+    Path(config_root).mkdir(parents=True, exist_ok=True)
+    # An inherited permission override would take precedence over this task's
+    # actual allowlist. Never inherit another CLI run's authorization.
+    env.pop(f"{prefix}_PERMISSION", None)
+    env.update({
+        "XDG_CONFIG_HOME": config_root,
+        f"{prefix}_CONFIG_DIR": config_root,
+        f"{prefix}_DISABLE_PROJECT_CONFIG": "1",
+        f"{prefix}_PURE": "1",
+        "SIMING_LOCAL_CLI_MCP_SCOPE": "one_turn",
+        f"{prefix}_CONFIG_CONTENT": json.dumps({
+            "$schema": "https://opencode.ai/config.json",
+            "share": "disabled",
+            "mcp": {
+                TRANSIENT_MCP_NAME: {
+                    "type": "local",
+                    "command": [server["command"], *server["args"]],
+                    "cwd": server.get("cwd") or cwd,
+                    "enabled": True,
+                    "timeout": TRANSIENT_MCP_TIMEOUT_MS,
+                },
+            },
+            "permission": permissions if permissions is not None else {
+                "*": "deny",
+                "read": "allow",
+                "external_directory": "deny",
+                f"{TRANSIENT_MCP_NAME}_*": "allow",
+            },
+        }, ensure_ascii=False),
+    })
+    if provider == "mimocode_cli":
+        env["MIMOCODE_DISABLE_CLAUDE_CODE_MCP"] = "1"
+        env["MIMOCODE_DISABLE_CLAUDE_IMPORT"] = "1"
+    return env
 
 
 def prepare_long_prompt_launch(adapter: Any, prompt: str, model: str) -> tuple[Any, str]:

@@ -54,13 +54,28 @@ import { useModelOptions } from '../hooks/useModelOptions'
 import { createLatestRequestGate } from '../shared/latestRequest'
 import { motionAwareScrollBehavior } from '../utils/motion'
 import { extractExplicitLocalPaths } from '../utils/localCliPathGrant'
-import { apiDateTimeMs } from '../utils/dateTime'
+import { apiDateTimeMs, formatApiDateTime } from '../utils/dateTime'
 import { AssistantMessageTime } from './assistant/MessageTime'
 import { ReasoningDisclosure } from './assistant/ReasoningDisclosure'
 import {
   runCreationAgentTurn,
   type CreationAgentTurnEvent,
 } from '../services/novelCreationAgent'
+import type { AssistantReferenceContext } from '../types/assistantReferenceContext'
+import type {
+  ConversationCheckpointDetail,
+  ConversationContextState,
+} from '../types/conversationContext'
+import {
+  checkpointFromEvent,
+  checkpointIdForState,
+  contextStateFromEvent,
+  getCreationConversationCheckpoint,
+  getCreationConversationContextState,
+} from '../services/conversationContext'
+import { modelContextCapacityIssueFrom } from '../services/conversationContextErrors'
+import { ConversationCheckpointNotice } from './assistant/ConversationCheckpointNotice'
+import { ModelContextCapacityAlert } from './assistant/ModelContextCapacityAlert'
 import {
   defaultCreationAgentRuntime,
   extractCreationAgentErrorDetail,
@@ -332,6 +347,7 @@ function GuiAssistantChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [inputValue, setInputValue] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [modelContextCapacityIssue, setModelContextCapacityIssue] = useState<ReturnType<typeof modelContextCapacityIssueFrom>>(null)
   const [loading, setLoading] = useState(false)
   const [projectsLoading, setProjectsLoading] = useState(true)
   const [projectsInitialized, setProjectsInitialized] = useState(false)
@@ -449,6 +465,10 @@ function GuiAssistantChat() {
   }, [selectedModel])
   const [systemSessionId, setSystemSessionId] = useState<string>()
   const systemSessionIdRef = useRef<string>()
+  const [creationContextState, setCreationContextState] = useState<ConversationContextState | null>(null)
+  const [creationCheckpointDetail, setCreationCheckpointDetail] = useState<ConversationCheckpointDetail | null>(null)
+  const [creationCheckpointModalOpen, setCreationCheckpointModalOpen] = useState(false)
+  const [creationCheckpointOwner, setCreationCheckpointOwner] = useState('')
   const pendingCreationSessionRef = useRef<Promise<{
     sessionId: string
     brief: string
@@ -459,6 +479,12 @@ function GuiAssistantChat() {
     sessionId: string
     projectId: string
   } | null>(null)
+  const resetCreationCheckpointPresentation = useCallback(() => {
+    setCreationContextState(null)
+    setCreationCheckpointDetail(null)
+    setCreationCheckpointModalOpen(false)
+    setCreationCheckpointOwner('')
+  }, [])
   const adoptCreationSession = useCallback((sessionId: string, brief = '') => {
     setCreatedProjectHandoff((current) => (
       current?.sessionId === sessionId ? current : null
@@ -476,6 +502,38 @@ function GuiAssistantChat() {
   useEffect(() => {
     systemConversationIdRef.current = systemConversationId
   }, [systemConversationId])
+
+  useEffect(() => {
+    resetCreationCheckpointPresentation()
+    if (!systemConversationId || !systemSessionId) return undefined
+    const owner = `${systemSessionId}:${systemConversationId}`
+    let cancelled = false
+    const restore = async () => {
+      try {
+        const state = await getCreationConversationContextState(
+          systemSessionId,
+          systemConversationId,
+        )
+        if (cancelled) return
+        setCreationCheckpointOwner(owner)
+        setCreationContextState(state)
+        const checkpointId = checkpointIdForState(state)
+        if (!checkpointId) return
+        const detail = await getCreationConversationCheckpoint(
+          systemSessionId,
+          systemConversationId,
+          checkpointId,
+        )
+        if (!cancelled) setCreationCheckpointDetail(detail)
+      } catch {
+        // No durable checkpoint is a normal state for a short or new chat.
+      }
+    }
+    void restore()
+    return () => {
+      cancelled = true
+    }
+  }, [resetCreationCheckpointPresentation, systemConversationId, systemSessionId])
 
   useEffect(() => {
     creationArtifactRequestRef.current += 1
@@ -1195,6 +1253,7 @@ function GuiAssistantChat() {
     setLoading(true)
     setActiveConvId(convId)
     setMessages([])
+    setModelContextCapacityIssue(null)
     setActiveCreationRun(null)
     creationRunMessageRef.current = null
     try {
@@ -1311,15 +1370,32 @@ function GuiAssistantChat() {
     setActiveConvId(null)
     setMessages([])
     setInputValue('')
+    setModelContextCapacityIssue(null)
     setActiveCreationRun(null)
     creationRunMessageRef.current = null
     setActiveMaterialImport(null)
     setCreationRunAction(null)
     setSystemConversationId(undefined)
     systemConversationIdRef.current = undefined
+    resetCreationCheckpointPresentation()
     setPendingFiles([])
     setPendingInputClarification(null)
     return true
+  }
+
+  const guideCreationCheckpointRetry = () => {
+    setCreationCheckpointModalOpen(false)
+    message.info('请发送一条新消息；系统会结合最新立项任务按需重新整理较早上下文。')
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('.gui-chat-composer textarea')?.focus()
+    })
+  }
+
+  const beginNovelCreation = () => {
+    setInputValue((current) => current || '我想创作一本新小说，请先和我确认题材、故事构想与篇幅。')
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('.gui-chat-composer textarea')?.focus()
+    })
   }
 
   const selectAssistantContext = async (value?: string) => {
@@ -1446,6 +1522,8 @@ function GuiAssistantChat() {
       return
     }
     if (event.type === 'error') {
+      const capacityIssue = modelContextCapacityIssueFrom(event)
+      if (capacityIssue) setModelContextCapacityIssue(capacityIssue)
       throw new Error(event.message || event.detail || 'AI助手执行失败')
     }
   }
@@ -1588,12 +1666,11 @@ function GuiAssistantChat() {
   }
 
   const handleSystemAssistantMessage = async (
-    text: string,
-    originalText?: string,
+    displayText: string,
+    referenceContext?: AssistantReferenceContext,
     localCliReadPaths: string[] = [],
   ) => {
-    const sourceText = text
-    const displayText = originalText || text
+    setModelContextCapacityIssue(null)
     setAgentRuntimeOverride({})
     let finalReply = ''
     let finalStatus: ChatMessage['status'] = 'completed'
@@ -1658,6 +1735,38 @@ function GuiAssistantChat() {
               }
             }
           }
+          if (event.type === 'conversation_context' || event.type === 'conversation_checkpoint') {
+            const ownerConversationId = durableTurn?.conversationId || systemConversationIdRef.current || ''
+            if (
+              systemSessionIdRef.current !== persistedSessionId
+              || systemConversationIdRef.current !== ownerConversationId
+            ) return
+            const owner = `${persistedSessionId}:${ownerConversationId}`
+            const nextState = contextStateFromEvent(event)
+            const nextCheckpoint = checkpointFromEvent(event)
+            setCreationCheckpointOwner(owner)
+            if (nextCheckpoint) setCreationCheckpointDetail(nextCheckpoint)
+            if (nextState) {
+              setCreationContextState(nextState)
+              const expectedCheckpointId = checkpointIdForState(nextState, nextCheckpoint)
+              if (!nextCheckpoint) {
+                setCreationCheckpointDetail((current) => (
+                  current && expectedCheckpointId && current.id === expectedCheckpointId ? current : null
+                ))
+              }
+            } else if (nextCheckpoint) {
+              setCreationContextState((current) => ({
+                ...(current || { status: nextCheckpoint.status }),
+                ...nextCheckpoint,
+                status: nextCheckpoint.status,
+                active_checkpoint_id: nextCheckpoint.status === 'ready'
+                  ? nextCheckpoint.id
+                  : current?.active_checkpoint_id,
+                latest_checkpoint_id: nextCheckpoint.id,
+              }))
+            }
+            return
+          }
           setMessages((prev) => {
             const next = [...prev]
             const last = next[next.length - 1]
@@ -1678,12 +1787,13 @@ function GuiAssistantChat() {
         }
         const response = await runCreationAgentTurn(
           persistedSessionId,
-          sourceText,
+          displayText,
           selectedModel || undefined,
           {
             conversationId: durableTurn?.conversationId,
             assistantMessageId: durableTurn?.assistantMessageId,
             localCliReadPaths,
+            referenceContext,
             signal: activeTurnAbortController.signal,
             onEvent: appendProgressEvent,
           },
@@ -1737,6 +1847,8 @@ function GuiAssistantChat() {
       if (err?.name === 'AbortError') {
         finish('已停止显示实时进度；后台仍会完成本轮，最终以保存的对话结果为准。', 'aborted')
       } else {
+        const capacityIssue = modelContextCapacityIssueFrom(err)
+        if (capacityIssue) setModelContextCapacityIssue(capacityIssue)
         recordAgentRuntimeError(err)
         finish(err.message || '处理失败', 'error')
         message.error(err.message || '处理失败')
@@ -2042,7 +2154,6 @@ function GuiAssistantChat() {
       context_scope: activeProjectId ? 'project' : 'creation',
       active_project_id: activeProjectId || '',
       creation_session_id: creationSessionId,
-      history: messages.slice(-8).map((item) => ({ role: item.role, content: item.content })),
       model: selectedModel || null,
     }
     if (sourceKind === 'attachment') {
@@ -2051,7 +2162,7 @@ function GuiAssistantChat() {
       Object.entries(sharedFields).forEach(([key, value]) => {
         form.append(
           key,
-          (key === 'history' || key === 'clarification_history')
+          key === 'clarification_history'
             ? JSON.stringify(value)
             : String(value ?? ''),
         )
@@ -2103,28 +2214,31 @@ function GuiAssistantChat() {
     }
   }
 
-  const buildReferenceMessage = (
+  const buildReferenceContext = (
     decision: AssistantInputRouteDecision,
     source: PendingMaterialFile,
-    originalInstruction: string,
-    clarificationAnswer?: string,
-  ) => {
-    const instruction = decision.resolved_instruction
-      || clarificationAnswer
-      || originalInstruction
-      || '请结合这份内容提供最有帮助的分析'
-    const context = decision.source_context || source.content.slice(0, 16_000)
-    const sourceChars = decision.source_coverage?.source_chars ?? source.content.length
-    const coverage = decision.source_coverage?.coverage === 'distributed'
-      ? `以下是覆盖原文开头、中段与结尾的路由视图；原文共 ${sourceChars.toLocaleString('zh-CN')} 字。若完成任务必须逐字读取全文，请明确告知用户需要进入持久化资料流程。`
-      : '以下包含本次提交的完整数据内容。'
-    return [
-      `[提交数据：${source.name}]`,
+    sourceKind: 'long_text' | 'attachment',
+  ): AssistantReferenceContext => {
+    const content = decision.source_context || source.content
+    const declaredCoverage = decision.source_coverage?.coverage
+    const coverage: AssistantReferenceContext['coverage'] = declaredCoverage
+      || (content === source.content ? 'full' : 'excerpt')
+    // Python validates character counts as Unicode code points, while
+    // JavaScript's string.length counts UTF-16 code units for astral symbols.
+    const contentChars = Array.from(content).length
+    const sourceChars = coverage === 'full'
+      ? contentChars
+      : Math.max(
+          decision.source_coverage?.source_chars ?? Array.from(source.content).length,
+          contentChars,
+        )
+    return {
+      source_kind: sourceKind,
+      source_name: Array.from(source.name.trim()).slice(0, 255).join('') || '未命名资料',
+      content,
       coverage,
-      context,
-      '',
-      `用户处理要求：${instruction}`,
-    ].join('\n\n')
+      source_chars: sourceChars,
+    }
   }
 
   const executeDataInputDecision = async (
@@ -2160,34 +2274,34 @@ function GuiAssistantChat() {
       return
     }
 
-    const messageForAssistant = decision.route === 'chat_only'
-      ? (resolvedInstruction || clarificationAnswer || originalInstruction)
-      : buildReferenceMessage(decision, source, originalInstruction, clarificationAnswer)
     const displayText = clarificationAnswer
       || originalInstruction
       || (sourceKind === 'attachment' ? `📎 ${source.name}` : `已提交长文本（${source.content.length.toLocaleString('zh-CN')} 字）`)
+    const referenceContext = decision.route === 'reference'
+      ? buildReferenceContext(decision, source, sourceKind)
+      : undefined
     setPendingFiles([])
     setPendingInputClarification(null)
     if (!activeProjectId) {
       await handleSystemAssistantMessage(
-        messageForAssistant,
         displayText,
+        referenceContext,
         readPaths,
       )
       return
     }
     await sendMessage({
       readPaths,
-      routedMessage: messageForAssistant,
       routedDisplayText: displayText,
+      referenceContext,
       bypassDataRouting: true,
     })
   }
 
   const sendMessage = async (options?: {
     readPaths?: string[]
-    routedMessage?: string
     routedDisplayText?: string
+    referenceContext?: AssistantReferenceContext
     bypassDataRouting?: boolean
   }) => {
     const rawInput = inputValue.trim()
@@ -2199,7 +2313,6 @@ function GuiAssistantChat() {
     const permissionInstruction = inputIsLongData ? '' : dataSourceInstruction
     // Allow sending if there are pending files (even without text)
     if ((!text && pendingFiles.length === 0 && !pendingInputClarification) || streaming) return
-    const effectiveText = options?.routedMessage ?? text
     const proposedReadPaths = supportsTransientCreationMcp
       ? (options?.readPaths ?? extractExplicitLocalPaths(permissionInstruction))
       : []
@@ -2272,8 +2385,8 @@ function GuiAssistantChat() {
     const submittedData = !options?.bypassDataRouting
       ? (pendingFiles[0] || (isLongDataText
         ? (() => {
-          const file = new File([effectiveText], '聊天长文本.txt', { type: 'text/plain;charset=utf-8' })
-          return { name: file.name, size: file.size, file, content: effectiveText }
+          const file = new File([text], '聊天长文本.txt', { type: 'text/plain;charset=utf-8' })
+          return { name: file.name, size: file.size, file, content: text }
         })()
         : undefined))
       : undefined
@@ -2300,22 +2413,17 @@ function GuiAssistantChat() {
       return
     }
 
-    let messageWithContext = effectiveText
     const displayText = text
+    setModelContextCapacityIssue(null)
 
     if (!activeProjectId) {
       await handleSystemAssistantMessage(
-        messageWithContext,
         displayText,
+        options?.referenceContext,
         grantedReadPaths,
       )
       return
     }
-
-    const history = messages.slice(-8).map((item) => ({
-      role: item.role,
-      content: item.content,
-    }))
 
     setMessages((prev) => [
       ...prev,
@@ -2381,7 +2489,8 @@ function GuiAssistantChat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: messageWithContext,
+          message: displayText,
+          reference_context: options?.referenceContext,
           conversation_id: undefined,
           canonical_conversation_id: durableProjectTurn.conversationId,
           creation_session_id: systemSessionId,
@@ -2391,12 +2500,25 @@ function GuiAssistantChat() {
           local_cli_read_permission_grant: grantedReadPaths.length > 0 ? 'read_once' : 'none',
           local_cli_read_paths: grantedReadPaths,
           outline_batch_count: 3,
-          history,
         }),
         signal: abortRef.current.signal,
       })
 
-      if (!res.ok || !res.body) throw new Error(`请求失败：${res.status}`)
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null)
+        const capacityIssue = modelContextCapacityIssueFrom(payload)
+        if (capacityIssue) setModelContextCapacityIssue(capacityIssue)
+        const detail = payload && typeof payload === 'object' && 'detail' in payload
+          ? (payload as { detail?: unknown }).detail
+          : null
+        const detailMessage = typeof detail === 'string'
+          ? detail
+          : detail && typeof detail === 'object' && 'message' in detail
+            ? String((detail as { message?: unknown }).message || '')
+            : ''
+        throw new Error(detailMessage || `请求失败（HTTP ${res.status}）`)
+      }
+      if (!res.body) throw new Error('请求失败：响应没有事件流')
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -3297,6 +3419,15 @@ function GuiAssistantChat() {
       {runtimeHasProblem && <Text type="danger">请切换有额度的模型后重试当前操作。</Text>}
     </div>
   )
+  const currentCreationCheckpointOwner = systemSessionId && systemConversationId
+    ? `${systemSessionId}:${systemConversationId}`
+    : ''
+  const visibleCreationContextState = creationCheckpointOwner === currentCreationCheckpointOwner
+    ? creationContextState
+    : null
+  const visibleCreationCheckpointDetail = creationCheckpointOwner === currentCreationCheckpointOwner
+    ? creationCheckpointDetail
+    : null
 
   return (
     <div className={`gui-chat${sidebarCollapsed ? ' gui-chat-collapsed' : ''}${systemSessionId && creationPanelOpen ? ' gui-chat-with-creation-panel' : ''}${systemSessionId && creationPanelOpen && expandedArtifact ? ' gui-chat-with-creation-editor' : ''}`}>
@@ -3429,6 +3560,21 @@ function GuiAssistantChat() {
           </Space>
         </div>
 
+        <ConversationCheckpointNotice
+          state={visibleCreationContextState}
+          detail={visibleCreationCheckpointDetail}
+          modalOpen={creationCheckpointModalOpen}
+          onOpen={() => setCreationCheckpointModalOpen(true)}
+          onClose={() => setCreationCheckpointModalOpen(false)}
+          onRebuild={guideCreationCheckpointRetry}
+          onCancel={() => undefined}
+          onNewConversation={() => {
+            setCreationCheckpointModalOpen(false)
+            void startNewConversation()
+          }}
+          canCancel={false}
+        />
+
         <div className="gui-chat-messages" aria-live="polite" aria-busy={streaming || loading}>
           {!selectedModel && (
             <Alert
@@ -3441,6 +3587,10 @@ function GuiAssistantChat() {
               action={<Button type="primary" onClick={() => navigate('/getting-started')}>免费设置</Button>}
             />
           )}
+          <ModelContextCapacityAlert
+            issue={modelContextCapacityIssue}
+            onConfigure={() => navigate('/settings?section=context-governance')}
+          />
           {!activeProjectId && !projectsLoading && messages.length === 0 ? (
             <div className="gui-chat-welcome">
               <div className="gui-chat-welcome-icon" aria-hidden="true">
@@ -3453,7 +3603,7 @@ function GuiAssistantChat() {
                 不需要先创建作品。你可以直接说"我想写1000章，克苏鲁+修仙+规则怪谈"，我会生成新书方案，并在你确认后创建作品。
               </Paragraph>
               <Space wrap className="gui-chat-welcome-actions">
-                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={() => navigate('/novel-creation')}>
+                <Button type="primary" icon={<PlusOutlined />} size="large" onClick={beginNovelCreation}>
                   开始新书立项
                 </Button>
                 <Button size="large" onClick={() => setInputValue('我想写一本新的小说，先和我聊聊想法')}>
@@ -3669,7 +3819,7 @@ function GuiAssistantChat() {
                   {index === 0 && <Tag color="success">当前</Tag>}
                 </span>
                 <span>{version.source || 'unknown'} · {version.change_type}</span>
-                <span>{version.created_at ? new Date(version.created_at).toLocaleString('zh-CN') : '时间未记录'}</span>
+                <span>{version.created_at ? (formatApiDateTime(version.created_at) || '时间未记录') : '时间未记录'}</span>
               </button>
             ))}
           </div>

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": "2026-08-27",
+  "contract_version": "2026-08-30",
   "canonical_authority": "pc",
   "modes": {
     "pc": "桌面后端和前端所使用的权威领域实现。",
@@ -19,6 +19,11 @@
         "chapterReorder": "chapter.reorder",
         "chapterSnapshots": "chapter.history",
         "pendingChapterDraft": "authoring.chapter",
+        "chapterDraft": "authoring.chapter",
+        "pendingOutlineDraft": "writer.outline",
+        "outlineDraft": "writer.outline",
+        "confirmOutlineDraft": "writer.outline",
+        "regenerateOutlineDraft": "writer.outline",
         "chapterSnapshotDiff": "chapter.history",
         "chapterSnapshot": "chapter.history",
         "chapterRestore": "chapter.restore",
@@ -31,11 +36,17 @@
         "worldTimeline": "worldbuilding.history",
         "assistantStream": "assistant.workspace",
         "assistantConversations": "assistant.workspace",
+        "assistantTranscriptImport": "assistant.workspace",
         "assistantConversation": "assistant.workspace",
+        "assistantContextState": "assistant.workspace",
+        "assistantCheckpoint": "assistant.workspace",
         "assistantRuns": "assistant.workspace",
         "assistantRun": "assistant.workspace",
         "assistantRunCancel": "assistant.workspace",
         "novelCreationSession": "novel_creation.session",
+        "novelCreationConversation": "novel_creation.session",
+        "novelCreationContextState": "novel_creation.session",
+        "novelCreationCheckpoint": "novel_creation.session",
         "novelCreationRuns": "novel_creation.session",
         "novelCreationRun": "novel_creation.session",
         "novelCreationStageConfirm": "novel_creation.session",
@@ -99,7 +110,9 @@
         "search_worldbuilding": "authoring.worldbuilding",
         "create_worldbuilding_entry": "authoring.worldbuilding",
         "update_worldbuilding_entry": "authoring.worldbuilding",
-        "preview_writing_context": "context.preview",
+        "prepare_task_context": "context.selection",
+        "search_task_context": "context.selection",
+        "submit_context_evidence": "context.selection",
         "chapter_writer": "writer.chapter",
         "character_writer": "writer.character",
         "outline_writer": "writer.outline",
@@ -1341,21 +1354,29 @@
       ]
     },
     {
-      "id": "context.preview",
+      "id": "context.selection",
       "area": "context",
-      "summary": "写章前上下文预检",
+      "summary": "模型驱动的正文/大纲上下文检索与复核",
       "status": "partial",
       "authority": {
         "type": "pc_workspace_tool",
-        "entrypoint": "preview_writing_context",
+        "entrypoint": "prepare_task_context -> search_task_context -> submit_context_evidence",
         "source_refs": [
           {
-            "path": "backend/app/services/workspace/tools/context_preview.py",
-            "contains": "async def preview_writing_context("
+            "path": "backend/app/services/workspace/tools/context_governance.py",
+            "contains": "async def prepare_task_context("
           },
           {
-            "path": "backend/app/services/context_orchestrator.py",
-            "contains": "class ContextOrchestrator"
+            "path": "backend/app/services/workspace/tools/context_governance.py",
+            "contains": "async def search_task_context("
+          },
+          {
+            "path": "backend/app/services/workspace/tools/context_governance.py",
+            "contains": "async def submit_context_evidence("
+          },
+          {
+            "path": "backend/app/services/task_context_selection.py",
+            "contains": "class TaskContextSelector:"
           }
         ]
       },
@@ -1375,14 +1396,22 @@
         },
         "android_offline": {
           "support": "blocked",
-          "reason": "没有模型执行路由时只保留资料缓存，不运行上下文预检。"
+          "reason": "没有模型执行路由时只保留资料缓存，不运行模型检索与选择流程。"
         },
         "android_standalone": {
           "support": "degraded",
           "source_refs": [
             {
               "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "private suspend fun previewWritingContext("
+              "contains": "private suspend fun prepareTaskContext("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun searchTaskContext("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun submitContextEvidence("
             },
             {
               "path": "backend/app/services/mobile_context_policy.py",
@@ -1397,7 +1426,7 @@
               "contains": "def build_policy()"
             }
           ],
-          "limitations": "已共享版本化策略、必选 coverage、全局 token 预算、source hash、选择指纹和 stale 校验；写章实际消费的完整清单会随运行持久化。Android 独立模式仍以本地词法检索替代 PC FTS/向量检索，不支持 pinned chunks，也不写入 PC 数据库级 ContextManifest 审计。"
+          "limitations": "正文与大纲规划共享 PC 导出的任务策略、精简基线、模型检索、精确来源复核、动态模型容量、source hash、一次性不可猜测选择令牌和 stale 校验。模型选中的精确来源不设固定单条字符或来源数量上限，仅受当前模型可用输入容量约束。Android 独立模式以模型发起的本地词法检索替代 PC 混合检索，不支持 pinned chunks，也不写入 PC 数据库级 ContextManifest 审计。"
         }
       },
       "side_effects": [],
@@ -1407,8 +1436,12 @@
       },
       "tests": [
         {
-          "path": "backend/tests/test_workspace_context_preview.py",
-          "contains": "test_preview_writing_context_returns_state_and_warnings"
+          "path": "backend/tests/test_context_orchestrator.py",
+          "contains": "test_new_search_invalidates_finalized_writing_selection"
+        },
+        {
+          "path": "backend/tests/test_context_orchestrator.py",
+          "contains": "test_selected_character_timeline_includes_events_older_than_fifty"
         },
         {
           "path": "backend/tests/test_mobile_context_policy.py",
@@ -1416,11 +1449,27 @@
         },
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextManifestTest.kt",
-          "contains": "selected source changes make a cached manifest stale"
+          "contains": "new search invalidates a finalized selection token"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextManifestTest.kt",
+          "contains": "selected exact source keeps content beyond old fixed character limit"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextParityTest.kt",
+          "contains": "exact character archive keeps full fields ai config and every relationship"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextManifestTest.kt",
+          "contains": "default search can select the full governance ledger"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextManifestTest.kt",
+          "contains": "outline planning baseline contains position and style but no story collections"
         }
       ],
       "known_gaps": [
-        "手机独立预检尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计；实际写章清单已在本机运行日志中持久化。"
+        "手机独立检索尚未复用 PC 的 FTS、语义嵌入、pinned chunks 与数据库级 ContextManifest 审计；实际写章清单已在本机运行日志中持久化。"
       ]
     },
     {
@@ -1939,7 +1988,7 @@
               "contains": "internal fun mobileChapterWriteRunId("
             }
           ],
-      "limitations": "写章前创建或校验 ContextManifest，生成前持久化运行、成功后原子保存草稿与完整清单；同一请求使用确定性 run ID，应用重启和断流恢复到同一未保存草稿。正式保存与建档由作者操作。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。"
+      "limitations": "写章前创建或校验 ContextManifest，并在生成开始前一次性消费选择令牌；生成前持久化运行、成功后原子保存草稿与完整清单。同一请求使用确定性 run ID，应用重启和断流恢复到同一未保存草稿。正式保存与建档由作者操作。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。"
         }
       },
       "side_effects": [
@@ -1952,7 +2001,7 @@
       "tests": [
         {
           "path": "backend/tests/test_context_orchestrator.py",
-          "contains": "test_writing_manifest_consumes_full_character_card_and_relationships"
+          "contains": "test_writing_manifest_loads_full_character_only_after_model_selection"
         },
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextManifestTest.kt",
@@ -2046,7 +2095,7 @@
     {
       "id": "writer.outline",
       "area": "context",
-      "summary": "生成结构化大纲节点",
+      "summary": "生成并由作者确认结构化大纲提案",
       "status": "partial",
       "authority": {
         "type": "pc_workspace_tool",
@@ -2071,7 +2120,11 @@
           "source_refs": [
             {
               "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun streamAssistant("
+              "contains": "suspend fun pendingOutlineDraft("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "contains": "suspend fun confirmOutlineDraft("
             }
           ]
         },
@@ -2088,10 +2141,14 @@
             },
             {
               "path": "scripts/export-mobile-prompt-contract.py",
-              "contains": "OUTLINE_NODES_TOOL"
+              "contains": "OUTLINE_PROPOSAL_TOOL"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileOutlineDraftStore.kt",
+              "contains": "internal class MobileOutlineDraftStore("
             }
           ],
-          "limitations": "提示词和输出工具共享，批次限制与本地上下文选择仍由 Kotlin 实现。"
+          "limitations": "使用 PC 导出的提示词、输出工具和 outline_planning 策略，生成开始前一次性消费选择令牌，并持久化单一 pending 提案；支持跨重启恢复、编辑、确认、确认后新回合写作、重新生成和放弃。提案超量或结构非法时整体拒绝，不静默截断；确认时按卷、章、节的依赖顺序写入。确认前不写正式大纲，并以正式大纲指纹拒绝过期提案。"
         }
       },
       "side_effects": [
@@ -2107,12 +2164,16 @@
           "contains": "test_android_prompt_contract_contains_full_nested_writer_pipeline"
         },
         {
-          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
-          "contains": "class CanonicalReplicaContractTest"
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileOutlineDraftStoreTest.kt",
+          "contains": "class MobileOutlineDraftStoreTest"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileOutlineDraftStoreTest.kt",
+          "contains": "store rejects invalid nested node hierarchy"
         }
       ],
       "known_gaps": [
-        "手机独立生成器尚未绑定 PC ContextManifest 和运行审计。"
+        "手机独立检索使用本地词法索引，且 ContextManifest/OutlineDraft 审计保存在本机而不是 PC 数据库；连接 Gateway 时使用 PC 权威实现。"
       ]
     },
     {

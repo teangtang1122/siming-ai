@@ -211,7 +211,7 @@ def _prepare_stage_manifest(
         return orchestrator, manifest
     interview = working_draft.get("interview")
     answers = (
-        (interview.get("history") or [])[-6:]
+        list(interview.get("history") or [])
         if isinstance(interview, dict) and isinstance(interview.get("history"), list)
         else []
     )
@@ -378,6 +378,9 @@ def _save_with_revision_cas(context: StageExecution, saver: Any) -> Any:
             context.expected_revision,
             int(getattr(current, "revision", context.expected_revision) or 0),
         )
+    # The CAS owns this transaction now. Persist entity/history changes before
+    # refreshing the parent: its refresh-expire cascade discards unflushed rows.
+    context.db.flush()
     context.db.expire(context.session)
     context.db.refresh(context.session)
     context.expected_revision = next_revision
@@ -817,6 +820,12 @@ async def execute_creation_artifact_generation(
         )
     except Exception as exc:
         db.rollback()
+        run_id = _text(args.get("_run_id"))
+        run = db.get(NovelCreationStageRun, run_id) if run_id else None
+        if run and run.session_id == _text(args.get("session_id")):
+            fail_run(db, run, exc, failed_stage=run.stage)
+            commit_session(db)
+            return stage_tool_result("error", str(exc), run, run.session)
         return {
             "tool": "generate_creation_artifact",
             "status": "error",

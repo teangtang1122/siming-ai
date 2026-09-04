@@ -98,6 +98,8 @@ class ExternalCatalogingPackTest(unittest.TestCase):
         self.assertIn("character_profiles", prompt)
         self.assertIn("character_relationship", prompt)
         self.assertIn("core_motivation", prompt)
+        self.assertIn("未具名岗位", prompt)
+        self.assertIn("不得创建角色卡", prompt)
 
     def test_pack_requires_atomic_summary_outline_skeleton(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")

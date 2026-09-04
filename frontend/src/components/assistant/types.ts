@@ -1,4 +1,16 @@
 /* Shared types for the assistant chat system. */
+export type {
+  ConversationCheckpointAuthorQuote,
+  ConversationCapacityAssurance,
+  ConversationCheckpointDetail,
+  ConversationCheckpointLedgerEntry,
+  ConversationCheckpointModelBinding,
+  ConversationCheckpointResourceRef,
+  ConversationCheckpointSemanticNavigation,
+  ConversationCheckpointSourceRange,
+  ConversationCheckpointStatus,
+  ConversationContextState,
+} from '../../types/conversationContext'
 
 export interface ApiResponse<T> {
   code: number
@@ -64,6 +76,7 @@ export interface WorkspaceMessageNavigationAction {
 export interface WorkspaceAssistantMessage {
   id?: string
   conversation_id?: string
+  sequence_no?: number
   role: 'user' | 'assistant'
   content: string
   reasoning_content?: string
@@ -77,6 +90,7 @@ export interface WorkspaceAssistantMessage {
 export interface WorkspacePersistedMessage {
   id: string
   conversation_id: string
+  sequence_no?: number
   role: 'user' | 'assistant'
   content: string
   payload?: WorkspaceAssistantResponse | null

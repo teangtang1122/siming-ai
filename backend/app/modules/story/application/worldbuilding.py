@@ -7,7 +7,13 @@ from .results import StoryMutation
 
 
 class WorldbuildingWorkspace(Protocol):
-    def list(self, project_id: str, dimension: str | None = None) -> dict: ...
+    def list(
+        self,
+        project_id: str,
+        dimension: str | None = None,
+        *,
+        include_inactive: bool = False,
+    ) -> dict: ...
 
     def create(self, project_id: str, payload: dict[str, Any]) -> StoryMutation: ...
 

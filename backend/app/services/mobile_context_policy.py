@@ -1,4 +1,4 @@
-"""Portable projection of the PC writing ContextManifest policy.
+"""Portable projection of the PC model-selected ContextManifest policy.
 
 Thin clients consume this generated contract instead of maintaining a second
 set of context tiers, budget defaults, ranking weights, or stale rules.
@@ -14,6 +14,12 @@ from .context_orchestrator import (
     DEFAULT_SAFETY_MARGIN_TOKENS,
     TASK_CONTEXT_CONTRACTS,
 )
+from .task_context_selection import (
+    TASK_CONTEXT_SEARCH_EXCERPT_CHARS,
+    TASK_CONTEXT_SEARCH_PAGE_LIMIT,
+    TASK_CONTEXT_SEARCH_SOURCE_TYPES,
+    TASK_CONTEXT_SOFT_TARGET_TOKENS,
+)
 
 
 def portable_context_policy(task_type: str = "writing") -> dict[str, Any]:
@@ -24,6 +30,48 @@ def portable_context_policy(task_type: str = "writing") -> dict[str, Any]:
     reimplemented with different semantics.
     """
     contract = TASK_CONTEXT_CONTRACTS[task_type]
+    categories: dict[str, dict[str, Any]] = {
+        "style": {
+            "tier": 1,
+            "max_items": 1,
+            "required": "style" in contract.required_categories,
+            "source_type": "project_style",
+        },
+        "user_requirement": {
+            "tier": 2,
+            "max_items": 1,
+            "required": False,
+            "source_type": "inline",
+            "content_limit_chars": 4_000,
+        },
+    }
+    if task_type == "writing":
+        categories["target_outline"] = {
+            "tier": 1,
+            "max_items": 1,
+            "required": True,
+            "source_type": "outline",
+            "field_limit_chars": 1_200,
+        }
+    elif task_type == "outline_planning":
+        categories.update(
+            {
+                "outline_parent": {
+                    "tier": 1,
+                    "max_items": 1,
+                    "required": False,
+                    "source_type": "outline",
+                    "field_limit_chars": 1_200,
+                },
+                "outline_position": {
+                    "tier": 1,
+                    "max_items": 1,
+                    "required": True,
+                    "source_type": "inline",
+                    "content_limit_chars": 2_000,
+                },
+            }
+        )
     return {
         "schema_version": 1,
         "policy_version": CONTEXT_POLICY_VERSION,
@@ -38,65 +86,17 @@ def portable_context_policy(task_type: str = "writing") -> dict[str, Any]:
             "safety_margin_tokens": DEFAULT_SAFETY_MARGIN_TOKENS,
             "minimum_output_reserve_tokens": 2_048,
             "output_ratio": contract.output_ratio,
+            "soft_input_target_tokens": TASK_CONTEXT_SOFT_TARGET_TOKENS,
+            "input_budget_mode": "model_window_minus_output_reserve_and_safety_margin",
         },
-        "categories": {
-            "style": {
-                "tier": 1,
-                "max_items": 1,
-                "required": "style" in contract.required_categories,
-                "source_type": "project_style",
-            },
-            "target_outline": {
-                "tier": 1,
-                "max_items": 1,
-                "required": "target_outline" in contract.required_categories,
-                "source_type": "outline",
-                "field_limit_chars": 1_200,
-            },
-            "user_requirement": {
-                "tier": 2,
-                "max_items": 1,
-                "required": False,
-                "source_type": "inline",
-                "content_limit_chars": 4_000,
-            },
-            "previous_summary": {
-                "tier": 3,
-                "max_items": 3,
-                "required": False,
-                "source_type": "chapter_summary",
-                "content_limit_chars": 1_600,
-            },
-            "scene_character": {
-                "tier": 3,
-                "max_items": 12,
-                "required": False,
-                "source_type": "character",
-                "content_limit_chars": 12_000,
-            },
-            "narrative_governance": {
-                "tier": 3,
-                "max_items": 1,
-                "required": False,
-                "source_type": "narrative_governance",
-                "content_limit_chars": 5_000,
-                "empty_ledger_text": "Narrative governance: no due or high-risk items.",
-            },
-            "hybrid_retrieval": {
-                "tier": 4,
-                "max_items": 24,
-                "required": False,
-                "content_limit_chars": 1_800,
-            },
-            "memory": {
-                "tier": 5,
-                "max_items": 6,
-                "required": False,
-                "source_type": "assistant_memory",
-                "content_limit_chars": 900,
-            },
-        },
+        "categories": categories,
         "selection": {
+            "mode": "model_retrieval_then_exact_selection",
+            "hard_source_count_limit": None,
+            "search_excerpt_chars": TASK_CONTEXT_SEARCH_EXCERPT_CHARS,
+            "search_page_limit": TASK_CONTEXT_SEARCH_PAGE_LIMIT,
+            "search_source_types": sorted(TASK_CONTEXT_SEARCH_SOURCE_TYPES),
+            "exact_source_content_limit_chars": None,
             "ordering": ["tier", "required_first", "score_desc", "title"],
             "dedupe_identity": ["source_type", "source_id", "chunk_id"],
             "required_over_budget_status": "needs_confirmation",
@@ -135,7 +135,7 @@ def portable_context_policy(task_type: str = "writing") -> dict[str, Any]:
         },
         "mobile_projection": {
             "execution_route": "android_standalone",
-            "retrieval": "deterministic_local_lexical_fallback",
+            "retrieval": "model_driven_local_lexical_fallback",
             "style_projection": "pc_prompt_contract_style_context",
             "fts_available": False,
             "semantic_embeddings_available": False,

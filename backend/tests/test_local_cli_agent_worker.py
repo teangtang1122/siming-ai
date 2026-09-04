@@ -1,4 +1,4 @@
-"""Tests for the remaining managed CLI general/cataloging worker paths."""
+"""Tests for managed CLI project, cataloging, writing, and outline paths."""
 from __future__ import annotations
 
 import asyncio
@@ -75,7 +75,7 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertNotIn("\n", prompt)
         self.assertIn("task.md", prompt)
 
-    def test_managed_worker_physically_rejects_removed_writing_mode(self):
+    def test_managed_worker_accepts_writing_mode_before_project_lookup(self):
         result = start_local_cli_agent_worker(
             self.db,
             "missing-project",
@@ -83,14 +83,20 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
             task_type="writing",
             provider="opencode_cli",
         )
-        self.assertEqual(result["status"], "error")
-        self.assertIn("不再提供章节写作路径", result["detail"])
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["detail"], "Project not found")
 
-    def test_registry_exposes_general_worker_but_not_writing_arguments(self):
+    def test_registry_exposes_draft_task_types_and_target_arguments(self):
         tool = registry.get("start_local_cli_agent_run")
         self.assertIsNotNone(tool)
         task_type = tool.input_schema["task_type"]
-        self.assertEqual(task_type["enum"], ["general", "cataloging"])
+        self.assertEqual(
+            task_type["enum"],
+            ["general", "cataloging", "writing", "outline_planning"],
+        )
+        self.assertIn("outline_node_id", tool.input_schema)
+        self.assertIn("parent_id", tool.input_schema)
+        self.assertIn("insert_after_id", tool.input_schema)
 
     def test_cataloging_task_reads_chapter_file_and_writes_through_mcp(self):
         project = self._project()
@@ -128,6 +134,7 @@ class LocalCLIAgentWorkerTestCase(unittest.TestCase):
         self.assertIn(str(chapter_file), task)
         self.assertIn('phase="facts"', task)
         self.assertIn("save_external_cataloging_facts", task)
+        self.assertIn("`facts` 必须直接传原生 JSON 数组", task)
         self.assertNotIn(chapter.content, task)
         self.assertEqual(_turn_stage(run, "auto"), "facts")
 

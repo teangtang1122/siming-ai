@@ -11,6 +11,7 @@ on:
       - ".github/workflows/gateway-image.yml"
   push:
     branches: [main]
+    tags: ["v*"]
     paths:
       - "backend/**"
       - "frontend/**"
@@ -18,8 +19,6 @@ on:
       - "compose.gateway.yml"
       - ".dockerignore"
       - ".github/workflows/gateway-image.yml"
-  release:
-    types: [published]
 
 permissions:
   contents: read
@@ -36,7 +35,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: github.event_name == 'release'
+        if: github.ref_type == 'tag'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -48,9 +47,16 @@ jobs:
         shell: bash
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/siming-ai-gateway"
-          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
-            version="${{ github.event.release.tag_name }}"
-            version="${version#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            frontend_version="$(jq -r '.version' frontend/package.json)"
+            backend_version="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' backend/app/version.py)"
+            android_version="$(sed -nE 's/.*versionName = "([^"]+)".*/\1/p' mobile/android/app/build.gradle.kts | head -n 1)"
+            if [[ "${tag}" != "v${frontend_version}" || "${frontend_version}" != "${backend_version}" || "${frontend_version}" != "${android_version}" ]]; then
+              echo "Tag ${tag} must match frontend/backend/Android version (${frontend_version}/${backend_version}/${android_version})." >&2
+              exit 1
+            fi
             major_minor="${version%.*}"
             {
               echo "tags<<EOF"
@@ -119,7 +125,7 @@ jobs:
           smoke_arch arm64 18001
 
       - name: Build and publish multi-architecture image
-        if: github.event_name == 'release'
+        if: github.ref_type == 'tag'
         uses: docker/build-push-action@v6
         with:
           context: .

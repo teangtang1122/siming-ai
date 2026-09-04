@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ai.local_cli_adapter import (
     DEFAULT_CLI_MODELS,
@@ -35,6 +35,7 @@ from app.ai.local_cli_adapter import (
     parse_cli_args,
     parse_cli_launch,
     preferred_local_cli_model,
+    sample_cli_process_tree,
 )
 from app.ai.local_cli_prompt import prepare_direct_mcp_launch, prepare_opencode_launch
 from app.core.exceptions import LLMError
@@ -152,6 +153,51 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         launch = parse_cli_launch(None, "opencode_cli", prompt, OPENCODE_DEFAULT_MODEL)
         self.assertIsNone(launch.stdin_text)
         self.assertIn(prompt, launch.args)
+
+    @patch("app.ai.local_cli_models.subprocess.run")
+    @patch("app.ai.local_cli_models.shutil.which", return_value=r"C:\tools\opencode.exe")
+    def test_opencode_verbose_capacity_survives_configured_name_merge(self, _which, run_mock):
+        run_mock.return_value.returncode = 0
+        run_mock.return_value.stdout = "opencode/big-pickle\n" + json.dumps({
+            "id": "big-pickle", "providerID": "opencode", "name": "Big Pickle",
+            "limit": {"context": 200000, "input": 160000, "output": 32000},
+            "headers": {"Authorization": "must-not-be-exported"},
+        })
+        models = local_cli_model_options(
+            "opencode_cli", "opencode",
+            cli_args='["run","--model","opencode/big-pickle","{prompt}"]',
+        )
+        selected = [item for item in models if item["id"] == "opencode/big-pickle"]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["context_window_tokens"], 200000)
+        self.assertEqual(selected[0]["max_output_tokens"], 32000)
+        self.assertEqual(selected[0]["capacity_source"], "opencode_cli_metadata")
+        self.assertNotIn("must-not-be-exported", json.dumps(models))
+        self.assertEqual(run_mock.call_args.args[0][-2:], ["models", "--verbose"])
+
+    @patch("app.ai.local_cli_models.subprocess.run")
+    @patch("app.ai.local_cli_models.shutil.which", return_value=r"C:\tools\opencode.exe")
+    def test_opencode_discovery_rejects_wrong_identity_and_invalid_capacity(self, _which, run_mock):
+        run_mock.return_value.returncode = 0
+        run_mock.return_value.stdout = (
+            "opencode/first\n" + json.dumps({
+                "id": "different", "providerID": "opencode",
+                "limit": {"context": 200000, "output": 32000},
+            }) + "\nopencode/second\n" + json.dumps({
+                "id": "second", "providerID": "opencode",
+                "limit": {"context": 2048, "output": 2048},
+            }) + "\nopencode/third\n" + json.dumps({
+                "id": "third", "providerID": "opencode",
+                "limit": {"context": 100000, "output": 10000},
+            })
+        )
+        models = discover_local_cli_models("opencode_cli", "opencode")
+        self.assertEqual([item["id"] for item in models], [
+            "opencode/first", "opencode/second", "opencode/third",
+        ])
+        self.assertNotIn("context_window_tokens", models[0])
+        self.assertNotIn("context_window_tokens", models[1])
+        self.assertEqual(models[2]["context_window_tokens"], 100000)
 
     def test_mimocode_default_args_are_safe(self):
         launch = parse_cli_launch(None, "mimocode_cli", "hello", "mimocode-cli")
@@ -421,7 +467,7 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             '"part":{"type":"text","text":"已完成"}}\n'
             '{"type":"step_finish","sessionID":"ses-1",'
             '"part":{"type":"step-finish","reason":"stop"}}\n'
-        ).encode("utf-8")
+        ).encode()
         process = SimpleNamespace(returncode=0)
 
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -629,9 +675,64 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
                 stalled_seconds=0.2,
             )
 
-        stdout, stderr = asyncio.run(run_busy_cli())
+        sample_number = 0
+
+        def active_metrics(_pid):
+            nonlocal sample_number
+            sample_number += 1
+            return {
+                "alive": True,
+                "process_count": 1,
+                "cpu_seconds": float(sample_number),
+                "read_bytes": 0,
+                "write_bytes": 0,
+                "rss_bytes": 1,
+                "metrics_available": True,
+            }
+
+        with patch(
+            "app.ai.local_cli_monitor.sample_cli_process_tree",
+            side_effect=active_metrics,
+        ):
+            stdout, stderr = asyncio.run(run_busy_cli())
         self.assertIn(b"finished", stdout)
         self.assertEqual(stderr, b"")
+
+    def test_process_metrics_tolerate_platform_without_io_counters(self):
+        class ProcessWithoutIOCounters:
+            def __init__(self, _pid):
+                pass
+
+            def children(self, recursive=True):
+                self.assert_recursive = recursive
+                return []
+
+            def is_running(self):
+                return True
+
+            def status(self):
+                return "running"
+
+            def cpu_times(self):
+                return SimpleNamespace(user=0.25, system=0.5)
+
+            def memory_info(self):
+                return SimpleNamespace(rss=32)
+
+        portable_psutil = SimpleNamespace(
+            Process=ProcessWithoutIOCounters,
+            Error=RuntimeError,
+            STATUS_ZOMBIE="zombie",
+        )
+        with patch("app.ai.local_cli_monitor.psutil", portable_psutil):
+            metrics = sample_cli_process_tree(123)
+
+        self.assertTrue(metrics["alive"])
+        self.assertTrue(metrics["metrics_available"])
+        self.assertEqual(metrics["cpu_seconds"], 0.75)
+        self.assertEqual(metrics["read_bytes"], 0)
+        self.assertEqual(metrics["write_bytes"], 0)
+        self.assertEqual(metrics["rss_bytes"], 32)
 
     def test_closed_output_streams_do_not_bypass_stall_monitor(self):
         async def run_silent_cli():
@@ -652,7 +753,19 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
                 stalled_seconds=0.2,
             )
 
-        with self.assertRaisesRegex(CLIStalledError, "确认卡住"):
+        stable_metrics = {
+            "alive": True,
+            "process_count": 1,
+            "cpu_seconds": 0.0,
+            "read_bytes": 0,
+            "write_bytes": 0,
+            "rss_bytes": 1,
+            "metrics_available": True,
+        }
+        with patch(
+            "app.ai.local_cli_monitor.sample_cli_process_tree",
+            return_value=stable_metrics,
+        ), self.assertRaisesRegex(CLIStalledError, "确认卡住"):
             asyncio.run(run_silent_cli())
 
     def test_persisted_chapter_draft_immediately_stops_cli_process(self):
@@ -684,6 +797,92 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         with self.assertRaisesRegex(CLITurnTerminal, "draft-1"):
             asyncio.run(run_cli_until_draft())
         self.assertLess(time.monotonic() - started, 3)
+
+    def test_terminal_draft_probe_uses_exact_run_iteration_evidence(self):
+        session = MagicMock()
+        detected = (
+            {
+                "tool": "save_external_outline_draft",
+                "status": "ok",
+                "detail": "大纲草稿已保存",
+                "data": {"draft_id": "outline-draft-1"},
+                "turn_directive": "end_after_outline_draft",
+                "turn_terminal": True,
+            },
+            "大纲草稿已生成",
+        )
+        runtime_body = {
+            "local_cli_terminal_draft_project_id": "project-1",
+            "local_cli_terminal_draft_run_id": "run-1",
+            "local_cli_terminal_draft_iteration": 4,
+        }
+
+        with patch(
+            "app.database.session.SessionLocal",
+            return_value=session,
+        ), patch(
+            "app.services.workspace.terminal_draft_detection.local_cli_terminal_draft",
+            return_value=detected,
+        ) as probe_drafts:
+            probe = LocalCLIAdapter._terminal_turn_probe(runtime_body)
+            self.assertIsNotNone(probe)
+            self.assertEqual(
+                probe(),
+                "save_external_outline_draft:outline-draft-1",
+            )
+
+        probe_drafts.assert_called_once_with(
+            session,
+            "project-1",
+            "run-1",
+            4,
+        )
+        session.close.assert_called_once_with()
+
+    def test_category_selection_ends_only_the_pending_model_step(self):
+        from app.services.tool_category_state import (
+            activate_tool_categories,
+            create_tool_category_state,
+            remove_tool_category_state,
+            replace_tool_categories,
+        )
+
+        state_file = create_tool_category_state()
+        try:
+            probe = LocalCLIAdapter._terminal_turn_probe({
+                "local_cli_mcp_authorized": True,
+                "local_cli_mcp_tool_category_state_file": state_file,
+            })
+            self.assertIsNotNone(probe)
+            self.assertIsNone(probe())
+            replace_tool_categories(state_file, ["story_knowledge"])
+            self.assertEqual(probe(), "set_tool_categories:1")
+            activate_tool_categories(state_file)
+            self.assertIsNone(probe())
+            replace_tool_categories(state_file, ["writing_context"])
+            self.assertEqual(probe(), "set_tool_categories:2")
+        finally:
+            remove_tool_category_state(state_file)
+
+    def test_category_probe_requires_managed_mcp_authorization(self):
+        self.assertIsNone(LocalCLIAdapter._terminal_turn_probe({
+            "local_cli_mcp_tool_category_state_file": "not-authorized",
+        }))
+
+    def test_terminal_output_distinguishes_categories_and_draft_types(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        context = SimpleNamespace(cwd="unused", isolated=False)
+        process = SimpleNamespace(returncode=-1)
+        for reason, expected in (
+            ("set_tool_categories:1", "工具类别已切换，继续下一模型步骤。"),
+            ("save_external_outline_draft:1", "大纲草稿已生成，等待作者确认。"),
+            ("save_external_chapter_draft:1", "章节草稿已生成，等待作者保存。"),
+        ):
+            with self.subTest(reason=reason), patch.object(adapter, "_cleanup_isolated_workspace"):
+                result = asyncio.run(adapter._finalize_run_output(
+                    context, process, b"", b"", reason, "model", {},
+                ))
+                self.assertEqual(result, expected)
 
     def test_runtime_cwd_does_not_fall_back_to_process_cwd(self):
         with patch.dict(
@@ -723,16 +922,43 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
         run_once = AsyncMock(side_effect=[LLMError("stream error"), "unexpected success"])
 
-        with patch.object(adapter, "_run_once", run_once):
-            with self.assertRaisesRegex(LLMError, "stream error"):
-                asyncio.run(adapter._run(
+        with patch.object(adapter, "_run_once", run_once), self.assertRaisesRegex(
+            LLMError, "stream error"
+        ):
+            asyncio.run(adapter._run(
+                "prompt",
+                "model",
+                {
+                    "local_cli_isolated": False,
+                    "local_cli_mcp_authorized": True,
+                },
+            ))
+
+        self.assertEqual(run_once.await_count, 1)
+
+    def test_direct_mcp_cli_does_not_restart_after_transient_post_write_failure(self):
+        adapter = LocalCLIAdapter(api_key="", base_url="opencode_cli", cli_command="opencode")
+        run_once = AsyncMock(
+            side_effect=[
+                LLMError("connection reset after durable MCP write"),
+                "unexpected second process",
+            ]
+        )
+
+        with patch.object(adapter, "_run_once", run_once), self.assertRaisesRegex(
+            LLMError, "connection reset"
+        ):
+            asyncio.run(
+                adapter._run(
                     "prompt",
                     "model",
                     {
-                        "local_cli_isolated": False,
+                        "local_cli_isolated": True,
                         "local_cli_mcp_authorized": True,
+                        "local_cli_retry_attempts": 3,
                     },
-                ))
+                )
+            )
 
         self.assertEqual(run_once.await_count, 1)
 
@@ -767,9 +993,10 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
         adapter = LocalCLIAdapter(api_key="", base_url="qwen_code_cli", cli_command="qwen")
         run_once = AsyncMock(side_effect=LLMError("No auth type is selected"))
 
-        with patch.object(adapter, "_run_once", run_once):
-            with self.assertRaisesRegex(LLMError, "No auth type"):
-                asyncio.run(adapter._run("prompt", "model", {"local_cli_isolated": True}))
+        with patch.object(adapter, "_run_once", run_once), self.assertRaisesRegex(
+            LLMError, "No auth type"
+        ):
+            asyncio.run(adapter._run("prompt", "model", {"local_cli_isolated": True}))
 
         self.assertEqual(run_once.await_count, 1)
 

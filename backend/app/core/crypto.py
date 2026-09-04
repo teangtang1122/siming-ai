@@ -6,6 +6,19 @@ from cryptography.fernet import Fernet
 from .legacy_env import get_compatible_env
 
 
+def key_file_path() -> str:
+    """Resolve the active key file without creating or reading a secret."""
+    key_file = get_compatible_env("SIMING_KEY_FILE")
+    if not key_file:
+        app_home = get_compatible_env("SIMING_HOME")
+        key_file = (
+            os.path.join(app_home, ".crypto_key")
+            if app_home
+            else os.path.join(os.path.dirname(__file__), "..", "..", ".crypto_key")
+        )
+    return os.path.abspath(key_file)
+
+
 def _get_or_create_key() -> bytes:
     """Get or create the encryption key.
     
@@ -17,14 +30,7 @@ def _get_or_create_key() -> bytes:
     if env_key:
         return env_key.encode()
 
-    key_file = get_compatible_env("SIMING_KEY_FILE")
-    if not key_file:
-        app_home = get_compatible_env("SIMING_HOME")
-        if app_home:
-            key_file = os.path.join(app_home, ".crypto_key")
-        else:
-            key_file = os.path.join(os.path.dirname(__file__), "..", "..", ".crypto_key")
-    key_file = os.path.abspath(key_file)
+    key_file = key_file_path()
     os.makedirs(os.path.dirname(key_file), exist_ok=True)
     
     if os.path.exists(key_file):

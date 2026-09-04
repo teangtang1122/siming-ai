@@ -55,8 +55,6 @@ WORLDBUILDING_WRITER_SYSTEM_BASE = (
     "4. 每个设定都有代价或限制——完美的设定是无聊的。\n"
     "5. 设定之间有关联——新的设定如何与已有设定互动？\n\n"
     "请调用 create_worldbuilding_entry 函数提交设定条目。"
-    "如果当前模型环境无法使用函数调用，则只输出严格 JSON："
-    '{"title":"","content":"","dimension":"culture","plot_usage":"","design_notes":""}。'
 )
 
 

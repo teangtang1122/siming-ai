@@ -45,7 +45,8 @@ SKILL_TEMPLATES: list[dict[str, Any]] = [
         "scope": "writing",
         "trigger_examples": ["检查设定", "有没有矛盾", "是否合理", "剧情冲突"],
         "recommended_tools": [
-            "preview_writing_context",
+            "prepare_task_context",
+            "search_task_context",
             "search_chapters",
             "search_characters",
             "search_worldbuilding",

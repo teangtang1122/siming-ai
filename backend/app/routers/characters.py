@@ -1,6 +1,5 @@
 """Character CRUD, version history, relationship network, and AI suggestion endpoints."""
 import json
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -11,16 +10,29 @@ from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..modules.story.application.commands import StoryCommandContext
 from ..modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
-from ..modules.story.interfaces.dependencies import get_story_command
 from ..modules.story.interfaces.character_dependencies import character_workspace
+from ..modules.story.interfaces.dependencies import get_story_command
 from ..schemas.character import (
     CharacterAIConfigUpdate,
+    CharacterChapterAppearanceUpsert,
     CharacterCreate,
     CharacterMergeRequest,
     CharacterUpdate,
     CharacterVersionItem,
     RelationshipUpdate,
 )
+from ..services.character_appearance_service import (
+    remove_character_chapter_appearance,
+)
+from ..services.character_appearance_service import (
+    upsert_character_chapter_appearance as upsert_character_chapter_appearance_record,
+)
+from ..services.character_merge_service import (
+    build_character_merge_preview,
+    find_duplicate_character_candidates,
+    merge_characters,
+)
+from ..services.character_role_types import normalize_character_role_type
 from ..services.character_service import (
     apply_change_log_to_character,
     character_to_dict,
@@ -31,18 +43,13 @@ from ..services.character_service import (
     snapshot_character,
     sync_character_aliases,
 )
-from ..services.character_merge_service import (
-    build_character_merge_preview,
-    find_duplicate_character_candidates,
-    merge_characters,
-)
-from ..services.character_role_types import normalize_character_role_type
+from ..services.planned_character_links import resolve_planned_outline_character_links
 
 router = APIRouter(tags=["characters"])
 
 
 @router.get("/projects/{project_id}/characters")
-def list_characters(project_id: str, q: Optional[str] = None, db: Session = Depends(get_db)):
+def list_characters(project_id: str, q: str | None = None, db: Session = Depends(get_db)):
     """Get project character list."""
     get_project_or_404(db, project_id)
     characters = character_workspace(db).list_characters(project_id, q)
@@ -82,6 +89,7 @@ def create_character(
     )
     db.flush()
     sync_character_aliases(db, character, payload.aliases)
+    resolved_outline_ids = resolve_planned_outline_character_links(db, character)
     command.queue(
         ContentSyncIntent(
             project_id=project_id,
@@ -89,6 +97,10 @@ def create_character(
             entity_id=character.id,
         ),
     )
+    if resolved_outline_ids:
+        command.queue(
+            ContentSyncIntent(project_id=project_id, target=ContentSyncTarget.OUTLINE)
+        )
     command.finish()
     db.refresh(character)
     return ApiResponse.success(data=character_to_dict(character), message="角色创建成功")
@@ -286,6 +298,87 @@ def delete_character(
     return ApiResponse.success(message="角色已删除")
 
 
+@router.delete(
+    "/projects/{project_id}/characters/{character_id}/appearances/{chapter_id}"
+)
+def delete_character_chapter_appearance(
+    project_id: str,
+    character_id: str,
+    chapter_id: str,
+    command: StoryCommandContext = Depends(get_story_command),
+):
+    """Remove an author-rejected chapter/character identity association.
+
+    Cataloging candidates and facts remain in the audit trail.  Only the
+    current creative projection is corrected, including outline links created
+    for the same chapter and the character's chapter provenance pointers.
+    """
+    db = command.session
+    data = remove_character_chapter_appearance(
+        db,
+        project_id,
+        character_id,
+        chapter_id,
+    )
+
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER,
+            entity_id=character_id,
+        ),
+    )
+    if data["removed_outline_links"]:
+        command.queue(
+            ContentSyncIntent(project_id=project_id, target=ContentSyncTarget.OUTLINE),
+        )
+    command.finish()
+    return ApiResponse.success(
+        data=data,
+        message="章节角色关联已移除",
+    )
+
+
+@router.put(
+    "/projects/{project_id}/characters/{character_id}/appearances/{chapter_id}"
+)
+def upsert_character_chapter_appearance(
+    project_id: str,
+    character_id: str,
+    chapter_id: str,
+    payload: CharacterChapterAppearanceUpsert,
+    command: StoryCommandContext = Depends(get_story_command),
+):
+    """Create or correct one author-confirmed chapter/person association.
+
+    The chapter and character IDs are validated against the current project.
+    Repeating the same request updates the one existing association instead of
+    creating duplicate rows.
+    """
+    db = command.session
+    data = upsert_character_chapter_appearance_record(
+        db,
+        project_id,
+        character_id,
+        chapter_id,
+        appearance_type=payload.appearance_type,
+        description=payload.description,
+    )
+
+    command.queue(
+        ContentSyncIntent(
+            project_id=project_id,
+            target=ContentSyncTarget.CHARACTER,
+            entity_id=character_id,
+        ),
+    )
+    command.finish()
+    return ApiResponse.success(
+        data=data,
+        message="章节人物关联已新增" if data["created"] else "章节人物关联已更新",
+    )
+
+
 @router.get("/projects/{project_id}/characters/{character_id}/versions")
 def list_character_versions(project_id: str, character_id: str, db: Session = Depends(get_db)):
     """Get character version history."""
@@ -329,6 +422,7 @@ def update_character_relationships(
     get_project_or_404(db, project_id)
     character = get_character_or_404(db, project_id, character_id)
     endpoint_ids: set[str] = set()
+    directed_pairs: set[tuple[str, str]] = set()
     for item in payload.relationships:
         source_id = item.source_character_id or character.id
         target_id = item.target_character_id
@@ -336,6 +430,10 @@ def update_character_relationships(
             raise ValidationError("提交的关系必须连接当前角色")
         if source_id == target_id:
             raise ValidationError("角色不能与自身建立关系")
+        pair = (source_id, target_id)
+        if pair in directed_pairs:
+            raise ValidationError("同一方向的两个角色只能保留一条现行关系")
+        directed_pairs.add(pair)
         endpoint_ids.update({source_id, target_id})
 
     workspace = character_workspace(db)
@@ -428,9 +526,9 @@ def update_character_ai_config(
 @router.get("/projects/{project_id}/characters/change-logs")
 def list_change_logs(
     project_id: str,
-    chapter_id: Optional[str] = None,
-    character_id: Optional[str] = None,
-    confirmed: Optional[bool] = None,
+    chapter_id: str | None = None,
+    character_id: str | None = None,
+    confirmed: bool | None = None,
     db: Session = Depends(get_db),
 ):
     """List character change logs, filterable by chapter/character/confirmed status."""
@@ -512,8 +610,8 @@ def reject_change_log(
 @router.post("/projects/{project_id}/characters/change-logs/batch")
 def batch_confirm_change_logs(
     project_id: str,
-    chapter_id: Optional[str] = None,
-    character_id: Optional[str] = None,
+    chapter_id: str | None = None,
+    character_id: str | None = None,
     action: str = Query("confirm", description="confirm or reject"),
     command: StoryCommandContext = Depends(get_story_command),
 ):
@@ -552,4 +650,5 @@ def batch_confirm_change_logs(
             ),
         )
     command.finish()
-    return ApiResponse.success(message=f"已{ '确认' if action == 'confirm' else '拒绝' } {len(logs)} 条变更记录")
+    verb = "确认" if action == "confirm" else "拒绝"
+    return ApiResponse.success(message=f"已{verb} {len(logs)} 条变更记录")

@@ -130,9 +130,26 @@ def search_manifest(project_id: str, manifest_id: str, payload: ContextSearchReq
     manifest = orchestrator.get_manifest(manifest_id, project_id)
     if not manifest:
         raise NotFoundError("Context manifest not found.")
-    rows = orchestrator.search_task_context(manifest, query=payload.query, limit=payload.limit)
+    probed_rows = orchestrator.search_task_context(
+        manifest,
+        query=payload.query,
+        limit=payload.limit,
+        offset=payload.cursor,
+        include_next_probe=True,
+    )
+    rows = probed_rows[: payload.limit]
+    has_more = len(probed_rows) > payload.limit
     commit_session(db)
-    return ApiResponse.success(data={"manifest_id": manifest.id, "items": rows})
+    return ApiResponse.success(data={
+        "manifest_id": manifest.id,
+        "items": rows,
+        "page": {
+            "cursor": payload.cursor,
+            "limit": payload.limit,
+            "next_cursor": payload.cursor + len(rows) if has_more else None,
+            "has_more": has_more,
+        },
+    })
 
 
 @router.post("/projects/{project_id}/context-manifests/{manifest_id}/evidence")

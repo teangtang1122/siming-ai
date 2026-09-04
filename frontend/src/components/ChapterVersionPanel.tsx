@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 import { useMemo, useState } from 'react'
 import { Alert, Button, List, Popconfirm, Select, Space, Tag, Typography, message } from 'antd'
 import { DiffOutlined, RollbackOutlined } from '@ant-design/icons'
@@ -184,7 +185,7 @@ export function ChapterVersionPanel({ projectId, data, onRestored }: ChapterVers
                   </Tag>
                   <Text type="secondary">{snapshot.word_count} 字</Text>
                   <Text type="secondary">{snapshot.trigger_type}</Text>
-                  {snapshot.created_at && <Text type="secondary">{new Date(snapshot.created_at).toLocaleString('zh-CN')}</Text>}
+                  {snapshot.created_at && <Text type="secondary">{(formatApiDateTime(snapshot.created_at) || '时间未记录')}</Text>}
                 </Space>
               </List.Item>
             )}

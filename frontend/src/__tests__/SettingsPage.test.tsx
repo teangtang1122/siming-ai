@@ -76,6 +76,7 @@ function mockCustomModelConfig() {
 describe('SettingsPage startup and update controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.history.replaceState({}, '', '/settings')
     mockInitialLoads()
     api.put.mockImplementation((_url: string, payload: object) => Promise.resolve({
       data: { data: { ...launcherSettings, ...payload } },
@@ -99,6 +100,15 @@ describe('SettingsPage startup and update controls', () => {
         { key: 'github', label: 'GitHub 全部版本', url: 'https://github.test/releases', description: '完整历史版本' },
       ],
     } } })
+  })
+
+  it('opens the advanced context panel from the model-capacity remediation link', async () => {
+    window.history.replaceState({}, '', '/settings?section=context-governance')
+    renderSettings()
+
+    const advanced = await screen.findByRole('button', { name: /高级设置：上下文与技术参数/ })
+    expect(advanced).toHaveAttribute('aria-expanded', 'true')
+    expect(document.getElementById('context-governance-settings')).toBeInTheDocument()
   })
 
   it('does not check or download updates during initial load', async () => {
@@ -284,7 +294,9 @@ describe('SettingsPage startup and update controls', () => {
       api_protocol: 'responses',
       model: 'gpt-5.6-sol',
     })))
-    expect(await screen.findByText('模型真实回复成功（Responses API）')).toBeInTheDocument()
+    expect(await screen.findByText(
+      '模型基础对话探测成功（Responses API）；长任务仍可能受到临时限流或服务容量影响',
+    )).toBeInTheDocument()
   })
 
   it('lets users revalidate a ready model instead of trusting stale status forever', async () => {
@@ -353,6 +365,8 @@ describe('SettingsPage startup and update controls', () => {
         base_url_override: 'https://api.vendor.example', api_protocol: 'auto', provider_type: 'api',
         readiness_status: 'unverified', readiness_message: '待验证', is_usable: false,
         is_global_default: false, api_key_configured: true,
+        context_window_tokens: 96_000, context_safety_margin_tokens: 512,
+        context_profile_source: 'configured', context_profile_known: true,
       }] } } })
       if (url === '/config/global-model') return Promise.resolve({ data: { data: { provider: null, model: null } } })
       if (url === '/config/content-root') return Promise.resolve({ data: { data: { current_path: 'D:/Siming/projects', default_path: 'D:/Siming/projects', is_default: true, exists: true, is_empty: true } } })
@@ -376,6 +390,34 @@ describe('SettingsPage startup and update controls', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models', expect.objectContaining({ provider: 'vendor' })))
     const saveCall = api.post.mock.calls.find(([url]) => url === '/config/models')
     expect(saveCall?.[1]?.api_key).toBeFalsy()
+    expect(saveCall?.[1]?.context_window_tokens).toBe(96_000)
+  })
+
+  it('uses the 256K fallback when an unknown custom model has no capacity profile', async () => {
+    mockCustomModelConfig()
+    api.post.mockImplementation((url: string) => {
+      if (url === '/config/models/list') {
+        return Promise.resolve({ data: { data: { models: [
+          { id: 'legacy-model', display_name: 'Legacy Model' },
+        ] } } })
+      }
+      return Promise.resolve({ data: { data: {} } })
+    })
+
+    renderSettings()
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+
+    const capacity = await screen.findByLabelText('模型上下文窗口 tokens')
+    expect(capacity).not.toBeDisabled()
+    expect(screen.getByText(/可留空；司命会按 256,000 tokens 临时兜底/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/ }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models', expect.objectContaining({
+      provider: 'vendor',
+      default_model: 'legacy-model',
+      context_window_tokens: null,
+    })))
   })
 
   it('asks OpenCode CLI itself for available models', async () => {

@@ -7,12 +7,51 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+from sqlalchemy.engine import make_url
 
 from app.services.external_agent import mcp_auto_config, mcp_server_spec
 
 
 class McpAutoConfigTest(unittest.TestCase):
+    def test_managed_mcp_keeps_runtime_database_key_and_content_across_cwd(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "app.services.external_agent.mcp_server_spec.get_settings",
+            return_value=SimpleNamespace(database_url="sqlite:///./novel_agent.db"),
+        ), patch.dict(os.environ, {
+            "DATABASE_URL": "sqlite:///wrong-installed-copy.db",
+            "SIMING_KEY_FILE": str(Path(directory) / "owner.key"),
+            "SIMING_CONTENT_ROOT": str(Path(directory) / "content"),
+        }):
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(directory)
+                env = mcp_server_spec.managed_mcp_environment()
+                child_cwd = Path(directory) / "isolated-child"
+                child_cwd.mkdir()
+                os.chdir(child_cwd)
+                self.assertEqual(
+                    Path(make_url(env["DATABASE_URL"]).database),
+                    Path(directory) / "novel_agent.db",
+                )
+                self.assertEqual(env["SIMING_KEY_FILE"], str(Path(directory) / "owner.key"))
+                self.assertEqual(env["SIMING_CONTENT_ROOT"], str(Path(directory) / "content"))
+                for name in ("SIMING_HOME", "MOSHU_HOME", "NOVEL_AGENT_HOME"):
+                    self.assertEqual(env[name], str(Path(directory)))
+                self.assertFalse((Path(directory) / "owner.key").exists())
+            finally:
+                os.chdir(original_cwd)
+
+    def test_managed_mcp_rejects_unshareable_memory_database(self):
+        for url in ("sqlite://", "sqlite:///:memory:", "sqlite:///file:shared?mode=memory&uri=true"):
+            with self.subTest(url=url), patch(
+                "app.services.external_agent.mcp_server_spec.get_settings",
+                return_value=SimpleNamespace(database_url=url),
+            ), self.assertRaisesRegex(ValueError, "共享持久数据库"):
+                mcp_server_spec.managed_mcp_environment()
+
     def test_frozen_mcp_server_uses_siming_home_instead_of_caller_cwd(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
             os.environ,

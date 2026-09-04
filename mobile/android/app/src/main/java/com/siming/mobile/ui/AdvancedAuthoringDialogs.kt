@@ -40,6 +40,7 @@ import com.siming.mobile.data.network.pcNewRelationship
 import com.siming.mobile.data.network.pcRelationshipMutationPayload
 import com.siming.mobile.data.network.mobileRefreshWarning
 import com.siming.mobile.data.toUserFacingMessage
+import com.siming.mobile.data.formatApiDateTime
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -205,7 +206,7 @@ internal fun ChapterHistoryDialog(
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "${snapshot.string("trigger_type")} · ${snapshot.string("created_at")}",
+                                "${snapshot.string("trigger_type")} · 版本时间（本地）：${formatApiDateTime(snapshot.string("created_at")) ?: "时间未记录"}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -570,7 +571,7 @@ internal fun WorldAdvancedDialog(
                                     version.string("source_chapter_id").takeIf(String::isNotBlank)?.let {
                                         Text("来源章节：$it", style = MaterialTheme.typography.bodySmall)
                                     }
-                                    Text(version.string("created_at"), style = MaterialTheme.typography.labelSmall)
+                                    Text("版本时间（本地）：${formatApiDateTime(version.string("created_at")) ?: "时间未记录"}", style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }
@@ -729,7 +730,7 @@ private fun CharacterVersionList(
                         version.string("change_summary").ifBlank { "无变更摘要" },
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Text(version.string("created_at"), style = MaterialTheme.typography.labelSmall)
+                    Text("版本时间（本地）：${formatApiDateTime(version.string("created_at")) ?: "时间未记录"}", style = MaterialTheme.typography.labelSmall)
                 }
                 TextButton(onClick = { onOpen(version.string("id")) }) { Text("查看") }
             }

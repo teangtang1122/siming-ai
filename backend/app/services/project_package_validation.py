@@ -414,6 +414,11 @@ class ProjectPackageValidator:
                     value = row.get(field)
                     if value is None:
                         continue
+                    if (
+                        key == "narrative_checkpoints"
+                        and field in {"chapter_id", "chapter_snapshot_id"}
+                    ):
+                        continue
                     if not isinstance(value, str) or value not in identifiers.get(
                         target_key, set()
                     ):

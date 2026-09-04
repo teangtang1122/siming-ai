@@ -23,6 +23,47 @@ function sseResponse(events: CreationAgentTurnEvent[]) {
 describe('creation Agent SSE client', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('delivers conversation context events as typed state frames before completion', async () => {
+    const events: CreationAgentTurnEvent[] = [
+      {
+        client_turn_id: 'turn-context',
+        sequence: 1,
+        type: 'conversation_context',
+        message: '正在整理较早上下文',
+        data: { context_state: { status: 'compressing', latest_checkpoint_id: 'checkpoint-1' } },
+      },
+      {
+        client_turn_id: 'turn-context',
+        sequence: 2,
+        type: 'conversation_checkpoint',
+        message: '较早上下文已整理',
+        data: { checkpoint: { id: 'checkpoint-1', status: 'ready' } },
+      },
+      {
+        client_turn_id: 'turn-context',
+        sequence: 3,
+        type: 'complete',
+        message: '本轮完成',
+        data: { reply: '已继续', turn_persisted: true },
+      },
+    ]
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse(events)))
+    const received: CreationAgentTurnEvent[] = []
+
+    const result = await runCreationAgentTurn('session-1', '继续', undefined, {
+      clientTurnId: 'turn-context',
+      onEvent: (event) => received.push(event),
+    })
+
+    expect(result.reply).toBe('已继续')
+    expect(received.map((event) => event.type)).toEqual([
+      'conversation_context',
+      'conversation_checkpoint',
+      'complete',
+    ])
+    expect(received[1].data?.checkpoint).toEqual({ id: 'checkpoint-1', status: 'ready' })
+  })
+
   it('reconnects with the same id and last sequence without duplicating events', async () => {
     const requests: Array<Record<string, unknown>> = []
     const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -67,6 +108,44 @@ describe('creation Agent SSE client', () => {
     expect(requests).toHaveLength(2)
     expect(requests[0]).toMatchObject({ client_turn_id: 'turn-1', after_sequence: 0 })
     expect(requests[1]).toMatchObject({ client_turn_id: 'turn-1', after_sequence: 1 })
+  })
+
+  it('keeps the exact author message separate from typed data-only reference material', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body || '{}')) as Record<string, unknown>)
+      return sseResponse([{
+        client_turn_id: 'turn-reference',
+        sequence: 1,
+        type: 'complete',
+        message: '本轮完成',
+        data: { reply: '完成', turn_persisted: true },
+      }])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await runCreationAgentTurn('session-1', '总结', undefined, {
+      clientTurnId: 'turn-reference',
+      referenceContext: {
+        source_kind: 'attachment',
+        source_name: '灰港.txt',
+        content: '林野来到灰港。',
+        coverage: 'full',
+        source_chars: 7,
+      },
+    })
+
+    expect(requests[0]).toMatchObject({
+      message: '总结',
+      reference_context: {
+        source_kind: 'attachment',
+        source_name: '灰港.txt',
+        content: '林野来到灰港。',
+        coverage: 'full',
+        source_chars: 7,
+      },
+    })
+    expect(String(requests[0].message)).not.toContain('林野来到灰港')
   })
 
   it('retries an initial network connection failure with the same id', async () => {

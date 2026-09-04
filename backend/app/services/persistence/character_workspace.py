@@ -112,11 +112,17 @@ class SqlAlchemyCharacterWorkspace:
         relationships: Sequence[Any],
     ) -> None:
         self.delete_relationships(project_id, character_id)
+        seen_pairs: set[tuple[str, str]] = set()
         for item in relationships:
+            source_id = item.source_character_id or character_id
+            pair = (source_id, item.target_character_id)
+            if pair in seen_pairs:
+                raise ValueError("同一方向的两个角色只能保留一条现行关系")
+            seen_pairs.add(pair)
             self.db.add(
                 CharacterRelationship(
                     project_id=project_id,
-                    character_a_id=item.source_character_id or character_id,
+                    character_a_id=source_id,
                     character_b_id=item.target_character_id,
                     relationship_type=item.relationship_type,
                     description=item.description,

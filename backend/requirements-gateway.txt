@@ -1,6 +1,7 @@
 # Cloud/Gateway runtime. Desktop WebView, Windows PTY, local models, and CLI
 # runtimes are intentionally excluded from the container image.
 fastapi==0.139.2
+fastjsonschema==2.21.2
 starlette==1.3.1
 uvicorn[standard]==0.27.0
 sqlalchemy==2.0.25

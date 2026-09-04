@@ -187,6 +187,12 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
         sync_worldbuilding_to_file,
         write_project_manifest,
     )
+    from ....services.rag.indexer import (
+        delete_source_index,
+        refresh_source_index,
+        reindex_project,
+        reindex_project_types,
+    )
 
     payload = dict(job.payload_json or {})
     target = ContentSyncTarget(job.target)
@@ -202,6 +208,10 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
         return "target_missing"
     if target is ContentSyncTarget.PROJECT:
         sync_project_to_files(session, project.id)
+        # Cataloging mutates several entity kinds and queues one project sync.
+        # Refresh discovery from those authoritative rows before the job can
+        # complete, so the next writing turn cannot retrieve an older excerpt.
+        reindex_project(session, project.id)
     elif target is ContentSyncTarget.PROJECT_MANIFEST:
         write_project_manifest(session, project)
     elif target is ContentSyncTarget.CHAPTER:
@@ -214,6 +224,8 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
             .first()
         )
         if chapter is None:
+            delete_source_index(session, project.id, "chapter", str(job.entity_id or ""))
+            delete_source_index(session, project.id, "chapter_summary", str(job.entity_id or ""))
             return "target_missing"
         sync_chapter_to_file(
             session,
@@ -221,6 +233,8 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
             chapter,
             index=int(payload.get("index") or 0),
         )
+        refresh_source_index(session, project.id, "chapter", chapter.id)
+        refresh_source_index(session, project.id, "chapter_summary", chapter.id)
     elif target is ContentSyncTarget.CHARACTER:
         character = (
             session.query(Character)
@@ -231,8 +245,12 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
             .first()
         )
         if character is None:
+            delete_source_index(session, project.id, "character", str(job.entity_id or ""))
+            delete_source_index(session, project.id, "character_timeline", str(job.entity_id or ""))
             return "target_missing"
         sync_character_to_file(session, project, character)
+        refresh_source_index(session, project.id, "character", character.id)
+        refresh_source_index(session, project.id, "character_timeline", character.id)
     elif target is ContentSyncTarget.WORLD_BUILDING:
         entry = (
             session.query(WorldbuildingEntry)
@@ -243,10 +261,17 @@ def _apply_projection(session: Session, job: ContentSyncJob) -> str:
             .first()
         )
         if entry is None:
+            delete_source_index(session, project.id, "worldbuilding", str(job.entity_id or ""))
             return "target_missing"
         sync_worldbuilding_to_file(session, project, entry)
+        refresh_source_index(session, project.id, "worldbuilding", entry.id)
     elif target is ContentSyncTarget.OUTLINE:
         sync_outline_to_file(session, project)
+        # Outline syncs cover a whole tree and therefore do not carry one
+        # entity_id. Rebuild that source type from authoritative rows so an
+        # author correction cannot leave the prior summary in a later writing
+        # context, and remove chunks for deleted nodes in the same pass.
+        reindex_project_types(session, project.id, source_types=["outline"])
     elif target is ContentSyncTarget.CHARACTER_RELATIONSHIPS:
         sync_relationships_to_file(session, project)
     elif target is ContentSyncTarget.WORLD_BUILDING_RELATIONSHIPS:

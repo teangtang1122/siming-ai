@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from itertools import count
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -13,7 +14,6 @@ from app.architecture.tool_categories import (
     tool_names_for_categories,
 )
 from app.core.exceptions import LLMError
-from app.core.json_repair import parse_json_object
 from app.database.models import NovelCreationStageRun
 from app.modules.creation.interfaces.agent_progress import (
     creation_tool_completed_event,
@@ -28,12 +28,38 @@ from app.modules.creation.interfaces.agent_scope import (
     creation_turn_write_denial,
     creation_turn_writes_closed,
 )
+from app.services.conversation_context.errors import (
+    ConversationContextError,
+    ConversationContextErrorCode,
+)
+from app.services.conversation_context.tool_transactions import (
+    NativeToolCall,
+    NativeToolResult,
+    ToolExecutionReceipt,
+    ToolTransaction,
+)
+from app.services.creation_agent_native_protocol import (
+    build_creation_execution_receipt,
+    safe_creation_tool_result,
+    validate_native_call_batch,
+)
 from app.services.creation_agent_turn_records import (
     CREATION_AGENT_TURN_SCHEMA,
-    canonical_tool_call,
     record_prompt_metric,
+    seal_creation_runtime_snapshot,
 )
 from app.services.workspace.executor import execute_workspace_action
+from app.services.workspace.registry import registry
+from app.services.workspace.tool_result_projection import (
+    MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
+    TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT,
+    ToolResultBatchOverCapacity,
+    ToolResultOverCapacity,
+    ToolResultProjectionError,
+    admit_native_assistant_transaction,
+    declared_model_results_for_tool_names,
+    model_tool_result_projector,
+)
 
 CREATION_AGENT_TOOLS = set(CREATION_AGENT_TOOL_NAMES)
 SESSION_TOOLS = CREATION_AGENT_TOOLS - {
@@ -46,11 +72,10 @@ SESSION_TOOLS = CREATION_AGENT_TOOLS - {
 REVISION_TOOLS = set(CREATION_AGENT_REVISION_TOOL_NAMES)
 WRITE_TOOLS = set(CREATION_AGENT_WRITE_TOOL_NAMES)
 READ_TOOLS = CREATION_AGENT_TOOLS - WRITE_TOOLS
-_MAX_TOOL_MESSAGE_CHARS = 90_000
-
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 CompleteTurn = Callable[..., Awaitable[dict[str, Any]]]
 EmitProgress = Callable[..., Awaitable[None]]
+PersistRuntimeState = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -60,19 +85,33 @@ class CreationTurnState:
     message: str
     model: str | None
     tool_mode: str
+    system_prompt: str
+    prepare_model_messages: Callable[..., Awaitable[list[dict[str, Any]]]]
+    provider_max_tokens: Callable[[], int | None]
+    persist_runtime_state: PersistRuntimeState
     messages: list[dict[str, Any]]
     schemas: list[dict[str, Any]]
     baseline_revision: int
     extra_body: dict[str, Any] | None
     on_event: ProgressCallback | None
+    reference_context: dict[str, Any] | None = None
+    turn_execution_id: str = ""
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     write_results: list[dict[str, Any]] = field(default_factory=list)
     protocol_messages: list[dict[str, Any]] = field(default_factory=list)
-    seen_calls: set[str] = field(default_factory=set)
+    seen_write_calls: set[str] = field(default_factory=set)
+    active_read_calls: set[str] = field(default_factory=set)
     final_reply: str = ""
     progress_events: list[dict[str, Any]] = field(default_factory=list)
     prompt_metrics: list[dict[str, Any]] = field(default_factory=list)
     direct_mcp_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_transactions: list[ToolTransaction] = field(default_factory=list)
+    pending_transaction_receipts: dict[
+        str, tuple[ToolExecutionReceipt, ...]
+    ] = field(default_factory=dict)
+    current_ledger: list[ToolExecutionReceipt] = field(default_factory=list)
+    compacted_transactions: list[dict[str, Any]] = field(default_factory=list)
+    native_transaction_count: int = 0
     active_categories: tuple[str, ...] = ()
     successful_write_count: int = 0
     failed_write_count: int = 0
@@ -111,135 +150,118 @@ async def _report_stream_resume(
     )
 
 
-def _parse_arguments(raw_arguments: Any) -> dict[str, Any]:
-    try:
-        return (
-            json.loads(raw_arguments)
-            if isinstance(raw_arguments, str)
-            else dict(raw_arguments)
+def _consume_delivered_transactions(state: CreationTurnState) -> None:
+    """Replace model-consumed native batches with compact server receipts."""
+
+    consumed_any = bool(state.tool_transactions)
+    for transaction in state.tool_transactions:
+        compactable = transaction.mark_consumed().mark_compactable()
+        receipts = state.pending_transaction_receipts.pop(
+            transaction.transaction_id,
+            (),
         )
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return parse_json_object(str(raw_arguments)) or {}
-
-
-def _run_message_projection(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    projected = {
-        key: value.get(key)
-        for key in (
-            "run_id", "id", "session_id", "stage", "operation", "status",
-            "operation_id", "input_revision", "result_mode", "warning",
-            "failure_class", "current_message", "next_action",
+        state.current_ledger.extend(receipts)
+        state.compacted_transactions.append(
+            compactable.to_dict(include_native_payload=False)
         )
-        if value.get(key) is not None
-    }
-    result = value.get("result") if isinstance(value.get("result"), dict) else {}
-    stages = result.get("stages") if isinstance(result.get("stages"), dict) else {}
-    if stages:
-        projected["generated_artifacts"] = sorted(
-            key for key in stages if key != "entity_change"
-        )
-    entity_change = stages.get("entity_change")
-    if isinstance(entity_change, dict):
-        projected["entity_change"] = entity_change
-    return projected
+    state.tool_transactions.clear()
+    if consumed_any:
+        # A successful next provider response proves that the read result was
+        # consumed.  The model may now safely re-read the same target if later
+        # reasoning requires fresh state; writes remain permanently deduped.
+        state.active_read_calls.clear()
 
 
-def _write_message_projection(result: dict[str, Any]) -> dict[str, Any]:
-    data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    projected: dict[str, Any] = {}
-    for key in (
-        "session_id", "revision", "current_revision", "failure_class",
-        "artifact", "affected_artifacts", "changed_fields", "operation_id",
-        "project_id", "reason",
-    ):
-        value = data.get(key)
-        if value is not None and not isinstance(value, dict):
-            projected[key] = value
-    artifact = data.get("artifact") if isinstance(data.get("artifact"), dict) else None
-    if artifact:
-        projected["artifact"] = {
-            key: artifact.get(key)
-            for key in ("artifact", "status", "source", "revision", "stale_reason")
-            if artifact.get(key) is not None
-        }
-    entity = data.get("entity") if isinstance(data.get("entity"), dict) else None
-    if entity:
-        projected["entity"] = {
-            key: entity.get(key)
-            for key in ("id", "artifact", "entity_type", "entity_key", "status", "revision")
-            if entity.get(key) is not None
-        }
-    run = _run_message_projection(data.get("run"))
-    if run:
-        projected["run"] = run
-    session = data.get("session") if isinstance(data.get("session"), dict) else None
-    if session:
-        projected["session"] = {
-            key: session.get(key)
-            for key in ("id", "status", "current_stage", "revision", "created_project_id")
-            if session.get(key) is not None
-        }
-    changes = data.get("changes")
-    if isinstance(changes, list):
-        projected["change_count"] = len(changes)
-    return {
-        "tool": result.get("tool"),
-        "status": result.get("status"),
-        "detail": result.get("detail"),
-        "data": projected or None,
-    }
+def _all_execution_receipts(
+    state: CreationTurnState,
+) -> tuple[ToolExecutionReceipt, ...]:
+    return (
+        *state.current_ledger,
+        *(
+            receipt
+            for transaction in state.tool_transactions
+            for receipt in state.pending_transaction_receipts.get(
+                transaction.transaction_id,
+                (),
+            )
+        ),
+    )
 
 
-def _bounded_tool_value(value: Any, *, depth: int = 0) -> Any:
-    if depth >= 8:
-        return {"omitted": True, "reason": "maximum_depth"}
-    if isinstance(value, str):
-        if len(value) <= 12_000:
-            return value
-        return value[:12_000] + "…[truncated]"
-    if isinstance(value, list):
-        selected = value[:40]
-        bounded = [_bounded_tool_value(item, depth=depth + 1) for item in selected]
-        if len(value) > len(selected):
-            bounded.append({"omitted_items": len(value) - len(selected)})
-        return bounded
-    if isinstance(value, dict):
-        items = list(value.items())[:80]
-        bounded = {
-            str(key): _bounded_tool_value(child, depth=depth + 1)
-            for key, child in items
-        }
-        if len(value) > len(items):
-            bounded["_omitted_fields"] = len(value) - len(items)
-        return bounded
-    return value
+def _durable_runtime_snapshot(
+    state: CreationTurnState,
+    *,
+    status: str = "running",
+    in_progress_transaction: ToolTransaction | None = None,
+    in_progress_receipts: tuple[ToolExecutionReceipt, ...] = (),
+) -> dict[str, Any]:
+    """Serialize only server state needed to audit/recover an interrupted turn."""
+
+    return seal_creation_runtime_snapshot({
+        "session_id": str(state.session.id),
+        "status": status,
+        "tool_mode": state.tool_mode,
+        "tool_results": list(state.tool_results),
+        "execution_receipts": [
+            receipt.to_dict()
+            for receipt in (
+                *_all_execution_receipts(state),
+                *in_progress_receipts,
+            )
+        ],
+        "compacted_tool_transactions": list(state.compacted_transactions),
+        "pending_tool_transactions": [
+            transaction.to_dict()
+            for transaction in (
+                *state.tool_transactions,
+                *(
+                    (in_progress_transaction,)
+                    if in_progress_transaction is not None
+                    else ()
+                ),
+            )
+        ],
+        "successful_write_count": state.successful_write_count,
+        "failed_write_count": state.failed_write_count,
+        "successful_read_count": state.successful_read_count,
+        "reference_context": state.reference_context,
+        "turn_execution_id": state.turn_execution_id,
+    })
+
+
+@dataclass(frozen=True)
+class _RuntimeResultTool:
+    """Explicit contract for the controller and rejected unknown tool calls."""
+
+    name: str
+    model_result_contract: Any = TOOL_CATEGORY_CONTROLLER_RESULT_CONTRACT
 
 
 def _tool_message_content(name: str, result: dict[str, Any]) -> str:
-    """Serialize valid, bounded JSON for the model without altering API results."""
+    """Apply the one declarative model-result projection path."""
 
-    payload = _write_message_projection(result) if name in WRITE_TOOLS else result
-    content = json.dumps(payload, ensure_ascii=False, default=str)
-    if len(content) <= _MAX_TOOL_MESSAGE_CHARS:
-        return content
-    bounded = _bounded_tool_value(payload)
-    content = json.dumps(bounded, ensure_ascii=False, default=str)
-    if len(content) <= _MAX_TOOL_MESSAGE_CHARS:
-        return content
-    return json.dumps({
-        "tool": result.get("tool") or name,
-        "status": "error",
-        "detail": (
-            "Tool result exceeded the model context boundary. Narrow the artifact/entity "
-            "query and fetch exact candidates separately."
-        ),
-        "data": {
-            "reason": "tool_result_too_large",
-            "original_chars": len(json.dumps(result, ensure_ascii=False, default=str)),
-        },
-    }, ensure_ascii=False)
+    tool = registry.get(name) or _RuntimeResultTool(name=name)
+    try:
+        return model_tool_result_projector.project(
+            tool,
+            result,
+            max_json_bytes=MAX_MODEL_VISIBLE_TOOL_RESULT_BATCH_JSON_BYTES,
+        ).content
+    except ToolResultOverCapacity as exc:
+        return json.dumps(
+            exc.model_error_result(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except ToolResultProjectionError:
+        return json.dumps(
+            safe_creation_tool_result(name, {
+                "status": "error",
+                "data": {"reason": "model_result_projection_failed"},
+            }),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
 
 async def _execute_domain_call(
@@ -293,13 +315,16 @@ async def _execute_domain_call(
         sort_keys=True,
         default=str,
     )
-    if signature in state.seen_calls:
+    seen_calls = (
+        state.seen_write_calls if name in WRITE_TOOLS else state.active_read_calls
+    )
+    if signature in seen_calls:
         return {
             "tool": name,
             "status": "skipped",
             "detail": "相同工具调用已执行，本轮不重复提交",
         }, None
-    state.seen_calls.add(signature)
+    seen_calls.add(signature)
     started = creation_tool_started_event(name, arguments)
     await bindings.emit_progress(
         state.on_event,
@@ -315,93 +340,279 @@ async def _execute_domain_call(
     ), None
 
 
+@dataclass(frozen=True)
+class _PreparedNativeBatch:
+    transaction_number: int
+    transaction: ToolTransaction
+    native_calls: tuple[NativeToolCall, ...]
+    batch_rejection: ToolResultBatchOverCapacity | None
+    invalid_assistant_detail: str
+    terminal_error: ConversationContextError | None
+
+
+def _prepare_native_batch(
+    state: CreationTurnState,
+    calls: list[dict[str, Any]],
+    *,
+    assistant_content: str,
+    assistant_reasoning_content: str,
+    assistant_provider_state: tuple[dict[str, Any], ...],
+) -> _PreparedNativeBatch:
+    if state.tool_transactions:
+        raise RuntimeError("上一批原生工具事务尚未消费，不能创建下一批事务")
+    resolved = declared_model_results_for_tool_names(
+        (
+            str((call.get("function") or {}).get("name") or "")
+            for call in calls
+        ),
+        resolve_tool=registry.get,
+    )
+    rejection: ToolResultBatchOverCapacity | None = None
+    invalid_detail = ""
+    terminal_error: ConversationContextError | None = None
+    assistant_payload: dict[str, Any] = {
+        "role": "assistant",
+        "content": assistant_content,
+        "tool_calls": calls,
+    }
+    if assistant_reasoning_content:
+        assistant_payload["reasoning_content"] = assistant_reasoning_content
+    if assistant_provider_state:
+        assistant_payload["provider_state"] = list(assistant_provider_state)
+    try:
+        admit_native_assistant_transaction(assistant_payload, resolved)
+    except ToolResultBatchOverCapacity as exc:
+        rejection = exc
+        if exc.reason != "tool_result_batch_over_capacity":
+            terminal_error = ConversationContextError(
+                ConversationContextErrorCode.PROTOCOL_INVALID,
+                "模型返回的原生工具事务超过可验证协议容量，本批次未执行。",
+                details={
+                    "reason": exc.reason,
+                    "call_count": exc.call_count,
+                    "actual_bytes": exc.declared_json_bytes,
+                    "max_bytes": exc.max_json_bytes,
+                    "remediation": "减少单步工具调用、参数或模型推理状态后重试。",
+                },
+            )
+    except ToolResultProjectionError:
+        invalid_detail = "原生工具事务无法安全验证；本批次未执行。"
+        terminal_error = ConversationContextError(
+            ConversationContextErrorCode.PROTOCOL_INVALID,
+            "模型返回的原生工具事务无法安全序列化，本批次未执行。",
+            details={
+                "reason": "native_assistant_transaction_invalid",
+                "call_count": len(calls),
+                "remediation": "重试本轮；若持续出现，请切换模型或检查提供商响应。",
+            },
+        )
+    state.native_transaction_count += 1
+    transaction_number = state.native_transaction_count
+    native_calls = tuple(
+        NativeToolCall(
+            call_id=str(call.get("id") or ""),
+            name=str((call.get("function") or {}).get("name") or ""),
+            arguments_json=str((call.get("function") or {}).get("arguments")),
+        )
+        for call in calls
+    )
+    transaction = ToolTransaction(
+        transaction_id=f"creation-transaction-{transaction_number}",
+        assistant_message_id=f"creation-tool-assistant-{transaction_number}",
+        assistant_content=assistant_content,
+        calls=native_calls,
+        assistant_reasoning_content=assistant_reasoning_content,
+        assistant_provider_state=(
+            ()
+            if invalid_detail or (
+                rejection is not None
+                and rejection.reason == "native_assistant_transaction_invalid"
+            )
+            else assistant_provider_state
+        ),
+    )
+    return _PreparedNativeBatch(
+        transaction_number=transaction_number,
+        transaction=transaction,
+        native_calls=native_calls,
+        batch_rejection=rejection,
+        invalid_assistant_detail=invalid_detail,
+        terminal_error=terminal_error,
+    )
+
+
+async def _execute_one_native_call(
+    state: CreationTurnState,
+    bindings: CreationExecutionBindings,
+    *,
+    native_call: NativeToolCall,
+    arguments: dict[str, Any],
+    transaction_number: int,
+    available_tools: set[str],
+    reads_ready_before_step: bool,
+    batch_rejection: ToolResultBatchOverCapacity | None,
+    invalid_assistant_detail: str,
+) -> tuple[NativeToolResult, ToolExecutionReceipt, tuple[str, ...] | None]:
+    name = native_call.name
+    if batch_rejection is not None:
+        tool_result, pending_categories = (
+            batch_rejection.model_error_result(name),
+            None,
+        )
+    elif invalid_assistant_detail:
+        tool_result, pending_categories = ({
+            "tool": name,
+            "status": "error",
+            "detail": invalid_assistant_detail,
+            "data": {"reason": "native_assistant_transaction_invalid"},
+        }, None)
+    elif name in WRITE_TOOLS and not reads_ready_before_step:
+        tool_result, pending_categories = ({
+            "tool": name,
+            "status": "denied",
+            "detail": (
+                "写入前必须先完成一次真实业务读取，并让读取结果进入下一模型步骤；"
+                "不得在同一个模型步骤并列决定读取和写入。"
+            ),
+            "data": {
+                "reason": "read_required",
+                "required_next_step": (
+                    "Read the exact target, then decide the write in the next model step."
+                ),
+            },
+        }, None)
+    else:
+        tool_result, pending_categories = await _execute_domain_call(
+            state,
+            bindings,
+            name,
+            arguments,
+            available_tools,
+        )
+    tool_result = safe_creation_tool_result(name, tool_result)
+    state.tool_results.append(tool_result)
+    if name != TOOL_CATEGORY_CONTROLLER:
+        completed = creation_tool_completed_event(name, arguments, tool_result)
+        await bindings.emit_progress(
+            state.on_event,
+            state.progress_events,
+            completed["type"],
+            completed["message"],
+            completed["data"],
+        )
+    if name in WRITE_TOOLS:
+        status = str(tool_result.get("status") or "")
+        result_data = (
+            tool_result.get("data")
+            if isinstance(tool_result.get("data"), dict)
+            else {}
+        )
+        boundary_reason = str(result_data.get("reason") or "")
+        if status in CREATION_WRITE_SUCCESS_STATUSES:
+            state.successful_write_count += 1
+            state.write_results.append(tool_result)
+        elif boundary_reason not in {
+            "successful_write_limit", "failed_write_limit", "read_required",
+        }:
+            state.failed_write_count += 1
+            if state.failed_write_count == CREATION_TURN_MAX_FAILED_WRITES:
+                await bindings.emit_progress(
+                    state.on_event,
+                    state.progress_events,
+                    "tool_completed",
+                    "写入连续失败已达上限，本轮已停止自动重试",
+                    {
+                        "tool": name,
+                        "status": "denied",
+                        "turn_boundary": "failed_write_limit",
+                        "failed_writes": state.failed_write_count,
+                    },
+                )
+    if (
+        name in READ_TOOLS
+        and str(tool_result.get("status") or "") in {"ok", "warning"}
+    ):
+        state.successful_read_count += 1
+    native_result, receipt = build_creation_execution_receipt(
+        session_id=str(state.session.id),
+        turn_execution_id=state.turn_execution_id,
+        transaction_number=transaction_number,
+        call=native_call,
+        result=tool_result,
+        model_content=_tool_message_content(name, tool_result),
+        read_tools=READ_TOOLS,
+        write_tools=WRITE_TOOLS,
+        write_success_statuses=CREATION_WRITE_SUCCESS_STATUSES,
+    )
+    return native_result, receipt, pending_categories
+
+
 async def _execute_native_calls(
     state: CreationTurnState,
     bindings: CreationExecutionBindings,
     calls: list[dict[str, Any]],
+    *,
+    arguments_by_call_id: dict[str, dict[str, Any]],
+    assistant_content: str,
+    assistant_reasoning_content: str,
+    assistant_provider_state: tuple[dict[str, Any], ...],
 ) -> tuple[str, ...] | None:
+    batch = _prepare_native_batch(
+        state,
+        calls,
+        assistant_content=assistant_content,
+        assistant_reasoning_content=assistant_reasoning_content,
+        assistant_provider_state=assistant_provider_state,
+    )
     available = set(tool_names_for_categories(state.active_categories)) & CREATION_AGENT_TOOLS
     reads_ready_before_step = state.successful_read_count > 0
-    for call in calls:
-        function = call.get("function") if isinstance(call, dict) else {}
-        name = str((function or {}).get("name") or "")
-        arguments = _parse_arguments((function or {}).get("arguments") or "{}")
-        if name in WRITE_TOOLS and not reads_ready_before_step:
-            tool_result, pending_categories = ({
-                "tool": name,
-                "status": "denied",
-                "detail": (
-                    "写入前必须先完成一次真实业务读取，并让读取结果进入下一模型步骤；"
-                    "不得在同一个模型步骤并列决定读取和写入。"
-                ),
-                "data": {
-                    "reason": "read_required",
-                    "required_next_step": (
-                        "Read the exact target, then decide the write "
-                        "in the next model step."
-                    ),
-                },
-            }, None)
-        else:
-            tool_result, pending_categories = await _execute_domain_call(
-                state,
-                bindings,
-                name,
-                arguments,
-                available,
-            )
-        state.tool_results.append(tool_result)
-        if name != TOOL_CATEGORY_CONTROLLER:
-            completed = creation_tool_completed_event(name, arguments, tool_result)
-            await bindings.emit_progress(
-                state.on_event,
-                state.progress_events,
-                completed["type"],
-                completed["message"],
-                completed["data"],
-            )
-        if name in WRITE_TOOLS:
-            status = str(tool_result.get("status") or "")
-            result_data = (
-                tool_result.get("data")
-                if isinstance(tool_result.get("data"), dict)
-                else {}
-            )
-            boundary_reason = str(result_data.get("reason") or "")
-            if status in CREATION_WRITE_SUCCESS_STATUSES:
-                state.successful_write_count += 1
-                state.write_results.append(tool_result)
-            elif boundary_reason not in {
-                "successful_write_limit", "failed_write_limit", "read_required",
-            }:
-                state.failed_write_count += 1
-                if state.failed_write_count == CREATION_TURN_MAX_FAILED_WRITES:
-                    await bindings.emit_progress(
-                        state.on_event,
-                        state.progress_events,
-                        "tool_completed",
-                        "写入连续失败已达上限，本轮已停止自动重试",
-                        {
-                            "tool": name,
-                            "status": "denied",
-                            "turn_boundary": "failed_write_limit",
-                            "failed_writes": state.failed_write_count,
-                        },
-                    )
-        if (
-            name in READ_TOOLS
-            and str(tool_result.get("status") or "") in {"ok", "warning"}
-        ):
-            state.successful_read_count += 1
+    transaction = batch.transaction
+    receipts: list[ToolExecutionReceipt] = []
+    for call_index, (call, native_call) in enumerate(
+        zip(calls, batch.native_calls, strict=True)
+    ):
+        arguments = dict(arguments_by_call_id[native_call.call_id])
+        native_result, receipt, pending_categories = await _execute_one_native_call(
+            state,
+            bindings,
+            native_call=native_call,
+            arguments=arguments,
+            transaction_number=batch.transaction_number,
+            available_tools=available,
+            reads_ready_before_step=reads_ready_before_step,
+            batch_rejection=batch.batch_rejection,
+            invalid_assistant_detail=batch.invalid_assistant_detail,
+        )
         tool_message = {
             "role": "tool",
             "tool_call_id": str(call.get("id") or ""),
-            "content": _tool_message_content(name, tool_result),
+            "content": native_result.content,
         }
         state.messages.append(tool_message)
         state.protocol_messages.append(tool_message)
+        transaction = transaction.add_result(native_result)
+        receipts.append(receipt)
         if pending_categories is not None:
+            state.pending_transaction_receipts[transaction.transaction_id] = tuple(
+                receipts
+            )
+            state.tool_transactions.append(transaction.mark_delivered())
+            await state.persist_runtime_state(_durable_runtime_snapshot(state))
             return pending_categories
+        if call_index < len(calls) - 1:
+            # A tool may have committed a business mutation.  Persist the
+            # partial server-authored transaction and receipt before invoking
+            # the next handler so a process failure cannot erase that fact.
+            await state.persist_runtime_state(_durable_runtime_snapshot(
+                state,
+                in_progress_transaction=transaction,
+                in_progress_receipts=tuple(receipts),
+            ))
+    state.pending_transaction_receipts[transaction.transaction_id] = tuple(receipts)
+    state.tool_transactions.append(transaction.mark_delivered())
+    await state.persist_runtime_state(_durable_runtime_snapshot(state))
+    if batch.terminal_error is not None:
+        raise batch.terminal_error
     return None
 
 
@@ -429,6 +640,12 @@ async def _run_native_step(
     # with no tools. This prevents a compliant model from spending another
     # planning step on reads or downstream writes.
     state.schemas = [] if writes_closed else bindings.tool_schemas(state.active_categories)
+    state.messages = await state.prepare_model_messages(
+        system_prompt=state.system_prompt,
+        current_tools=state.schemas,
+        current_ledger=tuple(state.current_ledger),
+        delivered_transactions=tuple(state.tool_transactions),
+    )
 
     async def report_resume(payload: dict[str, Any]) -> None:
         await _report_stream_resume(state, bindings, payload)
@@ -438,7 +655,7 @@ async def _run_native_step(
         tools=state.schemas,
         model=state.model,
         temperature=0.25,
-        max_tokens=None,
+        max_tokens=state.provider_max_tokens(),
         timeout=300,
         retry=0,
         resume=8,
@@ -455,22 +672,37 @@ async def _run_native_step(
         schemas=state.schemas,
         result=result,
     )
+    # A successful provider response proves that the immediately preceding
+    # delivered native batch was consumed. Replace it before adding any new
+    # tool calls so raw assistant/tool payloads never accumulate by step.
+    consumed_delivered = bool(state.tool_transactions)
+    _consume_delivered_transactions(state)
+    if consumed_delivered:
+        await state.persist_runtime_state(_durable_runtime_snapshot(state))
     content = str(result.get("content") or "")
-    raw_calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
-    calls = [
-        call
-        for index, raw_call in enumerate(raw_calls)
-        if (call := canonical_tool_call(
-            raw_call,
-            fallback_id=f"creation-tool-{iteration}-{index}",
-        )) is not None
-    ][:12]
-    category_calls = [
-        call for call in calls
-        if call.get("function", {}).get("name") == TOOL_CATEGORY_CONTROLLER
-    ]
-    if category_calls:
-        calls = category_calls[:1]
+    reasoning_content = str(result.get("reasoning_content") or "")
+    raw_provider_state = result.get("provider_state")
+    provider_state = tuple(
+        dict(item)
+        for item in (
+            raw_provider_state if isinstance(raw_provider_state, list) else ()
+        )
+        if isinstance(item, dict)
+    )
+    raw_calls = (
+        result.get("tool_calls")
+        if isinstance(result.get("tool_calls"), list)
+        else []
+    )
+    calls, arguments_by_call_id = validate_native_call_batch(
+        raw_calls,
+        iteration=iteration,
+        allowed_tool_names=frozenset(
+            str((schema.get("function") or {}).get("name") or "")
+            for schema in state.schemas
+            if isinstance(schema, dict)
+        ),
+    )
     if not calls:
         if requires_category_selection:
             raise LLMError(
@@ -480,9 +712,21 @@ async def _run_native_step(
         state.final_reply = content.strip()
         return False
     assistant_message = {"role": "assistant", "content": content, "tool_calls": calls}
+    if reasoning_content:
+        assistant_message["reasoning_content"] = reasoning_content
+    if provider_state:
+        assistant_message["provider_state"] = list(provider_state)
     state.messages.append(assistant_message)
     state.protocol_messages.append(assistant_message)
-    pending_categories = await _execute_native_calls(state, bindings, calls)
+    pending_categories = await _execute_native_calls(
+        state,
+        bindings,
+        calls,
+        arguments_by_call_id=arguments_by_call_id,
+        assistant_content=content,
+        assistant_reasoning_content=reasoning_content,
+        assistant_provider_state=provider_state,
+    )
     if pending_categories is not None:
         state.active_categories = pending_categories
     return True
@@ -494,7 +738,7 @@ async def run_native_steps(
 ) -> None:
     if state.tool_mode != "native":
         return
-    for iteration in range(6):
+    for iteration in count():
         if not await _run_native_step(state, bindings, iteration):
             break
 
@@ -545,14 +789,18 @@ async def _complete_reply(
         )
         return
     if not state.final_reply and state.tool_results and state.tool_mode != "direct_mcp":
-        state.messages.append({
-            "role": "user",
-            "content": (
-                "请根据以上真实工具返回，用两到四句中文说明本轮实际修改了什么、"
-                "哪些内容没有修改，并提出一个基于当前立项数据的后续问题。"
-                "不得声称未成功的写入已经保存。"
-            ),
-        })
+        summary_instruction = (
+            "请根据以上真实工具返回，用两到四句中文说明本轮实际修改了什么、"
+            "哪些内容没有修改，并提出一个基于当前立项数据的后续问题。"
+            "不得声称未成功的写入已经保存。"
+        )
+        state.messages = await state.prepare_model_messages(
+            system_prompt=state.system_prompt,
+            current_tools=(),
+            current_ledger=tuple(state.current_ledger),
+            delivered_transactions=tuple(state.tool_transactions),
+            extra_runtime_instruction=summary_instruction,
+        )
 
         async def report_resume(payload: dict[str, Any]) -> None:
             await _report_stream_resume(state, bindings, payload)
@@ -563,7 +811,7 @@ async def _complete_reply(
                 tools=[],
                 model=state.model,
                 temperature=0.2,
-                max_tokens=None,
+                max_tokens=state.provider_max_tokens(),
                 timeout=300,
                 retry=0,
                 resume=8,
@@ -578,6 +826,10 @@ async def _complete_reply(
                 schemas=[],
                 result=summary,
             )
+            consumed_delivered = bool(state.tool_transactions)
+            _consume_delivered_transactions(state)
+            if consumed_delivered:
+                await state.persist_runtime_state(_durable_runtime_snapshot(state))
             state.final_reply = str(summary.get("content") or "").strip()
         except Exception:
             state.final_reply = ""
@@ -636,12 +888,16 @@ async def finish_creation_turn(
         )
     active_run = await _present_active_run(state)
     turn_messages: list[dict[str, Any]] = [
-        {"role": "user", "content": state.message[:1_000_000]},
+        {"role": "user", "content": state.message},
         *state.protocol_messages,
-        {"role": "assistant", "content": state.final_reply[:80_000]},
+        {"role": "assistant", "content": state.final_reply},
     ]
     prompt_tokens = (
-        sum(int(item["prompt_tokens"]) for item in state.prompt_metrics if item.get("prompt_tokens") is not None)
+        sum(
+            int(item["prompt_tokens"])
+            for item in state.prompt_metrics
+            if item.get("prompt_tokens") is not None
+        )
         if any(item.get("prompt_tokens") is not None for item in state.prompt_metrics)
         else None
     )
@@ -655,6 +911,16 @@ async def finish_creation_turn(
         "progress_events": state.progress_events,
         "prompt_metrics": state.prompt_metrics,
         "direct_mcp_calls": state.direct_mcp_calls,
+        "reference_context": state.reference_context,
+        "execution_receipts": [
+            receipt.to_dict()
+            for receipt in _all_execution_receipts(state)
+        ],
+        "compacted_tool_transactions": state.compacted_transactions,
+        "pending_tool_transactions": [
+            transaction.to_dict(include_native_payload=False)
+            for transaction in state.tool_transactions
+        ],
         "outcome": {
             "status": "completed",
             "tool_count": len(state.tool_results),

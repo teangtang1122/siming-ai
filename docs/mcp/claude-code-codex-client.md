@@ -319,7 +319,9 @@ chapter summaries, character cards, outline nodes, worldbuilding, and links.
 | `search_worldbuilding` | Search worldbuilding entries |
 | `search_outline` | Search outline nodes |
 | `search_context` | Full-text RAG search |
-| `preview_writing_context` | Pre-write context check |
+| `prepare_task_context` | Build a compact task baseline |
+| `search_task_context` | Run model-chosen focused context retrieval |
+| `submit_context_evidence` | Exact-fetch and finalize model-selected sources |
 | `web_search` | Internet search |
 
 ### External Agent Reporting Tools
@@ -456,33 +458,52 @@ Claude Code / Codex can write novels through Siming **without any model API conf
 ### How It Works
 
 1. The Agent reads real project entities and selects the chapter-level outline required by the user's latest message; the UI selection is not an implicit target.
-2. Siming prepares one persisted context manifest and the quality writing prompt.
-3. The external model generates exactly one independent unsaved draft.
-4. `save_external_chapter_draft` loads that draft into the editor and ends the model turn.
-5. The author separately chooses **Save and catalog** or **Save only**. De-AI and quality scoring read the current editor text.
+2. Siming prepares a persisted manifest containing only the hard anchors and the quality writing prompt.
+3. The external model chooses focused searches, reviews compact candidates, and submits only the sources it needs.
+4. Siming exact-fetches and verifies those sources without a fixed per-source character or source-count cap, reports a non-blocking 32k soft target, and derives actual capacity from the model window after output reserve and safety margin. It then returns the exact `task_context` and an unpredictable, one-use selection token.
+5. In the next model step, the external model generates exactly one independent unsaved draft.
+6. `save_external_chapter_draft` validates and consumes the manifest selection token, loads that draft into the editor, and ends the model turn. A failed attempt must re-run source review and submission before retrying; tokens cannot be replayed.
+7. The author separately chooses **Save and catalog** or **Save only**. De-AI and quality scoring read the current editor text.
 
 ### Writing a Chapter Without Siming API
 
 ```
-# 1. Get writing context
+# 1. Build the compact baseline
 prepare_external_writing_context({
   "project_id": "YOUR_PROJECT_ID",
   "outline_node_id": "NODE_ID",
   "requirements": "The user's latest writing request"
 })
 
-# 2. [Claude Code writes chapter using the context and prompt pack]
+# 2. Let the model retrieve focused candidates (repeat with other queries as needed)
+search_task_context({
+  "project_id": "YOUR_PROJECT_ID",
+  "context_manifest_id": "MANIFEST_ID",
+  "query": "characters and unresolved facts needed for this chapter",
+  "source_types": ["character", "chapter_summary", "worldbuilding"]
+})
 
-# 3. Save the draft
+# 3. Finalize only the needed candidate IDs (an empty sources list is allowed)
+submit_context_evidence({
+  "project_id": "YOUR_PROJECT_ID",
+  "context_manifest_id": "MANIFEST_ID",
+  "sources": [{"item_id": "SEARCH_RESULT_ITEM_ID"}]
+})
+
+# 4. [In the next model step, Claude Code writes one chapter using the returned
+#    exact task_context and prompt pack]
+
+# 5. Save the draft using the token returned by submit_context_evidence
 save_external_chapter_draft({
   "project_id": "YOUR_PROJECT_ID",
   "content": "Generated chapter text...",
   "outline_node_id": "NODE_ID",
   "context_manifest_id": "MANIFEST_ID",
+  "context_selection_token": "SELECTION_TOKEN",
   "source_agent": "claude-code"
 })
 
-# 4. Stop. Formal save and cataloging are author-controlled UI actions.
+# 6. Stop. Formal save and cataloging are author-controlled UI actions.
 ```
 
 ### Creating a New Novel Through the Shared Agent Contract
@@ -605,7 +626,11 @@ current status, outline nodes, and worldbuilding entries, so it must follow
 | `get_tool_playbook` | Get tool usage guide |
 | `get_quality_rubric` | Get quality scoring criteria |
 | `prepare_external_writing_context` | Build writing context package |
+| `prepare_task_context` | Build a compact governed baseline |
+| `search_task_context` | Retrieve compact model-chosen candidates |
+| `submit_context_evidence` | Finalize exact selected sources and issue a token |
 | `save_external_chapter_draft` | Store generated draft |
+| `save_external_outline_draft` | Store an editable outline proposal without formal outline writes |
 | `get_external_chapter_draft` | Retrieve stored draft |
 | `record_external_quality_review` | Store quality review |
 | `start_novel_creation_session` | Start new novel creation |
@@ -630,7 +655,7 @@ These tools call the configured model API and will fail if no API key is set:
 | Tool | Why It Needs API |
 |------|-----------------|
 | `chapter_writer` | Generates chapter text using LLM |
-| `outline_writer` | Generates outline nodes using LLM |
+| `outline_writer` | Generates an author-reviewable outline proposal using LLM |
 | `character_writer` | Generates character cards using LLM |
 | `worldbuilding_writer` | Generates worldbuilding entries using LLM |
 | `rewrite_text` | Rewrites text using LLM |
@@ -679,9 +704,11 @@ If `chapter_writer` or other LLM tools fail with "no API key configured":
 1. You're trying to use tools that require Siming's model API
 2. Use the **No Siming API mode** instead (see above)
 3. Replace `chapter_writer` with:
-   - `prepare_external_writing_context` to get context
-   - External model generates text
-   - `save_external_chapter_draft` to load one unsaved draft into the editor and end the turn
+   - `prepare_external_writing_context` to build the compact baseline
+   - `search_task_context` one or more times with model-chosen queries
+   - `submit_context_evidence` to exact-fetch the selected sources and issue a one-use selection token
+   - External model generates text in the next model step from the returned `task_context`
+   - `save_external_chapter_draft` with that token to load one unsaved draft into the editor and end the turn
    - The author then chooses **Save and catalog** or **Save only** in the UI
 
 ### SSE Not Connected

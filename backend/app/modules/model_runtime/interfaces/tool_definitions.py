@@ -8,12 +8,12 @@ from app.architecture.tool_definition import ToolDef
 TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ToolDef(
         name="start_local_cli_agent_run",
-        description="Start a Siming-managed local CLI Agent worker for general project work or cataloging only. Chapter writing uses the assistant's direct API/CLI draft path. Never call this from an already-running external MCP client.",
+        description="Start a Siming-managed local CLI Agent worker for general work, cataloging, chapter writing, or an author-reviewable outline proposal. Writing and planning use the same model-driven task-context selection contract and only save drafts. Never call this from an already-running external MCP client.",
         input_schema={
             "task_type": {
                 "type": "string",
-                "enum": ["general", "cataloging"],
-                "description": "general|cataloging",
+                "enum": ["general", "cataloging", "writing", "outline_planning"],
+                "description": "general|cataloging|writing|outline_planning",
             },
             "user_request": {
                 "type": "string",
@@ -26,6 +26,22 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "chapter_id": {
                 "type": "string",
                 "description": "Cataloging/review target chapter for the governed baseline",
+            },
+            "outline_node_id": {
+                "type": "string",
+                "description": "Real chapter-level outline target for writing when already resolved",
+            },
+            "parent_id": {
+                "type": "string",
+                "description": "Real parent outline ID for an outline proposal; empty means root",
+            },
+            "insert_after_id": {
+                "type": "string",
+                "description": "Real sibling insertion anchor for an outline proposal",
+            },
+            "batch_count": {
+                "type": "integer",
+                "description": "Requested outline proposal count, 1-8; never triggers planning by itself",
             },
             "context_manifest_id": {
                 "type": "string",
@@ -48,7 +64,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="wait_local_cli_agent_run",
-        description="Wait for a Siming-managed general or cataloging CLI Agent run to finish.",
+        description="Wait for a Siming-managed CLI Agent run to finish.",
         input_schema={
             "run_id": {
                 "type": "string",

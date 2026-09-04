@@ -169,6 +169,61 @@ def test_saved_custom_api_verification_persists_detected_responses_protocol():
     assert response.data["test"]["api_protocol"] == "responses"
 
 
+def test_opencode_verification_retains_capacity_for_first_real_creation_turn():
+    db = _session()
+    config = APIConfig(
+        provider="opencode_cli",
+        api_key_encrypted=encrypt("__local_cli__"),
+        default_model="opencode/big-pickle",
+        provider_type="local_cli",
+        cli_command="opencode",
+        readiness_status="unverified",
+    )
+    db.add(config)
+    db.commit()
+    verification = AsyncMock()
+    verification.list_models.return_value = [{
+        "id": "opencode/big-pickle", "display_name": "Big Pickle",
+        "context_window_tokens": 200000, "max_output_tokens": 32000,
+        "safety_margin_tokens": 512, "capacity_source": "opencode_cli_metadata",
+    }]
+    with patch.object(
+        config_router, "test_connection",
+        new=AsyncMock(return_value=ApiResponse.success(data={"reply": "连接成功"})),
+    ), patch.object(config_router, "get_model_verification", return_value=verification):
+        response = asyncio.run(config_router.verify_saved_model_config("opencode_cli", db))
+
+    db.refresh(config)
+    assert config.readiness_status == "ready"
+    assert response.data["config"]["context_profile_known"] is True
+    assert response.data["config"]["context_window_tokens"] == 200000
+    assert response.data["config"]["context_profile_source"] == "opencode_cli_metadata"
+    assert config.available_models_json[0]["max_output_tokens"] == 32000
+    request = verification.list_models.await_args.args[0]
+    assert request.cli_command == config.cli_command
+
+
+def test_free_opencode_activation_persists_the_same_discovered_capacity():
+    from app.services import opencode_activation
+
+    db = _session()
+    models = [{
+        "id": "opencode/big-pickle", "context_window_tokens": 200000,
+        "max_output_tokens": 32000, "capacity_source": "opencode_cli_metadata",
+    }]
+    with patch(
+        "app.database.session.SessionLocal", sessionmaker(bind=db.get_bind()),
+    ), patch.object(opencode_activation, "local_cli_model_options", return_value=models):
+        opencode_activation.save_activated_config("opencode", "opencode/big-pickle")
+
+    config = db.query(APIConfig).filter_by(provider="opencode_cli").one()
+    data = config_router._config_payload(config, db=db)
+    assert data["is_usable"] is True
+    assert data["context_profile_known"] is True
+    assert data["context_window_tokens"] == 200000
+    assert data["context_profile_source"] == "opencode_cli_metadata"
+
+
 def test_saved_config_verification_persists_quota_failure():
     db = _session()
     config = APIConfig(

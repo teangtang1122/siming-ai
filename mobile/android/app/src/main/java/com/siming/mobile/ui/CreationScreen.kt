@@ -133,6 +133,7 @@ internal fun CreationScreen(
             onOpenDossier = { showDossier = true },
             onSend = { message -> viewModel.sendCreationMessage(active.string("id"), message) },
             onDiscard = { viewModel.discardCreation(active.string("id")) },
+            onConfigureApi = onConfigureApi,
             onOpenProject = onOpenProject,
         )
         else -> CreationLanding(

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from typing import Any
@@ -18,12 +20,14 @@ from ..operation_runtime import (
     register_operation_actions,
     unregister_operation_actions,
 )
+from .assistant_public_errors import public_server_failure
 from .run_log import mark_assistant_run
 
 _BACKGROUND_ASSISTANT_TASKS: set[asyncio.Task[Any]] = set()
 _EXPLICIT_CANCELLATIONS: set[asyncio.Task[Any]] = set()
 _END = object()
 _CREATE_TASK = asyncio.create_task
+logger = logging.getLogger(__name__)
 
 
 def assistant_cancel_was_explicit() -> bool:
@@ -162,6 +166,14 @@ async def detached_assistant_stream(
                 _mark_cancelled(run_id)
             raise
         except Exception as exc:
+            error_id = uuid.uuid4().hex
+            failure = public_server_failure(error_id)
+            logger.exception(
+                "Detached workspace stream failed error_id=%s run=%s type=%s",
+                error_id,
+                run_id,
+                type(exc).__name__,
+            )
             if run_id:
                 error_db = SessionLocal()
                 try:
@@ -172,14 +184,14 @@ async def detached_assistant_stream(
                             run,
                             status="error",
                             phase="stream_runtime_error",
-                            error=str(exc),
+                            error=failure.persisted_error,
                         )
                 finally:
                     error_db.close()
             await publish(
                 "data: "
                 + json.dumps(
-                    {"type": "error", "message": f"服务器错误: {exc}"},
+                    {"type": "error", **failure.to_dict()},
                     ensure_ascii=False,
                 )
                 + "\n\n"

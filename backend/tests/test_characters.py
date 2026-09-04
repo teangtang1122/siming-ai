@@ -16,7 +16,16 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_novel_agent.db"
 
 from fastapi.testclient import TestClient
 
-from app.database.models import Character, CharacterRelationship, Project
+from app.database.models import (
+    Chapter,
+    ChapterCharacter,
+    Character,
+    CharacterRelationship,
+    CharacterVersion,
+    OutlineNode,
+    OutlineNodeCharacter,
+    Project,
+)
 from app.database.session import Base, SessionLocal, engine
 from app.main import app
 
@@ -185,6 +194,173 @@ class TestCharacterCRUD(CharacterTestCase):
         finally:
             db.close()
 
+    def test_author_can_remove_wrong_chapter_identity_link_without_deleting_a_character(self):
+        project_id = self.create_project()
+        character = self.create_character(project_id, "保管员")
+        db = SessionLocal()
+        try:
+            prior = Chapter(project_id=project_id, title="前一章", content="正文", sort_order=1)
+            current = Chapter(project_id=project_id, title="当前章", content="正文", sort_order=2)
+            db.add_all([prior, current])
+            db.flush()
+            chapter_outline = OutlineNode(
+                project_id=project_id,
+                node_type="chapter",
+                title="当前章",
+                source_chapter_id=current.id,
+            )
+            section_outline = OutlineNode(
+                project_id=project_id,
+                node_type="section",
+                title="当前章 / 场景",
+                source_chapter_id=current.id,
+                parent=chapter_outline,
+            )
+            db.add_all([chapter_outline, section_outline])
+            db.flush()
+            current.outline_node_id = chapter_outline.id
+            stored = db.query(Character).filter(Character.id == character["id"]).one()
+            stored.last_seen_chapter_id = current.id
+            stored.last_updated_chapter_id = current.id
+            db.add_all([
+                ChapterCharacter(chapter_id=prior.id, character_id=stored.id),
+                ChapterCharacter(chapter_id=current.id, character_id=stored.id),
+                OutlineNodeCharacter(
+                    outline_node_id=chapter_outline.id,
+                    character_id=stored.id,
+                ),
+                OutlineNodeCharacter(
+                    outline_node_id=section_outline.id,
+                    character_id=stored.id,
+                ),
+                CharacterVersion(
+                    character_id=stored.id,
+                    version_number=2,
+                    snapshot_data="{}",
+                    change_summary="前一章建档",
+                    source_chapter_id=prior.id,
+                ),
+                CharacterVersion(
+                    character_id=stored.id,
+                    version_number=3,
+                    snapshot_data="{}",
+                    change_summary="当前章误合并",
+                    source_chapter_id=current.id,
+                ),
+            ])
+            db.commit()
+            prior_id = prior.id
+            current_id = current.id
+        finally:
+            db.close()
+
+        response = self.client.delete(
+            f"{API_PREFIX}/projects/{project_id}/characters/{character['id']}"
+            f"/appearances/{current_id}"
+        )
+        self.assertEqual(response.status_code, 200)
+        result = response.json()["data"]
+        self.assertEqual(result["removed_chapter_links"], 1)
+        self.assertEqual(result["removed_outline_links"], 2)
+        self.assertEqual(result["last_seen_chapter_id"], prior_id)
+        self.assertEqual(result["last_updated_chapter_id"], prior_id)
+
+        detail = self.client.get(
+            f"{API_PREFIX}/projects/{project_id}/characters/{character['id']}"
+        ).json()["data"]
+        self.assertEqual([item["id"] for item in detail["appearances"]["chapters"]], [prior_id])
+        self.assertEqual(detail["appearances"]["outline_nodes"], [])
+        self.assertEqual(detail["name"], "保管员")
+
+        second = self.client.delete(
+            f"{API_PREFIX}/projects/{project_id}/characters/{character['id']}"
+            f"/appearances/{current_id}"
+        )
+        self.assertEqual(second.status_code, 404)
+
+    def test_author_can_idempotently_add_and_correct_chapter_appearance(self):
+        project_id = self.create_project()
+        character = self.create_character(project_id, "冯志安")
+        db = SessionLocal()
+        try:
+            chapter = Chapter(
+                project_id=project_id,
+                title="谁拟谁核",
+                content="正文",
+                sort_order=26,
+            )
+            db.add(chapter)
+            db.commit()
+            chapter_id = chapter.id
+        finally:
+            db.close()
+
+        endpoint = (
+            f"{API_PREFIX}/projects/{project_id}/characters/{character['id']}"
+            f"/appearances/{chapter_id}"
+        )
+        first = self.client.put(
+            endpoint,
+            json={"appearance_type": "提及", "description": "轮值表中被提及"},
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first.json()["data"]["created"])
+
+        repeated = self.client.put(
+            endpoint,
+            json={"appearance_type": "出场", "description": "作者更正为历史场景出场"},
+        )
+        self.assertEqual(repeated.status_code, 200)
+        self.assertFalse(repeated.json()["data"]["created"])
+        self.assertEqual(repeated.json()["data"]["appearance_type"], "出场")
+
+        db = SessionLocal()
+        try:
+            links = db.query(ChapterCharacter).filter(
+                ChapterCharacter.chapter_id == chapter_id,
+                ChapterCharacter.character_id == character["id"],
+            ).all()
+            self.assertEqual(len(links), 1)
+            self.assertEqual(links[0].appearance_type, "出场")
+            self.assertEqual(links[0].description, "作者更正为历史场景出场")
+        finally:
+            db.close()
+
+        detail = self.client.get(
+            f"{API_PREFIX}/projects/{project_id}/characters/{character['id']}"
+        ).json()["data"]
+        self.assertEqual(len(detail["appearances"]["chapters"]), 1)
+        self.assertEqual(
+            detail["appearances"]["chapters"][0]["appearance_type"],
+            "出场",
+        )
+        self.assertEqual(detail["last_seen_chapter_id"], chapter_id)
+
+    def test_chapter_appearance_rejects_cross_project_chapter(self):
+        project_a = self.create_project("作品A")
+        project_b = self.create_project("作品B")
+        character = self.create_character(project_a, "角色A")
+        db = SessionLocal()
+        try:
+            foreign_chapter = Chapter(
+                project_id=project_b,
+                title="作品B章节",
+                content="正文",
+                sort_order=1,
+            )
+            db.add(foreign_chapter)
+            db.commit()
+            foreign_chapter_id = foreign_chapter.id
+        finally:
+            db.close()
+
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_a}/characters/{character['id']}"
+            f"/appearances/{foreign_chapter_id}",
+            json={"appearance_type": "出场", "description": "不应写入"},
+        )
+        self.assertEqual(response.status_code, 404)
+
 
 class TestCharacterVersions(CharacterTestCase):
     """Version history tests."""
@@ -348,6 +524,30 @@ class TestCharacterRelationships(CharacterTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("连接当前角色", response.json()["message"])
+
+    def test_duplicate_directed_pair_is_rejected(self):
+        project_id = self.create_project()
+        source = self.create_character(project_id, "甲")
+        target = self.create_character(project_id, "乙")
+
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/characters/{source['id']}/relationships",
+            json={
+                "relationships": [
+                    {
+                        "target_character_id": target["id"],
+                        "relationship_type": "协作",
+                    },
+                    {
+                        "target_character_id": target["id"],
+                        "relationship_type": "调查搭档",
+                    },
+                ]
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("只能保留一条", response.json()["message"])
 
 
 if __name__ == "__main__":

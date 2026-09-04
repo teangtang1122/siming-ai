@@ -1,40 +1,5 @@
 {
   "categories": {
-    "hybrid_retrieval": {
-      "content_limit_chars": 1800,
-      "max_items": 24,
-      "required": false,
-      "tier": 4
-    },
-    "memory": {
-      "content_limit_chars": 900,
-      "max_items": 6,
-      "required": false,
-      "source_type": "assistant_memory",
-      "tier": 5
-    },
-    "narrative_governance": {
-      "content_limit_chars": 5000,
-      "empty_ledger_text": "Narrative governance: no due or high-risk items.",
-      "max_items": 1,
-      "required": false,
-      "source_type": "narrative_governance",
-      "tier": 3
-    },
-    "previous_summary": {
-      "content_limit_chars": 1600,
-      "max_items": 3,
-      "required": false,
-      "source_type": "chapter_summary",
-      "tier": 3
-    },
-    "scene_character": {
-      "content_limit_chars": 12000,
-      "max_items": 12,
-      "required": false,
-      "source_type": "character",
-      "tier": 3
-    },
     "style": {
       "max_items": 1,
       "required": true,
@@ -91,7 +56,7 @@
     "fts_available": false,
     "manifest_persistence": "session_only",
     "pinned_chunks_available": false,
-    "retrieval": "deterministic_local_lexical_fallback",
+    "retrieval": "model_driven_local_lexical_fallback",
     "semantic_embeddings_available": false,
     "stale_on_model_change": true,
     "stale_on_request_change": true,
@@ -99,12 +64,14 @@
     "style_projection": "pc_prompt_contract_style_context"
   },
   "model_defaults": {
-    "context_window_tokens": 1000000,
+    "context_window_tokens": 256000,
+    "input_budget_mode": "model_window_minus_output_reserve_and_safety_margin",
     "minimum_output_reserve_tokens": 2048,
     "output_ratio": 0.45,
-    "safety_margin_tokens": 512
+    "safety_margin_tokens": 512,
+    "soft_input_target_tokens": 32000
   },
-  "policy_version": 1,
+  "policy_version": 4,
   "ranking": {
     "hybrid": {
       "lexical": 0.45,
@@ -125,6 +92,9 @@
       "source_id",
       "chunk_id"
     ],
+    "exact_source_content_limit_chars": null,
+    "hard_source_count_limit": null,
+    "mode": "model_retrieval_then_exact_selection",
     "ordering": [
       "tier",
       "required_first",
@@ -132,9 +102,289 @@
       "title"
     ],
     "required_over_budget_status": "needs_confirmation",
+    "search_excerpt_chars": 600,
+    "search_page_limit": 10,
+    "search_source_types": [
+      "assistant_memory",
+      "chapter",
+      "chapter_summary",
+      "character",
+      "character_timeline",
+      "narrative_governance",
+      "outline",
+      "worldbuilding"
+    ],
     "unknown_model_uses_defaults": true
   },
-  "source_sha256": "9870aeb53af5da30458a11b879a31bce0aa9697af4a202907e0933a10a4991c8",
+  "source_sha256": "6b46afbd2827bcd9faa477e44bee985c3d28fb16ca0d8fb7e22a9e0dea24ae1c",
+  "task_policies": {
+    "outline_planning": {
+      "categories": {
+        "outline_parent": {
+          "field_limit_chars": 1200,
+          "max_items": 1,
+          "required": false,
+          "source_type": "outline",
+          "tier": 1
+        },
+        "outline_position": {
+          "content_limit_chars": 2000,
+          "max_items": 1,
+          "required": true,
+          "source_type": "inline",
+          "tier": 1
+        },
+        "style": {
+          "max_items": 1,
+          "required": true,
+          "source_type": "project_style",
+          "tier": 1
+        },
+        "user_requirement": {
+          "content_limit_chars": 4000,
+          "max_items": 1,
+          "required": false,
+          "source_type": "inline",
+          "tier": 2
+        }
+      },
+      "contract": {
+        "optional_categories": [
+          "outline_parent",
+          "user_requirement",
+          "previous_summary",
+          "scene_character",
+          "worldbuilding",
+          "narrative_governance",
+          "memory",
+          "skill",
+          "hybrid_retrieval"
+        ],
+        "required_categories": [
+          "style",
+          "outline_position"
+        ]
+      },
+      "hashing": {
+        "algorithm": "sha256",
+        "encoding": "utf-8",
+        "selected_content_hash": true,
+        "selection_fingerprint_fields": [
+          "category",
+          "source_type",
+          "source_id",
+          "chunk_id",
+          "source_hash"
+        ]
+      },
+      "index_version": 1,
+      "mobile_projection": {
+        "durable_manifest_audit_available": false,
+        "execution_route": "android_standalone",
+        "fts_available": false,
+        "manifest_persistence": "session_only",
+        "pinned_chunks_available": false,
+        "retrieval": "model_driven_local_lexical_fallback",
+        "semantic_embeddings_available": false,
+        "stale_on_model_change": true,
+        "stale_on_request_change": true,
+        "stale_on_selected_source_change": true,
+        "style_projection": "pc_prompt_contract_style_context"
+      },
+      "model_defaults": {
+        "context_window_tokens": 256000,
+        "input_budget_mode": "model_window_minus_output_reserve_and_safety_margin",
+        "minimum_output_reserve_tokens": 2048,
+        "output_ratio": 0.3,
+        "safety_margin_tokens": 512,
+        "soft_input_target_tokens": 32000
+      },
+      "policy_version": 4,
+      "ranking": {
+        "hybrid": {
+          "lexical": 0.45,
+          "recency": 0.15,
+          "semantic": 0.35,
+          "structural": 0.05
+        },
+        "lexical_fallback": {
+          "lexical": 0.7,
+          "recency": 0.2,
+          "structural": 0.1
+        }
+      },
+      "schema_version": 1,
+      "selection": {
+        "dedupe_identity": [
+          "source_type",
+          "source_id",
+          "chunk_id"
+        ],
+        "exact_source_content_limit_chars": null,
+        "hard_source_count_limit": null,
+        "mode": "model_retrieval_then_exact_selection",
+        "ordering": [
+          "tier",
+          "required_first",
+          "score_desc",
+          "title"
+        ],
+        "required_over_budget_status": "needs_confirmation",
+        "search_excerpt_chars": 600,
+        "search_page_limit": 10,
+        "search_source_types": [
+          "assistant_memory",
+          "chapter",
+          "chapter_summary",
+          "character",
+          "character_timeline",
+          "narrative_governance",
+          "outline",
+          "worldbuilding"
+        ],
+        "unknown_model_uses_defaults": true
+      },
+      "task_type": "outline_planning",
+      "token_estimation": {
+        "cjk_ranges": [
+          "\\u4e00-\\u9fff",
+          "\\u3400-\\u4dbf"
+        ],
+        "cjk_tokens_per_character": 1,
+        "minimum_non_cjk_tokens_for_non_empty_text": 1,
+        "non_cjk_characters_per_token": 4
+      }
+    },
+    "writing": {
+      "categories": {
+        "style": {
+          "max_items": 1,
+          "required": true,
+          "source_type": "project_style",
+          "tier": 1
+        },
+        "target_outline": {
+          "field_limit_chars": 1200,
+          "max_items": 1,
+          "required": true,
+          "source_type": "outline",
+          "tier": 1
+        },
+        "user_requirement": {
+          "content_limit_chars": 4000,
+          "max_items": 1,
+          "required": false,
+          "source_type": "inline",
+          "tier": 2
+        }
+      },
+      "contract": {
+        "optional_categories": [
+          "user_requirement",
+          "previous_summary",
+          "scene_character",
+          "worldbuilding",
+          "narrative_governance",
+          "memory",
+          "skill",
+          "hybrid_retrieval"
+        ],
+        "required_categories": [
+          "target_outline",
+          "style"
+        ]
+      },
+      "hashing": {
+        "algorithm": "sha256",
+        "encoding": "utf-8",
+        "selected_content_hash": true,
+        "selection_fingerprint_fields": [
+          "category",
+          "source_type",
+          "source_id",
+          "chunk_id",
+          "source_hash"
+        ]
+      },
+      "index_version": 1,
+      "mobile_projection": {
+        "durable_manifest_audit_available": false,
+        "execution_route": "android_standalone",
+        "fts_available": false,
+        "manifest_persistence": "session_only",
+        "pinned_chunks_available": false,
+        "retrieval": "model_driven_local_lexical_fallback",
+        "semantic_embeddings_available": false,
+        "stale_on_model_change": true,
+        "stale_on_request_change": true,
+        "stale_on_selected_source_change": true,
+        "style_projection": "pc_prompt_contract_style_context"
+      },
+      "model_defaults": {
+        "context_window_tokens": 256000,
+        "input_budget_mode": "model_window_minus_output_reserve_and_safety_margin",
+        "minimum_output_reserve_tokens": 2048,
+        "output_ratio": 0.45,
+        "safety_margin_tokens": 512,
+        "soft_input_target_tokens": 32000
+      },
+      "policy_version": 4,
+      "ranking": {
+        "hybrid": {
+          "lexical": 0.45,
+          "recency": 0.15,
+          "semantic": 0.35,
+          "structural": 0.05
+        },
+        "lexical_fallback": {
+          "lexical": 0.7,
+          "recency": 0.2,
+          "structural": 0.1
+        }
+      },
+      "schema_version": 1,
+      "selection": {
+        "dedupe_identity": [
+          "source_type",
+          "source_id",
+          "chunk_id"
+        ],
+        "exact_source_content_limit_chars": null,
+        "hard_source_count_limit": null,
+        "mode": "model_retrieval_then_exact_selection",
+        "ordering": [
+          "tier",
+          "required_first",
+          "score_desc",
+          "title"
+        ],
+        "required_over_budget_status": "needs_confirmation",
+        "search_excerpt_chars": 600,
+        "search_page_limit": 10,
+        "search_source_types": [
+          "assistant_memory",
+          "chapter",
+          "chapter_summary",
+          "character",
+          "character_timeline",
+          "narrative_governance",
+          "outline",
+          "worldbuilding"
+        ],
+        "unknown_model_uses_defaults": true
+      },
+      "task_type": "writing",
+      "token_estimation": {
+        "cjk_ranges": [
+          "\\u4e00-\\u9fff",
+          "\\u3400-\\u4dbf"
+        ],
+        "cjk_tokens_per_character": 1,
+        "minimum_non_cjk_tokens_for_non_empty_text": 1,
+        "non_cjk_characters_per_token": 4
+      }
+    }
+  },
   "task_type": "writing",
   "token_estimation": {
     "cjk_ranges": [

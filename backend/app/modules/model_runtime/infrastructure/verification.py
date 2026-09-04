@@ -229,10 +229,20 @@ async def _list_anthropic(request: ModelProbeRequest) -> list[dict]:
         if response.status_code == 401:
             raise LLMError("Anthropic API key is invalid")
         response.raise_for_status()
-        models = [
-            {"id": item["id"], "display_name": item.get("display_name", item["id"])}
-            for item in response.json().get("data", [])
-        ]
+        models = []
+        for item in response.json().get("data", []):
+            model = {
+                "id": item["id"],
+                "display_name": item.get("display_name", item["id"]),
+            }
+            if item.get("max_input_tokens"):
+                model["context_window_tokens"] = int(item["max_input_tokens"])
+            if item.get("max_tokens"):
+                model["max_output_tokens"] = int(item["max_tokens"])
+            if model.get("context_window_tokens"):
+                model["safety_margin_tokens"] = 512
+                model["capacity_source"] = "anthropic_models_api"
+            models.append(model)
         return sorted(models, key=lambda item: item["id"])[:100]
     except httpx.ConnectError as exc:
         raise LLMError("Cannot connect to Anthropic") from exc

@@ -1,22 +1,22 @@
 """Tests for MCP write confirmation token flow."""
 import asyncio
 import json
-import sys
 import os
+import sys
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app.mcp.adapter import execute_tool
 from app.mcp.permissions import (
-    issue_confirmation_token,
-    validate_confirmation_token,
-    revoke_token,
     clear_expired_tokens,
     get_tier,
     is_allowed,
+    issue_confirmation_token,
+    revoke_token,
+    validate_confirmation_token,
 )
-from app.mcp.adapter import execute_tool
 from app.services.workspace.registry import registry
 
 
@@ -212,7 +212,7 @@ class ExecuteToolConfirmationTest(unittest.TestCase):
             "tool": "list_chapters",
             "status": "ok",
             "detail": "Found",
-            "data": {"items": []},
+            "data": [],
         }
         mock_db = MagicMock()
         result = asyncio.run(execute_tool(

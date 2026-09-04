@@ -4,8 +4,40 @@ import asyncio
 import json
 import time
 from uuid import uuid4
+from unittest.mock import AsyncMock, Mock
 
 from app.services.creation_agent_turn_runtime import creation_agent_turn_stream
+
+
+def test_creation_failure_has_correlated_redacted_diagnostic(monkeypatch, caplog):
+    import app.services.creation_agent_turn_runtime as runtime
+
+    request = runtime.CreationAgentTurnInput(
+        session_id="session", message="create", client_turn_id="turn", model=None,
+        conversation_id="conversation", assistant_message_id="assistant",
+        local_cli_read_paths=(),
+    )
+    conversations = Mock()
+    context = runtime._TurnContext(
+        request=request, db=Mock(), conversations=conversations,
+        conversation_id="conversation", assistant_message_id="assistant",
+    )
+    publish = AsyncMock()
+    monkeypatch.setattr(runtime, "commit_session", lambda _db: None)
+    secret = "sk-private-credential-must-not-leak"
+    asyncio.run(runtime._persist_turn_error(
+        context, publish, RuntimeError(f"CLI contract failed; api_key={secret}"),
+    ))
+    event = publish.await_args.args[0]
+    error_id = event["data"]["error_id"]
+    persisted = conversations.finish_turn.call_args.args[2]
+    assert error_id in event["message"]
+    assert error_id in caplog.text
+    assert persisted["payload"]["creation_agent_error"]["error_id"] == error_id
+    assert persisted["status"] == "error"
+    assert secret not in caplog.text
+    assert secret not in json.dumps(event)
+    assert secret not in json.dumps(persisted)
 
 
 async def _collect(stream) -> list[dict]:

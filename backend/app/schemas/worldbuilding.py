@@ -13,6 +13,7 @@ WorldbuildingDimension = Literal[
     "races",
     "culture",
 ]
+WorldbuildingStatus = Literal["active", "superseded", "archived", "draft"]
 
 
 class WorldbuildingEntryCreate(BaseModel):
@@ -31,6 +32,7 @@ class WorldbuildingEntryUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     content: Optional[str] = Field(None, min_length=1)
     sort_order: Optional[int] = Field(None, ge=0)
+    status: Optional[WorldbuildingStatus] = None
 
 
 class WorldbuildingEntryResponse(BaseModel):

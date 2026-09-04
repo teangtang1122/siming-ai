@@ -420,6 +420,32 @@ def test_invalid_json_is_repaired_once_and_refine_failure_keeps_current_concepts
     assert session.draft_json["concepts"] == before
 
 
+def test_stage_run_http_request_preserves_explicit_context_for_durable_execution():
+    db = _db()
+    session = _session(db)
+    save_stage(session, "world_style", {
+        "worldbuilding": [{"title": "明确选择的档案", "dimension": "culture", "content": "现有事实"}],
+    })
+    db.commit()
+    entity_id = session.entities[0].id
+    payload = NovelCreationStageRunRequest(
+        stage="characters", model="openai:test",
+        context_entity_ids=[entity_id], context_artifacts=["world_style"],
+        expected_revision=session.revision,
+    )
+    with patch("app.routers.novel_creation.schedule_creation_stage") as schedule:
+        response = asyncio.run(start_creation_stage_run(
+            session.id, payload, SimpleNamespace(state=SimpleNamespace()), db,
+            idempotency_key=None,
+        ))
+    run = db.query(NovelCreationStageRun).filter_by(session_id=session.id).one()
+    assert run.request_json["context_entity_ids"] == [entity_id]
+    assert run.request_json["context_artifacts"] == ["world_style"]
+    queued_request = schedule.call_args.args[2]
+    assert queued_request["context_entity_ids"] == [entity_id]
+    assert queued_request["context_artifacts"] == ["world_style"]
+
+
 def test_stage_run_freezes_the_click_time_draft_revision_and_hash():
     db = _db()
     session = _session(db)
@@ -626,7 +652,7 @@ def test_android_creation_apply_immediately_enables_the_formal_project_for_sync(
     }
     with (
         patch(
-            "app.routers.novel_creation.finalize_creation_session",
+            "app.routers.novel_creation_aux_routes.finalize_creation_session",
             new=AsyncMock(return_value=tool_result),
         ),
         patch(

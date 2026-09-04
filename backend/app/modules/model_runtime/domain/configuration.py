@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,13 @@ class ModelProviderConfig:
     provider_type: str = "api"
     cli_command: str | None = None
     cli_args: str | None = None
+    # Optional request-scoped, explicitly configured and validated capacity. Persistent
+    # provider rows continue to use ModelContextProfile; the Android encrypted
+    # envelope supplies these values only for the active request context.
+    context_window_tokens: int | None = None
+    max_output_tokens: int | None = None
+    safety_margin_tokens: int | None = None
+    capacity_assurance: Literal["exact", "conservative", "unverified"] = "conservative"
 
 
 @dataclass(frozen=True)

@@ -37,7 +37,11 @@ class TransactionVisibilityTest(unittest.TestCase):
         with patch("app.services.workspace.generated_drafts.store_chapter_draft", return_value="draft-tv-1"), \
              patch("app.services.workspace.generated_drafts.find_pending_chapter_draft", return_value=None), \
              patch("app.services.cataloging.launcher.find_blocking_chapter_cataloging_job", return_value=None), \
-             patch("app.services.cataloging.launcher.find_cataloging_required_chapter", return_value=None):
+             patch("app.services.cataloging.launcher.find_cataloging_required_chapter", return_value=None), \
+             patch(
+                 "app.services.workspace.tools.external_writing._external_draft_manifest_error",
+                 return_value=None,
+             ):
             db = chapter_target_db()
             result = asyncio.run(save_external_chapter_draft(db, "p1", {
                 "content": "Test content for transaction visibility",
@@ -104,7 +108,11 @@ class ReadAfterWriteVerificationTest(unittest.TestCase):
              patch("app.services.workspace.generated_drafts.get_chapter_draft", return_value="Saved content"), \
              patch("app.services.workspace.generated_drafts.find_pending_chapter_draft", return_value=None), \
              patch("app.services.cataloging.launcher.find_blocking_chapter_cataloging_job", return_value=None), \
-             patch("app.services.cataloging.launcher.find_cataloging_required_chapter", return_value=None):
+             patch("app.services.cataloging.launcher.find_cataloging_required_chapter", return_value=None), \
+             patch(
+                 "app.services.workspace.tools.external_writing._external_draft_manifest_error",
+                 return_value=None,
+             ):
             db = chapter_target_db()
 
             # Save

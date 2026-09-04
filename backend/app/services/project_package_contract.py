@@ -711,6 +711,8 @@ def _clear_structure_references(key: str, row: dict[str, Any]) -> dict[str, Any]
         "first_seen_chapter_id",
         "target_chapter_id",
         "resolved_chapter_id",
+        "chapter_id",
+        "chapter_snapshot_id",
     }
     for field in chapter_reference_fields:
         if field in sanitized:

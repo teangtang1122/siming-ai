@@ -1,17 +1,19 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Modal, message } from 'antd'
-import { MemoryRouter } from 'react-router-dom'
+import { useEffect } from 'react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { mockDelete, mockGet, mockPost } = vi.hoisted(() => ({
+const { mockDelete, mockGet, mockPost, mockPut } = vi.hoisted(() => ({
   mockDelete: vi.fn(),
   mockGet: vi.fn(),
   mockPost: vi.fn(),
+  mockPut: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
-  apiClient: { delete: mockDelete, get: mockGet, post: mockPost },
+  apiClient: { delete: mockDelete, get: mockGet, post: mockPost, put: mockPut },
 }))
 
 vi.mock('../shared/operations/queries', () => ({
@@ -19,6 +21,7 @@ vi.mock('../shared/operations/queries', () => ({
 }))
 
 import WorkspaceAssistantChat from '../components/WorkspaceAssistantChat'
+import { AiPanelProvider, useAiPanelContext } from '../contexts/AiPanelContext'
 
 const encoder = new TextEncoder()
 
@@ -115,6 +118,10 @@ const completedRunDetail = {
 }
 
 function renderChat(onApplied = vi.fn()) {
+  const LocationProbe = () => {
+    const location = useLocation()
+    return <span data-testid="location-probe">{location.pathname}{location.search}</span>
+  }
   const view = render(
     <MemoryRouter>
       <WorkspaceAssistantChat
@@ -123,6 +130,7 @@ function renderChat(onApplied = vi.fn()) {
         modelOptions={[{ value: 'openai:test', label: 'OpenAI · test' }]}
         onApplied={onApplied}
       />
+      <LocationProbe />
     </MemoryRouter>,
   )
   return { ...view, onApplied }
@@ -149,6 +157,7 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     mockGet.mockResolvedValue({ data: { data: { items: [], total: 0 } } })
     mockDelete.mockResolvedValue({ data: { data: null } })
     mockPost.mockResolvedValue({ data: { data: { status: 'cancelled' } } })
+    mockPut.mockResolvedValue({ data: { data: null } })
   })
 
   it('submits only one cancellation and exposes the pending state', async () => {
@@ -546,6 +555,220 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     expect(lastPostPayload).not.toHaveProperty('target_chapter_id')
   })
 
+  it('syncs the current editor draft and binds its id before asking AI to revise it', async () => {
+    const stream = createControlledResponse([
+      conversationEvent + runEvent + sse({
+        type: 'complete',
+        data: {
+          reply: '正在修改当前草稿。',
+          actions: [],
+          applied_actions: [],
+          tool_logs: [],
+          run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+        },
+      }) + sse('[DONE]'),
+    ])
+    stream.close()
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    function PendingDraftChat() {
+      const { openGeneratedDraft } = useAiPanelContext()
+      useEffect(() => {
+        openGeneratedDraft({
+          draftId: 'draft-current',
+          projectId: 'project-1',
+          title: '第一章 潮声',
+          outlineNodeId: 'outline-1',
+          contextManifestId: 'manifest-old',
+          savedChapterId: null,
+          draftKind: 'new',
+          targetChapterId: null,
+          baseChapterVersion: null,
+          content: '编辑器中最新的未保存正文。',
+          wordCount: 14,
+          status: 'pending',
+        })
+      }, [openGeneratedDraft])
+      return (
+        <WorkspaceAssistantChat
+          projectId="project-1"
+          defaultModel="openai:test"
+          modelOptions={[{ value: 'openai:test', label: 'OpenAI · test' }]}
+        />
+      )
+    }
+
+    render(
+      <MemoryRouter>
+        <AiPanelProvider>
+          <PendingDraftChat />
+        </AiPanelProvider>
+      </MemoryRouter>,
+    )
+    const user = userEvent.setup()
+    await user.type(screen.getByPlaceholderText(/告诉AI你想写什么/), '把结尾改得更紧张')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    await waitFor(() => expect(mockPut).toHaveBeenCalledWith(
+      '/projects/project-1/chapter-drafts/draft-current',
+      {
+        title: '第一章 潮声',
+        outline_node_id: 'outline-1',
+        content: '编辑器中最新的未保存正文。',
+      },
+    ))
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(requestBody.active_chapter_draft_id).toBe('draft-current')
+    expect(requestBody.message).toBe('把结尾改得更紧张')
+  })
+
+  it('keeps newer manual edits when the same-draft AI result arrives late', async () => {
+    const stream = createControlledResponse([conversationEvent + runEvent])
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    function EditableDraftChat() {
+      const { generatedDraft, openGeneratedDraft, updateGeneratedDraft } = useAiPanelContext()
+      useEffect(() => {
+        openGeneratedDraft({
+          draftId: 'draft-current',
+          projectId: 'project-1',
+          title: '第一章 潮声',
+          outlineNodeId: 'outline-1',
+          contextManifestId: 'manifest-old',
+          savedChapterId: null,
+          draftKind: 'new',
+          targetChapterId: null,
+          baseChapterVersion: null,
+          content: '发起修改时的草稿。',
+          wordCount: 10,
+          status: 'pending',
+        })
+      }, [openGeneratedDraft])
+      return (
+        <>
+          <button type="button" onClick={() => updateGeneratedDraft({ content: '等待期间的手动编辑。' })}>
+            手动编辑草稿
+          </button>
+          <output data-testid="current-draft-content">{generatedDraft?.content}</output>
+          <WorkspaceAssistantChat
+            projectId="project-1"
+            defaultModel="openai:test"
+            modelOptions={[{ value: 'openai:test', label: 'OpenAI · test' }]}
+          />
+        </>
+      )
+    }
+
+    render(
+      <MemoryRouter>
+        <AiPanelProvider>
+          <EditableDraftChat />
+        </AiPanelProvider>
+      </MemoryRouter>,
+    )
+    const user = userEvent.setup()
+    await user.type(screen.getByPlaceholderText(/告诉AI你想写什么/), '修改当前草稿')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+    await waitFor(() => expect(mockPut).toHaveBeenCalledTimes(1))
+
+    await user.click(screen.getByRole('button', { name: '手动编辑草稿' }))
+    stream.push(sse({
+      type: 'complete',
+      data: {
+        reply: '当前草稿已修改。',
+        actions: [],
+        applied_actions: [{
+          tool: 'chapter_writer',
+          status: 'ok',
+          data: {
+            draft_id: 'draft-current',
+            title: '第一章 潮声',
+            outline_node_id: 'outline-1',
+            context_manifest_id: 'manifest-ai-result',
+            content: '迟到的 AI 完整修改稿。',
+            draft_status: 'pending',
+          },
+        }],
+        tool_logs: [],
+        run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+      },
+    }), sse('[DONE]'))
+    stream.close()
+
+    await waitFor(() => expect(mockPut).toHaveBeenCalledTimes(2))
+    expect(mockPut).toHaveBeenLastCalledWith(
+      '/projects/project-1/chapter-drafts/draft-current',
+      {
+        title: '第一章 潮声',
+        outline_node_id: 'outline-1',
+        content: '等待期间的手动编辑。',
+      },
+    )
+    expect(screen.getByTestId('current-draft-content')).toHaveTextContent('等待期间的手动编辑。')
+  })
+
+  it('lets the author discard a generated chapter draft from its chat card', async () => {
+    const stream = createControlledResponse([conversationEvent + runEvent])
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    }))
+    const user = userEvent.setup()
+    renderChat()
+    await sendChapterRequest()
+    const draftAction = {
+      tool: 'chapter_writer',
+      status: 'ok',
+      detail: '第二章草稿已生成，尚未保存',
+      data: {
+        draft_id: 'draft-discard-chat',
+        project_id: 'project-1',
+        title: '第二章 夜雨',
+        content: '夜雨落在山门外。',
+        draft_status: 'pending',
+      },
+    }
+    await act(async () => {
+      stream.push(sse({
+        type: 'complete',
+        data: {
+          reply: '第二章草稿已生成，尚未保存。',
+          applied_actions: [draftAction],
+          actions: [draftAction],
+          tool_logs: [draftAction],
+          run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+        },
+      }) + sse('[DONE]'))
+      stream.close()
+    })
+    mockDelete.mockResolvedValueOnce({
+      data: { data: { draft_id: 'draft-discard-chat', draft_status: 'discarded' } },
+    })
+
+    await user.click(await screen.findByRole('button', { name: /丢弃/ }))
+    const confirmation = await screen.findByText('丢弃这份章节草稿？')
+    const popover = confirmation.closest('.ant-popover-inner')
+    expect(popover).not.toBeNull()
+    await user.click(within(popover as HTMLElement).getByRole('button', { name: /丢\s*弃/ }))
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith(
+      '/projects/project-1/chapter-drafts/draft-discard-chat',
+    ))
+    expect(await screen.findByText('草稿已丢弃')).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalledWith(
+      '/projects/project-1/chapters',
+      expect.anything(),
+    )
+  })
+
   it('shows a rejected chat draft save instead of failing silently', async () => {
     const stream = createControlledResponse([conversationEvent + runEvent])
     vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -612,9 +835,129 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByText('本机 CLI 已连接本轮临时 Siming MCP')).toBeInTheDocument()
+    expect(await screen.findByText('本机 CLI 将使用本轮临时 Siming MCP')).toBeInTheDocument()
     expect(screen.getByText(/只开放当前作品范围的工具/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '授权下一条代理操作' })).not.toBeInTheDocument()
+  })
+
+  it('shows an editable outline draft card and confirms before any formal write', async () => {
+    const stream = createControlledResponse([conversationEvent + runEvent])
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    }))
+    const user = userEvent.setup()
+    renderChat()
+    await sendChapterRequest()
+    const action = {
+      tool: 'outline_writer',
+      status: 'ok',
+      detail: '大纲草稿已生成，等待作者确认',
+      data: {
+        draft_id: 'outline-draft-1',
+        project_id: 'project-1',
+        insert_after_id: 'outline-1',
+        draft_status: 'pending',
+        nodes: [{ node_type: 'chapter', title: '第二章 夜雨', summary: '夜雨袭城。', status: 'pending' }],
+      },
+    }
+    await act(async () => {
+      stream.push(sse({
+        type: 'complete',
+        data: {
+          reply: '大纲草稿已生成。',
+          applied_actions: [action],
+          actions: [action],
+          tool_logs: [action],
+          run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+        },
+      }) + sse('[DONE]'))
+      stream.close()
+    })
+
+    expect(await screen.findByText('大纲草稿已生成，等待作者确认')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /查看并编辑/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认并写章' })).toBeInTheDocument()
+
+    mockPost.mockResolvedValueOnce({
+      data: { data: { draft_status: 'confirmed', saved_outline_node_ids: ['outline-2'] } },
+    })
+    await user.click(screen.getByRole('button', { name: /确认大纲/ }))
+    expect(mockPost).toHaveBeenCalledWith(
+      '/projects/project-1/outline-drafts/outline-draft-1/confirm',
+      { write_after_confirm: false },
+    )
+  })
+
+  it('starts confirm-and-write as a separate author Agent request', async () => {
+    const first = createControlledResponse([conversationEvent + runEvent])
+    const second = createControlledResponse([
+      sse({
+        type: 'conversation',
+        conversation: { id: 'conversation-2', project_id: 'project-1', title: '写第二章' },
+        user_message: { id: 'user-2', role: 'user', content: '请根据真实大纲 ID 写章', status: 'completed' },
+        assistant_message: { id: 'assistant-2', role: 'assistant', content: '正在分析需求...', status: 'running' },
+      }),
+    ])
+    const fetchMock = vi.fn()
+      .mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+        first.bindSignal(init?.signal)
+        return Promise.resolve(first.response)
+      })
+      .mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+        second.bindSignal(init?.signal)
+        return Promise.resolve(second.response)
+      })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    renderChat()
+    await sendChapterRequest()
+    const action = {
+      tool: 'outline_writer',
+      status: 'ok',
+      data: {
+        draft_id: 'outline-draft-write',
+        project_id: 'project-1',
+        draft_status: 'pending',
+        nodes: [{ node_type: 'chapter', title: '第二章 夜雨', summary: '夜雨袭城。', status: 'pending' }],
+      },
+    }
+    await act(async () => {
+      first.push(sse({
+        type: 'complete',
+        data: {
+          reply: '请确认。',
+          applied_actions: [action],
+          actions: [action],
+          tool_logs: [action],
+          run: { id: 'run-1', operation_id: 'operation-1', status: 'completed', phase: 'completed' },
+        },
+      }) + sse('[DONE]'))
+      first.close()
+    })
+    mockPost.mockResolvedValueOnce({
+      data: {
+        data: {
+          draft_status: 'confirmed',
+          saved_outline_node_ids: ['outline-real-2'],
+          next_author_request: {
+            requires_new_agent_turn: true,
+            outline_node_id: 'outline-real-2',
+            message: '请根据刚确认的章级大纲（ID：outline-real-2）写这一章。',
+          },
+        },
+      },
+    })
+
+    await user.click(await screen.findByRole('button', { name: '确认并写章' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body))
+    expect(secondBody.message).toContain('outline-real-2')
+    expect(mockPost).toHaveBeenCalledWith(
+      '/projects/project-1/outline-drafts/outline-draft-write/confirm',
+      { write_after_confirm: true },
+    )
+    second.close()
   })
 
   it('requires a separate one-turn read snapshot confirmation for a pasted path', async () => {
@@ -642,5 +985,282 @@ describe('WorkspaceAssistantChat cancellation and recovery', () => {
     expect(screen.getByText('C:\\Novel Notes\\世界观.md')).toBeInTheDocument()
     expect(screen.getByText(/只能读取隔离副本/)).toBeInTheDocument()
     expect(screen.getByText(/本轮结束后快照自动删除/)).toBeInTheDocument()
+  })
+
+  it('does not claim a short within-capacity conversation was compacted', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/projects/project-1/ai/assistant/conversations') {
+        return Promise.resolve({
+          data: { data: { items: [{ id: 'conversation-short', project_id: 'project-1', title: '短会话' }], total: 1 } },
+        })
+      }
+      if (url === '/projects/project-1/ai/assistant/conversations/conversation-short') {
+        return Promise.resolve({
+          data: {
+            data: {
+              conversation: { id: 'conversation-short', project_id: 'project-1', title: '短会话' },
+              messages: [],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/context-state')) {
+        return Promise.resolve({
+          data: {
+            data: {
+              status: 'ready',
+              active_checkpoint_id: null,
+              latest_checkpoint_id: null,
+              trigger: 'within_capacity',
+              capacity_assurance: 'unverified',
+              warnings: [],
+            },
+          },
+        })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    renderChat()
+
+    await screen.findByText('短会话')
+    await waitFor(() => expect(mockGet).toHaveBeenCalledWith(
+      '/projects/project-1/ai/assistant/conversations/conversation-short/context-state',
+    ))
+    expect(screen.queryByText('已整理较早上下文')).not.toBeInTheDocument()
+  })
+
+  it('shows a ready checkpoint outside the transcript and exposes verified details', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/projects/project-1/ai/assistant/conversations') {
+        return Promise.resolve({
+          data: { data: { items: [{ id: 'conversation-context', project_id: 'project-1', title: '长期讨论' }], total: 1 } },
+        })
+      }
+      if (url === '/projects/project-1/ai/assistant/conversations/conversation-context') {
+        return Promise.resolve({
+          data: {
+            data: {
+              conversation: { id: 'conversation-context', project_id: 'project-1', title: '长期讨论' },
+              messages: [
+                {
+                  id: 'source-user-1', conversation_id: 'conversation-context', role: 'user',
+                  content: '不要修改主角姓名。', status: 'completed', payload: null,
+                },
+                {
+                  id: 'source-assistant-1', conversation_id: 'conversation-context', role: 'assistant',
+                  content: '已记录。', status: 'completed', payload: null,
+                },
+              ],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/context-state')) {
+        return Promise.resolve({
+          data: {
+            data: {
+              status: 'ready',
+              policy_version: 1,
+              schema_version: 1,
+              active_checkpoint_id: 'checkpoint-1',
+              source_message_count: 30,
+              recent_exact_turn_count: 4,
+              original_history_tokens: 84000,
+              active_history_tokens: 19000,
+              trigger: 'projected_next_step_over_capacity',
+              capacity_assurance: 'exact',
+              model: 'openai:gpt-test',
+              warnings: [],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/checkpoints/checkpoint-1')) {
+        return Promise.resolve({
+          data: {
+            data: {
+              id: 'checkpoint-1',
+              status: 'ready',
+              policy_version: 1,
+              schema: 'conversation_checkpoint.v1',
+              source_range: {
+                first_sequence: 1,
+                last_sequence: 30,
+                message_count: 30,
+                started_at: '2026-08-01T08:00:00Z',
+                ended_at: '2026-08-20T08:00:00Z',
+              },
+              recent_exact_turn_count: 4,
+              original_history_tokens: 84000,
+              active_history_tokens: 19000,
+              checkpoint_tokens: 6000,
+              trigger: 'projected_next_step_over_capacity',
+              capacity_assurance: 'exact',
+              model_binding: { provider: 'openai', model: 'gpt-test' },
+              author_quotes: [{
+                message_id: 'source-user-1',
+                exact_quote: '不要修改主角姓名。',
+                purpose: 'active_constraint',
+              }],
+              execution_ledger: [{
+                run_id: 'run-old',
+                step_id: 'step-old',
+                tool: 'create_outline_nodes',
+                status: 'ok',
+                detail: '已创建章级大纲',
+                resource_refs: [{ type: 'outline', id: 'outline-2', revision: 3 }],
+              }],
+              semantic_navigation: {
+                authority: 'non_authoritative_navigation',
+                current_objectives: ['继续规划下一章'],
+              },
+              warnings: [],
+            },
+          },
+        })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+
+    const user = userEvent.setup()
+    const view = renderChat()
+
+    expect(await screen.findByText('已整理较早上下文')).toBeInTheDocument()
+    expect(screen.getByText(/保留最近 4 轮原文/)).toBeInTheDocument()
+    const transcript = document.querySelector('.workspace-assistant-messages')
+    expect(transcript).not.toHaveTextContent('已整理较早上下文')
+
+    await user.click(screen.getByRole('button', { name: /查看/ }))
+    const detailDialog = await screen.findByRole('dialog', { name: '上下文整理详情' })
+    expect(within(detailDialog).getByText(/原始 84,000 tokens/)).toBeInTheDocument()
+    expect(within(detailDialog).getByText('不要修改主角姓名。', { exact: false })).toBeInTheDocument()
+    expect(within(detailDialog).getByText('create_outline_nodes')).toBeInTheDocument()
+    expect(within(detailDialog).getByText(/outline · outline-2 · r3/)).toBeInTheDocument()
+    expect(within(detailDialog).getByText('继续规划下一章')).toBeInTheDocument()
+    expect(within(detailDialog).getByText(/openai:gpt-test/)).toBeInTheDocument()
+    view.unmount()
+  })
+
+  it('keeps a failed checkpoint recoverable and guides retry through a new message', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/projects/project-1/ai/assistant/conversations') {
+        return Promise.resolve({
+          data: { data: { items: [{ id: 'conversation-failed', project_id: 'project-1', title: '失败会话' }], total: 1 } },
+        })
+      }
+      if (url === '/projects/project-1/ai/assistant/conversations/conversation-failed') {
+        return Promise.resolve({
+          data: {
+            data: {
+              conversation: { id: 'conversation-failed', project_id: 'project-1', title: '失败会话' },
+              messages: [],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/context-state')) {
+        return Promise.resolve({
+          data: {
+            data: {
+              status: 'failed',
+              latest_checkpoint_id: 'checkpoint-failed',
+              error_code: 'conversation_checkpoint_failed',
+              error_detail: '结构校验失败',
+              retryable: true,
+              warnings: [],
+            },
+          },
+        })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    const user = userEvent.setup()
+    renderChat()
+
+    expect(await screen.findByText('较早上下文整理失败')).toBeInTheDocument()
+    expect(screen.getByText(/当前任务尚未执行，完整聊天仍然保留/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /发送新消息重试/ }))
+
+    expect(mockPost).not.toHaveBeenCalled()
+    expect(document.querySelector('.workspace-assistant-sr-status')).toHaveTextContent('请发送一条新消息')
+    await waitFor(() => expect(screen.getByPlaceholderText(/告诉AI你想写什么/)).toHaveFocus())
+  })
+
+  it('treats checkpoint SSE frames as UI state and no longer sends a fixed history slice', async () => {
+    const stream = createControlledResponse([
+      conversationEvent
+      + sse({
+        type: 'conversation_context',
+        context_state: {
+          status: 'compressing',
+          latest_checkpoint_id: 'checkpoint-stream',
+          source_message_count: 24,
+          recent_exact_turn_count: 3,
+          trigger: 'projected_next_step_over_capacity',
+          warnings: [],
+        },
+      })
+      + runEvent,
+    ])
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderChat()
+    await sendChapterRequest()
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(requestBody).not.toHaveProperty('history')
+    expect(await screen.findByText('正在整理较早上下文')).toBeInTheDocument()
+    expect(document.querySelector('.workspace-assistant-messages')).not.toHaveTextContent('正在整理较早上下文')
+
+    await act(async () => {
+      stream.push(sse({
+        type: 'conversation_checkpoint',
+        checkpoint: {
+          id: 'checkpoint-stream',
+          status: 'ready',
+          source_range: { first_sequence: 1, last_sequence: 24, message_count: 24 },
+          recent_exact_turn_count: 3,
+          original_history_tokens: 60000,
+          active_history_tokens: 16000,
+          trigger: 'projected_next_step_over_capacity',
+          capacity_assurance: 'exact',
+          warnings: [],
+        },
+      }))
+    })
+
+    expect(await screen.findByText('已整理较早上下文')).toBeInTheDocument()
+    expect(screen.getByText(/保留最近 3 轮原文/)).toBeInTheDocument()
+    expect(document.querySelector('.workspace-assistant-messages')).not.toHaveTextContent('已整理较早上下文')
+  })
+
+  it('handles an explicit server capacity error and opens the exact governance settings panel', async () => {
+    const stream = createControlledResponse([
+      sse({
+        type: 'error',
+        code: 'conversation_capacity_unknown',
+        message: '模型上下文容量未知',
+        details: { remediation: 'configure_model_context_profile' },
+      }) + sse('[DONE]'),
+    ])
+    stream.close()
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      stream.bindSignal(init?.signal)
+      return Promise.resolve(stream.response)
+    }))
+    const user = userEvent.setup()
+    renderChat()
+
+    await user.type(screen.getByPlaceholderText(/告诉AI你想写什么/), '继续写')
+    await user.click(screen.getByRole('button', { name: /发送/ }))
+
+    expect(await screen.findByText('需要配置当前模型的上下文容量')).toBeInTheDocument()
+    expect(screen.getByText(/避免用猜测的容量继续执行/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '配置上下文容量' }))
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/settings?section=context-governance')
   })
 })

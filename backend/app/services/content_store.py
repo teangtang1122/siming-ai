@@ -32,6 +32,7 @@ from ..database.models import (
     WorldbuildingEntry,
     WorldbuildingRelation,
 )
+from ..database.query_filters import is_current_worldbuilding_status
 from .chapter_service import create_snapshot, ensure_current_snapshot
 from .character_service import (
     character_aliases,
@@ -264,6 +265,16 @@ def sync_character_to_file(db: Session, project: Project, character: Character) 
 
 def sync_worldbuilding_to_file(db: Session, project: Project, entry: WorldbuildingEntry) -> None:
     folder = ensure_project_folder(db, project)
+    if not is_current_worldbuilding_status(entry.status):
+        # The project folder is working context for local agents. Historical
+        # rows remain in the authoritative database and official exports, but
+        # keeping their JSON files here lets a broad Glob/Grep inject retired
+        # facts and IDs into later writing or cataloging turns.
+        delete_project_file(project, entry.content_file_path)
+        entry.content_file_path = None
+        entry.content_hash = None
+        invalidate_project(project.id)
+        return
     rel = entry.content_file_path or f"worldbuilding/{_safe_name(entry.dimension, 'misc')}/{_safe_name(entry.title, 'entry')}-{entry.id}.json"
     path = folder / rel
     payload = {

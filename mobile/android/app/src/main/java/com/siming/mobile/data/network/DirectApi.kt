@@ -39,13 +39,81 @@ data class DirectApiConfig(
     val protocol: String = PROTOCOL_AUTO,
     val availableModels: List<String> = emptyList(),
     val taskModels: Map<String, String> = emptyMap(),
+    /** Author-supplied capacity; null temporarily uses the bounded 256K fallback. */
+    val contextWindowTokens: Int? = null,
+    /** Provenance is persisted so the 256K fallback is never presented as a model profile. */
+    val contextCapacitySource: String? = null,
+    val maxOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
+    val safetyMarginTokens: Int = DEFAULT_SAFETY_MARGIN_TOKENS,
 ) {
+    init {
+        require(contextWindowTokens == null || contextWindowTokens > 0) { "模型上下文窗口必须大于零" }
+        require(contextCapacitySource == null || contextCapacitySource in contextCapacitySources) {
+            "模型容量来源无效"
+        }
+        require(maxOutputTokens > 0) { "模型输出预留必须大于零" }
+        require(safetyMarginTokens >= 0) { "模型安全余量不能为负数" }
+        contextWindowTokens?.let { window ->
+            require(maxOutputTokens + safetyMarginTokens < window) {
+                "输出预留与安全余量必须小于模型上下文窗口"
+            }
+        }
+    }
+
     fun modelForTask(taskType: String): String = taskModels[taskType]
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?: model
 
-    fun forTask(taskType: String): DirectApiConfig = copy(model = modelForTask(taskType))
+    fun isDeepSeekProvider(): Boolean = listOf(displayName, baseUrl, model)
+        .any { it.contains("deepseek", ignoreCase = true) }
+
+    fun withContextWindowFallback(): DirectApiConfig {
+        if (contextWindowTokens != null) {
+            return if (contextCapacitySource == null) {
+                copy(contextCapacitySource = CONTEXT_CAPACITY_CONFIGURED)
+            } else {
+                this
+            }
+        }
+        val outputLimit = DEFAULT_CONTEXT_WINDOW_TOKENS - safetyMarginTokens - 1
+        require(outputLimit > 0) { "256K 兜底窗口无法为输入保留空间" }
+        return copy(
+            contextWindowTokens = DEFAULT_CONTEXT_WINDOW_TOKENS,
+            contextCapacitySource = CONTEXT_CAPACITY_FALLBACK,
+            maxOutputTokens = minOf(maxOutputTokens, outputLimit),
+        )
+    }
+
+    /**
+     * Preserve an explicit profile, use exact first-party metadata when available,
+     * otherwise bind the selected task model to the shared 256K fallback.
+     */
+    fun forTask(taskType: String): DirectApiConfig {
+        val defaultModel = MobileKnownModelCapacityCatalog.canonicalModelForOfficialEndpoint(
+            baseUrl,
+            model,
+        )
+        val selectedModel = MobileKnownModelCapacityCatalog.canonicalModelForOfficialEndpoint(
+            baseUrl,
+            modelForTask(taskType),
+        )
+        val selected = if (selectedModel == defaultModel) {
+            copy(model = selectedModel)
+        } else {
+            copy(
+                model = selectedModel,
+                contextWindowTokens = null,
+                contextCapacitySource = null,
+            )
+        }
+        val bound = if (selected.contextWindowTokens != null) {
+            selected
+        } else {
+            MobileKnownModelCapacityCatalog.applyIfKnown(selected)
+        }
+        return (bound ?: selected).withContextWindowFallback()
+    }
 
     fun summary() = DirectApiSummary(
         displayName = displayName,
@@ -54,6 +122,10 @@ data class DirectApiConfig(
         protocol = protocol,
         availableModels = availableModels,
         taskModels = taskModels,
+        contextWindowTokens = contextWindowTokens,
+        contextCapacitySource = contextCapacitySource,
+        maxOutputTokens = maxOutputTokens,
+        safetyMarginTokens = safetyMarginTokens,
     )
 
     companion object {
@@ -66,10 +138,21 @@ data class DirectApiConfig(
         const val TASK_WRITING = "writing"
         const val TASK_EVALUATION = "evaluation"
         const val TASK_DECONSTRUCT = "deconstruct"
+        const val CONTEXT_CAPACITY_CONFIGURED = "configured"
+        const val CONTEXT_CAPACITY_CATALOG = "catalog"
+        const val CONTEXT_CAPACITY_FALLBACK = "fallback"
+        const val DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000
+        const val DEFAULT_AGENT_OUTPUT_TOKENS = 6_000
+        const val DEFAULT_SAFETY_MARGIN_TOKENS = 4_096
         val supportedProtocols = setOf(
             PROTOCOL_AUTO,
             PROTOCOL_RESPONSES,
             PROTOCOL_CHAT_COMPLETIONS,
+        )
+        val contextCapacitySources = setOf(
+            CONTEXT_CAPACITY_CONFIGURED,
+            CONTEXT_CAPACITY_CATALOG,
+            CONTEXT_CAPACITY_FALLBACK,
         )
         val taskModelLabels = linkedMapOf(
             TASK_ASSISTANT to "项目助手",
@@ -89,6 +172,10 @@ data class DirectApiSummary(
     val protocol: String,
     val availableModels: List<String> = emptyList(),
     val taskModels: Map<String, String> = emptyMap(),
+    val contextWindowTokens: Int? = null,
+    val contextCapacitySource: String? = null,
+    val maxOutputTokens: Int = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS,
+    val safetyMarginTokens: Int = DirectApiConfig.DEFAULT_SAFETY_MARGIN_TOKENS,
 )
 
 data class DirectApiProbe(
@@ -100,6 +187,7 @@ data class DirectAgentToolCall(
     val id: String,
     val name: String,
     val arguments: JsonObject,
+    val rawArgumentsJson: String,
 )
 
 data class DirectAgentTurn(
@@ -109,6 +197,14 @@ data class DirectAgentTurn(
     val assistantMessage: JsonObject,
     val promptTokens: Int? = null,
 )
+
+class DirectNativeToolProtocolException(message: String) : IllegalStateException(message) {
+    val reason: String = REASON
+
+    companion object {
+        const val REASON = "native_assistant_transaction_invalid"
+    }
+}
 
 private data class DirectStreamSegment(
     val finishReason: String,
@@ -337,17 +433,15 @@ class DirectApiClient(
         endpointLoop@ for (endpoint in endpointCandidates(config.baseUrl, path)) {
             while (true) {
                 try {
-                    val payload = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
-                        responsesAgentPayload(
-                            config, messages, tools, effectiveToolChoice,
-                            maxOutputTokens, temperature, extraBody,
-                        )
-                    } else {
-                        chatAgentPayload(
-                            config, messages, tools, effectiveToolChoice,
-                            maxOutputTokens, temperature, extraBody,
-                        )
-                    }
+                    val payload = agentRequestPayload(
+                        config = config,
+                        messages = messages,
+                        tools = tools,
+                        toolChoice = effectiveToolChoice,
+                        maxOutputTokens = maxOutputTokens,
+                        temperature = temperature,
+                        extraBody = extraBody,
+                    )
                     val response = executeWithRetry(endpoint, config.apiKey, json.encodeToString(payload))
                     if (response.statusCode in PATH_FALLBACK_STATUS_CODES) break
                     ensureSuccess(response)
@@ -407,17 +501,16 @@ class DirectApiClient(
         var lastError: Throwable? = null
         endpointLoop@ for (endpoint in endpointCandidates(config.baseUrl, path)) {
             while (true) {
-                val payload = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
-                    responsesAgentPayload(
-                        config, messages, tools, effectiveToolChoice,
-                        maxOutputTokens, temperature, extraBody, stream = true,
-                    )
-                } else {
-                    chatAgentPayload(
-                        config, messages, tools, effectiveToolChoice,
-                        maxOutputTokens, temperature, extraBody, stream = true,
-                    )
-                }
+                val payload = agentRequestPayload(
+                    config = config,
+                    messages = messages,
+                    tools = tools,
+                    toolChoice = effectiveToolChoice,
+                    maxOutputTokens = maxOutputTokens,
+                    temperature = temperature,
+                    extraBody = extraBody,
+                    stream = true,
+                )
                 try {
                     return executeAgentStream(
                         endpoint = endpoint,
@@ -469,6 +562,92 @@ class DirectApiClient(
         if (this !is DirectApiHttpException) return false
         val detail = message.orEmpty().lowercase()
         return "tool_choice" in detail || "tool choice" in detail
+    }
+
+    /**
+     * The single request serializer shared by execution and conversation-budget
+     * accounting. Keeping the provider transformation here prevents the sealed
+     * budget from measuring a provider-neutral shape that is never sent.
+     */
+    internal fun agentRequestPayload(
+        config: DirectApiConfig,
+        messages: List<JsonObject>,
+        tools: JsonArray,
+        toolChoice: String?,
+        maxOutputTokens: Int,
+        temperature: Double,
+        extraBody: JsonObject?,
+        stream: Boolean = false,
+    ): JsonObject {
+        val effectiveToolChoice = providerSafeToolChoice(config, toolChoice)
+        return if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+            responsesAgentPayload(
+                config = config,
+                messages = messages,
+                tools = tools,
+                toolChoice = effectiveToolChoice,
+                maxOutputTokens = maxOutputTokens,
+                temperature = temperature,
+                extraBody = extraBody,
+                stream = stream,
+            )
+        } else {
+            chatAgentPayload(
+                config = config,
+                messages = messages,
+                tools = tools,
+                toolChoice = effectiveToolChoice,
+                maxOutputTokens = maxOutputTokens,
+                temperature = temperature,
+                extraBody = extraBody,
+                stream = stream,
+            )
+        }
+    }
+
+    /** The exact non-streaming text payload used by [complete]. */
+    internal fun completeRequestPayload(
+        config: DirectApiConfig,
+        protocol: String,
+        systemPrompt: String,
+        userPrompt: String,
+        maxOutputTokens: Int,
+        temperature: Double,
+        extraBody: JsonObject?,
+    ): JsonObject {
+        require(protocol in setOf(
+            DirectApiConfig.PROTOCOL_RESPONSES,
+            DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS,
+        )) { "文本请求必须先解析为明确的 provider 协议" }
+        return if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+            buildJsonObject {
+                put("model", config.model.trim())
+                put("instructions", systemPrompt)
+                put("input", userPrompt)
+                put("temperature", temperature)
+                put("max_output_tokens", maxOutputTokens)
+                put("stream", false)
+                extraBody?.forEach { (key, value) -> put(key, value) }
+            }
+        } else {
+            buildJsonObject {
+                put("model", config.model.trim())
+                put("messages", buildJsonArray {
+                    add(buildJsonObject {
+                        put("role", "system")
+                        put("content", systemPrompt)
+                    })
+                    add(buildJsonObject {
+                        put("role", "user")
+                        put("content", userPrompt)
+                    })
+                })
+                put("temperature", temperature)
+                put("max_tokens", maxOutputTokens)
+                put("stream", false)
+                extraBody?.forEach { (key, value) -> put(key, value) }
+            }
+        }
     }
 
     private suspend fun completeResolved(
@@ -551,6 +730,10 @@ class DirectApiClient(
                         put("output", message.string("content"))
                     })
                     "assistant" -> {
+                        (message["provider_state"] as? JsonArray).orEmpty().forEach { state ->
+                            val value = state as? JsonObject ?: return@forEach
+                            if (value.string("type") == "reasoning") add(value)
+                        }
                         val content = message.string("content")
                         if (content.isNotBlank()) add(buildJsonObject {
                             put("role", "assistant")
@@ -621,7 +804,7 @@ class DirectApiClient(
                     put("type", "function")
                     put("function", buildJsonObject {
                         put("name", call.name)
-                        put("arguments", json.encodeToString(call.arguments))
+                        put("arguments", call.rawArgumentsJson)
                     })
                 })
             }
@@ -663,6 +846,12 @@ class DirectApiClient(
                 } + listOf(item.string("reasoning_content"), item.string("text")).filter(String::isNotBlank)
             }
             .joinToString("\n")
+        val providerState = output.mapNotNull { raw ->
+            val item = raw as? JsonObject ?: return@mapNotNull null
+            item.takeIf {
+                it.string("type") == "reasoning" && it.string("encrypted_content").isNotBlank()
+            }
+        }
         val toolCalls = buildJsonArray {
             calls.forEach { call ->
                 add(buildJsonObject {
@@ -670,7 +859,7 @@ class DirectApiClient(
                     put("type", "function")
                     put("function", buildJsonObject {
                         put("name", call.name)
-                        put("arguments", json.encodeToString(call.arguments))
+                        put("arguments", call.rawArgumentsJson)
                     })
                 })
             }
@@ -678,14 +867,18 @@ class DirectApiClient(
         val canonical = buildJsonObject {
             put("role", "assistant")
             put("content", content)
+            if (reasoning.isNotBlank()) put("reasoning_content", reasoning)
+            if (providerState.isNotEmpty()) put("provider_state", JsonArray(providerState))
             if (calls.isNotEmpty()) put("tool_calls", toolCalls)
         }
         return DirectAgentTurn(content.trim(), reasoning, calls, canonical, promptTokens(root, "input_tokens"))
     }
 
     private fun parseToolCall(element: JsonElement): DirectAgentToolCall? {
-        val value = element as? JsonObject ?: return null
-        val function = value["function"] as? JsonObject ?: return null
+        val value = element as? JsonObject
+            ?: throw DirectNativeToolProtocolException("原生 tool_call 必须是对象")
+        val function = value["function"] as? JsonObject
+            ?: throw DirectNativeToolProtocolException("原生 tool_call 缺少 function 对象")
         return parseFunctionCall(
             id = value.string("id"),
             name = function.string("name"),
@@ -697,15 +890,22 @@ class DirectApiClient(
         id: String,
         name: String,
         rawArguments: String,
-    ): DirectAgentToolCall? {
-        if (name.isBlank()) return null
+    ): DirectAgentToolCall {
+        if (id.isBlank()) throw DirectNativeToolProtocolException("原生工具调用缺少 call_id，未执行工具")
+        if (name.isBlank()) throw DirectNativeToolProtocolException("原生工具调用缺少函数名，未执行工具")
+        if (rawArguments.isBlank()) {
+            throw DirectNativeToolProtocolException("原生工具调用缺少 arguments JSON，未执行工具")
+        }
         val arguments = runCatching {
-            json.parseToJsonElement(rawArguments.ifBlank { "{}" }) as? JsonObject
-        }.getOrNull() ?: JsonObject(emptyMap())
+            json.parseToJsonElement(rawArguments) as? JsonObject
+        }.getOrNull() ?: throw DirectNativeToolProtocolException(
+            "原生工具调用 arguments 不是有效 JSON 对象，未执行工具",
+        )
         return DirectAgentToolCall(
-            id = id.ifBlank { "call_${UUID.randomUUID()}" },
+            id = id,
             name = name,
             arguments = arguments,
+            rawArgumentsJson = rawArguments,
         )
     }
 
@@ -853,10 +1053,14 @@ class DirectApiClient(
                 val finalCalls = calls.values.distinct().mapNotNull { buffer ->
                     parseFunctionCall(buffer.id, buffer.name, buffer.arguments.toString())
                 }.ifEmpty { parsedTerminal?.toolCalls.orEmpty() }
+                val providerState = (parsedTerminal?.assistantMessage?.get("provider_state") as? JsonArray)
+                    .orEmpty()
+                    .mapNotNull { it as? JsonObject }
                 canonicalAgentTurn(
                     content = finalContent,
                     reasoning = finalReasoning,
                     calls = finalCalls,
+                    providerState = providerState,
                     promptTokens = promptTokens ?: parsedTerminal?.promptTokens,
                 )
             }
@@ -872,7 +1076,11 @@ class DirectApiClient(
     ) {
         val id = item.string("call_id").ifBlank { item.string("id") }
         val itemId = item.string("id")
-        val key = id.ifBlank { itemId }.ifBlank { "call-${calls.size}" }
+        val key = id.ifBlank { itemId }.ifBlank {
+            throw DirectNativeToolProtocolException(
+                "Responses 原生函数调用缺少 call_id 和 item id，未执行工具",
+            )
+        }
         val buffer = calls[id] ?: calls[itemId] ?: calls.getOrPut(key) { DirectAgentToolCallBuffer() }
         if (id.isNotBlank()) calls[id] = buffer
         if (itemId.isNotBlank()) calls[itemId] = buffer
@@ -887,6 +1095,7 @@ class DirectApiClient(
         content: String,
         reasoning: String,
         calls: List<DirectAgentToolCall>,
+        providerState: List<JsonObject>,
         promptTokens: Int?,
     ): DirectAgentTurn {
         val toolCalls = buildJsonArray {
@@ -896,7 +1105,7 @@ class DirectApiClient(
                     put("type", "function")
                     put("function", buildJsonObject {
                         put("name", call.name)
-                        put("arguments", json.encodeToString(call.arguments))
+                        put("arguments", call.rawArgumentsJson)
                     })
                 })
             }
@@ -905,6 +1114,7 @@ class DirectApiClient(
             put("role", "assistant")
             put("content", content)
             if (reasoning.isNotBlank()) put("reasoning_content", reasoning)
+            if (providerState.isNotEmpty()) put("provider_state", JsonArray(providerState))
             if (calls.isNotEmpty()) put("tool_calls", toolCalls)
         }
         return DirectAgentTurn(content.trim(), reasoning, calls, canonical, promptTokens)
@@ -1129,35 +1339,15 @@ class DirectApiClient(
         } else {
             "chat/completions"
         }
-        val payload = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
-            buildJsonObject {
-                put("model", config.model.trim())
-                put("instructions", systemPrompt)
-                put("input", userPrompt)
-                put("temperature", temperature)
-                put("max_output_tokens", maxOutputTokens)
-                put("stream", false)
-                extraBody?.forEach { (key, value) -> put(key, value) }
-            }
-        } else {
-            buildJsonObject {
-                put("model", config.model.trim())
-                put("messages", buildJsonArray {
-                    add(buildJsonObject {
-                        put("role", "system")
-                        put("content", systemPrompt)
-                    })
-                    add(buildJsonObject {
-                        put("role", "user")
-                        put("content", userPrompt)
-                    })
-                })
-                put("temperature", temperature)
-                put("max_tokens", maxOutputTokens)
-                put("stream", false)
-                extraBody?.forEach { (key, value) -> put(key, value) }
-            }
-        }
+        val payload = completeRequestPayload(
+            config = config,
+            protocol = protocol,
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            maxOutputTokens = maxOutputTokens,
+            temperature = temperature,
+            extraBody = extraBody,
+        )
         var lastError: Throwable? = null
         for (endpoint in endpointCandidates(config.baseUrl, path)) {
             try {

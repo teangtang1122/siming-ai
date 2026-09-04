@@ -11,6 +11,8 @@ import com.siming.mobile.data.MobileExportFile
 import com.siming.mobile.data.MobileNovelImportFile
 import com.siming.mobile.data.MobileProjectPackageFile
 import com.siming.mobile.data.MobilePendingChapterDraft
+import com.siming.mobile.data.MobilePendingOutlineDraft
+import com.siming.mobile.data.MobileOutlineDraftNode
 import com.siming.mobile.data.MobileAssistantConversation
 import com.siming.mobile.data.MobileAssistantMessage
 import com.siming.mobile.data.creation.CreationExecutionRoute
@@ -36,8 +38,10 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -58,7 +62,10 @@ data class MobileUiState(
     val assistantConversations: List<MobileAssistantConversation> = emptyList(),
     val assistantMessages: List<MobileAssistantMessage> = emptyList(),
     val assistantToolLog: List<String> = emptyList(),
+    val assistantContextState: MobileAssistantContextState? = null,
     val pendingChapterDraft: MobilePendingChapterDraft? = null,
+    val pendingOutlineDraft: MobilePendingOutlineDraft? = null,
+    val pendingAssistantRequest: String? = null,
     val directApi: DirectApiSummary? = null,
     val discoveredModels: List<String> = emptyList(),
     val activeCreationId: String? = null,
@@ -78,6 +85,200 @@ data class MobileUiState(
     val catalogingActivity: String = "",
     val exportRunning: Boolean = false,
 )
+
+data class MobileAssistantContextState(
+    val status: String,
+    val detail: String = "",
+    val activeCheckpointId: String? = null,
+    val latestCheckpointId: String? = null,
+    val policyVersion: Int? = null,
+    val schemaVersion: String? = null,
+    val sourceRange: MobileAssistantCheckpointSourceRange? = null,
+    val coveredSequenceRanges: List<MobileAssistantCheckpointSourceRange> = emptyList(),
+    val recentExactTurnCount: Int? = null,
+    val originalHistoryTokens: Int? = null,
+    val activeHistoryTokens: Int? = null,
+    val checkpointTokens: Int? = null,
+    val trigger: String? = null,
+    val capacityAssurance: String? = null,
+    val provider: String? = null,
+    val model: String? = null,
+    val warnings: List<String> = emptyList(),
+    val authorQuotes: List<MobileAssistantCheckpointQuote> = emptyList(),
+    val executionLedger: List<MobileAssistantCheckpointLedgerEntry> = emptyList(),
+    val checkpointDetailLoaded: Boolean = false,
+    val errorCode: String? = null,
+    val errorDetail: String? = null,
+    val retryable: Boolean = true,
+)
+
+data class MobileAssistantCheckpointSourceRange(
+    val firstSequence: Long?,
+    val lastSequence: Long?,
+    val messageCount: Int?,
+)
+
+data class MobileAssistantCheckpointQuote(
+    val messageId: String,
+    val exactQuote: String,
+    val purpose: String? = null,
+    val superseded: Boolean = false,
+)
+
+data class MobileAssistantCheckpointLedgerEntry(
+    val stepId: String,
+    val tool: String,
+    val status: String,
+    val detail: String,
+    val resourceIds: List<String> = emptyList(),
+)
+
+internal fun mobileAssistantContextStateFromJson(
+    state: JsonObject,
+    checkpointDetail: JsonObject? = null,
+): MobileAssistantContextState {
+    val merged = JsonObject(state.toMutableMap().apply {
+        checkpointDetail?.forEach { (key, value) -> put(key, value) }
+    })
+    val source = (merged["source_range"] as? JsonObject) ?: buildJsonObject {
+        state["source_first_sequence"]?.let { put("first_sequence", it) }
+        state["source_last_sequence"]?.let { put("last_sequence", it) }
+        state["source_message_count"]?.let { put("message_count", it) }
+    }
+    val modelBinding = merged["model_binding"] as? JsonObject
+    val warnings = buildList {
+        listOf(state, checkpointDetail).forEach { candidate ->
+            (candidate?.get("warnings") as? JsonArray).orEmpty().forEach { raw ->
+                (raw as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)?.let(::add)
+            }
+        }
+    }.distinct()
+    val quotes = (merged["author_quotes"] as? JsonArray).orEmpty().mapNotNull { raw ->
+        val quote = raw as? JsonObject ?: return@mapNotNull null
+        val messageId = quote.stringValue("message_id")
+        val exactQuote = quote.stringValue("exact_quote")
+        if (messageId.isBlank() || exactQuote.isBlank()) return@mapNotNull null
+        MobileAssistantCheckpointQuote(
+            messageId = messageId,
+            exactQuote = exactQuote,
+            purpose = quote.stringValue("purpose").ifBlank { null },
+            superseded = (quote["superseded"] as? JsonPrimitive)?.booleanOrNull == true,
+        )
+    }
+    val ledger = (merged["execution_ledger"] as? JsonArray).orEmpty().mapNotNull { raw ->
+        val entry = raw as? JsonObject ?: return@mapNotNull null
+        val resourceIds = buildList {
+            (entry["resource_ids"] as? JsonArray).orEmpty().forEach { resource ->
+                (resource as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)?.let(::add)
+            }
+            (entry["resource_refs"] as? JsonArray).orEmpty().forEach { resource ->
+                (resource as? JsonObject)?.stringValue("id")?.takeIf(String::isNotBlank)?.let(::add)
+            }
+        }.distinct()
+        val stepId = entry.stringValue("step_id")
+        val tool = entry.stringValue("tool")
+        if (stepId.isBlank() && tool.isBlank()) return@mapNotNull null
+        MobileAssistantCheckpointLedgerEntry(
+            stepId = stepId,
+            tool = tool.ifBlank { "operation" },
+            status = entry.stringValue("status").ifBlank { "unknown" },
+            detail = entry.stringValue("detail").ifBlank { entry.stringValue("summary") },
+            resourceIds = resourceIds,
+        )
+    }
+    val covered = (merged["covered_sequence_ranges"] as? JsonArray).orEmpty().mapNotNull { raw ->
+        (raw as? JsonObject)?.toAssistantSourceRange()
+    }
+    val providerLabel = modelBinding?.stringValue("provider").orEmpty()
+        .ifBlank { state.stringValue("provider") }
+    val modelLabel = modelBinding?.stringValue("display_name").orEmpty()
+        .ifBlank { modelBinding?.stringValue("model").orEmpty() }
+        .ifBlank { modelBinding?.stringValue("model_name").orEmpty() }
+        .ifBlank { state.stringValue("model") }
+    return MobileAssistantContextState(
+        status = state.stringValue("status").ifBlank { merged.stringValue("status") },
+        detail = state.stringValue("detail").ifBlank { merged.stringValue("detail") },
+        activeCheckpointId = state.stringValue("active_checkpoint_id")
+            .ifBlank { state.stringValue("checkpoint_id") }
+            .ifBlank { null },
+        latestCheckpointId = state.stringValue("latest_checkpoint_id")
+            .ifBlank { checkpointDetail?.stringValue("id").orEmpty() }
+            .ifBlank { null },
+        policyVersion = (merged["policy_version"] as? JsonPrimitive)?.intOrNull,
+        schemaVersion = (merged["schema_version"] as? JsonPrimitive)?.contentOrNull
+            ?: (merged["schema"] as? JsonPrimitive)?.contentOrNull,
+        sourceRange = source.toAssistantSourceRange(),
+        coveredSequenceRanges = covered,
+        recentExactTurnCount = (state["recent_exact_turn_count"] as? JsonPrimitive)?.intOrNull
+            ?: (state["recent_exact_turns"] as? JsonPrimitive)?.intOrNull,
+        originalHistoryTokens = (state["original_history_tokens"] as? JsonPrimitive)?.intOrNull
+            ?: (merged["original_tokens"] as? JsonPrimitive)?.intOrNull,
+        activeHistoryTokens = (state["active_history_tokens"] as? JsonPrimitive)?.intOrNull
+            ?: (state["active_tokens"] as? JsonPrimitive)?.intOrNull
+            ?: (state["current_input_tokens"] as? JsonPrimitive)?.intOrNull,
+        checkpointTokens = (merged["checkpoint_tokens"] as? JsonPrimitive)?.intOrNull,
+        trigger = state.stringValue("trigger").ifBlank { null },
+        capacityAssurance = state.stringValue("capacity_assurance")
+            .ifBlank { merged.stringValue("capacity_assurance") }
+            .ifBlank { null },
+        provider = providerLabel.ifBlank { null },
+        model = modelLabel.ifBlank { null },
+        warnings = warnings,
+        authorQuotes = quotes,
+        executionLedger = ledger,
+        checkpointDetailLoaded = checkpointDetail != null ||
+            (state.containsKey("author_quotes") && state.containsKey("execution_ledger")),
+        errorCode = state.stringValue("error_code").ifBlank { merged.stringValue("error_code") }.ifBlank { null },
+        errorDetail = state.stringValue("error_detail").ifBlank { merged.stringValue("error_detail") }.ifBlank { null },
+        retryable = (state["retryable"] as? JsonPrimitive)?.booleanOrNull ?: true,
+    )
+}
+
+private fun JsonObject.toAssistantSourceRange(): MobileAssistantCheckpointSourceRange? {
+    val first = (get("first_sequence") as? JsonPrimitive)?.longOrNull
+    val last = (get("last_sequence") as? JsonPrimitive)?.longOrNull
+    val count = (get("message_count") as? JsonPrimitive)?.intOrNull
+    return if (first == null && last == null && count == null) null else {
+        MobileAssistantCheckpointSourceRange(first, last, count)
+    }
+}
+
+private fun JsonObject.stringValue(name: String): String =
+    (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+internal fun MobileAssistantContextState.withCheckpointDetail(
+    checkpoint: JsonObject,
+): MobileAssistantContextState = mobileAssistantContextStateFromJson(
+    buildJsonObject {
+        put("status", status)
+        put("detail", detail)
+        activeCheckpointId?.let { put("active_checkpoint_id", it) }
+        latestCheckpointId?.let { put("latest_checkpoint_id", it) }
+        policyVersion?.let { put("policy_version", it) }
+        schemaVersion?.let { put("schema_version", it) }
+        sourceRange?.let { range -> put("source_range", range.toJson()) }
+        put("covered_sequence_ranges", JsonArray(coveredSequenceRanges.map { it.toJson() }))
+        recentExactTurnCount?.let { put("recent_exact_turn_count", it) }
+        originalHistoryTokens?.let { put("original_history_tokens", it) }
+        activeHistoryTokens?.let { put("active_history_tokens", it) }
+        checkpointTokens?.let { put("checkpoint_tokens", it) }
+        trigger?.let { put("trigger", it) }
+        capacityAssurance?.let { put("capacity_assurance", it) }
+        provider?.let { put("provider", it) }
+        model?.let { put("model", it) }
+        put("warnings", JsonArray(warnings.map(::JsonPrimitive)))
+        errorCode?.let { put("error_code", it) }
+        errorDetail?.let { put("error_detail", it) }
+        put("retryable", retryable)
+    },
+    checkpoint,
+)
+
+private fun MobileAssistantCheckpointSourceRange.toJson(): JsonObject = buildJsonObject {
+    firstSequence?.let { put("first_sequence", it) }
+    lastSequence?.let { put("last_sequence", it) }
+    messageCount?.let { put("message_count", it) }
+}
 
 @OptIn(ExperimentalSerializationApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -145,6 +346,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resumeCreation(sessionId: String) {
         uiState.value = uiState.value.copy(activeCreationId = sessionId, error = null)
+        viewModelScope.launch {
+            runCatching { repository.refreshCreationConversationContext(sessionId) }
+                .onFailure { error ->
+                    uiState.value = uiState.value.copy(
+                        error = "立项上下文详情加载失败：${error.toUserFacingMessage()}",
+                    )
+                }
+        }
     }
 
     fun closeCreation() {
@@ -305,6 +514,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         protocol: String,
         availableModels: List<String>,
         taskModels: Map<String, String>,
+        contextWindowTokens: Int?,
+        maxOutputTokens: Int,
+        safetyMarginTokens: Int,
         onConfigured: () -> Unit,
     ) {
         viewModelScope.launch {
@@ -330,6 +542,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     protocol,
                     (availableModels + discovered + effectiveModel).distinct(),
                     taskModels,
+                    contextWindowTokens,
+                    maxOutputTokens,
+                    safetyMarginTokens,
                 )
                 uiState.value = uiState.value.copy(
                     busy = false,
@@ -357,7 +572,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun testDirectApi() = launchActivity("正在测试手机直连 API…") {
         val summary = repository.testDirectApi()
         uiState.value = uiState.value.copy(directApi = summary)
-        "${summary.displayName} · ${summary.model} 真实对话成功"
+        "${summary.displayName} · ${summary.model} 基础对话探测成功；" +
+            "长任务仍可能受到临时限流或服务容量影响"
     }
 
     fun clearDirectApi() {
@@ -819,6 +1035,7 @@ private fun updateCatalogingProgress(
                 assistantRunId = null,
                 assistantOperationId = null,
                 assistantToolLog = emptyList(),
+                assistantContextState = null,
                 error = null,
             )
             try {
@@ -827,26 +1044,40 @@ private fun updateCatalogingProgress(
                     prompt = prompt,
                     modelRoute = modelRoute,
                     conversationId = uiState.value.assistantConversationId,
-                    history = uiState.value.assistantMessages.takeLast(12).map { message ->
-                        buildJsonObject {
-                            put("role", message.role)
-                            put("content", message.content)
-                        }
-                    },
                 ) { event ->
-                    val update = parseAssistantEvent(event)
                     val current = uiState.value
+                    val parsedUpdate = parseAssistantEvent(event)
+                    val contextState = parsedUpdate.contextState?.let { state ->
+                        enrichAssistantContextState(
+                            projectId = projectId,
+                            conversationId = parsedUpdate.conversationId
+                                ?: current.assistantConversationId,
+                            state = state,
+                        )
+                    }
+                    val update = if (contextState == parsedUpdate.contextState) {
+                        parsedUpdate
+                    } else {
+                        parsedUpdate.copy(contextState = contextState)
+                    }
                     val nextDraft = when {
                         update.draftData != null -> {
                             val parsed = MobilePendingChapterDraft.fromJson(projectId, update.draftData)
                             if (parsed != null && update.draftDelta != null) {
                                 val previous = current.pendingChapterDraft
                                     ?.takeIf { it.draftId == parsed.draftId }
-                                parsed.copy(content = previous?.content.orEmpty() + update.draftDelta)
+                                if (update.replaceDraftContent) {
+                                    parsed
+                                } else {
+                                    parsed.copy(content = previous?.content.orEmpty() + update.draftDelta)
+                                }
                             } else parsed ?: current.pendingChapterDraft
                         }
                         else -> current.pendingChapterDraft
                     }
+                    val nextOutlineDraft = update.outlineDraftData
+                        ?.let { MobilePendingOutlineDraft.fromJson(projectId, it) }
+                        ?: current.pendingOutlineDraft
                     uiState.value = current.copy(
                         assistantOutput = when {
                             update.output == null -> current.assistantOutput
@@ -865,7 +1096,9 @@ private fun updateCatalogingProgress(
                         assistantToolLog = update.toolLog?.let {
                             (current.assistantToolLog + it).takeLast(100)
                         } ?: current.assistantToolLog,
+                        assistantContextState = update.contextState ?: current.assistantContextState,
                         pendingChapterDraft = nextDraft,
+                        pendingOutlineDraft = nextOutlineDraft,
                     )
                     val runId = uiState.value.assistantRunId
                     if (assistantCancelRequested && !runId.isNullOrBlank()) {
@@ -873,9 +1106,18 @@ private fun updateCatalogingProgress(
                         throw CancellationException("用户取消手机工作区任务")
                     }
                 }
+                val refreshedChapterDraft = if (
+                    uiState.value.pendingChapterDraft?.revision == true
+                ) {
+                    runCatching { repository.pendingChapterDraft(projectId) }.getOrNull()
+                } else {
+                    uiState.value.pendingChapterDraft
+                }
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
                     assistantActivity = "",
+                    pendingChapterDraft = refreshedChapterDraft
+                        ?: uiState.value.pendingChapterDraft,
                     notice = when (route) {
                         AssistantRoute.GatewayPc ->
                             "AI 任务已使用 PC 配置线路执行，相关修改已同步到手机"
@@ -884,6 +1126,8 @@ private fun updateCatalogingProgress(
                         AssistantRoute.DirectApi ->
                             if (uiState.value.pendingChapterDraft != null) {
                                 "章节草稿已交给正文编辑器，等待你明确保存"
+                            } else if (uiState.value.pendingOutlineDraft != null) {
+                                "大纲草稿已交给结构页，等待你审阅确认"
                             } else {
                                 "手机独立工作区任务已完成，本地产生的修改已写入手机副本"
                             }
@@ -958,6 +1202,34 @@ private fun updateCatalogingProgress(
         uiState.value = uiState.value.copy(pendingChapterDraft = null)
     }
 
+    fun updatePendingChapterDraft(
+        draft: MobilePendingChapterDraft,
+        title: String,
+        content: String,
+        onUpdated: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                busy = true,
+                activity = "正在同步未保存章节草稿…",
+                error = null,
+            )
+            try {
+                val updated = repository.updatePendingChapterDraft(draft, title, content)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingChapterDraft = updated,
+                    notice = "未保存章节草稿已同步，可以继续让 AI 修改",
+                )
+                onUpdated()
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
     fun savePendingChapterDraft(
         draft: MobilePendingChapterDraft,
         title: String,
@@ -1003,6 +1275,140 @@ private fun updateCatalogingProgress(
         }
     }
 
+    fun discardPendingChapterDraft(draft: MobilePendingChapterDraft) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(
+                busy = true,
+                activity = "正在丢弃章节草稿…",
+                error = null,
+            )
+            try {
+                repository.discardPendingChapterDraft(draft)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingChapterDraft = null,
+                    notice = "章节草稿已丢弃；正式正文未改变",
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun restorePendingOutlineDraft(projectId: String) {
+        if (uiState.value.pendingOutlineDraft?.projectId == projectId) return
+        viewModelScope.launch {
+            try {
+                val draft = repository.pendingOutlineDraft(projectId)
+                if (draft != null) uiState.value = uiState.value.copy(pendingOutlineDraft = draft)
+            } catch (error: Exception) {
+                showError(error)
+            }
+        }
+    }
+
+    fun updatePendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        nodes: List<MobileOutlineDraftNode>,
+        designNotes: String,
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在保存大纲草稿…", error = null)
+            try {
+                val updated = repository.updatePendingOutlineDraft(draft, nodes, designNotes)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = updated,
+                    notice = "大纲草稿修改已保存；正式大纲尚未改变",
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun confirmPendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        nodes: List<MobileOutlineDraftNode>,
+        designNotes: String,
+        writeAfterConfirm: Boolean,
+        onConfirmed: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在确认大纲草稿…", error = null)
+            try {
+                val updated = repository.updatePendingOutlineDraft(draft, nodes, designNotes)
+                val result = repository.confirmPendingOutlineDraft(updated, writeAfterConfirm)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = null,
+                    pendingAssistantRequest = result.nextAuthorMessage,
+                    notice = if (result.nextAuthorMessage != null) {
+                        "大纲已确认；将以新的作者请求发起写章"
+                    } else {
+                        "大纲已确认并写入正式结构"
+                    },
+                )
+                onConfirmed()
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun regeneratePendingOutlineDraft(
+        draft: MobilePendingOutlineDraft,
+        onRequested: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在释放旧大纲草稿…", error = null)
+            try {
+                val request = repository.regeneratePendingOutlineDraft(draft)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = null,
+                    pendingAssistantRequest = request,
+                    notice = "旧草稿已丢弃；将以新的作者请求重新规划",
+                )
+                onRequested()
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun discardPendingOutlineDraft(draft: MobilePendingOutlineDraft) {
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(busy = true, activity = "正在丢弃大纲草稿…", error = null)
+            try {
+                repository.discardPendingOutlineDraft(draft)
+                uiState.value = uiState.value.copy(
+                    busy = false,
+                    activity = "",
+                    pendingOutlineDraft = null,
+                    notice = "大纲草稿已丢弃；正式大纲未改变",
+                )
+            } catch (error: Exception) {
+                uiState.value = uiState.value.copy(busy = false, activity = "")
+                showError(error)
+            }
+        }
+    }
+
+    fun takePendingAssistantRequest(): String? {
+        val request = uiState.value.pendingAssistantRequest
+        if (request != null) uiState.value = uiState.value.copy(pendingAssistantRequest = null)
+        return request
+    }
+
     fun refreshAssistantConversations(projectId: String, selectCurrent: Boolean = false) {
         viewModelScope.launch {
             runCatching { repository.assistantConversations(projectId) }
@@ -1024,13 +1430,22 @@ private fun updateCatalogingProgress(
 
     fun loadAssistantConversation(projectId: String, conversationId: String) {
         viewModelScope.launch {
-            runCatching { repository.assistantMessages(projectId, conversationId) }
-                .onSuccess { messages ->
+            runCatching {
+                val messages = repository.assistantMessages(projectId, conversationId)
+                val context = repository.assistantContextState(projectId, conversationId)
+                    ?.let { mobileAssistantContextStateFromJson(it) }
+                    ?.let { state ->
+                        enrichAssistantContextState(projectId, conversationId, state)
+                    }
+                messages to context
+            }
+                .onSuccess { (messages, context) ->
                     uiState.value = uiState.value.copy(
                         assistantConversationId = conversationId,
                         assistantMessages = messages,
                         assistantOutput = messages.lastOrNull { it.role == "assistant" }?.content.orEmpty(),
                         assistantToolLog = messages.lastOrNull { it.role == "assistant" }?.toolLogs.orEmpty(),
+                        assistantContextState = context,
                     )
                 }
                 .onFailure(::showError)
@@ -1044,6 +1459,7 @@ private fun updateCatalogingProgress(
             assistantOutput = "",
             assistantReasoning = "",
             assistantToolLog = emptyList(),
+            assistantContextState = null,
         )
     }
 
@@ -1129,6 +1545,22 @@ private fun updateCatalogingProgress(
         uiState.value = uiState.value.copy(error = error.toUserFacingMessage())
     }
 
+    private suspend fun enrichAssistantContextState(
+        projectId: String,
+        conversationId: String?,
+        state: MobileAssistantContextState,
+    ): MobileAssistantContextState {
+        if (connection.value == null || conversationId.isNullOrBlank()) return state
+        val checkpointId = when (state.status) {
+            "ready" -> state.activeCheckpointId
+            else -> state.latestCheckpointId ?: state.activeCheckpointId
+        } ?: return state
+        val checkpoint = runCatching {
+            repository.assistantCheckpointDetail(projectId, conversationId, checkpointId)
+        }.getOrNull() ?: return state
+        return state.withCheckpointDetail(checkpoint)
+    }
+
     private fun parseAssistantEvent(raw: String): AssistantEventUpdate = runCatching {
         if (raw == "[DONE]") return@runCatching AssistantEventUpdate(activity = "")
         val event = json.parseToJsonElement(raw) as? JsonObject
@@ -1162,6 +1594,15 @@ private fun updateCatalogingProgress(
                             action["status"]?.jsonPrimitive?.contentOrNull == "ok"
                     }
                     ?.get("data") as? JsonObject
+                val outlineDraft = (data?.get("applied_actions") as? JsonArray)
+                    .orEmpty()
+                    .mapNotNull { it as? JsonObject }
+                    .firstOrNull { action ->
+                        action["tool"]?.jsonPrimitive?.contentOrNull in
+                            setOf("outline_writer", "save_external_outline_draft") &&
+                            action["status"]?.jsonPrimitive?.contentOrNull in setOf("ok", "blocked")
+                    }
+                    ?.get("data") as? JsonObject
                 AssistantEventUpdate(
                     output = reply,
                     replaceOutput = true,
@@ -1169,6 +1610,7 @@ private fun updateCatalogingProgress(
                     replaceReasoning = reasoning != null,
                     activity = "",
                     draftData = draft,
+                    outlineDraftData = outlineDraft,
                 )
             }
             "chapter_draft" -> AssistantEventUpdate(
@@ -1179,10 +1621,49 @@ private fun updateCatalogingProgress(
                 activity = "章节正在正文编辑器中实时生成…",
                 draftData = event["data"] as? JsonObject,
                 draftDelta = delta,
+                replaceDraftContent = (
+                    ((event["data"] as? JsonObject)?.get("replace_content") as? JsonPrimitive)
+                        ?.booleanOrNull == true
+                    ),
+            )
+            "outline_draft" -> AssistantEventUpdate(
+                activity = detail ?: "大纲草稿已生成，等待作者审阅",
+                outlineDraftData = event["data"] as? JsonObject,
             )
             "conversation" -> {
                 val conversation = event["conversation"] as? JsonObject
                 AssistantEventUpdate(conversationId = conversation?.get("id")?.jsonPrimitive?.contentOrNull)
+            }
+            "conversation_context" -> {
+                val data = event["data"] as? JsonObject
+                val state = event["context_state"] as? JsonObject
+                    ?: data?.get("context_state") as? JsonObject
+                    ?: event
+                val status = state["status"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (status.isBlank()) {
+                    AssistantEventUpdate()
+                } else {
+                    val checkpoint = event["checkpoint"] as? JsonObject
+                        ?: data?.get("checkpoint") as? JsonObject
+                    val normalizedState = if (state.stringValue("detail").isBlank() && !detail.isNullOrBlank()) {
+                        JsonObject(state.toMutableMap().apply { put("detail", JsonPrimitive(detail)) })
+                    } else state
+                    val context = mobileAssistantContextStateFromJson(normalizedState, checkpoint)
+                    val activity = when (status) {
+                        "pending", "compressing" -> "正在整理较早上下文；当前任务尚未执行"
+                        "ready" -> context.detail.ifBlank { "较早上下文已整理，正在继续当前任务" }
+                        "failed" -> context.errorDetail.orEmpty()
+                            .ifBlank { "较早上下文整理失败；当前任务尚未执行" }
+                        "syncing_transcript" -> context.detail.ifBlank { "正在同步手机完整会话…" }
+                        "transcript_synced" -> context.detail.ifBlank { "手机完整会话已同步" }
+                        else -> context.detail.takeIf(String::isNotBlank)
+                    }
+                    AssistantEventUpdate(
+                        activity = activity,
+                        conversationId = state.stringValue("conversation_id").ifBlank { null },
+                        contextState = context,
+                    )
+                }
             }
             "run" -> {
                 val run = event["run"] as? JsonObject
@@ -1234,6 +1715,9 @@ private data class AssistantEventUpdate(
     val toolLog: String? = null,
     val draftData: JsonObject? = null,
     val draftDelta: String? = null,
+    val replaceDraftContent: Boolean = false,
+    val outlineDraftData: JsonObject? = null,
+    val contextState: MobileAssistantContextState? = null,
 )
 
 fun ReplicaEntity.payload(): JsonObject? = payloadJson?.let {

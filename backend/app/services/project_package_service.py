@@ -212,6 +212,7 @@ class ProjectPackageExporter:
                 self.db.query(ChapterDraft)
                 .filter(
                     ChapterDraft.project_id == self.project_id,
+                    ChapterDraft.status == "pending",
                     ChapterDraft.saved_chapter_id.is_(None),
                 )
                 .order_by(ChapterDraft.created_at.asc())
@@ -328,6 +329,8 @@ class ProjectPackageExporter:
         manifest_entries: list[dict[str, Any]] = []
         material_assets: list[tuple[Path, str, str]] = []
 
+        valid_chapter_ids = {row.id for row in collected.get("chapters", [])}
+        valid_snapshot_ids = {row.id for row in collected.get("chapter_snapshots", [])}
         for spec in COLLECTION_SPECS:
             if self.profile not in spec.profiles:
                 continue
@@ -346,6 +349,13 @@ class ProjectPackageExporter:
                     if spec.key == "chapter_drafts":
                         row["saved_chapter_id"] = None
                         row["status"] = "pending"
+                    if spec.key == "narrative_checkpoints":
+                        chapter_id = row.get("chapter_id")
+                        snapshot_id = row.get("chapter_snapshot_id")
+                        if chapter_id not in valid_chapter_ids:
+                            row["chapter_id"] = None
+                        if snapshot_id not in valid_snapshot_ids or row.get("chapter_id") is None:
+                            row["chapter_snapshot_id"] = None
                     if spec.key == "creation_materials":
                         source, size, digest = material_metadata[model_row.id]
                         filename = _safe_filename(model_row.filename, "material")
@@ -492,6 +502,7 @@ class ProjectPackageImporter:
         self._restore_outline_nodes()
         self._insert_collection("chapters")
         self._restore_outline_chapter_references()
+        self._restore_outline_cataloging_ownership()
         for key in (
             "characters",
             "worldbuilding_entries",
@@ -673,6 +684,83 @@ class ProjectPackageImporter:
             outline = self.db.get(OutlineNode, self.identifier_map[row["id"]])
             if outline is not None:
                 outline.source_chapter_id = self.identifier_map.get(source_chapter_id)
+        self.db.flush()
+
+    def _restore_outline_cataloging_ownership(self) -> None:
+        """Rebuild catalog-owned outline state omitted by package v1.
+
+        ``cataloging_status`` was intentionally absent from the original
+        author-data allowlist, but the outline runtime uses ``cataloged`` to
+        distinguish generated scene projections from author-owned planning
+        nodes.  A full package already contains enough durable evidence to
+        restore that state without trusting a new archive field: a chapter
+        summary proves the chapter completed cataloging, the chapter's bound
+        outline is its author-owned catalog projection, and nodes carrying the
+        same source chapter are catalog-generated descendants.
+        """
+
+        if self.package.profile != "full":
+            return
+        summarized_chapters = {
+            str(row.get("chapter_id"))
+            for row in self.package.rows.get("chapter_summaries", [])
+            if row.get("chapter_id")
+        }
+        if not summarized_chapters:
+            return
+        cataloged_outline_ids: set[str] = set()
+        for row in self.package.rows.get("chapters", []):
+            source_chapter_id = str(row.get("id") or "")
+            source_outline_id = str(row.get("outline_node_id") or "")
+            if (
+                source_chapter_id not in summarized_chapters
+                or not source_outline_id
+            ):
+                continue
+            cataloged_outline_ids.add(source_outline_id)
+            mapped_outline_id = self.identifier_map.get(source_outline_id)
+            mapped_chapter_id = self.identifier_map.get(source_chapter_id)
+            outline = (
+                self.db.get(OutlineNode, mapped_outline_id)
+                if mapped_outline_id
+                else None
+            )
+            if outline is None:
+                continue
+            # Older full packages kept the planning summary visible even after
+            # cataloging had written an actual summary.  Import the durable
+            # chapter projection as the current outline while retaining the
+            # original plan in planned_summary.
+            if str(outline.actual_summary or "").strip():
+                outline.summary = outline.actual_summary
+            outline.source_chapter_id = mapped_chapter_id
+        cataloged_outline_ids.update(
+            str(row.get("id"))
+            for row in self.package.rows.get("outline_nodes", [])
+            if row.get("source_chapter_id") in summarized_chapters
+        )
+        for source_id in cataloged_outline_ids:
+            mapped_id = self.identifier_map.get(source_id)
+            outline = self.db.get(OutlineNode, mapped_id) if mapped_id else None
+            if outline is not None:
+                outline.cataloging_status = "cataloged"
+        mapped_cataloged_outline_ids = {
+            self.identifier_map[source_id]
+            for source_id in cataloged_outline_ids
+            if source_id in self.identifier_map
+        }
+        if mapped_cataloged_outline_ids:
+            stale_planning_sections = (
+                self.db.query(OutlineNode)
+                .filter(
+                    OutlineNode.node_type == "section",
+                    OutlineNode.parent_id.in_(mapped_cataloged_outline_ids),
+                    OutlineNode.source_chapter_id.is_(None),
+                )
+                .all()
+            )
+            for outline in stale_planning_sections:
+                self.db.delete(outline)
         self.db.flush()
 
     def _insert_collection(self, key: str) -> None:

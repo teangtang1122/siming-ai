@@ -1,5 +1,6 @@
 """Anthropic Claude adapter using the official anthropic SDK."""
-from typing import AsyncGenerator, Optional
+import json
+from typing import Any, AsyncGenerator, Optional
 
 from anthropic import (
     APIConnectionError,
@@ -27,6 +28,18 @@ def _convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
     return result
 
 
+def _anthropic_continuation_blocks(message: dict) -> list[dict]:
+    """Return provider-native thinking blocks that can be replayed verbatim."""
+
+    blocks: list[dict] = []
+    for item in message.get("provider_state") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in {"thinking", "redacted_thinking"}:
+            blocks.append(dict(item))
+    return blocks
+
+
 def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[Optional[str], list[dict]]:
     """Convert OpenAI-style messages to Anthropic format, handling all role types.
 
@@ -37,7 +50,9 @@ def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[Optional[str]
     system_parts: list[str] = []
     anthropic_messages: list[dict] = []
 
-    for msg in messages:
+    index = 0
+    while index < len(messages):
+        msg = messages[index]
         role = msg.get("role")
         content = msg.get("content")
         tool_calls = msg.get("tool_calls")
@@ -46,41 +61,72 @@ def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[Optional[str]
             # System prompts — accumulate into the top-level system param
             if isinstance(content, str) and content.strip():
                 system_parts.append(content)
+            index += 1
             continue
 
         if role == "tool":
-            # OpenAI tool result → Anthropic tool_result in a user message
-            tool_call_id = msg.get("tool_call_id", "")
-            anthropic_messages.append({
-                "role": "user",
-                "content": [{
+            # One assistant may request several tools in parallel. Anthropic's
+            # native transaction represents the complete consecutive result
+            # batch as one user message containing ordered tool_result blocks.
+            result_blocks: list[dict] = []
+            while index < len(messages) and messages[index].get("role") == "tool":
+                result_message = messages[index]
+                tool_call_id = result_message.get("tool_call_id")
+                if not isinstance(tool_call_id, str) or not tool_call_id:
+                    raise ValueError("Anthropic tool result requires a non-empty native call ID")
+                result_content = result_message.get("content")
+                result_blocks.append({
                     "type": "tool_result",
                     "tool_use_id": tool_call_id,
-                    "content": content if isinstance(content, str) else str(content or ""),
-                }],
-            })
+                    "content": (
+                        result_content
+                        if isinstance(result_content, str)
+                        else str(result_content or "")
+                    ),
+                })
+                index += 1
+            anthropic_messages.append({"role": "user", "content": result_blocks})
             continue
 
         if role == "assistant" and tool_calls:
             # Assistant message with tool calls → Anthropic assistant with tool_use blocks
-            anthropic_content: list[dict] = []
+            anthropic_content = _anthropic_continuation_blocks(msg)
             if content and isinstance(content, str) and content.strip():
                 anthropic_content.append({"type": "text", "text": content})
             for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    raise ValueError("Anthropic tool call must be an object")
+                function = tc.get("function")
+                if not isinstance(function, dict):
+                    raise ValueError("Anthropic tool call requires a function object")
+                call_id = tc.get("id")
+                name = function.get("name")
+                if not isinstance(call_id, str) or not call_id:
+                    raise ValueError("Anthropic tool call requires a non-empty native call ID")
+                if not isinstance(name, str) or not name:
+                    raise ValueError("Anthropic tool call requires a non-empty function name")
                 anthropic_content.append({
                     "type": "tool_use",
-                    "id": tc["id"],
-                    "name": tc["function"]["name"],
-                    "input": _safe_json_loads(tc["function"]["arguments"]),
+                    "id": call_id,
+                    "name": name,
+                    "input": _safe_json_loads(function.get("arguments")),
                 })
             anthropic_messages.append({"role": "assistant", "content": anthropic_content})
+            index += 1
             continue
 
         # Plain user/assistant messages
         if role in ("user", "assistant"):
-            anthropic_messages.append({"role": role, "content": content or ""})
+            continuation = _anthropic_continuation_blocks(msg) if role == "assistant" else []
+            if continuation:
+                if content and isinstance(content, str):
+                    continuation.append({"type": "text", "text": content})
+                anthropic_messages.append({"role": role, "content": continuation})
+            else:
+                anthropic_messages.append({"role": role, "content": content or ""})
         else:
             anthropic_messages.append({"role": "user", "content": str(content or "")})
+        index += 1
 
     if not anthropic_messages:
         anthropic_messages.append({"role": "user", "content": ""})
@@ -89,34 +135,69 @@ def _convert_messages_for_anthropic(messages: list[dict]) -> tuple[Optional[str]
     return system, anthropic_messages
 
 
-def _safe_json_loads(s: str) -> dict:
-    import json as _json
+def _safe_json_loads(s: Any) -> dict:
+    """Decode a native call without repairing invalid provider output."""
+
+    if not isinstance(s, str):
+        raise ValueError("Anthropic tool call arguments must be a JSON string")
     try:
-        return _json.loads(s) if s else {}
-    except _json.JSONDecodeError:
-        return {}
+        value = json.loads(s)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Anthropic tool call arguments must be valid JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("Anthropic tool call arguments must be a JSON object")
+    return value
 
 
-def _parse_anthropic_response(response) -> tuple[str, list[dict] | None]:
+def _dump_anthropic_block(block: object) -> dict[str, Any]:
+    if isinstance(block, dict):
+        return dict(block)
+    model_dump = getattr(block, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(exclude_none=True)
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    return {}
+
+
+def _parse_anthropic_response(
+    response: object,
+) -> tuple[str, list[dict] | None, str, list[dict[str, Any]]]:
     """Extract text content and tool_use blocks from an Anthropic response."""
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    provider_state: list[dict[str, Any]] = []
     tool_calls: list[dict] = []
 
-    for block in response.content:
+    for block in getattr(response, "content", None) or []:
         if block.type == "text":
             text_parts.append(block.text)
+        elif block.type in {"thinking", "redacted_thinking"}:
+            dumped = _dump_anthropic_block(block)
+            if dumped:
+                provider_state.append(dumped)
+            thinking = getattr(block, "thinking", None)
+            if thinking:
+                reasoning_parts.append(str(thinking))
         elif block.type == "tool_use":
-            import json as _json
             tool_calls.append({
                 "id": block.id,
                 "type": "function",
                 "function": {
                     "name": block.name,
-                    "arguments": _json.dumps(block.input, ensure_ascii=False) if isinstance(block.input, dict) else str(block.input),
+                    "arguments": (
+                        json.dumps(block.input, ensure_ascii=False)
+                        if isinstance(block.input, dict)
+                        else str(block.input)
+                    ),
                 },
             })
 
-    return "\n".join(text_parts), tool_calls or None
+    return (
+        "\n".join(text_parts),
+        tool_calls or None,
+        "\n".join(reasoning_parts),
+        provider_state,
+    )
 
 
 class AnthropicAdapter(BaseAdapter):
@@ -168,9 +249,15 @@ class AnthropicAdapter(BaseAdapter):
                 # "auto" is Anthropic's default — no parameter needed
 
             response = await client.messages.create(**kwargs)
-            content_text, tool_calls = _parse_anthropic_response(response)
+            (
+                content_text,
+                tool_calls,
+                reasoning_content,
+                provider_state,
+            ) = _parse_anthropic_response(response)
             return {
                 "content": content_text or None,
+                "reasoning_content": reasoning_content,
                 "model": response.model,
                 "usage": {
                     "prompt_tokens": response.usage.input_tokens if response.usage else 0,
@@ -178,6 +265,7 @@ class AnthropicAdapter(BaseAdapter):
                     "total_tokens": (response.usage.input_tokens + response.usage.output_tokens) if response.usage else 0,
                 },
                 "tool_calls": tool_calls,
+                "provider_state": provider_state,
             }
         except AuthenticationError as e:
             raise LLMError(f"Anthropic API Key 无效: {e}")
@@ -263,6 +351,8 @@ class AnthropicAdapter(BaseAdapter):
                 kwargs["tool_choice"] = {"type": "tool", "name": tool_choice["function"]["name"]}
 
             tool_index = 0
+            finish_reason = "incomplete"
+            usage = None
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
                     if event.type == "text_delta":
@@ -288,13 +378,31 @@ class AnthropicAdapter(BaseAdapter):
                                 "name": None,
                                 "arguments_delta": event.delta.partial_json,
                             }
+                        elif event.delta.type == "thinking_delta":
+                            thinking = str(getattr(event.delta, "thinking", "") or "")
+                            if thinking:
+                                yield {"type": "reasoning_delta", "delta": thinking}
 
                     elif event.type == "message_delta":
-                        yield {
-                            "type": "done",
-                            "finish_reason": event.delta.stop_reason or "stop",
-                            "usage": None,  # Anthropic streaming doesn't provide usage in-stream
-                        }
+                        finish_reason = str(event.delta.stop_reason or "stop")
+
+                final_message = await stream.get_final_message()
+                _, _, _, provider_state = _parse_anthropic_response(final_message)
+                final_usage = getattr(final_message, "usage", None)
+                if final_usage is not None:
+                    input_tokens = int(getattr(final_usage, "input_tokens", 0) or 0)
+                    output_tokens = int(getattr(final_usage, "output_tokens", 0) or 0)
+                    usage = {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    }
+                yield {
+                    "type": "done",
+                    "finish_reason": finish_reason,
+                    "usage": usage,
+                    "provider_state": provider_state,
+                }
 
         except AuthenticationError as e:
             raise LLMError(f"Anthropic API Key 无效: {e}")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,8 +14,8 @@ from app.architecture.tool_categories import (
     normalize_tool_categories,
     tool_names_for_categories,
 )
-from app.mcp.server import handle_message
 from app.mcp.schemas import make_text_result
+from app.mcp.server import handle_message
 from app.modules.creation.interfaces.agent_progress import (
     creation_tool_completed_event,
     creation_tool_started_event,
@@ -22,11 +23,14 @@ from app.modules.creation.interfaces.agent_progress import (
 from app.services.novel_creation_agent import _domain_tool_schemas, _tool_schemas
 from app.services.tool_category_state import (
     activate_tool_categories,
+    append_tool_category_audit,
+    append_tool_category_event,
     create_tool_category_state,
     read_tool_category_audits,
     read_tool_category_events,
     read_tool_category_state,
     remove_tool_category_state,
+    replace_tool_categories,
 )
 from app.services.workspace.registry import registry
 
@@ -130,6 +134,104 @@ def test_process_scoped_mcp_activates_categories_at_next_step_boundary():
         assert "patch_creation_session" in names
         assert "finalize_creation_session" not in names
     finally:
+        remove_tool_category_state(state_file)
+
+
+def test_reselecting_active_categories_does_not_restart_the_model_step():
+    state_file = create_tool_category_state()
+    try:
+        replace_tool_categories(state_file, ["story_knowledge", "writing_context"])
+        activated = activate_tool_categories(state_file)
+        version = activated["version"]
+
+        repeated = json.loads(handle_message(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": TOOL_CATEGORY_CONTROLLER,
+                    "arguments": {
+                        "enabled_categories": ["story_knowledge", "writing_context"]
+                    },
+                },
+            }),
+            permission_pack="creation_session",
+            tool_category_state_file=state_file,
+        ))
+
+        assert repeated["result"]["isError"] is True
+        assert "不要重复选择" in json.dumps(repeated, ensure_ascii=False)
+        state = read_tool_category_state(state_file)
+        assert state["version"] == version
+        assert state["active_version"] == version
+        assert state["active_categories"] == ["story_knowledge", "writing_context"]
+    finally:
+        remove_tool_category_state(state_file)
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable on this platform: {exc}")
+
+
+def test_state_rewrite_does_not_follow_fixed_temporary_symlink(tmp_path: Path):
+    state_file = create_tool_category_state()
+    state_path = Path(state_file)
+    legacy_temporary = state_path.with_suffix(".tmp")
+    target = tmp_path / "do-not-overwrite.txt"
+    original = b"author-private-content"
+    target.write_bytes(original)
+    _symlink_or_skip(legacy_temporary, target)
+    target_path = target.resolve()
+    try:
+        activate_tool_categories(state_file)
+
+        assert target.read_bytes() == original
+        assert target.resolve() == target_path
+        assert legacy_temporary.is_symlink()
+        assert legacy_temporary.resolve() == target_path
+    finally:
+        legacy_temporary.unlink(missing_ok=True)
+        remove_tool_category_state(state_file)
+
+
+@pytest.mark.parametrize(
+    ("name", "append"),
+    [
+        ("events.ndjson", lambda state: append_tool_category_event(
+            state, {"type": "status", "message": "must-not-escape"}
+        )),
+        ("audit.ndjson", lambda state: append_tool_category_audit(
+            state, {"tool": "probe", "status": "ok", "result": "must-not-escape"}
+        )),
+    ],
+)
+def test_state_mirror_append_does_not_follow_symlink(
+    tmp_path: Path,
+    name: str,
+    append,
+):
+    state_file = create_tool_category_state()
+    mirror_path = Path(state_file).parent / name
+    target = tmp_path / f"{name}.target"
+    original = b"author-private-content\n"
+    target.write_bytes(original)
+    mirror_path.unlink()
+    _symlink_or_skip(mirror_path, target)
+    target_path = target.resolve()
+    try:
+        append(state_file)
+
+        assert target.read_bytes() == original
+        assert target.resolve() == target_path
+        assert mirror_path.is_symlink()
+        assert mirror_path.resolve() == target_path
+    finally:
+        mirror_path.unlink(missing_ok=True)
+        mirror_path.touch(mode=0o600)
         remove_tool_category_state(state_file)
 
 

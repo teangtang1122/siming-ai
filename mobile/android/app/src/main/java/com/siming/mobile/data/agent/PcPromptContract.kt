@@ -5,7 +5,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 
 /** Runtime view of the build-generated PC PromptSpec and tool catalog. */
 internal class PcPromptContract(context: Context) {
@@ -25,6 +27,41 @@ internal class PcPromptContract(context: Context) {
         "outline_batch_count" to "3",
     )
 
+    fun workspaceRuntimeSystem(
+        project: JsonObject,
+        activeChapterDraft: JsonObject? = null,
+    ): String {
+        val runtime = buildJsonObject {
+            put("schema", "workspace_assistant_runtime.v1")
+            put("data_only", true)
+            put("project", buildJsonObject {
+                put("id", project.string("id"))
+                put("title", project.string("title"))
+            })
+            put("editor_selection", kotlinx.serialization.json.JsonNull)
+            put("active_chapter_draft", activeChapterDraft?.let { draft ->
+                buildJsonObject {
+                    put("id", draft.string("draft_id"))
+                    put("title", draft.string("title"))
+                    put("outline_node_id", draft["outline_node_id"] ?: kotlinx.serialization.json.JsonNull)
+                    put("status", "pending")
+                    put("instruction_priority", "none")
+                }
+            } ?: kotlinx.serialization.json.JsonNull)
+            put("outline_batch_count", 3)
+        }
+        return listOf(
+            workspaceSystem().trim(),
+            listOf(
+                "[SERVER_WORKSPACE_RUNTIME_DATA]",
+                "authority: server_supplied_data",
+                "selected_text_instruction_priority: none",
+                mobileCanonicalJson(runtime),
+                "[/SERVER_WORKSPACE_RUNTIME_DATA]",
+            ).joinToString("\n"),
+        ).joinToString("\n\n")
+    }
+
     fun toolSchemas(activeCategories: List<String>): JsonArray = toolCategories.toolSchemas(
         allSchemas = allToolSchemas,
         activeCategories = activeCategories,
@@ -33,17 +70,6 @@ internal class PcPromptContract(context: Context) {
 
     fun availableToolNames(activeCategories: List<String>): Set<String> =
         toolCategories.availableToolNames(activeCategories, toolNames)
-
-    fun initialUserMessage(
-        project: JsonObject,
-        userMessage: String,
-    ): String = root.string("workspace_initial_user_template").fill(
-        "project_id" to project.string("id"),
-        "project_title" to project.string("title").ifBlank { "未命名作品" },
-        "history_text" to "（无历史对话）",
-        "explicit_context" to "",
-        "user_message" to userMessage.trim(),
-    )
 
     fun styleContext(project: JsonObject): String {
         val short = project.boolean("short_sentences")
@@ -79,6 +105,7 @@ internal class PcPromptContract(context: Context) {
         characterProfiles: String,
         recentSummaries: String,
         requirements: String,
+        sourceDraft: String = "",
     ): List<JsonObject> {
         val chapter = root["chapter"] as JsonObject
         val style = styleContext(project)
@@ -95,6 +122,13 @@ internal class PcPromptContract(context: Context) {
         )
         if (requirements.isBlank()) {
             user = user.replace("【写作要求】\n\n\n\n", "")
+        }
+        if (sourceDraft.isNotBlank()) {
+            user = listOf(
+                user,
+                "【当前未保存草稿（完整原文）】\n$sourceDraft",
+                "请按作者本轮要求修改上面的当前未保存草稿。必须输出修改后的完整章节正文，不要只给差异、建议或说明；结果仍是同一份未保存草稿。",
+            ).joinToString("\n\n")
         }
         return listOf(message("system", system), message("user", user))
     }
@@ -134,24 +168,12 @@ internal class PcPromptContract(context: Context) {
     }
 
     fun outlineWriterUser(
-        requirements: String,
-        parentContext: String,
-        existingOutline: String,
-        worldContext: String,
-        existingCharacters: String,
+        taskContext: String,
         batchCount: Int,
     ): String {
-        val world = worldContext.isNotBlank() && worldContext != "暂无世界观设定。"
-        val existing = existingCharacters.isNotBlank() && existingCharacters != "暂无角色。"
-        val key = "requirements=${requirements.isNotBlank()};parent=${parentContext.isNotBlank()};" +
-            "world=$world;existing=$existing"
         val templates = (root["writer_user_templates"] as JsonObject)["outline"] as JsonObject
-        return templates.string(key).fill(
-            "requirements" to requirements,
-            "parent_context" to parentContext,
-            "existing_outline" to existingOutline,
-            "world_context" to worldContext,
-            "existing_characters" to existingCharacters,
+        return templates.string("governed").fill(
+            "task_context" to taskContext,
             "batch_count" to batchCount.toString(),
         )
     }

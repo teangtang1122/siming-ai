@@ -7,7 +7,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingFact, CatalogingChapterRun, CatalogingJob
+from ...modules.continuity.domain.cataloging_contract import CATALOGING_FACT_TYPES
 from .candidate_io import float_or_none
+
+
+SOURCE_FACT_TYPES = frozenset(CATALOGING_FACT_TYPES)
 
 
 def create_fact(
@@ -38,7 +42,11 @@ def create_fact(
 def load_facts_for_run(db: Session, run: CatalogingChapterRun) -> list[dict[str, Any]]:
     rows = (
         db.query(CatalogingFact)
-        .filter(CatalogingFact.chapter_run_id == run.id, CatalogingFact.status == "active")
+        .filter(
+            CatalogingFact.chapter_run_id == run.id,
+            CatalogingFact.status == "active",
+            CatalogingFact.fact_type.in_(SOURCE_FACT_TYPES),
+        )
         .order_by(CatalogingFact.sort_order.asc(), CatalogingFact.created_at.asc())
         .all()
     )
@@ -59,6 +67,20 @@ def load_facts_for_run(db: Session, run: CatalogingChapterRun) -> list[dict[str,
 
 def clear_facts_for_run(db: Session, run: CatalogingChapterRun) -> None:
     db.query(CatalogingFact).filter(CatalogingFact.chapter_run_id == run.id).delete(synchronize_session=False)
+
+
+def clear_derived_facts_for_run(db: Session, run: CatalogingChapterRun) -> int:
+    """Remove materialized candidate facts before replaying source facts."""
+
+    return int(
+        db.query(CatalogingFact)
+        .filter(
+            CatalogingFact.chapter_run_id == run.id,
+            CatalogingFact.fact_type.notin_(SOURCE_FACT_TYPES),
+        )
+        .delete(synchronize_session=False)
+        or 0
+    )
 
 
 def fact_to_dict(row: CatalogingFact) -> dict[str, Any]:

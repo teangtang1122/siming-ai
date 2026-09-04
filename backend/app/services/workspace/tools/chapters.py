@@ -1,8 +1,10 @@
-"""Read, restore, diff, and delete chapter workspace tools.
+"""Read, restore, diff, and delete chapter data.
 
 Creating and editing chapter prose is intentionally absent here. AI writing
 produces a pending ``ChapterDraft``; only the author-facing chapter HTTP API
-can turn the current editor text into an official chapter.
+can turn the current editor text into an official chapter.  Restore and delete
+reuse the canonical chapter workspace so every surface gets the same
+cataloging rollback semantics.
 """
 from __future__ import annotations
 
@@ -12,25 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.architecture.uow import commit_session
 
-from ....database.models import (
-    Chapter,
-    ChapterCharacter,
-    ChapterSnapshot,
-    ChapterSummary,
-    Character,
-    CharacterChangeLog,
-    CharacterTimeline,
-    Project,
-)
+from ....database.models import Chapter, ChapterSnapshot
 from ....modules.story.application.content_sync import queue_content_sync
-from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
-from ....services.chapter_service import (
-    diff_snapshots,
-    restore_chapter_from_snapshot,
-    snapshot_to_item,
-)
-from ....services.narrative_governance import mark_governance_items_stale_for_chapter
-from ....services.narrative_ledger import restore_ledger_checkpoint
+from ....modules.story.infrastructure.chapters import SqlAlchemyChapterWorkspace
+from ....services.chapter_service import diff_snapshots, snapshot_to_item
 from ..utils import find_outline_by_title_or_id
 
 
@@ -147,6 +134,11 @@ def _find_snapshot(
     return None
 
 
+def _queue_sync_intents(db: Session, intents: list[Any]) -> None:
+    for intent in intents:
+        queue_content_sync(db, intent)
+
+
 async def list_chapter_versions(
     db: Session,
     project_id: str,
@@ -165,7 +157,10 @@ async def list_chapter_versions(
     return {
         "tool": "list_chapter_versions",
         "status": "ok",
-        "detail": f"章节「{chapter.title}」共有 {len(items)} 个版本快照，当前 v{chapter.current_version or 1}",
+        "detail": (
+            f"章节「{chapter.title}」共有 {len(items)} 个版本快照，"
+            f"当前 v{chapter.current_version or 1}"
+        ),
         "data": {
             "chapter": _chapter_version_data(chapter),
             "items": items,
@@ -179,7 +174,6 @@ async def restore_chapter_version(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    project = db.query(Project).filter(Project.id == project_id).first()
     chapter = _find_chapter(db, project_id, args)
     if not chapter:
         return {
@@ -213,43 +207,29 @@ async def restore_chapter_version(
                 "items": [snapshot_to_item(item) for item in _chapter_snapshots(db, chapter)],
             },
         }
-    restored = restore_chapter_from_snapshot(db, chapter, snapshot)
-    chapter.cataloging_required = True
-    ledger_restore = restore_ledger_checkpoint(db, project_id, chapter, snapshot.id)
-    stale_count = mark_governance_items_stale_for_chapter(
-        db,
+
+    restored_from = snapshot_to_item(snapshot)
+    mutation = SqlAlchemyChapterWorkspace(db).restore(
         project_id,
         chapter.id,
-        reason=f"{chapter.title} 已恢复历史版本，原治理结论需要复检",
-        actor="chapter_restore",
+        snapshot.id,
     )
-    if project:
-        queue_content_sync(
-            db,
-            ContentSyncIntent(
-                project_id=project_id,
-                target=ContentSyncTarget.CHAPTER,
-                entity_id=chapter.id,
-                source="workspace_tool",
-            ),
-        )
-    result = {
+    _queue_sync_intents(db, mutation.sync_intents)
+    commit_session(db)
+    recatalog_ids = mutation.data.get("recatalog_required_chapter_ids", [])
+    return {
         "tool": "restore_chapter_version",
         "status": "ok",
-        "detail": f"已将「{chapter.title}」恢复到 v{snapshot.version_number}，当前记录为 v{chapter.current_version or 1}",
+        "detail": (
+            f"已将「{chapter.title}」恢复到 v{snapshot.version_number}；"
+            f"该章及后续 {max(len(recatalog_ids) - 1, 0)} 章需要重新建档"
+        ),
         "data": {
-            "chapter": _chapter_version_data(chapter),
-            "restored_from": snapshot_to_item(snapshot),
-            "restore_snapshot": snapshot_to_item(restored),
+            **mutation.data,
+            "restored_from": restored_from,
             "content_preview": (chapter.content or "")[:500],
-            "ledger_checkpoint_id": ledger_restore["ledger_checkpoint_id"],
-            "ledger_restored_count": ledger_restore["restored_count"],
-            "ledger_conflicts": ledger_restore["conflicts"],
-            "governance_invalidated_count": stale_count,
         },
     }
-    commit_session(db)
-    return result
 
 
 async def diff_chapter_versions(
@@ -298,58 +278,27 @@ async def delete_chapter(
     project_id: str,
     args: dict[str, Any],
 ) -> dict:
-    project = db.query(Project).filter(Project.id == project_id).first()
     chapter = _find_chapter(db, project_id, args)
     if not chapter:
         return {"tool": "delete_chapter", "status": "skipped", "detail": "未找到章节"}
 
     title = chapter.title
-    chapter_id = chapter.id
-    content_file_path = chapter.content_file_path
-    change_logs = db.query(CharacterChangeLog).filter(
-        CharacterChangeLog.chapter_id == chapter.id,
-        CharacterChangeLog.confirmed.is_(True),
-    ).all()
-    reverted: list[str] = []
-    for log_entry in change_logs:
-        character = db.query(Character).filter(Character.id == log_entry.character_id).first()
-        if character and log_entry.field_name in {
-            "abilities",
-            "personality",
-            "background",
-            "appearance",
-        }:
-            old_value = log_entry.old_value
-            if old_value and old_value != "（档案中无记录）":
-                setattr(character, log_entry.field_name, old_value)
-                reverted.append(character.name)
-    if reverted:
-        db.flush()
-
-    db.query(CharacterChangeLog).filter(CharacterChangeLog.chapter_id == chapter.id).delete()
-    db.query(CharacterTimeline).filter(CharacterTimeline.chapter_id == chapter.id).delete()
-    db.query(ChapterCharacter).filter(ChapterCharacter.chapter_id == chapter.id).delete()
-    db.query(ChapterSummary).filter(ChapterSummary.chapter_id == chapter.id).delete()
-    db.delete(chapter)
-    if project:
-        queue_content_sync(
-            db,
-            ContentSyncIntent(
-                project_id=project_id,
-                target=ContentSyncTarget.FILE_DELETE,
-                entity_id=chapter_id,
-                payload={
-                    "folder_path": project.folder_path,
-                    "relative_path": content_file_path,
-                },
-                source="workspace_tool",
-            ),
-        )
-
-    detail = f"已删除章节：{title}"
-    if reverted:
-        detail += f"，已回退 {len(reverted)} 个角色的状态（{', '.join(reverted)}）"
-    return {"tool": "delete_chapter", "status": "ok", "detail": detail}
+    mutation = SqlAlchemyChapterWorkspace(db).delete(project_id, chapter.id)
+    _queue_sync_intents(db, mutation.sync_intents)
+    commit_session(db)
+    recatalog_ids = mutation.data.get("recatalog_required_chapter_ids", [])
+    detail = f"已删除章节：{title}，并回退该章建档产生的系统状态"
+    if recatalog_ids:
+        detail += f"；后续 {len(recatalog_ids)} 章已标记为需要重新建档"
+    warnings = (mutation.data.get("cataloging_rollback") or {}).get("warnings") or []
+    if warnings:
+        detail += f"；另有 {len(warnings)} 项作者数据因存在后续使用而保留，请复核"
+    return {
+        "tool": "delete_chapter",
+        "status": "ok",
+        "detail": detail,
+        "data": mutation.data,
+    }
 
 
 __all__ = [

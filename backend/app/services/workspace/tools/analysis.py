@@ -16,6 +16,7 @@ from ....database.models import (
     Project,
     WorldbuildingEntry,
 )
+from ....database.query_filters import current_worldbuilding_clause
 from ....prompts.analysis_prompts import (
     build_character_change_messages,
     build_conflict_suggestion_messages,
@@ -273,7 +274,10 @@ async def detect_worldbuilding_conflicts(
     """Detect logical contradictions between worldbuilding entries."""
     entries = (
         db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        )
         .order_by(WorldbuildingEntry.dimension.asc(), WorldbuildingEntry.sort_order.asc())
         .all()
     )
@@ -386,7 +390,10 @@ async def detect_new_worldbuilding(
     # Build lightweight summary of existing entries for the LLM
     entries = (
         db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        )
         .order_by(WorldbuildingEntry.dimension.asc())
         .all()
     )

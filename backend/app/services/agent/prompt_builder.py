@@ -148,6 +148,7 @@ def compose_chapter_writer_messages(
     character_profiles: str,
     recent_summaries: str,
     requirements: str = "",
+    source_draft: str = "",
 ) -> list[dict[str, str]]:
     """Compose chapter writer messages from a chapter pack.
 
@@ -168,10 +169,18 @@ def compose_chapter_writer_messages(
         user_parts.append(f"【角色档案】\n{character_profiles}")
     if recent_summaries and recent_summaries != "暂无前文章节。":
         user_parts.append(f"【前文摘要】\n{recent_summaries}")
+    if source_draft:
+        user_parts.append(f"【当前未保存草稿（完整原文）】\n{source_draft}")
     word_target = "1800-2500"
-    user_parts.append(
-        f"\n请根据以上素材，写出完整的章节正文（{word_target} 字）。直接输出正文，不要加任何说明。"
-    )
+    if source_draft:
+        user_parts.append(
+            "\n请按作者本轮要求修改上面的当前未保存草稿。必须输出修改后的完整章节正文，"
+            "不要只给差异、建议或说明；结果仍是同一份未保存草稿。"
+        )
+    else:
+        user_parts.append(
+            f"\n请根据以上素材，写出完整的章节正文（{word_target} 字）。直接输出正文，不要加任何说明。"
+        )
 
     return [
         {"role": "system", "content": system_prompt},

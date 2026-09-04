@@ -52,6 +52,19 @@ class CreationWorkbenchContractTest {
         })
         assertFalse(CreationWorkbenchContract.canArchive(stale))
         assertEquals(listOf("请先确认characters"), CreationWorkbenchContract.archiveBlockers(stale, emptyMap()))
+
+        val blockedReview = session(stages.toMutableMap().apply {
+            put("final_review", state("confirmed", buildJsonObject {
+                put("ready", false)
+                put("blocking", buildJsonArray { add(JsonPrimitive("作者要求核对尚未校准的原始证据")) })
+                put("warnings", buildJsonArray { add(JsonPrimitive("模型超时不能算作审阅完成")) })
+            }))
+        })
+        assertFalse(CreationWorkbenchContract.canArchive(blockedReview))
+        assertEquals(
+            listOf("作者要求核对尚未校准的原始证据"),
+            CreationWorkbenchContract.archiveBlockers(blockedReview, emptyMap()),
+        )
     }
 
     @Test

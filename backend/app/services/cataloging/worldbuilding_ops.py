@@ -14,6 +14,7 @@ from ...database.models import (
     WorldbuildingTimeline,
     WorldbuildingVersion,
 )
+from ...database.query_filters import is_current_worldbuilding_status
 from .candidate_io import float_or_none
 from .constants import WORLD_DIMENSIONS
 from .links import link_chapter_worldbuilding
@@ -38,7 +39,40 @@ def apply_worldbuilding(
     if not content:
         raise ValueError("世界观内容为空")
     dimension = _normalize_dimension(payload.get("dimension"), payload)
-    entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, payload.get("id") or title)
+    suppressed_target_id = str(
+        payload.get("_cataloging_suppressed_target_id") or ""
+    ).strip()
+    if suppressed_target_id:
+        entry = db.get(WorldbuildingEntry, suppressed_target_id)
+        if entry is not None and entry.project_id != chapter.project_id:
+            raise ValueError("已停用世界观目标不属于当前作品")
+        snapshot = worldbuilding_snapshot(entry) if entry else None
+        status = str(
+            payload.get("_cataloging_suppressed_target_status") or "superseded"
+        )
+        warning = (
+            f"世界观“{title}”对应的旧建档目标已由作者标记为{status}，"
+            "本次重建档保留候选审计，但未重新激活或新建重复词条。"
+        )
+        return {
+            "target_type": "worldbuilding_suppressed",
+            "target_id": suppressed_target_id,
+            "old_value": snapshot,
+            "new_value": snapshot,
+            "detail": warning,
+            "review_warning": warning,
+        }
+    entry_id = str(payload.get("id") or "").strip()
+    if not create and not entry_id:
+        raise ValueError("世界观更新必须使用上下文中已有条目的精确 ID")
+    entry = _find_current_worldbuilding_target(
+        db,
+        chapter.project_id,
+        entry_id or title,
+        explicit_id=entry_id,
+    )
+    if entry_id and not entry:
+        raise ValueError("世界观更新目标 ID 不存在或不属于当前作品")
     old = worldbuilding_snapshot(entry) if entry else None
     if not entry:
         entry = WorldbuildingEntry(
@@ -55,14 +89,40 @@ def apply_worldbuilding(
         db.add(entry)
         db.flush()
     else:
+        entry.status = "active"
         entry.dimension = dimension
         if content:
-            entry.content = merge_text(entry.content, content, chapter, limit=12000)
-        entry.title = title[:200]
-        entry.last_updated_chapter_id = chapter.id
+            previous = payload.get("_cataloging_previous_payload")
+            previous = previous if isinstance(previous, dict) else {}
+            previous_content = str(
+                previous.get("content")
+                or previous.get("description")
+                or previous.get("evidence")
+                or ""
+            ).strip()
+            current_content = str(entry.content or "")
+            entry.content = (
+                current_content.replace(previous_content, content, 1)[:12000]
+                if previous_content and previous_content in current_content
+                else merge_text(current_content, content, chapter, limit=12000)
+            )
+        # A cataloging update is bound by the exact existing ID.  The model may
+        # mention that entity with a shorter alias in chapter prose, but that
+        # alias must not silently rename the author's canonical world card.
+        # Authors can still rename a card through the worldbuilding edit API.
+        if create:
+            entry.title = title[:200]
+        if _chapter_can_advance_world_state(db, entry, chapter):
+            entry.last_updated_chapter_id = chapter.id
         entry.confidence = float_or_none(candidate.confidence) or entry.confidence
-    ensure_worldbuilding_version(db, entry, chapter, payload)
-    link_chapter_worldbuilding(db, chapter, entry, str(payload.get("description") or payload.get("evidence") or ""))
+    if old is None or worldbuilding_snapshot(entry) != old:
+        ensure_worldbuilding_version(db, entry, chapter, payload)
+    link_chapter_worldbuilding(
+        db,
+        chapter,
+        entry,
+        str(payload.get("description") or payload.get("evidence") or ""),
+    )
     return {
         "target_type": "worldbuilding",
         "target_id": entry.id,
@@ -73,7 +133,15 @@ def apply_worldbuilding(
 
 
 def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, chapter: Chapter, payload: dict[str, Any]) -> dict:
-    entry = find_worldbuilding_by_title_or_id(db, chapter.project_id, payload.get("id") or payload.get("title"))
+    entry_id = str(payload.get("id") or "").strip()
+    entry = _find_current_worldbuilding_target(
+        db,
+        chapter.project_id,
+        entry_id or payload.get("title"),
+        explicit_id=entry_id,
+    )
+    if entry_id and not entry:
+        raise ValueError("世界观时间线目标 ID 不存在或不属于当前作品")
     if not entry:
         title = str(payload.get("title") or "").strip()
         if not title or _is_placeholder_worldbuilding_title(title):
@@ -91,22 +159,65 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
         db.add(entry)
         db.flush()
         ensure_worldbuilding_version(db, entry, chapter, payload)
-    event = WorldbuildingTimeline(
-        entry_id=entry.id,
-        chapter_id=chapter.id,
-        event_description=str(payload.get("event_description") or payload.get("description") or "")[:4000],
-        event_type=str(payload.get("event_type") or "fact_change")[:50],
-        evidence=str(payload.get("evidence") or candidate.evidence or "")[:2000],
-        sort_order=int(payload.get("sort_order") or 0),
-    )
-    if not event.event_description:
+    else:
+        entry.status = "active"
+    description = str(payload.get("event_description") or payload.get("description") or "")[:4000]
+    if not description:
         raise ValueError("世界观时间线事件为空")
-    db.add(event)
+    event_type = str(payload.get("event_type") or "fact_change")[:50]
+    sort_order = int(payload.get("sort_order") or candidate.sort_order or 0)
+    preferred_id = str(payload.get("_cataloging_target_id") or "").strip()
+    event = (
+        db.query(WorldbuildingTimeline)
+        .filter(
+            WorldbuildingTimeline.id == preferred_id,
+            WorldbuildingTimeline.chapter_id == chapter.id,
+            WorldbuildingTimeline.entry_id == entry.id,
+        )
+        .first()
+        if preferred_id
+        else None
+    )
+    if not event:
+        event = (
+            db.query(WorldbuildingTimeline)
+            .filter(
+                WorldbuildingTimeline.entry_id == entry.id,
+                WorldbuildingTimeline.chapter_id == chapter.id,
+                WorldbuildingTimeline.event_type == event_type,
+                WorldbuildingTimeline.sort_order == sort_order,
+            )
+            .order_by(WorldbuildingTimeline.created_at.asc())
+            .first()
+        )
+    old = None
+    if event:
+        old = {
+            "event_description": event.event_description,
+            "event_type": event.event_type,
+            "evidence": event.evidence,
+            "sort_order": event.sort_order,
+        }
+        event.event_description = description
+        event.event_type = event_type
+        event.evidence = str(payload.get("evidence") or candidate.evidence or "")[:2000]
+        event.sort_order = sort_order
+    else:
+        event = WorldbuildingTimeline(
+            entry_id=entry.id,
+            chapter_id=chapter.id,
+            event_description=description,
+            event_type=event_type,
+            evidence=str(payload.get("evidence") or candidate.evidence or "")[:2000],
+            sort_order=sort_order,
+        )
+        db.add(event)
     link_chapter_worldbuilding(db, chapter, entry, event.event_description)
+    db.flush()
     return {
         "target_type": "worldbuilding_timeline",
         "target_id": event.id,
-        "old_value": None,
+        "old_value": old,
         "new_value": payload,
         "detail": f"世界观时间线已写入: {entry.title}",
     }
@@ -115,6 +226,48 @@ def apply_worldbuilding_timeline(db: Session, candidate: CatalogingCandidate, ch
 def _is_placeholder_worldbuilding_title(title: str | None) -> bool:
     text = str(title or "").strip()
     return not text or text in PLACEHOLDER_WORLDBUILDING_TITLES or text.startswith("未命名")
+
+
+def _find_current_worldbuilding_target(
+    db: Session,
+    project_id: str,
+    value: Any,
+    *,
+    explicit_id: str = "",
+) -> WorldbuildingEntry | None:
+    """Resolve only the current author-approved projection.
+
+    Re-cataloging reconciliation handles an intentionally retired target before
+    reaching this helper. Ordinary candidates must never revive an archived,
+    superseded, or draft row merely because they retained its old ID.
+    """
+
+    entry = find_worldbuilding_by_title_or_id(db, project_id, value)
+    if entry is not None or not explicit_id:
+        return entry
+    historical = db.get(WorldbuildingEntry, explicit_id)
+    if (
+        historical is not None
+        and historical.project_id == project_id
+        and not is_current_worldbuilding_status(historical.status)
+    ):
+        raise ValueError(
+            "世界观目标 ID 已停用，不能重新激活；请改用当前 active 条目的精确 ID"
+        )
+    return None
+
+
+def _chapter_can_advance_world_state(
+    db: Session,
+    entry: WorldbuildingEntry,
+    chapter: Chapter,
+) -> bool:
+    if not entry.last_updated_chapter_id or entry.last_updated_chapter_id == chapter.id:
+        return True
+    latest = db.query(Chapter).filter(Chapter.id == entry.last_updated_chapter_id).first()
+    if not latest:
+        return True
+    return int(chapter.sort_order or 0) >= int(latest.sort_order or 0)
 
 
 def ensure_worldbuilding_version(

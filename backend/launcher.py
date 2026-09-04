@@ -577,6 +577,7 @@ def _run_mcp_server() -> None:
         help="Required one-session boundary for the creation_session permission pack.",
     )
     parser.add_argument("--tool-category-state-file", default="")
+    parser.add_argument("--direct-mcp-lease-token", default="", help=argparse.SUPPRESS)
     parser.add_argument(
         "--permission-pack",
         default=os.environ.get("MOSHU_MCP_PERMISSION_PACK", "auto"),
@@ -611,6 +612,7 @@ def _run_mcp_server() -> None:
             permission_pack=args.permission_pack,
             creation_session_id=args.creation_session_id,
             tool_category_state_file=args.tool_category_state_file,
+            direct_mcp_lease_token=args.direct_mcp_lease_token,
         )
     finally:
         db.close()

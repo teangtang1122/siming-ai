@@ -35,6 +35,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "limit": {"type": "integer", "description": "返回条数上限，默认10，最大20"},
         },
         tool_type="memory",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="low",
         handler_name="recall",
     ),

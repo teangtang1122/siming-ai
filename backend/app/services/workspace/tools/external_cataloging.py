@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -28,21 +29,123 @@ from app.database.models import (
     PublicPromptPack,
     WorldbuildingEntry,
 )
+from app.database.query_filters import current_worldbuilding_clause
 from app.modules.story.application.content_sync import ensure_chapter_mirror
+from app.modules.continuity.domain.cataloging_contract import (
+    CATALOGING_FACT_TYPES,
+    CHAPTER_LINK_REPLACE_LIST_FIELDS,
+)
 from app.prompts.cataloging_source import get_outline_granularity_rules
+from app.services.cataloging.launcher import create_and_queue_cataloging_job
 
 logger = logging.getLogger(__name__)
 
 
 COMPLETED_RUN_STATUSES = {"completed", "completed_with_warnings"}
-CANONICAL_FACT_TYPES = {
-    "chapter_overview",
-    "character_fact",
-    "relationship_fact",
-    "worldbuilding_fact",
-    "outline_fact",
-    "identity_hint",
-}
+CANONICAL_FACT_TYPES = frozenset(CATALOGING_FACT_TYPES)
+_COVERAGE_MANIFEST_LIST_FIELDS = (
+    "characters",
+    "worldbuilding",
+    "relationships",
+    "character_profiles",
+)
+_FACT_OVERVIEW_SCOPE_FIELDS = (
+    "cataloging_characters",
+    "anonymous_participants",
+    "cataloging_worldbuilding_titles",
+    "incidental_worldbuilding_mentions",
+)
+_CHARACTER_ARCHIVE_IDENTITIES = frozenset({
+    "stable_character",
+    "anonymous_role",
+    "mention_only",
+})
+_WORLDBUILDING_ARCHIVE_IDENTITIES = frozenset({
+    "stable_setting",
+    "mention_only",
+})
+
+
+def _normalized_fact_identity(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _validate_identity_list(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    fact_index: int,
+) -> tuple[list[str], list[str]]:
+    value = payload.get(field)
+    if field not in payload:
+        return [], [f"facts[{fact_index}].payload.{field} is required (use [] when empty)"]
+    if not isinstance(value, list):
+        return [], [f"facts[{fact_index}].payload.{field} must be an array of non-empty strings"]
+
+    result: list[str] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    for item_index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            errors.append(
+                f"facts[{fact_index}].payload.{field}[{item_index}] must be a non-empty string"
+            )
+            continue
+        display = " ".join(item.split())
+        identity = _normalized_fact_identity(display)
+        if identity in seen:
+            errors.append(
+                f"facts[{fact_index}].payload.{field} contains duplicate identity: {display}"
+            )
+            continue
+        seen.add(identity)
+        result.append(display)
+    return result, errors
+
+
+def _first_fact_identity(payload: dict[str, Any], fields: tuple[str, ...]) -> str:
+    for field in fields:
+        value = payload.get(field)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return " ".join(item.split())
+    return ""
+
+
+def _format_identity_set(values: set[str]) -> str:
+    return ", ".join(sorted(values))
+
+
+def _candidate_payload(candidate: CatalogingCandidate) -> dict[str, Any]:
+    try:
+        payload = json.loads(candidate.edited_payload or candidate.raw_payload or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _source_overview_scene_count(
+    db: Session,
+    chapter_run: CatalogingChapterRun,
+) -> int | None:
+    counts: list[int] = []
+    overview_rows = db.query(CatalogingFact).filter(
+        CatalogingFact.chapter_run_id == chapter_run.id,
+        CatalogingFact.fact_type == "chapter_overview",
+        CatalogingFact.status == "active",
+    ).all()
+    for overview in overview_rows:
+        try:
+            overview_payload = json.loads(overview.raw_payload or "{}")
+        except (TypeError, ValueError):
+            continue
+        scenes = overview_payload.get("scenes") if isinstance(overview_payload, dict) else None
+        if isinstance(scenes, list):
+            counts.append(len(scenes))
+    return max(counts) if counts else None
 
 
 def _managed_cataloging_bindings() -> list[dict[str, str]]:
@@ -264,18 +367,16 @@ async def start_external_cataloging_job(
             "data": None,
         }
 
-    chapter_ids = args.get("chapter_ids", [])
+    chapter_ids = [
+        str(item)
+        for item in (args.get("chapter_ids") or [])
+        if str(item or "").strip()
+    ]
+    chapter_query = db.query(Chapter).filter(Chapter.project_id == project_id)
     if chapter_ids:
-        chapters = db.query(Chapter).filter(
-            Chapter.project_id == project_id,
-            Chapter.id.in_(chapter_ids),
-        ).order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).all()
-    else:
-        chapters = db.query(Chapter).filter(
-            Chapter.project_id == project_id,
-        ).order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).all()
-
-    if not chapters:
+        chapter_query = chapter_query.filter(Chapter.id.in_(chapter_ids))
+    chapter_count = chapter_query.count()
+    if not chapter_count:
         return {
             "tool": "start_external_cataloging_job",
             "status": "skipped",
@@ -283,37 +384,33 @@ async def start_external_cataloging_job(
             "data": None,
         }
 
-    job = CatalogingJob(
-        project_id=project_id,
-        execution_mode="external_agent",
-        execution_backend="external_agent",
-        status="running",
-        total_chapters=len(chapters),
+    job, launch = create_and_queue_cataloging_job(
+        db,
+        project_id,
+        chapter_ids,
+        execution_mode="auto",
+        backend_override="external_agent",
+        provider_override="external_agent",
+        trigger_source="external_agent",
+        run_now=False,
     )
-    db.add(job)
-    db.flush()
-
-    for i, chapter in enumerate(chapters):
-        run = CatalogingChapterRun(
-            job_id=job.id,
-            project_id=project_id,
-            chapter_id=chapter.id,
-            chapter_order=i,
-            status="pending",
-        )
-        db.add(run)
-
-    commit_session(db)
-    db.refresh(job)
+    idempotent = bool(launch.get("idempotent_reuse"))
 
     return {
         "tool": "start_external_cataloging_job",
         "status": "ok",
-        "detail": f"Job created with {len(chapters)} chapters",
+        "detail": (
+            f"Current chapter versions already have a cataloging job; reused {job.id}"
+            if idempotent
+            else f"Job created with {job.total_chapters or chapter_count} chapters"
+        ),
         "data": {
             "job_id": job.id,
-            "chapter_count": len(chapters),
+            "chapter_count": chapter_count,
             "status": job.status,
+            "chapter_versions_recorded": True,
+            "idempotent_reuse": idempotent,
+            "launch": launch,
             "next_tool": "get_prompt_pack",
             "workflow_reminder": _workflow_reminder(
                 "get_prompt_pack",
@@ -576,6 +673,7 @@ async def get_next_external_cataloging_chapter(
 
     char_index: dict[str, str] = {}
     wb_index: dict[str, str] = {}
+    worldbuilding_identity_review_required: list[dict[str, str]] = []
     outline_neighborhood: list[dict[str, Any]] = []
     if include_context_indexes:
         characters = db.query(Character).filter(
@@ -591,8 +689,27 @@ async def get_next_external_cataloging_chapter(
 
         wb_entries = db.query(WorldbuildingEntry).filter(
             WorldbuildingEntry.project_id == effective_project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
         ).all()
         wb_index = {e.title: e.id for e in wb_entries}
+        if phase == "candidates":
+            from app.services.cataloging.fact_store import load_facts_for_run
+            from app.services.cataloging.targeted_context import (
+                worldbuilding_identity_review_candidates,
+            )
+
+            worldbuilding_identity_review_required = [
+                {
+                    "id": entry.id,
+                    "title": entry.title,
+                    "dimension": entry.dimension,
+                }
+                for entry in worldbuilding_identity_review_candidates(
+                    db,
+                    effective_project_id,
+                    load_facts_for_run(db, chapter_run),
+                )
+            ]
 
         outline_nodes = db.query(OutlineNode).filter(
             OutlineNode.project_id == effective_project_id,
@@ -618,6 +735,8 @@ async def get_next_external_cataloging_chapter(
 
     if phase == "facts":
         chapter_run.status = "in_progress"
+        job.status = "running"
+        job.current_chapter_id = chapter.id
         commit_session(db)
 
     project = db.query(Project).filter(Project.id == effective_project_id).first()
@@ -653,6 +772,7 @@ async def get_next_external_cataloging_chapter(
             "project_folder": project_folder,
             "character_alias_index": char_index,
             "worldbuilding_title_index": wb_index,
+            "worldbuilding_identity_review_required": worldbuilding_identity_review_required,
             "outline_neighborhood": outline_neighborhood,
             "outline_granularity_policy": get_outline_granularity_rules(),
             "prompt_pack": prompt_pack_data,
@@ -674,7 +794,9 @@ def _validate_external_fact_records(
 ) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any], int]], list[str]]:
     validated: list[tuple[str, dict[str, Any], dict[str, Any], int]] = []
     errors: list[str] = []
-    for index, fact_data in enumerate(facts if isinstance(facts, list) else []):
+    if not isinstance(facts, list):
+        return [], ["facts must be a JSON array of objects, not a JSON-encoded string"]
+    for index, fact_data in enumerate(facts):
         if not isinstance(fact_data, dict):
             errors.append(f"facts[{index}] must be an object")
             continue
@@ -688,8 +810,188 @@ def _validate_external_fact_records(
             errors.append(f"facts[{index}].payload must be an object")
         if fact_type and isinstance(payload, dict):
             validated.append((fact_type, payload, fact_data, index))
-    if not any(fact_type == "chapter_overview" for fact_type, *_ in validated):
+    overview_records = [
+        (payload, index)
+        for fact_type, payload, _fact_data, index in validated
+        if fact_type == "chapter_overview"
+    ]
+    if not overview_records:
         errors.append("facts must include one chapter_overview record")
+    elif len(overview_records) > 1:
+        errors.append(
+            f"facts must include exactly one chapter_overview record; received {len(overview_records)}"
+        )
+    overview_scopes: dict[str, set[str]] = {}
+    for payload, index in overview_records:
+        scenes = payload.get("scenes")
+        if isinstance(scenes, list) and len(scenes) > 6:
+            errors.append(
+                f"facts[{index}].payload.scenes must contain at most 6 grouped story "
+                f"scenes; received {len(scenes)}"
+            )
+        for field in _FACT_OVERVIEW_SCOPE_FIELDS:
+            values, field_errors = _validate_identity_list(
+                payload,
+                field,
+                fact_index=index,
+            )
+            errors.extend(field_errors)
+            overview_scopes[field] = {
+                _normalized_fact_identity(value) for value in values
+            }
+
+    stable_characters: dict[str, tuple[str, int]] = {}
+    non_archival_characters: dict[str, tuple[str, int]] = {}
+    stable_worldbuilding: dict[str, tuple[str, int]] = {}
+    incidental_worldbuilding: dict[str, tuple[str, int]] = {}
+    relationship_pairs: dict[tuple[str, str], int] = {}
+
+    for fact_type, payload, _fact_data, index in validated:
+        if fact_type == "character_fact":
+            archive_identity = str(payload.get("archive_identity") or "").strip()
+            if archive_identity not in _CHARACTER_ARCHIVE_IDENTITIES:
+                errors.append(
+                    f"facts[{index}].payload.archive_identity must be one of "
+                    f"{sorted(_CHARACTER_ARCHIVE_IDENTITIES)}"
+                )
+                continue
+            if not isinstance(payload.get("stable_profile_change"), bool):
+                errors.append(
+                    f"facts[{index}].payload.stable_profile_change must be a boolean"
+                )
+            name = _first_fact_identity(
+                payload,
+                ("primary_name", "character_name", "name", "names"),
+            )
+            if not name:
+                errors.append(
+                    f"facts[{index}].payload must identify the character with primary_name, "
+                    "character_name, name, or names"
+                )
+                continue
+            normalized = _normalized_fact_identity(name)
+            target = (
+                stable_characters
+                if archive_identity == "stable_character"
+                else non_archival_characters
+            )
+            other = (
+                non_archival_characters
+                if archive_identity == "stable_character"
+                else stable_characters
+            )
+            if normalized in target:
+                errors.append(
+                    f"facts[{index}] duplicates character_fact identity: {name}"
+                )
+            elif normalized in other:
+                errors.append(
+                    f"facts[{index}] conflicts with another character_fact archive_identity: {name}"
+                )
+            else:
+                target[normalized] = (name, index)
+
+        elif fact_type == "worldbuilding_fact":
+            archive_identity = str(payload.get("archive_identity") or "").strip()
+            if archive_identity not in _WORLDBUILDING_ARCHIVE_IDENTITIES:
+                errors.append(
+                    f"facts[{index}].payload.archive_identity must be one of "
+                    f"{sorted(_WORLDBUILDING_ARCHIVE_IDENTITIES)}"
+                )
+                continue
+            if not isinstance(payload.get("stable_setting_change"), bool):
+                errors.append(
+                    f"facts[{index}].payload.stable_setting_change must be a boolean"
+                )
+            title = _first_fact_identity(
+                payload,
+                ("canonical_title_hint", "title_hint", "title", "entry_title"),
+            )
+            if not title:
+                errors.append(
+                    f"facts[{index}].payload must identify the setting with "
+                    "canonical_title_hint or title_hint"
+                )
+                continue
+            normalized = _normalized_fact_identity(title)
+            target = (
+                stable_worldbuilding
+                if archive_identity == "stable_setting"
+                else incidental_worldbuilding
+            )
+            other = (
+                incidental_worldbuilding
+                if archive_identity == "stable_setting"
+                else stable_worldbuilding
+            )
+            if normalized in target:
+                errors.append(
+                    f"facts[{index}] duplicates worldbuilding_fact identity: {title}"
+                )
+            elif normalized in other:
+                errors.append(
+                    f"facts[{index}] conflicts with another worldbuilding_fact archive_identity: {title}"
+                )
+            else:
+                target[normalized] = (title, index)
+
+        elif fact_type == "relationship_fact":
+            source_name = _first_fact_identity(payload, ("source_name",))
+            target_name = _first_fact_identity(payload, ("target_name",))
+            relationship_type = _first_fact_identity(payload, ("relationship_type",))
+            if not source_name or not target_name or not relationship_type:
+                errors.append(
+                    f"facts[{index}].payload relationship_fact requires non-empty "
+                    "source_name, target_name, and relationship_type"
+                )
+                continue
+            pair = (
+                _normalized_fact_identity(source_name),
+                _normalized_fact_identity(target_name),
+            )
+            if pair in relationship_pairs:
+                errors.append(
+                    f"facts[{index}] duplicates directed relationship_fact pair: "
+                    f"{source_name} -> {target_name}"
+                )
+            else:
+                relationship_pairs[pair] = index
+
+    if overview_scopes:
+        expected_scope_pairs = (
+            ("cataloging_characters", stable_characters),
+            ("anonymous_participants", non_archival_characters),
+            ("cataloging_worldbuilding_titles", stable_worldbuilding),
+            ("incidental_worldbuilding_mentions", incidental_worldbuilding),
+        )
+        for field, fact_identities in expected_scope_pairs:
+            overview_identities = overview_scopes.get(field, set())
+            fact_identity_set = set(fact_identities)
+            missing = fact_identity_set - overview_identities
+            extra = overview_identities - fact_identity_set
+            if missing:
+                names = {fact_identities[item][0] for item in missing}
+                errors.append(
+                    f"chapter_overview.payload.{field} is missing fact identities: "
+                    f"{_format_identity_set(names)}"
+                )
+            if extra:
+                errors.append(
+                    f"chapter_overview.payload.{field} has identities without matching facts: "
+                    f"{_format_identity_set(extra)}"
+                )
+
+        stable_scope = overview_scopes.get("cataloging_characters", set())
+        for (source_name, target_name), index in relationship_pairs.items():
+            missing_endpoints = {
+                name for name in (source_name, target_name) if name not in stable_scope
+            }
+            if missing_endpoints:
+                errors.append(
+                    f"facts[{index}].payload relationship endpoints must be stable_character "
+                    "facts listed in chapter_overview.payload.cataloging_characters; missing: "
+                    f"{_format_identity_set(missing_endpoints)}"
+                )
     return validated, errors
 
 
@@ -715,6 +1017,7 @@ def _persist_external_fact_records(
     chapter_run.status = "facts_saved"
     if job.status == "waiting_confirmation":
         job.status = "running"
+    job.updated_at = datetime.utcnow()
     commit_session(db)
     return len(records)
 
@@ -808,12 +1111,17 @@ async def save_external_cataloging_facts(
                 "job_id": job_id,
                 "project_id": effective_project_id,
                 "chapter_id": chapter_id,
-                "validation_errors": validation_errors,
+                "validation_errors": validation_errors[:12],
+                "validation_error_count": len(validation_errors),
+                "validation_errors_has_more": len(validation_errors) > 12,
                 "allowed_fact_types": sorted(CANONICAL_FACT_TYPES),
                 "next_tool": "save_external_cataloging_facts",
             },
         }
 
+    # Standalone MCP jobs do not pass through the managed CLI launcher. Their
+    # first fact write must establish the same chapter-local archive baseline.
+    chapter_run.started_at = chapter_run.started_at or datetime.utcnow()
     saved = _persist_external_fact_records(
         db,
         job,
@@ -972,6 +1280,320 @@ async def save_external_cataloging_candidates(
             },
         }
 
+    validation_errors = (
+        ["candidates must be a JSON array of objects, not a JSON-encoded string"]
+        if not isinstance(candidates, list)
+        else [f"candidates[{index}] must be an object"
+              for index, item in enumerate(candidates) if not isinstance(item, dict)]
+    )
+    expanded_candidates: list[dict[str, Any]] = []
+    if not validation_errors:
+        from app.modules.continuity.domain.cataloging_contract import (
+            validate_coverage_manifest_relationships,
+        )
+        from app.services.cataloging.character_targets import (
+            validate_character_profile_target,
+            validate_character_state_target,
+        )
+        from app.services.cataloging.candidate_validation import (
+            validate_candidate_source_character_grounding,
+        )
+        from app.services.cataloging.jsonl import normalize_candidate
+
+        for index, item in enumerate(candidates):
+            for record in expand_candidate_records(item):
+                expanded_candidates.append(record)
+                try:
+                    normalized = normalize_candidate(record)
+                    validate_coverage_manifest_relationships(normalized["payload"])
+                    validate_character_profile_target(
+                        db, effective_project_id, normalized["item_type"], normalized["payload"],
+                    )
+                    validate_character_state_target(
+                        db,
+                        effective_project_id,
+                        normalized["item_type"],
+                        normalized["payload"],
+                        chapter_content=str(chapter_run.chapter.content or "")
+                        if chapter_run.chapter is not None
+                        else "",
+                    )
+                    validate_candidate_source_character_grounding(
+                        db,
+                        effective_project_id,
+                        chapter_run,
+                        normalized,
+                    )
+                except ValueError as exc:
+                    validation_errors.append(f"candidates[{index}]: {exc}")
+    managed_cli_job = bool(
+        managed_binding and job.execution_backend == "local_cli_agent"
+    )
+    if managed_cli_job and not validation_errors:
+        from app.services.cataloging.jsonl import normalize_candidate
+
+        normalized_batch = [normalize_candidate(record) for record in expanded_candidates]
+        if len(normalized_batch) > 3:
+            validation_errors.append(
+                "Siming-managed cataloging accepts at most 3 candidate records per call; "
+                "submit only the next missing items"
+            )
+
+        existing_candidates = (
+            db.query(CatalogingCandidate)
+            .filter(CatalogingCandidate.chapter_run_id == chapter_run.id)
+            .filter(CatalogingCandidate.status != "rejected")
+            .all()
+        )
+        source_scene_count = _source_overview_scene_count(db, chapter_run)
+        chapter = db.query(Chapter).filter(
+            Chapter.id == chapter_id,
+            Chapter.project_id == effective_project_id,
+        ).first()
+        if not existing_candidates:
+            expected_outline_type = (
+                "outline_update"
+                if chapter is not None and chapter.outline_node_id
+                else "outline_create"
+            )
+            batch_types = [str(item.get("item_type") or "") for item in normalized_batch]
+            if batch_types != ["chapter_summary", expected_outline_type]:
+                validation_errors.append(
+                    "The first Siming-managed candidate call must contain exactly 2 records "
+                    f"in order: chapter_summary, {expected_outline_type}"
+                )
+            elif expected_outline_type == "outline_update" and chapter is not None:
+                outline_payload = normalized_batch[1].get("payload") or {}
+                outline_id = str(
+                    outline_payload.get("id")
+                    or normalized_batch[1].get("target_id")
+                    or ""
+                ).strip()
+                if outline_id != str(chapter.outline_node_id or ""):
+                    validation_errors.append(
+                        "The chapter outline already exists; outline_update must carry its "
+                        f"exact id {chapter.outline_node_id}"
+                    )
+
+            if batch_types and batch_types[0] == "chapter_summary":
+                summary_payload = normalized_batch[0].get("payload") or {}
+                if str(summary_payload.get("coverage_manifest_mode") or "").strip():
+                    validation_errors.append(
+                        "coverage_manifest_mode is only valid when amending an already accepted "
+                        "chapter_summary"
+                    )
+                summary_text = str(
+                    summary_payload.get("summary_text")
+                    or summary_payload.get("summary")
+                    or ""
+                )
+                if len("".join(summary_text.split())) < 40:
+                    validation_errors.append(
+                        "chapter_summary must contain at least 40 non-whitespace characters"
+                    )
+                manifest = summary_payload.get("coverage_manifest")
+                declared_scene_count = (
+                    manifest.get("scene_count") if isinstance(manifest, dict) else None
+                )
+                if source_scene_count is not None and declared_scene_count != source_scene_count:
+                    validation_errors.append(
+                        "coverage_manifest.scene_count must equal chapter_overview.scenes "
+                        f"exactly: facts={source_scene_count}, "
+                        f"manifest={declared_scene_count}"
+                    )
+        else:
+            # CatalogingCandidate has exactly one run-local summary and one
+            # aggregate chapter link. Both may be amended idempotently after
+            # a missing-items response, while the chapter outline cannot be
+            # submitted twice.
+            repeated_chapter_outlines = [
+                item
+                for item in normalized_batch
+                if str(item.get("item_type") or "") in {"outline_create", "outline_update"}
+                and str((item.get("payload") or {}).get("node_type") or "chapter")
+                == "chapter"
+            ]
+            if repeated_chapter_outlines:
+                validation_errors.append(
+                    "the chapter-level outline was already accepted; subsequent calls may "
+                    "contain only missing supplemental candidates, one chapter_summary "
+                    "coverage_manifest amendment, or one aggregate chapter_link amendment"
+                )
+
+            summary_items = [
+                item
+                for item in normalized_batch
+                if str(item.get("item_type") or "") == "chapter_summary"
+            ]
+            if len(summary_items) > 1:
+                validation_errors.append(
+                    "Submit at most one chapter_summary amendment per call"
+                )
+            for summary_item in summary_items:
+                summary_payload = summary_item.get("payload") or {}
+                manifest_mode = str(
+                    summary_payload.get("coverage_manifest_mode") or ""
+                ).strip().lower()
+                if manifest_mode and manifest_mode != "replace":
+                    validation_errors.append(
+                        "coverage_manifest_mode must be exactly 'replace' when provided"
+                    )
+                    continue
+                if manifest_mode != "replace":
+                    continue
+                if len(normalized_batch) != 1:
+                    validation_errors.append(
+                        "A coverage_manifest replacement call must contain only the one "
+                        "chapter_summary amendment"
+                    )
+                manifest = summary_payload.get("coverage_manifest")
+                if not isinstance(manifest, dict):
+                    validation_errors.append(
+                        "coverage_manifest replacement requires a complete coverage_manifest object"
+                    )
+                    continue
+                required_fields = {"scene_count", *_COVERAGE_MANIFEST_LIST_FIELDS}
+                missing_fields = sorted(required_fields - set(manifest))
+                if missing_fields:
+                    validation_errors.append(
+                        "coverage_manifest replacement is missing required fields: "
+                        + ", ".join(missing_fields)
+                    )
+                invalid_list_fields = [
+                    field
+                    for field in _COVERAGE_MANIFEST_LIST_FIELDS
+                    if field in manifest and not isinstance(manifest.get(field), list)
+                ]
+                if invalid_list_fields:
+                    validation_errors.append(
+                        "coverage_manifest replacement fields must be arrays: "
+                        + ", ".join(invalid_list_fields)
+                    )
+                replacement_scene_count = manifest.get("scene_count")
+                if (
+                    not isinstance(replacement_scene_count, int)
+                    or isinstance(replacement_scene_count, bool)
+                    or replacement_scene_count <= 0
+                ):
+                    validation_errors.append(
+                        "coverage_manifest replacement scene_count must be a positive integer"
+                    )
+                existing_summary = next(
+                    (
+                        item
+                        for item in existing_candidates
+                        if item.item_type == "chapter_summary"
+                    ),
+                    None,
+                )
+                existing_manifest = (
+                    _candidate_payload(existing_summary).get("coverage_manifest")
+                    if existing_summary is not None
+                    else None
+                )
+                existing_scene_count = (
+                    existing_manifest.get("scene_count")
+                    if isinstance(existing_manifest, dict)
+                    else None
+                )
+                if existing_summary is None:
+                    validation_errors.append(
+                        "coverage_manifest replacement requires an already accepted chapter_summary"
+                    )
+                elif replacement_scene_count != existing_scene_count:
+                    validation_errors.append(
+                        "coverage_manifest replacement cannot change scene_count: "
+                        f"existing={existing_scene_count}, replacement={replacement_scene_count}"
+                    )
+                if source_scene_count is None:
+                    validation_errors.append(
+                        "coverage_manifest replacement requires chapter_overview.scenes source facts"
+                    )
+                elif replacement_scene_count != source_scene_count:
+                    validation_errors.append(
+                        "coverage_manifest replacement scene_count must equal "
+                        f"chapter_overview.scenes: facts={source_scene_count}, "
+                        f"replacement={replacement_scene_count}"
+                    )
+
+        existing_link_count = sum(
+            1 for item in existing_candidates if item.item_type == "chapter_link"
+        )
+        new_link_items = [
+            item
+            for item in normalized_batch
+            if str(item.get("item_type") or "") == "chapter_link"
+        ]
+        if len(new_link_items) > 1:
+            validation_errors.append(
+                "Submit at most one aggregate chapter_link per call; a later call may "
+                "idempotently add missing characters, worldbuilding, locations, items, "
+                "and events to the same staged record"
+            )
+        for link_item in new_link_items:
+            link_payload = link_item.get("payload") or {}
+            link_mode = str(
+                link_payload.get("chapter_link_mode") or ""
+            ).strip().lower()
+            if link_mode and link_mode != "replace":
+                validation_errors.append(
+                    "chapter_link_mode must be exactly 'replace' when provided"
+                )
+                continue
+            if link_mode != "replace":
+                continue
+            if existing_link_count != 1:
+                validation_errors.append(
+                    "chapter_link replacement requires exactly one already accepted "
+                    "aggregate chapter_link"
+                )
+            if len(normalized_batch) != 1:
+                validation_errors.append(
+                    "A chapter_link replacement call must contain only the one "
+                    "chapter_link amendment"
+                )
+            missing_fields = sorted(
+                set(CHAPTER_LINK_REPLACE_LIST_FIELDS) - set(link_payload)
+            )
+            if missing_fields:
+                validation_errors.append(
+                    "chapter_link replacement is missing required fields: "
+                    + ", ".join(missing_fields)
+                )
+            invalid_list_fields = [
+                field
+                for field in CHAPTER_LINK_REPLACE_LIST_FIELDS
+                if field in link_payload and not isinstance(link_payload.get(field), list)
+            ]
+            if invalid_list_fields:
+                validation_errors.append(
+                    "chapter_link replacement fields must be arrays: "
+                    + ", ".join(invalid_list_fields)
+                )
+    if validation_errors:
+        preview_limit = 3
+        preview = "; ".join(validation_errors[:preview_limit])
+        remaining = len(validation_errors) - preview_limit
+        detail = (
+            "Candidates do not match the canonical candidates contract: "
+            + preview
+            + (f"; and {remaining} more validation errors" if remaining > 0 else "")
+        )
+        return {
+            "tool": "save_external_cataloging_candidates",
+            "status": "skipped",
+            "detail": detail,
+            "data": {
+                "job_id": job_id,
+                "project_id": effective_project_id,
+                "chapter_id": chapter_id,
+                "validation_errors": validation_errors[:12],
+                "validation_error_count": len(validation_errors),
+                "validation_errors_has_more": len(validation_errors) > 12,
+                "next_tool": "save_external_cataloging_candidates",
+            },
+        }
+
     saved = 0
     duplicates = 0
     warnings: list[str] = []
@@ -981,8 +1603,6 @@ async def save_external_cataloging_candidates(
         .count()
     )
     for cand_data in candidates:
-        if not isinstance(cand_data, dict):
-            continue
         for record in expand_candidate_records(cand_data):
             created = create_candidate_from_raw(
                 db,
@@ -1015,15 +1635,32 @@ async def save_external_cataloging_candidates(
         db=db,
         project_id=project_id,
     )
-    missing_required_items = coverage.cli_parity_missing
+    missing_required_items = list(coverage.cli_parity_missing)
+    if managed_binding:
+        # Managed automatic cataloging owns the complete facts-to-archive
+        # transaction.  Source/manifest disagreements cannot be downgraded to
+        # advisory warnings here, or a tiny placeholder summary and an empty
+        # manifest can falsely mark a richly extracted chapter as complete.
+        missing_required_items.extend(coverage.review_warnings)
+    missing_required_items = list(dict.fromkeys(missing_required_items))
     candidate_set_complete = not missing_required_items
+    managed_auto_job = (
+        managed_binding
+        and job.execution_mode == "auto"
+        and job.execution_backend == "local_cli_agent"
+    )
+    auto_apply_inline = candidate_set_complete and managed_auto_job
     if candidate_set_complete:
         # Saved candidates still need to be applied to project data. Keep the
         # run blocking here so external agents cannot report completion before
         # writes are actually applied.
         chapter_run.status = "awaiting_confirmation"
-        job.status = "waiting_confirmation"
-        job.blocked_chapter_id = chapter_id
+        # A managed automatic job applies immediately below. Do not commit a
+        # user-facing waiting state in the small transaction gap before that
+        # call: HTTP clients and the CLI poller can otherwise mistake normal
+        # automatic progress for a manual confirmation barrier.
+        job.status = "running" if auto_apply_inline else "waiting_confirmation"
+        job.blocked_chapter_id = None if auto_apply_inline else chapter_id
         next_tool = "apply_pending_cataloging"
         note = (
             "Candidates are only staged until apply_pending_cataloging writes them into "
@@ -1034,7 +1671,10 @@ async def save_external_cataloging_candidates(
         # any valid rows so a fresh CLI turn can add the missing required data.
         chapter_run.status = "facts_saved"
         job.status = "running"
-        job.blocked_chapter_id = chapter_id
+        # The managed automatic worker is actively accumulating another batch;
+        # it is neither waiting for the author nor blocked.  Keep the public
+        # blocking field reserved for real failures and manual confirmation.
+        job.blocked_chapter_id = None if managed_auto_job else chapter_id
         missing_text = ", ".join(missing_required_items)
         warnings.append(
             f"Candidate set is incomplete; missing required items: {missing_text}"
@@ -1044,16 +1684,12 @@ async def save_external_cataloging_candidates(
             "The candidate set is incomplete. Add the missing required items for this same "
             "chapter before calling apply_pending_cataloging."
         )
+    job.updated_at = datetime.utcnow()
     commit_session(db)
 
     auto_applied = False
     apply_status = ""
-    if (
-        candidate_set_complete
-        and managed_binding
-        and job.execution_mode == "auto"
-        and job.execution_backend == "local_cli_agent"
-    ):
+    if auto_apply_inline:
         # A Siming-managed CLI turn is already running under a user-started
         # automatic cataloging job.  Apply at the transactional MCP boundary
         # instead of waiting for the model to remember a second tool call.  In
@@ -1075,15 +1711,26 @@ async def save_external_cataloging_candidates(
             )
         commit_session(db)
 
+    no_effect_incomplete = not candidate_set_complete and saved == 0
+    missing_preview = "；".join(missing_required_items[:3])
+    missing_remainder = max(0, len(missing_required_items) - 3)
+    incomplete_detail = (
+        f"Saved {saved} candidates; candidate set is incomplete; missing: {missing_preview}"
+        + (f"; and {missing_remainder} more" if missing_remainder else "")
+    )
     result = {
         "tool": "save_external_cataloging_candidates",
-        "status": "ok",
+        "status": "skipped" if no_effect_incomplete else "ok",
         "detail": (
+            "No candidates were stored because the submitted batch was empty, invalid, "
+            "or redundant; submit canonical candidate objects directly"
+            if no_effect_incomplete
+            else
             f"Saved {saved} candidates and applied them automatically"
             if auto_applied
             else f"Saved {saved} candidates"
             if candidate_set_complete
-            else f"Saved {saved} candidates; candidate set is incomplete"
+            else incomplete_detail
         ),
         "data": {
             "job_id": job_id,
@@ -1091,6 +1738,9 @@ async def save_external_cataloging_candidates(
             "chapter_id": chapter_id,
             "candidates_saved": saved,
             "duplicates_skipped": duplicates,
+            "no_effect_reason": (
+                "empty_or_unusable_candidate_batch" if no_effect_incomplete else None
+            ),
             "candidates_total": coverage.total,
             "candidate_set_complete": candidate_set_complete,
             "missing_required_items": missing_required_items,
@@ -1151,7 +1801,7 @@ async def verify_external_cataloging_progress(
     ).count()
     completed_runs = db.query(CatalogingChapterRun).filter(
         CatalogingChapterRun.job_id == job_id,
-        CatalogingChapterRun.status == "completed",
+        CatalogingChapterRun.status.in_(["completed", "completed_with_warnings"]),
     ).count()
     failed_runs = db.query(CatalogingChapterRun).filter(
         CatalogingChapterRun.job_id == job_id,
@@ -1177,7 +1827,10 @@ async def verify_external_cataloging_progress(
     # Count project data
     chapters_count = db.query(Chapter).filter(Chapter.project_id == effective_project_id).count()
     characters_count = db.query(Character).filter(Character.project_id == effective_project_id).count()
-    wb_count = db.query(WorldbuildingEntry).filter(WorldbuildingEntry.project_id == effective_project_id).count()
+    wb_count = db.query(WorldbuildingEntry).filter(
+        WorldbuildingEntry.project_id == effective_project_id,
+        current_worldbuilding_clause(WorldbuildingEntry.status),
+    ).count()
     outline_count = db.query(OutlineNode).filter(OutlineNode.project_id == effective_project_id).count()
     chapter_outline_count = db.query(OutlineNode).filter(
         OutlineNode.project_id == effective_project_id,

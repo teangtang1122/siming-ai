@@ -42,6 +42,26 @@ CREATION_AGENT_TOOL_NAMES = frozenset({
     "apply_creation_import",
 })
 
+# Android's standalone creation workspace has no durable background-operation,
+# artifact-version, or file-import runtime. Keep that platform difference in
+# the generated contract so those tools are never advertised as executable.
+MOBILE_CREATION_UNSUPPORTED_TOOL_NAMES = frozenset({
+    "get_creation_operation",
+    "cancel_creation_operation",
+    "pause_creation_operation",
+    "resume_creation_operation",
+    "retry_creation_operation",
+    "undo_creation_artifact",
+    "list_creation_artifact_versions",
+    "get_creation_artifact_diff",
+    "restore_creation_artifact_version",
+    "preview_creation_import",
+    "apply_creation_import",
+})
+MOBILE_CREATION_AGENT_TOOL_NAMES = (
+    CREATION_AGENT_TOOL_NAMES - MOBILE_CREATION_UNSUPPORTED_TOOL_NAMES
+)
+
 CREATION_MODEL_SPAWNING_TOOL_NAMES = frozenset({
     "generate_creation_artifact",
     "refine_creation_artifact",
@@ -147,6 +167,8 @@ __all__ = [
     "CREATION_TURN_MAX_FAILED_WRITES",
     "CREATION_TURN_MAX_SUCCESSFUL_WRITES",
     "CREATION_WRITE_SUCCESS_STATUSES",
+    "MOBILE_CREATION_AGENT_TOOL_NAMES",
+    "MOBILE_CREATION_UNSUPPORTED_TOOL_NAMES",
     "creation_turn_write_denial",
     "creation_turn_writes_closed",
 ]

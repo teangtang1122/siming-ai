@@ -14,9 +14,37 @@ def test_classify_network_unavailability():
     ) == "network"
 
 
+def test_classify_explicit_provider_overload_before_generic_502_network_error():
+    assert classify_failure(
+        "Streaming response failed: [502] Upstream error from Nvidia: "
+        "Service temporarily overloaded"
+    ) == "unavailable"
+
+
 def test_classify_empty_and_invalid_model_responses():
     assert classify_failure("没有收到模型的文字回复") == "empty_response"
     assert classify_failure("模型返回的新选项格式无法解析") == "invalid_response"
+
+
+def test_classify_tool_schema_errors_without_treating_cataloging_as_login():
+    detail = (
+        "save_external_cataloging_facts: 工具参数不符合当前 JSON Schema，本次未执行。"
+        "请核对必填字段及类型；对象和数组必须直接传入。"
+    )
+
+    assert classify_failure(detail) == "invalid_arguments"
+    assert classify_failure("Required tool argument facts is missing") == "invalid_arguments"
+    assert classify_failure("cataloging failed for an unknown reason") == "unknown"
+    assert classify_failure("HTTP 401 Unauthorized") == "auth"
+    assert classify_failure("Login required") == "auth"
+
+    payload = json.loads(merge_event_metadata(
+        json.dumps({"tool": "save_external_cataloging_facts"}),
+        event_type="tool_result",
+        status="error",
+        message=detail,
+    ))
+    assert payload["failure_class"] == "invalid_arguments"
 
 
 def test_merge_event_metadata_adds_failure_class_and_next_action():

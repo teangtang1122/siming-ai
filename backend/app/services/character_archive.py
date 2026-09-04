@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from ..database.models import Character, CharacterRelationship
 from .character_role_types import normalize_character_role_type
 
-
 CHARACTER_PROFILE_FIELDS: tuple[str, ...] = (
     "core_motivation",
     "inner_lack",
@@ -98,6 +97,7 @@ def character_archive_payload(
     character: Character,
     *,
     db: Session | None = None,
+    target_chapter_number: int | None = None,
 ) -> dict[str, Any]:
     """Return the complete stable character card, optionally with relations."""
     profile = (
@@ -146,6 +146,37 @@ def character_archive_payload(
     }
     if db is not None:
         payload["relationships"] = _relationship_payloads(db, character)
+    reveal_chapter = profile.get("reveal_chapter")
+    if (
+        isinstance(target_chapter_number, int)
+        and not isinstance(target_chapter_number, bool)
+        and target_chapter_number > 0
+        and isinstance(reveal_chapter, int)
+        and not isinstance(reveal_chapter, bool)
+        and reveal_chapter > target_chapter_number
+    ):
+        payload.update(
+            {
+                "aliases": [],
+                "age": "",
+                "appearance": "",
+                "personality": "",
+                "background": "",
+                "abilities": [],
+                "state": {key: "" for key in payload["state"]},
+                "profile": {
+                    field: reveal_chapter if field == "reveal_chapter" else ""
+                    for field in CHARACTER_PROFILE_FIELDS
+                },
+                "ai_config": None,
+                "relationships": [],
+                "disclosure": {
+                    "status": "withheld_until_chapter",
+                    "target_chapter_number": target_chapter_number,
+                    "reveal_chapter": reveal_chapter,
+                },
+            }
+        )
     return payload
 
 
@@ -153,10 +184,15 @@ def character_archive_text(
     character: Character,
     *,
     db: Session | None = None,
+    target_chapter_number: int | None = None,
 ) -> str:
     """Serialize the canonical card deterministically for prompts and hashes."""
     return json.dumps(
-        character_archive_payload(character, db=db),
+        character_archive_payload(
+            character,
+            db=db,
+            target_chapter_number=target_chapter_number,
+        ),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

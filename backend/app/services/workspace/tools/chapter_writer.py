@@ -23,12 +23,21 @@ from ....services.cataloging.launcher import (
     find_blocking_chapter_cataloging_job,
     find_cataloging_required_chapter,
 )
+from ....services.chapter_writing_constraints import (
+    check_chapter_length,
+    recommended_han_character_target,
+)
 from ....services.context_orchestrator import ContextOrchestrator
 from ..generated_drafts import (
     ChapterDraftOutlineConflict,
+    ChapterDraftRevisionConflict,
+    ChapterDraftTargetConflict,
     PendingChapterDraftConflict,
+    chapter_draft_result_data,
+    find_chapter_draft,
     find_pending_chapter_draft,
     pending_draft_block_result,
+    replace_pending_chapter_draft_after_ai_revision,
     store_chapter_draft,
 )
 from ..turn_control import AssistantTurnDirective, apply_turn_directive
@@ -62,12 +71,14 @@ def _chapter_writer_target(
     db: Session,
     project_id: str,
     outline_node_id: str | None,
-) -> tuple[Any | None, dict | None]:
+    target_chapter_id: str | None,
+    source_draft_id: str | None,
+) -> tuple[Any | None, Any | None, Any | None, dict | None]:
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
-        return None, _writer_result("skipped", "项目不存在")
+        return None, None, None, _writer_result("skipped", "项目不存在")
     if not outline_node_id:
-        return None, _writer_result(
+        return None, None, None, _writer_result(
             "skipped",
             "必须先根据用户当前消息确定章级大纲节点，再生成正文",
         )
@@ -77,11 +88,45 @@ def _chapter_writer_target(
         .first()
     )
     if not target_outline or target_outline.node_type != "chapter":
-        return None, _writer_result(
+        return None, None, None, _writer_result(
             "skipped",
             "outline_node_id 必须是当前作品的章级节点，不能使用卷级或场景级节点",
             {"outline_node_id": outline_node_id},
         )
+
+    source_draft = None
+    if source_draft_id:
+        pending_draft = find_pending_chapter_draft(db, project_id)
+        source_draft = find_chapter_draft(db, project_id, source_draft_id)
+        if (
+            source_draft is None
+            or str(source_draft.status or "") != "pending"
+            or pending_draft is None
+            or str(pending_draft.id) != source_draft_id
+        ):
+            return None, None, None, _writer_result(
+                "skipped",
+                "source_draft_id 必须是当前作品正在编辑的未保存章节草稿",
+                {"source_draft_id": source_draft_id},
+            )
+        if str(source_draft.outline_node_id or "") != outline_node_id:
+            return None, None, None, _writer_result(
+                "skipped",
+                "当前草稿与所选章级大纲不匹配，未执行修改",
+                {
+                    "source_draft_id": source_draft_id,
+                    "outline_node_id": outline_node_id,
+                },
+            )
+        draft_target_id = str(source_draft.target_chapter_id or "") or None
+        if target_chapter_id and target_chapter_id != draft_target_id:
+            return None, None, None, _writer_result(
+                "skipped",
+                "target_chapter_id 与当前草稿的正式章节目标不匹配",
+                {"source_draft_id": source_draft_id},
+            )
+        target_chapter_id = draft_target_id
+
     existing_chapter = (
         db.query(Chapter)
         .filter(
@@ -91,64 +136,71 @@ def _chapter_writer_target(
         .first()
     )
     if existing_chapter:
-        return None, _writer_result(
+        if not target_chapter_id or str(existing_chapter.id) != target_chapter_id:
+            return None, None, None, _writer_result(
+                "skipped",
+                "该章级大纲已关联正式章节，不能覆盖；如需修订，"
+                "必须明确提供该正式章节的 target_chapter_id",
+                {
+                    "outline_node_id": outline_node_id,
+                    "existing_chapter_id": existing_chapter.id,
+                },
+            )
+    elif target_chapter_id:
+        return None, None, None, _writer_result(
             "skipped",
-            "该章级大纲已关联正式章节；章节写作只能生成新章草稿，不能覆盖已有正文",
-            {
-                "outline_node_id": outline_node_id,
-                "existing_chapter_id": existing_chapter.id,
-            },
+            "target_chapter_id 与所选章级大纲不匹配，未生成修订候选",
+            {"outline_node_id": outline_node_id, "target_chapter_id": target_chapter_id},
         )
-    pending_draft = find_pending_chapter_draft(db, project_id)
-    if pending_draft:
-        return None, pending_draft_block_result("chapter_writer", pending_draft)
-    blocking_job = find_blocking_chapter_cataloging_job(db, project_id)
-    if blocking_job:
-        return None, cataloging_block_result("chapter_writer", blocking_job)
-    required_chapter = find_cataloging_required_chapter(db, project_id)
-    if required_chapter:
-        return None, cataloging_required_block_result("chapter_writer", required_chapter)
-    return target_outline, None
+    if source_draft is None:
+        pending_draft = find_pending_chapter_draft(db, project_id)
+        if pending_draft:
+            return None, None, None, pending_draft_block_result("chapter_writer", pending_draft)
+        # Cataloging gates progression to another chapter. A reviewable
+        # revision of the current formal chapter does not advance the story.
+        if target_chapter_id is None:
+            blocking_job = find_blocking_chapter_cataloging_job(db, project_id)
+            if blocking_job:
+                return None, None, None, cataloging_block_result("chapter_writer", blocking_job)
+            required_chapter = find_cataloging_required_chapter(db, project_id)
+            if required_chapter:
+                return None, None, None, cataloging_required_block_result("chapter_writer", required_chapter)
+    return target_outline, existing_chapter, source_draft, None
 
 
 def _prepare_chapter_writer_manifest(
     db: Session,
     project_id: str,
     args: dict[str, Any],
-    involved_names: list[str],
-    model: str | None,
+    outline_node_id: str,
+    source_draft_id: str | None,
 ) -> tuple[ContextOrchestrator, Any | None, dict | None]:
-    # Every model path starts with the same persisted manifest. Existing tool
-    # callers do not need to provide an id; missing anchors become a
-    # recoverable confirmation state instead of a blind model call.
+    # Writing never creates context implicitly. The outer Agent must first
+    # inspect the compact anchors, search focused gaps, and finalize exact
+    # evidence in a previous model step.
     orchestrator = ContextOrchestrator(db)
     requested_manifest_id = str(args.get("context_manifest_id") or "").strip()
-    if requested_manifest_id:
-        manifest = orchestrator.get_manifest(requested_manifest_id, project_id)
-        if not manifest:
-            return orchestrator, None, _writer_result(
-                "needs_confirmation",
-                "The requested context manifest was not found.",
-                {"context_manifest_id": requested_manifest_id},
-            )
-    else:
-        manifest = orchestrator.prepare(
-            project_id=project_id,
-            task_type="writing",
-            model=model,
-            execution_route=(
-                "internal_cli"
-                if is_local_cli_provider(_chapter_writer_provider(model))
-                else "internal_api"
-            ),
-            arguments={**args, "involved_characters": involved_names},
-            pinned_chunk_ids=(
-                args.get("pinned_chunk_ids")
-                if isinstance(args.get("pinned_chunk_ids"), list)
-                else ()
-            ),
+    selection_token = str(args.get("context_selection_token") or "").strip()
+    if not requested_manifest_id:
+        return orchestrator, None, _writer_result(
+            "needs_confirmation",
+            "必须先建立写章上下文基线，并让模型检索、复核所需资料。",
+            {"next_tool": "prepare_task_context"},
         )
-    manifest_ok, manifest_detail = orchestrator.validate(manifest)
+    manifest = orchestrator.get_manifest(requested_manifest_id, project_id)
+    if not manifest:
+        return orchestrator, None, _writer_result(
+            "needs_confirmation",
+            "The requested context manifest was not found.",
+            {"context_manifest_id": requested_manifest_id},
+        )
+    manifest_ok, manifest_detail = orchestrator.validate_task_selection(
+        manifest,
+        token=selection_token,
+        task_type="writing",
+        outline_node_id=outline_node_id,
+        source_draft_id=source_draft_id,
+    )
     if not manifest_ok:
         status = (
             manifest.status
@@ -179,33 +231,61 @@ class _GeneratedChapterProse:
 async def _generate_chapter_prose(
     db: Session,
     project_id: str,
-    requirements: str,
-    involved_names: list[str],
     outline_node_id: str,
     model: str | None,
     orchestrator: ContextOrchestrator,
     manifest: Any,
 ) -> tuple[_GeneratedChapterProse | None, dict | None]:
+    generation_items = orchestrator.task_generation_items(manifest)
     outline_ctx = (
-        _manifest_section_text(manifest, "target_outline")
+        _manifest_item_text(
+            generation_items,
+            categories={"target_outline"},
+        )
         or "No target outline was selected."
     )
+    supporting_outlines = _manifest_item_text(
+        generation_items,
+        categories={"agent_selected", "pinned"},
+        source_types={"outline"},
+    )
+    if supporting_outlines:
+        outline_ctx = f"{outline_ctx}\n\n{supporting_outlines}"
     summaries = (
-        _manifest_section_text(manifest, "previous_summary")
+        _manifest_item_text(
+            generation_items,
+            categories={"agent_selected", "pinned"},
+            source_types={"chapter", "chapter_summary"},
+        )
         or "No previous chapter summary is available."
     )
     characters = (
-        _manifest_section_text(manifest, "scene_character")
+        _manifest_item_text(
+            generation_items,
+            categories={"agent_selected", "pinned"},
+            source_types={"character", "character_timeline"},
+        )
         or "No scene character was selected."
     )
-    world_ctx = _manifest_section_text(
-        manifest,
-        "worldbuilding",
-        "hybrid_retrieval",
-        "narrative_governance",
-        "pinned",
+    world_ctx = _manifest_item_text(
+        generation_items,
+        categories={"agent_selected", "pinned"},
+        excluded_source_types={
+            "outline", "chapter", "chapter_summary", "character", "character_timeline",
+        },
     ) or "No additional worldbuilding source was selected."
-    style_ctx = _manifest_section_text(manifest, "style") or "Use the project's established style."
+    style_ctx = _manifest_item_text(
+        generation_items,
+        categories={"style"},
+    ) or "Use the project's established style."
+    requirements = _manifest_item_text(
+        generation_items,
+        categories={"user_requirement"},
+    )
+    source_draft = _manifest_item_text(
+        generation_items,
+        categories={"target_draft"},
+    )
     messages = compose_chapter_writer_messages(
         pack=get_chapter_pack(),
         style_context=style_ctx,
@@ -214,6 +294,7 @@ async def _generate_chapter_prose(
         character_profiles=characters,
         recent_summaries=summaries,
         requirements=requirements,
+        source_draft=source_draft,
     )
     timeout_seconds, max_output_tokens = _chapter_writer_limits(model)
     max_output_tokens = min(max_output_tokens, max(1, manifest.output_reserve_tokens))
@@ -250,7 +331,6 @@ async def _generate_chapter_prose(
             orchestrator,
             manifest,
             outline_node_id,
-            involved_names,
         ),
     ), None
 
@@ -262,35 +342,39 @@ async def chapter_writer(
 ) -> dict:
     """Generate an independent chapter draft for the model-selected outline."""
     outline_node_id = str(args.get("outline_node_id") or "").strip() or None
-    requirements = str(args.get("requirements") or "").strip()
-    involved_names = (
-        [str(name).strip() for name in args.get("involved_characters", []) if name]
-        if isinstance(args.get("involved_characters"), list)
-        else []
-    )
-    target_outline, preflight_error = _chapter_writer_target(
+    target_chapter_id = str(args.get("target_chapter_id") or "").strip() or None
+    source_draft_id = str(args.get("source_draft_id") or "").strip() or None
+    target_outline, target_chapter, source_draft, preflight_error = _chapter_writer_target(
         db,
         project_id,
         outline_node_id,
+        target_chapter_id,
+        source_draft_id,
     )
     if preflight_error:
         return preflight_error
+    base_chapter_version = int(target_chapter.current_version or 1) if target_chapter else None
 
     model = str(args.get("model") or "") or None
     orchestrator, manifest, manifest_error = _prepare_chapter_writer_manifest(
         db,
         project_id,
         args,
-        involved_names,
-        model,
+        str(outline_node_id),
+        source_draft_id,
     )
     if manifest_error:
         return manifest_error
+    if not orchestrator.mark_consumed(manifest):
+        return _writer_result(
+            "needs_confirmation",
+            "context_selection_token 已使用；请重新检索并提交资料。",
+            {"context_manifest_id": manifest.id},
+        )
+    commit_session(db)
     generated, generation_error = await _generate_chapter_prose(
         db,
         project_id,
-        requirements,
-        involved_names,
         str(outline_node_id),
         model,
         orchestrator,
@@ -301,20 +385,81 @@ async def chapter_writer(
 
     content = generated.content
     outline_title = target_outline.title or ""
-    orchestrator.mark_consumed(manifest)
     manifest_id = manifest.id
-
     try:
-        draft_id = store_chapter_draft(
-            project_id=project_id,
-            content=content,
-            title=outline_title,
-            outline_node_id=outline_node_id,
-            context_manifest_id=manifest_id,
-            db=db,
+        length_check = check_chapter_length(content, manifest)
+    except ValueError as error:
+        return _writer_result(
+            "needs_confirmation",
+            f"写作上下文中的结构化正文长度约束无效：{error}",
+            {"context_manifest_id": manifest_id},
         )
+    if not length_check.accepted:
+        minimum = int(length_check.minimum_han_characters or 0)
+        recommended = recommended_han_character_target(minimum)
+        return _writer_result(
+            "needs_confirmation",
+            (
+                f"模型正文只有 {length_check.actual_han_characters} 个汉字，低于作者明确的 "
+                f"{minimum} 汉字硬下限；未创建待审草稿。为减少反复退回，"
+                f"请重新建立上下文并以至少 {recommended} 个汉字为重试目标。"
+            ),
+            {
+                "context_manifest_id": manifest_id,
+                "outline_node_id": outline_node_id,
+                "actual_han_characters": length_check.actual_han_characters,
+                "minimum_han_characters": minimum,
+                "recommended_han_characters": recommended,
+                "draft_stored": False,
+            },
+        )
+
+    stored_draft = None
+    try:
+        if source_draft_id:
+            source_item = next(
+                (
+                    item
+                    for item in orchestrator.task_generation_items(manifest)
+                    if item.category == "target_draft"
+                    and str(item.source_id or "") == source_draft_id
+                ),
+                None,
+            )
+            stored_draft = replace_pending_chapter_draft_after_ai_revision(
+                db,
+                project_id,
+                source_draft_id,
+                expected_source_hash=str(getattr(source_item, "source_hash", "") or ""),
+                content=content,
+                context_manifest_id=manifest_id,
+            )
+            draft_id = source_draft_id
+        else:
+            draft_id = store_chapter_draft(
+                project_id=project_id,
+                content=content,
+                title=outline_title,
+                outline_node_id=outline_node_id,
+                context_manifest_id=manifest_id,
+                target_chapter_id=target_chapter_id,
+                base_chapter_version=base_chapter_version,
+                db=db,
+            )
     except PendingChapterDraftConflict as conflict:
         return pending_draft_block_result("chapter_writer", conflict.draft)
+    except ChapterDraftRevisionConflict as conflict:
+        data = (
+            chapter_draft_result_data(conflict.draft, db=db)
+            if conflict.draft is not None
+            else {"draft_id": source_draft_id}
+        )
+        data["late_result_discarded"] = True
+        return _writer_result(
+            "skipped",
+            f"{conflict.reason}；迟到的 AI 修改未覆盖当前内容",
+            data,
+        )
     except ChapterDraftOutlineConflict as conflict:
         return _writer_result(
             "skipped",
@@ -324,23 +469,50 @@ async def chapter_writer(
             ),
             {
                 "outline_node_id": outline_node_id,
-                "existing_chapter_id": conflict.chapter.id,
+                "existing_chapter_id": getattr(conflict.chapter, "id", target_chapter_id),
             },
         )
+    except ChapterDraftTargetConflict as conflict:
+        return _writer_result(
+            "skipped",
+            "生成期间目标章节与所选大纲的绑定发生变化；候选未覆盖正文",
+            {"target_chapter_id": conflict.target_chapter_id},
+        )
 
+    result_draft_kind = (
+        str(stored_draft.draft_kind or "new")
+        if stored_draft is not None
+        else ("revision" if target_chapter_id else "new")
+    )
+    result_target_chapter_id = (
+        stored_draft.target_chapter_id if stored_draft is not None else target_chapter_id
+    )
+    result_base_chapter_version = (
+        stored_draft.base_chapter_version if stored_draft is not None else base_chapter_version
+    )
     return apply_turn_directive({
         "tool": "chapter_writer",
         "status": "ok",
-        "detail": f"已生成章节草稿（{count_words(content)} 字），尚未保存",
+        "detail": (
+            f"已修改当前章节草稿（{count_words(content)} 字），仍未保存"
+            if source_draft_id
+            else f"已生成章节草稿（{count_words(content)} 字），尚未保存"
+        ),
         "data": {
             "draft_id": draft_id,
             "content_ref": draft_id,
             "content": content,
-            "title": outline_title,
+            "title": str(stored_draft.title or "") if stored_draft is not None else outline_title,
             "outline_node_id": outline_node_id,
             "draft_status": "pending",
-            "next_actions": ["save_and_catalog", "save_only"],
+            "draft_kind": result_draft_kind,
+            "target_chapter_id": result_target_chapter_id,
+            "base_chapter_version": result_base_chapter_version,
+            "source_draft_id": source_draft_id,
+            "next_actions": ["revise_draft", "save_and_catalog", "save_only", "discard"],
             "word_count": count_words(content),
+            "han_character_count": length_check.actual_han_characters,
+            "minimum_han_characters": length_check.minimum_han_characters,
             "model": generated.model_result.get("model", ""),
             "context_manifest_id": manifest_id,
             "context_snapshot": generated.context_snapshot,
@@ -351,13 +523,23 @@ async def chapter_writer(
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _manifest_section_text(context_manifest, *categories: str) -> str:
-    """Return exact selected manifest content for one or more categories."""
-    wanted = set(categories)
+def _manifest_item_text(
+    items: list[Any],
+    *,
+    categories: set[str],
+    source_types: set[str] | None = None,
+    excluded_source_types: set[str] | None = None,
+) -> str:
+    """Render only the Agent-finalized evidence requested by one prompt section."""
+    source_types = source_types or set()
+    excluded_source_types = excluded_source_types or set()
     return "\n\n".join(
         item.content_excerpt
-        for item in context_manifest.items
-        if item.category in wanted and item.content_excerpt
+        for item in items
+        if item.category in categories
+        and (not source_types or item.source_type in source_types)
+        and item.source_type not in excluded_source_types
+        and item.content_excerpt
     ).strip()
 
 
@@ -365,16 +547,25 @@ def _manifest_snapshot(
     orchestrator: ContextOrchestrator,
     context_manifest,
     outline_node_id: str | None,
-    involved_names: list[str],
 ) -> dict:
     """Compact, content-free UI snapshot generated from the manifest."""
     payload = orchestrator.manifest_payload(context_manifest, include_content=False)
+    generation_items = orchestrator.task_generation_items(context_manifest)
+    selected_items = [
+        item
+        for item in generation_items
+        if item.category == "agent_selected" or item.pinned
+    ]
     return {
         "manifest_id": context_manifest.id,
         "status": context_manifest.status,
         "outline_node_id": outline_node_id,
-        "involved_characters": involved_names,
-        "rag_used": any(item.chunk_id for item in context_manifest.items),
+        "involved_characters": [
+            item.title
+            for item in selected_items
+            if item.source_type in {"character", "character_timeline"}
+        ],
+        "rag_used": bool(selected_items),
         "total_used_chars": context_manifest.estimated_input_chars,
         "total_estimated_tokens": context_manifest.estimated_input_tokens,
         "input_budget_tokens": context_manifest.input_budget_tokens,
@@ -396,7 +587,12 @@ def _manifest_snapshot(
                 "pinned": item["pinned"],
             }
             for item in payload["items"]
+            if item["category"] not in {"agent_search"}
         ],
         "warnings": payload["warnings"],
-        "explanations": [item["selection_reason"] for item in payload["items"]],
+        "explanations": [
+            item["selection_reason"]
+            for item in payload["items"]
+            if item["category"] != "agent_search"
+        ],
     }

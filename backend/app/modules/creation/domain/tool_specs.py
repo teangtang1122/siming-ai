@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
 
@@ -15,6 +15,12 @@ class CompatibleInput(BaseModel):
 
 _CREATION_MODEL_DESCRIPTION = (
     "Optional model identity. When omitted, creation uses the active default model."
+)
+
+_PATCH_CHANGES_DESCRIPTION = (
+    "原生 JSON 操作数组，不是 JSON 编码字符串。每个元素是包含 path、action 和 value 的对象；"
+    "完整阶段使用 [{\"path\":\"/\",\"action\":\"set\",\"value\":{...}}]，"
+    "value 中的对象和数组也必须直接传入，不要转成字符串。"
 )
 
 
@@ -47,6 +53,38 @@ class CreationArtifactInput(CompatibleInput):
 
 
 class CreationPatchOperation(CompatibleInput):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "required": ["action"],
+                    "properties": {
+                        "action": {"enum": ["set", "replace", "append", "remove", "resize"]},
+                        "op": {"type": "null"},
+                    },
+                },
+                {
+                    "required": ["op"],
+                    "properties": {
+                        "op": {"enum": ["add", "replace", "remove"]},
+                        "action": {"type": "null"},
+                    },
+                },
+            ],
+            "allOf": [
+                {
+                    "if": {
+                        "required": ["action"],
+                        "properties": {"action": {"const": "resize"}},
+                    },
+                    "then": {
+                        "required": ["target_count"],
+                        "properties": {"target_count": {"type": "integer", "minimum": 0}},
+                    },
+                }
+            ],
+        }
+    )
     action: Literal["set", "replace", "append", "remove", "resize"] | None = Field(
         default=None,
         description=(
@@ -68,6 +106,14 @@ class CreationPatchOperation(CompatibleInput):
     target_count: int | None = Field(default=None, ge=0, description="resize 的目标数组长度")
     fill_value: Any = Field(default=None, description="resize 扩展数组时使用的填充值")
 
+    @model_validator(mode="after")
+    def require_one_operation_form(self) -> CreationPatchOperation:
+        if (self.action is None) == (self.op is None):
+            raise ValueError("action 与 op 必须且只能提供一个")
+        if self.action == "resize" and self.target_count is None:
+            raise ValueError("resize 操作必须提供 target_count")
+        return self
+
 
 class ListCreationArtifactsInput(CompatibleInput):
     session_id: str
@@ -75,7 +121,10 @@ class ListCreationArtifactsInput(CompatibleInput):
 
 class PatchCreationArtifactInput(CreationArtifactInput):
     expected_revision: int
-    changes: list[CreationPatchOperation]
+    changes: list[CreationPatchOperation] = Field(
+        min_length=1,
+        description=_PATCH_CHANGES_DESCRIPTION,
+    )
 
 
 class CreationArtifactLockInput(CreationArtifactInput):
@@ -103,7 +152,10 @@ class CreationEntityInput(CompatibleInput):
 
 class PatchCreationEntityInput(CreationEntityInput):
     expected_revision: int
-    changes: list[CreationPatchOperation]
+    changes: list[CreationPatchOperation] = Field(
+        min_length=1,
+        description=_PATCH_CHANGES_DESCRIPTION,
+    )
 
 
 class DeleteCreationEntityInput(CreationEntityInput):
@@ -185,12 +237,23 @@ class ApplyCreationImportInput(CompatibleInput):
 
 
 class ListImportedFilesInput(CompatibleInput):
-    pass
+    cursor: int = Field(default=0, ge=0, description="Cursor returned by the previous page")
+    limit: int = Field(default=3, ge=1, le=3, description="Files in this page (default/max 3)")
 
 
 class ReadImportedFileInput(CompatibleInput):
-    filename: str
-    max_size: int = 50_000
+    filename: str = Field(description="Name of the file to read (from list_imported_files)")
+    max_size: int = Field(
+        default=4_000,
+        ge=1,
+        le=4_000,
+        description="Characters in this range (default/max 4000)",
+    )
+    offset_chars: int = Field(
+        default=0,
+        ge=0,
+        description="Character offset for this range (default 0)",
+    )
 
 
 _INPUTS: dict[str, type[BaseModel]] = {

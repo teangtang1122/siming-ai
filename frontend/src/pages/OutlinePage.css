@@ -164,6 +164,17 @@
   background: var(--ant-color-success);
 }
 
+.outline-tree-draft-node .outline-tree-title {
+  border: 1px dashed var(--ant-color-warning-border);
+  border-radius: 6px;
+  background: var(--ant-color-warning-bg);
+  padding: 2px 6px;
+}
+
+.outline-tree-title-draft {
+  color: var(--ant-color-warning-text);
+}
+
 /* ── Editor ── */
 .outline-editor {
   min-width: 0;

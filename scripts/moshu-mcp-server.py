@@ -75,6 +75,9 @@ def _prepare_data_environment() -> Path:
 
 
 def main() -> None:
+    # Help/errors are part of the CLI surface too. Configure before argparse
+    # can exit, otherwise Windows emits GBK while MCP clients expect UTF-8.
+    _configure_stdio_utf8()
     parser = argparse.ArgumentParser(
         prog="moshu-mcp-server",
         description="Siming MCP Server — exposes Siming workspace tools over stdio.",
@@ -111,12 +114,16 @@ def main() -> None:
         help="Process-scoped model-selected tool category state for one managed Agent turn.",
     )
     parser.add_argument(
+        "--direct-mcp-lease-token",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging to stderr.",
     )
     args = parser.parse_args()
-    _configure_stdio_utf8()
 
     # ── Logging ──────────────────────────────────────────────────────────
     import logging
@@ -156,6 +163,7 @@ def main() -> None:
             permission_pack=args.permission_pack,
             creation_session_id=args.creation_session_id,
             tool_category_state_file=args.tool_category_state_file,
+            direct_mcp_lease_token=args.direct_mcp_lease_token,
         )
     finally:
         db.close()

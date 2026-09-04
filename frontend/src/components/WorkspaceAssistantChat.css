@@ -185,6 +185,63 @@
   width: 1px;
 }
 
+/* ── Conversation context checkpoint ── */
+.conversation-checkpoint-notice {
+  align-items: flex-start;
+  flex: 0 0 auto;
+}
+
+.conversation-checkpoint-notice .ant-alert-content {
+  min-width: 0;
+}
+
+.conversation-checkpoint-notice .ant-alert-description {
+  line-height: 1.5;
+}
+
+.conversation-checkpoint-detail {
+  max-height: min(68vh, 720px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.conversation-checkpoint-detail-section {
+  margin-top: 12px;
+}
+
+.conversation-checkpoint-detail-section ul,
+.conversation-checkpoint-navigation ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.conversation-checkpoint-quote {
+  margin: 0 0 4px !important;
+  white-space: pre-wrap;
+}
+
+.conversation-checkpoint-ledger-entry {
+  min-width: 0;
+  width: 100%;
+}
+
+.conversation-checkpoint-ledger-entry .ant-typography {
+  margin-bottom: 4px;
+  margin-top: 6px;
+}
+
+.conversation-checkpoint-navigation {
+  display: grid;
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .conversation-checkpoint-notice .ant-alert-action {
+    margin-inline-start: 0;
+    padding-top: 8px;
+  }
+}
+
 /* ── Run log ── */
 .workspace-assistant-run-log {
   background: var(--ant-color-bg-container);
@@ -253,6 +310,11 @@
   margin-bottom: 10px;
   padding: 10px 12px;
   transition: border-color 0.2s ease;
+}
+
+.workspace-assistant-message-source-highlight {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 0 0 2px var(--ant-color-primary-bg);
 }
 
 .workspace-assistant-user {

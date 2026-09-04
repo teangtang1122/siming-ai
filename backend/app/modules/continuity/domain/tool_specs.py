@@ -7,6 +7,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
+from ...story.interfaces.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from .cataloging_contract import CatalogingFactType
 
 
 class CompatibleInput(BaseModel):
@@ -35,10 +37,69 @@ class GetNarrativeLedgerInput(CompatibleInput):
     storyline: str = ""
 
 
+class CatalogingFactInput(CompatibleInput):
+    fact_type: CatalogingFactType
+    payload: dict[str, Any]
+    evidence: str | None = None
+    confidence: float | None = None
+
+
+class SaveExternalCatalogingFactsInput(CompatibleInput):
+    job_id: str = Field(min_length=1)
+    chapter_id: str = Field(min_length=1)
+    facts: list[CatalogingFactInput]
+
+
+class SaveExternalCatalogingCandidatesInput(CompatibleInput):
+    job_id: str = Field(min_length=1)
+    chapter_id: str = Field(min_length=1)
+    candidates: list[dict[str, Any]]
+
+
+class OutlineProposalNodeInput(CompatibleInput):
+    title: str = Field(min_length=1, max_length=200)
+    node_type: Literal["volume", "chapter", "section"] = "chapter"
+    summary: str
+    character_names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Characters involved in this future plan. Names that do not yet have a character "
+            "record remain unlinked planning metadata when the author confirms the draft; "
+            "confirmation never creates placeholder character records."
+        ),
+    )
+    parent_title: str | None = Field(
+        default=None,
+        description=(
+            "Optional parent title. Use a title from this same proposal for nested nodes. "
+            "Top-level nodes may omit it; a value matching the formal parent_id is accepted "
+            "and normalized."
+        ),
+    )
+
+
+class SaveExternalOutlineDraftInput(CompatibleInput):
+    context_manifest_id: str = Field(min_length=1)
+    context_selection_token: str = Field(min_length=1)
+    parent_id: str | None = None
+    insert_after_id: str | None = None
+    nodes: list[OutlineProposalNodeInput] = Field(
+        min_length=1, max_length=OUTLINE_PROPOSAL_MAX_NODES,
+        description=(
+            "Native node array; length must equal the prepared outline_planning "
+            "batch_count. summary describes future plans, not actual events."
+        ),
+    )
+    design_notes: str = ""
+
+
 _INPUTS: dict[str, type[BaseModel]] = {
     "inspect_story_granularity": InspectStoryGranularityInput,
     "repair_story_granularity": RepairStoryGranularityInput,
     "get_narrative_ledger": GetNarrativeLedgerInput,
+    "save_external_cataloging_facts": SaveExternalCatalogingFactsInput,
+    "save_external_cataloging_candidates": SaveExternalCatalogingCandidatesInput,
+    "save_external_outline_draft": SaveExternalOutlineDraftInput,
 }
 
 

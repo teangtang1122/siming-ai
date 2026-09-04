@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import CatalogingCandidate, Chapter, ChapterSummary
+from ...database.models import CatalogingCandidate, Chapter
+from ..chapter_summary_service import upsert_chapter_summary_record
 from ..narrative_governance import (
     apply_chapter_governance_payload,
     record_chapter_governance_review,
@@ -128,17 +128,13 @@ def apply_chapter_summary(
             "detail": "章节叙事状态已归档",
         }
     key_events = payload.get("key_events") if isinstance(payload.get("key_events"), list) else []
-    old = None
-    summary = db.query(ChapterSummary).filter(ChapterSummary.chapter_id == chapter.id).first()
-    if not summary:
-        summary = ChapterSummary(chapter_id=chapter.id, summary_text=summary_text)
-        db.add(summary)
-    else:
-        old = {"summary_text": summary.summary_text, "key_events": summary.key_events}
-        summary.summary_text = summary_text
-    summary.key_events = json.dumps([str(item) for item in key_events], ensure_ascii=False)
-    summary.ai_model = "cataloging"
-    summary.updated_at = datetime.utcnow()
+    summary, old = upsert_chapter_summary_record(
+        db,
+        chapter,
+        summary_text=summary_text,
+        key_events=[str(item) for item in key_events],
+        source="cataloging",
+    )
     fact = None
     ledger: dict[str, Any] = {"items": [], "counts": {"new": 0, "advanced": 0, "fulfilled": 0, "invalidated": 0, "pending_review": 0}}
     if narrative_state:
@@ -152,6 +148,7 @@ def apply_chapter_summary(
             payload=narrative_state,
         )
         ledger = record_narrative_ledger(db, candidate, chapter, narrative_state)
+    db.flush()
     return {
         "target_type": "chapter_summary",
         "target_id": summary.id,

@@ -32,6 +32,10 @@ class PcAdvancedPathsTest {
             "/api/v1/projects/project-1/chapter-drafts/pending",
             PcApiPaths.pendingChapterDraft(project),
         )
+        assertEquals(
+            "/api/v1/projects/project-1/chapter-drafts/draft-1",
+            PcApiPaths.chapterDraft(project, "draft-1"),
+        )
     }
 
     @Test

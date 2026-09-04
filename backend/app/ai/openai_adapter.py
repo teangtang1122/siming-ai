@@ -177,9 +177,12 @@ def _responses_input(messages: list[dict]) -> list[dict]:
             output = message.get("content")
             if not isinstance(output, str):
                 output = _json.dumps(output, ensure_ascii=False)
+            call_id = message.get("tool_call_id")
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError("Responses tool result requires a non-empty native call ID")
             items.append({
                 "type": "function_call_output",
-                "call_id": str(message.get("tool_call_id") or ""),
+                "call_id": call_id,
                 "output": output or "",
             })
             continue
@@ -201,11 +204,26 @@ def _responses_input(messages: list[dict]) -> list[dict]:
             continue
         for tool_call in message.get("tool_calls") or []:
             function = tool_call.get("function") or {}
+            call_id = tool_call.get("id")
+            name = function.get("name")
+            arguments = function.get("arguments")
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError("Responses tool call requires a non-empty native call ID")
+            if not isinstance(name, str) or not name:
+                raise ValueError("Responses tool call requires a non-empty function name")
+            if not isinstance(arguments, str):
+                raise ValueError("Responses tool call arguments must be a JSON string")
+            try:
+                parsed_arguments = _json.loads(arguments)
+            except _json.JSONDecodeError as exc:
+                raise ValueError("Responses tool call arguments must be valid JSON") from exc
+            if not isinstance(parsed_arguments, dict):
+                raise ValueError("Responses tool call arguments must be a JSON object")
             items.append({
                 "type": "function_call",
-                "call_id": str(tool_call.get("id") or tool_call.get("call_id") or ""),
-                "name": str(function.get("name") or tool_call.get("name") or ""),
-                "arguments": str(function.get("arguments") or tool_call.get("arguments") or "{}"),
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
             })
     return items
 
@@ -286,11 +304,14 @@ def _responses_tool_calls(response: object) -> list[dict] | None:
         if getattr(item, "type", None) != "function_call":
             continue
         calls.append({
-            "id": str(getattr(item, "call_id", None) or getattr(item, "id", "")),
+            # ``item.id`` identifies the Responses output item, not the native
+            # function call. Falling back to it would fabricate a different
+            # protocol identity for the later tool result.
+            "id": str(getattr(item, "call_id", "") or ""),
             "type": "function",
             "function": {
                 "name": str(getattr(item, "name", "")),
-                "arguments": str(getattr(item, "arguments", "{}")),
+                "arguments": str(getattr(item, "arguments", "") or ""),
             },
         })
     return calls or None
@@ -407,7 +428,7 @@ class OpenAIAdapter(BaseAdapter):
                 if getattr(item, "type", None) == "function_call":
                     index = int(getattr(event, "output_index", len(tool_buffers)) or 0)
                     buffer = {
-                        "id": str(getattr(item, "call_id", None) or getattr(item, "id", "")),
+                        "id": str(getattr(item, "call_id", "") or ""),
                         "name": str(getattr(item, "name", "") or ""),
                         "arguments": "",
                     }
@@ -439,7 +460,7 @@ class OpenAIAdapter(BaseAdapter):
                 if getattr(item, "type", None) == "function_call":
                     index = int(getattr(event, "output_index", 0) or 0)
                     buffer = tool_buffers.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                    call_id = str(getattr(item, "call_id", None) or getattr(item, "id", ""))
+                    call_id = str(getattr(item, "call_id", "") or "")
                     name = str(getattr(item, "name", "") or "")
                     arguments = str(getattr(item, "arguments", "") or "")
                     if (call_id and not buffer["id"]) or (name and not buffer["name"]):

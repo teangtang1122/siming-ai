@@ -6,15 +6,15 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....modules.model_runtime.application.execution import model_executor as LLMGateway
-from ....core.json_repair import parse_json_object
 from ....database.models import (
+    Chapter,
     Character,
     CharacterRelationship,
-    Chapter,
     Project,
 )
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....prompts.plot_prompts import build_plot_design_messages
+from ....prompts.style_prompts import build_style_context
 from ....services.context_builders import (
     _build_outline_context,
     _build_outline_overview,
@@ -22,7 +22,10 @@ from ....services.context_builders import (
     _build_scene_characters_context,
     _build_world_context,
 )
-from ....prompts.style_prompts import build_style_context
+from .native_structured_output import (
+    NativeStructuredOutputError,
+    required_tool_arguments,
+)
 
 PLOT_DESIGN_TOOL = {
     "type": "function",
@@ -126,24 +129,6 @@ PLOT_DESIGN_TOOL = {
 }
 
 
-def _parse_plot_design_payload(raw: str) -> dict | None:
-    parsed = parse_json_object(raw)
-    if not isinstance(parsed, dict):
-        return None
-    if isinstance(parsed.get("arguments"), dict):
-        parsed = parsed["arguments"]
-    elif isinstance(parsed.get("arguments"), str):
-        nested = parse_json_object(parsed["arguments"])
-        if isinstance(nested, dict):
-            parsed = nested
-    for key in ("design_plot_output", "plot_design", "plot", "data"):
-        nested = parsed.get(key)
-        if isinstance(nested, dict):
-            parsed = nested
-            break
-    return parsed if isinstance(parsed, dict) else None
-
-
 async def design_plot(
     db: Session,
     project_id: str,
@@ -226,7 +211,7 @@ async def design_plot(
                     )
                     rel_lines.append(f"    {other}: {r.relationship_type}")
                 if rel_lines:
-                    detail_parts.append(f"  关系:\n" + "\n".join(rel_lines))
+                    detail_parts.append("  关系:\n" + "\n".join(rel_lines))
             char_details.append("\n".join(detail_parts))
     char_detail_text = "\n\n".join(char_details) if char_details else "未指定角色。"
 
@@ -279,20 +264,19 @@ async def design_plot(
     except Exception as exc:
         return {"tool": "design_plot", "status": "error", "detail": f"LLM 调用失败：{exc}", "data": {}}
 
-    tool_calls = result.get("tool_calls") or []
-    raw_for_error = str(result.get("content", ""))
-    if tool_calls:
-        raw_for_error = str(tool_calls[0].get("function", {}).get("arguments", ""))
-    parsed = _parse_plot_design_payload(raw_for_error)
-    if not parsed:
+    try:
+        parsed, raw_for_error = required_tool_arguments(
+            result,
+            expected_name="design_plot_output",
+        )
+    except NativeStructuredOutputError as exc:
         return {
             "tool": "design_plot",
             "status": "error",
             "detail": "LLM 返回的剧情设计无法解析为JSON",
-            "data": {"raw": raw_for_error[:2000]},
+            "data": {"protocol_error": exc.reason},
         }
-
-    if not isinstance(parsed, dict):
+    if not parsed:
         return {
             "tool": "design_plot",
             "status": "error",
@@ -309,6 +293,6 @@ async def design_plot(
         "status": "ok",
         "detail": f"剧情设计完成：{len(scenes)} 个场景"
             + (f"，建议 {len(new_chars)} 个新角色" if new_chars else "")
-            + (f"，发现潜在问题" if issues else ""),
+            + ("，发现潜在问题" if issues else ""),
         "data": parsed,
     }

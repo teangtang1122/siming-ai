@@ -1,6 +1,8 @@
 package com.siming.mobile.data.agent
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -60,7 +62,7 @@ internal fun resolvePcCharacters(
     return PcCharacterResolution(selected, resolvedAliases)
 }
 
-/** Mirrors PC preview_writing_context relationship payload selection. */
+/** Renders relationships for an exact character source selected by the model. */
 internal fun pcRelationshipPayloads(
     allRecords: List<JsonObject>,
     selectedCharacters: List<JsonObject>,
@@ -126,8 +128,108 @@ internal fun pcCharacterDetails(
     }
 }
 
+/** Complete Android projection of the PC character archive after explicit model selection. */
+internal fun pcExactCharacterArchive(
+    allRecords: List<JsonObject>,
+    character: JsonObject,
+    targetChapterNumber: Int? = null,
+): String {
+    val characterId = character.string("id")
+    val names = allRecords
+        .filter { it.recordType() == "character" }
+        .associate { it.string("id") to it.string("name") }
+    val aiConfig = allRecords.firstOrNull {
+        it.recordType() == "character_ai_config" && it.string("character_id") == characterId
+    }
+    val relationships = allRecords.asSequence()
+        .filter { it.recordType() == "character_relationship" }
+        .filter { it.relationFrom() == characterId || it.relationTo() == characterId }
+        .sortedBy { it.string("id") }
+        .map { relation ->
+            JsonObject(
+                linkedMapOf(
+                    "id" to JsonPrimitive(relation.string("id")),
+                    "source_id" to JsonPrimitive(relation.relationFrom()),
+                    "source_name" to JsonPrimitive(
+                        names[relation.relationFrom()] ?: relation.relationFrom(),
+                    ),
+                    "target_id" to JsonPrimitive(relation.relationTo()),
+                    "target_name" to JsonPrimitive(
+                        names[relation.relationTo()] ?: relation.relationTo(),
+                    ),
+                    "relationship_type" to JsonPrimitive(relation.string("relationship_type")),
+                    "description" to JsonPrimitive(relation.string("description")),
+                ),
+            )
+        }
+        .toList()
+    val state = JsonObject(
+        linkedMapOf(
+            "life_status" to JsonPrimitive(character.string("life_status")),
+            "current_location" to JsonPrimitive(character.string("current_location")),
+            "realm_or_level" to JsonPrimitive(character.string("realm_or_level")),
+            "physical_state" to JsonPrimitive(character.string("physical_state")),
+            "mental_state" to JsonPrimitive(character.string("mental_state")),
+            "current_goal" to JsonPrimitive(character.string("current_goal")),
+            "active_conflict" to JsonPrimitive(character.string("active_conflict")),
+            "abilities_state" to JsonPrimitive(character.string("abilities_state")),
+            "items_or_assets" to JsonPrimitive(character.string("items_or_assets")),
+        ),
+    )
+    val archive = linkedMapOf<String, JsonElement>(
+        "id" to JsonPrimitive(characterId),
+        "name" to JsonPrimitive(character.string("name")),
+        "aliases" to (character["aliases"] ?: JsonArray(emptyList())),
+        "role_type" to JsonPrimitive(character.string("role_type")),
+        "age" to JsonPrimitive(character.string("age")),
+        "appearance" to JsonPrimitive(character.string("appearance")),
+        "personality" to JsonPrimitive(character.string("personality")),
+        "background" to JsonPrimitive(character.string("background")),
+        "abilities" to (character["abilities"] ?: JsonArray(emptyList())),
+        "state" to state,
+        "profile" to (character["profile"] ?: JsonObject(emptyMap())),
+        "ai_config" to (
+            aiConfig?.let { config ->
+                JsonObject(config.filterKeys { key -> key != "_record_type" })
+            } ?: JsonNull
+        ),
+        "relationships" to JsonArray(relationships),
+    )
+    val profile = character["profile"] as? JsonObject ?: JsonObject(emptyMap())
+    val revealChapter = profile.intValue("reveal_chapter")
+    if (
+        targetChapterNumber != null && targetChapterNumber > 0 &&
+        revealChapter != null && revealChapter > targetChapterNumber
+    ) {
+        archive["aliases"] = JsonArray(emptyList())
+        archive["age"] = JsonPrimitive("")
+        archive["appearance"] = JsonPrimitive("")
+        archive["personality"] = JsonPrimitive("")
+        archive["background"] = JsonPrimitive("")
+        archive["abilities"] = JsonArray(emptyList())
+        archive["state"] = JsonObject(
+            state.keys.associateWith { JsonPrimitive("") },
+        )
+        archive["profile"] = JsonObject(
+            PC_CHARACTER_PROFILE_FIELDS.associateWith { field ->
+                if (field == "reveal_chapter") JsonPrimitive(revealChapter) else JsonPrimitive("")
+            },
+        )
+        archive["ai_config"] = JsonNull
+        archive["relationships"] = JsonArray(emptyList())
+        archive["disclosure"] = JsonObject(
+            linkedMapOf(
+                "status" to JsonPrimitive("withheld_until_chapter"),
+                "target_chapter_number" to JsonPrimitive(targetChapterNumber),
+                "reveal_chapter" to JsonPrimitive(revealChapter),
+            ),
+        )
+    }
+    return canonicalMobileJson(JsonObject(archive))
+}
+
 /** Mirrors PC governance_context ordering, open-status filtering, and latest-state selection. */
-internal fun pcGovernanceContext(allRecords: List<JsonObject>, limit: Int = 12): String {
+internal fun pcGovernanceContext(allRecords: List<JsonObject>, limit: Int? = 12): String {
     val weighted = mutableListOf<Pair<Int, String>>()
     allRecords.forEach { row ->
         when (row.recordType()) {
@@ -165,9 +267,9 @@ internal fun pcGovernanceContext(allRecords: List<JsonObject>, limit: Int = 12):
     }
 
     if (weighted.isEmpty()) return ""
-    return "叙事治理锁：\n" + weighted
-        .sortedByDescending { it.first }
-        .take(limit)
+    val ordered = weighted.sortedByDescending { it.first }
+    val selected = if (limit == null) ordered else ordered.take(limit)
+    return "叙事治理锁：\n" + selected
         .joinToString("\n") { it.second }
 }
 
@@ -179,7 +281,6 @@ private fun latestCharacterStates(allRecords: List<JsonObject>): List<JsonObject
             compareByDescending<JsonObject> { it.string("created_at") }
                 .thenByDescending { it.string("id") },
         )
-        .take(100)
         .forEach { row ->
             val characterId = row.string("character_id")
             if (characterId.isNotBlank()) latest.putIfAbsent(characterId, row)
@@ -228,3 +329,15 @@ private fun importance(value: String): Int = IMPORTANCE_WEIGHT[value] ?: 2
 
 private val OPEN_STATUSES = setOf("open", "deferred", "pending_review", "stale")
 private val IMPORTANCE_WEIGHT = mapOf("critical" to 4, "high" to 3, "medium" to 2, "low" to 1)
+private val PC_CHARACTER_PROFILE_FIELDS = listOf(
+    "core_motivation",
+    "inner_lack",
+    "core_belief",
+    "public_persona",
+    "hidden_persona",
+    "reveal_chapter",
+    "moral_taboo",
+    "voice",
+    "action_habit",
+    "trauma_trigger",
+)

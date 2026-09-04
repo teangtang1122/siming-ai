@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -723,7 +724,7 @@ function NovelCreationWizardPage() {
                 <div className="creation-resume-list">
                   {otherSessions.slice(0, 4).map((item) => (
                     <Card size="small" key={item.id} onClick={() => void loadSession(item.id)} hoverable title={item.draft?.form?.brief?.slice(0, 30) || '未命名立项'}>
-                      <Text type="secondary">{item.draft?.form?.genre || '自由创作'} · {item.updated_at ? new Date(item.updated_at).toLocaleString('zh-CN') : '刚刚保存'}</Text>
+                      <Text type="secondary">{item.draft?.form?.genre || '自由创作'} · {item.updated_at ? (formatApiDateTime(item.updated_at) || '时间未记录') : '刚刚保存'}</Text>
                     </Card>
                   ))}
                 </div>
@@ -826,7 +827,7 @@ function NovelCreationWizardPage() {
                 <div className="creation-resume-list">
                   {otherSessions.slice(0, 4).map((item) => (
                     <Card size="small" key={item.id} onClick={() => void loadSession(item.id)} hoverable title={item.draft?.form?.brief?.slice(0, 30) || '未命名立项'} extra={<Button type="text" danger icon={<DeleteOutlined />} aria-label="删除草稿" onClick={(event) => { event.stopPropagation(); void deleteDraft(item.id) }} />}>
-                      <Text type="secondary">{item.draft?.form?.genre || '自由创作'} · {item.updated_at ? new Date(item.updated_at).toLocaleString('zh-CN') : '刚刚保存'}</Text>
+                      <Text type="secondary">{item.draft?.form?.genre || '自由创作'} · {item.updated_at ? (formatApiDateTime(item.updated_at) || '时间未记录') : '刚刚保存'}</Text>
                     </Card>
                   ))}
                 </div>

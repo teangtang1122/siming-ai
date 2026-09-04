@@ -51,21 +51,6 @@ def generate_idempotency_key(
         key = f"{dimension}:{title}"
         return f"create_worldbuilding_entry:{project_id}:{key}" if title else None
 
-    if tool == "create_relationship":
-        source = str(args.get("source") or args.get("from") or "").strip()
-        target = str(args.get("target") or args.get("to") or "").strip()
-        if not source or not target:
-            return None
-        from .utils import find_character_by_name_or_id
-
-        source_character = find_character_by_name_or_id(db, project_id, source)
-        target_character = find_character_by_name_or_id(db, project_id, target)
-        if source_character and target_character:
-            first, second = sorted([source_character.id, target_character.id])
-            return f"create_relationship:{project_id}:{first}:{second}"
-        first, second = sorted([source.lower(), target.lower()])
-        return f"create_relationship:{project_id}:{first}:{second}"
-
     return None
 
 

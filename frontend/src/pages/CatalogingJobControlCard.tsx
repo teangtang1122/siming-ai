@@ -1,14 +1,26 @@
 import { Button, Card, Progress, Space, Tag, Typography } from 'antd'
 import { StepForwardOutlined } from '@ant-design/icons'
-import type { CatalogingJob } from './catalogingTypes'
+import type { CatalogingJob, CatalogingRun } from './catalogingTypes'
 import { catalogingStatusColor, catalogingStatusLabel } from './catalogingTypes'
 import { PersistentActionBar, PersistentOutcome } from '../components/interaction'
 import type { OperationOutcome, OperationResult } from '../components/interaction'
+import { formatApiDateTime } from '../utils/dateTime'
 
 const { Text } = Typography
 
+const catalogingStageLabel: Record<string, string> = {
+  queued: '准备中',
+  facts: '事实抽取',
+  candidates: '候选生成',
+  apply: '写入档案',
+  completed: '处理完成',
+}
+
 interface CatalogingJobControlCardProps {
   job: CatalogingJob | null
+  currentRun?: CatalogingRun
+  factCount?: number
+  candidateCount?: number
   progress: number
   streaming: boolean
   onApplyPending: () => void
@@ -24,6 +36,9 @@ interface CatalogingJobControlCardProps {
 
 function CatalogingJobControlCard({
   job,
+  currentRun,
+  factCount = 0,
+  candidateCount = 0,
   progress,
   streaming,
   onApplyPending,
@@ -101,6 +116,32 @@ function CatalogingJobControlCard({
           <Text>章节 {job.completed_chapters || 0}/{job.total_chapters || 0}</Text>
           {job.error && !outcome && <Text type="danger">{job.error}</Text>}
         </Space>
+        {['queued', 'running'].includes(job.status) && currentRun && (
+          <Space direction="vertical" size={4}>
+            <Space wrap>
+              <Text type="secondary">当前章节：{currentRun.chapter_title}</Text>
+              <Tag color={catalogingStatusColor[currentRun.status] || 'default'}>
+                {job.execution_mode === 'auto' && currentRun.status === 'awaiting_confirmation'
+                  ? '候选应用中'
+                  : catalogingStatusLabel[currentRun.status] || currentRun.status}
+              </Tag>
+              {job.current_stage && (
+                <Tag color="processing">{catalogingStageLabel[job.current_stage] || job.current_stage}</Tag>
+              )}
+              <Text type="secondary">已保存 {factCount} 条事实 · {candidateCount} 条候选</Text>
+            </Space>
+            {(job.current_message || job.last_activity_at) && (
+              <Space wrap>
+                {job.current_message && <Text type="secondary">{job.current_message}</Text>}
+                {job.last_activity_at && (
+                  <Text type="secondary">
+                    最近活动：{formatApiDateTime(job.last_activity_at) || '时间未记录'}
+                  </Text>
+                )}
+              </Space>
+            )}
+          </Space>
+        )}
         <Progress percent={progress} />
         {outcome && <PersistentOutcome outcome={outcome} title={outcomeTitle} result={result} />}
         {job.status === 'waiting_confirmation' && (

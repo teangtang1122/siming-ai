@@ -1,0 +1,44 @@
+{
+  "schema": "assistant_transcript_import_interop_fixture.v1",
+  "message": {
+    "id": "message-1",
+    "sequence_no": 1,
+    "role": "user",
+    "content": "问题 1",
+    "status": "completed",
+    "message_hash": "d3983296d8a9dc591aa2a7f57ca11544977c6d5d4120dabc1665886123194d49"
+  },
+  "import_key": {
+    "source_title": "　章节\r\n一 ",
+    "normalized_title": "章节 一",
+    "payload": {
+      "schema": "assistant_transcript_import_key.v2",
+      "project_id": "project-1",
+      "client_conversation_id": "conversation-1",
+      "server_conversation_id": null,
+      "transcript_revision": 2,
+      "title": "章节 一",
+      "messages": [
+        {
+          "schema": "assistant_transcript_message.v1",
+          "id": "message-1",
+          "sequence_no": 1,
+          "role": "user",
+          "content": "问题 1",
+          "status": "completed"
+        },
+        {
+          "schema": "assistant_transcript_message.v1",
+          "id": "message-2",
+          "sequence_no": 2,
+          "role": "assistant",
+          "content": "回答 1",
+          "status": "completed"
+        }
+      ]
+    },
+    "sha256": "17fd823137f3b4825054a6b3a123095ff8e36f9e6700b9956a79c7a1937bed64",
+    "idempotency_key": "mobile-transcript:17fd823137f3b4825054a6b3a123095ff8e36f9e6700b9956a79c7a1937bed64",
+    "server_request_hash": "2f18ebdfd969c07a1a1fef10059b7a9174854c64426743ad085841b657e147cc"
+  }
+}

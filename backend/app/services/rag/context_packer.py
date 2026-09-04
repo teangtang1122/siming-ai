@@ -26,6 +26,10 @@ from ...database.models import (
     RagChunk,
     WorldbuildingEntry,
 )
+from ...database.query_filters import (
+    current_worldbuilding_clause,
+    is_current_worldbuilding_status,
+)
 from ..context_builders import (
     _build_character_ai_context,
     _build_character_context,
@@ -261,6 +265,7 @@ def _pack_worldbuilding(
     if rag_available:
         entry_count = db.query(WorldbuildingEntry).filter(
             WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
         ).count()
         if entry_count > 50:
             rag_attempted = True
@@ -322,6 +327,7 @@ def _pack_worldbuilding(
 
     entry_count = db.query(WorldbuildingEntry).filter(
         WorldbuildingEntry.project_id == project_id,
+        current_worldbuilding_clause(WorldbuildingEntry.status),
     ).count()
     return ContextSection(
         category="worldbuilding",
@@ -451,6 +457,13 @@ def _pack_pinned(
         chunk = db.query(RagChunk).filter(RagChunk.id == cid).first()
         if not chunk:
             continue
+        if chunk.source_type == "worldbuilding":
+            entry = db.query(WorldbuildingEntry).filter(
+                WorldbuildingEntry.id == chunk.source_id,
+                WorldbuildingEntry.project_id == chunk.project_id,
+            ).first()
+            if not entry or not is_current_worldbuilding_status(entry.status):
+                continue
         section = ContextSection(
             category="pinned",
             title=f"固定: {chunk.title or chunk.source_type}",
@@ -583,6 +596,7 @@ def pack_context(
         if wb_section:
             wb_count = db.query(WorldbuildingEntry).filter(
                 WorldbuildingEntry.project_id == project_id,
+                current_worldbuilding_clause(WorldbuildingEntry.status),
             ).count()
             if wb_count > 50:
                 reason = wb_section.selection_reason

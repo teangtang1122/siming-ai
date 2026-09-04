@@ -2,6 +2,50 @@ import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios'
 
 const API_BASE_URL = '/api/v1'
 const API_TIMEOUT_MS = 600000
+const CHAPTER_SAVE_PATH = /^\/projects\/[^/]+\/chapters\/[^/]+$/
+
+type CatalogingImpact = 'semantic' | 'style_only'
+
+function chapterSaveConfig(
+  url: string,
+  data: unknown,
+  config?: AxiosRequestConfig,
+): AxiosRequestConfig | undefined {
+  if (!CHAPTER_SAVE_PATH.test(url) || !data || typeof data !== 'object') {
+    return config
+  }
+  const payload = data as Record<string, unknown>
+  if (!Object.prototype.hasOwnProperty.call(payload, 'cataloging_mode')) {
+    return config
+  }
+  const existingHeaders = config?.headers || {}
+  if ('X-Siming-Cataloging-Impact' in existingHeaders) {
+    return config
+  }
+
+  let impact: CatalogingImpact = 'semantic'
+  if (typeof window !== 'undefined') {
+    try {
+      const styleOnly = window.confirm(
+        '本次是否只调整措辞、句式或标点，完全不改变剧情事实、角色状态、设定、事件顺序或章节结构？\n\n'
+        + '确定：仅润色，保留现有建档状态。\n'
+        + '取消：存在剧情或事实变化，回退本章及后续章节的旧建档状态。',
+      )
+      impact = styleOnly ? 'style_only' : 'semantic'
+    } catch {
+      // Non-browser test/runtime environments may not implement confirm.
+      impact = 'semantic'
+    }
+  }
+
+  return {
+    ...config,
+    headers: {
+      ...existingHeaders,
+      'X-Siming-Cataloging-Impact': impact,
+    },
+  }
+}
 
 class ApiClient {
   private client: AxiosInstance
@@ -53,8 +97,8 @@ class ApiClient {
     return this.client.postForm<T>(url, data, config)
   }
 
-  put<T>(url: string, data?: unknown) {
-    return this.client.put<T>(url, data)
+  put<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
+    return this.client.put<T>(url, data, chapterSaveConfig(url, data, config))
   }
 
   patch<T>(url: string, data?: unknown) {

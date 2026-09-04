@@ -1,7 +1,7 @@
 import {
   apiDateTimeIso,
   formatAssistantTimestamp,
-  formatAssistantTimestampTitle,
+  formatApiDateTime,
 } from '../../utils/dateTime'
 
 interface AssistantMessageTimeProps {
@@ -16,7 +16,7 @@ export function AssistantMessageTime({ value }: AssistantMessageTimeProps) {
     <time
       className="assistant-message-time"
       dateTime={iso}
-      title={formatAssistantTimestampTitle(value) || undefined}
+      title={formatApiDateTime(value) || undefined}
     >
       {label}
     </time>

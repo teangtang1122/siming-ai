@@ -1,8 +1,8 @@
 """Regression tests for runtime database schema compatibility."""
 
+import json
 import sqlite3
 import unittest
-import json
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -257,6 +257,7 @@ class RuntimeMigrationTestCase(unittest.TestCase):
             message = AssistantMessage(
                 conversation_id=conversation.id,
                 role="assistant",
+                sequence_no=1,
                 content="正在写作",
                 status="running",
             )
@@ -287,7 +288,9 @@ class RuntimeMigrationTestCase(unittest.TestCase):
             self.assertEqual(db.get(AssistantRunStep, run_step.id).status, "interrupted")
             recovered_message = db.get(AssistantMessage, message.id)
             self.assertEqual(recovered_message.status, "error")
-            self.assertEqual(json.loads(recovered_message.payload_json)["run"]["status"], "interrupted")
+            self.assertEqual(
+                json.loads(recovered_message.payload_json)["run"]["status"], "interrupted"
+            )
         finally:
             db.close()
 
@@ -305,6 +308,7 @@ class RuntimeMigrationTestCase(unittest.TestCase):
             message = AssistantMessage(
                 conversation_id=conversation.id,
                 role="assistant",
+                sequence_no=1,
                 content="正在分析需求...",
                 status="running",
             )

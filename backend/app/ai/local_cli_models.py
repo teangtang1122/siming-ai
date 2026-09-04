@@ -54,7 +54,7 @@ DEFAULT_CLI_MODELS: dict[str, str] = {
     "custom_cli": "custom-cli",
 }
 CLI_MODEL_DISCOVERY_ARGS: dict[str, list[str]] = {
-    "opencode_cli": ["models"],
+    "opencode_cli": ["models", "--verbose"],
     "mimocode_cli": ["models"],
     "codex_cli": ["models"],
     "cursor_cli": ["--list-models"],
@@ -123,17 +123,27 @@ def _model_option(model: str, display_name: str | None = None) -> dict:
 
 def _merge_model_options(*groups: list[dict]) -> list[dict]:
     merged: list[dict] = []
-    seen: set[str] = set()
+    by_id: dict[str, dict] = {}
     for group in groups:
         for item in group:
             model = str(item.get("id") or "").strip()
-            if not model or model in seen:
+            if not model:
                 continue
-            seen.add(model)
-            merged.append({
-                "id": model,
-                "display_name": str(item.get("display_name") or model),
-            })
+            if model not in by_id:
+                option = {
+                    "id": model,
+                    "display_name": str(item.get("display_name") or model),
+                }
+                by_id[model] = option
+                merged.append(option)
+            # A configured name may precede discovery. Keep its label, while
+            # retaining capacity evidence from the CLI's exact model record.
+            for key in (
+                "context_window_tokens", "max_output_tokens",
+                "safety_margin_tokens", "capacity_source",
+            ):
+                if key in item:
+                    by_id[model][key] = item[key]
     return merged
 
 
@@ -317,6 +327,51 @@ def _extract_discovered_models(payload: str) -> list[str]:
     return [value for value in map(str, values) if _clean_model_candidate(value)]
 
 
+def _opencode_model_options(payload: str) -> list[dict]:
+    """Read OpenCode's model-ID line followed by its verbose JSON record."""
+    decoder = json.JSONDecoder()
+    options: list[dict] = []
+    offset = 0
+    while offset < len(payload):
+        end = payload.find("\n", offset)
+        end = len(payload) if end < 0 else end
+        model = _clean_model_candidate(payload[offset:end])
+        offset = end + 1
+        if not model or "/" not in model:
+            continue
+        option = _model_option(model)
+        while offset < len(payload) and payload[offset].isspace():
+            offset += 1
+        if offset < len(payload) and payload[offset] == "{":
+            try:
+                record, offset = decoder.raw_decode(payload, offset)
+            except json.JSONDecodeError:
+                options.append(option)
+                break
+            if isinstance(record, dict) and (
+                f"{record.get('providerID')}/{record.get('id')}" == model
+            ):
+                if isinstance(record.get("name"), str):
+                    option["display_name"] = record["name"]
+                limits = record.get("limit")
+                if isinstance(limits, dict):
+                    window, output = limits.get("context"), limits.get("output")
+                    if (
+                        type(window) is int and type(output) is int
+                        and 2048 <= window <= 10_000_000
+                        and 0 < output <= 1_000_000
+                        and output + 512 < window
+                    ):
+                        option.update(
+                            context_window_tokens=window,
+                            max_output_tokens=output,
+                            safety_margin_tokens=512,
+                            capacity_source="opencode_cli_metadata",
+                        )
+        options.append(option)
+    return _merge_model_options(options)
+
+
 def discover_local_cli_models(
     provider: str,
     command: str | None = None,
@@ -346,6 +401,8 @@ def discover_local_cli_models(
         return []
     if completed.returncode != 0:
         return []
+    if provider == "opencode_cli":
+        return _opencode_model_options(completed.stdout)
     return [
         {"id": model, "display_name": model}
         for model in dict.fromkeys(_extract_discovered_models(completed.stdout))

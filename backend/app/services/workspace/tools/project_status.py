@@ -33,6 +33,7 @@ async def get_project_archive_status(
         OutlineNode,
         WorldbuildingEntry,
     )
+    from app.database.query_filters import current_worldbuilding_clause
     from app.services.story_granularity import inspect_chapter_granularity
     from app.services.narrative_ledger import list_narrative_ledger
     if not str(project_id or "").strip():
@@ -68,6 +69,10 @@ async def get_project_archive_status(
     ).count()
 
     worldbuilding_count = db.query(WorldbuildingEntry).filter(
+        WorldbuildingEntry.project_id == project_id,
+        current_worldbuilding_clause(WorldbuildingEntry.status),
+    ).count()
+    worldbuilding_total_count = db.query(WorldbuildingEntry).filter(
         WorldbuildingEntry.project_id == project_id,
     ).count()
 
@@ -205,6 +210,9 @@ async def get_project_archive_status(
             "character_aliases_count": aliases_count,
             "relationships_count": relationships_count,
             "worldbuilding_count": worldbuilding_count,
+            "worldbuilding_inactive_count": max(
+                0, worldbuilding_total_count - worldbuilding_count
+            ),
             "last_cataloging_job": last_job_data,
             "granularity_health": granularity_health,
             "warnings": warnings,

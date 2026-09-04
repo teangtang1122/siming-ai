@@ -16,6 +16,7 @@ class EntrypointHelpTest(unittest.TestCase):
             [sys.executable, _SCRIPT, "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
         )
         self.assertEqual(result.returncode, 0, f"Exit code {result.returncode}: {result.stderr}")
@@ -25,6 +26,7 @@ class EntrypointHelpTest(unittest.TestCase):
             [sys.executable, _SCRIPT, "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
         )
         self.assertIn("MCP", result.stdout)
@@ -35,6 +37,7 @@ class EntrypointHelpTest(unittest.TestCase):
             [sys.executable, _SCRIPT, "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
         )
         self.assertIn("--project-id", result.stdout)
@@ -44,6 +47,7 @@ class EntrypointHelpTest(unittest.TestCase):
             [sys.executable, _SCRIPT, "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
         )
         self.assertIn("--permission-pack", result.stdout)
@@ -58,6 +62,7 @@ class EntrypointBadArgsTest(unittest.TestCase):
             [sys.executable, _SCRIPT, "--invalid-flag"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
         )
         self.assertNotEqual(result.returncode, 0)

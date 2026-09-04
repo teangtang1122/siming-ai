@@ -10,6 +10,29 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 
+INTERNAL_LLM_TOOLS = [
+    "chapter_writer",
+    "character_writer",
+    "outline_writer",
+    "worldbuilding_writer",
+    "design_plot",
+    "roleplay_character",
+    "dialogue_battle",
+    "evaluate_chapter",
+    "detect_character_changes",
+    "detect_new_worldbuilding",
+    "detect_worldbuilding_conflicts",
+    "rewrite_text",
+    "expand_text",
+    "continue_text",
+    "start_cataloging_job",
+    "resume_cataloging_job",
+    "retry_current_cataloging_chapter",
+    "rerun_cataloging_resolution_current",
+    "start_deconstruct_job",
+]
+
+
 async def get_moshu_usage_guide(
     db: Session,
     project_id: str,
@@ -26,29 +49,11 @@ async def get_moshu_usage_guide(
     ensure_builtin_packs(db)
 
     scenario = str(args.get("scenario") or "quickstart").strip() or "quickstart"
-    no_api = bool(args.get("no_api") if "no_api" in args else scenario in {"cataloging_no_api", "writing_no_api"})
-
-    internal_llm_tools = [
-        "chapter_writer",
-        "character_writer",
-        "outline_writer",
-        "worldbuilding_writer",
-        "design_plot",
-        "roleplay_character",
-        "dialogue_battle",
-        "evaluate_chapter",
-        "detect_character_changes",
-        "detect_new_worldbuilding",
-        "detect_worldbuilding_conflicts",
-        "rewrite_text",
-        "expand_text",
-        "continue_text",
-        "start_cataloging_job",
-        "resume_cataloging_job",
-        "retry_current_cataloging_chapter",
-        "rerun_cataloging_resolution_current",
-        "start_deconstruct_job",
-    ]
+    no_api = bool(
+        args.get("no_api")
+        if "no_api" in args
+        else scenario in {"cataloging_no_api", "writing_no_api", "outline_no_api"}
+    )
 
     workflows = {
         "quickstart": {
@@ -78,7 +83,7 @@ async def get_moshu_usage_guide(
                 "list_prompt_packs",
                 "get_prompt_pack",
             ],
-            "internal_llm_tools_forbidden_by_default": internal_llm_tools,
+            "internal_llm_tools_forbidden_by_default": INTERNAL_LLM_TOOLS,
         },
         "import_file": {
             "title": "导入本地小说为新作品",
@@ -101,7 +106,7 @@ async def get_moshu_usage_guide(
                 "每章 apply 后调用 verify_external_cataloging_progress；前一章完成前不得处理下一章。发现缺项时只补工具明确列出的缺项。",
                 "最终调用 get_project_archive_status，确认角色、大纲、世界观、章节摘要数量符合预期后再报告完成。",
             ],
-            "forbidden_tools": internal_llm_tools,
+            "forbidden_tools": INTERNAL_LLM_TOOLS,
         },
         "cataloging_internal": {
             "title": "使用司命内部 API 建档",
@@ -116,13 +121,28 @@ async def get_moshu_usage_guide(
         "writing_no_api": {
             "title": "API-free 写作，由外部 Agent 生成正文",
             "steps": [
-                "调用 prepare_external_writing_context 获取大纲、角色、世界观、摘要和基础写作提示词。",
-                "外部 Agent 一次生成基础正文；本任务不执行去除 AI 味改写或质量评审。",
-                "调用 save_external_chapter_draft 保存完整的未入库草稿，然后立即结束本轮。",
+                "查询真实章级大纲 ID；界面选中项和历史消息不能替代最新用户目标。",
+                "调用 prepare_external_writing_context 建立只含目标、文风、作者要求和显式固定项的精简基线。",
+                "模型按需调用 search_task_context，复核候选后调用 submit_context_evidence；确实不需要额外资料时提交空数组。",
+                "submit_context_evidence 返回首个 context_page；若 has_more=true，逐次原样复制 next_arguments 调用 prepare_task_context，末页才返回 context_selection_token。",
+                "读完全部精确上下文后，在下一模型步骤一次生成未入库草稿。",
+                "携带同一 manifest 与 context_selection_token 调用 save_external_chapter_draft，然后立即结束本轮。",
                 "不得继续写入正式章节、角色或世界观，也不得启动或查询建档。",
                 "正式保存与启动建档由作者在界面选择；去除 AI 味和质量评分直接读取编辑器当前草稿。",
             ],
-            "forbidden_tools": internal_llm_tools,
+            "forbidden_tools": INTERNAL_LLM_TOOLS,
+        },
+        "outline_no_api": {
+            "title": "API-free 大纲提案，由外部 Agent 生成并交作者确认",
+            "steps": [
+                "查询真实父节点与插入位置；应用层不根据关键词或界面状态猜目标。",
+                "调用 prepare_task_context(task_type='outline_planning', parent_id=..., insert_after_id=..., batch_count=..., requirements=...) 建立精简基线。",
+                "模型按需调用 search_task_context，复核候选后调用 submit_context_evidence。",
+                "按 next_arguments 逐页读完 context_page；末页取得选择令牌后，才在下一模型步骤生成章级节点及其 section。",
+                "携带同一 manifest 与 context_selection_token 调用 save_external_outline_draft，然后立即结束本轮。",
+                "不得调用 create_outline_nodes 或继续写正文；作者可编辑、确认、重新生成或放弃提案。",
+            ],
+            "forbidden_tools": INTERNAL_LLM_TOOLS,
         },
         "writing_internal": {
             "title": "使用司命内部 API 写作",
@@ -154,11 +174,23 @@ async def get_moshu_usage_guide(
     }
 
 def _recommended_next(scenario: str, no_api: bool) -> list[dict[str, Any]]:
-    if scenario == "cataloging_no_api" or no_api:
+    if scenario == "cataloging_no_api":
         return [
             {"tool": "get_prompt_pack", "arguments": {"pack_id": "cataloging_external_no_api"}},
             {"tool": "start_external_cataloging_job", "arguments": {}},
         ]
+    if scenario == "writing_no_api":
+        return [
+            {"tool": "get_prompt_pack", "arguments": {"pack_id": "chapter_writing_quality"}},
+            {"tool": "prepare_external_writing_context", "arguments": {}},
+        ]
+    if scenario == "outline_no_api":
+        return [
+            {"tool": "get_prompt_pack", "arguments": {"pack_id": "outline_planning"}},
+            {"tool": "prepare_task_context", "arguments": {"task_type": "outline_planning"}},
+        ]
+    if no_api:
+        return [{"tool": "get_mcp_permission_status", "arguments": {}}]
     if scenario == "import_file":
         return [{"tool": "import_file_as_project", "arguments": {"file_path": "<path>", "title": "<title>"}}]
     return [{"tool": "list_projects", "arguments": {}}, {"tool": "get_mcp_permission_status", "arguments": {}}]

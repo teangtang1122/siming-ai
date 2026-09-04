@@ -12,6 +12,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -35,20 +36,7 @@ object MobileProviderEncryption {
         val associatedData =
             "siming-mobile-provider-v1:${connection.deviceId}:$projectId".toByteArray(Charsets.UTF_8)
         val plaintext = Json.encodeToString(
-            buildJsonObject {
-                put("base_url", config.baseUrl.trim().trimEnd('/'))
-                put("api_key", config.apiKey.trim())
-                put("model", config.model.trim())
-                put(
-                    "protocol",
-                    if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
-                        DirectApiConfig.PROTOCOL_RESPONSES
-                    } else {
-                        DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS
-                    },
-                )
-                put("issued_at", System.currentTimeMillis())
-            },
+            providerPlaintext(config, issuedAt = System.currentTimeMillis()),
         ).toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
@@ -59,6 +47,43 @@ object MobileProviderEncryption {
             nonce = encode(nonce),
             ciphertext = encode(ciphertext),
         )
+    }
+
+    /** Request-scoped provider and capacity profile; this object is encrypted as one envelope. */
+    internal fun providerPlaintext(
+        config: DirectApiConfig,
+        issuedAt: Long,
+    ): JsonObject {
+        val effectiveConfig = config.withContextWindowFallback()
+        val contextWindow = requireNotNull(effectiveConfig.contextWindowTokens)
+        return buildJsonObject {
+            put("base_url", effectiveConfig.baseUrl.trim().trimEnd('/'))
+            put("api_key", effectiveConfig.apiKey.trim())
+            put("model", effectiveConfig.model.trim())
+            put(
+                "protocol",
+                if (effectiveConfig.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+                    DirectApiConfig.PROTOCOL_RESPONSES
+                } else {
+                    DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS
+                },
+            )
+            put("context_window_tokens", contextWindow)
+            put("max_output_tokens", effectiveConfig.maxOutputTokens)
+            put("safety_margin_tokens", effectiveConfig.safetyMarginTokens)
+            put(
+                "capacity_assurance",
+                if (
+                    effectiveConfig.contextCapacitySource ==
+                    DirectApiConfig.CONTEXT_CAPACITY_FALLBACK
+                ) {
+                    "unverified"
+                } else {
+                    "conservative"
+                },
+            )
+            put("issued_at", issuedAt)
+        }
     }
 
     private fun hkdfSha256(input: ByteArray, info: ByteArray, length: Int): ByteArray {

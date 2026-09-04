@@ -7,12 +7,15 @@ from typing import Optional
 
 from sqlalchemy.orm import Session, selectinload
 
+from ...core.exceptions import ValidationError
 from ...database.models import (
     Character,
     OutlineNode,
     OutlineNodeCharacter,
     WorldbuildingEntry,
 )
+from ...database.query_filters import current_worldbuilding_clause
+from ..outline_service import replace_character_links
 
 
 WORLD_DIMENSIONS = {"geography", "history", "factions", "power_system", "races", "culture"}
@@ -94,10 +97,23 @@ def find_worldbuilding_by_title_or_id(
     text = str(value or "").strip()
     if not text:
         return None
+    by_id = (
+        db.query(WorldbuildingEntry)
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            WorldbuildingEntry.id == text,
+        )
+        .first()
+    )
+    if by_id:
+        return by_id
     return (
         db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
-        .filter((WorldbuildingEntry.id == text) | (WorldbuildingEntry.title == text))
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            WorldbuildingEntry.title == text,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        )
         .first()
     )
 
@@ -166,13 +182,32 @@ def find_outline_by_title_or_id(
 
 def character_ids_from_names(db: Session, project_id: str, names: object) -> list[str]:
     if not isinstance(names, list):
-        return []
-    ids = []
+        raise ValidationError("关联角色必须是名称或 ID 列表")
+    ids: list[str] = []
+    unresolved: list[str] = []
     for name in names:
         character = find_character_by_name_or_id(db, project_id, name)
-        if character and character.id not in ids:
+        if not character:
+            label = str(name or "").strip() or "<空名称>"
+            if label not in unresolved:
+                unresolved.append(label)
+            continue
+        if character.id not in ids:
             ids.append(character.id)
+    if unresolved:
+        raise ValidationError(f"未找到当前作品内的关联角色：{'、'.join(unresolved)}")
     return ids
+
+
+def outline_links_from_names(
+    db: Session,
+    project_id: str,
+    names: object,
+) -> list[tuple[str, Optional[str]]]:
+    return [
+        (character_id, "AI关联")
+        for character_id in character_ids_from_names(db, project_id, names)
+    ]
 
 
 def replace_outline_links_by_names(
@@ -181,13 +216,14 @@ def replace_outline_links_by_names(
     node: OutlineNode,
     names: object,
 ) -> None:
-    ids = character_ids_from_names(db, project_id, names)
-    if not ids:
+    if names is None:
         return
-    node.linked_characters.clear()
-    db.flush()
-    for character_id in ids:
-        node.linked_characters.append(OutlineNodeCharacter(character_id=character_id, role_in_scene="AI关联"))
+    replace_character_links(
+        db,
+        project_id,
+        node,
+        outline_links_from_names(db, project_id, names),
+    )
 
 
 def next_outline_sort_order(db: Session, project_id: str, parent_id: Optional[str]) -> int:
@@ -219,6 +255,7 @@ _find_character_by_name_or_id = find_character_by_name_or_id
 _normalize_outline_lookup = normalize_outline_lookup
 _find_outline_by_title_or_id = find_outline_by_title_or_id
 _character_ids_from_names = character_ids_from_names
+_outline_links_from_names = outline_links_from_names
 _replace_outline_links_by_names = replace_outline_links_by_names
 _next_outline_sort_order = next_outline_sort_order
 _next_worldbuilding_sort_order = next_worldbuilding_sort_order

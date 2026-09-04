@@ -166,7 +166,6 @@ async def classify_assistant_data_input(
     context_scope: str = "creation",
     active_project_id: str = "",
     creation_session_id: str = "",
-    history: list[dict[str, Any]] | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Ask the selected model to route a data-bearing assistant input.
@@ -186,14 +185,6 @@ async def classify_assistant_data_input(
         if isinstance(item, dict)
     ]
     latest_answer = clarification_entries[-1]["answer"] if clarification_entries else ""
-    recent_history = [
-        {
-            "role": str(item.get("role") or "")[:20],
-            "content": str(item.get("content") or "")[:1_000],
-        }
-        for item in (history or [])[-6:]
-        if isinstance(item, dict)
-    ]
     payload = {
         "chat_instruction": str(user_instruction or ""),
         "source": {
@@ -207,7 +198,6 @@ async def classify_assistant_data_input(
             "scope": str(context_scope or "creation"),
             "active_project_id": str(active_project_id or "") or None,
             "creation_session_id": str(creation_session_id or "") or None,
-            "recent_history": recent_history,
         },
         "clarification": {
             "history": clarification_entries,

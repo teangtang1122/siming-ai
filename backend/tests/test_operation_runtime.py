@@ -247,7 +247,7 @@ def test_completed_operation_without_reply_or_changes_is_not_generic_success():
     assert payload["outcome"] == "empty_response"
 
 
-def test_heartbeat_preserves_quiet_health_and_real_activity_timestamp():
+def test_heartbeat_and_process_samples_do_not_forge_semantic_activity():
     _engine, _Session, db = _db()
     operation = ensure_operation(db, source_kind="test", source_id="heartbeat", title="Heartbeat test")
     operation.health_status = "quiet"
@@ -261,7 +261,11 @@ def test_heartbeat_preserves_quiet_health_and_real_activity_timestamp():
 
     record_operation_signal(operation.id, "process", {"cpu_seconds": 10}, db=db)
     assert operation.health_status == "active"
-    assert operation.last_activity_at > previous_activity
+    assert operation.last_activity_at == previous_activity
+
+    operation.last_activity_at = datetime.utcnow() - timedelta(minutes=31)
+    operation.heartbeat_at = datetime.utcnow()
+    assert serialize_operation(operation)["health_status"] == "suspected_stall"
 
 
 def test_stream_output_keeps_one_live_snapshot_without_growing_the_event_log():

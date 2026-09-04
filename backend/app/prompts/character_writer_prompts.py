@@ -43,8 +43,6 @@ CHARACTER_WRITER_SYSTEM_BASE = (
     "根据提供的项目上下文和用户需求，创建一份完整的角色卡片。\n"
     "如果用户要求创建多个角色，确保每个角色的性格、动机和说话方式有明显区分。\n\n"
     "请调用 create_character 函数提交角色卡片。"
-    "如果当前模型环境无法使用函数调用，则只输出严格 JSON 对象，不要 Markdown，不要解释；"
-    "JSON 顶层包含 name、appearance、personality、background、abilities、role_type、speech_style、motivation、conflict、ai_config、design_notes。"
 )
 
 

@@ -1,3 +1,4 @@
+import { formatApiDateTime } from '../utils/dateTime'
 import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
@@ -149,7 +150,7 @@ function ExternalAgentPermissionPanel({ projectId, globalCliOverride }: External
           <span>外部 Agent 权限设置</span>
           {lastSavedAt && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              上次保存: {new Date(lastSavedAt).toLocaleString()}
+              上次保存: {(formatApiDateTime(lastSavedAt) || '时间未记录')}
             </Text>
           )}
         </Space>

@@ -248,6 +248,7 @@ def _read_chapter_detail(db: Any, parsed: ParsedUri) -> ResourceContent:
         ChapterCharacter, Character,
         ChapterWorldbuilding, WorldbuildingEntry,
     )
+    from app.database.query_filters import current_worldbuilding_clause
     chapter = db.query(Chapter).filter(
         Chapter.project_id == parsed.project_id,
         Chapter.id == parsed.entity_id,
@@ -307,7 +308,8 @@ def _read_chapter_detail(db: Any, parsed: ParsedUri) -> ResourceContent:
         worldbuilding = []
         for link in wb_links:
             entry = db.query(WorldbuildingEntry).filter(
-                WorldbuildingEntry.id == link.worldbuilding_entry_id
+                WorldbuildingEntry.id == link.worldbuilding_entry_id,
+                current_worldbuilding_clause(WorldbuildingEntry.status),
             ).first()
             if entry:
                 worldbuilding.append({
@@ -361,8 +363,10 @@ def _read_character_detail(db: Any, parsed: ParsedUri) -> ResourceContent:
 def _read_worldbuilding_index(db: Any, parsed: ParsedUri) -> ResourceContent:
     import json
     from app.database.models import WorldbuildingEntry
+    from app.database.query_filters import current_worldbuilding_clause
     entries = db.query(WorldbuildingEntry).filter(
-        WorldbuildingEntry.project_id == parsed.project_id
+        WorldbuildingEntry.project_id == parsed.project_id,
+        current_worldbuilding_clause(WorldbuildingEntry.status),
     ).order_by(WorldbuildingEntry.sort_order).all()
     items = [
         {"id": e.id, "title": e.title, "dimension": e.dimension}
@@ -375,9 +379,11 @@ def _read_worldbuilding_index(db: Any, parsed: ParsedUri) -> ResourceContent:
 def _read_worldbuilding_detail(db: Any, parsed: ParsedUri) -> ResourceContent:
     import json
     from app.database.models import WorldbuildingEntry
+    from app.database.query_filters import current_worldbuilding_clause
     entry = db.query(WorldbuildingEntry).filter(
         WorldbuildingEntry.project_id == parsed.project_id,
         WorldbuildingEntry.id == parsed.entity_id,
+        current_worldbuilding_clause(WorldbuildingEntry.status),
     ).first()
     if not entry:
         return ResourceContent(uri=parsed.uri, mime_type="application/json",

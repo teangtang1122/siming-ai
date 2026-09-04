@@ -32,6 +32,11 @@ export interface CatalogingJob {
   failed_chapters: number
   error?: string | null
   review_warning?: string | null
+  current_stage?: string | null
+  current_message?: string | null
+  process_alive?: boolean | null
+  heartbeat_at?: string | null
+  last_activity_at?: string | null
   created_at?: string | null
   updated_at?: string | null
   completed_at?: string | null
@@ -112,6 +117,11 @@ export const catalogingStatusColor: Record<string, string> = {
   completed: 'green',
   failed: 'red',
   pending: 'default',
+  in_progress: 'processing',
+  facts_saved: 'blue',
+  awaiting_confirmation: 'orange',
+  completed_with_warnings: 'orange',
+  skipped_by_user: 'default',
   edited: 'blue',
   approved: 'green',
   rejected: 'red',
@@ -130,6 +140,11 @@ export const catalogingStatusLabel: Record<string, string> = {
   failed: '建档失败',
   cancelled: '已取消',
   pending: '待处理',
+  in_progress: '正在抽取事实',
+  facts_saved: '事实已保存，正在生成候选',
+  awaiting_confirmation: '候选待确认',
+  completed_with_warnings: '完成，需留意警告',
+  skipped_by_user: '已由作者跳过',
   edited: '已编辑',
   approved: '已确认',
   rejected: '已拒绝',

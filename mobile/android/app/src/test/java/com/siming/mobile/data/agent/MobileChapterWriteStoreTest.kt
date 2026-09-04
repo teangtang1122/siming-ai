@@ -62,7 +62,15 @@ class MobileChapterWriteStoreTest {
             assertNotNull(recovered)
             assertEquals(MobileChapterWriteState.GENERATED, recovered.state)
             assertEquals(
-                setOf("generating", "generated", "cancelled", "failed", "saved", "superseded"),
+                setOf(
+                    "generating",
+                    "generated",
+                    "cancelled",
+                    "failed",
+                    "saved",
+                    "discarded",
+                    "superseded",
+                ),
                 MobileChapterWriteState.ALL,
             )
             assertEquals(runId, store.latestGenerated("p1")?.id)
@@ -70,6 +78,36 @@ class MobileChapterWriteStoreTest {
             assertEquals(null, store.latestGenerated("p1"))
             assertEquals(runId, mobileChapterWriteRunId("p1", "deepseek-chat", manifest))
             assertNotEquals(runId, mobileChapterWriteRunId("p2", "deepseek-chat", manifest))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `author discard releases standalone draft without deleting audit record`() = runTest {
+        val directory = createTempDirectory("siming-mobile-write-").toFile()
+        try {
+            val manifest = manifest()
+            val runId = mobileChapterWriteRunId("p1", "deepseek-chat", manifest)
+            val store = MobileChapterWriteStore(directory)
+            store.save(
+                MobileChapterWriteRun(
+                    id = runId,
+                    projectId = "p1",
+                    model = "deepseek-chat",
+                    title = "断线重连",
+                    content = "作者决定不用的正文。",
+                    state = MobileChapterWriteState.GENERATED,
+                    manifest = manifest,
+                ),
+            )
+
+            val discarded = store.markDiscarded(runId)
+
+            assertEquals(MobileChapterWriteState.DISCARDED, discarded?.state)
+            assertEquals(MobileChapterWriteState.DISCARDED, store.markDiscarded(runId)?.state)
+            assertEquals(null, store.latestGenerated("p1"))
+            assertEquals(MobileChapterWriteState.DISCARDED, store.load(runId)?.state)
         } finally {
             directory.deleteRecursively()
         }
@@ -149,9 +187,6 @@ class MobileChapterWriteStoreTest {
             outlineNodeId = "o1",
             targetChapterId = "",
             requirements = "切断病毒网络",
-            involvedCharacters = listOf("陆糖"),
-            characterLimit = 8,
-            recentLimit = 3,
         )
         val item = MobileContextManifestItem(
             category = "target_outline",
@@ -181,6 +216,7 @@ class MobileChapterWriteStoreTest {
             selectionFingerprint = mobileSha256(item.sourceHash),
             contextWindowTokens = 16_384,
             inputBudgetTokens = 8_000,
+            softInputTargetTokens = 8_000,
             outputReserveTokens = 4_000,
             safetyMarginTokens = 512,
             items = listOf(item),
@@ -188,6 +224,7 @@ class MobileChapterWriteStoreTest {
                 "target_outline" to MobileContextCoverage(true, "covered", 1),
             ),
             warnings = listOf("lexical fallback"),
+            selectionToken = "selection-token-1",
         )
     }
 }

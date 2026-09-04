@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 from app.architecture.tool_definition import ToolDef
+from app.modules.continuity.domain.cataloging_contract import CATALOGING_FACT_TYPES
+from app.modules.story.interfaces.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from app.services.task_context_delivery import CONTEXT_PAGE_INPUTS
 
 TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ToolDef(
@@ -72,12 +75,14 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="list_cataloging_candidates",
-        description="List cataloging candidates for review.",
+        description="Read a complete page of cataloging candidates. Follow next_arguments while has_more is true; reduce limit if a page exceeds capacity.",
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "chapter_run_id": {"type": "string", "description": "Optional chapter run ID"},
             "status": {"type": "string", "description": "Optional candidate status filter"},
             "item_type": {"type": "string", "description": "Optional candidate type filter"},
+            "offset": {"type": "integer", "minimum": 0, "description": "Zero-based item offset; default 0"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Complete items per page; default 2"},
         },
         required=["job_id"],
         tool_type="read",
@@ -86,11 +91,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="list_cataloging_facts",
-        description="List saved first-stage cataloging facts.",
+        description="Read a complete page of saved first-stage facts. Follow next_arguments while has_more is true before resolving candidates; reduce limit if a page exceeds capacity.",
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
             "chapter_run_id": {"type": "string", "description": "Optional chapter run ID"},
             "fact_type": {"type": "string", "description": "Optional fact type filter"},
+            "offset": {"type": "integer", "minimum": 0, "description": "Zero-based item offset; default 0"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Complete items per page; default 2"},
         },
         required=["job_id"],
         tool_type="read",
@@ -378,61 +385,124 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="prepare_external_writing_context",
-        description="Build a complete writing context package for a model-selected chapter outline. API-free: does not call LLM. The outline_node_id must be a chapter node in the current project.",
+        description="Prepare governed writing context for a model-selected chapter or the current pending draft. To revise that draft, pass its real source_draft_id; its full current text becomes a required, hash-checked context anchor. Writing instructions and source text are returned only in context_page.text; follow the next_tool_suggestions arguments until has_more=false. Then search and submit exact evidence, read all selected-context pages, and use the selection token. API-free and never overwrites formal prose.",
         input_schema={
             "outline_node_id": {"type": "string", "description": "Target outline node ID"},
+            "target_chapter_id": {
+                "type": "string",
+                "description": "Existing chapter ID when preparing a reviewable revision",
+            },
+            "source_draft_id": {
+                "type": "string",
+                "description": "Current pending draft ID when revising the same unsaved draft",
+            },
             "include_prompt_pack": {
                 "type": "boolean",
                 "description": "Include public prompt pack (default true)",
             },
             "requirements": {"type": "string", "description": "Additional writing requirements"},
+            "minimum_han_characters": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000,
+                "description": "Model-structured hard minimum when the author explicitly requires a Chinese-body length; enforced before any draft is stored and never inferred from requirements text",
+            },
             "context_manifest_id": {
                 "type": "string",
-                "description": "Prepared governed baseline manifest ID",
+                "description": "Prepared governed baseline manifest ID; reuse after model-driven retrieval",
             },
             "model": {
                 "type": "string",
-                "description": "Model identity used to resolve the context budget",
+                "description": "Model identity for unbound external agents; managed CLI runs use their pinned executing model for the context budget",
             },
             "pinned_chunk_ids": {"type": "array", "items": {"type": "string"}},
             "pinned_source_ids": {"type": "array", "items": {"type": "string"}},
+            **CONTEXT_PAGE_INPUTS,
         },
         required=["outline_node_id"],
         tool_type="read",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="prepare_external_writing_context",
     ),
     ToolDef(
         name="save_external_chapter_draft",
-        description="Save one independent, not-yet-official new-chapter draft for a model-selected outline and end the model turn. The outline must not already have a formal chapter; this tool never creates rewrite drafts or overwrites saved prose.",
+        description="Save one not-yet-official new-chapter draft, reviewable existing-chapter revision, or replace the exact current pending draft and end the model turn. Pending-draft revision requires the same source_draft_id used for context and is rejected if the author changed it meanwhile. This tool never overwrites saved prose.",
         input_schema={
             "content": {"type": "string", "description": "Chapter content to save"},
             "outline_node_id": {"type": "string", "description": "Linked outline node ID"},
+            "target_chapter_id": {
+                "type": "string",
+                "description": "Existing chapter ID for a revision candidate",
+            },
+            "base_chapter_version": {
+                "type": "integer",
+                "description": "Version returned by prepare_external_writing_context for conflict protection",
+            },
+            "source_draft_id": {
+                "type": "string",
+                "description": "Current pending draft ID to replace after exact-context revision",
+            },
             "context_manifest_id": {
                 "type": "string",
                 "description": "Prepared governed baseline manifest ID",
+            },
+            "context_selection_token": {
+                "type": "string",
+                "description": "Token returned by submit_context_evidence after exact source selection",
             },
             "source_agent": {
                 "type": "string",
                 "description": "Source agent name (e.g. claude-code)",
             },
         },
-        required=["content", "outline_node_id"],
+        required=["content", "outline_node_id", "context_manifest_id", "context_selection_token"],
         tool_type="write",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
+        ends_agent_turn=True,
         handler_name="save_external_chapter_draft",
     ),
     ToolDef(
         name="get_external_chapter_draft",
-        description="Get a saved chapter draft by ID. API-free.",
+        description="Get a chapter draft by ID, or omit the ID to discover the current pending draft. API-free.",
         input_schema={
             "draft_id": {"type": "string", "description": "Draft ID to retrieve"},
             "content_ref": {"type": "string", "description": "Alias for draft_id"},
         },
-        required=["draft_id"],
+        required=[],
         tool_type="read",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="get_external_chapter_draft",
+    ),
+    ToolDef(
+        name="save_external_outline_draft",
+        description="Save one author-visible, not-yet-formal outline proposal from exact model-selected context and end the turn. The author must confirm it before formal outline nodes exist.",
+        input_schema={
+            "nodes": {
+                "type": "array",
+                "items": {"type": "object"},
+                "minItems": 1,
+                "maxItems": OUTLINE_PROPOSAL_MAX_NODES,
+                "description": f"One to {OUTLINE_PROPOSAL_MAX_NODES} proposed outline nodes",
+            },
+            "design_notes": {"type": "string"},
+            "parent_id": {"type": "string"},
+            "insert_after_id": {"type": "string"},
+            "context_manifest_id": {"type": "string"},
+            "context_selection_token": {"type": "string"},
+        },
+        required=["nodes", "context_manifest_id", "context_selection_token"],
+        tool_type="write",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
+        estimated_cost="free",
+        ends_agent_turn=True,
+        handler_name="save_external_outline_draft",
     ),
     ToolDef(
         name="record_external_quality_review",
@@ -661,11 +731,19 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "chapter_id": {"type": "string", "description": "Chapter ID"},
             "facts": {
                 "type": "array",
-                "items": {"type": "object"},
-                "description": "Extracted facts",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "fact_type": {"type": "string", "enum": list(CATALOGING_FACT_TYPES)},
+                        "payload": {"type": "object"},
+                        "evidence": {"type": "string"},
+                    },
+                    "required": ["fact_type", "payload"],
+                },
+                "description": "Extracted records with fact_type and object payload. Include exactly one chapter_overview whose four required scope arrays exactly match the stable/non-archival character and worldbuilding facts. Relationship endpoints must be stable characters in cataloging_characters. Do not send flat untyped facts or duplicate identities.",
             },
         },
-        required=["job_id", "chapter_id"],
+        required=["job_id", "chapter_id", "facts"],
         tool_type="write",
         writes_project_data=True,
         risk_level="low",
@@ -675,9 +753,20 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ToolDef(
         name="save_external_cataloging_candidates",
         description=(
-            "Save one chapter's complete candidate batch proposed by the external model. "
-            "The same call must include both chapter_summary and chapter-level outline; "
-            "empty entity lists are valid when the chapter contains no such information. API-free."
+            "Save one incremental batch toward a chapter's complete candidate set. "
+            "For Siming-managed jobs each call accepts at most 3 records; the first call "
+            "must contain exactly chapter_summary and the chapter-level outline. Continue "
+            "only with returned missing items. A later single chapter_summary may set "
+            "coverage_manifest_mode='replace' with all five manifest fields to remove an "
+            "overdeclared alias without changing scene_count. A later single chapter_link may set "
+            "chapter_link_mode='replace' with all five aggregate arrays to remove a wrong alias or "
+            "endpoint from the retained link. When a source fact label resolves to a differently "
+            "titled active world card, put that exact label in the card's source_fact_titles. "
+            "A state update that changes an existing "
+            "appearance or age must include the exact current *_before value and a verbatim chapter "
+            "*_evidence excerpt. A state update that changes an existing "
+            "non-empty items_or_assets must copy it exactly to items_or_assets_before and retain it in "
+            "the new full value. Empty entity lists are valid. API-free."
         ),
         input_schema={
             "job_id": {"type": "string", "description": "Cataloging job ID"},
@@ -686,8 +775,13 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "array",
                 "items": {"type": "object"},
                 "description": (
-                    "Complete candidates for one chapter. Put chapter_summary and the "
-                    "chapter-level outline first in the same call; do not save only a summary."
+                    "Native candidate objects for the next incremental batch. Siming-managed "
+                    "calls allow at most 3; the first call is exactly chapter_summary plus the "
+                    "chapter-level outline. A manifest replacement must be the only record in "
+                    "its call and include scene_count, characters, worldbuilding, relationships, "
+                    "and character_profiles. A chapter-link replacement must be the only record "
+                    "in its call and include characters, worldbuilding_titles, locations, items, "
+                    "and events."
                 ),
             },
         },

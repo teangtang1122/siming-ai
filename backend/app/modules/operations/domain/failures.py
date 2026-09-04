@@ -12,11 +12,28 @@ def classify_failure(message: str | None) -> str | None:
     lower = text.lower()
     if re.search(r"free\s+usage\s+exceeded|quota|rate\s*limit|too many requests|429|402", lower):
         return "quota_or_rate_limit"
+    if (
+        ("json schema" in lower and re.search(r"arguments?|parameters?|参数", lower))
+        or re.search(
+            r"(?:invalid|missing|required)\s+(?:tool\s+)?(?:arguments?|parameters?)|"
+            r"(?:arguments?|parameters?)\s+(?:failed|invalid).*schema|schema\s+validation\s+failed",
+            lower,
+        )
+    ):
+        return "invalid_arguments"
     if re.search(
-        r"invalidtoken|invalid[_\s-]*token|expired[_\s-]*token|401|unauthori[sz]ed|login|required",
+        r"invalidtoken|invalid[_\s-]*token|expired[_\s-]*token|"
+        r"(?:http|status|error(?:\s+code)?|code)\s*[:=]?\s*401\b|"
+        r"\bunauthori[sz]ed\b|\bauthentication\s+(?:failed|required)\b|"
+        r"\blogin[\s_-]+required\b",
         lower,
     ):
         return "auth"
+    # Provider overload responses commonly arrive inside an HTTP 502 wrapper.
+    # Classify the explicit capacity signal before the generic upstream/network
+    # branch so the UI can recommend switching models or retrying later.
+    if "service temporarily overloaded" in lower or "temporarily overloaded" in lower:
+        return "unavailable"
     if "timeout" in lower or "超时" in text:
         return "timeout"
     if re.search(

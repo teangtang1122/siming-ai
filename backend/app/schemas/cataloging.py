@@ -61,6 +61,12 @@ class CatalogingJobResponse(BaseModel):
     model_source: Optional[str] = None
     provider: Optional[str] = None
     error: Optional[str]
+    review_warning: Optional[str] = None
+    current_stage: Optional[str] = None
+    current_message: Optional[str] = None
+    process_alive: Optional[bool] = None
+    heartbeat_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime]

@@ -15,22 +15,31 @@ from app.database.models import (
     Character,
     CharacterAlias,
     CharacterRelationship,
+    CharacterTimeline,
     Project,
+    WorldbuildingEntry,
+    WorldbuildingTimeline,
 )
 from app.services.cataloging.candidate_validation import (
     candidate_coverage_review_message,
     inspect_candidate_coverage,
 )
+from app.services.cataloging.candidate_source_expectations import _source_expectations
 from app.services.cataloging.character_ops import (
     apply_character_create,
     apply_character_relationship,
 )
+from app.services.cataloging.context import _worldbuilding_detail
 from app.services.cataloging.orchestrator import (
     _compact_local_runtime_context,
     create_cataloging_job,
 )
 from app.services.cataloging.snapshots import character_snapshot
-from app.services.cataloging.targeted_context import build_targeted_context
+from app.services.cataloging.targeted_context import (
+    _character_context,
+    _worldbuilding_context,
+    build_targeted_context,
+)
 
 
 def database():
@@ -76,6 +85,48 @@ def candidate(db, job, run, chapter, item_type, payload, sort_order=0):
     return row
 
 
+def test_pending_timeline_rows_are_safe_to_sort_in_cataloging_contexts():
+    character = Character(
+        id="character-1",
+        project_id="project-1",
+        name="Pending role",
+        role_type="supporting",
+    )
+    character.timeline_events.extend(
+        [
+            CharacterTimeline(
+                character_id=character.id,
+                chapter_id=f"chapter-{index}",
+                event_description=f"Pending event {index}",
+                event_type="key_event",
+            )
+            for index in range(2)
+        ]
+    )
+    world = WorldbuildingEntry(
+        id="world-1",
+        project_id="project-1",
+        dimension="history",
+        title="Pending history",
+        content="Pending events.",
+    )
+    world.timeline_events.extend(
+        [
+            WorldbuildingTimeline(
+                entry_id=world.id,
+                chapter_id=f"chapter-{index}",
+                event_description=f"Pending world event {index}",
+                event_type="fact_change",
+            )
+            for index in range(2)
+        ]
+    )
+
+    assert len(_character_context(character)["recent_timeline"]) == 2
+    assert len(_worldbuilding_context(world)["recent_timeline"]) == 2
+    assert len(_worldbuilding_detail(world)["recent_timeline"]) == 2
+
+
 def test_fact_inventory_prevents_a_false_empty_manifest():
     engine, db = database()
     try:
@@ -91,7 +142,11 @@ def test_fact_inventory_prevents_a_false_empty_manifest():
             project_id=project.id,
             chapter_id=chapter.id,
             fact_type="character_fact",
-            raw_payload=json.dumps({"name": "张三"}, ensure_ascii=False),
+            raw_payload=json.dumps({
+                "name": "张三",
+                "archive_identity": "stable_character",
+                "stable_profile_change": False,
+            }, ensure_ascii=False),
             status="active",
         ))
         rows = [
@@ -115,6 +170,152 @@ def test_fact_inventory_prevents_a_false_empty_manifest():
         engine.dispose()
 
 
+def test_structured_overview_excludes_incidental_existing_entities_from_source_scope():
+    engine, db = database()
+    try:
+        project = Project(id="project-structured-scope", title="结构化建档范围")
+        chapter = Chapter(
+            id="chapter-structured-scope",
+            project_id=project.id,
+            title="第一章",
+            content=(
+                "周芷没有采用方敏的旧笔记。她核对港办〔2015〕17号，"
+                "正文只顺带提到稿签送审登记簿。"
+            ),
+        )
+        selected_character = Character(
+            id="character-selected",
+            project_id=project.id,
+            name="周芷",
+        )
+        incidental_character = Character(
+            id="character-incidental",
+            project_id=project.id,
+            name="方敏",
+        )
+        selected_worldbuilding = WorldbuildingEntry(
+            id="world-selected",
+            project_id=project.id,
+            dimension="organization",
+            title="港办〔2015〕17号",
+            content="当前有效文件。",
+            status="active",
+        )
+        incidental_worldbuilding = WorldbuildingEntry(
+            id="world-incidental",
+            project_id=project.id,
+            dimension="organization",
+            title="稿签送审登记簿",
+            content="流程用语。",
+            status="active",
+        )
+        db.add_all([
+            project,
+            chapter,
+            selected_character,
+            incidental_character,
+            selected_worldbuilding,
+            incidental_worldbuilding,
+        ])
+        db.commit()
+        job = create_cataloging_job(
+            db,
+            project.id,
+            "auto",
+            "deepseek:test",
+            [chapter.id],
+        )
+        run = job.chapter_runs[0]
+        db.add(CatalogingFact(
+            job_id=job.id,
+            chapter_run_id=run.id,
+            project_id=project.id,
+            chapter_id=chapter.id,
+            fact_type="chapter_overview",
+            raw_payload=json.dumps({
+                "characters": ["周芷", "方敏"],
+                "cataloging_characters": ["周芷"],
+                "anonymous_participants": [],
+                "worldbuilding_titles": ["港办〔2015〕17号", "稿签送审登记簿"],
+                "cataloging_worldbuilding_titles": ["港办〔2015〕17号"],
+                "incidental_worldbuilding_mentions": ["稿签送审登记簿"],
+            }, ensure_ascii=False),
+            status="active",
+        ))
+        row = candidate(
+            db,
+            job,
+            run,
+            chapter,
+            "chapter_summary",
+            summary_payload(),
+        )
+
+        expected_characters, expected_worldbuilding, _, _ = _source_expectations(
+            db,
+            project.id,
+            [row],
+            [selected_character, incidental_character],
+            {"周芷": "周芷", "方敏": "方敏"},
+        )
+
+        assert expected_characters == {"周芷"}
+        assert expected_worldbuilding == {"港办〔2015〕17号"}
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_targeted_worldbuilding_context_exposes_ids_and_hides_superseded_entries():
+    engine, db = database()
+    try:
+        project = Project(id="project-world-context", title="世界观上下文")
+        chapter = Chapter(
+            id="chapter-world-context",
+            project_id=project.id,
+            title="第一章",
+            content="临汐水文站记录潮位。",
+            sort_order=1000,
+        )
+        active = WorldbuildingEntry(
+            id="world-active",
+            project_id=project.id,
+            dimension="geography",
+            title="临汐水文站",
+            content="当前有效站点。",
+            status="active",
+        )
+        stale = WorldbuildingEntry(
+            id="world-stale",
+            project_id=project.id,
+            dimension="geography",
+            title="旧水文站",
+            content="已经纠正的错误资料。",
+            status="superseded",
+        )
+        db.add_all([project, chapter, active, stale])
+        db.commit()
+
+        context = build_targeted_context(
+            db,
+            project.id,
+            chapter,
+            [{"fact_type": "worldbuilding_fact", "payload": {"title": "临汐水文站"}}],
+        )
+
+        assert context["worldbuilding_title_index"] == [
+            {"id": active.id, "dimension": "geography", "title": "临汐水文站"}
+        ]
+        assert [item["id"] for item in context["relevant_worldbuilding"]] == [active.id]
+        compact = _compact_local_runtime_context(context)
+        assert compact["worldbuilding_title_index"][0]["id"] == active.id
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_persistence_coverage_errors_are_presented_in_chinese():
     engine, db = database()
     try:
@@ -130,7 +331,11 @@ def test_persistence_coverage_errors_are_presented_in_chinese():
             project_id=project.id,
             chapter_id=chapter.id,
             fact_type="character_fact",
-            raw_payload=json.dumps({"name": "张三"}, ensure_ascii=False),
+            raw_payload=json.dumps({
+                "name": "张三",
+                "archive_identity": "stable_character",
+                "stable_profile_change": False,
+            }, ensure_ascii=False),
             status="active",
         ))
         rows = [
@@ -436,7 +641,11 @@ def test_conflicting_staged_aliases_are_not_silently_merged():
             project_id=project.id,
             chapter_id=chapter.id,
             fact_type="character_fact",
-            raw_payload=json.dumps({"name": "阿糖"}, ensure_ascii=False),
+            raw_payload=json.dumps({
+                "name": "阿糖",
+                "archive_identity": "stable_character",
+                "stable_profile_change": False,
+            }, ensure_ascii=False),
             status="active",
         ))
         rows = [
@@ -585,6 +794,8 @@ def test_stable_character_fact_must_update_character_profile():
             fact_type="character_fact",
             raw_payload=json.dumps({
                 "primary_name": "姜尘",
+                "archive_identity": "stable_character",
+                "stable_profile_change": True,
                 "profile_clues": {
                     "moral_taboo": "不拿无辜者作饵",
                     "voice": "简短",
@@ -663,6 +874,52 @@ def test_relationship_applier_never_manufactures_blank_character_cards():
 
         assert db.query(Character).count() == 0
         assert db.query(CharacterRelationship).count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_relationship_applier_updates_existing_directed_pair_when_type_changes():
+    engine, db = database()
+    try:
+        project = Project(id="project-1", title="关系更新")
+        chapter = Chapter(
+            id="chapter-1",
+            project_id=project.id,
+            title="第一章",
+            content="甲与乙从临时协作变成调查搭档。",
+        )
+        source = Character(id="character-a", project_id=project.id, name="甲")
+        target = Character(id="character-b", project_id=project.id, name="乙")
+        relationship = CharacterRelationship(
+            id="relationship-1",
+            project_id=project.id,
+            character_a_id=source.id,
+            character_b_id=target.id,
+            relationship_type="协作",
+            description="两人临时协作。",
+        )
+        db.add_all([project, chapter, source, target, relationship])
+        db.commit()
+        job = create_cataloging_job(db, project.id, "auto", "deepseek:test", [chapter.id])
+        run = job.chapter_runs[0]
+        row = candidate(db, job, run, chapter, "character_relationship", {
+            "source_name": "甲",
+            "target_name": "乙",
+            "relationship_type": "调查搭档",
+            "description": "两人共同核验证据。",
+        })
+
+        result = apply_character_relationship(db, row, chapter, json.loads(row.raw_payload))
+        db.flush()
+
+        relationships = db.query(CharacterRelationship).all()
+        assert len(relationships) == 1
+        assert relationships[0].id == "relationship-1"
+        assert relationships[0].relationship_type == "调查搭档"
+        assert "共同核验证据" in relationships[0].description
+        assert result["target_id"] == "relationship-1"
     finally:
         db.close()
         Base.metadata.drop_all(engine)

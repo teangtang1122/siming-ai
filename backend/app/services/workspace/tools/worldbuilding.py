@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ....database.models import Project, WorldbuildingEntry
+from ....database.query_filters import normalized_worldbuilding_status
 from ....modules.story.application.content_sync import queue_content_sync
 from ....modules.story.domain.content_sync import ContentSyncIntent, ContentSyncTarget
 from ..utils import (
@@ -29,6 +30,14 @@ async def create_worldbuilding_entry(
     content = str(args.get("content") or "").strip()
     if not title or not content:
         return {"tool": "create_worldbuilding_entry", "status": "skipped", "detail": "世界观标题或内容为空"}
+    try:
+        status = normalized_worldbuilding_status(args.get("status"))
+    except ValueError as exc:
+        return {
+            "tool": "create_worldbuilding_entry",
+            "status": "skipped",
+            "detail": str(exc),
+        }
 
     from ..idempotency import generate_idempotency_key, check_idempotency
     _idem_key = generate_idempotency_key(db, "create_worldbuilding_entry", project_id, args)
@@ -58,7 +67,7 @@ async def create_worldbuilding_entry(
             if args.get("sort_order") is not None
             else next_worldbuilding_sort_order(db, project_id, dimension)
         ),
-        status=str(args.get("status") or "active")[:30],
+        status=status,
         confidence=float(args.get("confidence")) if args.get("confidence") is not None else None,
         first_seen_chapter_id=str(args.get("first_seen_chapter_id") or "")[:36] or None,
         last_updated_chapter_id=str(args.get("last_updated_chapter_id") or "")[:36] or None,
@@ -101,7 +110,14 @@ async def update_worldbuilding_entry(
     if args.get("sort_order") is not None:
         entry.sort_order = int(args.get("sort_order"))
     if "status" in args:
-        entry.status = str(args.get("status") or "active")[:30]
+        try:
+            entry.status = normalized_worldbuilding_status(args.get("status"))
+        except ValueError as exc:
+            return {
+                "tool": "update_worldbuilding_entry",
+                "status": "skipped",
+                "detail": str(exc),
+            }
     if "confidence" in args:
         entry.confidence = float(args.get("confidence")) if args.get("confidence") is not None else None
     if "first_seen_chapter_id" in args:

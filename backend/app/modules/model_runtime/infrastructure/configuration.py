@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ....core.crypto import decrypt
+from ....core.provider_model_identity import canonical_model_identity
 from ....database.session import SessionLocal
 from ..application.ports import ModelConfigurationPort
 from ..domain.configuration import ModelProviderConfig, TaskModelSetting
@@ -50,9 +51,10 @@ class SqlAlchemyModelConfiguration(ModelConfigurationPort):
     def _snapshot(row: APIConfig | None) -> ModelProviderConfig | None:
         if not row or local_runtime_disabled(row.provider) or not is_model_config_usable(row):
             return None
+        provider, default_model = canonical_model_identity(row.provider, row.default_model)
         return ModelProviderConfig(
-            provider=row.provider,
-            default_model=row.default_model,
+            provider=provider,
+            default_model=default_model,
             api_key=decrypt(row.api_key_encrypted) if row.api_key_encrypted else "",
             base_url=row.base_url_override,
             api_protocol=row.api_protocol or "chat_completions",

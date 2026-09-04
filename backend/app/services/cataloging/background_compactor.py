@@ -57,9 +57,9 @@ def merge_background(existing: Any, incoming: Any, chapter: Chapter, *, limit: i
         return _clip(_compact_text(new_text, limit), limit)
 
     if _same_or_superset(old_text, new_text):
-        return _clip(new_text, limit)
-    if _same_or_superset(new_text, old_text):
         return _clip(old_text, limit)
+    if _same_or_superset(new_text, old_text):
+        return _clip(new_text, limit)
 
     old_fragments = _split_fragments(old_text)
     new_fragments = _split_fragments(new_text)
@@ -91,29 +91,38 @@ def _split_fragments(text: str) -> list[str]:
 
 def _dedupe_fragments(fragments: list[str]) -> list[str]:
     result: list[str] = []
-    normalized_seen: set[str] = set()
     for fragment in fragments:
         normalized = _normalize(fragment)
-        if not normalized or normalized in normalized_seen:
+        if not normalized:
             continue
-        duplicate_index = _find_containing_fragment(result, fragment)
-        if duplicate_index is not None:
-            if len(fragment) > len(result[duplicate_index]):
-                result[duplicate_index] = fragment
-            normalized_seen.add(normalized)
+
+        existing_keys = [_normalize(item) for item in result]
+        if normalized in existing_keys:
             continue
-        normalized_seen.add(normalized)
+
+        # A rewritten cumulative profile often folds several older semicolon
+        # fragments into one sentence.  Replacing only the first contained
+        # fragment leaves the other fragments behind and duplicates the same
+        # facts.  Collapse every exact normalized fragment contained by the
+        # rewrite, preserving the earliest position.  This is deterministic
+        # text compaction; it does not infer semantic similarity.
+        contained = [
+            index
+            for index, key in enumerate(existing_keys)
+            if key and key in normalized
+        ]
+        if contained:
+            insert_at = contained[0]
+            result = [
+                item for index, item in enumerate(result) if index not in contained
+            ]
+            result.insert(insert_at, fragment)
+            continue
+
+        if any(normalized in key for key in existing_keys if key):
+            continue
         result.append(fragment)
     return result
-
-
-def _find_containing_fragment(existing: list[str], incoming: str) -> int | None:
-    incoming_key = _normalize(incoming)
-    for index, item in enumerate(existing):
-        item_key = _normalize(item)
-        if incoming_key in item_key or item_key in incoming_key:
-            return index
-    return None
 
 
 def _compose_fragments(fragments: list[str], new_fragments: list[str], limit: int) -> str:

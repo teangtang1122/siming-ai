@@ -77,11 +77,11 @@ class ListMcpToolsByPackTest(unittest.TestCase):
     def test_cataloging_worker_pack_is_compact_and_complete(self):
         tools = list_mcp_tools(permission_pack="cataloging_worker")
         names = {t.name for t in tools}
-        self.assertEqual(len(names), 10)
+        self.assertEqual(len(names), 9)
         self.assertIn("get_next_external_cataloging_chapter", names)
         self.assertIn("save_external_cataloging_facts", names)
         self.assertIn("save_external_cataloging_candidates", names)
-        self.assertIn("apply_pending_cataloging", names)
+        self.assertNotIn("apply_pending_cataloging", names)
         self.assertIn("report_agent_progress", names)
         self.assertNotIn("list_projects", names)
         self.assertNotIn("chapter_writer", names)

@@ -1,4 +1,5 @@
 """Project-folder tools for Siming 2.x file-backed content."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,9 +16,8 @@ from ....services.content_store import (
 )
 from ....services.storage_contract import storage_health
 
-
 TEXT_SUFFIXES = {".md", ".json", ".txt", ".yml", ".yaml", ".csv"}
-MAX_READ_CHARS = 200_000
+MAX_READ_CHARS = 4_000
 MAX_WRITE_CHARS = 1_500_000
 CANONICAL_DIRS = {"chapters", "characters", "worldbuilding", "outline", "relationships"}
 
@@ -38,10 +38,7 @@ def _safe_path(folder: Path, raw_path: object) -> Path:
     if not text:
         raise ValueError("path is required")
     candidate = Path(text)
-    if candidate.is_absolute():
-        path = candidate.resolve()
-    else:
-        path = (folder / text).resolve()
+    path = candidate.resolve() if candidate.is_absolute() else (folder / text).resolve()
     path.relative_to(folder)
     return path
 
@@ -75,7 +72,14 @@ async def get_project_files_info(db: Session, project_id: str, args: dict[str, A
             "title": project.title,
             "folder_path": str(folder),
             "manifest": "moshu-project.json",
-            "standard_dirs": ["chapters", "characters", "worldbuilding", "outline", "relationships", "outbox"],
+            "standard_dirs": [
+                "chapters",
+                "characters",
+                "worldbuilding",
+                "outline",
+                "relationships",
+                "outbox",
+            ],
             "storage_health": storage_health(db, project),
         },
     }
@@ -93,13 +97,23 @@ async def list_project_files(db: Session, project_id: str, args: dict[str, Any])
         return {"tool": "list_project_files", "status": "skipped", "detail": "文件路径超出作品目录"}
     if not target.exists() or not target.is_dir():
         return {"tool": "list_project_files", "status": "skipped", "detail": "目录不存在"}
-    limit = max(1, min(int(args.get("limit") or 200), 1000))
-    items = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:limit]
+    limit = max(1, min(int(args.get("limit") or 4), 4))
+    cursor = max(0, int(args.get("cursor") or 0))
+    all_items = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    items = all_items[cursor : cursor + limit]
+    has_more = cursor + len(items) < len(all_items)
     return {
         "tool": "list_project_files",
         "status": "ok",
         "detail": f"列出 {len(items)} 个项目文件",
-        "data": {"project_id": project.id, "folder_path": str(folder), "items": [_file_item(item, folder) for item in items]},
+        "data": {
+            "project_id": project.id,
+            "folder_path": str(folder),
+            "items": [_file_item(item, folder) for item in items],
+            "cursor": cursor,
+            "next_cursor": cursor + len(items) if has_more else None,
+            "has_more": has_more,
+        },
     }
 
 
@@ -115,10 +129,17 @@ async def read_project_file(db: Session, project_id: str, args: dict[str, Any]) 
     if not path.exists() or not path.is_file():
         return {"tool": "read_project_file", "status": "skipped", "detail": "文件不存在"}
     if path.suffix.lower() not in TEXT_SUFFIXES:
-        return {"tool": "read_project_file", "status": "skipped", "detail": "仅支持读取文本类项目文件"}
+        return {
+            "tool": "read_project_file",
+            "status": "skipped",
+            "detail": "仅支持读取文本类项目文件",
+        }
+    offset_chars = max(0, int(args.get("offset_chars") or 0))
     max_chars = max(1, min(int(args.get("max_chars") or MAX_READ_CHARS), MAX_READ_CHARS))
     text = path.read_text(encoding="utf-8", errors="replace")
-    truncated = len(text) > max_chars
+    end = min(len(text), offset_chars + max_chars)
+    content = text[offset_chars:end]
+    has_more = end < len(text)
     return {
         "tool": "read_project_file",
         "status": "ok",
@@ -126,8 +147,11 @@ async def read_project_file(db: Session, project_id: str, args: dict[str, Any]) 
         "data": {
             "project_id": project.id,
             "path": _rel(path, folder),
-            "content": text[:max_chars],
-            "truncated": truncated,
+            "content": content,
+            "offset_chars": offset_chars,
+            "returned_chars": len(content),
+            "next_offset_chars": end if has_more else None,
+            "has_more": has_more,
             "total_chars": len(text),
         },
     }
@@ -147,13 +171,24 @@ async def write_project_file(db: Session, project_id: str, args: dict[str, Any])
         return {
             "tool": "write_project_file",
             "status": "skipped",
-            "detail": "2.1 起章节/角色/大纲/世界观文件是只读镜像；请使用对应 create/update/delete 工具写入数据库后自动刷新镜像",
+            "detail": (
+                "2.1 起章节/角色/大纲/世界观文件是只读镜像；请使用对应 "
+                "create/update/delete 工具写入数据库后自动刷新镜像"
+            ),
         }
     if path.suffix.lower() not in TEXT_SUFFIXES:
-        return {"tool": "write_project_file", "status": "skipped", "detail": "仅支持写入文本类项目文件"}
+        return {
+            "tool": "write_project_file",
+            "status": "skipped",
+            "detail": "仅支持写入文本类项目文件",
+        }
     content = str(args.get("content") or "")
     if len(content) > MAX_WRITE_CHARS:
-        return {"tool": "write_project_file", "status": "skipped", "detail": "写入内容过长，请分块写入"}
+        return {
+            "tool": "write_project_file",
+            "status": "skipped",
+            "detail": "写入内容过长，请分块写入",
+        }
     if path.exists() and not bool(args.get("overwrite", True)):
         return {"tool": "write_project_file", "status": "skipped", "detail": "文件已存在，未覆盖"}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,19 +209,32 @@ async def search_project_files(db: Session, project_id: str, args: dict[str, Any
     query = str(args.get("query") or "").strip()
     if not query:
         return {"tool": "search_project_files", "status": "skipped", "detail": "搜索词为空"}
+    if len(query) > 200:
+        return {
+            "tool": "search_project_files",
+            "status": "skipped",
+            "detail": "搜索词超过200字符，请缩小查询范围",
+        }
     root_arg = str(args.get("path") or "").strip()
     try:
         root = folder if not root_arg else _safe_path(folder, root_arg)
     except ValueError:
-        return {"tool": "search_project_files", "status": "skipped", "detail": "文件路径超出作品目录"}
+        return {
+            "tool": "search_project_files",
+            "status": "skipped",
+            "detail": "文件路径超出作品目录",
+        }
     if not root.exists():
         return {"tool": "search_project_files", "status": "skipped", "detail": "搜索目录不存在"}
-    limit = max(1, min(int(args.get("limit") or 50), 200))
-    context_chars = max(20, min(int(args.get("context_chars") or 120), 500))
+    limit = max(1, min(int(args.get("limit") or 3), 3))
+    cursor = max(0, min(int(args.get("cursor") or 0), 10_000))
+    context_chars = max(20, min(int(args.get("context_chars") or 75), 75))
     matches: list[dict[str, Any]] = []
+    matched_before_page = 0
+    has_more = False
     files = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
     for path in files:
-        if len(matches) >= limit:
+        if has_more:
             break
         if path.suffix.lower() not in TEXT_SUFFIXES:
             continue
@@ -197,23 +245,39 @@ async def search_project_files(db: Session, project_id: str, args: dict[str, Any
         lower_text = text.lower()
         lower_query = query.lower()
         start = 0
-        while len(matches) < limit:
+        while True:
             index = lower_text.find(lower_query, start)
             if index < 0:
                 break
+            if matched_before_page < cursor:
+                matched_before_page += 1
+                start = index + len(query)
+                continue
+            if len(matches) >= limit:
+                has_more = True
+                break
             left = max(0, index - context_chars)
             right = min(len(text), index + len(query) + context_chars)
-            matches.append({
-                "path": _rel(path, folder),
-                "offset": index,
-                "snippet": text[left:right],
-            })
+            matches.append(
+                {
+                    "path": _rel(path, folder),
+                    "offset": index,
+                    "snippet": text[left:right],
+                }
+            )
             start = index + len(query)
     return {
         "tool": "search_project_files",
         "status": "ok",
         "detail": f"找到 {len(matches)} 处文件匹配",
-        "data": {"project_id": project.id, "query": query, "matches": matches},
+        "data": {
+            "project_id": project.id,
+            "query": query,
+            "matches": matches,
+            "cursor": cursor,
+            "next_cursor": cursor + len(matches) if has_more else None,
+            "has_more": has_more,
+        },
     }
 
 
@@ -236,7 +300,10 @@ async def sync_project_files(db: Session, project_id: str, args: dict[str, Any])
             return {
                 "tool": "sync_project_files",
                 "status": "skipped",
-                "detail": "2.1 默认禁止从文件镜像反向覆盖数据库；如确需修复导入，请传 confirm_import_from_files=true",
+                "detail": (
+                    "2.1 默认禁止从文件镜像反向覆盖数据库；如确需修复导入，"
+                    "请传 confirm_import_from_files=true"
+                ),
             }
         refresh_project_from_files(db, project.id)
         queue_content_sync(
@@ -252,11 +319,18 @@ async def sync_project_files(db: Session, project_id: str, args: dict[str, Any])
             return {
                 "tool": "sync_project_files",
                 "status": "skipped",
-                "detail": "2.1 默认禁止从文件镜像反向覆盖数据库；如确需修复导入，请传 confirm_import_from_files=true",
+                "detail": (
+                    "2.1 默认禁止从文件镜像反向覆盖数据库；如确需修复导入，"
+                    "请传 confirm_import_from_files=true"
+                ),
             }
         refresh_project_from_files(db, project.id)
     else:
-        return {"tool": "sync_project_files", "status": "skipped", "detail": f"未知同步方向：{direction}"}
+        return {
+            "tool": "sync_project_files",
+            "status": "skipped",
+            "detail": f"未知同步方向：{direction}",
+        }
     db.flush()
     return {
         "tool": "sync_project_files",

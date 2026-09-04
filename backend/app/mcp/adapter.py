@@ -10,22 +10,60 @@ import hashlib
 import json
 import logging
 import traceback
+from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
+from app.architecture.uow import defer_session_commits
 from app.mcp.permissions import filter_tools, is_allowed
 from app.mcp.schemas import McpTool, McpToolResult, make_text_result
 from app.services.workspace.registry import ToolDef, registry
+from app.services.workspace.tool_result_projection import (
+    ToolResultProjectionError,
+    model_tool_result_projector,
+    sanitize_diagnostic_tool_result,
+)
 
 logger = logging.getLogger(__name__)
-
-# Maximum character count before content is truncated in MCP responses.
-_CONTENT_TRUNCATE_LIMIT = 12000
 
 # Workspace tools usually return ``ok``.  Context governance additionally
 # exposes the persisted manifest lifecycle states below; both mean the result
 # is usable and must not be surfaced to MCP clients as a failed tool call.
-_MCP_SUCCESS_STATUSES = frozenset({"ok", "ready", "overridden"})
+MCP_USABLE_STATUSES = frozenset({
+    "ok",
+    "ready",
+    "overridden",
+    "awaiting_selection",
+    "selected",
+    "consumed",
+})
+
+_TELEMETRY_TOOLS = frozenset({
+    "report_agent_plan",
+    "report_agent_progress",
+    "report_context_selected",
+    "append_draft_chunk",
+    "mark_draft_ready",
+    "finish_agent_run",
+})
+_RUN_BOUND_CONTEXT_TOOLS = frozenset({
+    "prepare_task_context",
+    "search_task_context",
+    "submit_context_evidence",
+})
+
+
+class McpResultAuditError(Exception):
+    """The server could not persist the authoritative result of an MCP call."""
+
+
+@dataclass(frozen=True)
+class _PreparedToolExecution:
+    definition: ToolDef
+    project_id: str
+    run_id: str | None
 
 _PROJECT_OPTIONAL_TOOLS = {
     "list_projects",
@@ -181,14 +219,7 @@ def is_tool_allowed(
     return is_allowed(td, allowed_tiers=allowed_tiers)
 
 
-def _truncate_content(text: str, limit: int = _CONTENT_TRUNCATE_LIMIT) -> str:
-    """Truncate content and append a notice if it exceeds the limit."""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n\n[truncated — {len(text)} chars total]"
-
-
-def _traceback_code(exc: Exception) -> str:
+def _traceback_code(exc: BaseException) -> str:
     """Generate a short, safe traceback identifier for logging correlation.
 
     Not a real stack trace — just a short hash that support can use to
@@ -198,7 +229,7 @@ def _traceback_code(exc: Exception) -> str:
     return hashlib.md5(tb.encode()).hexdigest()[:8]
 
 
-def _suggest_next_steps(exc: Exception, tool_name: str) -> list[str]:
+def _suggest_next_steps(exc: BaseException, tool_name: str) -> list[str]:
     """Return actionable suggestions for recoverable error types."""
     exc_type = type(exc).__name__
 
@@ -225,7 +256,7 @@ def _suggest_next_steps(exc: Exception, tool_name: str) -> list[str]:
 def _build_error_payload(
     *,
     tool_name: str,
-    exc: Exception,
+    exc: BaseException,
     detail: str = "",
 ) -> dict:
     """Build a structured MCP error response with actionable details."""
@@ -254,39 +285,129 @@ def _build_error_payload(
     return payload
 
 
-def _format_tool_result(raw: dict) -> McpToolResult:
-    """Convert an execute_workspace_action result dict into an MCP tool result.
+def _project_tool_execution(
+    td: ToolDef,
+    raw: Mapping[str, Any],
+) -> tuple[McpToolResult, dict[str, Any]]:
+    """Return the model projection and the authoritative persistence result.
 
-    The workspace handler returns:
-        {"tool": str, "status": str, "detail": str, "data": Any, "warnings": list?}
-
-    This function:
-    - Wraps it as JSON text in the MCP content array.
-    - Truncates large content fields.
-    - Marks errors when status indicates failure.
+    MCP clients are model runtimes too, so they receive the same declarative
+    projection as native assistant loops. Results are never character-sliced:
+    an oversized or non-JSON source becomes a small, valid JSON error receipt.
     """
-    status = raw.get("status", "ok")
-    is_error = status not in _MCP_SUCCESS_STATUSES
+    try:
+        projected = model_tool_result_projector.project(td, raw)
+        status_value = projected.payload.get("status")
+        if not isinstance(status_value, str) or not status_value.strip():
+            raise ToolResultProjectionError(td.name, "工具结果缺少有效的 status")
+    except Exception as exc:
+        if isinstance(exc, ToolResultProjectionError):
+            unsafe_error = exc.model_error_result()
+        else:
+            # RecursionError and unexpected serializer failures are not
+            # ToolResultProjectionError subclasses. Do not reflect their text:
+            # a handler-controlled object may have produced it.
+            unsafe_error = {
+                "tool": td.name,
+                "status": "error",
+                "detail": "工具结果无法按声明的模型可见合同序列化。",
+                "data": {"reason": "serialization_failed"},
+            }
+        audit_result = sanitize_diagnostic_tool_result(td.name, unsafe_error)
+        status = str(audit_result.get("status") or "error").strip().lower()
+        return (
+            McpToolResult(
+                content=[{
+                    "type": "text",
+                    "text": json.dumps(audit_result, ensure_ascii=False),
+                }],
+                is_error=status not in MCP_USABLE_STATUSES,
+            ),
+            audit_result,
+        )
+    else:
+        audit_result = dict(raw)
 
-    # Build the MCP-friendly payload
-    payload: dict[str, Any] = {
-        "status": status,
-        "detail": raw.get("detail", ""),
-    }
-    if "tool" in raw:
-        payload["tool"] = raw["tool"]
-    if "data" in raw and raw["data"] is not None:
-        payload["data"] = raw["data"]
-    if "warnings" in raw and raw["warnings"]:
-        payload["warnings"] = raw["warnings"]
-
-    text = json.dumps(payload, ensure_ascii=False, indent=None)
-    text = _truncate_content(text)
-
-    return McpToolResult(
-        content=[{"type": "text", "text": text}],
-        is_error=is_error,
+    status = str(projected.payload["status"]).strip().lower()
+    return (
+        McpToolResult(
+            content=[{"type": "text", "text": projected.content}],
+            is_error=status not in MCP_USABLE_STATUSES,
+        ),
+        audit_result,
     )
+
+
+def _format_tool_result(td: ToolDef, raw: Mapping[str, Any]) -> McpToolResult:
+    """Project one handler result through its declared model-visible contract."""
+
+    return _project_tool_execution(td, raw)[0]
+
+
+def project_tool_result(tool_name: str, raw: Mapping[str, Any]) -> McpToolResult:
+    """Project a persisted result through the same contract used for live MCP."""
+
+    definition = get_tool_def(tool_name)
+    if definition is None:
+        return make_text_result(
+            json.dumps(
+                {
+                    "tool": tool_name,
+                    "status": "error",
+                    "detail": "MCP 工具定义不存在，无法恢复持久结果。",
+                },
+                ensure_ascii=False,
+            ),
+            is_error=True,
+        )
+    return _format_tool_result(definition, raw)
+
+
+def tool_result_payload(result: McpToolResult, tool_name: str) -> dict[str, Any]:
+    """Parse a structured MCP result for auditing without inventing success."""
+
+    for block in result.content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        try:
+            payload = json.loads(str(block.get("text") or ""))
+        except (json.JSONDecodeError, RecursionError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        status = payload.get("status")
+        claimed_tool = payload.get("tool")
+        if not isinstance(status, str) or not status.strip():
+            continue
+        if claimed_tool not in (None, "", tool_name):
+            continue
+        return payload
+    return {
+        "tool": tool_name,
+        "status": "error",
+        "detail": "MCP 工具结果不是合法结构化 JSON。",
+        "data": {"reason": "serialization_failed"},
+    }
+
+
+def _complete_preflight_result(
+    db: Any,
+    tool_name: str,
+    result: McpToolResult,
+    result_audit_sink: Callable[[dict[str, Any], McpToolResult], None] | None,
+) -> McpToolResult:
+    """Close a pre-handler audit step without committing business mutations."""
+
+    if result_audit_sink is None:
+        return result
+    _safe_rollback(db)
+    try:
+        result_audit_sink(tool_result_payload(result, tool_name), result)
+        _safe_commit(db)
+    except Exception as exc:
+        _safe_rollback(db)
+        raise McpResultAuditError("MCP preflight result audit failed") from exc
+    return result
 
 
 def _log_mcp_tool_call(
@@ -306,7 +427,7 @@ def _log_mcp_tool_call(
     try:
         # Create a minimal step log for the MCP tool call
         # We don't have a full AssistantRun context, so we create a standalone log
-        args_summary = json.dumps(arguments, ensure_ascii=False)[:500]
+        args_summary = _build_args_summary(arguments)
         logger.info(
             "MCP tool call: tool=%s project=%s status=%s args=%s",
             tool_name, project_id, status, args_summary,
@@ -359,19 +480,60 @@ def _log_run_tool_event(
         pass
 
 
-def _build_args_summary(arguments: dict[str, Any]) -> str:
-    """Build a safe, truncated summary of tool arguments.
+_REDACTED_ARGUMENT_KEYS = {
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "body",
+    "confirmationtoken",
+    "content",
+    "contextselectiontoken",
+    "cwd",
+    "directmcpleasetoken",
+    "directory",
+    "filecontent",
+    "filepath",
+    "leasetoken",
+    "manuscript",
+    "oauthtoken",
+    "password",
+    "path",
+    "prompt",
+    "projectfolder",
+    "secret",
+    "selectedtext",
+    "sourcepath",
+    "targetpath",
+    "text",
+    "token",
+}
 
-    Large content fields are replaced with placeholders.
-    """
+
+def _normalized_argument_key(key: Any) -> str:
+    return "".join(char for char in str(key).lower() if char.isalnum())
+
+
+def _safe_argument_log_key(key: Any) -> str:
+    raw = str(key)
+    identifier = raw.replace("_", "")
+    if raw and len(raw) <= 64 and raw.isascii() and identifier.isalnum():
+        return raw
+    return "[field]"
+
+
+def _build_args_summary(arguments: dict[str, Any]) -> str:
+    """Build a bounded structural summary without logging string payloads."""
     summary_parts = []
     for key, value in arguments.items():
-        if isinstance(value, str) and len(value) > 100:
-            summary_parts.append(f"{key}: [{len(value)} chars]")
+        if _normalized_argument_key(key) in _REDACTED_ARGUMENT_KEYS:
+            rendered = "[redacted]"
+        elif isinstance(value, str):
+            rendered = f"[str:{len(value)}]"
         elif isinstance(value, (list, dict)):
-            summary_parts.append(f"{key}: [{type(value).__name__}]")
+            rendered = f"[{type(value).__name__}:{len(value)}]"
         else:
-            summary_parts.append(f"{key}: {value}")
+            rendered = str(value)
+        summary_parts.append(f"{_safe_argument_log_key(key)}: {rendered}")
     result = ", ".join(summary_parts)
     return result[:300] if len(result) > 300 else result
 
@@ -387,8 +549,12 @@ def _infer_project_id_from_arguments(db: Any, arguments: dict[str, Any]) -> str:
             inferred = getattr(job, "project_id", "") if job else ""
             if isinstance(inferred, str) and inferred.strip():
                 return inferred.strip()
-    except Exception:
-        logger.debug("Could not infer project_id from job_id", exc_info=True)
+    except Exception as exc:
+        logger.debug(
+            "Could not infer project_id from job_id type=%s traceback_code=%s",
+            type(exc).__name__,
+            _traceback_code(exc),
+        )
 
     try:
         run_id = str(arguments.get("run_id") or "").strip()
@@ -399,8 +565,12 @@ def _infer_project_id_from_arguments(db: Any, arguments: dict[str, Any]) -> str:
             inferred = getattr(run, "project_id", "") if run else ""
             if isinstance(inferred, str) and inferred.strip():
                 return inferred.strip()
-    except Exception:
-        logger.debug("Could not infer project_id from run_id", exc_info=True)
+    except Exception as exc:
+        logger.debug(
+            "Could not infer project_id from run_id type=%s traceback_code=%s",
+            type(exc).__name__,
+            _traceback_code(exc),
+        )
 
     return ""
 
@@ -437,8 +607,12 @@ def _safe_rollback(db: Any) -> None:
     if callable(rollback):
         try:
             rollback()
-        except Exception:
-            logger.exception("Failed to roll back MCP database session")
+        except Exception as exc:
+            logger.error(
+                "Failed to roll back MCP database session type=%s traceback_code=%s",
+                type(exc).__name__,
+                _traceback_code(exc),
+            )
 
 
 def _creation_session_scope_error(
@@ -509,6 +683,121 @@ def _creation_session_scope_error(
     return None
 
 
+def _error_result(payload: Mapping[str, Any]) -> McpToolResult:
+    return make_text_result(json.dumps(dict(payload), ensure_ascii=False), is_error=True)
+
+
+def _prepare_tool_execution(
+    db: Any,
+    project_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    allowed_tiers: set[str],
+    permission_pack: str | None,
+    run_id: str | None,
+    creation_session_id: str,
+) -> _PreparedToolExecution | McpToolResult:
+    """Validate scope and normalize internal arguments before dispatch."""
+
+    td = get_tool_def(tool_name)
+    if td is None:
+        return _error_result(
+            {"status": "error", "detail": f"Tool not found: {tool_name}"}
+        )
+    if not is_tool_allowed(tool_name, allowed_tiers=allowed_tiers, permission_pack=permission_pack):
+        return _error_result(
+            {"status": "denied", "detail": f"Permission denied: {tool_name}"}
+        )
+    if permission_pack == "creation_session":
+        scope_error = _creation_session_scope_error(
+            db,
+            td,
+            tool_name,
+            arguments,
+            creation_session_id,
+        )
+        if scope_error:
+            return _error_result({"status": "denied", "detail": scope_error})
+    effective_project_id = str(arguments.pop("project_id", "") or project_id or "").strip()
+    if not effective_project_id:
+        effective_project_id = _infer_project_id_from_arguments(db, arguments)
+    if _requires_project_id(td) and not effective_project_id:
+        return _error_result(_missing_project_payload(tool_name))
+    if tool_name in _TELEMETRY_TOOLS or tool_name in _RUN_BOUND_CONTEXT_TOOLS:
+        run_id = run_id or str(arguments.get("run_id") or "").strip() or None
+        if run_id:
+            arguments["run_id"] = run_id
+    elif not run_id:
+        run_id = arguments.pop("run_id", None)
+    else:
+        arguments.pop("run_id", None)
+    arguments.setdefault("_context_execution_route", "external_mcp")
+    from app.mcp.permissions import get_tier, validate_confirmation_token
+
+    trusted_local = permission_pack == "trusted_local_maintenance"
+    requires_token = (
+        get_tier(td) == "write_confirmed" and not permission_pack
+    ) or td.requires_confirmation
+    if requires_token and not trusted_local:
+        token_str = arguments.pop("confirmation_token", "")
+        is_valid, reason = validate_confirmation_token(token_str, tool_name)
+        if not is_valid:
+            return _error_result(
+                {
+                    "status": "denied",
+                    "detail": f"Write confirmation required: {reason}",
+                    "reason": reason,
+                }
+            )
+    return _PreparedToolExecution(td, effective_project_id, run_id)
+
+
+async def _execute_prepared_tool(
+    db: Any,
+    prepared: _PreparedToolExecution,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> tuple[McpToolResult, dict[str, Any]]:
+    from app.services.workspace.executor import execute_workspace_action
+
+    raw_result = await execute_workspace_action(
+        db,
+        prepared.project_id,
+        {"tool": tool_name, "arguments": arguments},
+    )
+    return _project_tool_execution(prepared.definition, raw_result)
+
+
+def _log_execution_result(
+    db: Any,
+    prepared: _PreparedToolExecution,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    status: str,
+    detail: str,
+) -> None:
+    _log_mcp_tool_call(
+        db,
+        prepared.project_id,
+        tool_name,
+        arguments,
+        status=status,
+        detail=detail,
+    )
+    if prepared.run_id:
+        _log_run_tool_event(
+            db,
+            prepared.run_id,
+            "tool_result",
+            tool_name,
+            arguments,
+            status=status,
+            detail=detail,
+        )
+
+
 async def execute_tool(
     db: Any,
     project_id: str,
@@ -519,176 +808,110 @@ async def execute_tool(
     permission_pack: str | None = None,
     run_id: str | None = None,
     creation_session_id: str = "",
+    result_audit_sink: Callable[[dict[str, Any], McpToolResult], None] | None = None,
+    result_audit_guard: Callable[[], dict[str, Any] | None] | None = None,
 ) -> McpToolResult:
-    """Execute an allowed MCP tool and return a structured MCP result.
+    """Execute one allowed MCP tool under one auditable commit boundary."""
 
-    Args:
-        db: SQLAlchemy session.
-        project_id: Current project ID (from MCP client context).
-        tool_name: Name of the tool to call.
-        arguments: Tool arguments dict.
-        allowed_tiers: Permission tiers to allow.
-        permission_pack: Permission pack name. If set, overrides allowed_tiers.
-        run_id: Optional external Agent run ID for automatic telemetry.
-        creation_session_id: One-session boundary for the transient creation pack.
-
-    Returns:
-        McpToolResult with structured content.
-    """
-    if allowed_tiers is None:
-        allowed_tiers = {"readonly"}
-
-    # Validate tool exists
-    td = get_tool_def(tool_name)
-    if td is None:
-        return make_text_result(
-            json.dumps({"status": "error", "detail": f"Tool not found: {tool_name}"}),
-            is_error=True,
+    prepared = _prepare_tool_execution(
+        db,
+        project_id,
+        tool_name,
+        arguments,
+        allowed_tiers=allowed_tiers or {"readonly"},
+        permission_pack=permission_pack,
+        run_id=run_id,
+        creation_session_id=creation_session_id,
+    )
+    if isinstance(prepared, McpToolResult):
+        return _complete_preflight_result(
+            db, tool_name, prepared, result_audit_sink
         )
 
-    # Validate permission
-    if not is_tool_allowed(tool_name, allowed_tiers=allowed_tiers, permission_pack=permission_pack):
-        return make_text_result(
-            json.dumps({"status": "denied", "detail": f"Permission denied: {tool_name}"}),
-            is_error=True,
+    if prepared.run_id:
+        _log_run_tool_event(
+            db, prepared.run_id, "tool_start", tool_name, arguments, status="running"
         )
-
-    if permission_pack == "creation_session":
-        scope_error = _creation_session_scope_error(
+    try:
+        trusted_boundary = result_audit_sink is not None and result_audit_guard is not None
+        commit_scope = defer_session_commits(db) if trusted_boundary else nullcontext()
+        with commit_scope:
+            formatted_result, audit_result = await _execute_prepared_tool(
+                db, prepared, tool_name, arguments
+            )
+            result_payload = tool_result_payload(formatted_result, tool_name)
+            result_status = str(result_payload["status"]).strip().lower()
+            usable = not formatted_result.is_error and result_status in MCP_USABLE_STATUSES
+            if usable and result_audit_guard is not None:
+                rejection = result_audit_guard()
+                if rejection is not None:
+                    formatted_result, audit_result = _project_tool_execution(
+                        prepared.definition, rejection
+                    )
+                    result_payload = tool_result_payload(formatted_result, tool_name)
+                    result_status = str(result_payload["status"]).strip().lower()
+                    usable = False
+            if not usable:
+                _safe_rollback(db)
+                formatted_result = _complete_preflight_result(
+                    db, tool_name, formatted_result, result_audit_sink
+                )
+            else:
+                if result_audit_sink is not None:
+                    result_audit_sink(audit_result, formatted_result)
+                try:
+                    _safe_commit(db)
+                except Exception as exc:
+                    _safe_rollback(db)
+                    raise McpResultAuditError(
+                        "MCP authoritative result commit failed"
+                    ) from exc
+        detail = str(result_payload.get("detail") or "")
+        _log_execution_result(
             db,
-            td,
+            prepared,
             tool_name,
             arguments,
-            creation_session_id,
+            status=result_status,
+            detail=detail,
         )
-        if scope_error:
-            return make_text_result(
-                json.dumps({"status": "denied", "detail": scope_error}, ensure_ascii=False),
-                is_error=True,
-            )
-
-    # Extract project_id/run_id from arguments if present (out-of-band MCP arguments)
-    effective_project_id = str(arguments.pop("project_id", "") or project_id or "").strip()
-    if not effective_project_id:
-        effective_project_id = _infer_project_id_from_arguments(db, arguments)
-    if _requires_project_id(td) and not effective_project_id:
-        return make_text_result(
-            json.dumps(_missing_project_payload(tool_name), ensure_ascii=False),
-            is_error=True,
-        )
-    telemetry_tools = {
-        "report_agent_plan",
-        "report_agent_progress",
-        "report_context_selected",
-        "append_draft_chunk",
-        "mark_draft_ready",
-        "finish_agent_run",
-    }
-    # Context governance handlers use run_id as part of their functional
-    # contract, not only for telemetry.  Keeping it here lets a long-running
-    # CLI resolve the manifest bound to its AgentRun without asking the model
-    # to copy an opaque UUID between tool calls.
-    run_bound_context_tools = {
-        "prepare_task_context",
-        "search_task_context",
-        "submit_context_evidence",
-    }
-    if tool_name in telemetry_tools or tool_name in run_bound_context_tools:
-        # These handlers need run_id as part of their public contract. Keep it
-        # in arguments instead of consuming it as out-of-band auto-telemetry.
-        run_id = run_id or str(arguments.get("run_id") or "").strip() or None
-        if run_id:
-            arguments["run_id"] = run_id
-    elif not run_id:
-        run_id = arguments.pop("run_id", None)
-    else:
-        arguments.pop("run_id", None)  # Strip if passed explicitly
-
-    # Workspace handlers use this marker to distinguish an author/manual API
-    # save from a formal write initiated by an MCP client.  The latter must
-    # carry a governed manifest and verified evidence before it can become
-    # project state.  It is deliberately internal-only and never part of the
-    # public tool schema.
-    arguments.setdefault("_context_execution_route", "external_mcp")
-    # Check confirmation token for legacy write tiers and explicitly sensitive tools.
-    # Trusted local mode is intentionally frictionless: it can execute Siming MCP
-    # project tools without an extra frontend confirmation prompt. Secret/internal
-    # model tools remain excluded by the permission-pack registry boundary.
-    from app.mcp.permissions import get_tier, validate_confirmation_token
-    trusted_local = permission_pack == "trusted_local_maintenance"
-    requires_token = (get_tier(td) == "write_confirmed" and not permission_pack) or td.requires_confirmation
-    if requires_token and not trusted_local:
-        token_str = arguments.pop("confirmation_token", "")
-        is_valid, reason = validate_confirmation_token(token_str, tool_name)
-        if not is_valid:
-            return make_text_result(
-                json.dumps({
-                    "status": "denied",
-                    "detail": f"Write confirmation required: {reason}",
-                    "reason": reason,
-                }),
-                is_error=True,
-            )
-
-    # Log tool_start event if run_id is provided
-    if run_id:
-        _log_run_tool_event(db, run_id, "tool_start", tool_name, arguments, status="running")
-
-    # Execute through the existing workspace executor
-    try:
-        from app.services.workspace.executor import execute_workspace_action
-        raw_result = await execute_workspace_action(
-            db,
-            effective_project_id,
-            {"tool": tool_name, "arguments": arguments},
-        )
-        if raw_result.get("status", "ok") in _MCP_SUCCESS_STATUSES:
-            try:
-                _safe_commit(db)
-            except Exception:
-                _safe_rollback(db)
-                raise
-        else:
-            _safe_rollback(db)
-
-        # Log the MCP tool call
-        _log_mcp_tool_call(
-            db, effective_project_id, tool_name, arguments,
-            status=raw_result.get("status", "ok"),
-            detail=raw_result.get("detail", ""),
-        )
-
-        # Log tool_result event if run_id is provided
-        if run_id:
-            _log_run_tool_event(
-                db, run_id, "tool_result", tool_name, arguments,
-                status=raw_result.get("status", "ok"),
-                detail=raw_result.get("detail", ""),
-            )
-
-        return _format_tool_result(raw_result)
-    except Exception as exc:
+        return formatted_result
+    except McpResultAuditError:
         _safe_rollback(db)
-        logger.exception("MCP tool execution failed: %s", tool_name)
-
-        error_payload = _build_error_payload(tool_name=tool_name, exc=exc)
-
-        # Log the failure
-        _log_mcp_tool_call(
-            db, effective_project_id, tool_name, arguments,
-            status="error",
+        raise
+    except BaseException as exc:
+        _safe_rollback(db)
+        logger.error(
+            "MCP tool execution failed tool=%s type=%s traceback_code=%s",
+            tool_name,
+            type(exc).__name__,
+            _traceback_code(exc),
+        )
+        cancelled = not isinstance(exc, Exception)
+        error_payload = (
+            {
+                "tool": tool_name,
+                "status": "cancelled",
+                "detail": "MCP 工具执行已取消。",
+                "data": {"reason": "execution_cancelled"},
+            }
+            if cancelled
+            else _build_error_payload(tool_name=tool_name, exc=exc)
+        )
+        error_result = _complete_preflight_result(
+            db,
+            tool_name,
+            _error_result(error_payload),
+            result_audit_sink,
+        )
+        _log_execution_result(
+            db,
+            prepared,
+            tool_name,
+            arguments,
+            status=str(error_payload["status"]),
             detail=error_payload["detail"],
         )
-
-        # Log tool_result error event if run_id is provided
-        if run_id:
-            _log_run_tool_event(
-                db, run_id, "tool_result", tool_name, arguments,
-                status="error",
-                detail=error_payload["detail"],
-            )
-
-        return make_text_result(
-            json.dumps(error_payload, ensure_ascii=False),
-            is_error=True,
-        )
+        if cancelled:
+            raise
+        return error_result

@@ -51,6 +51,37 @@ describe('CatalogingPage job ownership', () => {
     api.stream.mockImplementation(() => undefined)
   })
 
+  it('loads history beyond twenty tasks without changing the selected task', async () => {
+    const jobs = Array.from({ length: 21 }, (_, index) => job(`history-${index}`, `model-${index}`))
+    api.get.mockImplementation((url: string, params?: { offset?: number }) => {
+      if (url.endsWith('/chapters')) return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      if (url.endsWith('/cataloging/jobs')) {
+        const offset = params?.offset || 0
+        return Promise.resolve({ data: { data: {
+          items: jobs.slice(offset, offset + 20), total: 21, next_offset: offset === 0 ? 20 : null,
+        } } })
+      }
+      if (url.endsWith('/cataloging/history-0')) {
+        return Promise.resolve({ data: { data: { job: jobs[0], runs: [run('history-run', 'history-0', '已选择章节')] } } })
+      }
+      if (url.endsWith('/candidates') || url.endsWith('/facts')) {
+        return Promise.resolve({ data: { data: { items: [], total: 0 } } })
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    render(<CatalogingPage projectId="project-1" />)
+    const firstPage = await screen.findAllByRole('button', { name: '载入任务' })
+    expect(firstPage).toHaveLength(20)
+    fireEvent.click(firstPage[0])
+    expect(await screen.findByText('model-0 · task')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '加载更早任务' }))
+    expect(await screen.findByText('已显示 21 / 21 条任务')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '载入任务' })).toHaveLength(21)
+    expect(screen.queryByRole('button', { name: '加载更早任务' })).not.toBeInTheDocument()
+    expect(screen.getByText('model-0 · task')).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledWith('/projects/project-1/cataloging/jobs', { limit: 20, offset: 20 })
+  })
+
   it('does not mix an older job response into the last selected task', async () => {
     const first = deferred<{ data: { data: { job: ReturnType<typeof job>; runs: ReturnType<typeof run>[] } } }>()
     const second = deferred<{ data: { data: { job: ReturnType<typeof job>; runs: ReturnType<typeof run>[] } } }>()

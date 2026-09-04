@@ -6,12 +6,15 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....modules.model_runtime.application.execution import model_executor as LLMGateway
-from ....core.json_repair import parse_json_object
 from ....database.models import Character, Project
+from ....modules.model_runtime.application.execution import model_executor as LLMGateway
 from ....prompts.character_writer_prompts import build_character_writer_messages
-from ....services.context_builders import _build_world_context as _build_world_ctx
 from ....prompts.style_prompts import build_style_context
+from ....services.context_builders import _build_world_context as _build_world_ctx
+from .native_structured_output import (
+    NativeStructuredOutputError,
+    required_tool_arguments,
+)
 
 CHARACTER_CARD_TOOL = {
     "type": "function",
@@ -121,25 +124,17 @@ async def character_writer(
     except Exception as exc:
         return {"tool": "character_writer", "status": "error", "detail": f"角色生成失败: {exc}", "data": {}}
 
-    tool_calls = result.get("tool_calls") or []
-    raw_for_error = str(result.get("content", ""))
-    if tool_calls:
-        raw_for_error = str(tool_calls[0].get("function", {}).get("arguments", ""))
-    parsed = None
     try:
-        parsed = _json.loads(raw_for_error) if tool_calls else parse_json_object(raw_for_error)
-        if isinstance(parsed, dict) and isinstance(parsed.get("character"), dict):
-            parsed = parsed["character"]
-        if isinstance(parsed, dict) and isinstance(parsed.get("arguments"), str):
-            parsed = parse_json_object(parsed["arguments"]) or parsed
-    except (_json.JSONDecodeError, AttributeError, TypeError):
-        parsed = None
-    if not isinstance(parsed, dict):
+        parsed, raw_for_error = required_tool_arguments(
+            result,
+            expected_name="create_character",
+        )
+    except NativeStructuredOutputError as exc:
         return {
             "tool": "character_writer",
             "status": "error",
             "detail": "角色生成结果解析失败",
-            "data": {"raw": raw_for_error[:500]},
+            "data": {"protocol_error": exc.reason},
         }
 
     if not parsed.get("name"):

@@ -1,4 +1,5 @@
 import { apiClient } from '../api/client'
+import type { AssistantReferenceContext } from '../types/assistantReferenceContext'
 
 interface ApiResponse<T> {
   code: number
@@ -65,6 +66,8 @@ export type CreationAgentTurnEventType =
   | 'tool_categories_changed'
   | 'tool_started'
   | 'tool_completed'
+  | 'conversation_context'
+  | 'conversation_checkpoint'
   | 'reply_delta'
   | 'heartbeat'
   | 'complete'
@@ -133,6 +136,7 @@ export async function runCreationAgentTurn(
     conversationId?: string
     assistantMessageId?: string
     localCliReadPaths?: string[]
+    referenceContext?: AssistantReferenceContext
     clientTurnId?: string
     signal?: AbortSignal
     onEvent?: (event: CreationAgentTurnEvent) => void
@@ -156,6 +160,7 @@ export async function runCreationAgentTurn(
           after_sequence: afterSequence,
           conversation_id: options.conversationId,
           assistant_message_id: options.assistantMessageId,
+          reference_context: options.referenceContext,
           local_cli_read_permission_grant: options.localCliReadPaths?.length ? 'read_once' : 'none',
           local_cli_read_paths: options.localCliReadPaths || [],
         }),

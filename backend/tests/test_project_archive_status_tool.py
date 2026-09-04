@@ -134,8 +134,8 @@ class ProjectArchiveStatusToolTest(unittest.TestCase):
             q.count.return_value = 0
             idx = call_count["n"]
             call_count["n"] += 1
-            # CatalogingJob query (8th call) returns the mock job
-            if idx == 7:
+            # CatalogingJob query follows active and total worldbuilding counts.
+            if idx == 8:
                 q.first.return_value = mock_job
             else:
                 q.first.return_value = None

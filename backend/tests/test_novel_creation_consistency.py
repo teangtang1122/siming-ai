@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pytest
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,9 @@ from app.services.novel_creation_consistency import (
     validate_creation_consistency,
 )
 from app.services.novel_creation_stage_execution import _merge_entity_generation
+from app.services.novel_creation_runs import create_run
+from app.services.novel_creation_claims import creation_idempotency_key
+from app.database.models import OperationRun
 from app.services.workspace.tools.novel_creation_v2 import run_creation_artifact_generation
 from tests.test_novel_creation_workspace_v2 import _db, _ready_session
 
@@ -123,8 +127,8 @@ def test_entity_target_generation_runs_end_to_end_without_rewriting_siblings():
         for item in list_creation_entities(session, artifact="characters")
         if item["entity_type"] == "character" and item["data"]["name"] == "周渡"
     )
-    generated = deepcopy(baseline)
-    generated["characters"][1]["goal"] = "揭开旧案并迫使主角公开真相"
+    generated = {"characters": [deepcopy(baseline["characters"][1])], "relationships": []}
+    generated["characters"][0]["goal"] = "揭开旧案并迫使主角公开真相"
 
     def stream(**_kwargs):
         async def generate():
@@ -152,3 +156,41 @@ def test_entity_target_generation_runs_end_to_end_without_rewriting_siblings():
     assert current["characters"][0] == baseline["characters"][0]
     assert current["characters"][1]["goal"] == "揭开旧案并迫使主角公开真相"
     assert current["relationships"] == baseline["relationships"]
+
+
+@pytest.mark.parametrize("target", [{"context_entity_ids": ["not-a-real-entity"]}, {"entity_id": "not-a-real-entity"}])
+def test_stage_preparation_failure_finishes_the_durable_run(target):
+    db = _db()
+    session = _ready_session(db)
+    request = {"stage": "opening_outline", "model": "openai:test", "use_model": True, **target}
+    run = create_run(db, session, "opening_outline", request)
+    db.commit()
+    before_revision = session.revision
+    with patch("app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion") as model:
+        result = asyncio.run(run_creation_artifact_generation(db, "", {
+            **request, "session_id": session.id, "_run_id": run.id,
+        }))
+    assert result["status"] == "error"
+    model.assert_not_called()
+    db.refresh(run)
+    assert run.status == "failed"
+    assert run.completed_at is not None
+    assert "不存在或已删除" in run.current_message
+    assert db.get(OperationRun, run.operation_id).status == "failed"
+    assert session.revision == before_revision
+
+
+@pytest.mark.parametrize("change", [
+    {"entity_id": "another-character"},
+    {"entity_type": "relationship"},
+    {"entity_count": 2},
+    {"context_entity_ids": ["corrected-reference"]},
+    {"context_artifacts": ["world_style"]},
+    {"auto_confirm": True},
+])
+def test_stage_request_identity_includes_selected_entities_and_context(change):
+    request = {"model": "openai:test", "instruction": "完善资料", "use_model": True, "auto_confirm": False}
+    common = dict(session_id="session", stage="characters", operation="refine", input_revision=1, input_snapshot_hash="snapshot")
+    original = creation_idempotency_key(**common, request=request)
+    assert creation_idempotency_key(**common, request={**request, **change}) != original
+    assert creation_idempotency_key(**common, request=dict(request)) == original

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...database.models import Character, Chapter, OutlineNode, WorldbuildingEntry
+from ...database.models import Chapter, Character, OutlineNode, WorldbuildingEntry
 from ..character_archive import character_archive_payload
 
 
@@ -43,6 +43,7 @@ def outline_snapshot(node: OutlineNode | None) -> dict | None:
         "source_chapter_id": node.source_chapter_id,
         "actual_summary": node.actual_summary,
         "planned_summary": node.planned_summary,
+        "cataloging_status": node.cataloging_status,
     }
 
 

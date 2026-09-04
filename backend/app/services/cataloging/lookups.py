@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...database.models import Character, CharacterAlias, OutlineNode, WorldbuildingEntry
+from ...database.query_filters import current_worldbuilding_clause
 from .name_utils import normalize_name_key, split_character_name
 
 
@@ -55,15 +56,41 @@ def _find_character_exact(db: Session, project_id: str, text: str) -> Character 
     return alias.character if alias else None
 
 
-def find_worldbuilding_by_title_or_id(db: Session, project_id: str, value: Any) -> WorldbuildingEntry | None:
+def find_worldbuilding_by_title_or_id(
+    db: Session,
+    project_id: str,
+    value: Any,
+) -> WorldbuildingEntry | None:
     text = str(value or "").strip()
     if not text:
         return None
-    return (
+    by_id = (
         db.query(WorldbuildingEntry)
-        .filter(WorldbuildingEntry.project_id == project_id)
-        .filter((WorldbuildingEntry.id == text) | (WorldbuildingEntry.title == text))
+        .filter(
+            WorldbuildingEntry.project_id == project_id,
+            WorldbuildingEntry.id == text,
+        )
         .first()
+    )
+    if by_id and str(by_id.status or "active").strip().lower() == "active":
+        return by_id
+    current = db.query(WorldbuildingEntry).filter(
+        WorldbuildingEntry.project_id == project_id,
+        current_worldbuilding_clause(WorldbuildingEntry.status),
+    )
+    exact = current.filter(WorldbuildingEntry.title == text).first()
+    if exact:
+        return exact
+    normalized = normalize_lookup(text)
+    if not normalized:
+        return None
+    return next(
+        (
+            entry
+            for entry in current.all()
+            if normalize_lookup(entry.title) == normalized
+        ),
+        None,
     )
 
 

@@ -119,9 +119,12 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "正式保存和建档由作者在界面选择。"
         ),
         "workflow_json": [
-            {"step": 1, "name": "prepare_context", "description": "调用 prepare_external_writing_context 获取上下文"},
-            {"step": 2, "name": "write_chapter", "description": "一次生成基础正文 1800-2500字"},
-            {"step": 3, "name": "save_draft", "description": "调用 save_external_chapter_draft 保存未入库草稿并立即结束"},
+            {"step": 1, "name": "prepare_context", "description": "调用 prepare_external_writing_context 建立精简写作基线"},
+            {"step": 2, "name": "retrieve_context", "description": "模型按需调用 search_task_context，只查看候选短摘要"},
+            {"step": 3, "name": "select_evidence", "description": "调用 submit_context_evidence 复核必要来源并取得首个精确上下文页"},
+            {"step": 4, "name": "read_context", "description": "若仍有后续页，逐次原样复制 next_arguments 调用 prepare_task_context；末页才返回选择令牌"},
+            {"step": 5, "name": "write_chapter", "description": "读完全部精确上下文后，在下一模型步骤一次生成基础正文 1800-2500字"},
+            {"step": 6, "name": "save_draft", "description": "携带末页选择令牌调用 save_external_chapter_draft 保存未入库草稿并立即结束"},
         ],
         "quality_rubric_json": None,
         "forbidden_patterns_json": [],
@@ -129,9 +132,12 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "save_external_chapter_draft": {
                 "scenario": "external_writing",
                 "steps": [
-                    "调用 prepare_external_writing_context 获取上下文",
-                    "按照本提示词包的写作规则生成正文",
-                    "调用 save_external_chapter_draft 存储草稿",
+                    "调用 prepare_external_writing_context 建立目标、文风和作者要求组成的精简基线",
+                    "模型自行调用 search_task_context 检索本章需要的资料，只查看候选短摘要",
+                    "模型复核后调用 submit_context_evidence，取得首个精确 context_page",
+                    "若 context_page.has_more=true，逐次原样复制 next_arguments 调用 prepare_task_context；不得跳页、改哈希或改页大小，末页才取得 context_selection_token",
+                    "在下一模型步骤按照本提示词包的写作规则生成正文",
+                    "携带选择令牌调用 save_external_chapter_draft 存储草稿",
                     "立即结束本轮；正式保存和建档由作者在界面操作",
                 ],
             },
@@ -218,7 +224,7 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
         "pack_id": "outline_planning",
         "scope": "outline_planning",
         "title": "大纲规划",
-        "summary": "设计有因果推进和节奏变化的大纲结构。",
+        "summary": "使用模型主动选材设计可由作者编辑确认、且尚未写入正式大纲的提案。",
         "system_prompt": (
             "你是一个故事结构师。设计有因果推进和节奏变化的大纲。\n\n"
             "【结构原则】\n"
@@ -230,8 +236,32 @@ BUILTIN_PACKS: list[dict[str, Any]] = [
             "【大纲层级】\n"
             "- volume：卷\n"
             "- chapter：章\n"
-            "- section：节"
+            "- section：节\n\n"
+            "逐页读完 submit_context_evidence 返回的精确 context_page，末页取得选择令牌后再生成。输出一份可编辑提案，"
+            "不得直接创建正式大纲，也不得在同一回合继续写正文。"
         ),
+        "workflow_json": [
+            {"step": 1, "name": "prepare_context", "description": "调用 prepare_task_context(task_type=outline_planning) 建立位置与文风基线"},
+            {"step": 2, "name": "retrieve_context", "description": "模型按需调用 search_task_context，只查看候选短摘要"},
+            {"step": 3, "name": "select_evidence", "description": "调用 submit_context_evidence 取得首个精确 context_page"},
+            {"step": 4, "name": "read_context", "description": "若仍有后续页，逐次原样复制 next_arguments 调用 prepare_task_context；末页才返回选择令牌"},
+            {"step": 5, "name": "propose_outline", "description": "读完全部精确上下文后，在下一模型步骤生成可编辑节点"},
+            {"step": 6, "name": "save_draft", "description": "调用 save_external_outline_draft 保存提案并立即结束"},
+        ],
+        "tool_playbook_json": {
+            "save_external_outline_draft": {
+                "scenario": "external_outline_planning",
+                "steps": [
+                    "查询真实父节点与插入位置，不使用界面选中项猜目标",
+                    "调用 prepare_task_context(task_type=outline_planning) 建立精简基线",
+                    "模型按需检索、复核并调用 submit_context_evidence",
+                    "按 next_arguments 逐页读完 context_page，末页取得选择令牌",
+                    "在下一模型步骤只使用完整精确上下文生成提案",
+                    "携带同一 manifest 和选择令牌调用 save_external_outline_draft",
+                    "立即结束本轮；正式大纲写入和后续正文由作者确认触发",
+                ],
+            },
+        },
     },
     {
         "pack_id": "anti_ai_review",

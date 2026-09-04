@@ -20,7 +20,7 @@ interface DateTimeParts {
  * Siming stores database datetimes as UTC. Older releases serialized those
  * values without an offset, which browsers interpret as local wall-clock
  * time. Keep explicit offsets untouched and treat legacy naive ISO values as
- * UTC so old and new assistant messages remain comparable.
+ * UTC so all saved records represent the same instant on every client.
  */
 export function normalizeApiDateTime(value?: string | null): string | null {
   const normalized = String(value || '').trim()
@@ -92,7 +92,8 @@ export function formatAssistantTimestamp(
   return `${parts.year}年${parts.month}月${parts.day}日 ${time}`
 }
 
-export function formatAssistantTimestampTitle(
+/** Full local timestamp for saved records, versions and message tooltips. */
+export function formatApiDateTime(
   value?: string | null,
   timeZone?: string,
 ): string | null {

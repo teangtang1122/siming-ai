@@ -45,6 +45,13 @@ def creation_idempotency_key(
         "operation": operation,
         "instruction": request.get("instruction"),
         "model": request.get("model"),
+        "entity_id": request.get("entity_id"),
+        "entity_type": request.get("entity_type"),
+        "entity_count": request.get("entity_count"),
+        "context_entity_ids": request.get("context_entity_ids") or [],
+        "context_artifacts": request.get("context_artifacts") or [],
+        "use_model": request.get("use_model"),
+        "auto_confirm": request.get("auto_confirm"),
         "input_revision": input_revision,
         "input_snapshot_hash": input_snapshot_hash,
     }

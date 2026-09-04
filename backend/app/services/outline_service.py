@@ -1,7 +1,7 @@
 """Shared outline utilities — node loading, sort context, tree building, and character links."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -62,6 +62,34 @@ def outline_sort_context(nodes: list[OutlineNode]) -> dict:
         return list(reversed(path))
 
     return {"nodes": node_by_id, "sort_keys": sort_keys, "path_for": path_for}
+
+
+def outline_chapter_number(nodes: list[OutlineNode], node_id: str) -> int | None:
+    """Return a chapter's one-based position in the authoritative outline tree.
+
+    ``OutlineNode.sort_order`` is local to a node's siblings, so it cannot be
+    used as a book-wide chapter number once chapters are grouped into volumes.
+    The tree preorder is the same structural order used by outline rendering;
+    counting only chapter nodes keeps sections from changing chapter numbers.
+    """
+
+    context = outline_sort_context(nodes)
+    sort_keys: dict[str, tuple[int, ...]] = context["sort_keys"]
+    target = context["nodes"].get(node_id)
+    if target is None or target.node_type != "chapter" or node_id not in sort_keys:
+        return None
+    chapters = sorted(
+        (
+            node
+            for node in nodes
+            if node.node_type == "chapter" and node.id in sort_keys
+        ),
+        key=lambda node: sort_keys[node.id],
+    )
+    return next(
+        (index for index, node in enumerate(chapters, start=1) if node.id == node_id),
+        None,
+    )
 
 
 def ensure_no_cycle(
@@ -128,22 +156,45 @@ def replace_character_links(
     if links is None:
         return
 
+    normalized_links: list[tuple[str, Optional[str]]] = []
+    seen_character_ids: set[str] = set()
+    for character_id, role_in_scene in links:
+        if character_id in seen_character_ids:
+            continue
+        seen_character_ids.add(character_id)
+        normalized_links.append((character_id, role_in_scene))
+    links = normalized_links
+
     character_ids = [character_id for character_id, _role in links]
+    characters_by_id: dict[str, Character] = {}
     if character_ids:
-        count = (
+        characters = (
             db.query(Character)
             .filter(Character.project_id == project_id, Character.id.in_(character_ids))
-            .count()
+            .all()
         )
-        if count != len(character_ids):
+        characters_by_id = {character.id: character for character in characters}
+        if len(characters_by_id) != len(character_ids):
             raise ValidationError("关联角色必须属于当前作品")
 
     node.linked_characters.clear()
     db.flush()
-    for character_id, role_in_scene in links:
+    linked_at = datetime.utcnow()
+    for index, (character_id, role_in_scene) in enumerate(links):
         node.linked_characters.append(
-            OutlineNodeCharacter(character_id=character_id, role_in_scene=role_in_scene)
+            OutlineNodeCharacter(
+                character=characters_by_id[character_id],
+                role_in_scene=role_in_scene,
+                # Windows clocks can give a whole batch the same timestamp.
+                # Persist its author-selected order instead of breaking ties
+                # by random character UUIDs after a refresh or export/import.
+                created_at=linked_at + timedelta(microseconds=index),
+            )
         )
+    # Materialize generated IDs/timestamps before any caller serializes this
+    # relationship collection. SessionLocal disables autoflush, so callers
+    # cannot rely on a later query to make pending association rows safe.
+    db.flush()
 
 
 def node_to_dict(node: OutlineNode) -> dict:
@@ -155,6 +206,10 @@ def node_to_dict(node: OutlineNode) -> dict:
         "node_type_label": NODE_TYPE_LABELS.get(node.node_type, node.node_type),
         "title": node.title,
         "summary": node.summary,
+        "actual_summary": node.actual_summary,
+        "planned_summary": node.planned_summary,
+        "source_chapter_id": node.source_chapter_id,
+        "cataloging_status": node.cataloging_status,
         "status": node.status,
         "status_label": STATUS_LABELS.get(node.status, node.status),
         "sort_order": node.sort_order,
@@ -168,7 +223,11 @@ def node_to_dict(node: OutlineNode) -> dict:
             }
             for link in sorted(
                 node.linked_characters,
-                key=lambda item: item.created_at,
+                key=lambda item: (
+                    item.created_at is None,
+                    item.created_at or datetime.min,
+                    item.character_id or "",
+                ),
             )
             if link.character is not None
         ],

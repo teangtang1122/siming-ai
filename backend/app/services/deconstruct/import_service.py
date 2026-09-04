@@ -20,6 +20,7 @@ from ...database.models import (
     OutlineNodeCharacter,
     WorldbuildingEntry,
 )
+from ...database.query_filters import current_worldbuilding_clause
 from ...schemas.deconstruct import DeconstructImportRequest
 from .constants import WORLD_DIMENSIONS
 from .import_helpers import (
@@ -450,11 +451,17 @@ def import_deconstruct_report(
         existing_world_titles = {
             (dimension, title)
             for dimension, title in db.query(WorldbuildingEntry.dimension, WorldbuildingEntry.title)
-            .filter(WorldbuildingEntry.project_id == project_id)
+            .filter(
+                WorldbuildingEntry.project_id == project_id,
+                current_worldbuilding_clause(WorldbuildingEntry.status),
+            )
             .all()
         }
         grouped_counts: dict[str, int] = {}
-        for dimension, in db.query(WorldbuildingEntry.dimension).filter(WorldbuildingEntry.project_id == project_id).all():
+        for dimension, in db.query(WorldbuildingEntry.dimension).filter(
+            WorldbuildingEntry.project_id == project_id,
+            current_worldbuilding_clause(WorldbuildingEntry.status),
+        ).all():
             grouped_counts[dimension] = grouped_counts.get(dimension, 0) + 1
 
         entries = data.get("worldbuilding_entries") or data.get("worldbuilding") or []

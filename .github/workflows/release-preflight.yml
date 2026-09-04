@@ -8,6 +8,7 @@ on:
       - "scripts/publish-github.ps1"
       - "scripts/smoke-test-release.ps1"
       - "scripts/verify-release-assets.ps1"
+      - "scripts/verify-published-release.ps1"
       - "scripts/build-android-release.ps1"
       - "scripts/verify-android-release.ps1"
       - "scripts/check-architecture.py"
@@ -43,6 +44,7 @@ jobs:
           Test-PowerShellSyntax scripts\publish-github.ps1
           Test-PowerShellSyntax scripts\smoke-test-release.ps1
           Test-PowerShellSyntax scripts\verify-release-assets.ps1
+          Test-PowerShellSyntax scripts\verify-published-release.ps1
           Test-PowerShellSyntax scripts\build-android-release.ps1
           Test-PowerShellSyntax scripts\verify-android-release.ps1
 

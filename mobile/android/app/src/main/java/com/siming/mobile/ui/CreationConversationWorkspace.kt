@@ -21,6 +21,8 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -48,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.siming.mobile.data.agent.MobileConversationContextErrorCode
 import com.siming.mobile.data.creation.CreationAgentTurnRecords
 import com.siming.mobile.data.creation.CreationAgentProgressEvent
 import kotlinx.serialization.json.JsonArray
@@ -71,6 +74,7 @@ internal fun CreationConversationWorkspace(
     onOpenDossier: () -> Unit,
     onSend: (String) -> Unit,
     onDiscard: () -> Unit,
+    onConfigureApi: () -> Unit,
     onOpenProject: (String) -> Unit,
 ) {
     val draft = session.objectValue("draft")
@@ -79,6 +83,11 @@ internal fun CreationConversationWorkspace(
     val projectId = session.string("created_project_id")
     val route = draft.string("execution_route")
     val host = draft.string("execution_host")
+    val capacityUnknown = creationNeedsCapacityConfiguration(progressEvents)
+    val conversationContext = creationConversationContextState(session, progressEvents)
+    val lastAuthorRequest = CreationAgentTurnRecords.turns(session)
+        .asReversed()
+        .firstNotNullOfOrNull { it.string("user_content").takeIf(String::isNotBlank) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -133,6 +142,40 @@ internal fun CreationConversationWorkspace(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+        }
+
+        if (capacityUnknown) {
+            item {
+                OutlinedCard(
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Text("模型上下文容量尚未配置", fontWeight = FontWeight.Bold)
+                        Text(
+                            "司命不会猜测模型窗口。配置上下文窗口、输出预留和安全余量后，再重新发送本轮要求。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(onClick = onConfigureApi, enabled = !running) {
+                            Text("配置上下文容量")
+                        }
+                    }
+                }
+            }
+        }
+
+        conversationContext?.let { contextState ->
+            item {
+                CreationConversationContextCard(
+                    state = contextState,
+                    onConfigureApi = onConfigureApi,
+                    onRetry = { lastAuthorRequest?.let(onSend) },
+                    onNewCreation = onBack,
+                    canRetry = !running && !lastAuthorRequest.isNullOrBlank(),
+                )
             }
         }
 
@@ -290,6 +333,114 @@ internal fun CreationConversationWorkspace(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+internal fun creationNeedsCapacityConfiguration(events: List<CreationAgentProgressEvent>): Boolean =
+    events.asReversed().firstOrNull { it.type == "conversation_context" }
+        ?.data
+        ?.string("error_code") == MobileConversationContextErrorCode.CAPACITY_UNKNOWN
+
+internal fun creationConversationContextState(
+    session: JsonObject,
+    liveEvents: List<CreationAgentProgressEvent>,
+): MobileAssistantContextState? {
+    val live = liveEvents.asReversed()
+        .firstOrNull { it.type == "conversation_context" }
+        ?.data
+    val stored = CreationAgentTurnRecords.turns(session)
+        .asReversed()
+        .asSequence()
+        .flatMap { turn ->
+            (turn["progress_events"] as? JsonArray)
+                .orEmpty()
+                .asReversed()
+                .asSequence()
+        }
+        .mapNotNull { it as? JsonObject }
+        .firstOrNull { it.string("type") == "conversation_context" }
+        ?.get("data") as? JsonObject
+    val persistedState = CreationAgentTurnRecords.contextState(session)
+    val persistedDetail = CreationAgentTurnRecords.checkpointDetail(session)
+    val root = live ?: persistedState ?: stored ?: return null
+    val state = root["context_state"] as? JsonObject ?: root
+    val inlineDetail = root["checkpoint"] as? JsonObject
+    val selectedCheckpointId = when (state.string("status")) {
+        "ready" -> state.string("active_checkpoint_id")
+        else -> state.string("latest_checkpoint_id").ifBlank {
+            state.string("active_checkpoint_id")
+        }
+    }
+    val matchingPersistedDetail = persistedDetail?.takeIf {
+        selectedCheckpointId.isNotBlank() && it.string("id") == selectedCheckpointId
+    }
+    return runCatching {
+        mobileAssistantContextStateFromJson(state, inlineDetail ?: matchingPersistedDetail)
+    }.getOrNull()
+}
+
+@Composable
+private fun CreationConversationContextCard(
+    state: MobileAssistantContextState,
+    onConfigureApi: () -> Unit,
+    onRetry: () -> Unit,
+    onNewCreation: () -> Unit,
+    canRetry: Boolean,
+) {
+    var expanded by rememberSaveable(
+        state.activeCheckpointId,
+        state.latestCheckpointId,
+        state.status,
+    ) { mutableStateOf(false) }
+    OutlinedCard(
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Text(
+                when (state.status) {
+                    "compressing", "pending" -> "正在整理较早立项对话"
+                    "failed" -> "立项对话上下文整理失败"
+                    else -> "立项对话上下文"
+                },
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                state.detail.ifBlank { "完整聊天记录仍保留，模型只接收容量内的活动上下文。" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (hasConversationContextDetails(state)) {
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "收起详情" else "查看详情")
+                    Icon(
+                        if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                        null,
+                    )
+                }
+            }
+            if (expanded) {
+                HorizontalDivider()
+                ConversationContextDetail(state)
+            }
+            if (requiresDirectContextCapacityConfiguration(state)) {
+                OutlinedButton(onClick = onConfigureApi) { Text("配置上下文容量") }
+            }
+            if (state.status == "failed" && !requiresDirectContextCapacityConfiguration(state)) {
+                Text(
+                    "系统不会沿用失败的 checkpoint；重试会创建一个新的完整回合。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.retryable) {
+                        Button(onClick = onRetry, enabled = canRetry) { Text("重试本轮要求") }
+                    }
+                    OutlinedButton(onClick = onNewCreation) { Text("新建立项") }
+                }
+            }
         }
     }
 }

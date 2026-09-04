@@ -1,51 +1,70 @@
 """Tests for MCP tool auto-instrumentation with run events."""
 import asyncio
 import json
-import sys
 import os
+import sys
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.mcp.adapter import execute_tool, _build_args_summary, _format_tool_result, _log_run_tool_event
+from app.mcp.adapter import (
+    _build_args_summary,
+    _format_tool_result,
+    _log_run_tool_event,
+    execute_tool,
+)
+from app.services.workspace.registry import registry
 
 
 class BuildArgsSummaryTest(unittest.TestCase):
-    """Verify _build_args_summary produces safe, truncated output."""
+    """Verify _build_args_summary logs structure, never string payloads."""
 
-    def test_short_args_preserved(self):
+    def test_string_values_are_summarized_and_numbers_are_preserved(self):
         result = _build_args_summary({"query": "test", "limit": 10})
-        self.assertIn("query: test", result)
+        self.assertIn("query: [str:4]", result)
+        self.assertNotIn("query: test", result)
         self.assertIn("limit: 10", result)
 
-    def test_long_string_truncated(self):
+    def test_sensitive_content_is_explicitly_redacted(self):
         result = _build_args_summary({"content": "x" * 500})
-        self.assertIn("[500 chars]", result)
+        self.assertIn("[redacted]", result)
         self.assertNotIn("xxxxx", result)
 
     def test_list_replaced(self):
         result = _build_args_summary({"items": [1, 2, 3]})
-        self.assertIn("[list]", result)
+        self.assertIn("[list:3]", result)
 
     def test_dict_replaced(self):
         result = _build_args_summary({"config": {"key": "value"}})
-        self.assertIn("[dict]", result)
+        self.assertIn("[dict:1]", result)
 
     def test_total_truncated(self):
         args = {f"field_{i}": f"value_{i}" for i in range(50)}
         result = _build_args_summary(args)
         self.assertLessEqual(len(result), 300)
 
+    def test_untrusted_argument_key_cannot_smuggle_secret_path_or_content(self):
+        secret_key = "sk-secret /private/project manuscript content"
+        result = _build_args_summary({secret_key: 7})
+        self.assertNotIn(secret_key, result)
+        self.assertNotIn("/private/project", result)
+        self.assertEqual(result, "[field]: 7")
+
 
 class FormatToolResultTest(unittest.TestCase):
     def test_ready_context_manifest_is_not_an_mcp_error(self):
-        result = _format_tool_result({
-            "tool": "prepare_task_context",
-            "status": "ready",
-            "detail": "Task context prepared.",
-            "data": {"context_manifest_id": "manifest-1"},
-        })
+        tool = registry.get("prepare_task_context")
+        self.assertIsNotNone(tool)
+        result = _format_tool_result(
+            tool,
+            {
+                "tool": "prepare_task_context",
+                "status": "ready",
+                "detail": "Task context prepared.",
+                "data": {"context_manifest_id": "manifest-1"},
+            },
+        )
 
         self.assertFalse(result.is_error)
         payload = json.loads(result.content[0]["text"])

@@ -1,6 +1,8 @@
 package com.siming.mobile.ui
 
+import com.siming.mobile.data.agent.mobileCapacityBoundTaskConfig
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.network.DirectApiConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -40,6 +42,45 @@ class ReferenceAssistantWorkspaceTest {
     fun `assistant quick actions only provide user messages without app routing`() {
         assertTrue(assistantQuickActions.any { it.label == "续写下一章" && "下一章" in it.prompt })
         assertTrue(assistantQuickActions.any { it.label == "检查世界观冲突" && "世界观" in it.prompt })
+    }
+
+    @Test
+    fun `unknown direct model capacity exposes the explicit configuration action`() {
+        assertTrue(
+            requiresDirectContextCapacityConfiguration(
+                MobileAssistantContextState(
+                    status = "failed",
+                    errorCode = "conversation_capacity_unknown",
+                ),
+            ),
+        )
+        assertFalse(
+            requiresDirectContextCapacityConfiguration(
+                MobileAssistantContextState(
+                    status = "failed",
+                    errorCode = "conversation_checkpoint_failed",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `assistant task model override uses bounded 256k fallback`() {
+        val config = DirectApiConfig(
+            displayName = "test",
+            baseUrl = "https://example.test/v1",
+            apiKey = "secret",
+            model = "general-model",
+            taskModels = mapOf(DirectApiConfig.TASK_ASSISTANT to "assistant-model"),
+            contextWindowTokens = 128_000,
+        )
+
+        val resolved = mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_ASSISTANT)
+
+        assertEquals("assistant-model", resolved.model)
+        assertEquals(DirectApiConfig.DEFAULT_CONTEXT_WINDOW_TOKENS, resolved.contextWindowTokens)
+        assertEquals(DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS, resolved.maxOutputTokens)
+        assertEquals(128_000, config.contextWindowTokens)
     }
 
     private fun replica(entityType: String, entityId: String, payload: String) = ReplicaEntity(

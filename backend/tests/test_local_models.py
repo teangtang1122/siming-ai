@@ -7,10 +7,11 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.ai.capabilities import sanitize_tool_request
+from app.ai.capabilities import ToolCapabilityUnavailableError, sanitize_tool_request
 from app.ai.gateway import LLMGateway
 from app.ai.local_runtime_adapter import LocalRuntimeAdapter
 from app.database.models import (
@@ -83,6 +84,24 @@ def test_local_runtime_tool_request_is_not_stripped():
     assert safe_tools is tools
     assert safe_tool_choice == "auto"
     assert notes == []
+
+
+def test_non_tool_provider_rejects_required_tools_instead_of_stripping_them():
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_project_info",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }]
+
+    with pytest.raises(
+        ToolCapabilityUnavailableError,
+        match=r"^tool_capability_unavailable:",
+    ) as exc_info:
+        sanitize_tool_request("codex_cli", tools, "required")
+
+    assert exc_info.value.reason_code == "tool_capability_unavailable"
 
 
 def test_task_setting_routes_to_local_runtime_by_default():

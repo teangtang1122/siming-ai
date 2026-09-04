@@ -9,7 +9,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ...database.models import RagChunk
+from ...database.models import RagChunk, WorldbuildingEntry
+from ...database.query_filters import current_worldbuilding_clause, is_current_worldbuilding_status
 from .indexer import detect_fts5_available
 
 
@@ -252,6 +253,28 @@ def search_chunks(
             for r in _search_like_only(db, project_id, all_terms, source_types, limit * 2)
         }
 
+    world_chunk_ids = [
+        chunk_id
+        for chunk_id, result in results_by_id.items()
+        if result.get("source_type") == "worldbuilding"
+    ]
+    if world_chunk_ids:
+        current_chunk_ids = {
+            row[0]
+            for row in (
+                db.query(RagChunk.id)
+                .join(WorldbuildingEntry, WorldbuildingEntry.id == RagChunk.source_id)
+                .filter(
+                    RagChunk.id.in_(world_chunk_ids),
+                    WorldbuildingEntry.project_id == project_id,
+                    current_worldbuilding_clause(WorldbuildingEntry.status),
+                )
+                .all()
+            )
+        }
+        for chunk_id in set(world_chunk_ids) - current_chunk_ids:
+            results_by_id.pop(chunk_id, None)
+
     sorted_results = sorted(results_by_id.values(), key=lambda x: x["score"], reverse=True)[:limit]
 
     return [
@@ -271,6 +294,13 @@ def search_chunks(
 
 def get_chunks_for_source(db: Session, project_id: str, source_type: str, source_id: str) -> list[dict]:
     """Get all chunks for a specific source object."""
+    if source_type == "worldbuilding":
+        entry = db.query(WorldbuildingEntry).filter(
+            WorldbuildingEntry.id == source_id,
+            WorldbuildingEntry.project_id == project_id,
+        ).first()
+        if not entry or not is_current_worldbuilding_status(entry.status):
+            return []
     chunks = (
         db.query(RagChunk)
         .filter(
@@ -300,6 +330,13 @@ def get_chunk_by_id(db: Session, chunk_id: str) -> dict | None:
     chunk = db.query(RagChunk).filter(RagChunk.id == chunk_id).first()
     if not chunk:
         return None
+    if chunk.source_type == "worldbuilding":
+        entry = db.query(WorldbuildingEntry).filter(
+            WorldbuildingEntry.id == chunk.source_id,
+            WorldbuildingEntry.project_id == chunk.project_id,
+        ).first()
+        if not entry or not is_current_worldbuilding_status(entry.status):
+            return None
     return {
         "chunk_id": chunk.id,
         "source_type": chunk.source_type,

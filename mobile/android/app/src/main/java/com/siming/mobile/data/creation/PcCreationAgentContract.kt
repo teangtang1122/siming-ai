@@ -24,7 +24,6 @@ internal class PcCreationAgentContract private constructor(
     private val agent: JsonObject = root["creation_agent"] as? JsonObject
         ?: error("手机内置契约缺少 creation_agent；请重新生成移动端 Prompt 契约")
     private val creation: JsonObject = root["creation"] as? JsonObject ?: JsonObject(emptyMap())
-    val maxIterations: Int = agent.string("max_iterations").toIntOrNull() ?: 6
     private val allToolSchemas: JsonArray = agent["tool_schemas"] as? JsonArray ?: JsonArray(emptyList())
     val toolCategories = PcToolCategoryContract(root)
     val categoryController: String = toolCategories.controller
@@ -32,6 +31,7 @@ internal class PcCreationAgentContract private constructor(
         .orEmpty()
         .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
         .toSet()
+    val excludedPcToolNames: Set<String> = requiredToolNames("excluded_pc_tool_names")
     val revisionToolNames: Set<String> = requiredToolNames("revision_tool_names")
     val writeToolNames: Set<String> = requiredToolNames("write_tool_names")
     val maxSuccessfulWritesPerTurn: Int = agent.string("max_successful_writes_per_turn")

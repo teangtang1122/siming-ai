@@ -114,16 +114,19 @@ internal class MobileCreationAgent(
     stage: String,
     instruction: String,
     config: DirectApiConfig,
+    entityTarget: JsonObject? = null,
+    entityBaseline: JsonObject? = null,
 ): JsonObject {
     require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
+    val stageBaseline = entityBaseline ?: baseline(source, stage)
     val (system, user) = if (stage == "concepts") {
         contract.conceptMessages(source, instruction)
     } else {
-        contract.stageMessages(source, stage, baseline(source, stage), instruction)
+        contract.stageMessages(source, stage, stageBaseline, instruction, entityTarget)
     }
     val maxTokens = if (stage == "concepts") 3_200 else 6_000
     val temperature = if (stage == "concepts") 0.8 else 0.65
-    val creationExtraBody = if (config.isDeepSeek()) buildJsonObject {
+    val creationExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
         put("thinking", buildJsonObject { put("type", "disabled") })
     } else null
     val raw = directApi.complete(
@@ -134,12 +137,11 @@ internal class MobileCreationAgent(
         temperature = temperature,
         extraBody = creationExtraBody,
     )
-    val stageBaseline = baseline(source, stage)
     var sourceLabel = "model"
     var warning = ""
     var repairMethod = ""
     val data = try {
-        parseStageData(stage, raw, stageBaseline, source.objectValue("draft"))
+        parseStageData(stage, raw, stageBaseline, entityTarget)
     } catch (initialError: Exception) {
         val (repairSystem, repairUser) = contract.repairMessages(
             raw,
@@ -164,7 +166,7 @@ internal class MobileCreationAgent(
             )
         }
         val repairedData = try {
-            parseStageData(stage, repaired, stageBaseline, source.objectValue("draft"))
+            parseStageData(stage, repaired, stageBaseline, entityTarget)
         } catch (repairError: Exception) {
             throw IllegalArgumentException(
                 "模型阶段输出无效，且同模型结构修复后仍不符合工具契约：${repairError.message.orEmpty()}",
@@ -191,16 +193,25 @@ internal class MobileCreationAgent(
         stage: String,
         raw: String,
         stageBaseline: JsonObject,
-        draft: JsonObject,
+        entityTarget: JsonObject?,
     ): JsonObject {
         val parsed = parseObject(raw)
         val rawData = (parsed["data"] as? JsonObject) ?: parsed
+        if (entityTarget != null) {
+            val rows = rawData[entityTarget.string("field")] as? JsonArray
+            require(!rows.isNullOrEmpty() && rows.all { it is JsonObject }) {
+                "模型没有在阶段集合中返回目标实体；不能用旧资料代替生成结果"
+            }
+            require(entityTarget.string("mode") != "existing" || rows.size == 1) {
+                "指定实体修订必须恰好返回一个目标对象"
+            }
+        }
         val data = if (stage == "concepts") {
             normalizeConcepts(rawData)
         } else {
             normalizeStage(stage, rawData, stageBaseline)
         }
-        validateStage(stage, data)
+        if (entityTarget == null) validateStage(stage, data)
         return data
     }
 
@@ -1118,9 +1129,6 @@ internal class MobileCreationAgent(
     private fun JsonObject.string(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
     private fun JsonObject.int(name: String): Int = (get(name) as? JsonPrimitive)?.intOrNull ?: 0
     private fun JsonArray.takeArray(count: Int): JsonArray = JsonArray(take(count))
-    private fun DirectApiConfig.isDeepSeek(): Boolean =
-        listOf(displayName, baseUrl, model).any { it.contains("deepseek", ignoreCase = true) }
-
     private companion object {
         val ROLE_TYPES = setOf("protagonist", "supporting", "antagonist", "mentor", "other", "merged_alias")
     }

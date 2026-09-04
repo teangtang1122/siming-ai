@@ -11,6 +11,7 @@ import {
   Popconfirm,
   Select,
   Space,
+  Tag,
   Tooltip,
   Tree,
   Typography,
@@ -31,8 +32,14 @@ import {
 } from '@ant-design/icons'
 import { apiClient } from '../api/client'
 import { SaveStatusIndicator } from '../components/interaction'
-import { useAiPanelContext } from '../contexts/AiPanelContext'
+import OutlineDraftReviewPanel from '../components/OutlineDraftReviewPanel'
+import {
+  useAiPanelContext,
+  type GeneratedOutlineDraft,
+  type GeneratedOutlineDraftNode,
+} from '../contexts/AiPanelContext'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
+import { createLatestRequestGate } from '../shared/latestRequest'
 import './OutlinePage.css'
 
 const { Text, Title } = Typography
@@ -107,6 +114,32 @@ interface SceneMetadata {
 
 interface OutlinePageProps {
   projectId: string
+}
+
+function outlineDraftFromPayload(
+  payload: Record<string, any>,
+  projectId: string,
+): GeneratedOutlineDraft | null {
+  const draftId = String(payload.draft_id || '')
+  const nodes = Array.isArray(payload.nodes)
+    ? payload.nodes.filter((node: unknown): node is GeneratedOutlineDraftNode => (
+      Boolean(node && typeof node === 'object' && 'title' in node && 'node_type' in node)
+    ))
+    : []
+  if (!draftId || nodes.length === 0) return null
+  return {
+    draftId,
+    projectId: String(payload.project_id || projectId),
+    contextManifestId: payload.context_manifest_id ? String(payload.context_manifest_id) : null,
+    parentId: payload.parent_id ? String(payload.parent_id) : null,
+    insertAfterId: payload.insert_after_id ? String(payload.insert_after_id) : null,
+    status: String(payload.draft_status || 'pending') as GeneratedOutlineDraft['status'],
+    nodes,
+    designNotes: String(payload.design_notes || ''),
+    savedOutlineNodeIds: Array.isArray(payload.saved_outline_node_ids)
+      ? payload.saved_outline_node_ids.map(String)
+      : [],
+  }
 }
 
 const NODE_TYPE_OPTIONS: Array<{ value: NodeType; label: string }> = [
@@ -187,6 +220,23 @@ function buildTree(flat: OutlineNode[]): OutlineNode[] {
   return roots
 }
 
+function insertDraftRoots(
+  siblings: DataNode[],
+  draftRoots: DataNode[],
+  insertAfterId: string | null,
+): DataNode[] {
+  if (draftRoots.length === 0) return siblings
+  const index = insertAfterId
+    ? siblings.findIndex((node) => String(node.key) === insertAfterId)
+    : -1
+  const insertionIndex = index >= 0 ? index + 1 : siblings.length
+  return [
+    ...siblings.slice(0, insertionIndex),
+    ...draftRoots,
+    ...siblings.slice(insertionIndex),
+  ]
+}
+
 function nextChildType(parent?: OutlineNode | null): NodeType {
   if (!parent) return 'volume'
   if (parent.node_type === 'volume') return 'chapter'
@@ -200,6 +250,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const [flat, setFlat] = useState<OutlineNode[]>([])
   const [characters, setCharacters] = useState<CharacterItem[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const selectedIdRef = useRef<string | null>(null)
   const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [searchKeyword, setSearchKeyword] = useState('')
   const [typeFilter, setTypeFilter] = useState<NodeType | 'all'>('all')
@@ -212,9 +263,21 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const resizeStartX = useRef(0)
   const resizeStartWidth = useRef(panelWidth)
   const [creating, setCreating] = useState(false)
+  const creatingRef = useRef(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const { refreshKey } = useAiPanelContext()
+  const formRevisionRef = useRef(0)
+  const saveRequestGate = useRef(createLatestRequestGate<string>())
+  const skipNextFormLoadRef = useRef<string | null>(null)
+  const {
+    refreshKey,
+    generatedOutlineDraft,
+    openGeneratedOutlineDraft,
+  } = useAiPanelContext()
+  const pendingOutlineDraft = (
+    generatedOutlineDraft?.projectId === projectId
+    && generatedOutlineDraft.status === 'pending'
+  ) ? generatedOutlineDraft : null
   const {
     saveStatus,
     saveError,
@@ -246,24 +309,28 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     setPanelWidth(clampedWidth)
   }
 
-  const fetchOutline = useCallback(async () => {
+  const fetchOutline = useCallback(async (preferredSelectedId?: string) => {
     setLoading(true)
     try {
       const res = await apiClient.get<ApiResponse<OutlineListResponse>>(`/projects/${projectId}/outline`)
       const payload = res.data.data
       setTree(payload.items)
       setFlat(payload.flat)
-      const nextSelectedId = selectedId && payload.flat.some((node) => node.id === selectedId)
-        ? selectedId
-        : (!creating ? payload.flat[0]?.id || null : null)
+      const currentSelectedId = preferredSelectedId || selectedIdRef.current
+      const nextSelectedId = currentSelectedId && payload.flat.some((node) => node.id === currentSelectedId)
+        ? currentSelectedId
+        : (!creatingRef.current ? payload.flat[0]?.id || null : null)
       setExpandedKeys((keys) => (keys.length > 0 ? keys : collectSelectedPath(payload.items, nextSelectedId)))
-      if (nextSelectedId !== selectedId) setSelectedId(nextSelectedId)
+      if (nextSelectedId !== selectedIdRef.current) {
+        selectedIdRef.current = nextSelectedId
+        setSelectedId(nextSelectedId)
+      }
     } catch (err: any) {
       message.error(err.message || '获取大纲失败')
     } finally {
       setLoading(false)
     }
-  }, [creating, projectId, selectedId])
+  }, [projectId])
 
   const fetchCharacters = useCallback(async () => {
     try {
@@ -276,21 +343,41 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     }
   }, [projectId])
 
+  const fetchPendingOutlineDraft = useCallback(async () => {
+    try {
+      const response = await apiClient.get<ApiResponse<Record<string, any> | null>>(
+        `/projects/${projectId}/outline-drafts/pending`,
+      )
+      const pending = response.data.data
+        ? outlineDraftFromPayload(response.data.data, projectId)
+        : null
+      if (pending) openGeneratedOutlineDraft(pending)
+    } catch (err: any) {
+      message.error(err.message || '获取大纲草稿失败')
+    }
+  }, [openGeneratedOutlineDraft, projectId])
+
   useEffect(() => {
     fetchOutline()
     fetchCharacters()
-  }, [fetchCharacters, fetchOutline])
+    fetchPendingOutlineDraft()
+  }, [fetchCharacters, fetchOutline, fetchPendingOutlineDraft])
 
   // Refresh data when AI applies changes
   useEffect(() => {
     if (refreshKey > 0) {
       fetchOutline()
       fetchCharacters()
+      fetchPendingOutlineDraft()
     }
-  }, [fetchCharacters, fetchOutline, refreshKey])
+  }, [fetchCharacters, fetchOutline, fetchPendingOutlineDraft, refreshKey])
 
   useEffect(() => {
     if (!creating && selectedNode) {
+      if (skipNextFormLoadRef.current === selectedNode.id) {
+        skipNextFormLoadRef.current = null
+        return
+      }
       form.setFieldsValue({
         parent_id: selectedNode.parent_id || undefined,
         node_type: selectedNode.node_type,
@@ -303,9 +390,16 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       })
     }
     if (!creating && !selectedNode) {
+      if (skipNextFormLoadRef.current) return
       form.resetFields()
     }
   }, [creating, form, selectedNode])
+
+  const visibleExpandedKeys = useMemo(() => {
+    const keys = filterActive ? collectTreeKeys(filteredTree) : expandedKeys
+    const parentId = pendingOutlineDraft?.parentId
+    return parentId && !keys.includes(parentId) ? [...keys, parentId] : keys
+  }, [expandedKeys, filterActive, filteredTree, pendingOutlineDraft?.parentId])
 
   const parentOptions = useMemo(
     () =>
@@ -344,11 +438,61 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       ),
       children: node.children.map(renderNode),
     })
-    return filteredTree.map(renderNode)
-  }, [filteredTree])
+    const formal = filteredTree.map(renderNode)
+    if (!pendingOutlineDraft) return formal
+
+    const draftByTitle = new Map<string, DataNode>()
+    const draftRoots: DataNode[] = []
+    pendingOutlineDraft.nodes.forEach((node, index) => {
+      const dataNode: DataNode = {
+        key: `outline-draft-${pendingOutlineDraft.draftId}-${index}`,
+        className: 'outline-tree-draft-node',
+        selectable: false,
+        title: (
+          <div className="outline-tree-title outline-tree-title-draft">
+            <span className="outline-tree-main">
+              <FileTextOutlined />
+              <span title={node.title}>{node.title}</span>
+            </span>
+            <span className="outline-tree-meta">
+              <Tag color="gold">未保存</Tag>
+            </span>
+          </div>
+        ),
+        children: [],
+      }
+      draftByTitle.set(node.title, dataNode)
+      const parentTitle = String(node.parent_title || '')
+      const draftParent = parentTitle ? draftByTitle.get(parentTitle) : null
+      if (draftParent) {
+        draftParent.children = [...(draftParent.children || []), dataNode]
+      } else {
+        draftRoots.push(dataNode)
+      }
+    })
+
+    const inject = (items: DataNode[]): DataNode[] => {
+      const copied = items.map((item) => ({
+        ...item,
+        children: item.children ? inject(item.children) : [],
+      }))
+      if (!pendingOutlineDraft.parentId) return copied
+      return copied.map((item) => (
+        String(item.key) === pendingOutlineDraft.parentId
+          ? { ...item, children: insertDraftRoots(item.children || [], draftRoots, pendingOutlineDraft.insertAfterId) }
+          : item
+      ))
+    }
+    if (pendingOutlineDraft.parentId) return inject(formal)
+    return insertDraftRoots(formal, draftRoots, pendingOutlineDraft.insertAfterId)
+  }, [filteredTree, pendingOutlineDraft])
 
   const startCreate = (parent?: OutlineNode | null) => {
     confirmLeave(() => {
+      saveRequestGate.current.invalidate()
+      setSaving(false)
+      creatingRef.current = true
+      selectedIdRef.current = null
       setCreating(true)
       setSelectedId(null)
       const parentId = parent?.id || null
@@ -371,6 +515,18 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       message.warning('请输入节点标题')
       return
     }
+    const targetCreating = creatingRef.current || !selectedIdRef.current
+    const targetId = selectedIdRef.current
+    const targetKey = targetCreating ? 'create' : `view:${targetId}`
+    const request = saveRequestGate.current.begin(targetKey)
+    const submittedRevision = formRevisionRef.current
+    const ownsTarget = () => (
+      saveRequestGate.current.isCurrent(request)
+      && (targetCreating
+        ? creatingRef.current
+        : !creatingRef.current && selectedIdRef.current === targetId)
+    )
+    const ownsSnapshot = () => ownsTarget() && formRevisionRef.current === submittedRevision
     setSaving(true)
     markSaving()
     try {
@@ -385,23 +541,47 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         metadata: values.metadata || {},
       }
 
-      if (creating || !selectedId) {
+      if (targetCreating) {
         const res = await apiClient.post<ApiResponse<OutlineNode>>(`/projects/${projectId}/outline`, payload)
-        setSelectedId(res.data.data.id)
-        setCreating(false)
+        if (ownsTarget()) {
+          const created = res.data.data
+          const snapshotStillCurrent = ownsSnapshot()
+          creatingRef.current = false
+          selectedIdRef.current = created.id
+          skipNextFormLoadRef.current = snapshotStillCurrent ? null : created.id
+          setSelectedId(created.id)
+          setCreating(false)
+          if (snapshotStillCurrent) markSaved()
+          else markDirty()
+          void fetchOutline(created.id)
+        } else {
+          void fetchOutline()
+        }
       } else {
         const res = await apiClient.put<ApiResponse<OutlineNode>>(
-          `/projects/${projectId}/outline/${selectedId}`,
+          `/projects/${projectId}/outline/${targetId}`,
           payload
         )
-        setSelectedId(res.data.data.id)
+        if (ownsTarget()) {
+          const snapshotStillCurrent = ownsSnapshot()
+          selectedIdRef.current = res.data.data.id
+          skipNextFormLoadRef.current = snapshotStillCurrent ? null : res.data.data.id
+          setSelectedId(res.data.data.id)
+          if (snapshotStillCurrent) markSaved()
+          else markDirty()
+          void fetchOutline(res.data.data.id)
+        } else {
+          void fetchOutline()
+        }
       }
-      markSaved()
-      fetchOutline()
     } catch (err: any) {
-      markSaveFailed(err.message || '保存大纲失败')
+      if (ownsTarget()) {
+        const detail = err.message || '保存大纲失败'
+        markSaveFailed(detail)
+        message.error(detail)
+      }
     } finally {
-      setSaving(false)
+      if (saveRequestGate.current.isCurrent(request)) setSaving(false)
     }
   }
 
@@ -410,6 +590,9 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     try {
       await apiClient.delete(`/projects/${projectId}/outline/${selectedId}`)
       message.success('大纲节点已删除')
+      saveRequestGate.current.invalidate()
+      selectedIdRef.current = null
+      creatingRef.current = false
       setSelectedId(null)
       setCreating(false)
       fetchOutline()
@@ -501,7 +684,12 @@ function OutlinePage({ projectId }: OutlinePageProps) {
             </Title>
             <Space size={6}>
               <Tooltip title="刷新">
-                <Button aria-label="刷新大纲" icon={<ReloadOutlined />} onClick={fetchOutline} loading={loading} />
+                <Button
+                  aria-label="刷新大纲"
+                  icon={<ReloadOutlined />}
+                  onClick={() => void fetchOutline()}
+                  loading={loading}
+                />
               </Tooltip>
               <Tooltip title="新增根节点">
                 <Button icon={<PlusOutlined />} onClick={() => startCreate(null)} />
@@ -553,12 +741,16 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               draggable
               treeData={treeData}
               selectedKeys={selectedId ? [selectedId] : []}
-              expandedKeys={filterActive ? collectTreeKeys(filteredTree) : expandedKeys}
+              expandedKeys={visibleExpandedKeys}
               onExpand={(keys) => setExpandedKeys(keys.map(String))}
               onSelect={(keys) => {
                 confirmLeave(() => {
+                  saveRequestGate.current.invalidate()
+                  setSaving(false)
+                  creatingRef.current = false
+                  selectedIdRef.current = keys.length > 0 ? String(keys[0]) : null
                   setCreating(false)
-                  setSelectedId(keys.length > 0 ? String(keys[0]) : null)
+                  setSelectedId(selectedIdRef.current)
                 })
               }}
               onDrop={handleDrop}
@@ -602,12 +794,14 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               <Title level={4} style={{ margin: 0 }}>
                 {editorTitle}
               </Title>
-              {!creating && selectedNode && (
+              {(creating || selectedNode || saveStatus === 'error') && (
                 <Space size={8} wrap>
-                  <Text type="secondary">
-                    {nodeTypeLabel(selectedNode.node_type)} · {statusLabel(selectedNode.status)}
-                    {selectedCharacterNames ? ` · ${selectedCharacterNames}` : ''}
-                  </Text>
+                  {!creating && selectedNode && (
+                    <Text type="secondary">
+                      {nodeTypeLabel(selectedNode.node_type)} · {statusLabel(selectedNode.status)}
+                      {selectedCharacterNames ? ` · ${selectedCharacterNames}` : ''}
+                    </Text>
+                  )}
                   <SaveStatusIndicator status={saveStatus} error={saveError} />
                 </Space>
               )}
@@ -634,10 +828,28 @@ function OutlinePage({ projectId }: OutlinePageProps) {
             </Space>
           </div>
 
+          {pendingOutlineDraft && (
+            <div style={{ marginBottom: 16 }}>
+              <OutlineDraftReviewPanel
+                projectId={projectId}
+                draft={pendingOutlineDraft}
+                onFormalOutlineChanged={fetchOutline}
+              />
+            </div>
+          )}
+
           {!creating && !selectedNode && tree.length === 0 ? (
             <Alert type="info" showIcon message="先创建一个大纲节点" />
           ) : (
-            <Form form={form} layout="vertical" onFinish={saveOutlineNode} onValuesChange={markDirty}>
+            <Form
+              form={form}
+              layout="vertical"
+              onFinish={saveOutlineNode}
+              onValuesChange={() => {
+                formRevisionRef.current += 1
+                markDirty()
+              }}
+            >
               <div className="outline-grid">
                 <Form.Item name="parent_id" label="父级节点">
                   <Select

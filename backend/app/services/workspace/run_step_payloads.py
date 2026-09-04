@@ -5,10 +5,12 @@ import hashlib
 import json
 from typing import Any
 
-MAX_RESULT_JSON_CHARS = 80_000
 RUN_LOG_META_KEY = "_siming_run_log"
 RUN_LOG_PAYLOAD_VERSION = 1
 LEGACY_TRUNCATION_SUFFIX = "...[truncated]"
+DIRECT_MCP_RETRY_BLOCK_REASON = (
+    "Direct MCP 步骤不能脱离原 lease 重试；请发起新的作者消息。"
+)
 
 _UNRECOVERABLE_REQUEST_MESSAGE = (
     "该步骤的历史请求参数不完整，无法安全重试；请重新发起原任务。"
@@ -41,49 +43,13 @@ def serialize_step_request(data: Any) -> str:
         raise ValueError("步骤请求参数无法完整序列化，未执行该步骤") from exc
 
 
-def _truncated_result_envelope(text: str, *, max_chars: int) -> str:
-    if max_chars <= 0:
-        raise ValueError("结果日志长度上限必须大于 0")
+def serialize_step_result(data: Any) -> str:
+    """Persist the complete JSON result as the execution audit source.
 
-    envelope: dict[str, Any] = {
-        RUN_LOG_META_KEY: {
-            "version": RUN_LOG_PAYLOAD_VERSION,
-            "kind": "truncated_result",
-        },
-        "_truncated": True,
-        "original_chars": len(text),
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "preview": "",
-    }
-    smallest = _dumps(envelope)
-    if len(smallest) > max_chars:
-        raise ValueError("结果日志长度上限不足以保存截断元数据")
-
-    # Escaping quotes, slashes and control characters can make the encoded
-    # preview much longer than its source slice.  Binary search guarantees the
-    # final database value respects the configured character limit and remains
-    # valid JSON for every input.
-    best = smallest
-    low = 0
-    high = min(len(text), max_chars)
-    while low <= high:
-        length = (low + high) // 2
-        envelope["preview"] = text[:length]
-        candidate = _dumps(envelope)
-        if len(candidate) <= max_chars:
-            best = candidate
-            low = length + 1
-        else:
-            high = length - 1
-    return best
-
-
-def serialize_step_result(
-    data: Any,
-    *,
-    max_chars: int = MAX_RESULT_JSON_CHARS,
-) -> str:
-    """Serialize a result as valid JSON, using a versioned envelope if large."""
+    Model-visible projection and conversation compaction happen only after
+    this durable write. A large result must therefore use an artifact
+    reference at the tool contract boundary, never an audit-log truncation.
+    """
 
     try:
         text = _dumps(data)
@@ -99,9 +65,7 @@ def serialize_step_result(
                 "value_type": type(data).__name__,
             }
         )
-    if len(text) <= max_chars:
-        return text
-    return _truncated_result_envelope(text, max_chars=max_chars)
+    return text
 
 
 def _payload_kind(value: Any) -> str | None:
@@ -172,8 +136,8 @@ def deserialize_step_value_for_display(raw: str | None) -> Any:
 
 
 __all__ = [
+    "DIRECT_MCP_RETRY_BLOCK_REASON",
     "LEGACY_TRUNCATION_SUFFIX",
-    "MAX_RESULT_JSON_CHARS",
     "RUN_LOG_META_KEY",
     "RUN_LOG_PAYLOAD_VERSION",
     "UnrecoverableStepRequest",

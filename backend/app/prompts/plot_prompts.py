@@ -1,13 +1,13 @@
 """Plot design prompts for the workspace design_plot tool."""
 from __future__ import annotations
 
+from .chapter_prompts import LITERARY_TECHNIQUES
 from .emotional_arc_prompts import build_emotional_arc_system_prompt
-from .plot_advanced_prompts import build_plot_advanced_system_prompt
 from .genre_prompts import build_genre_framework_prompt
+from .paragraph_hooks_prompts import build_paragraph_hooks_system_prompt
+from .plot_advanced_prompts import build_plot_advanced_system_prompt
 from .plot_emotion_system_prompts import build_emotion_system_prompt
 from .plot_framework_prompts import build_framework_system_prompt
-from .paragraph_hooks_prompts import build_paragraph_hooks_system_prompt
-from .chapter_prompts import LITERARY_TECHNIQUES
 
 _emotional_arc_rules = build_emotional_arc_system_prompt()
 _plot_advanced_rules = build_plot_advanced_system_prompt()
@@ -41,8 +41,6 @@ PLOT_DESIGN_SYSTEM = (
     "- 禁止凭空创造世界观中不存在的设定。\n"
     "- 禁止输出设计维度以外的内容。\n\n"
     "完成后请调用 design_plot_output 函数提交设计方案。"
-    "如果当前模型环境无法使用函数调用，则只输出严格 JSON 对象，不要 Markdown，不要解释；"
-    "JSON 顶层必须包含 scenes、character_actions、conflicts、emotional_arc、consistency_check、new_characters_needed、engagement_assessment、summary。"
 )
 
 

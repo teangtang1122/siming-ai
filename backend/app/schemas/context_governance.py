@@ -26,8 +26,9 @@ class ContextEvidenceSubmission(BaseModel):
 
 
 class ContextSearchRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=12000)
-    limit: int = Field(12, ge=1, le=40)
+    query: str = Field(..., min_length=1, max_length=500)
+    limit: int = Field(10, ge=1, le=10)
+    cursor: int = Field(0, ge=0, le=20)
 
 
 class ModelContextProfilePayload(BaseModel):

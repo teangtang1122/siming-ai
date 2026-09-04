@@ -33,6 +33,11 @@
   z-index: 4;
 }
 
+.worldbuilding-row-inactive > td {
+  background: var(--ant-color-fill-quaternary);
+  color: var(--ant-color-text-secondary);
+}
+
 @media (max-width: 1080px) {
   .worldbuilding-shell {
     grid-template-columns: 1fr;

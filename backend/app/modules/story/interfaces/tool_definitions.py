@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from app.architecture.tool_definition import ToolDef
+from app.modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from app.modules.story.interfaces.search_tool_definitions import SEARCH_TOOL_DEFINITIONS
 
 TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ToolDef(
@@ -44,7 +46,10 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         description="创建或修改正式作品的权威立项资料。适用于作者直接调整，也适用于导入作品：先读取章节、大纲、角色和世界观，再按用户要求从现有小说回填创作约束、创意方向、文风与世界观。更新会影响后续项目助手和正文创作上下文。",
         input_schema={
             "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
-            "expected_revision": {"type": "integer", "description": "可选，刚读取到的立项资料版本；防止覆盖并发修改"},
+            "expected_revision": {
+                "type": "integer",
+                "description": "可选，刚读取到的立项资料版本；防止覆盖并发修改",
+            },
             "constraints": {
                 "type": "object",
                 "description": "局部创作约束，如brief、genre、target_audience、platform、target_words、target_chapters、world_tone、story_structure、pacing、writing_style、special_requirements、avoid",
@@ -78,14 +83,20 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="list_project_files",
-        description="列出作品目录内的文件或子目录。只能访问该作品目录，不能读取 API Key 或系统设置。",
+        description="分页列出作品目录内的文件或子目录。只能访问该作品目录，不能读取 API Key 或系统设置。",
         input_schema={
             "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
             "path": {
                 "type": "string",
                 "description": "相对作品目录的子目录，如 chapters、characters、outline",
             },
-            "limit": {"type": "integer", "description": "返回数量上限，默认200"},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4,
+                "description": "本页数量，默认/最大4",
+            },
+            "cursor": {"type": "integer", "minimum": 0, "description": "上一页返回的 next_cursor"},
         },
         tool_type="read",
         estimated_cost="free",
@@ -93,11 +104,21 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="read_project_file",
-        description="读取作品目录内的文本文件，如章节 Markdown、角色 JSON、世界观 JSON。大文件会按 max_chars 截断。",
+        description="按显式字符范围读取作品目录内的文本文件。返回 next_offset_chars 时用它继续读取，不会把超大文件一次送入模型。",
         input_schema={
             "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
             "path": {"type": "string", "description": "作品目录内的相对文件路径"},
-            "max_chars": {"type": "integer", "description": "最多读取字符数，默认200000"},
+            "offset_chars": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "起始字符偏移，默认0",
+            },
+            "max_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4000,
+                "description": "本页最多读取字符数，默认4000，最大4000",
+            },
         },
         required=["path"],
         tool_type="read",
@@ -106,15 +127,31 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="search_project_files",
-        description="在作品目录内搜索文本。适合外部 Agent 快速定位章节正文、角色卡、大纲或世界观中的线索。",
+        description="在作品目录内分页搜索短文本命中。返回 next_cursor 时用它获取下一页；需要大段原文时再用 read_project_file 按范围读取。",
         input_schema={
             "project_id": {"type": "string", "description": "可选，作品ID。不传则使用当前作品"},
-            "query": {"type": "string", "description": "要搜索的文本"},
+            "query": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "要搜索的文本，最多200字符",
+            },
             "path": {"type": "string", "description": "可选，限定搜索子目录或文件"},
-            "limit": {"type": "integer", "description": "匹配数量上限，默认50"},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3,
+                "description": "本页匹配数量，默认3，最大3",
+            },
+            "cursor": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "上一页返回的 next_cursor，首页不传",
+            },
             "context_chars": {
                 "type": "integer",
-                "description": "每个命中前后保留的字符数，默认120",
+                "minimum": 20,
+                "maximum": 75,
+                "description": "每个命中前后保留的字符数，默认75，最大75",
             },
         },
         required=["query"],
@@ -445,79 +482,31 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         estimated_cost="free",
         handler_name="merge_duplicate_characters",
     ),
-    ToolDef(
-        name="search_characters",
-        description="按角色名片段搜索角色完整档案。返回角色姓名、外貌、性格、背景、能力列表、角色类型。内容截断至8000字。",
-        input_schema={
-            "query": {"type": "string", "description": "角色名片段，支持模糊匹配"},
-            "limit": {"type": "integer", "description": "返回条数上限，默认10，最大30"},
-        },
-        required=["query"],
-        tool_type="read",
-        estimated_cost="free",
-        handler_name="search_characters",
-    ),
-    ToolDef(
-        name="search_chapters",
-        description="搜索章节全文。按标题搜索，可选限定大纲节点。正文截断至8000字。",
-        input_schema={
-            "query": {"type": "string", "description": "章节标题片段，支持模糊匹配"},
-            "outline_node_id": {
-                "type": "string",
-                "description": "限定大纲节点ID，传入后忽略query直接返回该节点下所有章节",
-            },
-            "limit": {"type": "integer", "description": "返回条数上限，默认5，最大20"},
-        },
-        tool_type="read",
-        estimated_cost="free",
-        handler_name="search_chapters",
-    ),
-    ToolDef(
-        name="search_outline",
-        description="按标题搜索大纲节点，或查看指定节点的子树。",
-        input_schema={
-            "query": {"type": "string", "description": "大纲标题片段，支持模糊匹配"},
-            "node_id": {
-                "type": "string",
-                "description": "指定节点ID，传入后返回该节点及所有子孙节点（忽略query）",
-            },
-            "limit": {"type": "integer", "description": "返回条数上限，默认10，最大60"},
-        },
-        tool_type="read",
-        estimated_cost="free",
-        handler_name="search_outline",
-    ),
-    ToolDef(
-        name="search_outline_tree",
-        description="获取完整大纲树结构（仅标题和层级），或指定子树。",
-        input_schema={
-            "root_id": {"type": "string", "description": "可选，子树根节点ID。不传则返回完整大纲树"}
-        },
-        tool_type="read",
-        estimated_cost="free",
-        handler_name="search_outline_tree",
-    ),
-    ToolDef(
-        name="search_worldbuilding",
-        description="按标题搜索世界观条目完整内容。可按维度过滤。",
-        input_schema={
-            "query": {"type": "string", "description": "设定标题片段，支持模糊匹配"},
-            "dimension": {
-                "type": "string",
-                "description": "限定维度：geography|history|factions|power_system|races|culture",
-            },
-            "limit": {"type": "integer", "description": "返回条数上限，默认10，最大30"},
-        },
-        tool_type="read",
-        estimated_cost="free",
-        handler_name="search_worldbuilding",
-    ),
+    *SEARCH_TOOL_DEFINITIONS,
     ToolDef(
         name="search_relationships",
-        description="查询角色的所有关系（与谁有关系、方向、关系类型、描述）。",
+        description="分页查询角色关系；关系描述按显式字符范围返回。",
         input_schema={
             "character_id": {"type": "string", "description": "角色ID，优先使用"},
             "character_name": {"type": "string", "description": "角色名，character_id为空时使用"},
+            "cursor": {"type": "integer", "minimum": 0, "description": "上一页的 next_cursor"},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "本页关系数，默认/最大5",
+            },
+            "description_offset_chars": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "描述起始字符偏移",
+            },
+            "description_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "description": "每条描述本页字符数，默认/最大100",
+            },
         },
         tool_type="read",
         estimated_cost="free",
@@ -525,24 +514,48 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="list_characters",
-        description="快速概览全部角色（仅返回姓名、ID、角色类型）。轻量级，先调此工具确认角色是否存在，再决定是否需要 search_characters 查详情。",
-        input_schema={},
+        description="分页概览角色（仅姓名、ID、角色类型）。返回 next_cursor 时可继续下一页。",
+        input_schema={
+            "cursor": {"type": "integer", "minimum": 0, "description": "上一页的 next_cursor"},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "本页条数，默认/最大10",
+            },
+        },
         tool_type="read",
         estimated_cost="free",
         handler_name="list_characters",
     ),
     ToolDef(
         name="list_chapters",
-        description="快速概览全部章节（仅返回标题、ID、对应大纲节点ID）。轻量级，不含正文。",
-        input_schema={},
+        description="分页概览章节（仅标题、ID、对应大纲节点ID），不含正文。",
+        input_schema={
+            "cursor": {"type": "integer", "minimum": 0, "description": "上一页的 next_cursor"},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "本页条数，默认/最大10",
+            },
+        },
         tool_type="read",
         estimated_cost="free",
         handler_name="list_chapters",
     ),
     ToolDef(
         name="list_worldbuilding",
-        description="快速概览全部世界观条目（仅返回标题、ID、维度）。轻量级，不含正文。",
-        input_schema={},
+        description="分页概览世界观条目（仅标题、ID、维度），不含正文。",
+        input_schema={
+            "cursor": {"type": "integer", "minimum": 0, "description": "上一页的 next_cursor"},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "本页条数，默认/最大10",
+            },
+        },
         tool_type="read",
         estimated_cost="free",
         handler_name="list_worldbuilding",
@@ -571,7 +584,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             },
             "status": {
                 "type": "string",
-                "description": "条目状态：active|archived|draft，默认active",
+                "enum": ["active", "superseded", "archived", "draft"],
+                "description": "条目状态；当前写作只读取 active，默认 active",
             },
             "confidence": {"type": "number", "description": "置信度评分，0-1"},
             "first_seen_chapter_id": {"type": "string", "description": "首次出现的章节ID"},
@@ -580,6 +594,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         required=["title", "content"],
         tool_type="write",
         idempotent=True,
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="create_worldbuilding_entry",
     ),
@@ -595,13 +611,19 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "dimension": {"type": "string", "description": "更新维度"},
             "content": {"type": "string", "description": "更新正文"},
             "sort_order": {"type": "integer", "description": "更新排序"},
-            "status": {"type": "string", "description": "更新状态：active|archived|draft"},
+            "status": {
+                "type": "string",
+                "enum": ["active", "superseded", "archived", "draft"],
+                "description": "更新状态；superseded 用于保留历史但隔离旧条目",
+            },
             "confidence": {"type": "number", "description": "更新置信度"},
             "first_seen_chapter_id": {"type": "string", "description": "更新首次出现章节ID"},
             "last_updated_chapter_id": {"type": "string", "description": "更新最后更新章节ID"},
         },
         required=["id"],
         tool_type="write",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="update_worldbuilding_entry",
     ),
@@ -649,23 +671,28 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         required=["title"],
         tool_type="write",
         idempotent=True,
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="create_outline_node",
     ),
     ToolDef(
         name="create_outline_nodes",
-        description="批量创建新的大纲节点。通常用于保存 outline_writer 生成的一组节点。",
+        description="按作者明确指令直接创建正式大纲节点。outline_writer 的提案必须通过作者可见的大纲草稿确认接口保存，不能在同一 Agent 轮继续调用此工具。",
         input_schema={
             "nodes": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "大纲节点列表，每个节点可包含 title/node_type/summary/status/character_names/parent_id",
+                "maxItems": OUTLINE_PROPOSAL_MAX_NODES,
+                "description": f"大纲节点列表（最多 {OUTLINE_PROPOSAL_MAX_NODES} 个），每个节点可包含 title/node_type/summary/status/character_names/parent_id",
             },
             "parent_id": {"type": "string", "description": "可选，批量节点的默认父节点ID"},
         },
         required=["nodes"],
         tool_type="write",
         idempotent=True,
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="create_outline_nodes",
     ),
@@ -693,6 +720,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "metadata": {"type": "object", "description": "更新 section 场景元数据"},
         },
         tool_type="write",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="update_outline_node",
     ),
@@ -763,6 +792,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         required=["name"],
         tool_type="write",
         idempotent=True,
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="create_character",
     ),
@@ -818,6 +849,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "profile": {"type": "object", "description": "更新稳定写作锁；提交完整 profile 对象"},
         },
         tool_type="write",
+        direct_mcp_project_scoped=True,
+        direct_mcp_transactional=True,
         estimated_cost="free",
         handler_name="update_character",
     ),
@@ -835,7 +868,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="create_relationship",
-        description="在两个角色之间创建关系。",
+        description="在两个角色之间保存一条有向关系；同一方向已存在时更新现行关系。",
         input_schema={
             "source": {"type": "string", "description": "角色A的名字或ID（也可用 from 字段）"},
             "target": {"type": "string", "description": "角色B的名字或ID（也可用 to 字段）"},

@@ -44,6 +44,7 @@ def test_small_document_is_routed_with_its_embedded_instruction_in_full(monkeypa
     sent_payload = json.loads(captured["messages"][1]["content"])
     assert sent_payload["chat_instruction"] == ""
     assert sent_payload["source"]["content_view"] == source
+    assert "recent_history" not in sent_payload["conversation_context"]
     assert result["route"] == "creation_material"
     assert result["source_coverage"]["coverage"] == "full"
 

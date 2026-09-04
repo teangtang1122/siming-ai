@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -301,6 +302,15 @@ class CharacterRelationship(Base):
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "character_a_id",
+            "character_b_id",
+            name="uq_character_relationships_directed_pair",
+        ),
+    )
+
 
 class OutlineNode(Base):
     __tablename__ = "outline_nodes"
@@ -360,7 +370,14 @@ class Chapter(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     outline_node_id = Column(
-        String(36), ForeignKey("outline_nodes.id", ondelete="SET NULL"), nullable=True
+        String(36),
+        ForeignKey(
+            "outline_nodes.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_chapters_outline_node_id_outline_nodes",
+        ),
+        nullable=True,
     )
     title = Column(String(200), nullable=False)
     content = Column(Text, nullable=False, default="")

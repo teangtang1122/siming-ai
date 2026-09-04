@@ -107,6 +107,10 @@ const messageTime = (message: WorkspaceAssistantMessage) => {
 
 export const sortWorkspaceMessages = (items: WorkspaceAssistantMessage[]) =>
   [...items].sort((a, b) => {
+    if (typeof a.sequence_no === 'number' && typeof b.sequence_no === 'number') {
+      const sequenceDiff = a.sequence_no - b.sequence_no
+      if (sequenceDiff !== 0) return sequenceDiff
+    }
     const timeDiff = messageTime(a) - messageTime(b)
     if (timeDiff !== 0) return timeDiff
     if (a.role !== b.role) return a.role === 'user' ? -1 : 1
@@ -118,6 +122,7 @@ export const toWorkspaceMessage = (
 ): WorkspaceAssistantMessage => ({
   id: item.id,
   conversation_id: item.conversation_id,
+  sequence_no: item.sequence_no,
   role: item.role,
   content: item.content,
   reasoning_content: item.role === 'assistant'

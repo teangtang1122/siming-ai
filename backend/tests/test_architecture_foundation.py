@@ -5,6 +5,7 @@ import ast
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, create_engine, select
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -16,7 +17,11 @@ from app.architecture.contracts import (
     OperationResult,
 )
 from app.architecture.tool_spec import ToolSpec
-from app.architecture.uow import SqlAlchemyUnitOfWork
+from app.architecture.uow import (
+    SqlAlchemyUnitOfWork,
+    commit_session,
+    defer_session_commits,
+)
 from app.modules import MODULES
 
 ArchitectureBase = declarative_base()
@@ -65,6 +70,60 @@ def test_request_bound_unit_of_work_rolls_back_without_closing_owner_session():
                 uow.session.add(Row(id=3))
             close.assert_not_called()
         assert session.scalar(select(Row.id).where(Row.id == 3)) is None
+    engine.dispose()
+
+
+def test_deferred_session_commits_flush_until_outer_owner_commits():
+    engine, Session = _session_factory()
+    with (
+        Session() as session,
+        patch.object(session, "flush", wraps=session.flush) as flush,
+        patch.object(session, "commit", wraps=session.commit) as commit,
+    ):
+        with defer_session_commits(session):
+            session.add(Row(id=4))
+            commit_session(session)
+            flush.assert_called_once()
+            commit.assert_not_called()
+        commit_session(session)
+        commit.assert_called_once()
+    with Session() as session:
+        assert session.scalar(select(Row.id).where(Row.id == 4)) == 4
+    engine.dispose()
+
+
+def test_deferred_session_commits_are_nested_and_session_scoped():
+    engine, Session = _session_factory()
+    with (
+        Session() as first,
+        Session() as second,
+        patch.object(first, "flush", wraps=first.flush) as first_flush,
+        patch.object(first, "commit", wraps=first.commit) as first_commit,
+        patch.object(second, "commit", wraps=second.commit) as second_commit,
+    ):
+        def nested_commit() -> None:
+            with defer_session_commits(first):
+                commit_session(first)
+
+        with defer_session_commits(first):
+            nested_commit()
+            commit_session(first)
+            commit_session(second)
+        assert first_flush.call_count == 2
+        first_commit.assert_not_called()
+        second_commit.assert_called_once()
+        commit_session(first)
+        first_commit.assert_called_once()
+    engine.dispose()
+
+
+def test_deferred_session_commit_marker_is_removed_after_failure():
+    engine, Session = _session_factory()
+    with Session() as session, patch.object(session, "commit", wraps=session.commit) as commit:
+        with pytest.raises(RuntimeError, match="stop"), defer_session_commits(session):
+            raise RuntimeError("stop")
+        commit_session(session)
+        commit.assert_called_once()
     engine.dispose()
 
 

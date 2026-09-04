@@ -1,19 +1,26 @@
 """Workspace tools for RAG: search_context, preview_rag_context, explain_context_selection."""
+
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ....services.rag.indexer import reindex_project, reindex_project_types, detect_fts5_available, project_has_chunks
-from ....services.rag.retriever import search_chunks, get_chunks_for_source
-from ....services.rag.context_packer import pack_context, ContextBudget
 from ....services.context_orchestrator import ContextOrchestrator
-
+from ....services.rag.context_packer import ContextBudget, pack_context
+from ....services.rag.indexer import (
+    detect_fts5_available,
+    project_has_chunks,
+    reindex_project,
+    reindex_project_types,
+)
+from ....services.rag.retriever import get_chunks_for_source, search_chunks
 
 # ---------------------------------------------------------------------------
 # search_context
 # ---------------------------------------------------------------------------
+
 
 async def search_context(
     db: Session,
@@ -23,18 +30,37 @@ async def search_context(
     """Full-text search across all indexed content."""
     query = str(args.get("query") or "").strip()
     if not query:
-        return {"tool": "search_context", "status": "skipped", "detail": "搜索词为空", "data": {"results": []}}
+        return {
+            "tool": "search_context",
+            "status": "skipped",
+            "detail": "搜索词为空",
+            "data": {"results": []},
+        }
+    if len(query) > 200:
+        return {
+            "tool": "search_context",
+            "status": "skipped",
+            "detail": "搜索词超过200字符，请缩小范围",
+            "data": {"results": []},
+        }
 
     source_types_raw = args.get("source_types")
     source_types = None
     if isinstance(source_types_raw, list) and source_types_raw:
         valid_types = {
-            "chapter", "chapter_summary", "outline", "character",
-            "character_timeline", "worldbuilding", "assistant_memory",
+            "chapter",
+            "chapter_summary",
+            "outline",
+            "character",
+            "character_timeline",
+            "worldbuilding",
+            "assistant_memory",
         }
         source_types = [st for st in source_types_raw if st in valid_types]
 
-    limit = max(1, min(int(args.get("limit") or 20), 50))
+    limit = max(1, min(int(args.get("limit") or 3), 3))
+    cursor = max(0, min(int(args.get("cursor") or 0), 40))
+    fetch_limit = cursor + limit + 1
 
     # Lazy index: if no chunks exist for this project (or for the requested
     # source_types), build the index first so the search has something to find.
@@ -51,9 +77,23 @@ async def search_context(
         execution_route="workspace_search",
         arguments={**args, "query": query},
     )
-    results = search_chunks(db, project_id, query, source_types=source_types, limit=limit)
-    evidence_items = orchestrator.search_task_context(manifest, query=query, limit=limit)
-    evidence_by_chunk = {item.get("chunk_id"): item for item in evidence_items if item.get("chunk_id")}
+    result_page = search_chunks(
+        db,
+        project_id,
+        query,
+        source_types=source_types,
+        limit=fetch_limit,
+    )
+    results = result_page[cursor : cursor + limit]
+    has_more = len(result_page) > cursor + limit
+    evidence_items = orchestrator.search_task_context(
+        manifest,
+        query=query,
+        limit=fetch_limit,
+    )
+    evidence_by_chunk = {
+        item.get("chunk_id"): item for item in evidence_items if item.get("chunk_id")
+    }
 
     detail = f"检索到 {len(results)} 条相关结果{indexed_info}"
     if manifest.status == "blocked_rebuild":
@@ -76,15 +116,18 @@ async def search_context(
                     "source_type": r.source_type,
                     "source_id": r.source_id,
                     "title": r.title,
-                    "content": r.content[:2000],
-                    "metadata": r.metadata,
+                    "content": r.content[:300],
+                    "content_truncated": len(r.content) > 300,
                     "score": round(r.score, 2),
-                    "reason": r.reason,
+                    "reason": str(r.reason or "")[:150],
                     "source_hash": (evidence_by_chunk.get(r.chunk_id) or {}).get("source_hash"),
-                    "evidence": evidence_by_chunk.get(r.chunk_id),
+                    "item_id": (evidence_by_chunk.get(r.chunk_id) or {}).get("item_id"),
                 }
                 for r in results
             ],
+            "cursor": cursor,
+            "next_cursor": cursor + len(results) if has_more else None,
+            "has_more": has_more,
         },
     }
 
@@ -92,6 +135,7 @@ async def search_context(
 # ---------------------------------------------------------------------------
 # preview_rag_context
 # ---------------------------------------------------------------------------
+
 
 async def preview_rag_context(
     db: Session,
@@ -109,21 +153,26 @@ async def preview_rag_context(
         model=str(args.get("model") or "") or None,
         execution_route="workspace_preview",
         arguments=args,
-        pinned_chunk_ids=args.get("pinned_chunk_ids") if isinstance(args.get("pinned_chunk_ids"), list) else (),
+        pinned_chunk_ids=args.get("pinned_chunk_ids")
+        if isinstance(args.get("pinned_chunk_ids"), list)
+        else (),
     )
 
     budget_override = args.get("budget_override")
     budget = ContextBudget()
     if isinstance(budget_override, dict):
         for key in [
-            "max_chapter_chars", "max_summary_chars", "max_character_chars",
-            "max_worldbuilding_chars", "max_memory_chars", "max_outline_chars", "reserve_chars",
+            "max_chapter_chars",
+            "max_summary_chars",
+            "max_character_chars",
+            "max_worldbuilding_chars",
+            "max_memory_chars",
+            "max_outline_chars",
+            "reserve_chars",
         ]:
             if key in budget_override:
-                try:
+                with suppress(ValueError, TypeError):
                     setattr(budget, key, int(budget_override[key]))
-                except (ValueError, TypeError):
-                    pass
 
     pinned_chunk_ids = None
     raw_pinned = args.get("pinned_chunk_ids")
@@ -137,7 +186,8 @@ async def preview_rag_context(
         auto_indexed = stats["total_chunks"] > 0
 
     packed = pack_context(
-        db, project_id,
+        db,
+        project_id,
         outline_node_id=outline_node_id,
         requirements=requirements,
         budget=budget,
@@ -188,6 +238,7 @@ async def preview_rag_context(
 # explain_context_selection
 # ---------------------------------------------------------------------------
 
+
 async def explain_context_selection(
     db: Session,
     project_id: str,
@@ -208,7 +259,9 @@ async def explain_context_selection(
     source_ids = [str(sid).strip() for sid in source_ids_raw if str(sid).strip()]
 
     # Run pack_context to get the full selection pipeline
-    packed = pack_context(db, project_id, outline_node_id=outline_node_id, requirements=requirements)
+    packed = pack_context(
+        db, project_id, outline_node_id=outline_node_id, requirements=requirements
+    )
 
     # Build explanations for requested source_ids
     explanations: list[dict] = []
@@ -218,23 +271,32 @@ async def explain_context_selection(
         if not chunks:
             # Try looking up by source_id directly
             from ....database.models import RagChunk
-            found = db.query(RagChunk).filter(
-                RagChunk.project_id == project_id,
-                RagChunk.source_id == source_id,
-            ).first()
+
+            found = (
+                db.query(RagChunk)
+                .filter(
+                    RagChunk.project_id == project_id,
+                    RagChunk.source_id == source_id,
+                )
+                .first()
+            )
             if found:
-                chunks = [{
-                    "source_type": found.source_type,
-                    "title": found.title,
-                    "chunk_id": found.id,
-                }]
+                chunks = [
+                    {
+                        "source_type": found.source_type,
+                        "title": found.title,
+                        "chunk_id": found.id,
+                    }
+                ]
 
         if not chunks:
-            explanations.append({
-                "source_id": source_id,
-                "found": False,
-                "reason": "未在RAG索引中找到此来源。可能需要先运行 reindex_project。",
-            })
+            explanations.append(
+                {
+                    "source_id": source_id,
+                    "found": False,
+                    "reason": "未在RAG索引中找到此来源。可能需要先运行 reindex_project。",
+                }
+            )
             continue
 
         # Check if this source is in the packed context
@@ -242,27 +304,31 @@ async def explain_context_selection(
         for section in packed.sections:
             if section.source_id == source_id:
                 in_context = True
-                explanations.append({
-                    "source_id": source_id,
-                    "source_type": section.source_type,
-                    "title": section.title,
-                    "in_context": True,
-                    "category": section.category,
-                    "score": round(section.score, 2),
-                    "selection_reason": section.selection_reason,
-                    "used_chars": section.used_chars,
-                })
+                explanations.append(
+                    {
+                        "source_id": source_id,
+                        "source_type": section.source_type,
+                        "title": section.title,
+                        "in_context": True,
+                        "category": section.category,
+                        "score": round(section.score, 2),
+                        "selection_reason": section.selection_reason,
+                        "used_chars": section.used_chars,
+                    }
+                )
                 break
 
         if not in_context:
             source_type = chunks[0].get("source_type", "") if chunks else ""
-            explanations.append({
-                "source_id": source_id,
-                "source_type": source_type,
-                "title": chunks[0].get("title", "") if chunks else "",
-                "in_context": False,
-                "reason": "该来源未被选入当前上下文。可能因为相关性不足或预算已满。",
-            })
+            explanations.append(
+                {
+                    "source_id": source_id,
+                    "source_type": source_type,
+                    "title": chunks[0].get("title", "") if chunks else "",
+                    "in_context": False,
+                    "reason": "该来源未被选入当前上下文。可能因为相关性不足或预算已满。",
+                }
+            )
 
     return {
         "tool": "explain_context_selection",

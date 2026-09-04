@@ -12,8 +12,10 @@ from app.ai.local_cli_adapter import (
     DEFAULT_CLI_ARGS,
     LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     LocalCLIAdapter,
+    local_cli_model_options,
 )
 from app.architecture.uow import commit_session
+from app.services.model_config_options import normalized_model_options
 from app.services.model_readiness import (
     mark_model_ready,
     mark_model_verification_failure,
@@ -147,6 +149,11 @@ def save_activated_config(command: str, model: str) -> None:
         config.provider_type = "local_cli"
         config.cli_command = command
         config.cli_args = json.dumps(DEFAULT_CLI_ARGS["opencode_cli"], ensure_ascii=False)
+        config.available_models_json = normalized_model_options(
+            "opencode_cli",
+            local_cli_model_options("opencode_cli", command, config.cli_args),
+            default_model=model,
+        )
         mark_model_ready(config, source="opencode_activation")
         db.query(APIConfig).update({"is_global_default": False})
         config.is_global_default = True

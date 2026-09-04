@@ -361,7 +361,6 @@ def record_operation_signal(
                 "phase",
                 "model_fallback",
                 "stream_resume",
-                "process",
                 "error",
             },
         )
