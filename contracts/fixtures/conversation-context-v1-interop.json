@@ -121,7 +121,9 @@
             "role": "user",
             "content": "问题 1",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           },
           {
             "message_id": "message-2",
@@ -129,7 +131,9 @@
             "role": "assistant",
             "content": "回答 1",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           }
         ]
       }
@@ -140,7 +144,9 @@
       "role": "user",
       "content": "现在只修改标题",
       "tool_call_id": null,
-      "tool_calls": []
+      "tool_calls": [],
+      "reasoning_content": "",
+      "provider_state": []
     },
     "current_turn_ledger": [],
     "pending_tool_transactions": [],
@@ -175,7 +181,7 @@
     "integrity": {
       "transcript_revision": 5,
       "checkpoint_hash": null,
-      "frame_hash": "71e1726eb23add6db52ea7f721fdcbed49622050b06a42d0234cdac65801581e"
+      "frame_hash": "8a434fdd826b86879e0e4b8293b52982e7d35bdfc9a95d90c4a0c53b56381b01"
     }
   },
   "segmented_frame": {
@@ -327,7 +333,9 @@
             "role": "user",
             "content": "问题 2",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           },
           {
             "message_id": "message-4",
@@ -335,7 +343,9 @@
             "role": "assistant",
             "content": "回答 2",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           }
         ]
       },
@@ -349,7 +359,9 @@
             "role": "user",
             "content": "问题 4",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           },
           {
             "message_id": "message-8",
@@ -357,7 +369,9 @@
             "role": "assistant",
             "content": "回答 4",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           }
         ]
       },
@@ -371,7 +385,9 @@
             "role": "user",
             "content": "问题 5",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           },
           {
             "message_id": "message-10",
@@ -379,7 +395,9 @@
             "role": "assistant",
             "content": "回答 5",
             "tool_call_id": null,
-            "tool_calls": []
+            "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": []
           }
         ]
       }
@@ -390,7 +408,9 @@
       "role": "user",
       "content": "继续",
       "tool_call_id": null,
-      "tool_calls": []
+      "tool_calls": [],
+      "reasoning_content": "",
+      "provider_state": []
     },
     "current_turn_ledger": [],
     "pending_tool_transactions": [],
@@ -425,7 +445,7 @@
     "integrity": {
       "transcript_revision": 11,
       "checkpoint_hash": "92007182ff7855542a28858085f9c3d83a2da659b8fe7ebd7710a46ae0d7e6cf",
-      "frame_hash": "5e95b1eabe41b9e8337f469a2df10c8eca2dd81281d807a3962e816c8049c075"
+      "frame_hash": "404791cf6dc498e495fa8759f700a07ae4f4e631ac3c9894ae1a81b7f96cdbb6"
     }
   }
 }

@@ -26,7 +26,7 @@ from app.ai.openai_adapter import (
     _responses_input,
     _responses_tool_calls,
 )
-from app.modules.model_runtime.infrastructure.gateway import _tool_delta_events_complete
+from app.modules.model_runtime.infrastructure.tool_stream import _tool_delta_events_complete
 from app.services.agent_tool_stream import collect_tool_turn
 from app.services.conversation_context import (
     ConversationContextError,

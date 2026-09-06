@@ -99,6 +99,50 @@ def should_retry_without_tool_choice(error: BaseException) -> bool:
     return "tool_choice" in text or "tool choice" in text
 
 
+# Provider errors that only exist because the request ran in thinking mode.
+# The pairs are structured provider-protocol markers, not user-language intent:
+# DeepSeek V4 thinking mode requires previous assistant reasoning_content to be
+# passed back when the request carries tools, and rejects OpenAI tool_choice.
+_THINKING_REJECTION_MARKERS: tuple[tuple[str, str], ...] = (
+    ("reasoning_content", "must be passed back"),
+    ("reasoning content", "must be passed back"),
+    ("thinking mode", "tool_choice"),
+    ("thinking mode", "tool choice"),
+    ("thinking mode", "not support"),
+    ("thinking mode", "unsupported"),
+    ("thinking mode", "reject"),
+)
+
+
+def is_thinking_rejection(error: BaseException) -> bool:
+    """Detect provider errors caused specifically by the thinking mode.
+
+    Adapting the provider rejection into this category lets the gateway retry
+    the exact same logical request once with thinking disabled.  The markers
+    are provider error-protocol text (returned verbatim by DeepSeek and other
+    OpenAI-compatible endpoints), never a guess at author intent.
+    """
+    text = str(error).lower()
+    if not text:
+        return False
+    return any(first in text and second in text for first, second in _THINKING_REJECTION_MARKERS)
+
+
+# Request-body switch that disables thinking for providers whose thinking mode
+# is enabled by default (DeepSeek V4).  Only providers with a known, verified
+# disable switch belong here; other OpenAI-compatible endpoints keep their own
+# documented parameters and must not receive a guessed body.
+_THINKING_DISABLE_BODIES: dict[str, dict[str, Any]] = {
+    "deepseek": {"thinking": {"type": "disabled"}},
+}
+
+
+def provider_thinking_disable_body(provider: str) -> dict[str, Any] | None:
+    """Return the extra_body that disables thinking for ``provider``, or None."""
+    body = _THINKING_DISABLE_BODIES.get(provider)
+    return dict(body) if body else None
+
+
 def normalize_retry_count(retry: int | None) -> int:
     """Treat retry as extra attempts, but always make at least one attempt.
 

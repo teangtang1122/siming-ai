@@ -317,6 +317,7 @@ def finalize_workspace_assistant_turn(
     assistant_message: Any,
     conversation: Any,
     final_reply: str,
+    final_reasoning: str = "",
     applied_actions: list[dict],
     tool_logs: list[dict],
     searched_context: list[dict],
@@ -382,6 +383,8 @@ def finalize_workspace_assistant_turn(
         "applied_actions": [],
         "actions": [],
     }
+    if final_reasoning:
+        response_payload["reasoning_content"] = final_reasoning
     assistant_message.content = response_payload["reply"]
     assistant_message.payload_json = json.dumps(response_payload, ensure_ascii=False)
     assistant_message.status = "completed"
@@ -404,6 +407,9 @@ def finalize_workspace_assistant_turn(
         commit_session(db)
     db.refresh(assistant_message)
     db.refresh(conversation)
+    # Reasoning is persisted for provider pass-back replay, but it must never
+    # reach the public complete payload (the visible reply stays clean).
+    response_payload.pop("reasoning_content", None)
     response_payload["message"] = _assistant_message_to_dict(assistant_message)
     response_payload["conversation"] = _assistant_conversation_to_dict(conversation)
     return response_payload

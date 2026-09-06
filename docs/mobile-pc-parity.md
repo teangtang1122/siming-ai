@@ -49,7 +49,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
 - **Android 离线：** 明确阻止：没有 Gateway 且未配置手机直连模型时不启动 Agent。
-- **Android 独立 Agent：** 明确降级实现：提示词、工具 schema、宽粒度类别控制器与版本化上下文策略均由 PC 源生成；模型正文、推理和函数参数使用供应商 SSE 真流式解析，thinking 模型沿用 PC 的 provider-safe tool_choice 规则并在接口明确拒绝时于输出前自动去参重试，章节草稿、完整 ContextManifest、通用会话转录与工具日志均可跨重启恢复。独立运行仍不进入 PC 的数据库级 AgentRun 审计，检索仍是确定性词法降级。
+- **Android 独立 Agent：** 明确降级实现：提示词、工具 schema、宽粒度类别控制器与版本化上下文策略均由 PC 源生成；模型正文、推理和函数参数使用供应商 SSE 真流式解析，thinking 模型沿用 PC 的 provider-safe tool_choice 规则并在接口明确拒绝时于输出前自动去参重试；请求因 thinking 模式（如历史 reasoning_content 缺失或参数冲突）在输出前被拒绝时，PC 与手机都会先自动关闭思考模式重试一次，章节草稿、完整 ContextManifest、通用会话转录与工具日志均可跨重启恢复。独立运行仍不进入 PC 的数据库级 AgentRun 审计，检索仍是确定性词法降级。
 - **已知缺口：**
   - 手机独立 Agent 的章节草稿、通用对话和工具日志已支持跨重启恢复，但独立运行不会伪装成 PC 数据库中的 AgentRun 审计记录。
 

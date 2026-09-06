@@ -2432,6 +2432,8 @@ def test_creation_context_turn_records_keep_all_closed_turns_and_exact_text():
             "content": long_user,
             "tool_call_id": None,
             "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": [],
         },
         {
             "message_id": "assistant-0",
@@ -2440,6 +2442,8 @@ def test_creation_context_turn_records_keep_all_closed_turns_and_exact_text():
             "content": long_assistant,
             "tool_call_id": None,
             "tool_calls": [],
+            "reasoning_content": "",
+            "provider_state": [],
         },
     ]
 

@@ -94,7 +94,10 @@ def render_context_frame(
 
     Provider adapters may translate this result to Anthropic or local CLI wire
     formats, but they must preserve layer order and re-run protocol validation
-    on the final native message sequence.
+    on the final native message sequence.  Recent exact assistant turns replay
+    their persisted reasoning/provider state so providers that require
+    ``reasoning_content`` pass-back (DeepSeek thinking mode with tools) accept
+    follow-up requests.
     """
 
     if verify_prompt_hash and text_sha256(system_prompt) != frame.system_contract.prompt_hash:
@@ -149,6 +152,8 @@ def render_context_frame(
                     layer=ContextLayer.RECENT_EXACT_TURN,
                     tool_calls=message.tool_calls,
                     tool_call_id=message.tool_call_id,
+                    reasoning_content=message.reasoning_content,
+                    provider_state=message.provider_state,
                 )
             )
         status_receipt = render_historical_turn_status(turn)

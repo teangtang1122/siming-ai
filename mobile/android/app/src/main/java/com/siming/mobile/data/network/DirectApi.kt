@@ -429,6 +429,8 @@ class DirectApiClient(
             "chat/completions"
         }
         var effectiveToolChoice = providerSafeToolChoice(config, toolChoice)
+        var effectiveExtraBody = extraBody
+        var thinkingRetryUsed = false
         var lastError: Throwable? = null
         endpointLoop@ for (endpoint in endpointCandidates(config.baseUrl, path)) {
             while (true) {
@@ -440,7 +442,7 @@ class DirectApiClient(
                         toolChoice = effectiveToolChoice,
                         maxOutputTokens = maxOutputTokens,
                         temperature = temperature,
-                        extraBody = extraBody,
+                        extraBody = effectiveExtraBody,
                     )
                     val response = executeWithRetry(endpoint, config.apiKey, json.encodeToString(payload))
                     if (response.statusCode in PATH_FALLBACK_STATUS_CODES) break
@@ -456,6 +458,13 @@ class DirectApiClient(
                     lastError = error
                     if (effectiveToolChoice != null && error.isToolChoiceRejection()) {
                         effectiveToolChoice = null
+                        continue
+                    }
+                    val disabledThinkingBody = thinkingDisabledExtraBody(config, effectiveExtraBody)
+                    if (!thinkingRetryUsed && disabledThinkingBody != null && error.isThinkingRejection()) {
+                        thinkingRetryUsed = true
+                        effectiveExtraBody = disabledThinkingBody
+                        lastError = null
                         continue
                     }
                     if (error is DirectApiHttpException && error.statusCode in PATH_FALLBACK_STATUS_CODES) {
@@ -497,6 +506,8 @@ class DirectApiClient(
             "chat/completions"
         }
         var effectiveToolChoice = providerSafeToolChoice(config, toolChoice)
+        var effectiveExtraBody = extraBody
+        var thinkingRetryUsed = false
         var visibleOutputEmitted = false
         var lastError: Throwable? = null
         endpointLoop@ for (endpoint in endpointCandidates(config.baseUrl, path)) {
@@ -508,7 +519,7 @@ class DirectApiClient(
                     toolChoice = effectiveToolChoice,
                     maxOutputTokens = maxOutputTokens,
                     temperature = temperature,
-                    extraBody = extraBody,
+                    extraBody = effectiveExtraBody,
                     stream = true,
                 )
                 try {
@@ -537,6 +548,18 @@ class DirectApiClient(
                         effectiveToolChoice = null
                         continue
                     }
+                    val disabledThinkingBody = thinkingDisabledExtraBody(config, effectiveExtraBody)
+                    if (
+                        !thinkingRetryUsed &&
+                        !visibleOutputEmitted &&
+                        disabledThinkingBody != null &&
+                        error.isThinkingRejection()
+                    ) {
+                        thinkingRetryUsed = true
+                        effectiveExtraBody = disabledThinkingBody
+                        lastError = null
+                        continue
+                    }
                     if (error is DirectApiHttpException && error.statusCode in PATH_FALLBACK_STATUS_CODES) {
                         break
                     }
@@ -562,6 +585,38 @@ class DirectApiClient(
         if (this !is DirectApiHttpException) return false
         val detail = message.orEmpty().lowercase()
         return "tool_choice" in detail || "tool choice" in detail
+    }
+
+    private fun Throwable.isThinkingRejection(): Boolean {
+        if (this !is DirectApiHttpException) return false
+        val detail = message.orEmpty().lowercase()
+        return (
+            "reasoning_content" in detail && "must be passed back" in detail
+        ) || (
+            "thinking mode" in detail && (
+                "tool_choice" in detail ||
+                    "tool choice" in detail ||
+                    "not support" in detail ||
+                    "unsupported" in detail ||
+                    "reject" in detail
+                )
+            )
+    }
+
+    /**
+     * One DeepSeek recovery attempt: disable V4 thinking after a thinking-mode
+     * rejection. Only DeepSeek has a verified disable switch; other providers
+     * keep their own documented parameters and return null here.
+     */
+    private fun thinkingDisabledExtraBody(
+        config: DirectApiConfig,
+        extraBody: JsonObject?,
+    ): JsonObject? {
+        if (!config.isDeepSeekProvider()) return null
+        return buildJsonObject {
+            extraBody?.forEach { (key, value) -> put(key, value) }
+            put("thinking", buildJsonObject { put("type", "disabled") })
+        }
     }
 
     /**

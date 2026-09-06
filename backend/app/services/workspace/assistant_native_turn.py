@@ -412,6 +412,8 @@ class WorkspaceNativeTurn:
             }
         )
         if not calls:
+            if capture.reply_text.strip():
+                state.final_reasoning = capture.reasoning
             self._complete_text_only(capture.reply_text)
             if state.loop_action != "synthesize":
                 self._mark_delivered_transactions_consumed()
@@ -634,6 +636,7 @@ class WorkspaceNativeTurn:
         return ""
 
     def _complete_terminal_result(self) -> None:
+        self.state.final_reasoning = ""
         result = self.state.turn_terminal_result
         if result and is_terminal_tool_result(result):
             self.state.final_reply = terminal_tool_reply(result)

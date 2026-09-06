@@ -171,10 +171,13 @@ class ConversationMessage:
     content: str = ""
     tool_call_id: str | None = None
     tool_calls: tuple[dict[str, Any], ...] = ()
+    reasoning_content: str = ""
+    provider_state: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "role", ConversationRole(self.role))
         object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
+        object.__setattr__(self, "provider_state", tuple(self.provider_state))
         if not self.message_id:
             raise ValueError("message_id must not be empty")
         if self.sequence_no <= 0:
@@ -185,6 +188,10 @@ class ConversationMessage:
             raise ValueError("only tool messages may set tool_call_id")
         if self.tool_calls and self.role is not ConversationRole.ASSISTANT:
             raise ValueError("only assistant messages may contain tool_calls")
+        if (
+            self.reasoning_content or self.provider_state
+        ) and self.role is not ConversationRole.ASSISTANT:
+            raise ValueError("only assistant messages may carry reasoning state")
 
     def to_dict(self) -> dict[str, Any]:
         return canonical_value(self)

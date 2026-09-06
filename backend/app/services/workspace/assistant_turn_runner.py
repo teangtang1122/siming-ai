@@ -484,7 +484,8 @@ class WorkspaceAssistantTurnRunner:
             "不要输出工具 JSON，不要启动另一个 CLI，不要修改任何全局 MCP 配置。"
             "请依据用户最新消息和真实项目数据自行判断任务、选择目标与工具。"
             "若决定生成章节正文，必须先取得真实章级大纲 ID，再读取写作上下文并保存一份未入库草稿；"
-            "若当前消息要求修改 active_chapter_draft，必须将其真实 ID 作为 source_draft_id 建立上下文并原地更新；"
+            "若当前消息要求修改 active_chapter_draft，必须将其真实 ID 作为"
+            " source_draft_id 建立上下文并原地更新；"
             "草稿生成或修改成功后立即结束，不得继续执行角色、关系、世界观或建档写入。"
         )
 
@@ -614,6 +615,7 @@ class WorkspaceAssistantTurnRunner:
             reply = "".join(chunks).strip()
             if reply:
                 state.final_reply = reply
+                state.final_reasoning = ""
                 state.final_model = state.payload.model or ""
                 state.final_usage = None
                 state.loop_action = "break"
@@ -837,6 +839,7 @@ class WorkspaceAssistantTurnRunner:
             assistant_message=state.assistant_message,
             conversation=state.conversation,
             final_reply=state.final_reply,
+            final_reasoning=state.final_reasoning,
             applied_actions=state.applied_actions,
             tool_logs=state.tool_logs,
             searched_context=state.searched_context,

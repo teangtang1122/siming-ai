@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 import pytest
@@ -39,6 +40,7 @@ def _message(
     *,
     status: str = "completed",
     conversation_id: str = "conversation-1",
+    payload_json: str | None = None,
 ) -> AssistantMessage:
     return AssistantMessage(
         id=f"message-{sequence}",
@@ -47,6 +49,7 @@ def _message(
         sequence_no=sequence,
         content=content,
         status=status,
+        payload_json=payload_json,
     )
 
 
@@ -87,6 +90,58 @@ def test_workspace_context_keeps_every_closed_status_and_verbatim_text() -> None
     assert context.turns[1].messages[1].content == "准确的失败信息"
     assert context.current_user_message.content == "  当前逐字任务\n保留空格  "
     assert all(len(turn.messages) == 2 for turn in context.turns)
+
+
+def test_workspace_context_replays_persisted_reasoning_for_follow_up_turns() -> None:
+    assistant_payload = json.dumps(
+        {
+            "reply": "第一答",
+            "reasoning_content": "第一轮思考",
+            "provider_state": [{"type": "reasoning", "id": "reasoning-1"}],
+        },
+        ensure_ascii=False,
+    )
+    messages = [
+        _message(1, "user", "第一问"),
+        _message(2, "assistant", "第一答", payload_json=assistant_payload),
+        _message(3, "user", "第二问"),
+        _message(4, "assistant", "正在分析需求...", status="running"),
+    ]
+
+    context = build_workspace_context_input(
+        _conversation(),
+        messages,
+        project_id="project-1",
+        current_user_message_id="message-3",
+    )
+
+    assistant_message = context.turns[0].messages[1]
+    assert assistant_message.content == "第一答"
+    assert assistant_message.reasoning_content == "第一轮思考"
+    assert assistant_message.provider_state == ({"type": "reasoning", "id": "reasoning-1"},)
+    # User messages never carry reasoning state.
+    assert context.turns[0].messages[0].reasoning_content == ""
+    assert context.turns[0].messages[0].provider_state == ()
+
+
+def test_workspace_context_tolerates_missing_or_malformed_reasoning_payload() -> None:
+    messages = [
+        _message(1, "user", "第一问"),
+        _message(2, "assistant", "第一答", payload_json="{not-json"),
+        _message(3, "user", "第二问"),
+        _message(4, "assistant", "正在分析需求...", status="running"),
+    ]
+
+    context = build_workspace_context_input(
+        _conversation(),
+        messages,
+        project_id="project-1",
+        current_user_message_id="message-3",
+    )
+
+    assistant_message = context.turns[0].messages[1]
+    assert assistant_message.reasoning_content == ""
+    assert assistant_message.provider_state == ()
 
 
 def test_workspace_context_has_no_fixed_turn_or_character_limit() -> None:

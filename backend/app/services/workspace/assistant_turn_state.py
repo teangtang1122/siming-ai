@@ -65,6 +65,7 @@ class WorkspaceAssistantTurnState:
 
     tool_logs: list[dict[str, Any]] = field(default_factory=list)
     final_reply: str = ""
+    final_reasoning: str = ""
     applied_actions: list[dict[str, Any]] = field(default_factory=list)
     searched_context: list[dict[str, Any]] = field(default_factory=list)
     final_model: str = ""

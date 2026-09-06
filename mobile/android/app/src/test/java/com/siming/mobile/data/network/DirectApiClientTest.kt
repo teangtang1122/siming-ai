@@ -538,6 +538,45 @@ class DirectApiClientTest {
     }
 
     @Test
+    fun `chat agent stream retries once with thinking disabled after reasoning pass-back rejection`() {
+        val attempts = AtomicInteger()
+        withServer(
+            object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                    return if (attempts.incrementAndGet() == 1) {
+                        jsonResponse(
+                            """{"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API.","type":"invalid_request_error"}}""",
+                            400,
+                        )
+                    } else {
+                        assertEquals(
+                            "disabled",
+                            body.getValue("thinking").jsonObject.getValue("type").jsonPrimitive.content,
+                        )
+                        sseResponse(
+                            """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-deepseek-reasoning","function":{"name":"get_project_info","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}""",
+                        )
+                    }
+                }
+            },
+        ) { server ->
+            val turn = runBlocking {
+                testClient().streamAgentTurn(
+                    config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS).copy(
+                        displayName = "DeepSeek",
+                        model = "deepseek-v4-flash",
+                    ),
+                    messages = listOf(buildJsonObject { put("role", "user"); put("content", "读取") }),
+                    tools = singleTool("get_project_info"),
+                )
+            }
+            assertEquals("get_project_info", turn.toolCalls.single().name)
+            assertEquals(2, attempts.get())
+        }
+    }
+
+    @Test
     fun `responses agent turn retries once without rejected tool choice`() {
         val attempts = AtomicInteger()
         withServer(

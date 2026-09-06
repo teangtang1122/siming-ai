@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
 from inspect import isawaitable
 from typing import TypeVar
 from uuid import uuid4
@@ -14,8 +12,10 @@ from uuid import uuid4
 from app.ai.anthropic_adapter import AnthropicAdapter
 from app.ai.base import BaseAdapter
 from app.ai.capabilities import (
+    is_thinking_rejection,
     normalize_retry_count,
     provider_capabilities,
+    provider_thinking_disable_body,
     request_meta,
     sanitize_tool_request,
     should_retry_without_tool_choice,
@@ -41,6 +41,11 @@ from .local_cli import (
     detect_cli_quota_error,
     effective_local_cli_model,
     is_local_cli_provider,
+)
+from .tool_stream import (
+    _consume_tool_stream_attempt,
+    _ResumeHandshake,
+    _ResumeHandshakeError,
 )
 
 ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
@@ -69,36 +74,6 @@ DEFAULT_STREAM_RESUMES = 8
 STREAM_RESUME_ANCHOR_CHARS = 64
 T = TypeVar("T")
 
-
-class _ResumeHandshakeError(LLMError):
-    """The replacement stream did not prove that it starts at our checkpoint."""
-
-
-@dataclass
-class _ResumeHandshake:
-    expected_prefix: str
-    buffered: str = ""
-    verified: bool = False
-
-    def consume(self, chunk: str) -> str:
-        if self.verified:
-            return chunk
-        self.buffered += chunk
-        candidate = self.buffered.lstrip()
-        if len(candidate) < len(self.expected_prefix):
-            if not self.expected_prefix.startswith(candidate):
-                raise _ResumeHandshakeError("模型没有按检查点恢复协议继续输出")
-            return ""
-        if not candidate.startswith(self.expected_prefix):
-            raise _ResumeHandshakeError("模型没有按检查点恢复协议继续输出")
-        self.verified = True
-        suffix = candidate[len(self.expected_prefix):]
-        self.buffered = ""
-        return suffix
-
-    def require_verified(self) -> None:
-        if not self.verified:
-            raise _ResumeHandshakeError("模型恢复响应在检查点握手完成前结束")
 
 
 def _normalize_stream_resumes(resume: int | None) -> int:
@@ -170,58 +145,6 @@ def _resume_messages(
     rendered = _append_system_instruction(messages, instruction)
     rendered.append({"role": "user", "content": "继续中断的同一模型步骤。"})
     return rendered, None
-
-
-def _tool_delta_events_complete(events: list[dict]) -> bool:
-    if not events:
-        return True
-    calls: dict[int, dict[str, str]] = {}
-    for event in events:
-        index = int(event.get("index") or 0)
-        call = calls.setdefault(index, {"name": "", "arguments": ""})
-        if event.get("name"):
-            call["name"] = str(event["name"])
-        if event.get("arguments_delta"):
-            call["arguments"] += str(event["arguments_delta"])
-    for call in calls.values():
-        if not call["name"]:
-            return False
-        if not call["arguments"]:
-            return False
-        try:
-            arguments = json.loads(call["arguments"])
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return False
-        if not isinstance(arguments, dict):
-            return False
-    return True
-
-
-def _validate_tool_stream_completion(
-    done_event: dict | None,
-    buffered_tool_events: list[dict],
-    handshake: _ResumeHandshake | None,
-    content_seen: bool,
-    usage_totals: dict[str, int],
-    has_usage: bool,
-) -> bool:
-    if handshake and content_seen:
-        handshake.require_verified()
-    if done_event is None:
-        raise _ResumeHandshakeError("模型工具流在正式结束帧到达前停止")
-    raw_usage = done_event.get("usage")
-    if isinstance(raw_usage, dict):
-        has_usage = True
-        for key in usage_totals:
-            usage_totals[key] += max(0, int(raw_usage.get(key) or 0))
-    finish_reason = str(done_event.get("finish_reason") or "").lower()
-    if finish_reason in {"length", "max_tokens", "token_limit", "incomplete"}:
-        raise _ResumeHandshakeError("模型输出达到单次长度上限，正在从检查点继续")
-    if not _tool_delta_events_complete(buffered_tool_events):
-        raise _ResumeHandshakeError("工具调用在参数完整前结束")
-    if handshake and not content_seen and not buffered_tool_events:
-        handshake.require_verified()
-    return has_usage
 
 
 def _record_stream_resume(
@@ -575,43 +498,54 @@ class LLMGateway:
         )
         attempts = normalize_retry_count(retry)
 
-        async def _call() -> dict:
+        thinking_disable_body = provider_thinking_disable_body(provider)
+
+        async def _call_with(extra_body_value: dict | None, choice: str | dict | None) -> dict:
             return await adapter.chat_completion(
                 messages=messages,
                 model=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                extra_body=call_extra_body,
+                extra_body=extra_body_value,
                 tools=safe_tools,
-                tool_choice=safe_tool_choice,
+                tool_choice=choice,
             )
+
+        def _disabled_thinking_body() -> dict | None:
+            if thinking_disable_body is None:
+                return None
+            merged = dict(call_extra_body or {})
+            merged.update(thinking_disable_body)
+            return merged
 
         try:
             result = await cls._call_with_retry(
                 attempts=attempts,
                 timeout_seconds=wait_timeout_seconds,
-                call_factory=_call,
+                call_factory=lambda: _call_with(call_extra_body, safe_tool_choice),
             )
         except LLMError as exc:
-            if safe_tool_choice is not None and should_retry_without_tool_choice(exc):
+            remove_tool_choice = (
+                safe_tool_choice is not None and should_retry_without_tool_choice(exc)
+            )
+            disable_thinking = bool(
+                _disabled_thinking_body() is not None and is_thinking_rejection(exc)
+            )
+            if not remove_tool_choice and not disable_thinking:
+                raise
+            choice = None if remove_tool_choice else safe_tool_choice
+            extra_body_value = _disabled_thinking_body() if disable_thinking else call_extra_body
+            if remove_tool_choice:
                 notes.append("接口拒绝 tool_choice，已自动去掉该参数重试")
-                try:
-                    result = await cls._call_with_retry(
-                        attempts=1,
-                        timeout_seconds=wait_timeout_seconds,
-                        call_factory=lambda: adapter.chat_completion(
-                            messages=messages,
-                            model=model_name,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            extra_body=call_extra_body,
-                            tools=safe_tools,
-                            tool_choice=None,
-                        ),
-                    )
-                except LLMError:
-                    raise
-            else:
+            if disable_thinking:
+                notes.append("模型思考模式请求被上游拒绝，已自动关闭思考模式重试一次")
+            try:
+                result = await cls._call_with_retry(
+                    attempts=1,
+                    timeout_seconds=wait_timeout_seconds,
+                    call_factory=lambda: _call_with(extra_body_value, choice),
+                )
+            except LLMError:
                 raise
 
         result.setdefault("model", model_name)
@@ -816,6 +750,8 @@ class LLMGateway:
         )
         raw_retries_remaining = attempts - 1
         resume_attempt = 0
+        thinking_retry_used = False
+        thinking_disable_body = provider_thinking_disable_body(provider)
         last_error: BaseException | None = None
         committed_parts: list[str] = []
         request_messages = messages
@@ -824,10 +760,8 @@ class LLMGateway:
         has_usage = False
 
         while True:
-            raw_produced = False
-            content_seen = False
-            buffered_tool_events: list[dict] = []
-            done_event: dict | None = None
+            received_any = [False]
+            has_usage_tracker = [has_usage]
             error_cause: BaseException | None = None
             non_retryable = False
             gen: AsyncGenerator[dict, None] | None = None
@@ -841,50 +775,21 @@ class LLMGateway:
                     tools=safe_tools,
                     tool_choice=safe_tool_choice,
                 )
-                while True:
-                    try:
-                        chunk = await cls._next_stream_item(gen, wait_timeout_seconds)
-                    except StopAsyncIteration:
-                        break
-                    raw_produced = True
-                    event_type = chunk.get("type")
-                    if event_type == "content_delta":
-                        delta = str(chunk.get("delta") or "")
-                        content_seen = content_seen or bool(delta)
-                        outgoing = handshake.consume(delta) if handshake else delta
-                        if outgoing:
-                            committed_parts.append(outgoing)
-                            yielded = dict(chunk)
-                            yielded["delta"] = outgoing
-                            yield yielded
-                    elif event_type == "tool_call_delta":
-                        buffered_tool_events.append(dict(chunk))
-                    elif event_type == "done":
-                        done_event = dict(chunk)
-                        with suppress(Exception):
-                            await gen.aclose()
-                        break
-                    else:
-                        yield chunk
-
-                has_usage = _validate_tool_stream_completion(
-                    done_event,
-                    buffered_tool_events,
-                    handshake,
-                    content_seen,
-                    usage_totals,
-                    has_usage,
-                )
-
-                for tool_event in buffered_tool_events:
-                    yield tool_event
-                if done_event is not None:
-                    if has_usage:
-                        done_event["usage"] = dict(usage_totals)
-                    if resume_attempt:
-                        notes.append(f"流式响应已从检查点续传 {resume_attempt} 次")
-                    done_event.setdefault("request_meta", request_meta(provider, model_name, notes))
-                    yield done_event
+                async for chunk in _consume_tool_stream_attempt(
+                    generator=gen,
+                    handshake=handshake,
+                    committed_parts=committed_parts,
+                    usage_totals=usage_totals,
+                    has_usage_tracker=has_usage_tracker,
+                    received_tracker=received_any,
+                    provider=provider,
+                    model_name=model_name,
+                    notes=notes,
+                    resume_attempt=resume_attempt,
+                    timeout_seconds=wait_timeout_seconds,
+                ):
+                    yield chunk
+                has_usage = has_usage_tracker[0]
                 return
             except TimeoutError as exc:
                 last_error = LLMError(f"流式请求超时（{timeout_seconds or '未限制'}秒）")
@@ -893,14 +798,36 @@ class LLMGateway:
                 last_error = exc
                 error_cause = exc
                 if (
-                    safe_tool_choice is not None
+                    not received_any[0]
+                    and safe_tool_choice is not None
                     and should_retry_without_tool_choice(exc)
-                    and not raw_produced
                 ):
                     notes.append("接口拒绝 tool_choice，已自动去掉该参数重试")
                     safe_tool_choice = None
+                elif (
+                    not received_any[0]
+                    and not thinking_retry_used
+                    and thinking_disable_body is not None
+                    and is_thinking_rejection(exc)
+                ):
+                    # DeepSeek V4 thinking mode rejects requests whose replayed
+                    # assistant messages carry no reasoning_content.  Retry the
+                    # exact same logical step once with thinking disabled.
+                    thinking_retry_used = True
+                    notes.append("模型思考模式请求被上游拒绝，已自动关闭思考模式重试一次")
+                    call_extra_body = dict(call_extra_body or {})
+                    call_extra_body.update(thinking_disable_body)
+                    last_error = None
+                    continue
                 else:
-                    non_retryable = _is_non_retryable(exc)
+                    non_retryable = _is_non_retryable(exc) or (
+                        thinking_retry_used and is_thinking_rejection(exc)
+                    )
+                    if thinking_retry_used and is_thinking_rejection(exc):
+                        last_error = LLMError(
+                            "模型思考模式请求被上游拒绝，已自动关闭思考模式重试一次，"
+                            "重试仍被拒绝；请新建对话或改用非思考模式模型后重试。"
+                        )
             except Exception as exc:
                 last_error = LLMError(f"流式调用失败: {exc}")
                 error_cause = exc
@@ -911,17 +838,16 @@ class LLMGateway:
 
             if non_retryable:
                 raise last_error from error_cause
-            if not raw_produced and raw_retries_remaining > 0:
+            if not received_any[0] and raw_retries_remaining > 0:
                 raw_retries_remaining -= 1
                 await asyncio.sleep(min(8, (attempts - raw_retries_remaining) * 1.5))
                 continue
 
             committed_text = "".join(committed_parts)
             can_resume = resumes_remaining > 0 and (
-                raw_produced
+                received_any[0]
                 or handshake is not None
                 or bool(committed_text)
-                or bool(buffered_tool_events)
             )
             if can_resume:
                 resumes_remaining -= 1

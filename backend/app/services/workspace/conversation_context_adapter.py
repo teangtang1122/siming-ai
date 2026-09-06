@@ -9,6 +9,7 @@ tail, truncates visible text, or reconstructs historical tool protocol.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -84,6 +85,34 @@ def _message_content(message: AssistantMessage) -> str:
 
 def _message_status(message: AssistantMessage) -> str:
     return str(message.status or "").strip().lower()
+
+
+def _assistant_reasoning_payload(
+    assistant: AssistantMessage,
+) -> tuple[str, tuple[dict[str, Any], ...]]:
+    """Read reasoning stored on a completed assistant message.
+
+    The workspace assistant persists the final reply's ``reasoning_content``
+    (and optional provider state) in the message payload so follow-up requests
+    can replay them to providers that require pass-back in thinking mode.
+    """
+    reasoning = ""
+    provider_state: tuple[dict[str, Any], ...] = ()
+    if not assistant.payload_json:
+        return reasoning, provider_state
+    try:
+        payload = json.loads(assistant.payload_json)
+    except Exception:
+        return reasoning, provider_state
+    if not isinstance(payload, dict):
+        return reasoning, provider_state
+    reasoning = str(payload.get("reasoning_content") or "")
+    raw_state = payload.get("provider_state")
+    if isinstance(raw_state, list):
+        provider_state = tuple(
+            dict(item) for item in raw_state if isinstance(item, dict)
+        )
+    return reasoning, provider_state
 
 
 def _validate_conversation_owner(
@@ -162,6 +191,7 @@ def _closed_workspace_turns(
             raise ValueError(
                 f"historical assistant message {assistant_id} is not in a closed state"
             )
+        assistant_reasoning, assistant_provider_state = _assistant_reasoning_payload(assistant)
         turns.append(
             ConversationTurn(
                 turn_id=f"workspace:{user_id}:{assistant_id}",
@@ -178,6 +208,8 @@ def _closed_workspace_turns(
                         sequence_no=assistant_sequence,
                         role=ConversationRole.ASSISTANT,
                         content=_message_content(assistant),
+                        reasoning_content=assistant_reasoning,
+                        provider_state=assistant_provider_state,
                     ),
                 ),
             )
