@@ -9,8 +9,10 @@ DEFAULT_MODEL_OUTPUT_TOKEN_LIMIT = 16000
 MAX_CONFIGURABLE_LIMIT = 1000000
 
 MODEL_OUTPUT_TOKEN_LIMITS: dict[tuple[str, str], int] = {
+    ("deepseek", "deepseek-flash"): 384000,
     ("deepseek", "deepseek-v4-pro"): 384000,
     ("deepseek", "deepseek-v4-flash"): 384000,
+    ("deepseek", "deepseek-v4-flash-vision-exp"): 384000,
     ("gemini", "gemini-3-pro-preview"): 65536,
     ("gemini", "gemini-3-flash-preview"): 65536,
     ("gemini", "gemini-2.5-pro"): 65536,
@@ -19,7 +21,6 @@ MODEL_OUTPUT_TOKEN_LIMITS: dict[tuple[str, str], int] = {
 }
 
 PROVIDER_OUTPUT_TOKEN_LIMITS: dict[str, int] = {
-    "deepseek": 384000,
     "gemini": 65536,
 }
 

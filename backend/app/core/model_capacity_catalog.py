@@ -32,7 +32,7 @@ def _capacity(window: int, output: int, source: str) -> KnownModelCapacity:
 
 _OPENAI = "openai_model_docs_2026_08_30"
 _ANTHROPIC = "anthropic_model_docs_2026_08_30"
-_DEEPSEEK = "deepseek_model_docs_2026_08_30"
+_DEEPSEEK = "deepseek_model_docs_2026_09_11"
 _GEMINI = "gemini_model_docs_2026_08_30"
 _QWEN = "qwen_model_docs_2026_08_30"
 
@@ -111,11 +111,18 @@ _CAPACITIES: dict[tuple[str, str], KnownModelCapacity] = {
     ("anthropic", "claude-3-5-sonnet-20241022"): _capacity(
         200_000, 8_192, _ANTHROPIC
     ),
-    # DeepSeek V4 pricing/specification page.
+    # https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+    # The official Flash aliases are still served; keep their exact request IDs.
+    ("deepseek", "deepseek-flash"): _capacity(
+        1_000_000, 384_000, _DEEPSEEK
+    ),
     ("deepseek", "deepseek-v4-pro"): _capacity(
         1_000_000, 384_000, _DEEPSEEK
     ),
     ("deepseek", "deepseek-v4-flash"): _capacity(
+        1_000_000, 384_000, _DEEPSEEK
+    ),
+    ("deepseek", "deepseek-v4-flash-vision-exp"): _capacity(
         1_000_000, 384_000, _DEEPSEEK
     ),
     # Google Gemini model pages.

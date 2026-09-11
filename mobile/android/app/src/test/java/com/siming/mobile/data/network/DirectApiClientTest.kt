@@ -99,6 +99,39 @@ class DirectApiClientTest {
     }
 
     @Test
+    fun `standalone discovery config serialization and requests retain new provider model ids`() {
+        val ids = listOf("deepseek-flash", "deepseek-future-test-model", "gemini-future-test-model",
+            "gpt-future-test-model", "qwen-future-test-model", "claude-future-test-model") +
+            (0..104).map { "provider-model-$it" }
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path == "/models") return jsonResponse(buildJsonObject {
+                    put("data", buildJsonArray { ids.forEach { add(buildJsonObject { put("id", it) }) } })
+                }.toString())
+                assertEquals("/chat/completions", request.path)
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                val model = body.getValue("model").jsonPrimitive.content
+                assertTrue(model in ids)
+                return jsonResponse("""{"choices":[{"message":{"content":"$model"}}]}""")
+            }
+        }) { server ->
+            val client = testClient()
+            val discovered = runBlocking { client.discoverModels(server.url("/").toString(), "test-key") }
+            assertEquals(ids.sorted(), discovered)
+            ids.take(6).forEach { model ->
+                val selected = config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS).copy(
+                    model = model, availableModels = discovered,
+                )
+                val restored = Json.decodeFromString(DirectApiConfig.serializer(),
+                    Json.encodeToString(DirectApiConfig.serializer(), selected))
+                assertEquals(model, restored.model)
+                assertEquals(discovered, restored.availableModels)
+                assertEquals(model, runBlocking { client.complete(restored, "system", "user") })
+            }
+        }
+    }
+
+    @Test
     fun `responses API extracts output text`() = withServer(
         pathDispatcher(
             "/responses" to jsonResponse(
@@ -458,6 +491,7 @@ class DirectApiClientTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 assertFalse("tool_choice" in body)
+                assertEquals("deepseek-flash", body.getValue("model").jsonPrimitive.content)
                 assertEquals(
                     "enabled",
                     body.getValue("thinking").jsonObject.getValue("type").jsonPrimitive.content,
@@ -472,7 +506,7 @@ class DirectApiClientTest {
             testClient().streamAgentTurn(
                 config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS).copy(
                     displayName = "DeepSeek",
-                    model = "deepseek-v4-pro",
+                    model = "deepseek-flash",
                 ),
                 messages = listOf(buildJsonObject { put("role", "user"); put("content", "读取") }),
                 tools = singleTool("get_project_info"),

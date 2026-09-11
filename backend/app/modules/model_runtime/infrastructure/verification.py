@@ -201,7 +201,7 @@ async def _list_openai(request: ModelProbeRequest) -> list[dict]:
         try:
             result = await asyncio.wait_for(client.models.list(), timeout=20)
             models = sorted({item.id for item in result.data})
-            return [{"id": model, "display_name": model} for model in models[:100]]
+            return [{"id": model, "display_name": model} for model in models]
         except OpenAIAuthError as exc:
             raise LLMError(f"{_provider_label(request.provider)} API key is invalid") from exc
         except OpenAIConnectionError as exc:
@@ -224,29 +224,39 @@ async def _list_anthropic(request: ModelProbeRequest) -> list[dict]:
     url = f"{request.base_url}/v1/models"
     headers = {"x-api-key": request.api_key, "anthropic-version": "2023-06-01"}
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(url, headers=headers)
-        if response.status_code == 401:
-            raise LLMError("Anthropic API key is invalid")
-        response.raise_for_status()
-        models = []
-        for item in response.json().get("data", []):
-            model = {
-                "id": item["id"],
-                "display_name": item.get("display_name", item["id"]),
-            }
-            if item.get("max_input_tokens"):
-                model["context_window_tokens"] = int(item["max_input_tokens"])
-            if item.get("max_tokens"):
-                model["max_output_tokens"] = int(item["max_tokens"])
-            if model.get("context_window_tokens"):
-                model["safety_margin_tokens"] = 512
-                model["capacity_source"] = "anthropic_models_api"
-            models.append(model)
-        return sorted(models, key=lambda item: item["id"])[:100]
+        async with asyncio.timeout(20), httpx.AsyncClient(timeout=20) as client:
+            models: dict[str, dict] = {}
+            params: dict[str, str | int] = {"limit": 1000}
+            cursors: set[str] = set()
+            while True:
+                response = await client.get(url, headers=headers, params=params)
+                if response.status_code == 401:
+                    raise LLMError("Anthropic API key is invalid")
+                response.raise_for_status()
+                page = response.json()
+                for item in page.get("data", []):
+                    model = {
+                        "id": item["id"],
+                        "display_name": item.get("display_name", item["id"]),
+                    }
+                    if item.get("max_input_tokens"):
+                        model["context_window_tokens"] = int(item["max_input_tokens"])
+                    if item.get("max_tokens"):
+                        model["max_output_tokens"] = int(item["max_tokens"])
+                    if model.get("context_window_tokens"):
+                        model["safety_margin_tokens"] = 512
+                        model["capacity_source"] = "anthropic_models_api"
+                    models[model["id"]] = model
+                if not page.get("has_more"):
+                    return sorted(models.values(), key=lambda item: item["id"])
+                cursor = page.get("last_id")
+                if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                    raise LLMError("Anthropic 模型列表分页异常，请重新获取")
+                cursors.add(cursor)
+                params["after_id"] = cursor
     except httpx.ConnectError as exc:
         raise LLMError("Cannot connect to Anthropic") from exc
-    except httpx.TimeoutException as exc:
+    except (TimeoutError, httpx.TimeoutException) as exc:
         raise LLMError("Request timed out") from exc
     except httpx.HTTPStatusError as exc:
         raise LLMError(f"Anthropic API error: HTTP {exc.response.status_code}") from exc

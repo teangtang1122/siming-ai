@@ -18,6 +18,8 @@ from app.core.model_capacity_catalog import (
         ("anthropic", "claude-opus-4-8", 1_000_000, 128_000),
         ("anthropic", "claude-3-5-sonnet-20241022", 200_000, 8_192),
         ("deepseek", "deepseek-v4-flash", 1_000_000, 384_000),
+        ("deepseek", "deepseek-flash", 1_000_000, 384_000),
+        ("deepseek", "deepseek-v4-flash-vision-exp", 1_000_000, 384_000),
         ("deepseek", "deepseek-v3", 1_000_000, 384_000),
         ("gemini", "models/gemini-2.5-flash", 1_048_576, 65_536),
         ("gemini", "gemini-3.7-flash", 1_048_576, 65_536),
@@ -39,13 +41,14 @@ def test_exact_documented_models_have_verified_capacity(
     assert capacity is not None
     assert capacity.context_window_tokens == window
     assert capacity.max_output_tokens == output
-    assert capacity.source.endswith("2026_08_30")
+    assert capacity.source.endswith("2026_09_11" if provider == "deepseek" else "2026_08_30")
 
 
 @pytest.mark.parametrize(
     ("provider", "model"),
     [
         ("openai", "gpt-4o-custom"),
+        ("deepseek", "deepseek-future-test-model"),
         ("codex_cli", "codex-cli"),
         ("claude_cli", "claude-code"),
         ("openrouter", "openai/gpt-4o"),

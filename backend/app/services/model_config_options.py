@@ -5,13 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..ai.local_cli_adapter import DEFAULT_CLI_MODELS, is_local_cli_provider
-from ..core.exceptions import ValidationError
 from ..core.model_capacity_catalog import known_model_capacity
-from ..core.provider_model_identity import (
-    DEEPSEEK_MODEL_ALIASES,
-    DEEPSEEK_SUPPORTED_MODELS,
-    canonical_model_name,
-)
+from ..core.provider_model_identity import canonical_model_name
 
 MAX_CONTEXT_WINDOW_TOKENS = 10_000_000
 MAX_OUTPUT_TOKENS = 1_000_000
@@ -21,18 +16,12 @@ MAX_SAFETY_MARGIN_TOKENS = 100_000
 def normalize_model_for_provider(
     provider: str,
     model: str,
-    *,
-    strict: bool = True,
 ) -> str:
     if is_local_cli_provider(provider):
         return model or DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
     if provider == "local_llama_cpp":
         return model
-    normalized = canonical_model_name(provider, model)
-    if provider == "deepseek" and normalized not in DEEPSEEK_SUPPORTED_MODELS and strict:
-        supported = ", ".join(sorted(DEEPSEEK_SUPPORTED_MODELS))
-        raise ValidationError(f"DeepSeek currently supports: {supported}")
-    return normalized
+    return canonical_model_name(provider, model)
 
 
 def _capacity_values(raw: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
@@ -71,7 +60,7 @@ def normalized_model_options(
             raw_capacity = raw
         else:
             continue
-        model_id = normalize_model_for_provider(provider, model_id.strip(), strict=False)
+        model_id = normalize_model_for_provider(provider, model_id.strip())
         if not model_id:
             continue
         option: dict[str, Any] = {
@@ -117,7 +106,6 @@ def normalized_model_options(
     normalized_default = normalize_model_for_provider(
         provider,
         default_model,
-        strict=False,
     )
     default_option = by_id.pop(normalized_default, None) or {
         "id": normalized_default,
@@ -157,8 +145,6 @@ def enriched_model_options(
 
 
 __all__ = [
-    "DEEPSEEK_MODEL_ALIASES",
-    "DEEPSEEK_SUPPORTED_MODELS",
     "enriched_model_options",
     "normalize_model_for_provider",
     "normalized_model_options",

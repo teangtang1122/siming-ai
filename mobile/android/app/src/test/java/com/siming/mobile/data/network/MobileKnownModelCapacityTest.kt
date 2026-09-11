@@ -6,6 +6,23 @@ import kotlin.test.assertNull
 
 class MobileKnownModelCapacityTest {
     @Test
+    fun `deepseek flash uses v4_1 documented capacity without changing its id`() {
+        val config = DirectApiConfig(
+            displayName = "DeepSeek", baseUrl = "https://api.deepseek.com/v1",
+            apiKey = "test-key", model = "deepseek-flash", maxOutputTokens = 400_000,
+        )
+        val resolved = MobileKnownModelCapacityCatalog.applyIfKnown(config)
+        assertEquals("deepseek-flash", resolved?.model)
+        assertEquals(1_000_000, resolved?.contextWindowTokens)
+        assertEquals(384_000, resolved?.maxOutputTokens)
+        assertNull(MobileKnownModelCapacityCatalog.resolve(config.baseUrl, "deepseek-future-test-model"))
+        assertNull(MobileKnownModelCapacityCatalog.resolve("https://proxy.example/v1", config.model))
+        assertEquals("deepseek-future-test-model", MobileKnownModelCapacityCatalog.canonicalModelForOfficialEndpoint(
+            config.baseUrl, "deepseek-future-test-model",
+        ))
+    }
+
+    @Test
     fun `official endpoint and exact model resolve documented capacity`() {
         val capacity = MobileKnownModelCapacityCatalog.resolve(
             "https://api.openai.com/v1",

@@ -4,10 +4,7 @@ from typing import AsyncGenerator, Optional
 from openai import APIConnectionError, APIError, APITimeoutError, AuthenticationError
 
 from ..core.exceptions import LLMError
-from ..core.provider_model_identity import (
-    DEEPSEEK_SUPPORTED_MODELS,
-    canonical_model_name,
-)
+from ..core.provider_model_identity import canonical_model_name
 from .base import BaseAdapter
 from .openai_adapter import (
     _extract_tool_calls,
@@ -42,7 +39,6 @@ class DeepSeekAdapter(BaseAdapter):
     """Adapter for DeepSeek API (OpenAI-compatible)."""
 
     DEFAULT_BASE_URL = "https://api.deepseek.com"
-    SUPPORTED_MODELS = DEEPSEEK_SUPPORTED_MODELS
 
     @property
     def provider_name(self) -> str:
@@ -53,13 +49,6 @@ class DeepSeekAdapter(BaseAdapter):
             self.api_key,
             self.base_url or self.DEFAULT_BASE_URL,
         )
-
-    def _normalize_model(self, model: str) -> str:
-        normalized = canonical_model_name(self.provider_name, model)
-        if normalized.startswith("deepseek-") and normalized not in self.SUPPORTED_MODELS:
-            supported = "、".join(sorted(self.SUPPORTED_MODELS))
-            raise LLMError(f"DeepSeek 当前支持的模型为 {supported}，请在系统设置中重新选择")
-        return normalized
 
     async def chat_completion(
         self,
@@ -72,7 +61,7 @@ class DeepSeekAdapter(BaseAdapter):
         tool_choice: Optional[str | dict] = None,
     ) -> dict:
         client = self._get_client()
-        model = self._normalize_model(model)
+        model = canonical_model_name(self.provider_name, model)
         kwargs = compact_openai_kwargs(dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens))
         kwargs["extra_body"] = _plain_text_extra_body(extra_body)
         if tools:
@@ -118,7 +107,7 @@ class DeepSeekAdapter(BaseAdapter):
         extra_body: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
         client = self._get_client()
-        model = self._normalize_model(model)
+        model = canonical_model_name(self.provider_name, model)
         self.last_stream_finish_reason = None
         kwargs = compact_openai_kwargs(dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, stream=True))
         kwargs["extra_body"] = _plain_text_extra_body(extra_body)
@@ -169,7 +158,7 @@ class DeepSeekAdapter(BaseAdapter):
         tool_choice: Optional[str | dict] = None,
     ) -> AsyncGenerator[dict, None]:
         client = self._get_client()
-        model = self._normalize_model(model)
+        model = canonical_model_name(self.provider_name, model)
         kwargs = compact_openai_kwargs(dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, stream=True))
         provider_body = _provider_extra_body(extra_body)
         if provider_body:

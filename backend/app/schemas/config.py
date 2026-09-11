@@ -48,6 +48,13 @@ def validate_provider_id(provider: str) -> str:
     return provider
 
 
+def validate_model_id(model: str) -> str:
+    model = model.strip()
+    if not model:
+        raise ValueError("Model id must not be blank")
+    return model
+
+
 class ProviderModelOption(BaseModel):
     """One model identity returned by a configured provider."""
 
@@ -58,7 +65,12 @@ class ProviderModelOption(BaseModel):
     safety_margin_tokens: Optional[int] = Field(None, ge=0, le=100_000)
     capacity_source: Optional[str] = Field(None, max_length=100)
 
-    @field_validator("id", "display_name")
+    @field_validator("id")
+    @classmethod
+    def _validate_model_id(cls, model: str) -> str:
+        return validate_model_id(model)
+
+    @field_validator("display_name")
     @classmethod
     def _strip_model_value(cls, value: Optional[str]) -> Optional[str]:
         return value.strip() if isinstance(value, str) else value
@@ -105,6 +117,11 @@ class APIConfigCreate(BaseModel):
     def _validate_provider(cls, provider: str) -> str:
         return validate_provider_id(provider)
 
+    @field_validator("default_model")
+    @classmethod
+    def _validate_model_id(cls, model: str) -> str:
+        return validate_model_id(model)
+
     @model_validator(mode="after")
     def _validate_context_capacity(self):
         if self.context_window_tokens is None:
@@ -124,6 +141,11 @@ class GlobalModelSetting(BaseModel):
 
     provider: str = Field(..., description="Global default provider")
     model: str = Field(..., min_length=1, max_length=MODEL_IDENTIFIER_MAX_LENGTH, description="Global default model name")
+
+    @field_validator("model")
+    @classmethod
+    def _validate_model_id(cls, model: str) -> str:
+        return validate_model_id(model)
 
     @field_validator("provider")
     @classmethod
@@ -146,7 +168,7 @@ class TaskModelSettingUpdate(BaseModel):
     @field_validator("model")
     @classmethod
     def _strip_model(cls, model: str) -> str:
-        return model.strip()
+        return validate_model_id(model)
 
 
 class ModelListRequest(BaseModel):

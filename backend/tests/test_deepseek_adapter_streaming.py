@@ -31,6 +31,23 @@ def _async_stream(*chunks):
 
 
 class DeepSeekStreamingTest(unittest.TestCase):
+    def test_discovered_models_reach_text_and_native_tool_streams_unchanged(self):
+        for model in ("deepseek-flash", "deepseek-future-test-model"):
+            for native_tools in (False, True):
+                with self.subTest(model=model, native_tools=native_tools):
+                    adapter = self._adapter_with_stream(_chunk(content="OK"))
+
+                    async def collect():
+                        method = adapter.stream_chat_completion_with_tools if native_tools else adapter.stream_chat_completion
+                        return [event async for event in method(
+                            messages=[{"role": "user", "content": "hello"}], model=model,
+                        )]
+
+                    events = asyncio.run(collect())
+                    self.assertIn({"type": "content_delta", "delta": "OK"} if native_tools else "OK", events)
+                    create = adapter._get_client.return_value.chat.completions.create
+                    self.assertEqual(create.await_args.kwargs["model"], model)
+
     @staticmethod
     def _adapter_with_stream(*chunks):
         adapter = DeepSeekAdapter(api_key="sk-test")

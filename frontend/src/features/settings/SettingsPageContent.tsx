@@ -70,7 +70,6 @@ import {
   defaultSafetyLimits,
   fallbackModelOptions,
   isCustomProviderSelection,
-  isDeepSeekModelSupported,
   isKnownProvider,
   isLocalCliProvider,
   modelCapacityDefaults,
@@ -597,10 +596,6 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       }
 
       const defaultModel = normalizeDefaultModel(provider, values.default_model)
-      if (provider === 'deepseek' && !isDeepSeekModelSupported(defaultModel)) {
-        message.error('DeepSeek 当前支持 deepseek-v4-pro 或 deepseek-v4-flash，请重新选择')
-        return
-      }
       await apiClient.post('/config/models', {
         provider,
         api_key: isCli ? undefined : values.api_key,
@@ -710,9 +705,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
 
     setModelsLoading(true)
     setModelOptions(fallbackOptions)
-    if (isCustom) {
-      setModelDiscovery({ status: 'idle', message: '正在自动拉取模型列表…' })
-    }
+    setModelDiscovery({ status: 'idle', message: '正在自动拉取模型列表…' })
     try {
       const res = await apiClient.post<{
         code: number
@@ -730,24 +723,20 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       if (form.getFieldValue('context_profile_source') !== 'configured') {
         applyCapacityForModel(provider, form.getFieldValue('default_model'), options)
       }
-      if (isCustom) {
-        if (res.data.data.manual_entry_required || options.length === 0) {
-          setModelDiscovery({
-            status: 'manual',
-            message: res.data.data.warning || '服务商未返回模型列表，请手动填写支持的模型名。',
-          })
-        } else {
-          setModelDiscovery({ status: 'success', message: `已自动拉取 ${options.length} 个模型，请选择默认模型。` })
-        }
+      if (res.data.data.manual_entry_required || options.length === 0) {
+        setModelDiscovery({
+          status: 'manual',
+          message: res.data.data.warning || '服务商未返回模型列表，请手动填写支持的模型名。',
+        })
+      } else {
+        setModelDiscovery({ status: 'success', message: `已自动拉取 ${options.length} 个模型，请选择默认模型。` })
       }
     } catch (err: any) {
       setModelOptions(fallbackOptions)
-      if (isCustom) {
-        setModelDiscovery({
-          status: 'manual',
-          message: `自动拉取模型失败：${err.message || '服务暂时不可用'}。你仍可手动填写模型名。`,
-        })
-      }
+      setModelDiscovery({
+        status: 'manual',
+        message: `自动拉取模型失败：${err.message || '服务暂时不可用'}。你仍可手动填写模型名。`,
+      })
     } finally {
       setModelsLoading(false)
     }
@@ -955,7 +944,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
 
   const defaultModelOptions = modelOptions.length > 0 ? modelOptions : fallbackModelOptions(modalProvider)
   const customModelSelection = isCustomProviderSelection(modalProvider)
-  const customManualEntry = customModelSelection && modelDiscovery.status === 'manual'
+  const manualModelEntry = !isLocalCliProvider(modalProvider) && modelDiscovery.status === 'manual'
   const providerOptions = launcherSettings?.gateway_headless
     ? PROVIDER_OPTIONS.filter((option) => !isLocalCliProvider(option.value))
     : PROVIDER_OPTIONS
@@ -1472,7 +1461,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               ]}
             />
           </Form.Item>
-          {customModelSelection && (
+          {modalProvider && (
             <Alert
               showIcon
               type={modelDiscovery.status === 'manual' ? 'warning' : modelDiscovery.status === 'success' ? 'success' : 'info'}
@@ -1548,7 +1537,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
             name="default_model"
             label="默认模型"
             extra={isLocalCliProvider(modalProvider) ? '列表由司命调用本机 CLI 自动获取；仍可直接输入模型名作为兜底。' : undefined}
-            rules={[{ required: true, message: '请选择默认模型名' }]}
+            rules={[{ required: true, whitespace: true, message: '请选择默认模型名' }]}
           >
             {isLocalCliProvider(modalProvider) ? (
               <AutoComplete
@@ -1570,7 +1559,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   ))
                 }}
               />
-            ) : customManualEntry ? (
+            ) : manualModelEntry ? (
               <Input
                 placeholder="例如 openai/gpt-4o-mini 或 vendor-model-name"
                 onChange={(event) => {
@@ -1587,11 +1576,11 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
               <Select
                 showSearch
                 loading={modelsLoading}
-                disabled={customModelSelection && modelDiscovery.status === 'idle' && defaultModelOptions.length === 0}
+                disabled={modelDiscovery.status === 'idle' && defaultModelOptions.length === 0}
                 placeholder={
                   modelsLoading
                     ? '正在获取模型列表...'
-                    : customModelSelection && modelDiscovery.status === 'idle'
+                    : modelDiscovery.status === 'idle'
                     ? '填写 API 端点和 API Key 后自动拉取'
                     : defaultModelOptions.length > 0
                     ? '选择模型名'
@@ -1670,7 +1659,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                   <Form.Item
                     name="max_output_tokens"
                     label="模型最大输出 tokens"
-                    extra="默认按模型能力上限填充；DeepSeek v4-pro / v4-flash 默认为 384,000，Gemini 默认为 65,536。"
+                    extra="已知型号按模型能力填充；新型号请按服务商说明确认最大输出长度。"
                     rules={[{ required: true, message: '请填写最大输出 tokens' }]}
                   >
                     <InputNumber min={1} max={1000000} style={{ width: '100%' }} />

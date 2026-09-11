@@ -34,6 +34,7 @@ import os
 import asyncio
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 # ---------------------------------------------------------------------------
@@ -448,6 +449,49 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["code"], 400)
         self.assertIn("自定义 OpenAI 兼容提供商必须填写自定义 API 端点", body["message"])
+
+    @patch("app.routers.config.get_model_verification")
+    def test_deepseek_discovered_model_can_be_saved_selected_and_called(self, verification_factory):
+        verification = MagicMock()
+        verification.list_models = AsyncMock()
+        verification_factory.return_value = verification
+        for model in ("deepseek-flash", "deepseek-future-test-model"):
+            with self.subTest(model=model):
+                verification.list_models.return_value = [{"id": model, "display_name": model}]
+                discovery = self.client.post(
+                    f"{API_PREFIX}/config/models/list",
+                    json={"provider": "deepseek", "api_key": "sk-test-key"},
+                )
+                self.assertEqual(discovery.status_code, 200)
+                options = discovery.json()["data"]["models"]
+                self.assertEqual([item["id"] for item in options], [model])
+                saved = self.client.post(f"{API_PREFIX}/config/models", json={
+                    "provider": "deepseek", "api_key": "sk-test-key",
+                    "default_model": model, "available_models": options,
+                })
+                self.assertEqual(saved.status_code, 200, saved.text)
+                _mark_config_ready("deepseek")
+                selected = self.client.put(f"{API_PREFIX}/config/global-model", json={
+                    "provider": "deepseek", "model": model,
+                })
+                self.assertEqual(selected.status_code, 200, selected.text)
+                self.assertEqual(selected.json()["data"]["model"], model)
+                listed = self.client.get(f"{API_PREFIX}/config/models").json()["data"]["items"][0]
+                self.assertEqual(listed["default_model"], model)
+                self.assertEqual([item["id"] for item in listed["available_models"]], [model])
+                client = MagicMock()
+                client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="OK", tool_calls=[]))],
+                    model=model, usage=None,
+                ))
+                with patch("app.ai.deepseek_adapter.DeepSeekAdapter._get_client", return_value=client):
+                    reply = self.client.post(f"{API_PREFIX}/chat/completion", json={
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "model": f"deepseek:{model}",
+                    })
+                self.assertEqual(reply.status_code, 200, reply.text)
+                self.assertEqual(reply.json()["data"]["content"], "OK")
+                self.assertEqual(client.chat.completions.create.await_args.kwargs["model"], model)
 
     def test_create_custom_openai_compatible_provider(self):
         """POST /config/models accepts custom OpenAI-compatible providers with a base URL."""

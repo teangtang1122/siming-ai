@@ -24,14 +24,12 @@ describe('local CLI default arguments', () => {
 
 describe('model capacity defaults', () => {
   it('prefills documented DeepSeek capacity without a manual profile', () => {
-    const option = fallbackModelOptions('deepseek').find(
-      (item) => item.id === 'deepseek-v4-flash',
-    )
+    const option = { id: 'deepseek-flash' }
 
-    expect(defaultSafetyLimits('deepseek', 'deepseek-v4-flash', option)).toMatchObject({
+    expect(defaultSafetyLimits('deepseek', 'deepseek-flash', option)).toMatchObject({
       context_window_tokens: 1_000_000,
       context_safety_margin_tokens: 512,
-      context_profile_source: 'deepseek_model_docs_2026_08_30',
+      context_profile_source: 'deepseek_model_docs_2026_09_11',
       max_output_tokens: 384_000,
     })
   })
@@ -64,9 +62,7 @@ describe('model capacity defaults', () => {
   })
 
   it('does not reuse official capacity for the same model name on a proxy', () => {
-    const option = fallbackModelOptions('deepseek').find(
-      (item) => item.id === 'deepseek-v4-flash',
-    )
+    const option = { id: 'deepseek-flash' }
 
     expect(usesDocumentedModelCatalog(
       'deepseek',
@@ -74,12 +70,33 @@ describe('model capacity defaults', () => {
     )).toBe(false)
     expect(defaultSafetyLimits(
       'deepseek',
-      'deepseek-v4-flash',
+      'deepseek-flash',
       option,
       'https://proxy.example/v1',
     )).toMatchObject({
       context_window_tokens: undefined,
       context_profile_source: undefined,
     })
+  })
+
+  it('leaves future DeepSeek capacity unverified with conservative output defaults', () => {
+    expect(defaultSafetyLimits('deepseek', 'deepseek-future-test-model')).toMatchObject({
+      context_window_tokens: undefined,
+      context_profile_source: undefined,
+      max_output_tokens: 16_000,
+    })
+  })
+})
+
+describe('provider model discovery', () => {
+  it.each(['deepseek', 'gemini', 'openai', 'anthropic', 'qwen'])('keeps new %s models and their metadata', (provider) => {
+    const options = [{ id: `${provider}-future-test-model`, display_name: 'New Model',
+      context_window_tokens: 128_000, max_output_tokens: 8_000, capacity_source: 'provider_metadata' }]
+    expect(normalizeProviderModelOptions(provider, options)).toEqual(options)
+  })
+
+  it.each(['deepseek', 'gemini'])('does not replace an empty %s response with a static list', (provider) => {
+    expect(normalizeProviderModelOptions(provider, [])).toEqual([])
+    expect(fallbackModelOptions(provider)).toEqual([])
   })
 })

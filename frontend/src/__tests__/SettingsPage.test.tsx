@@ -327,6 +327,57 @@ describe('SettingsPage startup and update controls', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models/deepseek/verify'))
   })
 
+  it.each(['deepseek', 'gemini'])('discovers and saves a new %s model without a built-in model entry', async (provider) => {
+    const model = `${provider}-future-test-model`
+    api.get.mockImplementation((url: string) => {
+      if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
+        id: 'model-config', provider, default_model: 'old-model', provider_type: 'api',
+        readiness_status: 'unverified', readiness_message: '待验证', is_usable: false,
+        is_global_default: false, api_key_configured: true,
+      }] } } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+    api.post.mockImplementation((url: string) => Promise.resolve({ data: { data: url === '/config/models/list'
+      ? { models: [{ id: model, display_name: 'New Provider Model' }] } : {} } }))
+
+    renderSettings()
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+    expect(await screen.findByText('已自动拉取 1 个模型，请选择默认模型。')).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByLabelText('默认模型'))
+    fireEvent.click(await screen.findByText('New Provider Model'))
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/ }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models', expect.objectContaining({
+      provider, default_model: model,
+      available_models: [{ id: model, display_name: 'New Provider Model' }],
+    })))
+  })
+
+  it.each(['deepseek', 'gemini'])('shows an empty %s response and permits explicit manual entry', async (provider) => {
+    api.get.mockImplementation((url: string) => {
+      if (url === '/config/models') return Promise.resolve({ data: { data: { items: [{
+        id: 'model-config', provider, default_model: 'saved-model', provider_type: 'api',
+        readiness_status: 'unverified', readiness_message: '待验证', is_usable: false,
+        is_global_default: false, api_key_configured: true,
+      }] } } })
+      return Promise.resolve({ data: { data: {} } })
+    })
+    api.post.mockResolvedValue({ data: { data: { models: [] } } })
+
+    renderSettings()
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+    expect(await screen.findByText('服务商未返回模型列表，请手动填写支持的模型名。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /重新拉取/ })).toBeInTheDocument()
+    expect(screen.getByLabelText('默认模型')).toHaveValue('saved-model')
+    expect(screen.getByLabelText('默认模型').tagName).toBe('INPUT')
+    fireEvent.change(screen.getByLabelText('默认模型'), { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/ }))
+    expect(await screen.findByText('请选择默认模型名')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalledWith('/config/models', expect.anything())
+  })
+
   it('automatically discovers models for a custom provider after credentials are complete', async () => {
     mockCustomModelConfig()
     api.post.mockImplementation((url: string) => {

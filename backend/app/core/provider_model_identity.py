@@ -7,12 +7,6 @@ aliases and custom OpenAI-compatible deployments must remain untouched.
 
 from __future__ import annotations
 
-DEEPSEEK_SUPPORTED_MODELS = frozenset(
-    {
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-    }
-)
 DEEPSEEK_MODEL_ALIASES = {
     # Siming 3.3.10 and earlier could persist this application-owned alias.
     # The DeepSeek adapter has always sent it as deepseek-v4-flash.
@@ -46,7 +40,6 @@ def canonical_model_identity(
 
 __all__ = [
     "DEEPSEEK_MODEL_ALIASES",
-    "DEEPSEEK_SUPPORTED_MODELS",
     "canonical_model_identity",
     "canonical_model_name",
     "canonical_provider",

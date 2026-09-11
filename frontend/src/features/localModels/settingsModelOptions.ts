@@ -24,7 +24,7 @@ export type ReadinessStatus =
 export const PROVIDER_OPTIONS = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic Claude' },
-  { value: 'deepseek', label: 'DeepSeek（v4-pro / v4-flash）' },
+  { value: 'deepseek', label: 'DeepSeek' },
   { value: 'qwen', label: '通义千问' },
   { value: 'gemini', label: 'Google Gemini' },
   { value: 'claude_cli', label: 'Claude Code CLI（本机）' },
@@ -127,26 +127,21 @@ export const resolveProviderForSubmit = (values: {
     : values.provider
 )
 
-const DEEPSEEK_MODEL_OPTIONS: ModelOption[] = [
-  {
-    id: 'deepseek-v4-pro',
-    display_name: 'deepseek-v4-pro',
-    context_window_tokens: 1_000_000,
-    max_output_tokens: 384_000,
-    safety_margin_tokens: 512,
-    capacity_source: 'deepseek_model_docs_2026_08_30',
-  },
-  {
-    id: 'deepseek-v4-flash',
-    display_name: 'deepseek-v4-flash',
-    context_window_tokens: 1_000_000,
-    max_output_tokens: 384_000,
-    safety_margin_tokens: 512,
-    capacity_source: 'deepseek_model_docs_2026_08_30',
-  },
-]
+// Capacity evidence only: available model IDs come from the provider's models API.
+const DEEPSEEK_MODEL_CAPACITIES: ModelOption[] = [
+  'deepseek-flash',
+  'deepseek-v4-pro',
+  'deepseek-v4-flash',
+  'deepseek-v4-flash-vision-exp',
+].map((id) => ({
+  id,
+  context_window_tokens: 1_000_000,
+  max_output_tokens: 384_000,
+  safety_margin_tokens: 512,
+  capacity_source: 'deepseek_model_docs_2026_09_11',
+}))
 
-const GEMINI_MODEL_OPTIONS: ModelOption[] = [
+const GEMINI_MODEL_CAPACITIES: ModelOption[] = [
   'gemini-3.7-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
@@ -228,8 +223,10 @@ export const readinessColor = (status: ReadinessStatus) => {
 
 const FALLBACK_OUTPUT_LIMIT = 16000
 const MODEL_OUTPUT_LIMITS: Record<string, number> = {
+  'deepseek:deepseek-flash': 384000,
   'deepseek:deepseek-v4-pro': 384000,
   'deepseek:deepseek-v4-flash': 384000,
+  'deepseek:deepseek-v4-flash-vision-exp': 384000,
   'gemini:gemini-3-pro-preview': 65536,
   'gemini:gemini-3-flash-preview': 65536,
   'gemini:gemini-2.5-pro': 65536,
@@ -237,7 +234,6 @@ const MODEL_OUTPUT_LIMITS: Record<string, number> = {
   'gemini:gemini-2.5-flash-lite': 65536,
 }
 const PROVIDER_OUTPUT_LIMITS: Record<string, number> = {
-  deepseek: 384000,
   gemini: 65536,
 }
 
@@ -271,8 +267,6 @@ export const usesDocumentedModelCatalog = (
 }
 
 export const fallbackModelOptions = (provider?: string): ModelOption[] => {
-  if (provider === 'deepseek') return DEEPSEEK_MODEL_OPTIONS
-  if (provider === 'gemini') return GEMINI_MODEL_OPTIONS
   if (provider && LOCAL_CLI_MODEL_OPTIONS[provider]) return LOCAL_CLI_MODEL_OPTIONS[provider]
   return []
 }
@@ -288,33 +282,17 @@ export const normalizeDefaultModel = (provider: string, model: string) => {
   return model
 }
 
-export const isDeepSeekModelSupported = (model: string) => (
-  DEEPSEEK_MODEL_OPTIONS.some((option) => option.id === model)
-)
-
 export const normalizeProviderModelOptions = (provider: string, options: ModelOption[]) => {
-  if (provider === 'gemini') {
-    const normalized = options.map((option) => {
-      const id = normalizeDefaultModel(provider, option.id)
-      return {
-        ...option,
-        id,
-        display_name: normalizeDefaultModel(provider, option.display_name || id),
-      }
-    })
-    const unique = Array.from(new Map(normalized.map((option) => [option.id, option])).values())
-    return unique.length > 0 ? unique : GEMINI_MODEL_OPTIONS
-  }
-  if (provider !== 'deepseek') return options
+  if (provider !== 'deepseek' && provider !== 'gemini') return options
   const normalized = options
     .map((option) => ({
       ...option,
-      id: normalizeDefaultModel(provider, option.id),
+      id: normalizeDefaultModel(provider, option.id.trim()),
       display_name: normalizeDefaultModel(provider, option.display_name || option.id),
     }))
-    .filter((option) => isDeepSeekModelSupported(option.id))
+    .filter((option) => option.id.length > 0)
   const unique = Array.from(new Map(normalized.map((option) => [option.id, option])).values())
-  return unique.length > 0 ? unique : DEEPSEEK_MODEL_OPTIONS
+  return unique
 }
 
 export const defaultOutputLimit = (provider?: string, model?: string) => {
@@ -334,8 +312,10 @@ export const modelCapacityDefaults = (
   const eligibleOption = option && (!optionUsesDocumentedCatalog || documentedCatalogAllowed)
     ? option
     : undefined
-  const capacity = eligibleOption || (documentedCatalogAllowed
-    ? fallbackModelOptions(provider).find((item) => item.id === model)
+  const catalog = provider === 'deepseek' ? DEEPSEEK_MODEL_CAPACITIES
+    : provider === 'gemini' ? GEMINI_MODEL_CAPACITIES : []
+  const capacity = eligibleOption?.context_window_tokens ? eligibleOption : (documentedCatalogAllowed
+    ? catalog.find((item) => item.id === model)
     : undefined)
   return {
     context_window_tokens: capacity?.context_window_tokens,

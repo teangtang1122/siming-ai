@@ -48,9 +48,6 @@ from ..services.external_agent.mcp_auto_config import (
     scan_cli_integrations,
 )
 from ..services.model_config_options import (
-    DEEPSEEK_SUPPORTED_MODELS,
-)
-from ..services.model_config_options import (
     enriched_model_options as _enriched_model_options,
 )
 from ..services.model_config_options import (
@@ -209,32 +206,18 @@ def _normalize_model_list_for_provider(
             {"id": item.model_key, "display_name": item.display_name}
             for item in model_config_crud(db).list_local_models()
         ]
-    if provider == "gemini":
-        normalized: dict[str, dict] = {}
-        for model in models:
-            model_id = _normalize_model_for_provider(provider, model.get("id", ""), strict=False)
-            if model_id:
-                normalized[model_id] = {
-                    **model,
-                    "id": model_id,
-                    "display_name": model.get("display_name") or model_id,
-                }
-        return list(normalized.values())
-    if provider != "deepseek":
+    if provider not in {"gemini", "deepseek"}:
         return models
-    normalized = {}
+    normalized: dict[str, dict] = {}
     for model in models:
-        model_id = _normalize_model_for_provider(provider, model.get("id", ""), strict=False)
-        if model_id in DEEPSEEK_SUPPORTED_MODELS:
+        model_id = _normalize_model_for_provider(provider, model.get("id", ""))
+        if model_id:
             normalized[model_id] = {
                 **model,
                 "id": model_id,
                 "display_name": model.get("display_name") or model_id,
             }
-    return list(normalized.values()) or [
-        {"id": model_id, "display_name": model_id}
-        for model_id in sorted(DEEPSEEK_SUPPORTED_MODELS)
-    ]
+    return list(normalized.values())
 
 
 def _available_model_options(cfg: Any, db: Session | None = None) -> list[dict[str, Any]]:
@@ -261,7 +244,6 @@ def _default_model_capacity(cfg: Any, db: Session | None) -> dict[str, Any]:
     model_name = _normalize_model_for_provider(
         provider,
         str(cfg.default_model),
-        strict=False,
     )
     if db is not None:
         profile = configured_model_context_profile(
@@ -322,7 +304,7 @@ def _config_payload(
     *,
     db: Session | None = None,
 ) -> dict:
-    default_model = _normalize_model_for_provider(cfg.provider, cfg.default_model, strict=False)
+    default_model = _normalize_model_for_provider(cfg.provider, cfg.default_model)
     data = {
         "id": cfg.id,
         "provider": cfg.provider,
@@ -393,7 +375,6 @@ def list_model_configs(db: Session = Depends(get_db)):
             "model": _normalize_model_for_provider(
                 setting.provider,
                 setting.model_name,
-                strict=False,
             ),
             "context_length": setting.context_length,
         }
@@ -421,7 +402,6 @@ def _task_model_payload(setting: Any, db: Session) -> dict[str, Any]:
         "model": _normalize_model_for_provider(
             setting.provider,
             setting.model_name,
-            strict=False,
         ),
         "context_length": setting.context_length,
         "is_usable": bool(config and is_model_config_usable(config)),
@@ -713,7 +693,12 @@ async def list_provider_models(payload: ModelListRequest, db: Session = Depends(
         else:
             raise
 
-    if _is_custom_api_provider(payload.provider) and not models and not manual_entry_required:
+    if (
+        not is_local_cli_provider(payload.provider)
+        and payload.provider != "local_llama_cpp"
+        and not models
+        and not manual_entry_required
+    ):
         manual_entry_required = True
         warning = "该接口返回了空模型列表，请手动填写服务商支持的模型名"
 
@@ -959,7 +944,7 @@ def get_global_model(db: Session = Depends(get_db)):
         return ApiResponse.success(data={"provider": None, "model": None}, message="未设置全局默认模型")
     return ApiResponse.success(data={
         "provider": config.provider,
-        "model": _normalize_model_for_provider(config.provider, config.default_model, strict=False),
+        "model": _normalize_model_for_provider(config.provider, config.default_model),
     })
 
 
@@ -983,7 +968,7 @@ def set_global_model(payload: GlobalModelSetting, db: Session = Depends(get_db))
     return ApiResponse.success(
         data={
             "provider": config.provider,
-            "model": _normalize_model_for_provider(config.provider, config.default_model, strict=False),
+            "model": _normalize_model_for_provider(config.provider, config.default_model),
         },
         message=f"全局默认模型已设置为 {config.provider}:{config.default_model}",
     )

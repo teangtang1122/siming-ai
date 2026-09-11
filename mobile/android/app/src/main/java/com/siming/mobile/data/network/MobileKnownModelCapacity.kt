@@ -17,7 +17,7 @@ internal data class MobileKnownModelCapacity(
 
 internal object MobileKnownModelCapacityCatalog {
     private const val OPENAI_SOURCE = "openai_model_docs_2026_08_30"
-    private const val DEEPSEEK_SOURCE = "deepseek_model_docs_2026_08_30"
+    private const val DEEPSEEK_SOURCE = "deepseek_model_docs_2026_09_11"
     private const val GEMINI_SOURCE = "gemini_model_docs_2026_08_30"
     private const val QWEN_SOURCE = "qwen_model_docs_2026_08_30"
 
@@ -73,8 +73,10 @@ internal object MobileKnownModelCapacityCatalog {
     )
 
     private val deepSeekDocumentedModels = setOf(
+        "deepseek-flash",
         "deepseek-v4-pro",
         "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
     )
 
     private val deepSeekLegacyAliases = mapOf(
