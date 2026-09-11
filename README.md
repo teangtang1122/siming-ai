@@ -23,7 +23,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前源码版本 3.3.14** 改善章节建档的参数校验、失败恢复和暂停继续，修复已完成建档后仍被旧草稿状态阻塞，以及 PC、手机助手消息顺序问题。完整变化见 [3.3.14 发布说明](docs/release-notes-3.3.14.md)。
+> **当前源码版本 3.3.15** 修复 DeepSeek 新型号被旧列表过滤的问题，补充 `deepseek-flash` 容量资料，完善各提供商模型发现、Claude 分页及空列表提示。完整变化见 [3.3.15 发布说明](docs/release-notes-3.3.15.md)。
 
 ## 它解决什么问题
 
