@@ -88,17 +88,20 @@ class ProjectPackageChapterStateMigrationInstrumentedTest {
             "VALUES ('edit', 'p1', 'chapter', 'edited', 'upsert', 7, '{}', 'saved-time', 'pending', NULL, NULL, 123)")
         old.close()
         val upgraded = Room.databaseBuilder(context, SimingDatabase::class.java, name)
-            .addMigrations(SimingDatabase.MIGRATION_3_4).build()
+            .addMigrations(SimingDatabase.MIGRATION_3_4, SimingDatabase.MIGRATION_4_5).build()
         try {
             val snapshot = upgraded.dao().projectSnapshot("p1")
             fun record(id: String) = snapshot.single { it.entityId == id }
             fun payload(id: String) = Json.parseToJsonElement(record(id).payloadJson!!).jsonObject
-            assertEquals(4, upgraded.openHelper.readableDatabase.version)
+            assertEquals(5, upgraded.openHelper.readableDatabase.version)
             assertEquals(JsonPrimitive(false), payload("complete")["cataloging_required"])
             assertEquals(JsonPrimitive(true), payload("edited")["cataloging_required"])
             assertEquals(JsonPrimitive(true), payload("pending")["cataloging_required"])
             assertEquals(JsonPrimitive(false), payload("known-complete")["cataloging_required"])
             assertEquals(JsonPrimitive("Author edited prose"), payload("edited")["content"])
+            assertEquals(JsonPrimitive(3), payload("edited")["current_version"])
+            assertEquals(JsonPrimitive(2), payload("complete")["current_version"])
+            assertEquals(JsonPrimitive(2), payload("pending")["current_version"])
             assertTrue(record("edited").dirty)
             assertFalse(record("complete").dirty)
             assertEquals(7L, record("complete").revision)

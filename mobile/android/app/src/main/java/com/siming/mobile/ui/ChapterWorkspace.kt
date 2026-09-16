@@ -161,7 +161,8 @@ internal fun PendingChapterDraftEditorScreen(
     var lastGeneratedContent by rememberSaveable(draft.draftId) { mutableStateOf(draft.content) }
     var showingFormalText by rememberSaveable(draft.draftId) { mutableStateOf(false) }
     var showDiscardDialog by rememberSaveable(draft.draftId) { mutableStateOf(false) }
-    val saveState = chapterDraftSaveState(draft, title, online, busy, showingFormalText)
+    val saveState = chapterDraftSaveState(draft, title, online, busy, showingFormalText,
+        directApiConfigured = viewModel.uiState.value.directApi != null)
 
     LaunchedEffect(draft.content, draft.status) {
         if (draft.generating || content == lastGeneratedContent) {
@@ -334,7 +335,7 @@ internal fun PendingChapterDraftEditorScreen(
                     draft.versionConflict -> "修订候选已保留，但版本冲突时禁止覆盖保存"
                     draft.revision -> "${content.count { !it.isWhitespace() }} 字 · 修订候选，保存后更新原章节"
                     online -> "${content.count { !it.isWhitespace() }} 字 · 确认满意后再建档"
-                    else -> "${content.count { !it.isWhitespace() }} 字 · 正文可保存在手机；连接 Gateway 后可建档"
+                    else -> "${content.count { !it.isWhitespace() }} 字 · 正文保存在手机；配置手机 API 后可独立建档"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

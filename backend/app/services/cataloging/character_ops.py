@@ -263,7 +263,9 @@ def apply_character_relationship(db: Session, candidate: CatalogingCandidate, ch
                 short=True,
             )
     else:
+        from ...modules.continuity.domain.portable_identity import portable_cataloging_id
         relationship = CharacterRelationship(
+            id=portable_cataloging_id("cataloging_relationship", chapter.project_id, source.id, target.id),
             project_id=chapter.project_id,
             character_a_id=source.id,
             character_b_id=target.id,

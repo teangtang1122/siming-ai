@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 internal fun mobileWorkspaceRuntimeData(project: JsonObject, chapterWritingState: JsonObject): JsonObject =
@@ -89,8 +90,11 @@ internal fun mobileChapterPayloadForSave(current: JsonObject?, payload: JsonObje
         current == null || current.text("content") != content -> true
         else -> current.catalogingRequired()
     }
+    val version = (current?.get("current_version") as? JsonPrimitive)?.intOrNull ?: 1
     return JsonObject((merged - "cataloging_required") +
-        (required?.let { mapOf("cataloging_required" to JsonPrimitive(it)) } ?: emptyMap()))
+        (required?.let { mapOf("cataloging_required" to JsonPrimitive(it)) } ?: emptyMap()) +
+        mapOf("current_version" to JsonPrimitive(if (current != null && current.text("content") != content) version + 1 else version),
+            "word_count" to JsonPrimitive(content.count { !it.isWhitespace() })))
 }
 
 internal fun mobileCatalogingBlockReason(state: JsonObject, sourceDraftId: String): String? = when {

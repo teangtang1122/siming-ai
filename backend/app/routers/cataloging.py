@@ -22,6 +22,7 @@ from ..schemas.cataloging import (
     CatalogingCandidateUpdate,
     CatalogingModeUpdate,
     CatalogingStartRequest,
+    MobileCatalogingCommit,
 )
 from ..services.cataloging.candidate_io import candidate_payload, candidate_to_dict
 from ..services.cataloging.job_control import (
@@ -88,6 +89,17 @@ async def start_cataloging(project_id: str, payload: CatalogingStartRequest, db:
     else:
         message = "作品建档任务已创建"
     return ApiResponse.success(data=launch, message=message)
+
+
+@router.post("/projects/{project_id}/cataloging/mobile-commit")
+def apply_mobile_cataloging(project_id: str, payload: MobileCatalogingCommit, db: Session = Depends(get_db)):
+    from ..services.cataloging.mobile_commit import commit_mobile_cataloging
+    get_project_or_404(db, project_id)
+    try:
+        result = commit_mobile_cataloging(db, project_id, payload)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return ApiResponse.success(data=result, message="手机建档结果已同步")
 
 
 @router.get("/projects/{project_id}/cataloging/jobs")

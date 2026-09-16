@@ -19,7 +19,7 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 | `authoring.outline` | /api/v1/projects/{project_id}/outline | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.project` | /api/v1/projects/{project_id} | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
 | `authoring.worldbuilding` | /api/v1/projects/{project_id}/worldbuilding | 调用 PC 权威接口 | 修订队列回放 | 修订队列回放 | 已对齐 |
-| `chapter.cataloging` | /api/v1/projects/{project_id}/cataloging | 调用 PC 权威接口 | 明确阻止 | 明确阻止 | 部分对齐 |
+| `chapter.cataloging` | /api/v1/projects/{project_id}/cataloging | 调用 PC 权威接口 | 明确阻止 | PC 权威实现 | 部分对齐 |
 | `chapter.history` | GET /chapters/{chapter_id}/snapshots[/diff/{snapshot_id}] | 调用 PC 只读接口 | 明确阻止 | 尚未支持 | 部分对齐 |
 | `chapter.reorder` | PUT /api/v1/projects/{project_id}/chapters/reorder | 调用 PC 权威接口 | 明确阻止 | 明确阻止 | 已对齐 |
 | `chapter.restore` | POST /chapters/{chapter_id}/restore/{snapshot_id} | 调用 PC 权威接口 | 明确阻止 | 明确阻止 | 已对齐 |
@@ -147,19 +147,21 @@ PC 是小说数据、领域副作用和上下文治理的唯一权威实现。An
 - **Android 离线：** 修订队列回放
 - **Android 独立 Agent：** 修订队列回放
 
-### `chapter.cataloging` — 导入或既有章节的作品建档任务
+### `chapter.cataloging` — 已保存章节的独立 API 建档、整章事务与后续 PC 同步
 
 - **权威入口：** `/api/v1/projects/{project_id}/cataloging`（`pc_http`）
 - **状态：** 部分对齐
 - **副作用：** cataloging
 - **幂等策略：** `client_serialization`；必须防重
-- **幂等限制：** Android 同一时刻只启动一个建档任务；服务端任务 ID 作为后续流式进度、查询与取消的唯一引用。
+- **幂等限制：** 本机按章节内容哈希、版本和来源快照恢复同一未完成计划；完成状态与资料同一 Room 事务写入。PC 接收已完成计划时按 request_id 去重，经同一 applier 校验并应用，不再调用模型。
 - **PC：** PC 权威实现
 - **Android 在线：** 调用 PC 权威接口
-- **Android 离线：** 明确阻止：完整建档会同时更新摘要、角色、世界观和治理资料，离线时不复制第二套权威实现。
-- **Android 独立 Agent：** 明确阻止：手机独立 Agent 暂不伪装成 PC Cataloging；连接 Gateway 后运行权威建档。
+- **Android 离线：** 明确阻止：完全断网时不能调用模型；正文、建档计划和错误保存在本机，恢复 API 网络后可明确重试。
+- **Android 独立 Agent：** PC 权威实现：使用手机 API 和 PC 同源工具目录、提示词及候选契约，完成角色、设定、场景大纲、章节关联与治理资料的本机事务。草稿须先由作者明确保存并建档。
 - **已知缺口：**
-  - 手机独立模型尚未实现与 PC 完全一致的批量 Cataloging 运行时。
+  - 手机任务保存在 Room，可取消与明确重试；未同步前不会显示在 PC 任务中心。手机通过最终计划完整性校验后自动应用，没有 PC 的手工逐候选编辑模式。
+  - 同步手机建档回执需要同时更新 PC/Gateway；旧 Gateway 无此接收接口时会明确报错并保留手机结果。
+  - Android 对非法治理引用会终止最终提交并交还模型修正；模型连续失败后保留正文及候选，不把该章标记为已建档。
 
 ### `chapter.history` — 章节快照列表、详情与差异比较
 

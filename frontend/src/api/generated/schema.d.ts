@@ -3039,6 +3039,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/cataloging/mobile-commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Mobile Cataloging */
+        post: operations["apply_mobile_cataloging_api_v1_projects__project_id__cataloging_mobile_commit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/cataloging/start": {
         parameters: {
             query?: never;
@@ -7770,6 +7787,33 @@ export interface components {
             transport?: string | null;
             /** Url */
             url?: string | null;
+        };
+        /**
+         * MobileCatalogingCommit
+         * @description A completed offline plan; synchronization never invokes another model.
+         */
+        MobileCatalogingCommit: {
+            /** Archive Guards */
+            archive_guards?: {
+                [key: string]: unknown;
+            }[];
+            /** Candidates */
+            candidates: {
+                [key: string]: unknown;
+            }[];
+            /** Chapter Id */
+            chapter_id: string;
+            /** Chapter Version */
+            chapter_version: number;
+            /** Content Sha256 */
+            content_sha256: string;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /** Request Id */
+            request_id: string;
         };
         /**
          * MobileProviderEnvelope
@@ -16138,6 +16182,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_mobile_cataloging_api_v1_projects__project_id__cataloging_mobile_commit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MobileCatalogingCommit"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

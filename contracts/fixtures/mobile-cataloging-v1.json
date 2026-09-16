@@ -1,0 +1,504 @@
+{
+  "ids": {
+    "project": "00000000-0000-0000-0000-000000000001",
+    "chapter": "00000000-0000-0000-0000-000000000002",
+    "hero": "00000000-0000-0000-0000-000000000003",
+    "mentor": "00000000-0000-0000-0000-000000000004",
+    "world": "00000000-0000-0000-0000-000000000005",
+    "volume": "00000000-0000-0000-0000-000000000006",
+    "outline": "00000000-0000-0000-0000-000000000007",
+    "scene1": "00000000-0000-0000-0000-000000000008",
+    "scene2": "00000000-0000-0000-0000-000000000009",
+    "snapshot": "00000000-0000-0000-0000-00000000000a"
+  },
+  "seed": [
+    [
+      "Project",
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "title": "独立建档回归作品"
+      }
+    ],
+    [
+      "OutlineNode",
+      {
+        "id": "00000000-0000-0000-0000-000000000006",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "node_type": "volume",
+        "title": "第一卷",
+        "summary": "寻找炉底的秘密",
+        "sort_order": 0
+      }
+    ],
+    [
+      "OutlineNode",
+      {
+        "id": "00000000-0000-0000-0000-000000000007",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "parent_id": "00000000-0000-0000-0000-000000000006",
+        "node_type": "chapter",
+        "title": "旧炉",
+        "summary": "预定先修炉",
+        "planned_summary": "预定先修炉",
+        "sort_order": 0
+      }
+    ],
+    [
+      "Chapter",
+      {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "title": "旧炉",
+        "content": "陆沉来到旧炉工坊，师傅阿衡递来一枚铜票。陆沉发现炉底有一道封印。他决定先修复炉体，再核实封印的来历。",
+        "current_version": 1,
+        "word_count": 50,
+        "sort_order": 0,
+        "outline_node_id": "00000000-0000-0000-0000-000000000007",
+        "cataloging_required": true
+      }
+    ],
+    [
+      "Character",
+      {
+        "id": "00000000-0000-0000-0000-000000000003",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "name": "陆沉",
+        "background": "旧炉工坊学徒。",
+        "items_or_assets": "一柄旧锤。",
+        "current_version": 2,
+        "role_type": "protagonist"
+      }
+    ],
+    [
+      "Character",
+      {
+        "id": "00000000-0000-0000-0000-000000000004",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "name": "阿衡",
+        "background": "旧炉师傅。",
+        "current_version": 1,
+        "role_type": "mentor"
+      }
+    ],
+    [
+      "WorldbuildingEntry",
+      {
+        "id": "00000000-0000-0000-0000-000000000005",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "title": "旧炉工坊",
+        "dimension": "geography",
+        "content": "炉材来自北岭。",
+        "status": "active"
+      }
+    ],
+    [
+      "ChapterSnapshot",
+      {
+        "id": "00000000-0000-0000-0000-00000000000a",
+        "chapter_id": "00000000-0000-0000-0000-000000000002",
+        "version_number": 1,
+        "content": "陆沉来到旧炉工坊，师傅阿衡递来一枚铜票。陆沉发现炉底有一道封印。他决定先修复炉体，再核实封印的来历。",
+        "word_count": 50,
+        "trigger_type": "manual_save"
+      }
+    ]
+  ],
+  "records": [
+    {
+      "entity_type": "chapter",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "payload": {
+        "_record_type": "chapter",
+        "id": "00000000-0000-0000-0000-000000000002",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "outline_node_id": "00000000-0000-0000-0000-000000000007",
+        "title": "旧炉",
+        "word_count": 50,
+        "current_version": 1,
+        "cataloging_required": true,
+        "sort_order": 0,
+        "outline_title": "旧炉",
+        "outline_status": "pending",
+        "outline_node_type": "chapter",
+        "outline_path": [
+          "第一卷",
+          "旧炉"
+        ],
+        "summary_text": null,
+        "key_events": [],
+        "created_at": "2026-09-16T00:00:00",
+        "updated_at": "2026-09-16T00:00:00",
+        "content": "陆沉来到旧炉工坊，师傅阿衡递来一枚铜票。陆沉发现炉底有一道封印。他决定先修复炉体，再核实封印的来历。",
+        "snapshot_count": 1
+      }
+    },
+    {
+      "entity_type": "chapter_version",
+      "id": "00000000-0000-0000-0000-00000000000a",
+      "payload": {
+        "_record_type": "chapter_snapshot",
+        "id": "00000000-0000-0000-0000-00000000000a",
+        "chapter_id": "00000000-0000-0000-0000-000000000002",
+        "version_number": 1,
+        "content": "陆沉来到旧炉工坊，师傅阿衡递来一枚铜票。陆沉发现炉底有一道封印。他决定先修复炉体，再核实封印的来历。",
+        "word_count": 50,
+        "trigger_type": "manual_save",
+        "created_at": "2026-09-16T00:00:00.000000Z"
+      }
+    },
+    {
+      "entity_type": "character",
+      "id": "00000000-0000-0000-0000-000000000003",
+      "payload": {
+        "_record_type": "character",
+        "id": "00000000-0000-0000-0000-000000000003",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "name": "陆沉",
+        "appearance": null,
+        "personality": null,
+        "background": "旧炉工坊学徒。",
+        "abilities": [],
+        "aliases": [],
+        "role_type": "protagonist",
+        "age": null,
+        "life_status": null,
+        "current_location": null,
+        "realm_or_level": null,
+        "physical_state": null,
+        "mental_state": null,
+        "current_goal": null,
+        "active_conflict": null,
+        "abilities_state": null,
+        "items_or_assets": "一柄旧锤。",
+        "profile": null,
+        "last_seen_chapter_id": null,
+        "last_updated_chapter_id": null,
+        "current_version": 2,
+        "is_evolution_tracked": true,
+        "created_at": "2026-09-16T00:00:00",
+        "updated_at": "2026-09-16T00:00:00"
+      }
+    },
+    {
+      "entity_type": "character",
+      "id": "00000000-0000-0000-0000-000000000004",
+      "payload": {
+        "_record_type": "character",
+        "id": "00000000-0000-0000-0000-000000000004",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "name": "阿衡",
+        "appearance": null,
+        "personality": null,
+        "background": "旧炉师傅。",
+        "abilities": [],
+        "aliases": [],
+        "role_type": "mentor",
+        "age": null,
+        "life_status": null,
+        "current_location": null,
+        "realm_or_level": null,
+        "physical_state": null,
+        "mental_state": null,
+        "current_goal": null,
+        "active_conflict": null,
+        "abilities_state": null,
+        "items_or_assets": null,
+        "profile": null,
+        "last_seen_chapter_id": null,
+        "last_updated_chapter_id": null,
+        "current_version": 1,
+        "is_evolution_tracked": true,
+        "created_at": "2026-09-16T00:00:00",
+        "updated_at": "2026-09-16T00:00:00"
+      }
+    },
+    {
+      "entity_type": "outline",
+      "id": "00000000-0000-0000-0000-000000000006",
+      "payload": {
+        "_record_type": "outline_node",
+        "id": "00000000-0000-0000-0000-000000000006",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "parent_id": null,
+        "node_type": "volume",
+        "node_type_label": "卷",
+        "title": "第一卷",
+        "summary": "寻找炉底的秘密",
+        "actual_summary": null,
+        "planned_summary": null,
+        "source_chapter_id": null,
+        "cataloging_status": null,
+        "status": "pending",
+        "status_label": "待规划",
+        "sort_order": 0,
+        "metadata": null,
+        "linked_characters": [],
+        "children": [],
+        "created_at": "2026-09-16T00:00:00",
+        "updated_at": "2026-09-16T00:00:00"
+      }
+    },
+    {
+      "entity_type": "outline",
+      "id": "00000000-0000-0000-0000-000000000007",
+      "payload": {
+        "_record_type": "outline_node",
+        "id": "00000000-0000-0000-0000-000000000007",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "parent_id": "00000000-0000-0000-0000-000000000006",
+        "node_type": "chapter",
+        "node_type_label": "章",
+        "title": "旧炉",
+        "summary": "预定先修炉",
+        "actual_summary": null,
+        "planned_summary": "预定先修炉",
+        "source_chapter_id": null,
+        "cataloging_status": null,
+        "status": "pending",
+        "status_label": "待规划",
+        "sort_order": 0,
+        "metadata": null,
+        "linked_characters": [],
+        "children": [],
+        "created_at": "2026-09-16T00:00:00",
+        "updated_at": "2026-09-16T00:00:00"
+      }
+    },
+    {
+      "entity_type": "project",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "payload": {
+        "_record_type": "project",
+        "id": "00000000-0000-0000-0000-000000000001",
+        "title": "独立建档回归作品",
+        "description": null,
+        "tags": null,
+        "narrative_perspective": "third_person",
+        "writing_style": "natural",
+        "forbidden_sentence_patterns": null,
+        "rhetoric_guidelines": null,
+        "short_sentences": false,
+        "custom_style_prompt": null,
+        "daily_word_goal": 6000,
+        "created_at": "2026-09-16T00:00:00.000000Z",
+        "updated_at": "2026-09-16T00:00:00.000000Z"
+      }
+    },
+    {
+      "entity_type": "world",
+      "id": "00000000-0000-0000-0000-000000000005",
+      "payload": {
+        "_record_type": "world_entry",
+        "id": "00000000-0000-0000-0000-000000000005",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "dimension": "geography",
+        "title": "旧炉工坊",
+        "content": "炉材来自北岭。",
+        "first_seen_chapter_id": null,
+        "last_updated_chapter_id": null,
+        "status": "active",
+        "confidence": null,
+        "sort_order": 0,
+        "created_at": "2026-09-16T00:00:00.000000Z",
+        "updated_at": "2026-09-16T00:00:00.000000Z"
+      }
+    }
+  ],
+  "candidates": [
+    {
+      "type": "chapter_summary",
+      "summary_text": "陆沉来到旧炉工坊后与师傅阿衡交谈并收下一枚铜票，随后发现炉底有一道尚未查明来源的封印。他决定先修复炉体，再核实封印的来历，师徒关系在本章得到确认，封印则成为等待后文核实的线索。",
+      "scenes": [
+        "工坊交谈",
+        "检查炉底"
+      ],
+      "key_events": [
+        "收到铜票",
+        "发现封印"
+      ],
+      "character_bindings": [
+        {
+          "name": "陆沉",
+          "id": "00000000-0000-0000-0000-000000000003",
+          "decision": "existing",
+          "reason": "真实档案与本章出场角色一致"
+        },
+        {
+          "name": "阿衡",
+          "id": "00000000-0000-0000-0000-000000000004",
+          "decision": "existing",
+          "reason": "真实档案与本章出场角色一致"
+        }
+      ],
+      "worldbuilding_bindings": [
+        {
+          "name": "旧炉工坊",
+          "id": "00000000-0000-0000-0000-000000000005",
+          "decision": "existing",
+          "reason": "故事发生地点"
+        }
+      ],
+      "coverage_manifest": {
+        "scene_count": 2,
+        "characters": [
+          "陆沉",
+          "阿衡"
+        ],
+        "character_profiles": [
+          "陆沉"
+        ],
+        "worldbuilding": [
+          "旧炉工坊"
+        ],
+        "relationships": [
+          {
+            "source_name": "陆沉",
+            "target_name": "阿衡",
+            "relationship_type": "师徒"
+          }
+        ]
+      },
+      "narrative_state": {
+        "events": [
+          "收到铜票",
+          "发现封印"
+        ],
+        "foreshadowing_planted": [
+          {
+            "title": "炉底封印",
+            "evidence": "陆沉发现炉底有一道封印。"
+          }
+        ]
+      },
+      "narrative_review": {
+        "source": "provided",
+        "outcome": "assessed"
+      }
+    },
+    {
+      "type": "character_update",
+      "id": "00000000-0000-0000-0000-000000000003",
+      "name": "陆沉",
+      "background_before": "旧炉工坊学徒。",
+      "background": "旧炉工坊学徒。开始核实炉底封印。",
+      "profile": {
+        "core_motivation": "修复旧炉并追查封印",
+        "voice": "寡言谨慎"
+      },
+      "custom_system_prompt": "保持第三人称限知；不可提前知晓封印来历。"
+    },
+    {
+      "type": "character_state_update",
+      "id": "00000000-0000-0000-0000-000000000003",
+      "name": "陆沉",
+      "current_location": "旧炉工坊",
+      "current_goal": "修复炉体",
+      "mental_state": "谨慎",
+      "items_or_assets_before": "一柄旧锤。",
+      "items_or_assets": "一柄旧锤。新增一枚铜票。"
+    },
+    {
+      "type": "character_state_update",
+      "id": "00000000-0000-0000-0000-000000000004",
+      "name": "阿衡",
+      "current_location": "旧炉工坊",
+      "mental_state": "关照学徒"
+    },
+    {
+      "type": "worldbuilding_update",
+      "id": "00000000-0000-0000-0000-000000000005",
+      "title": "旧炉工坊",
+      "dimension": "geography",
+      "content": "工坊以铜票结算。"
+    },
+    {
+      "type": "character_relationship",
+      "source_name": "陆沉",
+      "target_name": "阿衡",
+      "relationship_type": "师徒",
+      "description": "师傅交给学徒一枚铜票。"
+    },
+    {
+      "type": "outline_update",
+      "id": "00000000-0000-0000-0000-000000000007",
+      "node_type": "chapter",
+      "title": "旧炉",
+      "summary": "交谈后发现封印，决定修炉并调查。",
+      "character_ids": [
+        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000004"
+      ]
+    },
+    {
+      "type": "outline_create",
+      "client_id": "00000000-0000-0000-0000-000000000008",
+      "node_type": "section",
+      "title": "师徒交谈",
+      "summary": "师徒交谈",
+      "character_ids": [
+        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000004"
+      ],
+      "scene_number": 1,
+      "purpose": "推进调查",
+      "location": "旧炉工坊",
+      "timeline": "本章当日",
+      "pov_character": "陆沉",
+      "characters": [
+        "陆沉",
+        "阿衡"
+      ],
+      "entry_state": "开始检查",
+      "exit_state": "取得线索",
+      "emotional_residue": "谨慎",
+      "unresolved_actions": []
+    },
+    {
+      "type": "outline_create",
+      "client_id": "00000000-0000-0000-0000-000000000009",
+      "node_type": "section",
+      "title": "发现封印",
+      "summary": "发现封印",
+      "character_ids": [
+        "00000000-0000-0000-0000-000000000003"
+      ],
+      "scene_number": 2,
+      "purpose": "推进调查",
+      "location": "旧炉工坊",
+      "timeline": "本章当日",
+      "pov_character": "陆沉",
+      "characters": [
+        "陆沉"
+      ],
+      "entry_state": "开始检查",
+      "exit_state": "取得线索",
+      "emotional_residue": "谨慎",
+      "unresolved_actions": []
+    },
+    {
+      "type": "chapter_link",
+      "characters": [
+        {
+          "name": "陆沉",
+          "appearance_type": "出场"
+        },
+        {
+          "name": "阿衡",
+          "appearance_type": "出场"
+        }
+      ],
+      "worldbuilding_titles": [
+        "旧炉工坊"
+      ],
+      "locations": [
+        "旧炉工坊"
+      ],
+      "items": [
+        "铜票"
+      ],
+      "events": [
+        "发现封印"
+      ]
+    }
+  ]
+}

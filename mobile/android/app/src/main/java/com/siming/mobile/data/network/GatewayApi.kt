@@ -556,6 +556,14 @@ suspend fun startCataloging(
     ),
 ).data
 
+suspend fun commitMobileCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    payload: JsonObject,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl, PcApiPaths.catalogingMobileCommit(projectId), "POST", json.encodeToString(payload),
+).data
+
 suspend fun getCatalogingJob(
     connection: GatewayConnection,
     projectId: String,

@@ -109,6 +109,8 @@ internal object PcApiPaths {
 
     fun catalogingStart(projectId: String): String = "${project(projectId)}/cataloging/start"
 
+    fun catalogingMobileCommit(projectId: String): String = "${project(projectId)}/cataloging/mobile-commit"
+
     fun catalogingJob(projectId: String, jobId: String): String =
         "${project(projectId)}/cataloging/${segment(jobId)}"
 

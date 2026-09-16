@@ -18,6 +18,19 @@ class CatalogingStartRequest(BaseModel):
     chapter_ids: list[str] = Field(default_factory=list, description="Optional ordered chapter IDs")
 
 
+class MobileCatalogingCommit(BaseModel):
+    """A completed offline plan; synchronization never invokes another model."""
+    request_id: str = Field(pattern=r"^local-cat-[0-9a-f-]{36}$")
+    chapter_id: str = Field(min_length=1)
+    chapter_version: int = Field(ge=1)
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidates: list[dict[str, Any]] = Field(min_length=2, max_length=500)
+    archive_guards: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+    model: str = Field(default="", max_length=200)
+
+    model_config = {"extra": "forbid"}
+
+
 class CatalogingModeUpdate(BaseModel):
     execution_mode: CatalogingMode
 

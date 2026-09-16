@@ -355,6 +355,13 @@ def _creation_normalization_fixture(baseline_fixture: dict) -> dict:
 
 
 def build_contract() -> dict:
+    from app.modules.continuity.domain.mobile_cataloging import MOBILE_CATALOGING_GUARD_FIELDS
+    from app.services.cataloging.agent import CATALOGING_AGENT_TOOLS
+    from app.services.cataloging.constants import APPLY_ORDER
+    from app.services.cataloging.character_ops import STATE_FIELD_LIMITS
+    from app.modules.continuity.domain.candidate_contract import candidate_record_schema
+    from app.prompts.cataloging_source import get_internal_cataloging_system_prompt
+    from app.services.story_granularity import CHARACTER_STATE_FIELDS, SECTION_SCENE_STATE_FIELDS
     missing = [name for name in MOBILE_TOOL_NAMES if registry.get(name) is None]
     if missing:
         raise RuntimeError(f"Missing workspace tools: {missing}")
@@ -381,6 +388,20 @@ def build_contract() -> dict:
         if schema.get("function", {}).get("name") in mobile_creation_names
     ]
     contract = {
+        "cataloging": {
+            "system_prompt": get_internal_cataloging_system_prompt(),
+            "tool_schemas": [tool_category_controller_schema(), *[
+                registry.get_spec(name).openai_schema() for name in sorted(CATALOGING_AGENT_TOOLS)
+            ]],
+            "candidate_schema": candidate_record_schema(),
+            "apply_order": APPLY_ORDER,
+            "character_state_fields": list(CHARACTER_STATE_FIELDS),
+            "character_state_limits": STATE_FIELD_LIMITS,
+            "scene_state_fields": list(SECTION_SCENE_STATE_FIELDS),
+            "max_steps": 48,
+            "max_consecutive_errors": 3,
+            "guard_fields": MOBILE_CATALOGING_GUARD_FIELDS,
+        },
         "schema_version": 3,
         "source_versions": {
             name: f"{spec_id}@{get_compiled_prompt(spec_id).version}"

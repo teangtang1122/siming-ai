@@ -46,6 +46,8 @@ internal fun ProjectToolsPanel(
 ) {
     val chapters by viewModel.entities(project.projectId, "chapter")
         .collectAsStateWithLifecycle(initialValue = emptyList())
+    val runs by viewModel.catalogingRuns(project.projectId).collectAsStateWithLifecycle(initialValue = emptyList())
+    val canCatalog = online || ui.directApi != null
     val totalWords = chapters.sumOf { it.text("content").count { char -> !char.isWhitespace() } }
     val catalogingHere = ui.catalogingProjectId == project.projectId
     val progress = if (ui.catalogingTotal > 0) {
@@ -87,8 +89,10 @@ internal fun ProjectToolsPanel(
                     Text(
                         if (online) {
                             "使用 PC 与桌面端相同的 Cataloging 流程扫描已导入章节，生成章节摘要、角色/设定变化和可写入候选资料。"
+                        } else if (ui.directApi != null) {
+                            "使用手机 API 逐章整理摘要、角色、设定、大纲和治理资料。每章通过校验后一起保存；中断时保留正文和计划，可在这里重试。"
                         } else {
-                            "完整作品建档依赖 PC 权威 Cataloging，以保证角色、世界观、摘要和治理数据不会出现两套口径。连接 Gateway 后即可启动。"
+                            "正文已保存在手机。配置手机 API 或连接 Gateway 后即可开始建档。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -113,11 +117,25 @@ internal fun ProjectToolsPanel(
                     } else {
                         Button(
                             onClick = { viewModel.startCataloging(project.projectId) },
-                            enabled = online && chapters.isNotEmpty() && !ui.catalogingRunning,
+                            enabled = canCatalog && chapters.isNotEmpty() && !ui.catalogingRunning,
                         ) {
                             Icon(Icons.Outlined.AutoAwesome, null)
                             Spacer(Modifier.width(7.dp))
-                            Text(if (online) "开始全书建档" else "连接服务后建档")
+                            Text(if (canCatalog) "为待建档章节建档" else "配置 API 后可建档")
+                        }
+                    }
+                    runs.take(8).forEach { run ->
+                        val chapterTitle = chapters.firstOrNull { it.entityId == run.chapterId }?.text("title").orEmpty()
+                        Text("$chapterTitle · " + when (run.status) {
+                            "completed" -> "建档完成"
+                            "running" -> "正在建档"
+                            "cancelled" -> "已取消"
+                            "interrupted" -> "上次建档已中断"
+                            else -> "建档失败"
+                        }, style = MaterialTheme.typography.bodySmall)
+                        run.error?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                        if (run.status in setOf("failed", "cancelled", "interrupted")) {
+                            TextButton(onClick = { viewModel.startCataloging(project.projectId, listOf(run.chapterId)) }, enabled = canCatalog && !ui.catalogingRunning) { Text("重试本章建档") }
                         }
                     }
                 }
