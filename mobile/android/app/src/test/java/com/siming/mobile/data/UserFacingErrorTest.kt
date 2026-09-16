@@ -19,7 +19,7 @@ class UserFacingErrorTest {
             UnknownHostException("example.invalid").toUserFacingMessage(),
         )
         assertEquals(
-            "连接服务器超时，请检查网络后重试",
+            "请求超时，未收到完整响应，请稍后重试",
             SocketTimeoutException("timeout").toUserFacingMessage(),
         )
     }

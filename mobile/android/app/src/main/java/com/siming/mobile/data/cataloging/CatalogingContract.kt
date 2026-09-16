@@ -27,6 +27,7 @@ internal class CatalogingContract(root: JsonObject) {
     val maxSteps = definition.number("max_steps")
     val maxErrors = definition.number("max_consecutive_errors")
     val guardFields = definition.getValue("guard_fields").jsonObject
+    val modelRequest = CatalogingModelRequest(definition.getValue("model_request").jsonObject)
 
     fun tools(active: List<String>) = categories.toolSchemas(schemas, active, names)
     fun validateTool(name: String, args: JsonObject) {

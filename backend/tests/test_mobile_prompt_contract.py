@@ -34,6 +34,21 @@ def test_android_prompt_contract_has_no_pc_source_drift():
     }
 
 
+def test_mobile_cataloging_request_policy_matches_pc_execution():
+    from app.services.cataloging.constants import (
+        CATALOGING_MAX_TOKENS, CATALOGING_TIMEOUT_SECONDS, CATALOGING_TEMPERATURE,
+    )
+    from app.services.cataloging.model_selection import cataloging_extra_body
+
+    request = json.loads(ASSET.read_text(encoding="utf-8"))["cataloging"]["model_request"]
+    assert request["stream_idle_timeout_seconds"] == CATALOGING_TIMEOUT_SECONDS == 300
+    assert request["max_output_tokens"] == CATALOGING_MAX_TOKENS
+    assert request["temperature"] == CATALOGING_TEMPERATURE
+    assert request["non_thinking_providers"] == ["deepseek"]
+    assert cataloging_extra_body("deepseek:deepseek-flash")["thinking"] == {"type": "disabled"}
+    assert "thinking" not in cataloging_extra_body("openai:fixture")
+
+
 def test_android_prompt_contract_contains_full_nested_writer_pipeline():
     contract = json.loads(ASSET.read_text(encoding="utf-8"))
     names = set(contract["tool_names"])
