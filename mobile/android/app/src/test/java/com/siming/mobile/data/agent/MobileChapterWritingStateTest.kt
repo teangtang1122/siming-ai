@@ -38,15 +38,15 @@ class MobileChapterWritingStateTest {
     }
 
     @Test
-    fun `changed local prose requires cataloging while a title edit retains completed state`() {
+    fun `changed local prose and title edits invalidate cataloging with a new PC compatible version`() {
         val completed = obj("""{"id":"chapter-1","content":"原文","title":"旧标题","cataloging_required":false,"current_version":2}""")
         val renamed = mobileChapterPayloadForSave(completed, obj("""{"title":"新标题"}"""))
-        assertEquals(JsonPrimitive(false), renamed["cataloging_required"])
+        assertEquals(JsonPrimitive(true), renamed["cataloging_required"])
         val edited = mobileChapterPayloadForSave(completed, obj("""{"content":"修改后的正文","cataloging_required":false}"""))
         assertEquals(JsonPrimitive(true), edited["cataloging_required"])
         assertEquals(JsonPrimitive(3), edited["current_version"])
         assertEquals(JsonPrimitive(6), edited["word_count"])
-        assertEquals(JsonPrimitive(2), renamed["current_version"])
+        assertEquals(JsonPrimitive(3), renamed["current_version"])
         assertEquals(JsonPrimitive(true), mobileChapterPayloadForSave(edited, obj("""{"title":"另一个标题","cataloging_required":false}"""))["cataloging_required"])
         assertEquals(JsonPrimitive(false), mobileChapterPayloadForSave(edited, obj("""{"content":""}"""))["cataloging_required"])
         // Derived mobile state must not become an author-supplied override on the canonical API.
@@ -63,7 +63,7 @@ class MobileChapterWritingStateTest {
         assertEquals(JsonPrimitive("chapter-1"), state["cataloging_state_unknown_chapter"]!!.jsonObject["id"])
         assertTrue(mobileCatalogingBlockReason(state, "")!!.contains("缺少"))
         val unchanged = mobileChapterPayloadForSave(obj(legacy.payloadJson!!), obj("""{"title":"重命名"}"""))
-        assertFalse(unchanged.containsKey("cataloging_required"))
+        assertEquals(JsonPrimitive(true), unchanged["cataloging_required"])
     }
 
     @Test
@@ -89,6 +89,18 @@ class MobileChapterWritingStateTest {
         val revision = entity("chapter_draft", "revision-1", """{"status":"pending","draft_kind":"revision","target_chapter_id":"chapter-1","outline_node_id":"outline-1"}""")
         val formal = entity("chapter", "chapter-1", """{"outline_node_id":"outline-1","content":"原文","cataloging_required":false}""")
         assertEquals(JsonPrimitive("revision-1"), state(listOf(revision, formal))["pending_draft"]!!.jsonObject["id"])
+    }
+
+    @Test
+    fun `editing a selected imported draft never returns another pending draft`() {
+        val older = entity("chapter_draft", "older", """{"status":"pending","draft_kind":"revision","target_chapter_id":"chapter-1","created_at":"2026-09-01"}""")
+        val newer = entity("chapter_draft", "newer", """{"status":"pending","created_at":"2026-09-02"}""")
+        val formal = entity("chapter", "chapter-1", """{"title":"原章","content":"原文","current_version":3}""")
+        val selected = mobileImportedChapterDraft("p1", listOf(older, newer, formal), "older")!!
+        assertEquals(JsonPrimitive("older"), selected["draft_id"])
+        assertEquals(JsonPrimitive(3), selected["target_chapter_current_version"])
+        assertEquals(JsonPrimitive("原文"), selected["target_chapter_content"])
+        assertNull(mobileImportedChapterDraft("p1", listOf(older, newer, formal), "missing"))
     }
 
     private fun state(snapshot: List<ReplicaEntity>) =

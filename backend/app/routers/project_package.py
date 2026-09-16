@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
+from ..architecture.uow import defer_session_commits
 from ..core.response import ApiResponse
 from ..database.session import get_db
 from ..modules.gateway.infrastructure.service import GatewayService
@@ -170,9 +171,11 @@ async def import_project_package(
                 )
             )
         if _paired_android(request) and not outcome.replayed:
-            # This service commits the canonical mobile replica together with
-            # the still-open project import transaction.
-            GatewayService(db).enable_project(outcome.result["project_id"])
+            # Seed versions and the immutable receipt share the import transaction.
+            # A lost response must not rebase phone edits over later PC changes.
+            with defer_session_commits(db):
+                config = GatewayService(db).enable_project(outcome.result["project_id"])
+                importer.record_sync_import_cursor(outcome, config.initial_revision)
         command.finish()
         committed = True
         if outcome.replayed:

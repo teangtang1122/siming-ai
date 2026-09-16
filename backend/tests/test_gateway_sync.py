@@ -217,8 +217,8 @@ def test_sync_is_ordered_idempotent_and_merges_different_entities(tmp_path):
             )
             assert [item.status for item in pushed.results] == ["applied", "applied"]
             assert [item.revision for item in pushed.results] == [
-                initial_cursor + 1,
-                initial_cursor + 2,
+                initial_cursor + 3,
+                initial_cursor + 4,
             ]
             stored_chapter = db.get(Chapter, "chapter-1")
             assert stored_chapter is not None
@@ -235,7 +235,7 @@ def test_sync_is_ordered_idempotent_and_merges_different_entities(tmp_path):
                 device_id=local.device_id,
             )
             assert duplicate.results[0].status == "duplicate"
-            assert duplicate.results[0].revision == initial_cursor + 1
+            assert duplicate.results[0].revision == pushed.results[0].revision
 
             pulled = service.pull(
                 cursor=initial_cursor,
@@ -252,7 +252,7 @@ def test_sync_is_ordered_idempotent_and_merges_different_entities(tmp_path):
                 limit=10,
                 protocol_version=1,
             )
-            assert [item.revision for item in remainder.changes] == [initial_cursor + 2]
+            assert [item.revision for item in remainder.changes] == [initial_cursor + 2, initial_cursor + 3, initial_cursor + 4]
             assert remainder.has_more is False
     finally:
         engine.dispose()
@@ -523,8 +523,8 @@ def test_project_opt_in_creates_verified_manifest_and_excludes_local_paths(tmp_p
             )
             assert pushed.results[0].status == "applied"
             refreshed = service.project_view(project.id)
-            assert refreshed.entity_count == 3
-            assert refreshed.counts == {"chapter": 2, "project": 1}
+            assert refreshed.entity_count == 5
+            assert refreshed.counts == {"chapter": 2, "project": 1, "chapter_version": 1, "governance": 1}
             assert refreshed.aggregate_hash != initial_hash
     finally:
         engine.dispose()

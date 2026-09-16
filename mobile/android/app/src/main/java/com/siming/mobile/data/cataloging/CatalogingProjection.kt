@@ -47,8 +47,8 @@ internal class CatalogingProjection(val plan: CatalogingPlan, val runId: String,
             put("sequence", ofType("narrative_checkpoint").maxOfOrNull { it.payload.number("sequence") }?.plus(1) ?: 1)
             put("label", "${chapter.text("title")} 建档完成"); put("trigger_type", "cataloging")
             put("state_json", buildJsonObject {
-                for (type in listOf("foreshadowing", "causal_edge", "narrative_debt", "character_narrative_state", "cataloging_fact")) {
-                    put(type, JsonArray(ofType(type).map { it.payload }))
+                for ((key, type) in mapOf("foreshadowings" to "foreshadowing", "causal_edges" to "causal_edge", "narrative_debts" to "narrative_debt", "character_states" to "character_narrative_state", "quality_metrics" to "chapter_quality_metric", "chapter_reviews" to "chapter_governance_review")) {
+                    put(key, JsonArray(ofType(type).map { it.payload }))
                 }
             })
         })

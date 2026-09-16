@@ -14,7 +14,6 @@ import com.siming.mobile.data.cataloging.catalogingChangedKeys
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
-import com.siming.mobile.data.agent.mobileChapterPayloadForSave
 import com.siming.mobile.data.agent.MobileAssistantConversationStore
 import com.siming.mobile.data.agent.MobileAssistantTurnContext
 import com.siming.mobile.data.agent.MobileConversationContextErrorCode
@@ -30,6 +29,9 @@ import com.siming.mobile.data.creation.CreationStartInput
 import com.siming.mobile.data.creation.CreationAgentTurnRecords
 import com.siming.mobile.data.creation.MobileCreationAgent
 import com.siming.mobile.data.creation.MobileCreationConversationAgent
+import com.siming.mobile.data.authoring.LocalAuthoringStore
+import com.siming.mobile.data.agent.mobileImportedChapterDraft
+import com.siming.mobile.data.authoring.chapterSnapshotDiff
 import com.siming.mobile.data.local.GatewayConnection
 import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.OutboxMutation
@@ -53,16 +55,13 @@ import com.siming.mobile.data.network.PcApiPayloads
 import com.siming.mobile.data.network.RemoteSyncProject
 import com.siming.mobile.data.network.SyncMutationRequest
 import com.siming.mobile.data.network.WorkspaceAssistantRequest
-import com.siming.mobile.data.network.withMobileRefreshFailure
 import com.siming.mobile.security.PairingSecurity
-import com.siming.mobile.security.MobileProviderEncryption
 import com.siming.mobile.security.SecureApiConfigStore
 import com.siming.mobile.security.SecureTokenStore
 import com.siming.mobile.security.StoredTokenPair
 import com.siming.mobile.security.VerifiedPairing
 import java.io.IOException
 import java.io.File
-import java.net.URLDecoder
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
@@ -113,6 +112,7 @@ class SimingRepository(
 ) {
     private val appContext = context.applicationContext
     private val dao = database.dao()
+    private val authoring = LocalAuthoringStore(database)
     private val tokenStore = SecureTokenStore(appContext)
     private val directApiStore = SecureApiConfigStore(appContext)
     private val api = GatewayApi(tokenStore)
@@ -287,8 +287,9 @@ class SimingRepository(
 
     suspend fun bootstrapEnabledProjects(): Int {
         val connection = requireConnection()
+        val excluded = dao.excludedProjectIds().toSet()
         val projectIds = api.listSyncProjects(connection)
-            .filter { it.status == "enabled" }
+            .filter { it.status == "enabled" && it.projectId !in excluded }
             .map { it.projectId }
         return bootstrapProjects(connection, projectIds)
     }
@@ -306,7 +307,9 @@ class SimingRepository(
             projectIds.forEach { projectId ->
                 dao.deleteCleanProjectReplicas(projectId)
             }
+            val excluded = dao.excludedProjectIds().toSet()
             for (snapshot in response.entities) {
+                if (snapshot.projectId in excluded || snapshot.entityType == "authoring_command") continue
                 val key = ReplicaEntity.key(
                     snapshot.projectId,
                     snapshot.entityType,
@@ -349,34 +352,6 @@ class SimingRepository(
             "单个导入文件不能超过 20 MiB"
         }
 
-        val connection = dao.connection()
-        if (connection != null && prepareCanonicalWrite()) {
-            onProgress("正在将原始 ${extension.uppercase()} 一次性上传到 Gateway…")
-            val remote = try {
-                api.importNovelProject(connection, file.filename, file.bytes)
-            } catch (error: GatewayHttpException) {
-                throw error
-            } catch (_: IOException) {
-                null
-            }
-            if (remote != null) {
-                val projectId = remote.string("project_id")
-                    .ifBlank { error("Gateway 批量导入结果缺少 project_id") }
-                val chapterCount = remote.int("total")
-                val encoding = remote.string("encoding").ifBlank { "未知" }
-                onProgress("Gateway 已批量落库，正在下载作品离线副本…")
-                val refreshWarning = runCatching {
-                    bootstrapProjects(connection, listOf(projectId))
-                }.exceptionOrNull()?.toUserFacingMessage()
-                return MobileNovelImportResult(
-                    projectId = projectId,
-                    chapterCount = chapterCount,
-                    encoding = encoding,
-                    remote = true,
-                    refreshWarning = refreshWarning,
-                )
-            }
-        }
         return importNovelOffline(file, onProgress)
     }
 
@@ -555,26 +530,6 @@ class SimingRepository(
         }
 
         val projectTitle = replicas.first { it.entityType == "project" }.payload.string("title")
-        val connection = dao.connection()
-        if (connection != null) {
-            onProgress("正在先上传完整项目包，再同步该作品的普通修改…")
-            try {
-                val result = uploadStoredProjectPackage(connection, stored)
-                return@withLock MobileProjectPackageImportResult(
-                    projectId = projectId,
-                    projectTitle = result.string("project_title").ifBlank { projectTitle },
-                    profile = validated.profile,
-                    remote = true,
-                    replayed = (result["replayed"] as? JsonPrimitive)?.booleanOrNull ?: false,
-                )
-            } catch (error: GatewayHttpException) {
-                purgeLocalProject(projectId)
-                throw error
-            } catch (_: IOException) {
-                // A validated local copy remains queued and is uploaded before
-                // ordinary outbox mutations on the next successful sync.
-            }
-        }
         if (dao.connection() != null) SyncScheduler.enqueue(appContext)
         MobileProjectPackageImportResult(
             projectId = projectId,
@@ -609,25 +564,7 @@ class SimingRepository(
             put("daily_word_goal", 6000)
         }
         validateEntitySize(payload)
-        val connection = dao.connection()
-        if (connection == null || !prepareCanonicalWrite()) {
-            return saveOfflineEntity(localId, "project", localId, payload)
-        }
-
-        val response = try {
-            api.createProject(
-                connection,
-                PcApiPayloads.authoring("project", payload, create = true),
-            )
-        } catch (error: GatewayHttpException) {
-            throw error
-        } catch (_: IOException) {
-            return saveOfflineEntity(localId, "project", localId, payload)
-        }
-        val projectId = response.requiredId()
-        saveCanonicalReplica(projectId, "project", projectId, response)
-        SyncScheduler.enqueue(appContext)
-        return projectId
+        return saveOfflineEntity(localId, "project", localId, payload)
     }
 
     suspend fun saveEntity(
@@ -635,134 +572,12 @@ class SimingRepository(
         entityType: String,
         entityId: String = UUID.randomUUID().toString(),
         payload: JsonObject,
-    ): String {
-        validateEntitySize(payload)
-        val connection = dao.connection()
-        if (
-            connection != null &&
-            entityType in CANONICAL_ENTITY_TYPES &&
-            prepareCanonicalWrite()
-        ) {
-            val key = ReplicaEntity.key(projectId, entityType, entityId)
-            val current = dao.entity(key)
-            require(current?.conflicted != true) { "请先处理这条资料的版本分岔，再继续保存" }
-            val create = entityType != "project" && current == null
-            val response = try {
-                if (entityType in GOVERNANCE_ENTITY_TYPES) {
-                    var saved = api.saveGovernanceEntity(
-                        connection,
-                        projectId,
-                        PcApiPayloads.governanceContent(entityType, payload, entityId, create),
-                    )
-                    val canonicalId = saved.requiredId()
-                    val statusPayload = PcApiPayloads.governanceStatus(entityType, payload)
-                    val desiredStatus = (statusPayload?.get("status") as? JsonPrimitive)?.content.orEmpty()
-                    val serverStatus = (saved["status"] as? JsonPrimitive)?.content.orEmpty()
-                    if (statusPayload != null && desiredStatus.isNotBlank() && desiredStatus != serverStatus) {
-                        saved = api.updateGovernanceStatus(
-                            connection,
-                            projectId,
-                            PcApiPayloads.governanceItemType(entityType),
-                            canonicalId,
-                            statusPayload,
-                        )
-                    }
-                    saved
-                } else {
-                    api.saveAuthoringEntity(
-                        connection = connection,
-                        projectId = projectId,
-                        entityType = entityType,
-                        entityId = entityId,
-                        create = create,
-                        payload = PcApiPayloads.authoring(entityType, payload, create),
-                    )
-                }
-            } catch (error: GatewayHttpException) {
-                throw error
-            } catch (_: IOException) {
-                return saveOfflineEntity(projectId, entityType, entityId, payload)
-            }
-            val canonicalId = response.requiredId()
-            saveCanonicalReplica(projectId, entityType, canonicalId, response)
-            SyncScheduler.enqueue(appContext)
-            return canonicalId
-        }
-        return saveOfflineEntity(projectId, entityType, entityId, payload)
-    }
+    ): String = saveOfflineEntity(projectId, entityType, entityId, payload)
 
-    private suspend fun saveOfflineEntity(
-        projectId: String,
-        entityType: String,
-        entityId: String,
-        payload: JsonObject,
-    ): String {
-        val key = ReplicaEntity.key(projectId, entityType, entityId)
-        val now = Instant.now().toString()
-        database.withTransaction {
-            val current = dao.entity(key)
-            val storedPayload = if (entityType == "chapter") {
-                mobileChapterPayloadForSave(
-                    current?.payloadJson?.let { json.parseToJsonElement(it) as? JsonObject }, payload,
-                )
-            } else payload
-            val encoded = json.encodeToString(storedPayload)
-            val mutationEncoded = canonicalMutationJson(projectId, entityType, entityId, encoded)
-                ?: error("同步写入缺少 payload")
-            val existingPending = dao.pendingMutation(projectId, entityType, entityId)?.takeIf { pending ->
-                // Each changed chapter body has its own version on both devices.
-                // Coalescing these saves would skip PC versions before plan replay.
-                entityType != "chapter" || pending.payloadJson?.let { json.parseToJsonElement(it) as? JsonObject }?.get("content") == storedPayload["content"]
-            }
-            dao.saveEntity(
-                ReplicaEntity(
-                    key = key,
-                    projectId = projectId,
-                    entityType = entityType,
-                    entityId = entityId,
-                    revision = current?.revision ?: 0,
-                    operation = "upsert",
-                    payloadJson = encoded,
-                    contentHash = sha256(encoded),
-                    serverModifiedAt = current?.serverModifiedAt ?: now,
-                    dirty = true,
-                    conflicted = current?.conflicted ?: false,
-                ),
-            )
-            if (entityType == "chapter" && storedPayload.string("content").isNotBlank()) {
-                val version = (storedPayload["current_version"] as? JsonPrimitive)?.intOrNull ?: 1
-                val snapshotId = catalogingId("chapter_snapshot", entityId, version.toString(), catalogingHash(storedPayload.string("content")))
-                val snapshotKey = ReplicaEntity.key(projectId, "chapter_version", snapshotId)
-                if (dao.entity(snapshotKey) == null) {
-                    val snapshot = buildJsonObject {
-                        put("id", snapshotId); put("project_id", projectId); put("chapter_id", entityId)
-                        put("_record_type", "chapter_snapshot"); put("version_number", version)
-                        put("content", storedPayload.string("content")); put("word_count", storedPayload.string("content").count { !it.isWhitespace() })
-                        put("trigger_type", "manual_save"); put("created_at", now)
-                    }.toString()
-                    dao.saveEntity(ReplicaEntity(snapshotKey, projectId, "chapter_version", snapshotId, 0, "upsert", snapshot, sha256(snapshot), now))
-                }
-            }
-            dao.saveMutation(
-                (existingPending ?: OutboxMutation(
-                    mutationId = UUID.randomUUID().toString(),
-                    projectId = projectId,
-                    entityType = entityType,
-                    entityId = entityId,
-                    operation = "upsert",
-                    baseRevision = current?.revision ?: 0,
-                    payloadJson = mutationEncoded,
-                    clientModifiedAt = now,
-                )).copy(
-                    payloadJson = mutationEncoded,
-                    clientModifiedAt = now,
-                    state = "pending",
-                    lastError = null,
-                ),
-            )
-        }
+    private suspend fun saveOfflineEntity(projectId: String, entityType: String, entityId: String, payload: JsonObject): String {
+        val result = authoring.save(projectId, entityType, entityId, payload)
         if (dao.connection() != null) SyncScheduler.enqueue(appContext)
-        return entityId
+        return result
     }
 
     private fun canonicalMutationJson(
@@ -779,34 +594,14 @@ class SimingRepository(
         )
     }
 
-    suspend fun deleteProject(projectId: String, localOnly: Boolean): ProjectDeletionResult = canonicalCommandMutex.withLock {
-        // Import, upload, push and pull share this lock. Re-read after acquiring
-        // it so a completed upload cannot turn a local deletion into a lost receipt.
+    suspend fun deleteProject(projectId: String): ProjectDeletionResult = canonicalCommandMutex.withLock {
         syncMutex.withLock delete@{
-            val current = dao.projectSyncRecord(projectId) ?: return@delete ProjectDeletionResult.ALREADY_ABSENT
-            require(!current.project.conflicted) { "请先处理这部作品的版本分岔，再执行删除" }
-            if (current.syncStatus == ProjectSyncStatus.LOCAL_ONLY) {
+            if (dao.projectSyncRecord(projectId) == null) return@delete ProjectDeletionResult.ALREADY_ABSENT
+            database.withTransaction {
+                dao.excludeProject(com.siming.mobile.data.local.ExcludedProject(projectId))
                 purgeLocalProject(projectId)
-                return@delete ProjectDeletionResult.LOCAL_ONLY
             }
-            check(!localOnly) {
-                "这部作品的同步状态已改变；请重新确认删除范围"
-            }
-
-            val connection = checkNotNull(dao.connection()) {
-                if (current.syncStatus == ProjectSyncStatus.UNCONFIRMED) {
-                    "这部作品的上传结果尚未确认；请连接 PC Gateway 核验后再删除"
-                } else {
-                    "这部作品已经进入 PC 权威库；请连接 PC Gateway 后再删除，避免下次同步把作品重新拉回手机"
-                }
-            }
-            if (dao.pendingMutationCount() > 0) {
-                syncNowLocked()
-                check(dao.pendingMutationCount() == 0) { "仍有离线修订未通过 PC 端校验，请先在同步页处理" }
-            }
-            api.deleteProject(connection, projectId)
-            purgeLocalProject(projectId)
-            ProjectDeletionResult.CANONICAL
+            ProjectDeletionResult.LOCAL_ONLY
         }
     }
 
@@ -825,137 +620,15 @@ class SimingRepository(
     suspend fun deleteEntity(projectId: String, entityType: String, entityId: String) {
         require(entityType != "project") { "整部作品请使用作品库的删除操作" }
         require(entityType !in GOVERNANCE_ENTITY_TYPES) {
-            "PC 端叙事治理不直接删除记录；请把状态改为 abandoned"
-        }
-        val connection = dao.connection()
-        if (
-            connection != null &&
-            entityType in CANONICAL_DELETABLE_ENTITY_TYPES &&
-            prepareCanonicalWrite()
-        ) {
-            val key = ReplicaEntity.key(projectId, entityType, entityId)
-            val current = dao.entity(key) ?: return
-            require(!current.conflicted) { "请先处理这条资料的版本分岔，再继续删除" }
-            try {
-                api.deleteAuthoringEntity(connection, projectId, entityType, entityId)
-            } catch (error: GatewayHttpException) {
-                throw error
-            } catch (_: IOException) {
-                deleteOfflineEntity(projectId, entityType, entityId)
-                return
-            }
-            dao.saveEntity(
-                current.copy(
-                    operation = "delete",
-                    payloadJson = null,
-                    contentHash = sha256("null"),
-                    serverModifiedAt = Instant.now().toString(),
-                    dirty = false,
-                    conflicted = false,
-                    localModifiedAt = System.currentTimeMillis(),
-                ),
-            )
-            SyncScheduler.enqueue(appContext)
-            return
+            "叙事治理保留生命周期记录；请把状态改为 abandoned"
         }
         deleteOfflineEntity(projectId, entityType, entityId)
     }
 
     private suspend fun deleteOfflineEntity(projectId: String, entityType: String, entityId: String) {
-        val key = ReplicaEntity.key(projectId, entityType, entityId)
-        val now = Instant.now().toString()
-        database.withTransaction {
-            val current = dao.entity(key) ?: return@withTransaction
-            val existingPending = dao.pendingMutation(projectId, entityType, entityId)
-            dao.saveEntity(
-                current.copy(
-                    operation = "delete",
-                    payloadJson = null,
-                    contentHash = sha256("null"),
-                    dirty = true,
-                    localModifiedAt = System.currentTimeMillis(),
-                ),
-            )
-            dao.saveMutation(
-                (existingPending ?: OutboxMutation(
-                    mutationId = UUID.randomUUID().toString(),
-                    projectId = projectId,
-                    entityType = entityType,
-                    entityId = entityId,
-                    operation = "delete",
-                    baseRevision = current.revision,
-                    payloadJson = null,
-                    clientModifiedAt = now,
-                )).copy(
-                    operation = "delete",
-                    payloadJson = null,
-                    clientModifiedAt = now,
-                    state = "pending",
-                    lastError = null,
-                ),
-            )
-        }
+        authoring.delete(projectId, entityType, entityId)
         if (dao.connection() != null) SyncScheduler.enqueue(appContext)
     }
-
-    /**
-     * Preserve the ordering of previously queued offline edits. Connectivity
-     * failures fall back to the outbox; authenticated HTTP errors stay visible
-     * because silently replaying them could duplicate a server-side write.
-     */
-    private suspend fun prepareCanonicalWrite(): Boolean {
-        if (dao.pendingMutationCount() == 0) return true
-        return try {
-            syncNow()
-            check(dao.pendingMutationCount() == 0) {
-                "仍有离线修订未通过 PC 端校验，请先在同步页处理"
-            }
-            true
-        } catch (error: GatewayHttpException) {
-            throw error
-        } catch (_: IOException) {
-            false
-        }
-    }
-
-    private suspend fun saveCanonicalReplica(
-        projectId: String,
-        entityType: String,
-        entityId: String,
-        response: JsonObject,
-    ) {
-        val key = ReplicaEntity.key(projectId, entityType, entityId)
-        val current = dao.entity(key)
-        val replicaPayload = buildJsonObject {
-            put("_record_type", RECORD_TYPES.getValue(entityType))
-            response.forEach { (name, value) -> put(name, value) }
-            put("id", entityId)
-            if (entityType != "project" && response["project_id"] == null) {
-                put("project_id", projectId)
-            }
-        }
-        val encoded = json.encodeToString(replicaPayload)
-        dao.saveEntity(
-            ReplicaEntity(
-                key = key,
-                projectId = projectId,
-                entityType = entityType,
-                entityId = entityId,
-                revision = current?.revision ?: 0,
-                operation = "upsert",
-                payloadJson = encoded,
-                contentHash = sha256(encoded),
-                serverModifiedAt = (response["updated_at"] as? JsonPrimitive)?.content
-                    ?: Instant.now().toString(),
-                dirty = false,
-                conflicted = false,
-            ),
-        )
-    }
-
-    private fun JsonObject.requiredId(): String =
-        (get("id") as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
-            ?: error("PC API 返回的数据缺少 id")
 
     private fun validateEntitySize(payload: JsonObject) {
         val encoded = json.encodeToString(payload)
@@ -964,41 +637,19 @@ class SimingRepository(
         }
     }
 
-    private suspend fun canonicalCommandConnection(): GatewayConnection {
-        val connection = requireConnection()
-        check(prepareCanonicalWrite()) {
-            "当前无法连接 PC Gateway，高级结构命令不会在手机端猜测执行"
-        }
-        return connection
-    }
-
     suspend fun reorderChapters(projectId: String, chapterIds: List<String>): JsonObject =
-        canonicalCommandMutex.withLock {
-            val connection = canonicalCommandConnection()
-            val result = api.reorderChapters(connection, projectId, chapterIds)
-            refreshAfterCanonicalWrite(connection, projectId, result)
-        }
+        canonicalCommandMutex.withLock { authoring.reorderChapters(projectId, chapterIds).also { scheduleSync() } }
 
-    suspend fun reorderOutline(
-        projectId: String,
-        parentId: String?,
-        nodeIds: List<String>,
-    ): JsonObject = canonicalCommandMutex.withLock {
-        require(nodeIds.distinct().size == nodeIds.size) { "大纲排序包含重复节点" }
-        val connection = dao.connection()
-        if (connection != null && prepareCanonicalWrite()) {
-            try {
-                val result = api.reorderOutline(connection, projectId, parentId, nodeIds)
-                return@withLock refreshAfterCanonicalWrite(connection, projectId, result)
-            } catch (error: GatewayHttpException) {
-                throw error
-            } catch (_: IOException) {
-                // Reordering is replay-safe because each outline node already
-                // carries parent_id + sort_order in the canonical mutation.
+    suspend fun reorderOutline(projectId: String, parentId: String?, nodeIds: List<String>): JsonObject =
+        canonicalCommandMutex.withLock { database.withTransaction {
+            val peers = dao.projectSnapshot(projectId).filter { it.entityType == "outline" }.filter {
+                val data = json.parseToJsonElement(requireNotNull(it.payloadJson)).jsonObject
+                CatalogRecord(it.entityType, it.entityId, data).recordType == "outline_node" &&
+                    (data["parent_id"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank) == parentId
             }
-        }
-        reorderOutlineOffline(projectId, parentId, nodeIds)
-    }
+            require(nodeIds.distinct().size == nodeIds.size && nodeIds.toSet() == peers.map { it.entityId }.toSet()) { "大纲排序必须包含同级全部节点，且不能重复" }
+            reorderOutlineOffline(projectId, parentId, nodeIds)
+        } }
 
     private suspend fun reorderOutlineOffline(
         projectId: String,
@@ -1030,20 +681,6 @@ class SimingRepository(
         }
     }
 
-    private suspend fun refreshAfterCanonicalWrite(
-        connection: GatewayConnection,
-        projectId: String,
-        result: JsonObject,
-    ): JsonObject = try {
-        pullAll(connection, listOf(projectId))
-        result
-    } catch (error: CancellationException) {
-        throw error
-    } catch (error: Exception) {
-        result.withMobileRefreshFailure(error.toUserFacingMessage())
-    }
-
-
 suspend fun runCataloging(
     projectId: String,
     chapterIds: List<String>? = null,
@@ -1056,31 +693,11 @@ suspend fun runCataloging(
     )
     require(chapterIds == null || chapterIds.toSet() == chapters.map { it.entityId }.toSet()) { "建档章节 ID 不存在或不属于本作品" }
     require(chapters.isNotEmpty()) { "作品没有可建档章节" }
-    if (dao.connection() == null) {
-        val config = resolvedDirectConfig("cataloging")
-        val contract = CatalogingContract(appContext)
-        return MobileCataloging(database, contract, config.model) { messages, tools, activity ->
-            contract.modelRequest.execute(directApi, config, messages, tools, activity)
-        }.run(projectId, chapters.map { it.entityId }, onProgress)
-    }
-    val connection = canonicalCommandConnection()
-    val started = api.startCataloging(connection, projectId, chapters.map { it.entityId })
-    var latest = started.toMobileCatalogingProgress()
-    onProgress(latest, "作品建档任务已创建")
-    api.streamCataloging(connection, projectId, latest.jobId) { raw ->
-        val event = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
-        val job = event?.get("job") as? JsonObject
-        if (job != null) latest = job.toMobileCatalogingProgress()
-        val message = (event?.get("message") as? JsonPrimitive)?.contentOrNull
-            ?: (event?.get("detail") as? JsonPrimitive)?.contentOrNull
-            ?: (event?.get("type") as? JsonPrimitive)?.contentOrNull
-        onProgress(latest, message)
-    }
-    val finalData = api.getCatalogingJob(connection, projectId, latest.jobId)
-    val finalJob = finalData["job"] as? JsonObject
-    if (finalJob != null) latest = finalJob.toMobileCatalogingProgress()
-    pullAll(connection, listOf(projectId))
-    return latest
+    val config = resolvedDirectConfig("cataloging")
+    val contract = CatalogingContract(appContext)
+    return MobileCataloging(database, contract, config.model) { messages, tools, activity ->
+        contract.modelRequest.execute(directApi, config, messages, tools, activity)
+    }.run(projectId, chapters.map { it.entityId }, onProgress)
 }
 
 suspend fun cancelCataloging(projectId: String, jobId: String) {
@@ -1099,26 +716,8 @@ suspend fun exportProject(projectId: String, format: String): MobileExportFile {
     require(normalized in setOf("txt", "docx", "pdf")) { "不支持的导出格式：$format" }
     val project = dao.entity(ReplicaEntity.key(projectId, "project", projectId))
         ?: error("作品不存在")
-    val connection = dao.connection()
-    if (connection == null) {
-        require(normalized == "txt") { "Word / PDF 导出需要连接 PC Gateway" }
-        val chapters = orderReplicaEntities(
-            "chapter",
-            dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
-        )
-        return buildLocalNovelExport(project, chapters)
-    }
-    check(prepareCanonicalWrite()) { "当前无法同步本机修改，请恢复 Gateway 连接后再导出" }
-    val metadata = api.createProjectExport(connection, projectId, normalized)
-    val fileId = (metadata["file_id"] as? JsonPrimitive)?.contentOrNull
-        ?: error("PC 导出结果缺少 file_id")
-    val filename = (metadata["filename"] as? JsonPrimitive)?.contentOrNull
-        ?: "司命导出.$normalized"
-    return MobileExportFile(
-        filename = filename,
-        mimeType = exportMimeType(normalized),
-        bytes = api.downloadProjectExport(connection, projectId, fileId),
-    )
+    val chapters = orderReplicaEntities("chapter", dao.projectSnapshot(projectId).filter { it.entityType == "chapter" })
+    return withContext(Dispatchers.Default) { buildLocalNovelExport(project, chapters, normalized) }
 }
 
 suspend fun exportProjectPackage(projectId: String, profile: String): MobileExportFile {
@@ -1133,12 +732,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         .ifBlank { "未命名作品" }
     val exportRoot = File(appContext.cacheDir, "project-package-exports").apply { mkdirs() }
     val destination = File(exportRoot, "${UUID.randomUUID()}$PROJECT_PACKAGE_EXTENSION")
-    val connection = dao.connection()
-    val filename = if (connection != null) {
-        check(prepareCanonicalWrite()) { "当前无法同步本机修改，请恢复 Gateway 连接后再导出项目包" }
-        api.downloadProjectPackage(connection, projectId, normalized, destination)
-            ?.let { URLDecoder.decode(it, Charsets.UTF_8.name()) }
-    } else {
+    val filename: String? = run {
         val stored = dao.projectPackage(projectId)
         val snapshot = dao.projectPackageSnapshot(projectId)
         val draft = mobileWorkspaceAgent.pendingChapterDraft(projectId)
@@ -1178,92 +772,45 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
 }
 
     suspend fun listChapterSnapshots(projectId: String, chapterId: String): JsonObject =
-        api.listChapterSnapshots(requireConnection(), projectId, chapterId)
+        authoring.read.history(projectId, "chapter", chapterId, "chapter_snapshot", "chapter_id")
 
-    suspend fun getChapterSnapshot(
-        projectId: String,
-        chapterId: String,
-        snapshotId: String,
-    ): JsonObject = api.getChapterSnapshot(
-        requireConnection(),
-        projectId,
-        chapterId,
-        snapshotId,
-    )
+    suspend fun getChapterSnapshot(projectId: String, chapterId: String, snapshotId: String): JsonObject =
+        authoring.read.snapshot(projectId, chapterId, snapshotId)
 
-    suspend fun diffChapterSnapshots(
-        projectId: String,
-        chapterId: String,
-        fromSnapshotId: String,
-        toSnapshotId: String,
-    ): JsonObject = api.diffChapterSnapshots(
-        requireConnection(),
-        projectId,
-        chapterId,
-        fromSnapshotId,
-        toSnapshotId,
-    )
+    suspend fun diffChapterSnapshots(projectId: String, chapterId: String, fromSnapshotId: String, toSnapshotId: String): JsonObject =
+        chapterSnapshotDiff(getChapterSnapshot(projectId, chapterId, fromSnapshotId), getChapterSnapshot(projectId, chapterId, toSnapshotId))
 
-    suspend fun restoreChapterSnapshot(
-        projectId: String,
-        chapterId: String,
-        snapshotId: String,
-    ): JsonObject = canonicalCommandMutex.withLock {
-        val connection = canonicalCommandConnection()
-        val result = api.restoreChapterSnapshot(connection, projectId, chapterId, snapshotId)
-        refreshAfterCanonicalWrite(connection, projectId, result)
+    suspend fun restoreChapterSnapshot(projectId: String, chapterId: String, snapshotId: String): JsonObject =
+        canonicalCommandMutex.withLock { authoring.restoreChapter(projectId, chapterId, snapshotId).also { scheduleSync() } }
+
+    suspend fun characterRelationshipNetwork(projectId: String): JsonObject = authoring.read.relationshipNetwork(projectId)
+
+    suspend fun replaceCharacterRelationships(projectId: String, characterId: String, relationships: JsonArray): JsonObject =
+        canonicalCommandMutex.withLock { authoring.replaceRelationships(projectId, characterId, relationships).also { scheduleSync() } }
+
+    private suspend fun scheduleSync() {
+        if (dao.connection() != null) SyncScheduler.enqueue(appContext)
     }
 
-    suspend fun characterRelationshipNetwork(projectId: String): JsonObject =
-        api.getCharacterRelationshipNetwork(requireConnection(), projectId)
+    suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject = authoring.read.aiConfig(projectId, characterId)
 
-    suspend fun replaceCharacterRelationships(
-        projectId: String,
-        characterId: String,
-        relationships: JsonArray,
-    ): JsonObject = canonicalCommandMutex.withLock {
-        val connection = canonicalCommandConnection()
-        val result = api.replaceCharacterRelationships(
-            connection,
-            projectId,
-            characterId,
-            buildJsonObject { put("relationships", relationships) },
-        )
-        refreshAfterCanonicalWrite(connection, projectId, result)
-    }
-
-    suspend fun characterAiConfig(projectId: String, characterId: String): JsonObject =
-        api.getCharacterAiConfig(requireConnection(), projectId, characterId)
-
-    suspend fun updateCharacterAiConfig(
-        projectId: String,
-        characterId: String,
-        payload: JsonObject,
-    ): JsonObject = canonicalCommandMutex.withLock {
-        val connection = canonicalCommandConnection()
-        val result = api.updateCharacterAiConfig(connection, projectId, characterId, payload)
-        refreshAfterCanonicalWrite(connection, projectId, result)
+    suspend fun updateCharacterAiConfig(projectId: String, characterId: String, payload: JsonObject): JsonObject = database.withTransaction {
+        val current = authoring.read.aiConfig(projectId, characterId)
+        val updated = JsonObject(current + payload + ("character_id" to JsonPrimitive(characterId)))
+        saveEntity(projectId, "character_ai_config", current.string("id"), updated)
+        authoring.read.aiConfig(projectId, characterId)
     }
 
     suspend fun characterVersions(projectId: String, characterId: String): JsonObject =
-        api.listCharacterVersions(requireConnection(), projectId, characterId)
+        authoring.read.history(projectId, "character", characterId, "character_version", "character_id")
 
-    suspend fun characterVersion(
-        projectId: String,
-        characterId: String,
-        versionId: String,
-    ): JsonObject = api.getCharacterVersion(
-        requireConnection(),
-        projectId,
-        characterId,
-        versionId,
-    )
+    suspend fun characterVersion(projectId: String, characterId: String, versionId: String): JsonObject =
+        authoring.read.characterVersion(projectId, characterId, versionId)
 
     suspend fun worldVersions(projectId: String, entryId: String): JsonObject =
-        api.listWorldVersions(requireConnection(), projectId, entryId)
+        authoring.read.history(projectId, "world", entryId, "world_version", "entry_id")
 
-    suspend fun worldTimeline(projectId: String, entryId: String): JsonObject =
-        api.listWorldTimeline(requireConnection(), projectId, entryId)
+    suspend fun worldTimeline(projectId: String, entryId: String): JsonObject = authoring.read.worldTimeline(projectId, entryId)
 
     private suspend fun uploadPendingProjectPackages(connection: GatewayConnection) {
         dao.pendingProjectPackages().forEach { stored -> uploadStoredProjectPackage(connection, stored) }
@@ -1294,7 +841,11 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             require(result.string("package_id") == stored.packageId) {
                 "Gateway 返回的项目包 ID 与本机副本不一致"
             }
-            refreshUploadedProjectPackage(connection, stored.projectId)
+            val importCursor = (result["sync_import_cursor"] as? JsonPrimitive)?.longOrNull
+            require(importCursor != null && importCursor > 0) {
+                "Gateway 未返回项目包的初始同步版本，请升级 PC/Gateway 后重试；手机资料已保留"
+            }
+            refreshUploadedProjectPackage(connection, stored.projectId, importCursor = importCursor)
             dao.saveProjectPackage(
                 stored.copy(
                     syncState = "succeeded",
@@ -1317,22 +868,29 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     private suspend fun refreshUploadedProjectPackage(
         connection: GatewayConnection,
         projectId: String,
-        rebaseKeys: Set<Pair<String, String>>? = null,
+        rebaseKeys: Set<Pair<String, String>> = emptySet(),
+        importCursor: Long? = null,
     ) {
         val response = api.bootstrap(connection, listOf(projectId))
         database.withTransaction {
             dao.deleteCleanProjectReplicas(projectId)
-            response.entities.filter { it.projectId == projectId }.forEach { snapshot ->
+            response.entities.filter { it.projectId == projectId && it.entityType != "authoring_command" }.forEach { snapshot ->
                 val key = ReplicaEntity.key(snapshot.projectId, snapshot.entityType, snapshot.entityId)
                 val current = dao.entity(key)
-                if (current?.dirty == true) {
+                if (current?.dirty == true || current?.conflicted == true) {
+                    // The import receipt freezes the original seed boundary even if
+                    // its response was lost. Later PC changes must still conflict.
+                    val canRebase = !current.conflicted && (
+                        (snapshot.entityType to snapshot.entityId) in rebaseKeys ||
+                            (importCursor != null && current.revision == 0L && snapshot.revision <= importCursor)
+                        )
                     dao.saveEntity(
                         current.copy(
-                            revision = snapshot.revision,
+                            revision = if (canRebase) snapshot.revision else current.revision,
                             serverModifiedAt = snapshot.serverModifiedAt,
                         ),
                     )
-                    if (rebaseKeys == null || (snapshot.entityType to snapshot.entityId) in rebaseKeys) {
+                    if (canRebase) {
                         dao.rebaseUnsentMutations(snapshot.projectId, snapshot.entityType, snapshot.entityId, snapshot.revision)
                     }
                 } else {
@@ -1351,12 +909,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                     )
                 }
             }
-            dao.saveCursor(
-                SyncCursor(
-                    cursor = response.cursor,
-                    lastSuccessfulSyncAt = System.currentTimeMillis(),
-                ),
-            )
+            // A per-project refresh must not advance the global pull cursor:
+            // other works may have unseen changes before this snapshot.
         }
     }
 
@@ -1369,6 +923,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             uploadPendingProjectPackages(connection)
             syncCatalogingCommits(connection)
             pushPending(connection)
+            for (projectId in dao.acknowledgedAuthoringProjects()) {
+                refreshUploadedProjectPackage(connection, projectId)
+            }
             refreshConflicts(connection)
             if (localProjectIds.isNotEmpty()) pullAll(connection, localProjectIds)
             val current = dao.cursor() ?: SyncCursor()
@@ -1426,21 +983,20 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
 
     private suspend fun pushPending(connection: GatewayConnection, before: Instant? = null, barrierId: String? = null) {
         while (true) {
-            val candidates = dao.pendingMutations(100).filter {
+            val queue = dao.pendingMutations(100).filter {
                 before == null || (barrierId != null && it.catalogingBarrierId == barrierId) || Instant.ofEpochMilli(it.createdAt).isBefore(before)
-            }.distinctBy { Triple(it.projectId, it.entityType, it.entityId) }
+            }
+            if (queue.firstOrNull()?.entityType == "authoring_command") {
+                syncAuthoringCommand(connection, queue.first())
+                continue
+            }
+            val coveredLocal = authoring.coveredKeys(dao.pendingMutations(Int.MAX_VALUE))
             val covered = dao.pendingCatalogingCommits().flatMap { run ->
                 catalogingChangedKeys(run).map { (type, id) -> Triple(run.projectId, type, id) }
             }.toSet()
-            val pending = buildList {
-                var estimatedBytes = 0
-                for (mutation in candidates) {
-                    val mutationBytes = (mutation.payloadJson?.toByteArray(Charsets.UTF_8)?.size ?: 4) + 512
-                    if (isNotEmpty() && estimatedBytes + mutationBytes > MAX_PUSH_BYTES) break
-                    add(mutation)
-                    estimatedBytes += mutationBytes
-                }
-            }
+            // Local transactions may depend on the immediately preceding chapter
+            // version or governance transition. Confirm each one before the next.
+            val pending = queue.take(1)
             if (pending.isEmpty()) return
             database.withTransaction {
                 pending.forEach { mutation ->
@@ -1486,6 +1042,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                     val current = dao.entity(key)
                     when (result.status) {
                         "applied", "duplicate" -> {
+                            authoring.acknowledge(sent)
                             val revision = result.revision ?: current?.revision ?: sent.baseRevision
                             dao.deleteMutation(sent.mutationId)
                             dao.rebaseUnsentMutations(sent.projectId, sent.entityType, sent.entityId, revision)
@@ -1509,7 +1066,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                                         conflicted = false,
                                     ),
                                 )
-                                if (!unchanged && Triple(sent.projectId, sent.entityType, sent.entityId) !in covered && dao.pendingMutation(
+                                if (!unchanged && key !in coveredLocal && Triple(sent.projectId, sent.entityType, sent.entityId) !in covered && dao.pendingMutation(
                                         sent.projectId,
                                         sent.entityType,
                                         sent.entityId,
@@ -1560,7 +1117,35 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                     resetForRetry(mutation, "Gateway 未返回该修订的处理结果")
                 }
             }
-            if (response.results.none { it.status in setOf("applied", "duplicate") }) return
+            if (response.results.size != pending.size || response.results.any { it.status !in setOf("applied", "duplicate") }) return
+        }
+    }
+
+    private suspend fun syncAuthoringCommand(connection: GatewayConnection, mutation: OutboxMutation) {
+        check(dao.openConflictsSnapshot().none { it.projectId == mutation.projectId }) { "请先处理这部作品的同步冲突，手机操作已保留" }
+        try {
+            val response = api.push(connection, listOf(SyncMutationRequest(
+                mutationId = mutation.mutationId, projectId = mutation.projectId,
+                entityType = mutation.entityType, entityId = mutation.entityId,
+                operation = mutation.operation, baseRevision = mutation.baseRevision,
+                payload = json.parseToJsonElement(requireNotNull(mutation.payloadJson)).jsonObject,
+                clientModifiedAt = mutation.clientModifiedAt,
+            )))
+            val result = response.results.singleOrNull { it.mutationId == mutation.mutationId }
+            check(result?.status in setOf("applied", "duplicate")) { result?.message ?: "同步命令尚未确认，手机操作已保留" }
+            val coveredKeys = authoring.coveredKeys(listOf(mutation))
+            val changed = dao.projectPackageSnapshot(mutation.projectId).filter { it.key in coveredKeys }.map { it.entityType to it.entityId }.toSet()
+            database.withTransaction { authoring.acknowledge(mutation) }
+            refreshUploadedProjectPackage(connection, mutation.projectId, changed)
+            database.withTransaction {
+                dao.deleteMutation(mutation.mutationId)
+                dao.entity(ReplicaEntity.key(mutation.projectId, "authoring_command", mutation.entityId))?.let {
+                    dao.saveEntity(it.copy(dirty = false, operation = "delete"))
+                }
+            }
+        } catch (error: Exception) {
+            dao.updateMutation(mutation.copy(state = "pending", lastError = error.toUserFacingMessage()))
+            throw error
         }
     }
 
@@ -1569,7 +1154,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         do {
             val response = api.pull(connection, cursorValue, projectIds)
             database.withTransaction {
+                val excluded = dao.excludedProjectIds().toSet()
                 for (change in response.changes) {
+                    if (change.projectId in excluded || change.entityType == "authoring_command") continue
                     val key = ReplicaEntity.key(change.projectId, change.entityType, change.entityId)
                     val local = dao.entity(key)
                     if (local?.dirty == true || local?.conflicted == true) continue
@@ -1641,19 +1228,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     }
 
     private suspend fun resetForRetry(mutation: OutboxMutation, error: String) {
-        val newer = dao.pendingMutation(
-            mutation.projectId,
-            mutation.entityType,
-            mutation.entityId,
-        )
-        if (mutation.catalogingBarrierId == null && newer != null && newer.mutationId != mutation.mutationId) {
-            // A save made while this request was in flight already contains the
-            // latest payload at the same base revision, so the older send can
-            // be discarded instead of creating an avoidable self-conflict.
-            dao.deleteMutation(mutation.mutationId)
-        } else {
-            dao.resetMutationForRetry(mutation.mutationId, error)
-        }
+        // An uncertain request may already have committed its history or lifecycle
+        // transition. Retry its stable ID before sending later authoring operations.
+        dao.resetMutationForRetry(mutation.mutationId, error)
     }
 
     suspend fun resolveConflict(conflict: LocalConflict, choice: String) {
@@ -1674,12 +1251,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         onEvent: suspend (String) -> Unit,
     ): AssistantRoute {
         val connection = dao.connection()
-        if (connection != null) {
-            val directConfig = if (modelRoute == AssistantModelRoute.MobileKey) {
-                resolvedAssistantDirectConfig(conversationId, onEvent)
-            } else {
-                null
-            }
+        if (modelRoute == AssistantModelRoute.Pc) {
+            requireNotNull(connection) { "远程 PC 模型需要连接 Gateway；手机独立写作请选择手机 API" }
             val canonicalConversationId = syncStandaloneAssistantTranscript(
                 connection = connection,
                 projectId = projectId,
@@ -1709,14 +1282,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                         message = prompt,
                         conversationId = canonicalConversationId,
                         activeChapterDraftId = activeChapterDraftId,
-                        modelRoute = if (directConfig == null) "pc" else "mobile",
-                        mobileProvider = directConfig?.let {
-                            MobileProviderEncryption.seal(
-                                requireMobileProviderCapacity(it),
-                                connection,
-                                projectId,
-                            )
-                        },
+                        modelRoute = "pc",
                     ),
                     trackingEvent,
                 )
@@ -1738,7 +1304,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 recoverAssistantRun(connection, projectId, recoverableRunId, trackingEvent, error)
             }
             syncNow()
-            return if (directConfig == null) AssistantRoute.GatewayPc else AssistantRoute.GatewayMobileKey
+            return AssistantRoute.GatewayPc
         }
 
         val directConfig = directApiStore.read()?.let {
@@ -1935,12 +1501,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     }
 
     suspend fun pendingChapterDraft(projectId: String): MobilePendingChapterDraft? {
-        val connection = dao.connection()
-        val value = if (connection != null) {
-            api.pendingChapterDraft(connection, projectId)
-        } else {
-            mobileWorkspaceAgent.pendingChapterDraft(projectId)
-        } ?: return null
+        val value = mobileWorkspaceAgent.pendingChapterDraft(projectId) ?: return null
         return MobilePendingChapterDraft.fromJson(projectId, value)
     }
 
@@ -1956,36 +1517,14 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 title,
                 content,
             ) ?: error("手机章节草稿不存在或已处理")
-            "project_package" -> updateImportedChapterDraft(draft, title, content)
-            else -> {
-                val connection = dao.connection()
-                    ?: error("同步 PC 章节草稿需要恢复 Gateway 连接")
-                api.updateChapterDraft(
-                    connection,
-                    draft.projectId,
-                    draft.draftId,
-                    buildJsonObject {
-                        put("title", title)
-                        put("content", content)
-                        put(
-                            "outline_node_id",
-                            draft.outlineNodeId?.let(::JsonPrimitive) ?: JsonNull,
-                        )
-                    },
-                )
-            }
+            else -> updateImportedChapterDraft(draft, title, content)
         }
         return MobilePendingChapterDraft.fromJson(draft.projectId, value)
             ?: error("章节草稿同步结果无效")
     }
 
     suspend fun pendingOutlineDraft(projectId: String): MobilePendingOutlineDraft? {
-        val connection = dao.connection()
-        val value = if (connection != null) {
-            api.pendingOutlineDraft(connection, projectId)
-        } else {
-            mobileWorkspaceAgent.pendingOutlineDraft(projectId)
-        } ?: return null
+        val value = mobileWorkspaceAgent.pendingOutlineDraft(projectId) ?: return null
         return MobilePendingOutlineDraft.fromJson(projectId, value)
     }
 
@@ -2000,39 +1539,17 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             put("nodes", JsonArray(nodes.map(MobileOutlineDraftNode::toJson)))
             put("design_notes", designNotes)
         }
-        val connection = dao.connection()
-        val value = if (connection != null) {
-            api.updateOutlineDraft(connection, draft.projectId, draft.draftId, payload)
-        } else {
-            mobileWorkspaceAgent.updateOutlineDraft(
-                draft.draftId,
-                payload["nodes"] as JsonArray,
-                designNotes,
-            ) ?: error("大纲草稿不存在或已处理")
-        }
+        val value = mobileWorkspaceAgent.updateOutlineDraft(draft.draftId, payload["nodes"] as JsonArray, designNotes)
+            ?: error("大纲草稿不存在或已处理")
         return MobilePendingOutlineDraft.fromJson(draft.projectId, value)
             ?: error("大纲草稿返回结构无效")
     }
 
     suspend fun discardPendingOutlineDraft(draft: MobilePendingOutlineDraft) {
-        val connection = dao.connection()
-        if (connection != null) {
-            api.discardOutlineDraft(connection, draft.projectId, draft.draftId)
-        } else {
-            mobileWorkspaceAgent.discardOutlineDraft(draft.draftId)
-                ?: error("大纲草稿不存在")
-        }
+        mobileWorkspaceAgent.discardOutlineDraft(draft.draftId) ?: error("大纲草稿不存在")
     }
 
     suspend fun regeneratePendingOutlineDraft(draft: MobilePendingOutlineDraft): String {
-        val connection = dao.connection()
-        if (connection != null) {
-            val response = api.regenerateOutlineDraft(connection, draft.projectId, draft.draftId)
-            return (response["next_author_request"] as? JsonObject)
-                ?.string("message")
-                .orEmpty()
-                .ifBlank { "请重新规划刚才的大纲草稿，保留作者已指定的插入位置。" }
-        }
         mobileWorkspaceAgent.supersedeOutlineDraft(draft.draftId)
             ?: error("大纲草稿不存在")
         return "请重新规划刚才的大纲草稿，保留作者已指定的插入位置。"
@@ -2042,24 +1559,6 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         draft: MobilePendingOutlineDraft,
         writeAfterConfirm: Boolean,
     ): MobileOutlineDraftConfirmation {
-        val connection = dao.connection()
-        if (connection != null) {
-            val response = api.confirmOutlineDraft(
-                connection,
-                draft.projectId,
-                draft.draftId,
-                writeAfterConfirm,
-            )
-            syncNow()
-            return MobileOutlineDraftConfirmation(
-                savedOutlineNodeIds = response.stringList("saved_outline_node_ids"),
-                chapterOutlineNodeIds = response.stringList("chapter_outline_node_ids"),
-                nextAuthorMessage = (response["next_author_request"] as? JsonObject)
-                    ?.string("message")
-                    ?.takeIf(String::isNotBlank),
-            )
-        }
-
         val current = mobileWorkspaceAgent.pendingOutlineDraft(draft.projectId)
             ?.let { MobilePendingOutlineDraft.fromJson(draft.projectId, it) }
             ?.takeIf { it.draftId == draft.draftId }
@@ -2248,40 +1747,20 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     ): String = draftSaveMutex.withLock {
         require(title.isNotBlank()) { "章节标题不能为空" }
         require(catalogingMode in setOf("save_only", "save_and_catalog")) { "未知的章节保存方式" }
-        val connection = dao.connection()
-        if (connection != null) {
-            val payload = buildJsonObject {
-                put("title", title.trim())
-                put("content", content)
-                draft.outlineNodeId?.let { put("outline_node_id", it) }
-                draft.contextManifestId?.let { put("context_manifest_id", it) }
-                put("draft_id", draft.draftId)
-                put("cataloging_mode", catalogingMode)
-                if (draft.revision) {
-                    put("expected_version", requireNotNull(draft.baseChapterVersion) {
-                        "修订候选缺少基准版本，不能安全保存"
-                    })
-                    put("trigger_type", "ai_revision")
-                }
+        require(!draft.generating && !draft.versionConflict) { "草稿尚未就绪或正式章节版本已变化" }
+        if (draft.revision) {
+            if (catalogingMode == "save_and_catalog") require(directApiStore.read() != null) { "请先配置手机 API" }
+            val id = requireNotNull(draft.targetChapterId) { "修订候选缺少目标章节" }
+            val expected = requireNotNull(draft.baseChapterVersion) { "修订候选缺少基准版本" }
+            database.withTransaction {
+                val current = authoring.read.requireEntity(draft.projectId, "chapter", id)
+                authoring.save(draft.projectId, "chapter", id, JsonObject(current + mapOf(
+                    "title" to JsonPrimitive(title.trim()), "content" to JsonPrimitive(content),
+                )), trigger = "ai_revision", expectedVersion = expected)
+                markChapterDraftConsumed(draft, id)
             }
-            val response = if (draft.revision) {
-                require(!draft.versionConflict) { "正式章节版本已变化，请重新生成或人工合并修订候选" }
-                api.saveGeneratedChapterRevision(
-                    connection,
-                    draft.projectId,
-                    requireNotNull(draft.targetChapterId) { "修订候选缺少目标章节" },
-                    payload,
-                )
-            } else {
-                api.saveGeneratedChapter(connection, draft.projectId, payload)
-            }
-            val chapterId = response.requiredId()
-            saveCanonicalReplica(draft.projectId, "chapter", chapterId, response)
-            markChapterDraftConsumed(draft)
-            SyncScheduler.enqueue(appContext)
-            return@withLock chapterId
+            return@withLock id
         }
-        require(!draft.revision) { "修订已有章节需要连接 PC，以核对正式章节版本后保存" }
         if (catalogingMode == "save_and_catalog") require(directApiStore.read() != null) { "请先配置手机 API，再使用保存并建档" }
         val chapterId = catalogingId("saved_draft", draft.projectId, draft.draftId)
         val snapshot = dao.projectSnapshot(draft.projectId)
@@ -2315,7 +1794,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         else require(existing.payloadJson?.let { (json.parseToJsonElement(it) as JsonObject).string("content") } == content) {
             "该草稿已保存；请在正式章节中继续修改"
         }
-        markChapterDraftConsumed(draft)
+        markChapterDraftConsumed(draft, chapterId)
         return@withLock chapterId
     }
 
@@ -2324,99 +1803,43 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             "android_standalone" -> require(
                 mobileWorkspaceAgent.discardChapterDraft(draft.draftId),
             ) { "手机章节草稿不存在或已处理" }
-            "project_package" -> require(
-                markChapterDraftReplicaStatus(draft, "discarded"),
-            ) { "项目包章节草稿不存在或已处理" }
             else -> {
-                val connection = dao.connection()
-                    ?: error("丢弃 PC 章节草稿需要恢复 Gateway 连接")
-                api.discardChapterDraft(connection, draft.projectId, draft.draftId)
+                ensureLocalDraft(draft)
+                authoring.closeReplicaDraft(draft.projectId, draft.draftId, "discarded")
+                scheduleSync()
             }
         }
     }
 
-    private suspend fun markChapterDraftConsumed(draft: MobilePendingChapterDraft) {
+    private suspend fun markChapterDraftConsumed(draft: MobilePendingChapterDraft, chapterId: String) {
         mobileWorkspaceAgent.markChapterDraftSaved(draft.draftId)
-        markChapterDraftReplicaStatus(draft, "saved")
-    }
-
-    private suspend fun updateImportedChapterDraft(
-        draft: MobilePendingChapterDraft,
-        title: String,
-        content: String,
-    ): JsonObject {
-        val key = ReplicaEntity.key(draft.projectId, "chapter_draft", draft.draftId)
-        val entity = dao.entity(key) ?: error("项目包章节草稿不存在")
-        val payload = entity.payloadJson
-            ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
-            ?: error("项目包章节草稿数据无效")
-        require(payload.string("status") in setOf("pending", "generated")) {
-            "项目包章节草稿已经处理或失效"
-        }
-        val now = Instant.now().toString()
-        val updated = JsonObject(
-            payload.toMutableMap().apply {
-                put("title", JsonPrimitive(title))
-                put("content", JsonPrimitive(content))
-                put("updated_at", JsonPrimitive(now))
-            },
-        )
-        val encoded = json.encodeToString(updated)
-        dao.saveEntity(
-            entity.copy(
-                payloadJson = encoded,
-                contentHash = sha256(encoded),
-                serverModifiedAt = now,
-                dirty = false,
-                conflicted = false,
-                localModifiedAt = System.currentTimeMillis(),
-            ),
-        )
-        return buildJsonObject {
-            put("draft_id", draft.draftId)
-            put("project_id", draft.projectId)
-            put("title", title)
-            put("content", content)
-            draft.outlineNodeId?.let { put("outline_node_id", it) }
-            put("draft_status", "pending")
-            put("execution_route", "project_package")
+        if (draft.executionRoute != "android_standalone") {
+            ensureLocalDraft(draft)
+            authoring.closeReplicaDraft(draft.projectId, draft.draftId, "saved", chapterId)
+            scheduleSync()
         }
     }
 
-    private suspend fun markChapterDraftReplicaStatus(
-        draft: MobilePendingChapterDraft,
-        status: String,
-    ): Boolean {
-        val key = ReplicaEntity.key(draft.projectId, "chapter_draft", draft.draftId)
-        val entity = dao.entity(key) ?: return false
-        val payload = entity.payloadJson
-            ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
-            ?: return false
-        if (status == "discarded") {
-            val currentStatus = payload.string("status")
-            if (currentStatus == status) return true
-            if (currentStatus !in setOf("pending", "generated", "generating")) return false
-        }
-        val now = Instant.now().toString()
-        val encoded = json.encodeToString(
-            JsonObject(
-                payload.toMutableMap().apply {
-                    put("status", JsonPrimitive(status))
-                    put("updated_at", JsonPrimitive(now))
-                },
-            ),
-        )
-        dao.saveEntity(
-            entity.copy(
-                payloadJson = encoded,
-                contentHash = sha256(encoded),
-                serverModifiedAt = now,
-                dirty = false,
-                conflicted = false,
-                localModifiedAt = System.currentTimeMillis(),
-            ),
-        )
-        return true
+    private suspend fun ensureLocalDraft(draft: MobilePendingChapterDraft) = database.withTransaction {
+        authoring.read.requireEntity(draft.projectId, "project", draft.projectId)
+        if (dao.entity(ReplicaEntity.key(draft.projectId, "chapter_draft", draft.draftId)) != null) return@withTransaction
+        draft.targetChapterId?.let { authoring.read.requireEntity(draft.projectId, "chapter", it) }
+        authoring.put(draft.projectId, "chapter_draft", draft.draftId, buildJsonObject {
+            put("id", draft.draftId); put("project_id", draft.projectId); put("_record_type", "chapter_draft")
+            put("title", draft.title); put("content", draft.content); put("status", draft.status)
+            put("draft_kind", draft.draftKind); put("created_at", Instant.now().toString())
+            put("outline_node_id", draft.outlineNodeId?.let(::JsonPrimitive) ?: JsonNull)
+            put("context_manifest_id", draft.contextManifestId?.let(::JsonPrimitive) ?: JsonNull)
+            put("target_chapter_id", draft.targetChapterId?.let(::JsonPrimitive) ?: JsonNull)
+            put("base_chapter_version", draft.baseChapterVersion?.let(::JsonPrimitive) ?: JsonNull)
+        })
+    }
+
+    private suspend fun updateImportedChapterDraft(draft: MobilePendingChapterDraft, title: String, content: String): JsonObject {
+        ensureLocalDraft(draft)
+        authoring.editReplicaDraft(draft.projectId, draft.draftId, title, content)
+        scheduleSync()
+        return requireNotNull(mobileImportedChapterDraft(draft.projectId, dao.projectSnapshot(draft.projectId), draft.draftId))
     }
 
     suspend fun cancelAssistantRun(projectId: String, runId: String) {
@@ -2424,9 +1847,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         api.cancelAssistantRun(connection, projectId, runId)
     }
 
-    suspend fun assistantConversations(projectId: String): List<MobileAssistantConversation> {
-        val connection = dao.connection()
-            ?: return mobileAssistantConversationStore.conversations(projectId)
+    suspend fun assistantConversations(projectId: String, modelRoute: AssistantModelRoute = AssistantModelRoute.MobileKey): List<MobileAssistantConversation> {
+        if (modelRoute == AssistantModelRoute.MobileKey) return mobileAssistantConversationStore.conversations(projectId)
+        val connection = requireConnection()
         val root = api.assistantConversations(connection, projectId)
         return (root["items"] as? JsonArray).orEmpty().mapNotNull { raw ->
             val item = raw as? JsonObject ?: return@mapNotNull null
@@ -2446,7 +1869,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         conversationId: String,
     ): JsonObject? {
         val connection = dao.connection()
-        if (connection != null) return api.assistantContextState(connection, projectId, conversationId)
+        if (connection != null && mobileAssistantConversationStore.snapshot(projectId, conversationId) == null) return api.assistantContextState(connection, projectId, conversationId)
         val snapshot = mobileAssistantConversationStore.snapshot(projectId, conversationId) ?: return null
         val latest = snapshot.checkpoints.lastOrNull()
         val status = when (latest?.status) {
@@ -2484,6 +1907,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         conversationId: String,
         checkpointId: String,
     ): JsonObject? {
+        mobileAssistantConversationStore.snapshot(projectId, conversationId)?.let { snapshot ->
+            return snapshot.checkpoints.firstOrNull { it.id == checkpointId }?.toJson()
+        }
         val connection = dao.connection() ?: return null
         return api.assistantCheckpoint(connection, projectId, conversationId, checkpointId)
     }
@@ -2492,8 +1918,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         projectId: String,
         conversationId: String,
     ): List<MobileAssistantMessage> {
-        val connection = dao.connection()
-            ?: return mobileAssistantConversationStore.messages(projectId, conversationId)
+        if (mobileAssistantConversationStore.snapshot(projectId, conversationId) != null) return mobileAssistantConversationStore.messages(projectId, conversationId)
+        val connection = dao.connection() ?: return emptyList()
         val root = api.assistantConversation(connection, projectId, conversationId)
         return (root["messages"] as? JsonArray).orEmpty().mapNotNull { raw ->
             val item = raw as? JsonObject ?: return@mapNotNull null
@@ -2558,7 +1984,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         val sessions = api.listNovelCreationSessions(connection)
         sessions.forEach { remote ->
             val sessionId = remote.string("id")
+            if (dao.entity(ReplicaEntity.key(CREATION_REPLICA_PROJECT, "creation_session", sessionId))?.operation == "delete") return@forEach
             val local = storedCreationSession(sessionId)
+            if (local != null && creationRoute(local) == CreationExecutionRoute.MobileKey) return@forEach
             val route = local?.let(::creationRoute) ?: CreationExecutionRoute.Pc
             val merged = local?.let { CreationAgentTurnRecords.mergeRemoteSession(remote, it) } ?: remote
             saveCreationSession(tagCreationRoute(merged, route, CREATION_HOST_GATEWAY))
@@ -2582,20 +2010,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             }
             CreationExecutionRoute.MobileKey -> {
                 resolvedDirectConfig(DirectApiConfig.TASK_PLANNING)
-                val connection = dao.connection()
-                if (connection == null) {
-                    tagCreationRoute(
-                        mobileCreationAgent.start(input),
-                        route,
-                        CREATION_HOST_DEVICE,
-                    )
-                } else {
-                    tagCreationRoute(
-                        api.startNovelCreation(connection, creationStartPayload(input)),
-                        route,
-                        CREATION_HOST_GATEWAY,
-                    )
-                }
+                tagCreationRoute(mobileCreationAgent.start(input), route, CREATION_HOST_DEVICE)
             }
         }
         saveCreationSession(session)
@@ -2638,8 +2053,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         require(message.isNotBlank()) { "请输入你想告诉 AI 的内容" }
         val loaded = loadCreationSession(sessionId)
         val route = creationRoute(loaded)
-        val gatewayExecution = creationHost(loaded) == CREATION_HOST_GATEWAY
-        val standaloneExecution = route == CreationExecutionRoute.MobileKey && !gatewayExecution
+        val standaloneExecution = route == CreationExecutionRoute.MobileKey
         // loadCreationSession has already projected a standalone canonical transcript.
         // Only non-standalone audits recover themselves; the device transcript is the
         // sole authority for whether a local turn completed or was interrupted.
@@ -2701,11 +2115,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         }
         val updated = try {
             when {
-                route == CreationExecutionRoute.Pc || gatewayExecution -> {
+                route == CreationExecutionRoute.Pc -> {
                     val connection = requireConnection()
-                    val mobileProvider = if (route == CreationExecutionRoute.MobileKey) {
-                        mobileProviderPayload(connection, sessionId)
-                    } else null
                     val result = api.novelCreationAgentTurn(
                         connection,
                         buildJsonObject {
@@ -2716,8 +2127,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                             CreationAgentTurnRecords.gatewayConversationId(current)
                                 .takeIf(String::isNotBlank)
                                 ?.let { put("conversation_id", it) }
-                            put("model_route", if (mobileProvider == null) "pc" else "mobile")
-                            mobileProvider?.let { put("mobile_provider", it) }
+                            put("model_route", "pc")
                         },
                     ) { event ->
                         val data = event["data"] as? JsonObject ?: JsonObject(emptyMap())
@@ -2952,15 +2362,12 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             onProgress("正在由 PC 权威建档服务生成${creationStageLabel(stage)}…")
             val payload = buildJsonObject {
                 put("stage", stage)
-                put("model_route", if (route == CreationExecutionRoute.MobileKey) "mobile" else "pc")
+                put("model_route", "pc")
                 put("use_model", true)
                 put("auto_confirm", false)
                 put("operation", operation)
                 put("expected_revision", current.int("revision"))
                 if (instruction.isNotBlank()) put("instruction", instruction.trim())
-                if (route == CreationExecutionRoute.MobileKey) {
-                    put("mobile_provider", mobileProviderPayload(connection, sessionId))
-                }
             }
             val started = api.startNovelCreationRun(connection, sessionId, payload)
             val run = started["run"] as? JsonObject ?: started
@@ -3127,16 +2534,11 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         requireCreationReady(current)
         val route = creationRoute(current)
         val executionHost = creationHost(current)
-        val connection = dao.connection()
         val projectId = when {
             executionHost == CREATION_HOST_GATEWAY -> {
                 onProgress("正在通过 PC 立项服务创建正式作品…")
                 val finalized = api.finalizeNovelCreation(requireConnection(), sessionId)
                 finalized.string("project_id").ifBlank { error("PC 建档结果缺少 project_id") }
-            }
-            connection != null -> {
-                onProgress("正在把手机 V3 草稿提交给 PC 的正式建档流程…")
-                applyLocalCreationThroughPc(connection, current, onProgress)
             }
             else -> {
                 onProgress("正在手机本地建立作品、角色、设定与大纲档案…")
@@ -3145,21 +2547,28 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         }
         val completed = mobileCreationAgent.markCompleted(current, projectId)
         saveCreationSession(tagCreationRoute(completed, route, executionHost))
-        if (connection != null) {
+        if (executionHost == CREATION_HOST_GATEWAY) {
             onProgress("正在下载正式作品的可离线副本…")
             bootstrapEnabledProjects()
         }
         return projectId
     }
 
+    suspend fun continueCreationOnPhone(sessionId: String): JsonObject = database.withTransaction {
+        val current = loadCreationSession(sessionId)
+        require(current.string("status") != "completed" && current.string("created_project_id").isBlank()) { "此立项已生成正式作品" }
+        if (creationRoute(current) == CreationExecutionRoute.MobileKey) return@withTransaction current
+        val local = tagCreationRoute(
+            CreationAgentTurnRecords.recoverInterruptedTurns(CreationAgentTurnRecords.detachGatewayContext(current)),
+            CreationExecutionRoute.MobileKey, CREATION_HOST_DEVICE,
+        )
+        saveCreationSession(local)
+        local
+    }
+
     suspend fun discardCreation(sessionId: String) {
         val key = ReplicaEntity.key(CREATION_REPLICA_PROJECT, "creation_session", sessionId)
         val entity = dao.entity(key) ?: return
-        val session = entity.payloadJson
-            ?.let { json.parseToJsonElement(it) as? JsonObject }
-        if (session != null && creationHost(session) == CREATION_HOST_GATEWAY) {
-            api.deleteNovelCreationSession(requireConnection(), sessionId)
-        }
         dao.saveEntity(entity.copy(operation = "delete", localModifiedAt = System.currentTimeMillis()))
     }
 
@@ -3248,7 +2657,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
 
     private suspend fun storedCreationSession(sessionId: String): JsonObject? {
         val key = ReplicaEntity.key(CREATION_REPLICA_PROJECT, "creation_session", sessionId)
-        val raw = dao.entity(key)?.payloadJson ?: return null
+        val raw = dao.entity(key)?.takeIf { it.operation == "upsert" }?.payloadJson ?: return null
         return json.parseToJsonElement(raw) as? JsonObject
     }
 
@@ -3272,30 +2681,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         }
 
     private fun creationHost(session: JsonObject): String =
-        session.draft().string("execution_host").ifBlank {
-            if (creationRoute(session) == CreationExecutionRoute.Pc) {
-                CREATION_HOST_GATEWAY
-            } else {
-                CREATION_HOST_DEVICE
-            }
-        }
-
-    private suspend fun mobileProviderPayload(
-        connection: GatewayConnection,
-        sessionId: String,
-    ): JsonObject {
-        val envelope = MobileProviderEncryption.seal(
-            requireMobileProviderCapacity(resolvedDirectConfig(DirectApiConfig.TASK_PLANNING)),
-            connection,
-            sessionId,
-        )
-        return buildJsonObject {
-            put("version", envelope.version)
-            put("ephemeral_public_key", envelope.ephemeralPublicKey)
-            put("nonce", envelope.nonce)
-            put("ciphertext", envelope.ciphertext)
-        }
-    }
+        if (creationRoute(session) == CreationExecutionRoute.Pc) CREATION_HOST_GATEWAY else CREATION_HOST_DEVICE
 
     private fun ensureSelectedConcept(data: JsonObject): JsonObject {
         if (data.string("selected_concept_id").isNotBlank()) return data
@@ -3327,61 +2713,6 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 .joinToString("；")
             blocking.ifBlank { "最终审阅尚未通过" }
         }
-    }
-
-    private suspend fun applyLocalCreationThroughPc(
-        connection: GatewayConnection,
-        local: JsonObject,
-        onProgress: suspend (String) -> Unit,
-    ): String {
-        val draft = local.draft()
-        val form = draft.objectValue("form")
-        var remote = api.startNovelCreation(
-            connection,
-            buildJsonObject {
-                put("mode", "internal_llm")
-                put("user_brief", local.string("user_brief"))
-                listOf("target_audience", "genre", "platform").forEach { key ->
-                    put(key, form[key] ?: JsonPrimitive(local.string(key)))
-                }
-                listOf(
-                    "preset_id", "theme_id", "target_words", "target_chapters", "world_tone",
-                    "story_structure", "pacing", "writing_style", "special_requirements", "avoid",
-                    "author_overrides",
-                ).forEach { key -> form[key]?.let { put(key, it) } }
-                put("creation_mode", draft.string("creation_mode"))
-                put("author_brief", draft.string("author_brief"))
-                put("author_outline", draft.string("author_outline"))
-                put("locked_requirements", draft["locked_requirements"] ?: JsonArray(emptyList()))
-            },
-        )
-        val remoteId = remote.string("id")
-        for (stage in CREATION_STAGE_ORDER) {
-            val state = local.stageState(stage)
-            if (state.string("status") != "confirmed") continue
-            var data = state["data"] as? JsonObject ?: continue
-            if (stage == "concepts") data = ensureSelectedConcept(data)
-            if (stage == "characters") data = mobileCreationAgent.openingContract.transferCharacters(local, data)
-            if (stage == "macro_outline") data = mobileCreationAgent.openingContract.transferVolumes(local, data)
-            if (stage == "opening_outline") {
-                data = mobileCreationAgent.openingContract.transferOpening(data, remote["volume_index"] as JsonArray, remote["character_index"] as JsonArray)
-            }
-            onProgress("正在提交${creationStageLabel(stage)}…")
-            remote = api.confirmNovelCreationStage(
-                connection,
-                remoteId,
-                stage,
-                buildJsonObject {
-                    put("data", data)
-                    put("confirm", true)
-                    put("source", "author")
-                    put("expected_revision", remote.int("revision"))
-                },
-            )
-        }
-        onProgress("结构校验通过，正在执行 PC 正式建档…")
-        val finalized = api.finalizeNovelCreation(connection, remoteId)
-        return finalized.string("project_id").ifBlank { error("PC 建档结果缺少 project_id") }
     }
 
     private suspend fun archiveLocalCreation(session: JsonObject): String {
@@ -3622,12 +2953,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     private fun creationConversationStorageId(sessionId: String): String =
         "creation-${sha256(sessionId).take(32)}"
 
-    private fun requireMobileProviderCapacity(config: DirectApiConfig): DirectApiConfig =
-        config.withContextWindowFallback()
-
     companion object {
         private const val MAX_ENTITY_BYTES = 1024 * 1024
-        private const val MAX_PUSH_BYTES = 6 * 1024 * 1024
         private const val CREATION_REPLICA_PROJECT = "__novel_creation__"
         private const val CREATION_HOST_GATEWAY = "gateway"
         private const val CREATION_HOST_DEVICE = "device"
@@ -3664,18 +2991,6 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             "superseded",
         )
         private val GOVERNANCE_ENTITY_TYPES = setOf("foreshadowing", "governance")
-        private val CANONICAL_DELETABLE_ENTITY_TYPES = setOf("chapter", "outline", "character", "world")
-        private val CANONICAL_ENTITY_TYPES = CANONICAL_DELETABLE_ENTITY_TYPES +
-            GOVERNANCE_ENTITY_TYPES + "project"
-        private val RECORD_TYPES = mapOf(
-            "project" to "project",
-            "chapter" to "chapter",
-            "outline" to "outline_node",
-            "character" to "character",
-            "world" to "world_entry",
-            "foreshadowing" to "foreshadowing",
-            "governance" to "narrative_debt",
-        )
         private val syncMutex = Mutex()
         private val canonicalCommandMutex = Mutex()
         private val draftSaveMutex = Mutex()
@@ -3688,7 +3003,6 @@ sealed interface SyncOutcome {
 
 enum class AssistantRoute {
     GatewayPc,
-    GatewayMobileKey,
     DirectApi,
 }
 

@@ -36,6 +36,10 @@ internal object CreationAgentTurnRecords {
     fun checkpointDetail(session: JsonObject): JsonObject? =
         session.objectValue("draft")[CHECKPOINT_DETAIL_KEY] as? JsonObject
 
+    fun detachGatewayContext(session: JsonObject): JsonObject = JsonObject(session + (
+        "draft" to JsonObject(session.objectValue("draft") - setOf(GATEWAY_CONVERSATION_KEY, CONTEXT_STATE_KEY, CHECKPOINT_DETAIL_KEY))
+        ))
+
     /** Keep local routing/conversation storage out of the business snapshot sent to the model. */
     fun agentVisibleDraft(session: JsonObject): JsonObject = JsonObject(
         session.objectValue("draft").filterKeys { it !in INTERNAL_DRAFT_KEYS },

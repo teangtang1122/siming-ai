@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import ValidationError
 from app.database.models import (
     Chapter,
     Character,
@@ -111,16 +112,28 @@ class SqlAlchemyCharacterWorkspace:
         character_id: str,
         relationships: Sequence[Any],
     ) -> None:
-        self.delete_relationships(project_id, character_id)
         seen_pairs: set[tuple[str, str]] = set()
+        endpoint_ids = {character_id}
         for item in relationships:
             source_id = item.source_character_id or character_id
             pair = (source_id, item.target_character_id)
+            if character_id not in pair:
+                raise ValidationError("提交的关系必须连接当前角色")
+            if source_id == item.target_character_id:
+                raise ValidationError("角色不能与自身建立关系")
             if pair in seen_pairs:
-                raise ValueError("同一方向的两个角色只能保留一条现行关系")
+                raise ValidationError("同一方向的两个角色只能保留一条现行关系")
             seen_pairs.add(pair)
+            endpoint_ids.update(pair)
+        if not self.targets_exist(project_id, endpoint_ids):
+            raise ValidationError("关系两端角色必须属于当前作品")
+        self.delete_relationships(project_id, character_id)
+        self.db.flush()
+        for item in relationships:
+            source_id = item.source_character_id or character_id
             self.db.add(
                 CharacterRelationship(
+                    **({"id": item.id} if getattr(item, "id", None) else {}),
                     project_id=project_id,
                     character_a_id=source_id,
                     character_b_id=item.target_character_id,

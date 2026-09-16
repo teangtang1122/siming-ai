@@ -38,7 +38,6 @@ import com.siming.mobile.data.network.PcEditableRelationship
 import com.siming.mobile.data.network.pcEditableRelationships
 import com.siming.mobile.data.network.pcNewRelationship
 import com.siming.mobile.data.network.pcRelationshipMutationPayload
-import com.siming.mobile.data.network.mobileRefreshWarning
 import com.siming.mobile.data.toUserFacingMessage
 import com.siming.mobile.data.formatApiDateTime
 import kotlinx.coroutines.launch
@@ -72,11 +71,7 @@ internal fun ChapterOrderDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    if (online) {
-                        "顺序会一次性提交给 PC 的章节重排接口，由 PC 统一维护 authoritative sort_order。"
-                    } else {
-                        "需要连接 PC Gateway 才能重排；离线状态不会在手机端猜测 sort_order。"
-                    },
+                    "调整全书阅读顺序，保存后立即在手机生效。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -117,17 +112,17 @@ internal fun ChapterOrderDialog(
         },
         confirmButton = {
             Button(
-                enabled = online && ordered.isNotEmpty() && !saving,
+                enabled = ordered.isNotEmpty() && !saving,
                 onClick = {
                     scope.launch {
                         saving = true
                         try {
-                            val result = viewModel.reorderChapters(
+                            viewModel.reorderChapters(
                                 projectId,
                                 ordered.map(ReplicaEntity::entityId),
                             )
                             viewModel.reportNotice(
-                                canonicalWriteNotice("章节顺序已由 PC 端统一更新", result),
+                                "章节顺序已保存到手机",
                             )
                             onDismiss()
                         } catch (error: Exception) {
@@ -163,7 +158,6 @@ internal fun ChapterHistoryDialog(
     var restoring by remember { mutableStateOf(false) }
 
     fun reload() {
-        if (!online) return
         scope.launch {
             loading = true
             try {
@@ -187,13 +181,11 @@ internal fun ChapterHistoryDialog(
                 Modifier.heightIn(max = 580.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (!online) {
-                    Text("版本历史、diff 和恢复属于 PC 领域命令，需要连接 Gateway。")
-                } else if (loading && snapshots.isEmpty()) {
+                if (loading && snapshots.isEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.height(20.dp).width(20.dp))
                         Spacer(Modifier.width(10.dp))
-                        Text("正在读取 PC 章节快照…")
+                        Text("正在读取章节快照…")
                     }
                 }
 
@@ -276,7 +268,7 @@ internal fun ChapterHistoryDialog(
                 diff?.let { result ->
                     HorizontalDivider()
                     Text(
-                        "PC diff · ${result.int("total_changes")} 处变化",
+                        "版本差异 · ${result.int("total_changes")} 处变化",
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
@@ -285,8 +277,8 @@ internal fun ChapterHistoryDialog(
                         fontFamily = FontFamily.Monospace,
                     )
                 }
-                if (snapshots.isEmpty() && !loading && online) {
-                    Text("PC 尚未保存章节快照。")
+                if (snapshots.isEmpty() && !loading) {
+                    Text("暂无章节快照。保存正文后会记录版本。")
                 }
             }
         },
@@ -300,7 +292,7 @@ internal fun ChapterHistoryDialog(
             onDismissRequest = { if (!restoring) restoreCandidate = null },
             title = { Text("恢复到 v${snapshot.int("version_number")}") },
             text = {
-                Text("PC 会创建新的 restore 版本、恢复对应 ledger checkpoint，并把受影响的旧治理结论标记为需要复检。")
+                Text("将把所选正文保存为新版本。本章及后续章节的建档结果会失效，需要重新建档；已有手动修改会保留。")
             },
             confirmButton = {
                 Button(
@@ -312,7 +304,7 @@ internal fun ChapterHistoryDialog(
                         val snapshotId = snapshot.string("id")
                         scope.launch {
                             try {
-                                val result = viewModel.restoreChapterSnapshot(
+                                viewModel.restoreChapterSnapshot(
                                     projectId,
                                     chapter.entityId,
                                     snapshotId,
@@ -320,12 +312,9 @@ internal fun ChapterHistoryDialog(
                                 restoreCandidate = null
                                 detail = null
                                 diff = null
-                                if (result.mobileRefreshWarning().isBlank()) reload()
+                                reload()
                                 viewModel.reportNotice(
-                                    canonicalWriteNotice(
-                                        "章节已通过 PC 版本系统恢复，并同步最新副本",
-                                        result,
-                                    ),
+                                    "章节已恢复为新版本，请重新建档",
                                 )
                             } catch (error: Exception) {
                                 viewModel.reportError(error.toUserFacingMessage())
@@ -377,7 +366,6 @@ internal fun CharacterAdvancedDialog(
     var versionDetail by remember { mutableStateOf<JsonObject?>(null) }
 
     fun loadAll() {
-        if (!online) return
         scope.launch {
             loading = true
             try {
@@ -404,10 +392,6 @@ internal fun CharacterAdvancedDialog(
                 Modifier.heightIn(max = 620.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (!online) {
-                    Text("关系网、角色 AI 配置和版本历史属于 PC 专用领域能力，需要连接 Gateway。")
-                    return@Column
-                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     CharacterAdvancedTab.entries.forEach { item ->
                         AssistChip(
@@ -431,18 +415,15 @@ internal fun CharacterAdvancedDialog(
                                 loading = true
                                 try {
                                     val payload = JsonArray(relations.map(::pcRelationshipMutationPayload))
-                                    val result = viewModel.replaceCharacterRelationships(
+                                    viewModel.replaceCharacterRelationships(
                                         projectId,
                                         character.entityId,
                                         payload,
                                     )
                                     viewModel.reportNotice(
-                                        canonicalWriteNotice(
-                                            "角色关系已由 PC 关系网接口统一保存",
-                                            result,
-                                        ),
+                                        "角色关系已保存到手机",
                                     )
-                                    if (result.mobileRefreshWarning().isBlank()) loadAll()
+                                    loadAll()
                                 } catch (error: Exception) {
                                     viewModel.reportError(error.toUserFacingMessage())
                                 } finally {
@@ -458,18 +439,15 @@ internal fun CharacterAdvancedDialog(
                             scope.launch {
                                 loading = true
                                 try {
-                                    val result = viewModel.updateCharacterAiConfig(
+                                    viewModel.updateCharacterAiConfig(
                                         projectId,
                                         character.entityId,
                                         aiConfigPayload(aiConfig),
                                     )
                                     viewModel.reportNotice(
-                                        canonicalWriteNotice(
-                                            "角色 AI 配置已通过 PC 专用接口保存",
-                                            result,
-                                        ),
+                                        "角色 AI 配置已保存到手机",
                                     )
-                                    if (result.mobileRefreshWarning().isBlank()) loadAll()
+                                    loadAll()
                                 } catch (error: Exception) {
                                     viewModel.reportError(error.toUserFacingMessage())
                                 } finally {
@@ -525,7 +503,6 @@ internal fun WorldAdvancedDialog(
     var timeline by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
 
     LaunchedEffect(entry.entityId, online) {
-        if (!online) return@LaunchedEffect
         loading = true
         try {
             versions = viewModel.worldVersions(projectId, entry.entityId).arrayObjects("items")
@@ -545,12 +522,8 @@ internal fun WorldAdvancedDialog(
                 Modifier.heightIn(max = 600.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (!online) {
-                    Text("世界观版本和时间线由 PC 维护，需要连接 Gateway 才能查看。")
-                    return@Column
-                }
                 Text(
-                    "世界观关系目前没有 PC 专用 HTTP 编辑路由，手机只保留同步数据，不自行发明写接口。",
+                    "这里保留世界观建档版本与事件时间线，可直接在手机查看。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -619,7 +592,7 @@ private fun RelationshipEditor(
         it.string("id") != currentCharacterId && it.string("id") !in existingCounterparts
     }
     Text(
-        "PC 的关系更新是“替换当前角色的全部关系”。手机会保留每条边的原始方向，避免从终点角色保存时反转语义。",
+        "保存会替换当前角色的全部关系，并保留每条关系的原始方向。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -792,11 +765,6 @@ private fun formatPcSnapshotDiff(result: JsonObject): String {
             chunk.stringList("to_lines").take(8).forEach { append("+ ").append(it).append('\n') }
         }.trimEnd()
     }
-}
-
-private fun canonicalWriteNotice(success: String, result: JsonObject): String {
-    val warning = result.mobileRefreshWarning()
-    return if (warning.isBlank()) success else "$success；手机副本待刷新：$warning"
 }
 
 private fun <T> List<T>.replaceAt(index: Int, value: T): List<T> =

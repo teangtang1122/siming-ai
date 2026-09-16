@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_valid
 
 SYNC_PROTOCOL_VERSION = 1
 SYNC_ENTITY_TYPES = (
+    "authoring_command",
     "project",
     "chapter",
     "chapter_version",
@@ -26,6 +27,7 @@ SYNC_ENTITY_TYPES = (
 )
 
 EntityType = Literal[
+    "authoring_command",
     "project",
     "chapter",
     "chapter_version",

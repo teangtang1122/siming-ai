@@ -98,16 +98,16 @@ internal fun ChapterWorkspace(
                     }
                     OutlinedButton(
                         onClick = onManageOrder,
-                        enabled = online && chapters.size > 1,
+                        enabled = chapters.size > 1,
                     ) {
                         Icon(Icons.Outlined.SwapVert, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("排序")
                     }
                 }
-                if (!online && chapters.size > 1) {
+                if (chapters.size > 1) {
                     Text(
-                        "当前可离线阅读和编辑；调整全书章节顺序需要连接 PC Gateway。",
+                        "章节顺序、正文和版本历史均可在手机管理。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -201,7 +201,7 @@ internal fun PendingChapterDraftEditorScreen(
                             else "确认 AI 章节草稿",
                         )
                         Text(
-                            if (draft.executionRoute == "android_standalone") "手机独立草稿" else "PC 工作流草稿",
+                            "手机未保存草稿",
                             style = MaterialTheme.typography.labelSmall,
                         )
                     }
@@ -334,7 +334,7 @@ internal fun PendingChapterDraftEditorScreen(
                     showingFormalText -> "当前正式正文 · 只读对比"
                     draft.versionConflict -> "修订候选已保留，但版本冲突时禁止覆盖保存"
                     draft.revision -> "${content.count { !it.isWhitespace() }} 字 · 修订候选，保存后更新原章节"
-                    online -> "${content.count { !it.isWhitespace() }} 字 · 确认满意后再建档"
+                    saveState.canCatalog -> "${content.count { !it.isWhitespace() }} 字 · 确认满意后再建档"
                     else -> "${content.count { !it.isWhitespace() }} 字 · 正文保存在手机；配置手机 API 后可独立建档"
                 },
                 style = MaterialTheme.typography.labelSmall,
@@ -659,7 +659,7 @@ internal fun ChapterEditorScreen(
                     textStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
                 )
                 Text(
-                    "${content.count { !it.isWhitespace() }} 字 · ${if (connection != null) "点击保存后提交到 Gateway" else "点击保存后保存在手机"}",
+                    "${content.count { !it.isWhitespace() }} 字 · 点击保存后保存在手机",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -706,12 +706,12 @@ internal fun ChapterEditorScreen(
                         showMore = false
                         onOpenHistory?.invoke()
                     },
-                    enabled = connection != null && onOpenHistory != null,
+                    enabled = onOpenHistory != null,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Icon(Icons.Outlined.History, null)
                     Spacer(Modifier.width(9.dp))
-                    Text(if (connection != null) "版本历史" else "版本历史需要连接 PC")
+                    Text("版本历史")
                     Spacer(Modifier.weight(1f))
                 }
                 TextButton(
@@ -735,7 +735,7 @@ internal fun ChapterEditorScreen(
         AlertDialog(
             onDismissRequest = { showDelete = false },
             title = { Text("删除《${title.ifBlank { "未命名章节" }}》？") },
-            text = { Text("删除会进入现有可靠同步流程；已同步作品不会绕过 PC 的版本与删除保护。") },
+            text = { Text("将从手机删除本章。已配置同步时，删除会进入待同步记录。") },
             confirmButton = {
                 TextButton(
                     onClick = {

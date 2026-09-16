@@ -15,6 +15,16 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface SimingDao {
+    @Query("SELECT DISTINCT projectId FROM replica_entities WHERE entityType = 'local_receipt' AND operation = 'delete'")
+    suspend fun acknowledgedAuthoringProjects(): List<String>
+    @Query("SELECT projectId FROM excluded_projects")
+    suspend fun excludedProjectIds(): List<String>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun excludeProject(project: ExcludedProject)
+
+    @Query("DELETE FROM excluded_projects WHERE projectId = :projectId")
+    suspend fun includeProject(projectId: String)
     @Query("SELECT * FROM local_cataloging_runs WHERE id = :id")
     suspend fun catalogingRun(id: String): LocalCatalogingRun?
 
@@ -30,7 +40,7 @@ interface SimingDao {
     @Query("UPDATE local_cataloging_runs SET status = :status, error = :error, updatedAt = :now WHERE id = :id AND status = 'running'")
     suspend fun stopCatalogingRun(id: String, status: String, error: String, now: String)
 
-    @Query("SELECT * FROM local_cataloging_runs WHERE status = 'completed' AND syncState IN ('pending', 'refresh_pending') ORDER BY createdAt, rowid")
+    @Query("SELECT * FROM local_cataloging_runs WHERE status IN ('completed', 'invalidated') AND syncState IN ('pending', 'refresh_pending') ORDER BY createdAt, rowid")
     suspend fun pendingCatalogingCommits(): List<LocalCatalogingRun>
 
     @Query("UPDATE sync_outbox SET catalogingBarrierId = :runId WHERE projectId = :projectId AND catalogingBarrierId IS NULL AND state IN ('pending', 'sending')")
@@ -82,13 +92,14 @@ interface SimingDao {
 
     @Query(
         "SELECT * FROM replica_entities WHERE projectId = :projectId " +
+            "AND entityType NOT IN ('local_receipt', 'authoring_command') " +
             "AND operation = 'upsert' ORDER BY localModifiedAt DESC",
     )
     suspend fun projectSnapshot(projectId: String): List<ReplicaEntity>
 
     @Query(
         "SELECT * FROM replica_entities WHERE projectId = :projectId " +
-            "ORDER BY localModifiedAt DESC",
+            "AND entityType NOT IN ('local_receipt', 'authoring_command') ORDER BY localModifiedAt DESC",
     )
     suspend fun projectPackageSnapshot(projectId: String): List<ReplicaEntity>
 
@@ -157,7 +168,7 @@ interface SimingDao {
         "SELECT " +
             "(SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')) + " +
             "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading')) + " +
-            "(SELECT COUNT(*) FROM local_cataloging_runs WHERE status = 'completed' AND syncState IN ('pending', 'refresh_pending'))",
+            "(SELECT COUNT(*) FROM local_cataloging_runs WHERE status IN ('completed', 'invalidated') AND syncState IN ('pending', 'refresh_pending'))",
     )
     fun observePendingCount(): Flow<Int>
 
@@ -165,7 +176,7 @@ interface SimingDao {
         "SELECT " +
             "(SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')) + " +
             "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading')) + " +
-            "(SELECT COUNT(*) FROM local_cataloging_runs WHERE status = 'completed' AND syncState IN ('pending', 'refresh_pending'))",
+            "(SELECT COUNT(*) FROM local_cataloging_runs WHERE status IN ('completed', 'invalidated') AND syncState IN ('pending', 'refresh_pending'))",
     )
     suspend fun pendingMutationCount(): Int
 
@@ -239,8 +250,9 @@ interface SimingDao {
         LocalConflict::class,
         StoredProjectPackage::class,
         LocalCatalogingRun::class,
+        ExcludedProject::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class SimingDatabase : RoomDatabase() {
@@ -255,7 +267,7 @@ abstract class SimingDatabase : RoomDatabase() {
                 SimingDatabase::class.java,
                 "siming-mobile.db",
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
                 .also { instance = it }
         }
@@ -263,6 +275,13 @@ abstract class SimingDatabase : RoomDatabase() {
         internal val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 restoreImportedChapterCatalogingState(db)
+            }
+        }
+
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `excluded_projects` (`projectId` TEXT NOT NULL, PRIMARY KEY(`projectId`))")
+                migrateMobileCreationHosts(db)
             }
         }
 

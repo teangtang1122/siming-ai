@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {"from":"open","to":"pending_review","values":{"resolved_chapter_id":"c","resolution_note":"已经修订正文"},"valid":true},
+    {"from":"open","to":"pending_review","values":{"resolution_note":"已经修订正文"},"valid":false},
+    {"from":"open","to":"fulfilled","values":{"resolved_chapter_id":"c","resolution_note":"已经修订正文","verification_note":"复核内容属实"},"valid":false},
+    {"from":"pending_review","to":"fulfilled","values":{"resolved_chapter_id":"c","resolution_note":"已经修订正文","verification_note":"复核内容属实"},"valid":true},
+    {"from":"pending_review","to":"fulfilled","values":{"resolved_chapter_id":"c","resolution_note":"已经修订正文"},"valid":false},
+    {"from":"open","to":"deferred","values":{"target_chapter_number":8},"valid":true},
+    {"from":"open","to":"deferred","values":{},"valid":false},
+    {"from":"fulfilled","to":"open","values":{"resolution_note":"正文再次发生变化"},"valid":true},
+    {"from":"fulfilled","to":"open","values":{},"valid":false},
+    {"from":"stale","to":"pending_review","values":{"resolved_chapter_id":"c","resolution_note":"已按新正文核对"},"valid":true},
+    {"from":"open","to":"stale","values":{},"valid":false},
+    {"from":"open","to":"abandoned","values":{"resolution_note":"作者调整后续情节"},"valid":true},
+    {"from":"open","to":"abandoned","values":{"resolution_note":"放弃"},"valid":false}
+  ]
+}

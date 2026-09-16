@@ -793,6 +793,9 @@ def apply_domain_mutation(
         actual_project = project_id_for_record(db, row, spec)
         if actual_project != project_id:
             raise ValidationError("不能删除其他作品中的记录")
+        if spec.model is Chapter:
+            SqlAlchemyChapterWorkspace(db).delete(project_id, entity_id)
+            return
         db.delete(row)
         db.flush()
         return
@@ -874,6 +877,7 @@ def apply_domain_mutation(
         row.word_count = count_words(row.content or "")
         db.flush()
     if spec.model is Chapter and not row_existed:
+        row.cataloging_required = bool((row.content or "").strip())
         db.add(create_snapshot(row, "manual_save"))
         create_narrative_checkpoint(
             db,

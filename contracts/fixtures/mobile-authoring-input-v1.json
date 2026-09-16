@@ -1,0 +1,151 @@
+{
+  "schema": "mobile-authoring-input.v1",
+  "cases": [
+    {
+      "name": "project_title_unicode_boundary",
+      "type": "project",
+      "payload": {
+        "title": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂"
+      },
+      "valid": true
+    },
+    {
+      "name": "project_title_too_long",
+      "type": "project",
+      "payload": {
+        "title": "甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"
+      },
+      "valid": false
+    },
+    {
+      "name": "negative_daily_target",
+      "type": "project",
+      "payload": {
+        "title": "作品",
+        "daily_word_goal": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "chapter_title_too_long",
+      "type": "chapter",
+      "payload": {
+        "title": "甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲",
+        "content": "正文"
+      },
+      "valid": false
+    },
+    {
+      "name": "character_name_boundary",
+      "type": "character",
+      "payload": {
+        "name": "甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"
+      },
+      "valid": true
+    },
+    {
+      "name": "character_name_too_long",
+      "type": "character",
+      "payload": {
+        "name": "甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"
+      },
+      "valid": false
+    },
+    {
+      "name": "character_age_too_long",
+      "type": "character",
+      "payload": {
+        "name": "人物",
+        "age": "甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"
+      },
+      "valid": false
+    },
+    {
+      "name": "config_model_too_long",
+      "type": "character_ai_config",
+      "payload": {
+        "model_override": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": false
+    },
+    {
+      "name": "outline_invalid_type",
+      "type": "outline",
+      "payload": {
+        "title": "卷",
+        "node_type": "scene",
+        "status": "pending"
+      },
+      "valid": false
+    },
+    {
+      "name": "outline_invalid_state",
+      "type": "outline",
+      "payload": {
+        "title": "卷",
+        "node_type": "volume",
+        "status": "done"
+      },
+      "valid": false
+    },
+    {
+      "name": "outline_negative_order",
+      "type": "outline",
+      "payload": {
+        "title": "卷",
+        "node_type": "volume",
+        "status": "pending",
+        "sort_order": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "outline_role_too_long",
+      "type": "outline",
+      "payload": {
+        "title": "章",
+        "node_type": "chapter",
+        "status": "pending",
+        "characters": [
+          {
+            "character_id": "actual-id",
+            "role_in_scene": "甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "world_empty_content",
+      "type": "world",
+      "payload": {
+        "title": "地理",
+        "dimension": "geography",
+        "content": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "world_valid",
+      "type": "world",
+      "payload": {
+        "title": "地理",
+        "dimension": "geography",
+        "content": "东有高山",
+        "sort_order": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "world_negative_order",
+      "type": "world",
+      "payload": {
+        "title": "地理",
+        "dimension": "geography",
+        "content": "东有高山",
+        "sort_order": -1
+      },
+      "valid": false
+    }
+  ]
+}

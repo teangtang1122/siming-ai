@@ -560,6 +560,18 @@ class ProjectPackageImporter:
         self.db.flush()
         return ProjectPackageImportOutcome(result, self.moved_asset_directories)
 
+    def record_sync_import_cursor(self, outcome: ProjectPackageImportOutcome, cursor: int) -> None:
+        if outcome.replayed or cursor <= 0:
+            raise ProjectPackageError(ERROR_CONFLICT, "项目包初始同步版本无效", 409)
+        receipt = (
+            self.db.query(ProjectPackageImportReceipt)
+            .filter_by(idempotency_key=self.idempotency_key)
+            .one()
+        )
+        outcome.result["sync_import_cursor"] = cursor
+        receipt.result_json = dict(outcome.result)
+        self.db.flush()
+
     def _claim_receipt(self) -> dict[str, Any] | None:
         existing = (
             self.db.query(ProjectPackageImportReceipt)

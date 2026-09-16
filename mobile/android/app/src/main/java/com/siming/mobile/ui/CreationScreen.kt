@@ -94,9 +94,6 @@ internal fun CreationScreen(
     val active = drafts.firstOrNull { it.entityId == ui.activeCreationId }?.creationPayload()
     var showDossier by rememberSaveable(ui.activeCreationId) { mutableStateOf(false) }
 
-    LaunchedEffect(connection?.deviceId) {
-        if (connection != null) viewModel.refreshCreationDrafts()
-    }
 
     when {
         ui.activeCreationId != null && active == null -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -133,6 +130,7 @@ internal fun CreationScreen(
             onOpenDossier = { showDossier = true },
             onSend = { message -> viewModel.sendCreationMessage(active.string("id"), message) },
             onDiscard = { viewModel.discardCreation(active.string("id")) },
+            onContinueOnPhone = { viewModel.continueCreationOnPhone(active.string("id")) },
             onConfigureApi = onConfigureApi,
             onOpenProject = onOpenProject,
         )
@@ -173,7 +171,7 @@ private fun CreationLanding(
     var brief by rememberSaveable { mutableStateOf("") }
     var creationMode by rememberSaveable { mutableStateOf("author_led") }
     var route by rememberSaveable(connection?.deviceId, directApi?.model) {
-        mutableStateOf(if (connection != null) CreationExecutionRoute.Pc else CreationExecutionRoute.MobileKey)
+        mutableStateOf(CreationExecutionRoute.MobileKey)
     }
     var advanced by rememberSaveable { mutableStateOf(false) }
     var authorOutline by rememberSaveable { mutableStateOf("") }
@@ -404,18 +402,11 @@ private fun CreationLanding(
                     selected = route == CreationExecutionRoute.MobileKey,
                     icon = if (directApi == null) Icons.Outlined.Key else Icons.Outlined.PhoneAndroid,
                     title = "使用手机保存的 Key",
-                    detail = directApi?.let {
-                        if (connection == null) {
-                            "${it.displayName} · ${it.model} · 手机直接调用"
-                        } else {
-                            "${it.displayName} · ${it.model} · 单次加密后由 PC 原生立项引擎执行"
-                        }
-                    }
+                    detail = directApi?.let { "${it.displayName} · ${it.model} · 手机直接调用" }
                         ?: "还没有配置；配置后无需 Gateway 也能完整立项",
                     badge = when {
                         directApi == null -> "去配置"
-                        connection != null -> "PC 原生流程"
-                        else -> "PC 同源 Agent"
+                        else -> "手机独立运行"
                     },
                     onClick = {
                         if (directApi == null) onConfigureApi() else route = CreationExecutionRoute.MobileKey

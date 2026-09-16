@@ -69,15 +69,21 @@ internal fun isPendingMobileChapterDraft(
     ) == null
 }
 
-internal fun mobileImportedChapterDraft(projectId: String, snapshot: List<ReplicaEntity>): JsonObject? =
+internal fun mobileImportedChapterDraft(projectId: String, snapshot: List<ReplicaEntity>, draftId: String? = null): JsonObject? =
     writingRecords(projectId, snapshot, "chapter_draft").asReversed().asSequence()
+        .filter { draftId == null || it.text("id") == draftId }
         .map { payload ->
+            val target = writingRecords(projectId, snapshot, "chapter").firstOrNull { it.text("id") == payload.text("target_chapter_id") }
             JsonObject(payload + mapOf(
                 "draft_id" to JsonPrimitive(payload.text("id")),
                 "content_ref" to JsonPrimitive(payload.text("id")),
                 "draft_status" to JsonPrimitive(payload.text("status")),
                 "execution_route" to JsonPrimitive("project_package"),
-            ))
+            ) + if (payload.text("draft_kind") == "revision") mapOf(
+                "target_chapter_current_version" to (target?.get("current_version") ?: JsonNull),
+                "target_chapter_title" to (target?.get("title") ?: JsonNull),
+                "target_chapter_content" to (target?.get("content") ?: JsonNull),
+            ) else emptyMap())
         }
         .firstOrNull { isPendingMobileChapterDraft(projectId, snapshot, it) }
 
@@ -85,15 +91,16 @@ internal fun mobileImportedChapterDraft(projectId: String, snapshot: List<Replic
 internal fun mobileChapterPayloadForSave(current: JsonObject?, payload: JsonObject): JsonObject {
     val merged = JsonObject(current.orEmpty() + payload)
     val content = merged.text("content")
+    val semanticChange = current == null || listOf("content", "title", "outline_node_id").any { current.text(it) != merged.text(it) }
     val required = when {
         content.isBlank() -> false
-        current == null || current.text("content") != content -> true
-        else -> current.catalogingRequired()
+        semanticChange -> true
+        else -> current?.catalogingRequired()
     }
     val version = (current?.get("current_version") as? JsonPrimitive)?.intOrNull ?: 1
     return JsonObject((merged - "cataloging_required") +
         (required?.let { mapOf("cataloging_required" to JsonPrimitive(it)) } ?: emptyMap()) +
-        mapOf("current_version" to JsonPrimitive(if (current != null && current.text("content") != content) version + 1 else version),
+        mapOf("current_version" to JsonPrimitive(if (current != null) version + 1 else version),
             "word_count" to JsonPrimitive(content.count { !it.isWhitespace() })))
 }
 

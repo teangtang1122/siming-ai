@@ -1,6 +1,9 @@
 package com.siming.mobile.data
 
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.export.ExportParagraph
+import com.siming.mobile.data.export.exportDocx
+import com.siming.mobile.data.export.exportPdf
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -47,25 +50,33 @@ internal fun exportMimeType(format: String): String = when (format.lowercase()) 
 internal fun buildLocalNovelExport(
     project: ReplicaEntity,
     chapters: List<ReplicaEntity>,
+    format: String = "txt",
 ): MobileExportFile {
+    require(format in setOf("txt", "docx", "pdf")) { "不支持的导出格式" }
     val title = project.payloadText("title").ifBlank { "未命名作品" }
     val safeTitle = title
         .replace(Regex("[\\\\/:*?\"<>|]"), "_")
         .trim()
         .ifBlank { "司命导出" }
         .take(80)
-    val content = buildString {
-        append(title).append("\n\n")
+    val paragraphs = buildList {
+        add(ExportParagraph(title, 1))
+        project.payloadText("description").takeIf(String::isNotBlank)?.let { add(ExportParagraph("简介: $it")) }
         chapters.forEachIndexed { index, chapter ->
             val chapterTitle = chapter.payloadText("title").ifBlank { "第 ${index + 1} 章" }
-            append(chapterTitle).append("\n\n")
-            append(chapter.payloadText("content").trim()).append("\n\n")
+            add(ExportParagraph(chapterTitle, 2))
+            chapter.payloadText("content").replace("\r\n", "\n").replace('\r', '\n').split('\n')
+                .forEach { add(ExportParagraph(it)) }
         }
-    }.trimEnd() + "\n"
+    }
     return MobileExportFile(
-        filename = "$safeTitle.txt",
-        mimeType = "text/plain",
-        bytes = content.toByteArray(Charsets.UTF_8),
+        filename = "$safeTitle.$format",
+        mimeType = exportMimeType(format),
+        bytes = when (format) {
+            "docx" -> exportDocx(paragraphs)
+            "pdf" -> exportPdf(paragraphs)
+            else -> (paragraphs.joinToString("\n\n") { it.text } + "\n").toByteArray(Charsets.UTF_8)
+        },
     )
 }
 

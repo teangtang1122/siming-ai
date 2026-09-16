@@ -4,6 +4,10 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
+/** An explicit removal from this device must survive later sync/bootstrap. */
+@Entity(tableName = "excluded_projects")
+data class ExcludedProject(@PrimaryKey val projectId: String)
+
 @Entity(
     tableName = "replica_entities",
     indices = [

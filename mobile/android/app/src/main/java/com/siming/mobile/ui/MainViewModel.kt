@@ -292,6 +292,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val startupPreferences = application.getSharedPreferences("startup_preferences", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private var assistantJob: Job? = null
+    private var activeAssistantModelRoute = AssistantModelRoute.MobileKey
     private var assistantHistoryRequest = 0L
     private val chapterDraftRefreshGuard = PendingChapterDraftRefreshGuard()
     private var assistantCancelRequested = false
@@ -452,13 +453,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun continueCreationOnPhone(sessionId: String) = launchCreation("正在转为手机独立立项…") {
+        repository.continueCreationOnPhone(sessionId)
+        "已转为手机独立立项；后续 AI 操作使用手机 API"
+    }
+
     fun discardCreation(sessionId: String) {
         viewModelScope.launch {
             runCatching { repository.discardCreation(sessionId) }
                 .onSuccess {
                     uiState.value = uiState.value.copy(
                         activeCreationId = null,
-                        notice = "立项草稿已移除；正式作品和其他草稿没有变化",
+                        notice = "立项草稿已从手机移除；其他设备副本保留",
                     )
                 }
                 .onFailure(::showError)
@@ -673,11 +679,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 repository.reorderOutline(projectId, parentId, nodeIds)
                 uiState.value = uiState.value.copy(
-                    notice = if (connection.value != null) {
-                        "大纲顺序已通过 PC 端同一排序 API 更新"
-                    } else {
-                        "大纲顺序已保存到手机，恢复连接后按节点修订同步"
-                    },
+                    notice = "大纲顺序已保存到手机",
                 )
             } catch (error: Exception) {
                 showError(error)
@@ -863,11 +865,7 @@ private fun updateCatalogingProgress(
             try {
                 val id = repository.createProject(title, description)
                 uiState.value = uiState.value.copy(
-                    notice = if (connection.value != null) {
-                        "新作品已通过 PC 端同一 API 创建，手机副本已更新"
-                    } else {
-                        "新作品已保存到手机，连接 Gateway 后自动同步"
-                    },
+                    notice = "新作品已保存到手机",
                 )
                 onCreated(id)
             } catch (error: Exception) {
@@ -876,13 +874,12 @@ private fun updateCatalogingProgress(
         }
     }
 
-    fun deleteProject(projectId: String, localOnly: Boolean, onDeleted: () -> Unit) {
+    fun deleteProject(projectId: String, onDeleted: () -> Unit) {
         viewModelScope.launch {
             try {
-                val result = repository.deleteProject(projectId, localOnly)
+                val result = repository.deleteProject(projectId)
                 uiState.value = uiState.value.copy(
                     notice = when (result) {
-                        ProjectDeletionResult.CANONICAL -> "作品已从 PC 权威库删除，手机副本已清理"
                         ProjectDeletionResult.LOCAL_ONLY -> "本地作品已从手机删除，待同步记录已取消"
                         ProjectDeletionResult.ALREADY_ABSENT -> "这部作品已删除"
                     },
@@ -970,11 +967,7 @@ private fun updateCatalogingProgress(
             try {
                 saveRecordInternal(projectId, entityType, entityId, fields, basePayload)
                 uiState.value = uiState.value.copy(
-                    notice = if (connection.value != null) {
-                        "已保存到 Gateway"
-                    } else {
-                        "已保存到手机；连接 Gateway 后自动同步"
-                    },
+                    notice = "已保存到手机",
                 )
                 onSaved()
             } catch (error: Exception) {
@@ -1030,11 +1023,7 @@ private fun updateCatalogingProgress(
             try {
                 repository.deleteEntity(projectId, entityType, entityId)
                 uiState.value = uiState.value.copy(
-                    notice = if (connection.value != null) {
-                        "已通过 PC 端同一 API 删除，手机副本已更新"
-                    } else {
-                        "删除已保存到手机，连接 Gateway 后自动同步"
-                    },
+                    notice = "删除已保存到手机",
                 )
                 onDeleted()
             } catch (error: Exception) {
@@ -1049,6 +1038,7 @@ private fun updateCatalogingProgress(
         modelRoute: AssistantModelRoute,
     ) {
         if (prompt.isBlank() || assistantJob?.isActive == true) return
+        activeAssistantModelRoute = modelRoute
         assistantHistoryRequest++
         chapterDraftRefreshGuard.invalidate()
         val liveTurnId = UUID.randomUUID().toString()
@@ -1145,8 +1135,6 @@ private fun updateCatalogingProgress(
                     notice = when (route) {
                         AssistantRoute.GatewayPc ->
                             "AI 任务已使用 PC 配置线路执行，相关修改已同步到手机"
-                        AssistantRoute.GatewayMobileKey ->
-                            "AI 任务已使用手机 Key 执行；提示词、工具和落库流程与 PC 一致"
                         AssistantRoute.DirectApi ->
                             if (uiState.value.pendingChapterDraft != null) {
                                 "章节草稿已交给正文编辑器，等待你明确保存"
@@ -1157,7 +1145,7 @@ private fun updateCatalogingProgress(
                             }
                     },
                 )
-                refreshAssistantConversations(projectId, selectCurrent = true)
+                refreshAssistantConversations(projectId, selectCurrent = true, modelRoute = modelRoute)
             } catch (_: CancellationException) {
                 uiState.value = uiState.value.copy(
                     assistantRunning = false,
@@ -1186,6 +1174,10 @@ private fun updateCatalogingProgress(
     fun cancelAssistant(projectId: String) {
         val job = assistantJob ?: return
         if (!job.isActive) return
+        if (activeAssistantModelRoute == AssistantModelRoute.MobileKey) {
+            job.cancel(CancellationException("用户取消手机工作区任务"))
+            return
+        }
         assistantCancelRequested = true
         val runId = uiState.value.assistantRunId
         uiState.value = uiState.value.copy(
@@ -1297,7 +1289,7 @@ private fun updateCatalogingProgress(
                     },
                 )
                 onSaved(chapterId)
-                if (catalogingMode == "save_and_catalog" && connection.value == null) {
+                if (catalogingMode == "save_and_catalog") {
                     startCataloging(draft.projectId, listOf(chapterId))
                 }
             } catch (error: Exception) {
@@ -1446,11 +1438,11 @@ private fun updateCatalogingProgress(
         return request
     }
 
-    fun refreshAssistantConversations(projectId: String, selectCurrent: Boolean = false) {
+    fun refreshAssistantConversations(projectId: String, selectCurrent: Boolean = false, modelRoute: AssistantModelRoute = AssistantModelRoute.MobileKey) {
         if (uiState.value.assistantRunning) return
         val request = ++assistantHistoryRequest
         viewModelScope.launch {
-            runCatching { repository.assistantConversations(projectId) }
+            runCatching { repository.assistantConversations(projectId, modelRoute) }
                 .onSuccess { conversations ->
                     if (request != assistantHistoryRequest || uiState.value.assistantRunning) return@onSuccess
                     val current = uiState.value.assistantConversationId
