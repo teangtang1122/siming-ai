@@ -357,7 +357,10 @@ def _creation_normalization_fixture(baseline_fixture: dict) -> dict:
 def build_contract() -> dict:
     from app.modules.continuity.domain.mobile_cataloging import MOBILE_CATALOGING_GUARD_FIELDS
     from app.services.cataloging.agent import CATALOGING_AGENT_TOOLS
-    from app.services.cataloging.constants import APPLY_ORDER
+    from app.services.cataloging.constants import (
+        APPLY_ORDER, CATALOGING_MAX_TOKENS, CATALOGING_TIMEOUT_SECONDS,
+        CATALOGING_TEMPERATURE, CATALOGING_NON_THINKING_PROVIDERS,
+    )
     from app.services.cataloging.character_ops import STATE_FIELD_LIMITS
     from app.modules.continuity.domain.candidate_contract import candidate_record_schema
     from app.prompts.cataloging_source import get_internal_cataloging_system_prompt
@@ -401,6 +404,12 @@ def build_contract() -> dict:
             "max_steps": 48,
             "max_consecutive_errors": 3,
             "guard_fields": MOBILE_CATALOGING_GUARD_FIELDS,
+            "model_request": {
+                "stream_idle_timeout_seconds": CATALOGING_TIMEOUT_SECONDS,
+                "max_output_tokens": CATALOGING_MAX_TOKENS,
+                "temperature": CATALOGING_TEMPERATURE,
+                "non_thinking_providers": sorted(CATALOGING_NON_THINKING_PROVIDERS),
+            },
         },
         "schema_version": 3,
         "source_versions": {

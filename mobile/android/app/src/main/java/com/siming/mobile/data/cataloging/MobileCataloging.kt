@@ -2,11 +2,13 @@ package com.siming.mobile.data.cataloging
 
 import androidx.room.withTransaction
 import com.siming.mobile.data.MobileCatalogingProgress
+import com.siming.mobile.data.toUserFacingMessage
 import com.siming.mobile.data.agent.pcExactCharacterArchive
 import com.siming.mobile.data.local.LocalCatalogingRun
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.SimingDatabase
 import com.siming.mobile.data.network.DirectAgentTurn
+import com.siming.mobile.data.network.DirectAgentStreamActivity
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -23,7 +25,7 @@ internal class MobileCataloging(
     private val database: SimingDatabase,
     private val contract: CatalogingContract,
     private val model: String,
-    private val turn: suspend (List<JsonObject>, JsonArray) -> DirectAgentTurn,
+    private val turn: suspend (List<JsonObject>, JsonArray, suspend (DirectAgentStreamActivity) -> Unit) -> DirectAgentTurn,
 ) {
     private val dao = database.dao()
 
@@ -64,8 +66,9 @@ internal class MobileCataloging(
                 withContext(NonCancellable) { dao.stopCatalogingRun(job.id, "cancelled", "作者取消或页面任务结束；正文和未应用计划已保留", Instant.now().toString()) }
                 throw e
             } catch (e: Exception) {
-                withContext(NonCancellable) { dao.stopCatalogingRun(job.id, "failed", e.message.orEmpty().take(8000), Instant.now().toString()) }
-                onProgress(latest.copy(status = "failed", failedChapters = 1), e.message)
+                val detail = e.toUserFacingMessage()
+                withContext(NonCancellable) { dao.stopCatalogingRun(job.id, "failed", detail.take(8000), Instant.now().toString()) }
+                onProgress(latest.copy(status = "failed", failedChapters = 1), detail)
                 throw e
             } finally { active.remove(job.id) }
         }
@@ -90,8 +93,23 @@ internal class MobileCataloging(
         var failures = 0
         for (step in 1..contract.maxSteps) {
             checkActive(job)
-            onProgress("正在核对建档计划（步骤 $step）")
-            val response = turn(messages.toList(), contract.tools(categories))
+            onProgress("正在等待建档模型（步骤 $step，连续 ${contract.modelRequest.idleTimeoutSeconds} 秒无有效输出将超时）")
+            var lastActivity: DirectAgentStreamActivity? = null
+            var lastActivityAt = 0L
+            val response = turn(messages.toList(), contract.tools(categories)) { activity ->
+                val now = System.nanoTime()
+                if (activity != lastActivity || now - lastActivityAt >= 1_000_000_000L) {
+                    checkActive(job)
+                    val detail = when (activity) {
+                        DirectAgentStreamActivity.REASONING -> "模型正在分析建档资料"
+                        DirectAgentStreamActivity.CONTENT -> "模型正在返回建档响应"
+                        DirectAgentStreamActivity.TOOL_ARGUMENTS -> "正在接收建档工具参数"
+                    }
+                    onProgress("$detail（步骤 $step）")
+                    lastActivity = activity
+                    lastActivityAt = now
+                }
+            }
             checkActive(job)
             val calls = response.toolCalls
             val allowed = contract.categories.availableToolNames(categories, contract.names)

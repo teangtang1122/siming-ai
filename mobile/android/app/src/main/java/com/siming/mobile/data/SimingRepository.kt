@@ -1058,9 +1058,9 @@ suspend fun runCataloging(
     require(chapters.isNotEmpty()) { "作品没有可建档章节" }
     if (dao.connection() == null) {
         val config = resolvedDirectConfig("cataloging")
-        return MobileCataloging(database, CatalogingContract(appContext), config.model) { messages, tools ->
-            directApi.streamAgentTurn(config, messages, tools, toolChoice = "auto", temperature = 0.1,
-                maxOutputTokens = minOf(config.maxOutputTokens, 20_000))
+        val contract = CatalogingContract(appContext)
+        return MobileCataloging(database, contract, config.model) { messages, tools, activity ->
+            contract.modelRequest.execute(directApi, config, messages, tools, activity)
         }.run(projectId, chapters.map { it.entityId }, onProgress)
     }
     val connection = canonicalCommandConnection()

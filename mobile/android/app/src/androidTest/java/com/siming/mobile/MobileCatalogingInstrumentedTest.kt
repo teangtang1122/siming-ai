@@ -16,6 +16,12 @@ import com.siming.mobile.data.cataloging.*
 import com.siming.mobile.data.local.*
 import com.siming.mobile.data.network.DirectAgentToolCall
 import com.siming.mobile.data.network.DirectAgentTurn
+import com.siming.mobile.data.network.DirectApiClient
+import com.siming.mobile.data.network.DirectApiConfig
+import com.siming.mobile.data.network.DirectApiTimeoutException
+import okhttp3.OkHttpClient
+import java.net.Proxy
+import java.util.concurrent.TimeUnit
 import java.time.Instant
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
@@ -50,7 +56,7 @@ class MobileCatalogingInstrumentedTest {
     private fun scripted(db: SimingDatabase, intercept: suspend (Int) -> Unit = {}): MobileCataloging {
         var step = 0
         val batches = listOf(listOf(fixture.getValue("candidates").jsonArray.first())) + fixture.getValue("candidates").jsonArray.drop(1).chunked(3)
-        return MobileCataloging(db, contract, "mock/deepseek-contract") { messages, tools ->
+        return MobileCataloging(db, contract, "mock/deepseek-contract") { messages, tools, _ ->
             val index = step++
             intercept(index)
             val jobId = Json.parseToJsonElement(messages[1].text("content")).jsonObject.text("job_id")
@@ -61,7 +67,7 @@ class MobileCatalogingInstrumentedTest {
                 }
                 1 -> call("get_next_external_cataloging_chapter", buildJsonObject { put("job_id", jobId); put("include_content", true) })
                 else -> {
-                    assertTrue("unexpected model call after finalize", index - 2 < batches.size)
+                    assertTrue("unexpected model call after finalize: ${messages.lastOrNull()}", index - 2 < batches.size)
                     call("save_external_cataloging_candidates", buildJsonObject {
                         put("job_id", jobId); put("chapter_id", chapterId); put("candidates", JsonArray(batches[index - 2]))
                         put("finalize", index - 2 == batches.lastIndex)
@@ -109,6 +115,71 @@ class MobileCatalogingInstrumentedTest {
             assertEquals(2, resumed.attempt)
             assertEquals("completed", resumed.status)
         } finally { db.close() }
+    }
+
+    @Test fun fifthChapterTimeoutPreservesCompletedChaptersAndRetryKeepsItsPlan() = runBlocking {
+        val db = database()
+        val server = MockWebServer()
+        try {
+            seed(db)
+            val source = db.dao().entity(ReplicaEntity.key(projectId, "chapter", chapterId))!!
+            val payload = Json.parseToJsonElement(source.payloadJson!!).jsonObject
+            val outline = db.dao().entity(ReplicaEntity.key(projectId, "outline", ids.text("outline")))!!
+            val outlinePayload = Json.parseToJsonElement(outline.payloadJson!!).jsonObject
+            val completedIds = (1..4).map { index -> "00000000-0000-0000-0000-00000000010$index" }
+            completedIds.forEachIndexed { index, id ->
+                val outlineId = "00000000-0000-0000-0000-00000000020${index + 1}"
+                db.dao().saveEntity(source.copy(
+                    key = ReplicaEntity.key(projectId, "chapter", id), entityId = id,
+                    payloadJson = JsonObject(payload + mapOf(
+                        "id" to JsonPrimitive(id), "cataloging_required" to JsonPrimitive(false),
+                        "outline_node_id" to JsonPrimitive(outlineId), "sort_order" to JsonPrimitive(index),
+                    )).toString(),
+                ))
+                db.dao().saveEntity(outline.copy(
+                    key = ReplicaEntity.key(projectId, "outline", outlineId), entityId = outlineId,
+                    payloadJson = JsonObject(outlinePayload + mapOf(
+                        "id" to JsonPrimitive(outlineId), "source_chapter_id" to JsonPrimitive(id),
+                        "sort_order" to JsonPrimitive(index),
+                    )).toString(),
+                ))
+            }
+            db.dao().saveEntity(source.copy(payloadJson = JsonObject(payload + ("sort_order" to JsonPrimitive(4))).toString()))
+            val before = db.dao().projectSnapshot(projectId).associateBy { it.key }
+            // MockWebServer throttles request reads too; let the whole request arrive first.
+            val partial = ": ${" ".repeat(4_096)}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"partial\",\"function\":{\"name\":\"read_cataloging_archive\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n"
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
+                .setBody(partial + "data: [DONE]\n\n").throttleBody(partial.toByteArray().size.toLong(), 2, TimeUnit.SECONDS))
+            server.start()
+            val api = DirectApiClient(OkHttpClient.Builder().proxy(Proxy.NO_PROXY).build(), allowCleartextForTests = true)
+            val config = DirectApiConfig("fixture", server.url("/").newBuilder().host("127.0.0.1").build().toString().trimEnd('/'), "fixture-key", "fixture-model")
+            val progress = mutableListOf<com.siming.mobile.data.MobileCatalogingProgress>()
+            val failed = runCatching {
+                scripted(db) { index -> if (index == 3) {
+                    api.streamAgentTurn(config, listOf(buildJsonObject { put("role", "user"); put("content", "fixture") }),
+                        JsonArray(emptyList()), streamIdleTimeoutMillis = 400)
+                } }.run(projectId, completedIds + chapterId) { state, _ -> progress += state }
+            }
+            assertTrue(failed.exceptionOrNull() is DirectApiTimeoutException)
+            assertEquals(4, progress.last().completedChapters)
+            assertEquals("failed", progress.last().status)
+            val retained = db.dao().catalogingRuns(projectId).single()
+            val error = retained.error.orEmpty()
+            assertTrue(error.contains("未收到模型有效输出"))
+            assertFalse(error.contains("检查网络"))
+            assertEquals(1, Json.parseToJsonElement(retained.candidatesJson).jsonArray.size)
+            assertEquals(before, db.dao().projectSnapshot(projectId).associateBy { it.key })
+            assertEquals(1, server.requestCount)
+            scripted(db).run(projectId, completedIds + chapterId) { _, _ -> }
+            val resumed = db.dao().catalogingRuns(projectId).single()
+            assertEquals(retained.id, resumed.id)
+            assertEquals(2, resumed.attempt)
+            assertEquals("completed", resumed.status)
+            completedIds.forEach { id ->
+                val key = ReplicaEntity.key(projectId, "chapter", id)
+                assertEquals(before[key], db.dao().entity(key))
+            }
+        } finally { server.shutdown(); db.close() }
     }
 
     @Test fun editingDuringGenerationRejectsEntireProjection() = runBlocking {

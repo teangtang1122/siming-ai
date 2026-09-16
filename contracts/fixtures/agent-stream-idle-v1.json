@@ -1,0 +1,52 @@
+{
+  "idle_timeout_ms": 500,
+  "cases": [
+    {
+      "name": "active_tool_arguments_outlive_idle_window",
+      "interval_ms": 150,
+      "headers_delay_ms": 0,
+      "expected": "completed",
+      "events": [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1", "function": {"name": "read_archive", "arguments": "{\"id\":"}}]}, "finish_reason": null}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "\"chapter"}}]}, "finish_reason": null}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "-1"}}]}, "finish_reason": null}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "\""}}]}, "finish_reason": null}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "}"}}]}, "finish_reason": null}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+      ]
+    },
+    {
+      "name": "heartbeats_and_empty_chunks_do_not_reset_idle_window",
+      "interval_ms": 150,
+      "headers_delay_ms": 0,
+      "expected": "timeout",
+      "events": [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1", "function": {"name": "read_archive", "arguments": "{\"id\":\"chapter-1\"}"}}]}, "finish_reason": null}]},
+        null,
+        {"choices": []},
+        {"choices": [{"delta": {"role": "assistant"}, "finish_reason": null}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": ""}}]}, "finish_reason": null}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+      ]
+    },
+    {
+      "name": "stalled_complete_arguments_require_a_terminal_event",
+      "interval_ms": 1000,
+      "headers_delay_ms": 0,
+      "expected": "timeout",
+      "events": [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1", "function": {"name": "read_archive", "arguments": "{\"id\":\"chapter-1\"}"}}]}, "finish_reason": null}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+      ]
+    },
+    {
+      "name": "waiting_for_first_response_is_bounded",
+      "interval_ms": 0,
+      "headers_delay_ms": 1000,
+      "expected": "timeout",
+      "events": [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1", "function": {"name": "read_archive", "arguments": "{\"id\":\"chapter-1\"}"}}]}, "finish_reason": "tool_calls"}]}
+      ]
+    }
+  ]
+}

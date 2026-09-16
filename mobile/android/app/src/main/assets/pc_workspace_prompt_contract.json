@@ -3405,6 +3405,14 @@
         "status",
         "dedupe_key"
       ]
+    },
+    "model_request": {
+      "stream_idle_timeout_seconds": 300,
+      "max_output_tokens": 20000,
+      "temperature": 0.1,
+      "non_thinking_providers": [
+        "deepseek"
+      ]
     }
   },
   "schema_version": 3,
@@ -9143,5 +9151,5 @@
       }
     }
   },
-  "source_sha256": "0a11a57b9c3e019057d7ff7a9004ad6995ea0277baa0db138a08f1ce8d5e1d5e"
+  "source_sha256": "49a4a25b4ce4782877cb0f7ba94f49ffde7a72dddc5e6fddf0b20eddac0bbdb4"
 }

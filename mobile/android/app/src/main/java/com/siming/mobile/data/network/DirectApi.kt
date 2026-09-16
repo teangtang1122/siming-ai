@@ -1,11 +1,11 @@
 package com.siming.mobile.data.network
 
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -504,9 +504,12 @@ class DirectApiClient(
         extraBody: JsonObject? = null,
         onContentDelta: suspend (String) -> Unit = {},
         onReasoningDelta: suspend (String) -> Unit = {},
+        streamIdleTimeoutMillis: Long? = null,
+        onActivity: suspend (DirectAgentStreamActivity) -> Unit = {},
     ): DirectAgentTurn = com.siming.mobile.data.observability.MobileTrace.span("model", config.model) {
         com.siming.mobile.data.observability.MobileTrace.current.get()?.secrets?.add(config.apiKey)
-        executeStreamAgentTurn(config, messages, tools, toolChoice, maxOutputTokens, temperature, extraBody, onContentDelta, onReasoningDelta).also {
+        executeStreamAgentTurn(config, messages, tools, toolChoice, maxOutputTokens, temperature, extraBody,
+            onContentDelta, onReasoningDelta, streamIdleTimeoutMillis, onActivity).also {
             com.siming.mobile.data.observability.MobileTrace.payload("adapter_output", it.assistantMessage)
         }
     }
@@ -521,6 +524,8 @@ class DirectApiClient(
         extraBody: JsonObject? = null,
         onContentDelta: suspend (String) -> Unit = {},
         onReasoningDelta: suspend (String) -> Unit = {},
+        streamIdleTimeoutMillis: Long? = null,
+        onActivity: suspend (DirectAgentStreamActivity) -> Unit = {},
     ): DirectAgentTurn {
         validateConfig(config)
         val protocol = if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
@@ -554,6 +559,8 @@ class DirectApiClient(
                         apiKey = config.apiKey,
                         body = json.encodeToString(payload),
                         protocol = protocol,
+                        streamIdleTimeoutMillis = streamIdleTimeoutMillis,
+                        onActivity = onActivity,
                         onContentDelta = { delta ->
                             visibleOutputEmitted = true
                             onContentDelta(delta)
@@ -953,6 +960,8 @@ class DirectApiClient(
         protocol: String,
         onContentDelta: suspend (String) -> Unit,
         onReasoningDelta: suspend (String) -> Unit,
+        streamIdleTimeoutMillis: Long?,
+        onActivity: suspend (DirectAgentStreamActivity) -> Unit,
     ): DirectAgentTurn = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(endpoint)
@@ -960,12 +969,21 @@ class DirectApiClient(
             .header("Authorization", "Bearer ${apiKey.trim()}")
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val call = client.newCall(request)
-        val cancellationHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
-            if (cause is CancellationException) call.cancel()
+        val requestClient = if (streamIdleTimeoutMillis == null) client else {
+            require(streamIdleTimeoutMillis > 0) { "模型流事件等待时限必须大于零" }
+            client.newBuilder()
+                // A separate event watchdog includes headers and ignores transport heartbeats.
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .callTimeout(0, TimeUnit.MILLISECONDS)
+                .build()
         }
+        val call = requestClient.newCall(request)
+        val idleTimeout = streamIdleTimeoutMillis?.let { DirectStreamIdleTimeout(call, it) }
+        var responseReceived = false
         try {
-            call.execute().use { response ->
+            idleTimeout?.startWaiting()
+            call.withCancellableResponse { response ->
+                responseReceived = true
                 if (!response.isSuccessful) {
                     val raw = response.body?.string().orEmpty()
                     ensureSuccess(RawResponse(response.code, raw))
@@ -977,6 +995,12 @@ class DirectApiClient(
                 var promptTokens: Int? = null
                 var terminalSeen = false
                 var terminalResponse: JsonObject? = null
+
+                suspend fun reportActivity(activity: DirectAgentStreamActivity, notify: suspend () -> Unit = {}) {
+                    idleTimeout?.stopWaiting()
+                    try { onActivity(activity); notify() }
+                    finally { idleTimeout?.startWaiting() }
+                }
 
                 while (true) {
                     currentCoroutineContext().ensureActive()
@@ -1004,14 +1028,14 @@ class DirectApiClient(
                                 val delta = root.string("delta")
                                 if (delta.isNotEmpty()) {
                                     content.append(delta)
-                                    onContentDelta(delta)
+                                    reportActivity(DirectAgentStreamActivity.CONTENT) { onContentDelta(delta) }
                                 }
                             }
                             type in RESPONSE_REASONING_DELTA_TYPES -> {
                                 val delta = root.string("delta").ifBlank { root.string("text") }
                                 if (delta.isNotEmpty()) {
                                     reasoning.append(delta)
-                                    onReasoningDelta(delta)
+                                    reportActivity(DirectAgentStreamActivity.REASONING) { onReasoningDelta(delta) }
                                 }
                             }
                         }
@@ -1019,6 +1043,7 @@ class DirectApiClient(
                         val item = root["item"] as? JsonObject
                         if (item?.string("type") == "function_call") {
                             mergeResponseFunctionCall(calls, item, replaceArguments = type.endsWith(".done"))
+                            reportActivity(DirectAgentStreamActivity.TOOL_ARGUMENTS)
                         }
                         if (type.contains("function_call_arguments")) {
                             val key = root.string("item_id")
@@ -1031,6 +1056,7 @@ class DirectApiClient(
                                 .ifBlank { root.string("delta") }
                             if (type.endsWith(".done")) buffer.replaceArguments(arguments)
                             else buffer.arguments.append(arguments)
+                            if (arguments.isNotEmpty()) reportActivity(DirectAgentStreamActivity.TOOL_ARGUMENTS)
                         }
 
                         if (type in RESPONSE_TERMINAL_TYPES) {
@@ -1038,11 +1064,15 @@ class DirectApiClient(
                             terminalResponse = responseRoot
                             if (type != "response.completed") {
                                 val status = responseRoot?.string("status").orEmpty().ifBlank { type }
-                                throw IOException("模型流式响应未完成：$status")
+                                throw DirectNativeToolProtocolException("模型响应未完成：$status；未执行本次工具调用")
                             }
                         }
                         promptTokens = responseRoot?.let { promptTokens(it, "input_tokens") } ?: promptTokens
+                        if (terminalSeen) break
                     } else {
+                        (root["error"] as? JsonObject)?.string("message")?.takeIf(String::isNotBlank)?.let {
+                            throw DirectApiHttpException(502, it)
+                        }
                         val choice = (root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
                             ?: continue
                         val delta = choice["delta"] as? JsonObject ?: JsonObject(emptyMap())
@@ -1055,7 +1085,7 @@ class DirectApiClient(
                         }
                         if (contentDelta.isNotEmpty()) {
                             content.append(contentDelta)
-                            onContentDelta(contentDelta)
+                            reportActivity(DirectAgentStreamActivity.CONTENT) { onContentDelta(contentDelta) }
                         }
                         val reasoningDelta = listOf("reasoning_content", "reasoning", "reasoning_text")
                             .firstNotNullOfOrNull { key ->
@@ -1063,26 +1093,39 @@ class DirectApiClient(
                             }.orEmpty()
                         if (reasoningDelta.isNotEmpty()) {
                             reasoning.append(reasoningDelta)
-                            onReasoningDelta(reasoningDelta)
+                            reportActivity(DirectAgentStreamActivity.REASONING) { onReasoningDelta(reasoningDelta) }
                         }
                         (delta["tool_calls"] as? JsonArray).orEmpty().forEachIndexed { position, raw ->
                             val streamed = raw as? JsonObject ?: return@forEachIndexed
                             val index = (streamed["index"] as? JsonPrimitive)?.intOrNull ?: position
                             val buffer = calls.getOrPut(index.toString()) { DirectAgentToolCallBuffer() }
-                            streamed.string("id").takeIf(String::isNotBlank)?.let { buffer.id = it }
+                            var changed = false
+                            streamed.string("id").takeIf(String::isNotBlank)?.let { buffer.id = it; changed = true }
                             val function = streamed["function"] as? JsonObject
                             function?.string("name")?.takeIf(String::isNotBlank)?.let {
                                 buffer.name += it
+                                changed = true
                             }
                             function?.string("arguments")?.takeIf(String::isNotEmpty)?.let {
                                 buffer.arguments.append(it)
+                                changed = true
                             }
+                            if (changed) reportActivity(DirectAgentStreamActivity.TOOL_ARGUMENTS)
                         }
                         promptTokens = promptTokens(root, "prompt_tokens") ?: promptTokens
-                        if (choice.string("finish_reason").isNotBlank()) terminalSeen = true
+                        val finishReason = choice.string("finish_reason")
+                        if (finishReason in INCOMPLETE_FINISH_REASONS) {
+                            val detail = when (finishReason) {
+                                "length", "max_tokens", "token_limit" -> "模型输出达到长度上限，未执行本次工具调用；请调整输出预留后重试"
+                                else -> "模型响应未完成：$finishReason；未执行本次工具调用"
+                            }
+                            throw DirectNativeToolProtocolException(detail)
+                        }
+                        if (finishReason.isNotBlank()) terminalSeen = true
                     }
                 }
 
+                idleTimeout?.stopWaiting()
                 if (!terminalSeen) throw IOException("AI 流式连接提前结束，未收到完成事件")
                 val parsedTerminal = terminalResponse?.let(::parseResponsesAgentTurn)
                 val finalContent = content.toString().ifBlank { parsedTerminal?.content.orEmpty() }
@@ -1101,8 +1144,19 @@ class DirectApiClient(
                     promptTokens = promptTokens ?: parsedTerminal?.promptTokens,
                 )
             }
+        } catch (error: IOException) {
+            currentCoroutineContext().ensureActive()
+            if (error is DirectApiTimeoutException) throw error
+            if (idleTimeout?.stop() == true) throw idleTimeout.failure(error)
+            if (error !is InterruptedIOException) throw error
+            val phase = when {
+                call.isCanceled() -> DirectApiTimeoutException.Phase.DEADLINE
+                responseReceived -> DirectApiTimeoutException.Phase.RECEIVING
+                else -> DirectApiTimeoutException.Phase.BEFORE_RESPONSE
+            }
+            throw DirectApiTimeoutException(phase, requestClient.callTimeoutMillis.toLong(), error)
         } finally {
-            cancellationHandle?.dispose()
+            idleTimeout?.stop()
         }
     }
 
@@ -1299,39 +1353,32 @@ class DirectApiClient(
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val call = client.newCall(request)
-        val cancellationHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
-            if (cause is CancellationException) call.cancel()
-        }
-        try {
-            call.execute().use { response ->
-                if (!response.isSuccessful) {
-                    val raw = response.body?.string().orEmpty()
-                    ensureSuccess(RawResponse(response.code, raw))
-                }
-                val source = response.body?.source() ?: throw IOException("AI 流式响应为空")
-                var finishReason = ""
-                var terminalSeen = false
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val line = source.readUtf8Line() ?: break
-                    if (!line.startsWith("data:")) continue
-                    val data = line.removePrefix("data:").trim()
-                    if (data.isEmpty()) continue
-                    if (data == "[DONE]") {
-                        if (protocol != DirectApiConfig.PROTOCOL_RESPONSES) terminalSeen = true
-                        break
-                    }
-                    val root = runCatching { json.parseToJsonElement(data) as JsonObject }.getOrNull() ?: continue
-                    val event = parseDirectStreamEvent(root, protocol)
-                    event.error?.let { throw DirectApiHttpException(502, it) }
-                    if (event.delta.isNotEmpty()) onDelta(event.delta)
-                    if (event.finishReason.isNotBlank()) finishReason = event.finishReason
-                    terminalSeen = terminalSeen || event.terminal
-                }
-                DirectStreamSegment(finishReason.ifBlank { "stop" }, terminalSeen)
+        call.withCancellableResponse { response ->
+            if (!response.isSuccessful) {
+                val raw = response.body?.string().orEmpty()
+                ensureSuccess(RawResponse(response.code, raw))
             }
-        } finally {
-            cancellationHandle?.dispose()
+            val source = response.body?.source() ?: throw IOException("AI 流式响应为空")
+            var finishReason = ""
+            var terminalSeen = false
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val line = source.readUtf8Line() ?: break
+                if (!line.startsWith("data:")) continue
+                val data = line.removePrefix("data:").trim()
+                if (data.isEmpty()) continue
+                if (data == "[DONE]") {
+                    if (protocol != DirectApiConfig.PROTOCOL_RESPONSES) terminalSeen = true
+                    break
+                }
+                val root = runCatching { json.parseToJsonElement(data) as JsonObject }.getOrNull() ?: continue
+                val event = parseDirectStreamEvent(root, protocol)
+                event.error?.let { throw DirectApiHttpException(502, it) }
+                if (event.delta.isNotEmpty()) onDelta(event.delta)
+                if (event.finishReason.isNotBlank()) finishReason = event.finishReason
+                terminalSeen = terminalSeen || event.terminal
+            }
+            DirectStreamSegment(finishReason.ifBlank { "stop" }, terminalSeen)
         }
     }
 
@@ -1448,7 +1495,7 @@ class DirectApiClient(
         } else {
             builder.post(body.toRequestBody(JSON_MEDIA_TYPE))
         }
-        client.newCall(builder.build()).execute().use { response ->
+        client.newCall(builder.build()).withCancellableResponse { response ->
             RawResponse(response.code, response.body?.string().orEmpty())
         }
     }

@@ -17,7 +17,7 @@ from ...database.models import CatalogingJob, CatalogingChapterRun
 from ...modules.model_runtime.application.execution import model_executor
 from ...prompts.cataloging_source import get_internal_cataloging_system_prompt
 from ..agent_tool_stream import collect_tool_turn
-from .constants import CATALOGING_MAX_TOKENS, CATALOGING_TIMEOUT_SECONDS
+from .constants import CATALOGING_MAX_TOKENS, CATALOGING_TIMEOUT_SECONDS, CATALOGING_TEMPERATURE
 from .model_selection import cataloging_extra_body
 
 CATALOGING_AGENT_TOOLS = frozenset({"get_next_external_cataloging_chapter", "read_cataloging_archive",
@@ -49,7 +49,7 @@ async def run_cataloging_agent(db: Session, job: CatalogingJob, run: CatalogingC
             registry.get_spec(name).openai_schema() for name in sorted(allowed)
             if registry.get_spec(name) is not None]]
         response = await collect_tool_turn(gateway, messages=messages, tools=schemas, tool_choice="auto",
-            model=job.model, temperature=0.1, max_tokens=CATALOGING_MAX_TOKENS,
+            model=job.model, temperature=CATALOGING_TEMPERATURE, max_tokens=CATALOGING_MAX_TOKENS,
             timeout=CATALOGING_TIMEOUT_SECONDS, retry=1, extra_body=cataloging_extra_body(job.model))
         check_active(db, job)
         batch = validate_workspace_native_tool_batch(response["tool_calls"],
