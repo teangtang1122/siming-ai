@@ -451,11 +451,11 @@ internal fun CharacterDetailScreen(
             Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("角色操作", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 8.dp))
                 TextButton(
-                    enabled = connection != null && onAdvanced != null,
+                    enabled = onAdvanced != null,
                     onClick = { showMore = false; onAdvanced?.invoke() },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (connection != null) "关系 / AI 配置 / 版本历史" else "高级资料需要连接 PC")
+                    Text("关系 / AI 配置 / 版本历史")
                     Spacer(Modifier.weight(1f))
                 }
                 TextButton(onClick = { showMore = false; showDelete = true }, modifier = Modifier.fillMaxWidth()) {
@@ -473,7 +473,7 @@ internal fun CharacterDetailScreen(
         AlertDialog(
             onDismissRequest = { showDelete = false },
             title = { Text("删除“${name.ifBlank { "未命名角色" }}”？") },
-            text = { Text("删除继续使用现有可靠同步与冲突保护，不会绕过 PC 的权威版本。") },
+            text = { Text("将从手机删除这条资料。已配置同步时，删除会进入待同步记录。") },
             confirmButton = {
                 TextButton(onClick = { showDelete = false; viewModel.deleteRecord(projectId, "character", character.entityId, onBack) }) {
                     Text("确认删除", color = MaterialTheme.colorScheme.error)
@@ -803,11 +803,11 @@ internal fun WorldDetailScreen(
             Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("设定操作", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 8.dp))
                 TextButton(
-                    enabled = connection != null && onAdvanced != null,
+                    enabled = onAdvanced != null,
                     onClick = { showMore = false; onAdvanced?.invoke() },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (connection != null) "版本历史 / 时间线" else "历史需要连接 PC")
+                    Text("版本历史 / 时间线")
                     Spacer(Modifier.weight(1f))
                 }
                 TextButton(onClick = { showMore = false; showDelete = true }, modifier = Modifier.fillMaxWidth()) {

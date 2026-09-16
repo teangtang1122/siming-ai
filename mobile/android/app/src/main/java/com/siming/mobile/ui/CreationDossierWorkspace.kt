@@ -438,7 +438,7 @@ internal fun CreationDossierWorkspace(
 
         item {
             Text(
-                "手机独立建档与 PC 使用相同的阶段结构、字段校验、确认门槛和正式作品公共契约；连接 Gateway 后，在线操作直接交给 PC 权威建档服务执行。",
+                "手机独立立项使用与 PC 相同的阶段结构、字段校验和确认门槛。选择手机 API 后，生成、编辑、确认和建立作品都在手机完成。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

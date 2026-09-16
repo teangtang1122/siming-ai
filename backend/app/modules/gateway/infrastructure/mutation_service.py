@@ -4,16 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from hashlib import sha256
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.architecture.uow import defer_session_commits
 from app.core.exceptions import AppException
 from app.modules.gateway.application.contracts import MutationResult, SyncMutation
 from app.services.gateway_legacy_replication import (
     apply_domain_mutation,
     domain_snapshot_for_entity,
+    project_snapshots,
 )
+from app.services.mobile_authoring_commands import apply_authoring_command
 
 from .models import SyncChange, SyncConflict, SyncEntityState, SyncTombstone
 from .support import MAX_ENTITY_PAYLOAD_BYTES, canonical_payload, payload_hash, utcnow
@@ -65,6 +69,17 @@ class GatewayMutationApplier:
             self.db.query(SyncChange).filter(SyncChange.mutation_id == mutation.mutation_id).first()
         )
         if change is not None:
+            if mutation.entity_type == "authoring_command" and (
+                change.project_id != mutation.project_id
+                or change.entity_type != mutation.entity_type
+                or change.entity_id != mutation.entity_id
+                or change.payload_json != mutation.payload
+            ):
+                return MutationResult(
+                    mutation_id=mutation.mutation_id,
+                    status="rejected",
+                    message="不能用同一回执 ID 提交不同命令",
+                )
             return MutationResult(
                 mutation_id=mutation.mutation_id,
                 status="duplicate",
@@ -139,8 +154,15 @@ class GatewayMutationApplier:
 
     def _project_to_domain(self, mutation: SyncMutation) -> MutationResult | None:
         try:
-            with self.db.begin_nested():
+            with self.db.begin_nested(), defer_session_commits(self.db):
                 self.db.info["siming_sync_projection"] = True
+                before = self._domain_records(mutation.project_id)
+                if mutation.entity_type == "authoring_command":
+                    if mutation.operation != "upsert":
+                        raise ValueError("操作回执不能删除")
+                    apply_authoring_command(self.db, mutation.project_id, mutation.payload or {})
+                    self._capture_effects(mutation, before)
+                    return None
                 apply_domain_mutation(
                     self.db,
                     project_id=mutation.project_id,
@@ -149,6 +171,7 @@ class GatewayMutationApplier:
                     operation=mutation.operation,
                     payload=mutation.payload,
                 )
+                self._capture_effects(mutation, before)
         except (AppException, SQLAlchemyError, ValueError) as exc:
             return MutationResult(
                 mutation_id=mutation.mutation_id,
@@ -158,6 +181,35 @@ class GatewayMutationApplier:
         finally:
             self.db.info.pop("siming_sync_projection", None)
         return None
+
+    def _domain_records(self, project_id: str) -> dict:
+        return {
+            (spec.entity_type, str(row.id)): payload
+            for spec, row, payload in project_snapshots(self.db, project_id)
+        }
+
+    def _capture_effects(self, mutation: SyncMutation, before: dict) -> None:
+        after = self._domain_records(mutation.project_id)
+        # All resulting rows and tombstones share the command transaction. Other
+        # devices receive real domain records, not just an opaque command receipt.
+        for key in sorted(before.keys() | after.keys()):
+            if key == (mutation.entity_type, mutation.entity_id):
+                continue
+            if before.get(key) == after.get(key):
+                continue
+            digest = sha256(f"{mutation.mutation_id}|{key[0]}|{key[1]}".encode()).hexdigest()
+            effect = SyncMutation(
+                mutation_id=digest,
+                project_id=mutation.project_id,
+                entity_type=key[0],
+                entity_id=key[1],
+                operation="upsert" if key in after else "delete",
+                base_revision=0,
+                payload=after.get(key),
+            )
+            state = self._entity_state(effect)
+            effect = effect.model_copy(update={"base_revision": state.revision if state else 0})
+            self._record_applied(effect, state=state, device_id=None)
 
     def _record_applied(
         self,
@@ -169,12 +221,15 @@ class GatewayMutationApplier:
         now = utcnow()
         effective_payload = mutation.payload
         if mutation.operation != "delete":
-            effective_payload = domain_snapshot_for_entity(
-                self.db,
-                project_id=mutation.project_id,
-                entity_type=mutation.entity_type,
-                entity_id=mutation.entity_id,
-            ) or mutation.payload
+            effective_payload = (
+                domain_snapshot_for_entity(
+                    self.db,
+                    project_id=mutation.project_id,
+                    entity_type=mutation.entity_type,
+                    entity_id=mutation.entity_id,
+                )
+                or mutation.payload
+            )
         digest = payload_hash(effective_payload)
         change = SyncChange(
             mutation_id=mutation.mutation_id,

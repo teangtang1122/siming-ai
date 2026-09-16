@@ -9490,7 +9490,7 @@ export interface components {
              * Entity Type
              * @enum {string}
              */
-            entity_type: "project" | "chapter" | "chapter_version" | "outline" | "character" | "character_ai_config" | "character_alias" | "character_relation" | "world" | "world_relation" | "summary" | "timeline" | "foreshadowing" | "governance";
+            entity_type: "authoring_command" | "project" | "chapter" | "chapter_version" | "outline" | "character" | "character_ai_config" | "character_alias" | "character_relation" | "world" | "world_relation" | "summary" | "timeline" | "foreshadowing" | "governance";
             /** Mutation Id */
             mutation_id: string;
             /**

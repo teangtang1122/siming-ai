@@ -828,6 +828,95 @@ def test_real_fastapi_routes_stream_export_and_idempotently_import(seeded):
     assert sync.source == "project_package_import"
 
 
+def test_android_import_receipt_preserves_seed_cursor_after_later_pc_edits(seeded, monkeypatch):
+    from app.modules.gateway.application.contracts import SyncMutation
+    from app.modules.gateway.infrastructure import service as gateway_service
+    from app.modules.gateway.infrastructure.models import SyncEntityState
+
+    db, factory, _content = seeded
+    monkeypatch.setattr(gateway_service, "backup_sqlite_database", lambda *args, **kwargs: None)
+    package = _export_bytes(db, "source-project", "structure")
+    app = _api_app(factory)
+
+    @app.middleware("http")
+    async def android_request(request, call_next):
+        request.state.gateway_device_id = "fixture-device"
+        request.state.gateway_device_platform = "android"
+        return await call_next(request)
+
+    key = str(uuid.uuid4())
+    with TestClient(app) as client:
+        def upload():
+            return client.post(
+                "/api/v1/projects/project-package/import",
+                files={"file": (f"mobile{PACKAGE_EXTENSION}", package, PACKAGE_MEDIA_TYPE)},
+                headers={"Idempotency-Key": key},
+            )
+
+        initial = upload()
+        assert initial.status_code == 200, initial.text
+        result = initial.json()["data"]
+        cursor = result["sync_import_cursor"]
+        assert cursor > 0
+        with factory() as remote:
+            state = remote.query(SyncEntityState).filter_by(
+                project_id=result["project_id"], entity_type="project"
+            ).one()
+            assert state.revision <= cursor
+            changed = gateway_service.GatewayService(remote)._apply_mutation(
+                SyncMutation(
+                    mutation_id="later-pc-edit", project_id=result["project_id"],
+                    entity_type="project", entity_id=result["project_id"],
+                    operation="upsert", base_revision=state.revision,
+                    payload={"title": "PC 在导入回执丢失后修改"},
+                ),
+                device_id=None, project_domain=True,
+            )
+            assert changed.status == "applied", changed.message
+            assert changed.revision > cursor
+            remote.commit()
+        replay = upload()
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["data"]["replayed"] is True
+        assert replay.json()["data"]["sync_import_cursor"] == cursor
+    db.expire_all()
+    assert db.get(Project, result["project_id"]).title == "PC 在导入回执丢失后修改"
+
+
+def test_android_import_rolls_back_seed_and_package_if_receipt_cannot_be_saved(seeded, monkeypatch):
+    from app.modules.gateway.infrastructure import service as gateway_service
+    from app.modules.gateway.infrastructure.models import SyncProject
+
+    db, factory, _content = seeded
+    monkeypatch.setattr(gateway_service, "backup_sqlite_database", lambda *args, **kwargs: None)
+    package = _export_bytes(db, "source-project", "structure")
+
+    def fail_receipt(*args):
+        raise RuntimeError("receipt persistence failed")
+
+    monkeypatch.setattr(ProjectPackageImporter, "record_sync_import_cursor", fail_receipt)
+    app = _api_app(factory)
+
+    @app.middleware("http")
+    async def android_request(request, call_next):
+        request.state.gateway_device_id = "fixture-device"
+        request.state.gateway_device_platform = "android"
+        return await call_next(request)
+
+    key = str(uuid.uuid4())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/projects/project-package/import",
+            files={"file": (f"mobile{PACKAGE_EXTENSION}", package, PACKAGE_MEDIA_TYPE)},
+            data={"new_title": "应回滚的副本"}, headers={"Idempotency-Key": key},
+        )
+        assert response.status_code == 500
+    db.expire_all()
+    assert db.query(Project).filter_by(title="应回滚的副本").count() == 0
+    assert db.query(ProjectPackageImportReceipt).filter_by(idempotency_key=key).count() == 0
+    assert db.query(SyncProject).count() == 0
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [

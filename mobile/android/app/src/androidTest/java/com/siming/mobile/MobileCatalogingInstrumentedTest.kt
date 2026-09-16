@@ -117,6 +117,29 @@ class MobileCatalogingInstrumentedTest {
         } finally { db.close() }
     }
 
+    @Test fun restoringChapterRollsBackGeneratedArchivesButKeepsLaterAuthorEdits() = runBlocking {
+        for (manualEdit in listOf(false, true)) {
+            val db = database()
+            try {
+                seed(db)
+                val store = com.siming.mobile.data.authoring.LocalAuthoringStore(db)
+                val original = store.read.requireEntity(projectId, "character", ids.text("hero"))
+                val snapshotId = store.read.records(projectId, "chapter_snapshot").single().text("id")
+                scripted(db).run(projectId, listOf(chapterId)) { _, _ -> }
+                val generated = store.read.requireEntity(projectId, "character", ids.text("hero"))
+                assertNotEquals(original["background"], generated["background"])
+                if (manualEdit) store.save(projectId, "character", ids.text("hero"), buildJsonObject { put("background", "作者亲自确认的新经历") })
+                store.restoreChapter(projectId, chapterId, snapshotId)
+                val restored = store.read.requireEntity(projectId, "character", ids.text("hero"))
+                assertEquals(if (manualEdit) JsonPrimitive("作者亲自确认的新经历") else original["background"], restored["background"])
+                assertTrue(store.read.records(projectId, "chapter_summary").isEmpty())
+                assertEquals("invalidated", db.dao().catalogingRuns(projectId).single().status)
+                assertEquals(JsonPrimitive(true), store.read.requireEntity(projectId, "chapter", chapterId)["cataloging_required"])
+                assertTrue(store.read.records(projectId, "narrative_checkpoint").any { it.text("trigger_type") == "restore" })
+            } finally { db.close() }
+        }
+    }
+
     @Test fun fifthChapterTimeoutPreservesCompletedChaptersAndRetryKeepsItsPlan() = runBlocking {
         val db = database()
         val server = MockWebServer()
@@ -254,7 +277,7 @@ class MobileCatalogingInstrumentedTest {
                                 if (mutation.number("base_revision") != (revisions[recordKey] ?: 0)) problems += "wrong base revision"
                                 val old = remote.getValue(recordKey)
                                 val update = mutation.obj("payload")
-                                val version = old.payload.number("current_version") + if (old.payload.text("content") != update.text("content")) 1 else 0
+                                val version = old.payload.number("current_version") + 1
                                 remote[recordKey] = old.copy(payload = JsonObject(old.payload + update + ("current_version" to JsonPrimitive(version))))
                                 revisions[recordKey] = ++revision
                                 buildJsonObject { put("mutation_id", mutation.text("mutation_id")); put("status", "applied"); put("revision", revision) }
@@ -294,7 +317,7 @@ class MobileCatalogingInstrumentedTest {
             db.dao().saveConnection(GatewayConnection(baseUrl = server.url("/").toString().trimEnd('/'), gatewayName = "fixture", gatewayFingerprint = "fixture", deviceId = "fixture", deviceRole = "editor", protocolVersion = 1))
             repository.syncNow()
             assertEquals(emptyList<String>(), problems)
-            assertEquals(listOf("push", "push", "commit", "bootstrap", "push"), events)
+            assertEquals(listOf("push", "push", "commit", "bootstrap", "push", "bootstrap"), events)
             assertEquals("作者后改标题", remote.getValue("chapter" to chapterId).payload.text("title"))
             assertEquals(0, db.dao().pendingMutationCount())
             assertEquals("synced", db.dao().catalogingRuns(projectId).single().syncState)

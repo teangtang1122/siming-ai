@@ -25,12 +25,8 @@ class PcApiPathsTest {
     }
 
     @Test
-    fun `project and outline management use canonical PC routes`() {
+    fun `remote project scope has a canonical path`() {
         assertEquals("/api/v1/projects/project-1", PcApiPaths.project("project-1"))
-        assertEquals(
-            "/api/v1/projects/project-1/outline/reorder",
-            PcApiPaths.outlineReorder("project-1"),
-        )
     }
 
     @Test

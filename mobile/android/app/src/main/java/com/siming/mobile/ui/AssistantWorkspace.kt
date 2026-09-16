@@ -84,20 +84,15 @@ internal fun AssistantWorkspace(
     val ui by viewModel.uiState
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val directApi = ui.directApi
-    var modelRoute by rememberSaveable { mutableStateOf("pc") }
+    var modelRoute by rememberSaveable { mutableStateOf("mobile") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(connection?.deviceId, directApi?.model) {
-        modelRoute = when {
-            connection == null && directApi != null -> "mobile"
-            modelRoute == "mobile" && directApi == null -> "pc"
-            else -> modelRoute
-        }
-    }
+    val standaloneMobile = modelRoute == "mobile" && directApi != null
+    val canUseAi = if (modelRoute == "mobile") directApi != null else connection != null
 
-    val standaloneMobile = connection == null && directApi != null
-    val gatewayMobile = connection != null && directApi != null && modelRoute == "mobile"
-    val canUseAi = connection != null || directApi != null
+    LaunchedEffect(projectId, modelRoute) {
+        viewModel.refreshAssistantConversations(projectId, modelRoute = if (modelRoute == "mobile") AssistantModelRoute.MobileKey else AssistantModelRoute.Pc)
+    }
 
     LaunchedEffect(ui.pendingAssistantRequest, canUseAi, ui.assistantRunning) {
         val queued = ui.pendingAssistantRequest
@@ -130,8 +125,7 @@ internal fun AssistantWorkspace(
                     Text(
                         when {
                             standaloneMobile -> "手机独立 · ${directApi?.model.orEmpty()}"
-                            gatewayMobile -> "PC 工作流 · 手机私有 Key"
-                            connection != null -> "PC 工作流 · PC 已配置线路"
+                            modelRoute == "pc" && connection != null -> "PC 工作流 · PC 已配置线路"
                             else -> "尚未配置 AI"
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -149,16 +143,12 @@ internal fun AssistantWorkspace(
                         warning = true,
                     )
                 }
-            } else if (standaloneMobile || gatewayMobile) {
+            } else if (standaloneMobile) {
                 item {
                     StatusBanner(
                         icon = Icons.Outlined.PhoneAndroid,
-                        title = if (standaloneMobile) "手机独立工作区" else "PC 工作流使用手机模型",
-                        detail = if (standaloneMobile) {
-            "可在手机读取资料、生成和保存草稿；配置手机 API 后可独立建档，完成后继续下一章。"
-                        } else {
-                            "API Key 只在手机持久化；本轮加密交给自己的 Gateway，任务结束后释放。"
-                        },
+                        title = "手机独立工作区",
+                        detail = "在手机读取资料、生成和保存草稿，并使用手机 API 完成建档。",
                     )
                 }
             }
@@ -306,7 +296,7 @@ internal fun AssistantWorkspace(
                 modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                if (connection != null && directApi != null) {
+                if (connection != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         AssistChip(
                             onClick = { modelRoute = "pc" },

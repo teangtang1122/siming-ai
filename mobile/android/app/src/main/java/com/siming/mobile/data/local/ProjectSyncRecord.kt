@@ -61,6 +61,5 @@ internal const val PROJECT_SYNC_RECORDS_QUERY = """
 
 enum class ProjectDeletionResult {
     LOCAL_ONLY,
-    CANONICAL,
     ALREADY_ABSENT,
 }

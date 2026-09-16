@@ -47,7 +47,7 @@ internal fun ProjectToolsPanel(
     val chapters by viewModel.entities(project.projectId, "chapter")
         .collectAsStateWithLifecycle(initialValue = emptyList())
     val runs by viewModel.catalogingRuns(project.projectId).collectAsStateWithLifecycle(initialValue = emptyList())
-    val canCatalog = online || ui.directApi != null
+    val canCatalog = ui.directApi != null
     val totalWords = chapters.sumOf { it.text("content").count { char -> !char.isWhitespace() } }
     val catalogingHere = ui.catalogingProjectId == project.projectId
     val progress = if (ui.catalogingTotal > 0) {
@@ -70,7 +70,7 @@ internal fun ProjectToolsPanel(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MicroTag("${chapters.size} 章", SimingBlue)
                 MicroTag("${totalWords} 字", SimingGreen)
-                MicroTag(if (online) "PC 权威模式" else "本机模式", MaterialTheme.colorScheme.secondary)
+                MicroTag("本机模式", MaterialTheme.colorScheme.secondary)
             }
         }
         item {
@@ -87,12 +87,10 @@ internal fun ProjectToolsPanel(
                         Text("作品建档", style = MaterialTheme.typography.titleMedium)
                     }
                     Text(
-                        if (online) {
-                            "使用 PC 与桌面端相同的 Cataloging 流程扫描已导入章节，生成章节摘要、角色/设定变化和可写入候选资料。"
-                        } else if (ui.directApi != null) {
+                        if (ui.directApi != null) {
                             "使用手机 API 逐章整理摘要、角色、设定、大纲和治理资料。每章通过校验后一起保存；中断时保留正文和计划，可在这里重试。"
                         } else {
-                            "正文已保存在手机。配置手机 API 或连接 Gateway 后即可开始建档。"
+                            "正文已保存在手机。配置手机 API 后即可开始建档。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -155,11 +153,7 @@ internal fun ProjectToolsPanel(
                         Text("导出小说", style = MaterialTheme.typography.titleMedium)
                     }
                     Text(
-                        if (online) {
-                            "TXT、Word 和 PDF 复用 PC 的正式导出服务；导出完成后由 Android 系统文件选择器决定保存位置。"
-                        } else {
-                            "离线和手机独立模式仍可从本机章节副本导出 TXT；Word / PDF 需要连接 PC。"
-                        },
+                        "TXT、Word 和 PDF 均在手机生成，包含当前已保存正文。导出后选择保存位置。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -177,11 +171,11 @@ internal fun ProjectToolsPanel(
                             }
                             OutlinedButton(
                                 onClick = { viewModel.prepareExport(project.projectId, "docx", onExportReady) },
-                                enabled = online,
+                                enabled = true,
                             ) { Text("Word") }
                             OutlinedButton(
                                 onClick = { viewModel.prepareExport(project.projectId, "pdf", onExportReady) },
-                                enabled = online,
+                                enabled = true,
                             ) { Text("PDF") }
                         }
                     }

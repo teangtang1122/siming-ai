@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "contract_version": "2026-09-12",
+  "contract_version": "2026-09-16",
   "canonical_authority": "pc",
   "modes": {
     "pc": "桌面后端和前端所使用的权威领域实现。",
-    "android_online": "Android 已连接 PC Gateway，优先调用 PC HTTP/Agent 能力。",
-    "android_offline": "Android 无 Gateway，仅使用本地副本与可回放 outbox。",
-    "android_standalone": "Android 配置独立模型，运行本地 Agent 和本地工具适配器。"
+    "android_online": "Android 保存了 Gateway 连接；资料操作仍在手机执行，Gateway 仅供显式选择的远程模型与跨设备同步使用。",
+    "android_offline": "Android 没有可达 Gateway；在本机独立导入、编辑、管理、导出，AI 需要另行配置手机 API。",
+    "android_standalone": "Android 配置手机 API，在手机运行完整写作、建档、立项流程；保存 Gateway 地址不会改变执行位置。"
   },
   "coverage_targets": [
     {
@@ -15,25 +15,7 @@
       "extractor": "kotlin_functions",
       "symbols": {
         "project": "authoring.project",
-        "outlineReorder": "authoring.outline",
-        "chapterReorder": "chapter.reorder",
-        "chapterSnapshots": "chapter.history",
         "pendingChapterDraft": "authoring.chapter",
-        "chapterDraft": "authoring.chapter",
-        "pendingOutlineDraft": "writer.outline",
-        "outlineDraft": "writer.outline",
-        "confirmOutlineDraft": "writer.outline",
-        "regenerateOutlineDraft": "writer.outline",
-        "chapterSnapshotDiff": "chapter.history",
-        "chapterSnapshot": "chapter.history",
-        "chapterRestore": "chapter.restore",
-        "characterRelationshipNetwork": "character.relationships",
-        "characterRelationships": "character.relationships",
-        "characterAiConfig": "character.ai_config",
-        "characterVersions": "character.versions",
-        "characterVersion": "character.versions",
-        "worldVersions": "worldbuilding.history",
-        "worldTimeline": "worldbuilding.history",
         "assistantStream": "assistant.workspace",
         "assistantConversations": "assistant.workspace",
         "assistantTranscriptImport": "assistant.workspace",
@@ -51,22 +33,13 @@
         "novelCreationRun": "novel_creation.session",
         "novelCreationStageConfirm": "novel_creation.session",
         "novelCreationStage": "novel_creation.session",
-        "narrativeGovernanceItems": "governance.items",
-        "narrativeGovernanceStatus": "governance.items",
         "conflictResolution": "sync.conflicts",
-        "catalogingStart": "chapter.cataloging",
         "catalogingJob": "chapter.cataloging",
-        "catalogingStream": "chapter.cataloging",
         "catalogingCancel": "chapter.cataloging",
-        "projectExport": "authoring.export",
-        "projectExportDownload": "authoring.export",
-        "projectPackageExport": "authoring.exchange_package",
         "contextTrace": "context.inspector",
         "catalogingMobileCommit": "chapter.cataloging"
       },
       "ignore_symbols": {
-        "authoringCollection": "Generic route factory; individual authoring capabilities own the semantic decision.",
-        "authoringItem": "Generic route factory; individual authoring capabilities own the semantic decision.",
         "segment": "Path-segment validation helper, not a user capability."
       }
     },
@@ -152,29 +125,39 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "degraded",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun streamAssistant("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "internal class MobileWorkspaceAgent("
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun cancelAssistantRun("
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "MOBILE_TOOL_NAMES = ["
             },
             {
-              "path": "backend/app/bootstrap/http_security.py",
-              "contains": "/api/v1/projects/{project_id}/ai/assistant/runs/{run_id}/cancel"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextManifest.kt",
+              "contains": "internal class MobileContextManifestEngine("
             },
             {
-              "path": "backend/app/routers/assistant_runs.py",
-              "contains": "async def cancel_assistant_run("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
+              "contains": "internal class MobileChapterWriteStore("
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
-              "contains": "private suspend fun recoverAssistantRun("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileAssistantConversationStore.kt",
+              "contains": "internal class MobileAssistantConversationStore("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/PcToolCategoryContract.kt",
+              "contains": "internal class PcToolCategoryContract"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/DirectApi.kt",
+              "contains": "private fun providerSafeToolChoice("
             }
-          ]
+          ],
+          "limitations": "提示词、工具 schema、宽粒度类别控制器与版本化上下文策略均由 PC 源生成；模型正文、推理和函数参数使用供应商 SSE 真流式解析，thinking 模型沿用 PC 的 provider-safe tool_choice 规则并在接口明确拒绝时于输出前自动去参重试，章节草稿、完整 ContextManifest、通用会话转录与工具日志均可跨重启恢复。独立运行仍不进入 PC 的数据库级 AgentRun 审计，检索仍是确定性词法降级。",
+          "notes": "默认使用手机 API，配置过 Gateway 也不转发。作者显式选择 PC 模型时，远程任务需要其主机运行。"
         },
         "android_offline": {
           "support": "blocked",
@@ -274,44 +257,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun saveAuthoringEntity("
-            }
-          ]
-        },
-        "android_offline": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "\"chapter\" -> \"chapter\""
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "backend/app/services/gateway_legacy_replication.py",
-              "contains": "if spec.model is Chapter and row_existed:"
-            },
-            {
-              "path": "backend/app/modules/story/infrastructure/chapters.py",
-              "contains": "cataloging_required=bool(str(payload.get(\"content\") or \"\").strip())"
-            }
-          ]
-        },
-        "android_standalone": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "if (call.name == \"chapter_writer\" && result.string(\"status\") == \"ok\")"
-            },
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
-              "contains": "const val GENERATED = \"generated\""
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
           ],
-          "notes": "草稿和 ContextManifest 先写入本机运行日志，写作模型随后立即停止；正式章节保存及是否启动建档由作者在界面选择。"
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_offline": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_standalone": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -340,6 +325,18 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileChapterWriteStoreTest.kt",
           "contains": "draft journal marks explicit author save without losing audit record"
+        },
+        {
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "aDraftBroughtFromPcCanBeEditedAndDiscardedWithPcUnavailable"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/authoring/LocalAuthoringValidationTest.kt",
+          "contains": "local input bounds match the shared desktop schema cases"
+        },
+        {
+          "path": "backend/tests/test_mobile_authoring_commands.py",
+          "contains": "test_local_input_bounds_match_the_shared_desktop_schema_cases"
         }
       ]
     },
@@ -367,40 +364,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun saveAuthoringEntity("
-            }
-          ]
-        },
-        "android_offline": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "\"character\" -> \"character\""
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "backend/app/services/gateway_legacy_replication.py",
-              "contains": "elif spec.model is Character:"
-            }
-          ]
-        },
-        "android_standalone": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "\"create_character\" -> createCharacter"
-            },
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "\"update_character\" -> updateCharacter"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
           ],
-          "notes": "本地写入统一投影为 PC Character 公共契约。"
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_offline": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_standalone": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -420,6 +423,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
           "contains": "class PcApiPayloadsTest"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/authoring/LocalAuthoringValidationTest.kt",
+          "contains": "local input bounds match the shared desktop schema cases"
+        },
+        {
+          "path": "backend/tests/test_mobile_authoring_commands.py",
+          "contains": "test_local_input_bounds_match_the_shared_desktop_schema_cases"
         }
       ]
     },
@@ -447,17 +458,18 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_cache",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/MainActivity.kt",
-              "contains": "ActivityResultContracts.OpenDocument()"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/NovelImport.kt",
+              "contains": "internal object NovelFileDecoder"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun importNovelProject("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "NovelFileDecoder.decode(file.filename, file.bytes)"
             }
-          ]
+          ],
+          "notes": "本机直接解析 TXT / Markdown / DOCX，文本与 PC 共用多编码回归样本且严格拒绝替换字符；Markdown 标题只参与章节边界识别，作品和章节在同一本地事务中写入后进入 outbox。"
         },
         "android_offline": {
           "support": "local_cache",
@@ -538,17 +550,18 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
               "contains": "suspend fun importProjectPackage("
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun downloadProjectPackage("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "suspend fun exportProjectPackage("
             }
-          ]
+          ],
+          "notes": "先在手机完成导入和导出；可选同步上传原包并回放后续修订。"
         },
         "android_offline": {
           "support": "local_cache",
@@ -599,6 +612,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/ProjectPackageTest.kt",
           "contains": "importedFullPackageRestoresDraftReplicaAndRewriteOverlaysEdits"
+        },
+        {
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringSyncInstrumentedTest.kt",
+          "contains": "importSeedRebasesOfflineEditsButNeverOverwritesLaterPcEditsAfterALostReceipt"
+        },
+        {
+          "path": "backend/tests/test_project_package.py",
+          "contains": "test_android_import_receipt_preserves_seed_cursor_after_later_pc_edits"
         }
       ],
       "known_gaps": []
@@ -623,33 +644,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun createProjectExport("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/export/LocalDocumentExport.kt",
+              "contains": "internal fun exportDocx"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/export/LocalDocumentExport.kt",
+              "contains": "internal fun exportPdf"
             }
-          ]
+          ],
+          "notes": "TXT、Word（DOCX）、PDF 均由手机生成，按正式章节顺序完整导出正文。"
         },
         "android_offline": {
-          "support": "degraded",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/MobileProjectTools.kt",
-              "contains": "buildLocalNovelExport"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/export/LocalDocumentExport.kt",
+              "contains": "internal fun exportDocx"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/export/LocalDocumentExport.kt",
+              "contains": "internal fun exportPdf"
             }
           ],
-          "limitations": "离线只导出本机章节 TXT；Word/PDF 需要 PC 的正式导出服务。"
+          "notes": "TXT、Word（DOCX）、PDF 均由手机生成，按正式章节顺序完整导出正文。"
         },
         "android_standalone": {
-          "support": "degraded",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/MobileProjectTools.kt",
-              "contains": "buildLocalNovelExport"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/export/LocalDocumentExport.kt",
+              "contains": "internal fun exportDocx"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/export/LocalDocumentExport.kt",
+              "contains": "internal fun exportPdf"
             }
           ],
-          "limitations": "手机独立模式可导出 TXT，Word/PDF 连接 PC 后生成。"
+          "notes": "TXT、Word（DOCX）、PDF 均由手机生成，按正式章节顺序完整导出正文。"
         }
       },
       "side_effects": [],
@@ -663,12 +697,16 @@
           "contains": "local txt export keeps chapter order and content"
         },
         {
-          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/ProjectToolPathsTest.kt",
-          "contains": "cataloging and export use canonical PC routes"
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "wordAndPaginatedPdfAreGeneratedOnDeviceWithAnUnavailableGateway"
+        },
+        {
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "wordAndPaginatedPdfAreGeneratedOnDeviceWithAnUnavailableGateway"
         }
       ],
       "known_gaps": [
-        "离线和手机独立模式只支持 TXT；Word / PDF 仍需连接 PC 权威导出服务。"
+        "Android PDF 使用系统字体与原生分页，PC 使用桌面导出引擎；排版和字体可能不同，文本、章节顺序与格式可用性保持一致。"
       ]
     },
     {
@@ -695,35 +733,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun saveAuthoringEntity("
-            }
-          ]
-        },
-        "android_offline": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "\"outline\" -> \"outline_node\""
-            }
-          ]
-        },
-        "android_standalone": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "\"create_outline_node\" -> createOutlineNode"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "\"update_outline_node\" -> updateOutlineNode"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_offline": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_standalone": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -743,6 +792,14 @@
         {
           "path": "backend/tests/test_gateway_canonical_entity_contract.py",
           "contains": "test_outline_mobile_mutation_maps_pc_metadata_and_character_links"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/authoring/LocalAuthoringValidationTest.kt",
+          "contains": "local input bounds match the shared desktop schema cases"
+        },
+        {
+          "path": "backend/tests/test_mobile_authoring_commands.py",
+          "contains": "test_local_input_bounds_match_the_shared_desktop_schema_cases"
         }
       ]
     },
@@ -770,31 +827,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun createProject("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_offline": {
-          "support": "sync_replay",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "\"project\" -> \"project\""
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "sync_replay",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "\"update_project_info\" -> updateProjectInfo"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -812,6 +884,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
           "contains": "class PcApiPayloadsTest"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/authoring/LocalAuthoringValidationTest.kt",
+          "contains": "local input bounds match the shared desktop schema cases"
+        },
+        {
+          "path": "backend/tests/test_mobile_authoring_commands.py",
+          "contains": "test_local_input_bounds_match_the_shared_desktop_schema_cases"
         }
       ]
     },
@@ -839,35 +919,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun saveAuthoringEntity("
-            }
-          ]
-        },
-        "android_offline": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "\"world\" -> \"world_entry\""
-            }
-          ]
-        },
-        "android_standalone": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "\"create_worldbuilding_entry\" -> createWorldbuilding"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "\"update_worldbuilding_entry\" -> updateWorldbuilding"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_offline": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_standalone": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -886,6 +977,10 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcApiPayloadsTest.kt",
           "contains": "class PcApiPayloadsTest"
+        },
+        {
+          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/authoring/LocalAuthoringValidationTest.kt",
+          "contains": "local input bounds match the shared desktop schema cases"
         }
       ]
     },
@@ -909,17 +1004,18 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "canonical",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun startCataloging("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/cataloging/MobileCataloging.kt",
+              "contains": "internal class MobileCataloging("
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun streamCataloging("
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "candidate_record_schema()"
             }
-          ]
+          ],
+          "notes": "使用手机 API 和 PC 同源工具目录、提示词及候选契约，完成角色、设定、场景大纲、章节关联与治理资料的本机事务。草稿须先由作者明确保存并建档。"
         },
         "android_offline": {
           "support": "blocked",
@@ -951,7 +1047,7 @@
       "tests": [
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/ProjectToolPathsTest.kt",
-          "contains": "cataloging and export use canonical PC routes"
+          "contains": "remote cataloging status and package sync use canonical PC routes"
         },
         {
           "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/MobileCatalogingInstrumentedTest.kt",
@@ -976,7 +1072,7 @@
       "id": "chapter.history",
       "area": "chapter",
       "summary": "章节快照列表、详情与差异比较",
-      "status": "partial",
+      "status": "aligned",
       "authority": {
         "type": "pc_http",
         "entrypoint": "GET /chapters/{chapter_id}/snapshots[/diff/{snapshot_id}]",
@@ -996,25 +1092,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "read_only_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun listChapterSnapshots("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun diffChapterSnapshots("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_offline": {
-          "support": "blocked",
-          "reason": "高级历史页面明确要求连接 PC Gateway，避免把不完整缓存当作权威版本。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "unsupported",
-          "reason": "手机独立 Agent 不维护 PC 版本账本。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [],
@@ -1028,13 +1145,11 @@
           "contains": "test_diff_between_two_snapshots"
         },
         {
-          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAdvancedPathsTest.kt",
-          "contains": "chapter advanced commands use canonical PC routes"
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "chapterHistoryReorderDiffAndRestoreWorkWithOrWithoutSavedGateway"
         }
       ],
-      "known_gaps": [
-        "离线副本中即使存在历史记录也不会开放恢复或 diff，以免版本链不完整。"
-      ]
+      "known_gaps": []
     },
     {
       "id": "chapter.reorder",
@@ -1060,21 +1175,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
-              "contains": "suspend fun reorderChapters("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_offline": {
-          "support": "blocked",
-          "reason": "排序必须一次提交当前作品全部章节，离线副本不能猜测 authoritative sort_order。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "blocked",
-          "reason": "独立 Agent 不直接改变 PC 权威章节顺序。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -1083,7 +1223,7 @@
       ],
       "idempotency": {
         "required": true,
-        "strategy": "set_replacement"
+        "strategy": "revisioned_outbox"
       },
       "tests": [
         {
@@ -1091,8 +1231,8 @@
           "contains": "test_list_chapters_keeps_reading_order_independent_from_outline_tree"
         },
         {
-          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAdvancedPathsTest.kt",
-          "contains": "chapter advanced commands use canonical PC routes"
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "chapterHistoryReorderDiffAndRestoreWorkWithOrWithoutSavedGateway"
         }
       ]
     },
@@ -1120,25 +1260,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
-              "contains": "suspend fun restoreChapterSnapshot("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/AdvancedAuthoringDialogs.kt",
-              "contains": "var restoring by remember"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_offline": {
-          "support": "blocked",
-          "reason": "恢复会创建新版本并恢复 ledger，必须连接 PC。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "blocked",
-          "reason": "独立 Agent 不具备 PC ledger/checkpoint 权威数据。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "恢复生成新的正文版本，回退受影响建档来源并要求重新建档。只恢复本机实际保存或导入的历史，不生成缺失历史。"
         }
       },
       "side_effects": [
@@ -1151,8 +1312,7 @@
       ],
       "idempotency": {
         "required": true,
-        "strategy": "client_serialization",
-        "limitations": "Android 已串行化恢复并阻止重复点击；PC 恢复接口每次调用仍会创建一个新 restore 版本，后续应增加服务端 request key。"
+        "strategy": "revisioned_outbox"
       },
       "tests": [
         {
@@ -1160,8 +1320,8 @@
           "contains": "test_restore_snapshot_creates_restore_snapshot"
         },
         {
-          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcCanonicalCommandResultTest.kt",
-          "contains": "refresh failure keeps successful command payload"
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "chapterHistoryReorderDiffAndRestoreWorkWithOrWithoutSavedGateway"
         }
       ]
     },
@@ -1189,30 +1349,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun updateCharacterAiConfig("
-            }
-          ]
-        },
-        "android_offline": {
-          "support": "sync_replay",
-          "source_refs": [
-            {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "\"character_ai_config\" -> values.normalizeStringArray(\"catchphrases\")"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "backend/app/services/gateway_legacy_replication.py",
-              "contains": "角色 AI 配置不能移动到其他角色"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
+        },
+        "android_offline": {
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "unsupported",
-          "reason": "手机独立 Agent 不消费 CharacterAIConfig；普通章节写作明确避免错误注入。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -1230,17 +1406,21 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAuxiliaryPayloadsTest.kt",
           "contains": "character AI config keeps catchphrases as PC string array"
+        },
+        {
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "relationshipsConfigAndCharacterVersionsAreAtomicAndIndependent"
         }
       ],
       "known_gaps": [
-        "CharacterAIConfig 仅在连接 PC 的高级页面和同步回放中可用，尚未接入手机独立角色扮演能力。"
+        "角色配置页可在手机独立修改；角色扮演模型运行能力不属于普通章节写作，当前未作为独立移动工作流提供。"
       ]
     },
     {
       "id": "character.relationships",
       "area": "character",
       "summary": "有方向的角色关系网读取与替换",
-      "status": "partial",
+      "status": "aligned",
       "authority": {
         "type": "pc_http",
         "entrypoint": "GET /characters/relationships; PUT /characters/{character_id}/relationships",
@@ -1260,41 +1440,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcRelationshipEditorContract.kt",
-              "contains": "internal data class PcEditableRelationship"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun replaceCharacterRelationships("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_offline": {
-          "support": "sync_replay",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "\"character_relation\" -> {"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "backend/app/services/gateway_legacy_replication.py",
-              "contains": "def _canonical_character_relation_values("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
           ],
-          "notes": "离线以单条有向边回放，不模拟在线“替换当前角色全部关系”的事务。"
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "degraded",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextParity.kt",
-              "contains": "internal fun pcRelationshipPayloads("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
           ],
-          "limitations": "能消费缓存关系并写入创作上下文，但没有离线专用完整关系网编辑器。"
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [
@@ -1303,7 +1488,7 @@
       ],
       "idempotency": {
         "required": true,
-        "strategy": "set_replacement"
+        "strategy": "revisioned_outbox"
       },
       "tests": [
         {
@@ -1313,11 +1498,13 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcRelationshipEditorContractTest.kt",
           "contains": "editing from target endpoint preserves original direction"
+        },
+        {
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "relationshipsConfigAndCharacterVersionsAreAtomicAndIndependent"
         }
       ],
-      "known_gaps": [
-        "手机在线编辑复用 PC 全量替换接口；离线回放仍是逐边 upsert，事务语义不同。"
-      ]
+      "known_gaps": []
     },
     {
       "id": "character.versions",
@@ -1343,21 +1530,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "read_only_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun listCharacterVersions("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_offline": {
-          "support": "blocked",
-          "reason": "离线列表可能缺少完整历史，界面不把缓存冒充权威版本。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "unsupported",
-          "reason": "独立 Agent 不维护角色版本账本。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [],
@@ -1371,8 +1583,8 @@
           "contains": "test_update_character_increments_version_and_writes_snapshot"
         },
         {
-          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcAdvancedPathsTest.kt",
-          "contains": "character advanced commands use canonical PC routes"
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "relationshipsConfigAndCharacterVersionsAreAtomicAndIndependent"
         }
       ],
       "known_gaps": [
@@ -1596,30 +1808,32 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun saveGovernanceEntity("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalGovernance.kt",
+              "contains": "internal fun localGovernanceTransition"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun updateGovernanceStatus("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             }
-          ]
+          ],
+          "notes": "治理页独立校验解决章节、复检说明及状态迁移，并保存生命周期事件。"
         },
         "android_offline": {
-          "support": "sync_replay",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "fun governanceContent("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalGovernance.kt",
+              "contains": "internal fun localGovernanceTransition"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/PcApiPayloads.kt",
-              "contains": "fun governanceStatus("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             }
-          ]
+          ],
+          "notes": "治理页独立校验解决章节、复检说明及状态迁移，并保存生命周期事件。"
         },
         "android_standalone": {
           "support": "degraded",
@@ -1648,6 +1862,14 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/agent/MobileContextParityTest.kt",
           "contains": "governance context mirrors PC open statuses and priority ordering"
+        },
+        {
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "outlineLinksAndGovernanceTransitionsStayAtomicWithoutPc"
+        },
+        {
+          "path": "backend/tests/test_mobile_authoring_commands.py",
+          "contains": "test_governance_lifecycle_accepts_same_cases_as_independent_phone"
         }
       ],
       "known_gaps": [
@@ -1678,27 +1900,45 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "degraded",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun startNovelCreation("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationAgent.kt",
+              "contains": "class MobileCreationAgent"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun confirmNovelCreationStage("
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "_creation_baseline_fixture"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/ui/CreationDossierWorkspace.kt",
+              "contains": "internal fun CreationDossierWorkspace("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/creation/CreationWorkbenchContract.kt",
+              "contains": "internal object CreationWorkbenchContract"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "suspend fun generateCreationStage("
             }
-          ]
+          ],
+          "limitations": "使用与 PC 构建时导出的 V3 PromptSpec、八个完整阶段（包含创作约束）、标准化、依赖失效和最终建档门槛；结构化建档页中的创意选择、阶段生成/编辑/确认、最终审阅和正式建档体验与 PC 对齐。手机独立执行仍没有 PC 服务端 durable Operation/AgentRun 审计记录。",
+          "notes": "默认使用手机 API，配置过 Gateway 也不转发。作者显式选择 PC 模型时，远程任务需要其主机运行。"
         },
         "android_offline": {
-          "support": "local_cache",
+          "support": "local_domain",
           "source_refs": [
             {
               "path": "mobile/android/app/src/main/java/com/siming/mobile/data/creation/MobileCreationConversationAgent.kt",
               "contains": "class MobileCreationConversationAgent"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "suspend fun continueCreationOnPhone("
             }
           ],
-          "notes": "会话先保存在手机，正式归档后进入规范同步。"
+          "notes": "已保存的立项资料可以本机编辑、确认并建立作品；AI 生成需要手机 API。旧 PC 草稿可显式转为手机独立立项。"
         },
         "android_standalone": {
           "support": "degraded",
@@ -1756,6 +1996,10 @@
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/creation/MobileCreationAgentTest.kt",
           "contains": "editingCreationConstraintsKeepsPcFormProjectionAndStalesDownstreamArtifacts"
+        },
+        {
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "continueCreationOnPhone"
         }
       ],
       "known_gaps": [
@@ -1855,28 +2099,32 @@
           ]
         },
         "android_offline": {
-          "support": "local_cache",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
-              "contains": "private suspend fun pushPending("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
               "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
-              "contains": "private suspend fun deleteOfflineEntity("
+              "contains": "private suspend fun pushPending("
             }
           ],
-          "notes": "本地修订和 tombstone 保存在 Room/outbox。"
+          "notes": "正文版本、治理迁移和高级操作按顺序持久化；不确定回执使用同一 ID 重试。衍生记录与正文在同一事务同步，成功后核对完整副本。"
         },
         "android_standalone": {
-          "support": "local_cache",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
-              "contains": "private val saveEntity"
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/SimingRepository.kt",
+              "contains": "private suspend fun pushPending("
             }
           ],
-          "notes": "Agent 写入同一副本/outbox。"
+          "notes": "正文版本、治理迁移和高级操作按顺序持久化；不确定回执使用同一 ID 重试。衍生记录与正文在同一事务同步，成功后核对完整副本。"
         }
       },
       "side_effects": [
@@ -1924,25 +2172,46 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "read_only_proxy",
+          "support": "local_domain",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun listWorldVersions("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun listWorldTimeline("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
             }
-          ]
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_offline": {
-          "support": "blocked",
-          "reason": "历史入口要求完整 PC 版本链。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         },
         "android_standalone": {
-          "support": "unsupported",
-          "reason": "手机独立 Agent 不维护世界观版本和时间线账本。"
+          "support": "local_domain",
+          "source_refs": [
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringStore.kt",
+              "contains": "internal class LocalAuthoringStore"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/authoring/LocalAuthoringRead.kt",
+              "contains": "internal class LocalAuthoringRead"
+            }
+          ],
+          "notes": "本机读取或在 Room 事务中写入；无需连接 PC。跨设备同步另行执行，保留冲突保护。"
         }
       },
       "side_effects": [],
@@ -1952,8 +2221,8 @@
       },
       "tests": [
         {
-          "path": "mobile/android/app/src/test/java/com/siming/mobile/data/network/PcWorldAdvancedPathsTest.kt",
-          "contains": "worldbuilding history uses canonical PC routes"
+          "path": "mobile/android/app/src/androidTest/java/com/siming/mobile/LocalAuthoringInstrumentedTest.kt",
+          "contains": "acknowledgedOlderMutationCannotClearNewerAuthorEdits"
         },
         {
           "path": "mobile/android/app/src/test/java/com/siming/mobile/data/local/CanonicalReplicaContractTest.kt",
@@ -2056,13 +2325,27 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "degraded",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun streamAssistant("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun chapterWriter("
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileContextManifest.kt",
+              "contains": "fun validate(existing: MobileContextManifest"
+            },
+            {
+              "path": "mobile/android/app/src/main/assets/pc_context_manifest_policy.json",
+              "contains": "\"stale_on_selected_source_change\": true"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileChapterWriteStore.kt",
+              "contains": "internal fun mobileChapterWriteRunId("
             }
-          ]
+          ],
+          "limitations": "写章前创建或校验 ContextManifest，并在生成开始前一次性消费选择令牌；生成前持久化运行、成功后原子保存草稿与完整清单。同一请求使用确定性 run ID，应用重启和断流恢复到同一未保存草稿。正式保存与建档由作者操作。检索仍为 Android 本地词法降级，审计未上传到 PC 账本。",
+          "notes": "默认使用手机 API，配置过 Gateway 也不转发。作者显式选择 PC 模型时，远程任务需要其主机运行。"
         },
         "android_offline": {
           "support": "blocked",
@@ -2144,13 +2427,19 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "degraded",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun streamAssistant("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun characterWriter("
+            },
+            {
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "CHARACTER_CARD_TOOL"
             }
-          ]
+          ],
+          "limitations": "提示词和输出工具由 PC 构建时导出，但上下文检索和后续领域副作用在手机端执行。",
+          "notes": "默认使用手机 API，配置过 Gateway 也不转发。作者显式选择 PC 模型时，远程任务需要其主机运行。"
         },
         "android_offline": {
           "support": "blocked",
@@ -2216,17 +2505,23 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "degraded",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun pendingOutlineDraft("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun outlineWriter("
             },
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun confirmOutlineDraft("
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "OUTLINE_PROPOSAL_TOOL"
+            },
+            {
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileOutlineDraftStore.kt",
+              "contains": "internal class MobileOutlineDraftStore("
             }
-          ]
+          ],
+          "limitations": "使用 PC 导出的提示词、输出工具和 outline_planning 策略，生成开始前一次性消费选择令牌，并持久化单一 pending 提案；支持跨重启恢复、编辑、确认、确认后新回合写作、重新生成和放弃。提案超量或结构非法时整体拒绝，不静默截断；确认时按卷、章、节的依赖顺序写入。确认前不写正式大纲，并以正式大纲指纹拒绝过期提案。",
+          "notes": "默认使用手机 API，配置过 Gateway 也不转发。作者显式选择 PC 模型时，远程任务需要其主机运行。"
         },
         "android_offline": {
           "support": "blocked",
@@ -2273,7 +2568,7 @@
         }
       ],
       "known_gaps": [
-        "手机独立检索使用本地词法索引，且 ContextManifest/OutlineDraft 审计保存在本机而不是 PC 数据库；连接 Gateway 时使用 PC 权威实现。"
+        "手机使用本地词法检索，ContextManifest 与大纲提案保存在手机；服务端数据库审计属于显式远程模型路线。"
       ]
     },
     {
@@ -2300,13 +2595,19 @@
           "support": "canonical"
         },
         "android_online": {
-          "support": "canonical_proxy",
+          "support": "degraded",
           "source_refs": [
             {
-              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/network/GatewayApi.kt",
-              "contains": "suspend fun streamAssistant("
+              "path": "mobile/android/app/src/main/java/com/siming/mobile/data/agent/MobileWorkspaceAgent.kt",
+              "contains": "private suspend fun worldbuildingWriter("
+            },
+            {
+              "path": "scripts/export-mobile-prompt-contract.py",
+              "contains": "WORLDBUILDING_ENTRY_TOOL"
             }
-          ]
+          ],
+          "limitations": "提示词和输出工具共享，但未消费世界观关系边，也没有 PC 上下文清单审计。",
+          "notes": "默认使用手机 API，配置过 Gateway 也不转发。作者显式选择 PC 模型时，远程任务需要其主机运行。"
         },
         "android_offline": {
           "support": "blocked",

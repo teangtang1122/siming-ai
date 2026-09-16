@@ -74,6 +74,7 @@ internal fun CreationConversationWorkspace(
     onOpenDossier: () -> Unit,
     onSend: (String) -> Unit,
     onDiscard: () -> Unit,
+    onContinueOnPhone: () -> Unit,
     onConfigureApi: () -> Unit,
     onOpenProject: (String) -> Unit,
 ) {
@@ -82,7 +83,6 @@ internal fun CreationConversationWorkspace(
     var input by rememberSaveable(session.string("id")) { mutableStateOf("") }
     val projectId = session.string("created_project_id")
     val route = draft.string("execution_route")
-    val host = draft.string("execution_host")
     val capacityUnknown = creationNeedsCapacityConfiguration(progressEvents)
     val conversationContext = creationConversationContextState(session, progressEvents)
     val lastAuthorRequest = CreationAgentTurnRecords.turns(session)
@@ -109,7 +109,6 @@ internal fun CreationConversationWorkspace(
                     Text(
                         when {
                             route == "pc" -> "电脑线路 · PC 对话式 Creation Agent"
-                            host == "gateway" -> "手机 Key · Gateway 执行 PC Creation Agent"
                             else -> "手机独立 · PC 同源 Creation Agent"
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -121,6 +120,17 @@ internal fun CreationConversationWorkspace(
                 }
                 IconButton(onClick = onDiscard, enabled = !running) {
                     Icon(Icons.Outlined.DeleteOutline, "移除立项草稿")
+                }
+            }
+        }
+
+        if (route == "pc" && projectId.isBlank()) {
+            item {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("可从手机已保存的资料继续立项，编辑、确认和建立作品都在手机完成；AI 对话使用手机 API。", style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = onContinueOnPhone, enabled = !running) { Text("转为手机独立立项") }
+                    }
                 }
             }
         }

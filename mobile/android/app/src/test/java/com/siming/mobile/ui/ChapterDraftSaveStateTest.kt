@@ -32,20 +32,20 @@ class ChapterDraftSaveStateTest {
     }
 
     @Test
-    fun `connecting enables both explicit actions without claiming the draft is saved`() {
+    fun `a saved gateway does not enable cataloging without phone API`() {
         val state = chapterDraftSaveState(draft, draft.title, online = true, busy = false, viewingFormalText = false)
         assertTrue(state.canSave)
-        assertTrue(state.canCatalog)
+        assertFalse(state.canCatalog)
         assertTrue(state.hint.contains("尚未保存"))
     }
 
     @Test
-    fun `disconnected revisions cannot offer a save that the repository rejects`() {
+    fun `disconnected revisions can be saved with a local version check`() {
         val revision = draft.copy(draftKind = "revision", baseChapterVersion = 2, targetChapterCurrentVersion = 2)
         val state = chapterDraftSaveState(revision, revision.title, online = false, busy = false, viewingFormalText = false)
-        assertFalse(state.canSave)
+        assertTrue(state.canSave)
         assertFalse(state.canCatalog)
-        assertTrue(state.hint.contains("核对正式章节版本"))
+        assertTrue(state.hint.contains("保存到手机"))
     }
 
     @Test

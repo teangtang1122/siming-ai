@@ -60,7 +60,7 @@ class ProjectDeletionInstrumentedTest {
             dao.saveEntity(project("other", revision = 8))
             assertEquals(2, dao.pendingMutationCount())
 
-            assertEquals(ProjectDeletionResult.LOCAL_ONLY, repository.deleteProject(id, localOnly = true))
+            assertEquals(ProjectDeletionResult.LOCAL_ONLY, repository.deleteProject(id))
             assertNull(dao.projectSyncRecord(id))
             assertNull(dao.projectPackage(id))
             assertTrue(dao.projectPackageSnapshot(id).isEmpty())
@@ -72,7 +72,7 @@ class ProjectDeletionInstrumentedTest {
                 assertEquals(0, it.getInt(0))
             }
             assertEquals(listOf("other"), repository.projects.first().map { it.project.projectId })
-            assertEquals(ProjectDeletionResult.ALREADY_ABSENT, repository.deleteProject(id, localOnly = true))
+            assertEquals(ProjectDeletionResult.ALREADY_ABSENT, repository.deleteProject(id))
         } finally {
             db.close()
             source.delete()
@@ -95,7 +95,7 @@ class ProjectDeletionInstrumentedTest {
             retained = File(dao.projectPackage(result.projectId)!!.localFilePath)
             dao.saveConnection(GatewayConnection(baseUrl = "http://127.0.0.1:1", gatewayName = "Unavailable fixture",
                 gatewayFingerprint = "fixture", deviceId = "fixture", deviceRole = "owner", protocolVersion = 1))
-            assertEquals(ProjectDeletionResult.LOCAL_ONLY, repository.deleteProject(result.projectId, localOnly = true))
+            assertEquals(ProjectDeletionResult.LOCAL_ONLY, repository.deleteProject(result.projectId))
             assertFalse(retained.exists())
             assertEquals(0, dao.pendingMutationCount())
         } finally {
@@ -106,53 +106,22 @@ class ProjectDeletionInstrumentedTest {
     }
 
     @Test
-    fun offlineDeletionPreservesSyncedProjectsAndUnconfirmedUploads() = runBlocking {
+    fun syncedAndUnconfirmedProjectsCanBeRemovedLocallyWithoutARequestToPc() = runBlocking {
         val db = Room.inMemoryDatabaseBuilder(context, SimingDatabase::class.java).build()
-        val source = File.createTempFile("delete-uncertain-", ".siming-project", context.cacheDir)
-        var retained: File? = null
         try {
             val dao = db.dao()
             val repository = SimingRepository(context, db)
-            MobileProjectPackageWriter.write("source", listOf(project("source")), null, "full", source)
-            val imported = repository.importProjectPackage(MobileProjectPackageFile(
-                source.name, source, source.length(), sha256File(source),
-            ))
-            val stored = dao.projectPackage(imported.projectId)!!
-            retained = File(stored.localFilePath)
-            suspend fun blocked(id: String) {
-                val result = runCatching { repository.deleteProject(id, localOnly = false) }
-                assertTrue(result.exceptionOrNull() is IllegalStateException)
-                assertNotNull(dao.projectSyncRecord(id))
+            dao.saveConnection(GatewayConnection(baseUrl = "http://127.0.0.1:1", gatewayName = "Unavailable fixture",
+                gatewayFingerprint = "fixture", deviceId = "fixture", deviceRole = "owner", protocolVersion = 1))
+            for (revision in listOf(0L, 8L)) {
+                val id = "project-$revision"
+                dao.saveEntity(project(id, revision, true))
+                dao.saveMutation(OutboxMutation("edit-$revision", id, "project", id, "upsert", revision, "{}", "now", state = "sending", sentPayloadHash = "uncertain"))
+                assertEquals(ProjectDeletionResult.LOCAL_ONLY, repository.deleteProject(id))
+                assertNull(dao.projectSyncRecord(id))
+                assertTrue(id in dao.excludedProjectIds())
+                assertNull(dao.pendingMutation(id, "project", id))
             }
-            dao.saveProjectPackage(stored.copy(syncState = "uploading"))
-            assertEquals(ProjectSyncStatus.UNCONFIRMED, dao.projectSyncRecord(imported.projectId)!!.syncStatus)
-            blocked(imported.projectId)
-            dao.saveProjectPackage(stored.copy(lastError = "Upload response lost"))
-            blocked(imported.projectId)
-            dao.saveProjectPackage(stored.copy(syncState = "succeeded", uploadedAt = 1))
-            blocked(imported.projectId)
-            val staleConfirmation = runCatching { repository.deleteProject(imported.projectId, localOnly = true) }
-            assertTrue(staleConfirmation.exceptionOrNull()?.message.orEmpty().contains("同步状态已改变"))
-            assertTrue(retained.exists())
-            for (dirty in listOf(false, true)) {
-                dao.saveEntity(project("remote", revision = 8, dirty = dirty))
-                blocked("remote")
-            }
-            dao.saveEntity(project("local", dirty = true))
-            val mutation = OutboxMutation("create", "local", "project", "local", "upsert", 0, "{}", "now")
-            dao.saveMutation(mutation.copy(state = "sending", sentPayloadHash = "hash"))
-            blocked("local")
-            dao.saveMutation(mutation.copy(lastError = "Response lost", sentPayloadHash = "hash"))
-            blocked("local")
-            dao.saveMutation(mutation)
-            assertEquals(ProjectSyncStatus.LOCAL_ONLY, dao.projectSyncRecord("local")!!.syncStatus)
-            assertEquals(ProjectDeletionResult.LOCAL_ONLY, repository.deleteProject("local", localOnly = true))
-            assertNotNull(dao.projectSyncRecord("remote"))
-            assertNotNull(dao.projectSyncRecord(imported.projectId))
-        } finally {
-            db.close()
-            source.delete()
-            retained?.delete()
-        }
+        } finally { db.close() }
     }
 }

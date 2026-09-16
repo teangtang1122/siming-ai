@@ -23,7 +23,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前源码版本 3.4.4** 修复手机独立建档持续输出时仍被超时中断的问题，与 PC 对齐为连续 300 秒没有有效模型输出才超时；DeepSeek 建档关闭深度思考，进度与错误提示更准确，失败后保留候选计划供作者重试。Android、PC 和 Gateway 同步发布。完整变化及验证范围见 [3.4.4 发布说明](docs/release-notes-3.4.4.md)。
+> **当前源码版本 3.4.5** 让手机独立完成立项、写章、建档、资料编辑、历史恢复和 TXT/Word/PDF 导出；旧 PC 立项草稿可转为手机继续，已同步作品也能本机移除。Android、PC 和 Gateway 同步发布，跨设备同步这些新增操作时请将 PC/Gateway 一并升级。完整变化及验证范围见 [3.4.5 发布说明](docs/release-notes-3.4.5.md)。
 >
 > **测试范围：既有 AI 实际运行测试主要基于 DeepSeek API 的 `deepseek-flash`；本次建档超时回归使用模拟模型调用和网络故障，尚未完成真实 DeepSeek 端到端验收。其他模型或 CLI 接入可能存在未知 bug，尚未完成同等范围的实机验证。**
 
@@ -95,7 +95,7 @@ opencode_cli:opencode/big-pickle
 
 - 桌面内置 Gateway：适合电脑开机时同步，仍可使用桌面本地模型、OpenCode、CLI 和 MCP。
 - Docker Gateway：适合 NAS、家中常开主机或云主机，提供同步和云端 API 写作；镜像不启用本地模型、OpenCode、CLI、MCP 或训练能力。
-- 手机在线编辑调用与 PC 前端相同的创作 API；项目助手可逐轮选择 PC 已配置模型或手机私有 Key，两者都执行 PC 的完整提示词与工具链。没有 Gateway 时，手机 Key 使用从 PC 源码自动导出的提示词/工具契约在设备上独立执行。
+- 手机独立完成导入、编辑、历史恢复、排序、角色配置、建档及 TXT/Word/PDF 导出。手机 API 始终在设备上使用 PC 同源提示词和工具契约运行，保存 Gateway 地址不会切换执行位置；Gateway 用于可选同步或作者显式选择的 PC 模型。
 - 手机端：可新建或导入 TXT，编辑章节、大纲、角色、世界观、伏笔与治理资料；离线照常写，联网后先上传再拉取。
 
 局域网可以直接连接；跨网络推荐 [Tailscale](https://tailscale.com/) 或自己配置 HTTPS。只有已显式加入同步的作品才会进入 Gateway，首次建档前会自动备份并核对数量与摘要哈希。完整部署、配对、备份和恢复步骤见 [Android 与 Gateway 指南](docs/gateway-mobile.md)，安全边界见 [Gateway 威胁模型](docs/security/gateway-threat-model.md)。

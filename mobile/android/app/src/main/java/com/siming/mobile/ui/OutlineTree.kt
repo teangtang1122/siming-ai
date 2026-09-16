@@ -187,11 +187,7 @@ internal fun OutlineTreeList(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("大纲", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (online) {
-                        "按卷 → 章 → 节查看；同级排序直接调用 PC 的大纲排序 API。"
-                    } else {
-                        "按卷 → 章 → 节查看；离线排序会保存为可回放的节点修订，联网后同步。"
-                    },
+                    "按卷 → 章 → 节查看；同级排序保存在手机。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

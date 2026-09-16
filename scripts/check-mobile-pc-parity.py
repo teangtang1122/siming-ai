@@ -27,6 +27,7 @@ SUPPORT_STATES = {
     "sync_replay",
     "read_only_cache",
     "local_cache",
+    "local_domain",
     "degraded",
     "blocked",
     "unsupported",
@@ -39,6 +40,7 @@ IMPLEMENTED_STATES = {
     "sync_replay",
     "read_only_cache",
     "local_cache",
+    "local_domain",
     "degraded",
 }
 STATUS_STATES = {"aligned", "partial", "planned"}
@@ -85,6 +87,7 @@ SUPPORT_LABELS = {
     "sync_replay": "修订队列回放",
     "read_only_cache": "只读缓存",
     "local_cache": "本地副本",
+    "local_domain": "手机独立领域实现",
     "degraded": "明确降级实现",
     "blocked": "明确阻止",
     "unsupported": "尚未支持",
@@ -367,7 +370,7 @@ def render_markdown(data: dict[str, Any], capabilities: list[dict[str, Any]]) ->
         "",
         "> 本文由 `contracts/mobile-pc-parity.json` 通过 `scripts/check-mobile-pc-parity.py` 生成；请勿手工修改。",
         "",
-        "PC 是小说数据、领域副作用和上下文治理的唯一权威实现。Android 在线模式应尽量作为薄客户端；离线模式只允许可验证回放的修订；手机独立 Agent 的降级能力必须显式记录。",
+        "PC 定义共享业务契约，Android 在手机执行对应领域操作。保存 Gateway 地址不改变手机 API 与本地资料的执行位置；跨设备同步和作者显式选择的远程模型才使用 Gateway。平台差异及验证范围在各项能力中说明。",
         "",
         f"当前共登记 **{len(capabilities)}** 项能力：**{aligned_count}** 项已对齐、**{partial_count}** 项部分对齐、**{planned_count}** 项待实现。",
         "",

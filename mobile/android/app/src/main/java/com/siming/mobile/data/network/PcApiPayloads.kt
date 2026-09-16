@@ -164,6 +164,13 @@ internal object PcApiPayloads {
         source: JsonObject,
         values: MutableMap<String, JsonElement>,
     ) {
+        if (values["characters"] == null && values["character_ids"] != null) {
+            values.normalizeStringArray("character_ids")
+            values["characters"] = JsonArray((values.getValue("character_ids") as JsonArray).map { id ->
+                buildJsonObject { put("character_id", id) }
+            })
+            values.remove("character_ids")
+        }
         if (values["metadata"] == null) {
             source["metadata_json"]?.let { values["metadata"] = it }
         }

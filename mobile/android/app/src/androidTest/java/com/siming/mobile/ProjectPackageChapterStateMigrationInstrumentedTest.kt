@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -81,6 +82,8 @@ class ProjectPackageChapterStateMigrationInstrumentedTest {
         evidence("edited")
         chapter("pending", "Original prose", true)
         evidence("pending")
+        insert("creation_session", "mobile-draft", """{"id":"mobile-draft","draft":{"execution_route":"mobile","execution_host":"gateway","ideas":"保留的创意"}}""")
+        insert("creation_session", "pc-draft", """{"id":"pc-draft","draft":{"execution_route":"pc","execution_host":"gateway"}}""")
         chapter("known-complete", "Prose", false)
         chapter("foreign", "Original prose", project = "p2")
         db.execSQL("INSERT INTO sync_outbox (mutationId, projectId, entityType, entityId, operation, baseRevision, " +
@@ -88,12 +91,16 @@ class ProjectPackageChapterStateMigrationInstrumentedTest {
             "VALUES ('edit', 'p1', 'chapter', 'edited', 'upsert', 7, '{}', 'saved-time', 'pending', NULL, NULL, 123)")
         old.close()
         val upgraded = Room.databaseBuilder(context, SimingDatabase::class.java, name)
-            .addMigrations(SimingDatabase.MIGRATION_3_4, SimingDatabase.MIGRATION_4_5).build()
+            .addMigrations(SimingDatabase.MIGRATION_3_4, SimingDatabase.MIGRATION_4_5, SimingDatabase.MIGRATION_5_6).build()
         try {
             val snapshot = upgraded.dao().projectSnapshot("p1")
             fun record(id: String) = snapshot.single { it.entityId == id }
             fun payload(id: String) = Json.parseToJsonElement(record(id).payloadJson!!).jsonObject
-            assertEquals(5, upgraded.openHelper.readableDatabase.version)
+            assertEquals(6, upgraded.openHelper.readableDatabase.version)
+            assertTrue(upgraded.dao().excludedProjectIds().isEmpty())
+            assertEquals("device", payload("mobile-draft").getValue("draft").jsonObject.getValue("execution_host").jsonPrimitive.content)
+            assertEquals("保留的创意", payload("mobile-draft").getValue("draft").jsonObject.getValue("ideas").jsonPrimitive.content)
+            assertEquals("gateway", payload("pc-draft").getValue("draft").jsonObject.getValue("execution_host").jsonPrimitive.content)
             assertEquals(JsonPrimitive(false), payload("complete")["cataloging_required"])
             assertEquals(JsonPrimitive(true), payload("edited")["cataloging_required"])
             assertEquals(JsonPrimitive(true), payload("pending")["cataloging_required"])

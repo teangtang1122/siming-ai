@@ -401,7 +401,7 @@ private fun LibraryScreen(
                     EmptyPanel(
                         icon = Icons.AutoMirrored.Outlined.LibraryBooks,
                         title = "这里还没有作品",
-                        detail = "可以从零立项，也可以直接导入 TXT、Markdown 或 DOCX；连接 PC Gateway 时会自动使用 PC 权威导入服务。",
+                        detail = "可以从零立项，也可以直接导入 TXT、Markdown 或 DOCX。导入、编辑和导出都在手机完成。",
                     )
                 }
             } else {
@@ -427,34 +427,21 @@ private fun LibraryScreen(
     projects.firstOrNull { it.project.projectId == deleteTarget }?.let { record ->
         val target = record.project
         val title = target.text("title").ifBlank { "未命名作品" }
-        val localOnly = record.syncStatus == ProjectSyncStatus.LOCAL_ONLY
-        val canAttemptDelete = !target.conflicted && (localOnly || connection != null)
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("删除《$title》？") },
             text = {
                 Text(
-                    when {
-                        target.conflicted -> "请先处理这部作品的版本分岔，再执行删除。"
-                        localOnly -> "这部作品尚未上传到 PC，将从当前手机移除，并取消待同步记录。此操作不可撤销。"
-                        connection != null -> "删除后会从 PC 权威作品库移除，并清理这台手机的离线副本。此操作不可撤销。"
-                        record.syncStatus == ProjectSyncStatus.UNCONFIRMED -> "这部作品的上传结果尚未确认。请连接 PC Gateway 核验后再删除。"
-                        else -> "这部作品已经与 PC 同步。为避免下次同步重新出现，请先连接 PC Gateway，再执行删除。"
-                    },
+                    "将从当前手机移除作品并取消待同步记录。其他设备上的副本保留，后续同步不会自动把作品重新下载。此操作不可撤销。",
                 )
             },
             confirmButton = {
                 TextButton(
-                    enabled = canAttemptDelete,
                     onClick = {
-                        viewModel.deleteProject(target.projectId, localOnly) { deleteTarget = null }
+                        viewModel.deleteProject(target.projectId) { deleteTarget = null }
                     },
                 ) {
-                    Text(when {
-                        target.conflicted -> "请先处理分岔"
-                        canAttemptDelete -> "确认删除"
-                        else -> "删除需联网"
-                    })
+                    Text("确认删除")
                 }
             },
             dismissButton = {
@@ -493,7 +480,6 @@ private fun ProjectScreen(
     LaunchedEffect(project.projectId, connection?.deviceId) {
         viewModel.restorePendingChapterDraft(project.projectId)
         viewModel.restorePendingOutlineDraft(project.projectId)
-        viewModel.refreshAssistantConversations(project.projectId)
     }
 
     val pendingChapterDraft = ui.pendingChapterDraft
@@ -633,7 +619,7 @@ if (editor != null) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(project.text("title").ifBlank { "未命名作品" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
-                                if (connection != null) "PC API 一致模式" else "离线资料工作台",
+                                "手机独立工作台",
                                 style = MaterialTheme.typography.labelSmall,
                             )
                         }
@@ -769,22 +755,18 @@ if (ui.pendingCatalogingProjectId == project.projectId) {
         title = { Text("导入完成 · ${ui.importedChapterCount} 章") },
         text = {
             Text(
-                if (connection != null) {
-                    "正文已经导入作品库。现在可以启动与 PC 相同的作品建档流程，让司命从现有章节整理摘要、角色变化和世界观资料。"
-                } else {
-                    "正文已经保存在手机。配置手机 API 后，可到“工具”独立完成章节建档；也可以先阅读和编辑。"
-                },
+                "正文已经保存在手机。配置手机 API 后，可到“工具”独立完成章节建档；也可以先阅读和编辑。",
             )
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (connection != null || ui.directApi != null) viewModel.startCataloging(project.projectId)
+                    if (ui.directApi != null) viewModel.startCataloging(project.projectId)
                     section = "tools"
                     viewModel.dismissImportCatalogingPrompt()
                 },
             ) {
-                Text(if (connection != null || ui.directApi != null) "开始建档" else "打开作品工具")
+                Text(if (ui.directApi != null) "开始建档" else "打开作品工具")
             }
         },
         dismissButton = {
@@ -852,26 +834,18 @@ private fun RecordList(
                     kicker = section.type.uppercase(),
                     title = section.label,
                     detail = when (section.type) {
-                    "chapter" -> if (online) {
-                        "在线保存调用 PC 端同一章节 API，快照、目录与校验逻辑完全复用。"
-                    } else {
-                        "当前离线；正文先保存在手机，恢复连接后进入可靠同步队列。"
-                    }
+                    "chapter" -> "正文、历史版本和章节顺序保存在手机，可独立编辑和恢复。"
                     "character" -> "字段直接对应 PC 角色卡：别名、外貌、能力、位置、境界、身心状态、目标与冲突共享同一份数据。"
                     "world" -> "规则与设定作为独立实体维护，避免二创时漂移。"
-                    else -> if (online) {
-                        "在线修改调用 PC 端规范 API，同时维护手机离线副本。"
-                    } else {
-                        "这里的修改支持离线保存与版本分岔保护。"
-                    }
+                    else -> "修改保存在手机，跨设备同步时保留版本分岔保护。"
                     },
                 )
                 if (onManageChapterOrder != null) {
                     OutlinedButton(
                         onClick = onManageChapterOrder,
-                        enabled = online && records.size > 1,
+                        enabled = records.size > 1,
                     ) {
-                        Text(if (online) "管理章节顺序" else "章节排序需要 PC Gateway")
+                        Text("管理章节顺序")
                     }
                 }
             }
@@ -885,7 +859,7 @@ private fun RecordList(
                     record,
                     onClick = { onOpen(record) },
                     onAdvanced = onAdvanced?.let { callback -> { callback(record) } },
-                    advancedEnabled = online,
+                    advancedEnabled = true,
                 )
             }
         }
@@ -960,9 +934,9 @@ private fun RecordCard(
                     ) {
                         Text(
                             when (entityType) {
-                                "chapter" -> if (advancedEnabled) "版本历史" else "版本需连接 PC"
-                                "character" -> if (advancedEnabled) "关系 / AI / 版本" else "高级资料需连接 PC"
-                                "world" -> if (advancedEnabled) "版本 / 时间线" else "历史需连接 PC"
+                                "chapter" -> "版本历史"
+                                "character" -> "关系 / AI / 版本"
+                                "world" -> "版本 / 时间线"
                                 else -> "高级资料"
                             },
                         )
@@ -1256,11 +1230,7 @@ private fun RecordEditorScreen(
                 }
             }
             Text(
-                if (connection != null) {
-                    "在线保存直接调用 PC 端同一路径与业务逻辑，并同步更新手机副本；不会退化为简化版写入。"
-                } else {
-                    "当前离线，保存会先写入手机数据库；连接 Gateway 后自动同步。"
-                },
+                "保存到手机后即可继续使用；跨设备同步会在 Gateway 可用时进行。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1529,7 +1499,7 @@ private fun PairingScreen(
                     Text("配置云端 API，开启 AI 立项")
                 }
                 Text(
-                    "API Key 仅由 Android Keystore 持久化。选择手机 Key + Gateway 时，只发送端到端加密的一次性请求凭据，PC 不保存。",
+                    "API Key 由 Android Keystore 加密保存。手机 API 直接连接你配置的模型服务，不通过 PC 转发。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),

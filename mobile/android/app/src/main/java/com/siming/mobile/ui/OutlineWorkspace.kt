@@ -213,11 +213,7 @@ internal fun MobileOutlineWorkspace(
                 ScreenHeading(
                     kicker = "",
                     title = "故事结构",
-                    detail = if (online) {
-                        "按卷、章、节整理剧情；排序直接使用 PC 的 canonical 大纲顺序。"
-                    } else {
-                        "离线也能整理结构；修改会进入可靠同步队列。"
-                    },
+                    detail = "在手机按卷、章、节整理剧情，修改与排序均保存在本机。",
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     MicroTag("$volumes 卷", SimingCinnabar)
