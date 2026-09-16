@@ -130,6 +130,10 @@ _WORLD = {
 
 }
 _OUTLINE = {
+    "client_id": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    },
     **{
         name: TEXT
         for name in (

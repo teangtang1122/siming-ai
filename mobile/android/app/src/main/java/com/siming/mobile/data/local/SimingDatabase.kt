@@ -15,6 +15,36 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface SimingDao {
+    @Query("SELECT * FROM local_cataloging_runs WHERE id = :id")
+    suspend fun catalogingRun(id: String): LocalCatalogingRun?
+
+    @Query("SELECT * FROM local_cataloging_runs WHERE projectId = :projectId ORDER BY createdAt DESC")
+    suspend fun catalogingRuns(projectId: String): List<LocalCatalogingRun>
+
+    @Query("SELECT * FROM local_cataloging_runs WHERE projectId = :projectId ORDER BY createdAt DESC")
+    fun observeCatalogingRuns(projectId: String): Flow<List<LocalCatalogingRun>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveCatalogingRun(run: LocalCatalogingRun)
+
+    @Query("UPDATE local_cataloging_runs SET status = :status, error = :error, updatedAt = :now WHERE id = :id AND status = 'running'")
+    suspend fun stopCatalogingRun(id: String, status: String, error: String, now: String)
+
+    @Query("SELECT * FROM local_cataloging_runs WHERE status = 'completed' AND syncState IN ('pending', 'refresh_pending') ORDER BY createdAt, rowid")
+    suspend fun pendingCatalogingCommits(): List<LocalCatalogingRun>
+
+    @Query("UPDATE sync_outbox SET catalogingBarrierId = :runId WHERE projectId = :projectId AND catalogingBarrierId IS NULL AND state IN ('pending', 'sending')")
+    suspend fun sealCatalogingSourceMutations(projectId: String, runId: String)
+
+    @Query("UPDATE sync_outbox SET baseRevision = :revision WHERE projectId = :projectId AND entityType = :entityType AND entityId = :entityId AND state = 'pending' AND sentPayloadHash IS NULL")
+    suspend fun rebaseUnsentMutations(projectId: String, entityType: String, entityId: String, revision: Long)
+
+    @Query("DELETE FROM local_cataloging_runs")
+    suspend fun clearCatalogingRuns()
+
+    @Query("DELETE FROM local_cataloging_runs WHERE projectId = :projectId")
+    suspend fun deleteProjectCatalogingRuns(projectId: String)
+
     @Query("SELECT * FROM gateway_connection WHERE id = 1")
     fun observeConnection(): Flow<GatewayConnection?>
 
@@ -100,7 +130,7 @@ interface SimingDao {
 
     @Query(
         "SELECT * FROM sync_outbox WHERE projectId = :projectId AND entityType = :entityType " +
-            "AND entityId = :entityId AND state = 'pending' ORDER BY createdAt DESC LIMIT 1",
+            "AND entityId = :entityId AND state = 'pending' AND catalogingBarrierId IS NULL ORDER BY createdAt DESC LIMIT 1",
     )
     suspend fun pendingMutation(
         projectId: String,
@@ -126,14 +156,16 @@ interface SimingDao {
     @Query(
         "SELECT " +
             "(SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')) + " +
-            "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading'))",
+            "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading')) + " +
+            "(SELECT COUNT(*) FROM local_cataloging_runs WHERE status = 'completed' AND syncState IN ('pending', 'refresh_pending'))",
     )
     fun observePendingCount(): Flow<Int>
 
     @Query(
         "SELECT " +
             "(SELECT COUNT(*) FROM sync_outbox WHERE state IN ('pending', 'sending')) + " +
-            "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading'))",
+            "(SELECT COUNT(*) FROM project_packages WHERE syncState IN ('pending', 'uploading')) + " +
+            "(SELECT COUNT(*) FROM local_cataloging_runs WHERE status = 'completed' AND syncState IN ('pending', 'refresh_pending'))",
     )
     suspend fun pendingMutationCount(): Int
 
@@ -206,8 +238,9 @@ interface SimingDao {
         SyncCursor::class,
         LocalConflict::class,
         StoredProjectPackage::class,
+        LocalCatalogingRun::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class SimingDatabase : RoomDatabase() {
@@ -222,7 +255,7 @@ abstract class SimingDatabase : RoomDatabase() {
                 SimingDatabase::class.java,
                 "siming-mobile.db",
             )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
                 .also { instance = it }
         }
@@ -230,6 +263,15 @@ abstract class SimingDatabase : RoomDatabase() {
         internal val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 restoreImportedChapterCatalogingState(db)
+            }
+        }
+
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sync_outbox ADD COLUMN catalogingBarrierId TEXT")
+                advanceQueuedLegacyChapterVersions(db)
+                db.execSQL("CREATE TABLE IF NOT EXISTS `local_cataloging_runs` (`id` TEXT NOT NULL, `projectId` TEXT NOT NULL, `chapterId` TEXT NOT NULL, `chapterVersion` INTEGER NOT NULL, `contentHash` TEXT NOT NULL, `status` TEXT NOT NULL, `sourceFingerprint` TEXT NOT NULL, `sourceJson` TEXT NOT NULL, `candidatesJson` TEXT NOT NULL, `transcriptJson` TEXT NOT NULL, `changesJson` TEXT, `error` TEXT, `model` TEXT NOT NULL, `attempt` INTEGER NOT NULL, `syncState` TEXT NOT NULL, `createdAt` TEXT NOT NULL, `updatedAt` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_cataloging_runs_projectId_chapterId` ON `local_cataloging_runs` (`projectId`, `chapterId`)")
             }
         }
 

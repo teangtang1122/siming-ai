@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database.models import (
@@ -14,7 +14,6 @@ from ..database.models import (
     Chapter,
     ChapterGovernanceReview,
     ChapterQualityMetric,
-    ChapterSnapshot,
     Character,
     CharacterNarrativeState,
     Foreshadowing,
@@ -23,7 +22,16 @@ from ..database.models import (
     NarrativeGovernanceEvent,
 )
 from ..modules.continuity.domain.governance_lifecycle import ALLOWED_STATUSES, normalize_item_type
-from .chapter_service import diff_snapshots, restore_chapter_from_snapshot
+from .narrative_checkpoints import (
+    checkpoint_diff as checkpoint_diff,
+)
+from .narrative_checkpoints import (
+    create_narrative_checkpoint as create_narrative_checkpoint,
+)
+from .narrative_checkpoints import (
+    restore_narrative_checkpoint as restore_narrative_checkpoint,
+)
+from .narrative_governance_records import _chapter, _clean, _serialize
 from .narrative_source_locator import resolve_narrative_source_range
 from .story_granularity import normalize_chapter_narrative_state
 
@@ -32,36 +40,14 @@ FINAL_STATUSES = {"fulfilled", "resolved", "abandoned", "invalidated"}
 IMPORTANCE_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
-def _clean(value: Any, limit: int = 2000) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
-
-
 def dedupe_key(*values: Any) -> str:
     canonical = "|".join(re.sub(r"[\W_]+", "", _clean(value).lower()) for value in values)
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:32]
 
 
-def _serialize(row: Any) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for column in row.__table__.columns:
-        value = getattr(row, column.name)
-        result[column.name] = value.isoformat() if isinstance(value, datetime) else value
-    return result
-
-
 def _chapter_number_map(db: Session, project_id: str) -> dict[str, int]:
     chapters = db.query(Chapter).filter(Chapter.project_id == project_id).order_by(Chapter.sort_order.asc(), Chapter.created_at.asc(), Chapter.id.asc()).all()
     return {chapter.id: index for index, chapter in enumerate(chapters, start=1)}
-
-
-def _chapter(db: Session, project_id: str, chapter_id: str | None) -> Chapter | None:
-    if not chapter_id:
-        return None
-    return (
-        db.query(Chapter)
-        .filter(Chapter.project_id == project_id, Chapter.id == chapter_id)
-        .first()
-    )
 
 
 def _record_event(
@@ -256,6 +242,7 @@ def _validate_candidate_status(item_type: str, status: str) -> str:
 
 
 def upsert_foreshadowing(db: Session, project_id: str, data: dict[str, Any]) -> Foreshadowing:
+    from ..modules.continuity.domain.portable_identity import portable_cataloging_id
     title = _clean(data.get("title") or data.get("description"), 500)
     if not title:
         raise ValueError("伏笔标题不能为空")
@@ -265,7 +252,7 @@ def upsert_foreshadowing(db: Session, project_id: str, data: dict[str, Any]) -> 
     )
     created = row is None
     if not row:
-        row = Foreshadowing(project_id=project_id, title=title, dedupe_key=key)
+        row = Foreshadowing(id=portable_cataloging_id("governance", project_id, "foreshadowing", key), project_id=project_id, title=title, dedupe_key=key)
     previous_status = None if created else row.status
     requested_status, _ = _prepare_candidate_status(
         row,
@@ -328,7 +315,8 @@ def upsert_causal_edge(db: Session, project_id: str, data: dict[str, Any]) -> Ca
     row, matched_by_reference = _find_governance_row(db, CausalEdge, project_id, data, key)
     created = row is None
     if not row:
-        row = CausalEdge(project_id=project_id, cause=cause, effect=effect, dedupe_key=key)
+        from ..modules.continuity.domain.portable_identity import portable_cataloging_id
+        row = CausalEdge(id=portable_cataloging_id("governance", project_id, "causal_edge", key), project_id=project_id, cause=cause, effect=effect, dedupe_key=key)
     previous_status = None if created else row.status
     requested_status, _ = _prepare_candidate_status(
         row,
@@ -383,6 +371,7 @@ def upsert_causal_edge(db: Session, project_id: str, data: dict[str, Any]) -> Ca
 
 
 def upsert_narrative_debt(db: Session, project_id: str, data: dict[str, Any]) -> NarrativeDebt:
+    from ..modules.continuity.domain.portable_identity import portable_cataloging_id
     title = _clean(data.get("title") or data.get("description"), 500)
     if not title:
         raise ValueError("叙事债务标题不能为空")
@@ -390,7 +379,7 @@ def upsert_narrative_debt(db: Session, project_id: str, data: dict[str, Any]) ->
     row, matched_by_reference = _find_governance_row(db, NarrativeDebt, project_id, data, key)
     created = row is None
     if not row:
-        row = NarrativeDebt(project_id=project_id, title=title, dedupe_key=key)
+        row = NarrativeDebt(id=portable_cataloging_id("governance", project_id, "narrative_debt", key), project_id=project_id, title=title, dedupe_key=key)
     previous_status = None if created else row.status
     requested_status, _ = _prepare_candidate_status(
         row,
@@ -964,121 +953,3 @@ def governance_context(db: Session, project_id: str, *, chapter_id: str | None =
             items.append((4, f"[角色动态/{row['character_id']}] {details}"))
     items.sort(key=lambda item: item[0], reverse=True)
     return "叙事治理锁：\n" + "\n".join(text for _, text in (items if limit is None else items[:limit])) if items else ""
-
-
-def _snapshot_state(db: Session, project_id: str) -> dict[str, Any]:
-    return {
-        "foreshadowings": [_serialize(row) for row in db.query(Foreshadowing).filter(Foreshadowing.project_id == project_id).all()],
-        "causal_edges": [_serialize(row) for row in db.query(CausalEdge).filter(CausalEdge.project_id == project_id).all()],
-        "narrative_debts": [_serialize(row) for row in db.query(NarrativeDebt).filter(NarrativeDebt.project_id == project_id).all()],
-        "character_states": [_serialize(row) for row in db.query(CharacterNarrativeState).filter(CharacterNarrativeState.project_id == project_id).all()],
-        "quality_metrics": [_serialize(row) for row in db.query(ChapterQualityMetric).filter(ChapterQualityMetric.project_id == project_id).all()],
-        "chapter_reviews": [_serialize(row) for row in db.query(ChapterGovernanceReview).filter(ChapterGovernanceReview.project_id == project_id).all()],
-    }
-
-
-def create_narrative_checkpoint(
-    db: Session,
-    project_id: str,
-    *,
-    chapter: Chapter | None = None,
-    label: str = "",
-    trigger_type: str = "post_write",
-    review_summary: dict[str, Any] | None = None,
-) -> NarrativeCheckpoint:
-    snapshot_id = None
-    if chapter:
-        db.flush()
-        snapshot = (
-            db.query(ChapterSnapshot)
-            .filter(ChapterSnapshot.chapter_id == chapter.id)
-            .order_by(ChapterSnapshot.version_number.desc(), ChapterSnapshot.created_at.desc())
-            .first()
-        )
-        snapshot_id = snapshot.id if snapshot else None
-    sequence = (db.query(func.max(NarrativeCheckpoint.sequence)).filter(NarrativeCheckpoint.project_id == project_id).scalar() or 0) + 1
-    state = _snapshot_state(db, project_id)
-    if review_summary:
-        state["_review"] = review_summary
-    checkpoint = NarrativeCheckpoint(
-        project_id=project_id,
-        chapter_id=chapter.id if chapter else None,
-        chapter_snapshot_id=snapshot_id,
-        sequence=sequence,
-        label=_clean(label, 300) or (f"{chapter.title} 写后状态" if chapter else f"叙事检查点 {sequence}"),
-        trigger_type=trigger_type,
-        state_json=state,
-    )
-    db.add(checkpoint)
-    db.flush()
-    return checkpoint
-
-
-def restore_narrative_checkpoint(db: Session, project_id: str, checkpoint_id: str) -> NarrativeCheckpoint:
-    checkpoint = db.query(NarrativeCheckpoint).filter(NarrativeCheckpoint.id == checkpoint_id, NarrativeCheckpoint.project_id == project_id).first()
-    if not checkpoint:
-        raise ValueError("叙事检查点不存在")
-    safety_chapter = _chapter(db, project_id, checkpoint.chapter_id)
-    create_narrative_checkpoint(
-        db,
-        project_id,
-        chapter=safety_chapter,
-        label=f"回滚至 #{checkpoint.sequence} 前的安全点",
-        trigger_type="pre_restore_safety",
-        review_summary={"restoring_checkpoint_id": checkpoint.id},
-    )
-    if checkpoint.chapter_id and checkpoint.chapter_snapshot_id:
-        chapter = db.query(Chapter).filter(Chapter.id == checkpoint.chapter_id, Chapter.project_id == project_id).first()
-        snapshot = db.query(ChapterSnapshot).filter(ChapterSnapshot.id == checkpoint.chapter_snapshot_id, ChapterSnapshot.chapter_id == checkpoint.chapter_id).first()
-        if not chapter or not snapshot:
-            raise ValueError("检查点关联的章节版本不存在")
-        restore_chapter_from_snapshot(db, chapter, snapshot)
-    state = checkpoint.state_json or {}
-    for model in (ChapterGovernanceReview, NarrativeDebt, CharacterNarrativeState, ChapterQualityMetric, CausalEdge, Foreshadowing):
-        db.query(model).filter(model.project_id == project_id).delete(synchronize_session="fetch")
-    db.flush()
-    db.expunge_all()
-    mapping = {
-        "foreshadowings": Foreshadowing,
-        "causal_edges": CausalEdge,
-        "narrative_debts": NarrativeDebt,
-        "character_states": CharacterNarrativeState,
-        "quality_metrics": ChapterQualityMetric,
-        "chapter_reviews": ChapterGovernanceReview,
-    }
-    for key, model in mapping.items():
-        valid = {column.name for column in model.__table__.columns}
-        for raw in state.get(key) or []:
-            values = {name: value for name, value in raw.items() if name in valid and name not in {"created_at", "updated_at"}}
-            db.add(model(**values))
-    db.flush()
-    return checkpoint
-
-
-def checkpoint_diff(db: Session, project_id: str, checkpoint_id: str) -> dict[str, Any]:
-    checkpoint = db.query(NarrativeCheckpoint).filter(NarrativeCheckpoint.id == checkpoint_id, NarrativeCheckpoint.project_id == project_id).first()
-    if not checkpoint:
-        raise ValueError("叙事检查点不存在")
-    current = _snapshot_state(db, project_id)
-    saved = checkpoint.state_json or {}
-    changes = {}
-    for key in current:
-        saved_by_id = {item["id"]: item for item in saved.get(key) or []}
-        current_by_id = {item["id"]: item for item in current.get(key) or []}
-        changes[key] = {
-            "added": [item for item_id, item in current_by_id.items() if item_id not in saved_by_id],
-            "removed": [item for item_id, item in saved_by_id.items() if item_id not in current_by_id],
-            "changed": [{"before": saved_by_id[item_id], "after": current_by_id[item_id]} for item_id in saved_by_id.keys() & current_by_id.keys() if saved_by_id[item_id] != current_by_id[item_id]],
-        }
-    chapter_changes = None
-    if checkpoint.chapter_id and checkpoint.chapter_snapshot_id:
-        saved_snapshot = db.query(ChapterSnapshot).filter(ChapterSnapshot.id == checkpoint.chapter_snapshot_id).first()
-        current_snapshot = (
-            db.query(ChapterSnapshot)
-            .filter(ChapterSnapshot.chapter_id == checkpoint.chapter_id)
-            .order_by(ChapterSnapshot.version_number.desc(), ChapterSnapshot.created_at.desc())
-            .first()
-        )
-        if saved_snapshot and current_snapshot:
-            chapter_changes = diff_snapshots(saved_snapshot, current_snapshot)
-    return {"checkpoint": _serialize(checkpoint), "chapter_changes": chapter_changes, "changes": changes}

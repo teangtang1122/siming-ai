@@ -2,6 +2,8 @@
 
 package com.siming.mobile.data
 
+import kotlinx.serialization.json.jsonPrimitive
+
 import com.siming.mobile.BuildConfig
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.recordType
@@ -516,7 +518,7 @@ internal class MobileProjectPackageValidator(
                                     "项目包 ID 在 $previous 与 ${spec.key} 中重复：$sourceId"
                                 }
                                 identifiersByCollection.getOrPut(spec.key, ::linkedSetOf).add(sourceId)
-                                if (spec.localEntityType != null || spec.key == "outline_characters") {
+                                if (spec.localEntityType != null || spec.key in setOf("outline_characters", "chapter_characters", "chapter_worldbuilding")) {
                                     coreRows.getOrPut(spec.key, ::mutableListOf).add(row)
                                 }
                                 if (spec.key == "creation_materials") materialRows += row
@@ -777,6 +779,8 @@ internal object MobileProjectPackageMaterializer {
         val mappedRows = validated.coreRows.mapValues { (_, rows) -> rows.map { mapRow(it, identifierMap) } }
         val characters = mappedRows["characters"].orEmpty().associateBy { it.string("id") }
         val outlineCharacters = mappedRows["outline_characters"].orEmpty().groupBy { it.string("outline_node_id") }
+        val chapterCharacters = mappedRows["chapter_characters"].orEmpty().groupBy { it.string("chapter_id") }
+        val chapterWorld = mappedRows["chapter_worldbuilding"].orEmpty().groupBy { it.string("chapter_id") }
         val aliases = mappedRows["character_aliases"].orEmpty().groupBy { it.string("character_id") }
         val chapterCatalogingState = ProjectPackageChapterCatalogingState(
             mappedRows["chapter_snapshots"].orEmpty(), mappedRows["chapter_summaries"].orEmpty(),
@@ -793,7 +797,11 @@ internal object MobileProjectPackageMaterializer {
                 // Package rows are storage records; Room consumers use the same
                 // public record shapes as PC snapshots, including exact IDs.
                 when (collection) {
-                    "chapters" -> mapped["cataloging_required"] = JsonPrimitive(chapterCatalogingState.required(source))
+                    "chapters" -> {
+                        mapped["cataloging_required"] = JsonPrimitive(chapterCatalogingState.required(source))
+                        mapped["characters"] = JsonArray(chapterCharacters[entityId].orEmpty())
+                        mapped["worldbuilding_ids"] = JsonArray(chapterWorld[entityId].orEmpty().map { it.getValue("worldbuilding_entry_id") })
+                    }
                     "outline_nodes" -> {
                         mapped["metadata"] = mapped.remove("metadata_json") ?: JsonNull
                         mapped["linked_characters"] = JsonArray(
@@ -1100,6 +1108,7 @@ internal object MobileProjectPackageWriter {
             null
         }
         val writtenIds = linkedSetOf<String>()
+        val linkParents = linkParents(spec, snapshot)
         var records = 0
         destination.bufferedWriter(Charsets.UTF_8).use { output ->
             fun emit(candidate: JsonObject?) {
@@ -1132,6 +1141,7 @@ internal object MobileProjectPackageWriter {
                             )
                         }
                         val id = mapped.string("id")
+                        if (linkParents?.second?.contains(mapped.string(linkParents.first)) == true) return@forEach
                         val local = overrides.remove(id)
                         val candidate = when {
                             pendingRow?.string("id") == id -> pendingRow
@@ -1148,6 +1158,7 @@ internal object MobileProjectPackageWriter {
                     emit(replicaRow(spec, local, projectId, profile, now, records))
                 }
             }
+            if (linkParents != null) localLinkRows(spec, snapshot, now).forEach(::emit)
             if (pendingRow != null && pendingRow.string("id") !in writtenIds) emit(pendingRow)
         }
         return records
@@ -1303,6 +1314,7 @@ internal object MobileProjectPackageWriter {
         profile: String,
         now: String,
     ): List<JsonObject> {
+        if (spec.key in setOf("outline_characters", "chapter_characters", "chapter_worldbuilding")) return localLinkRows(spec, snapshot, now)
         if (spec.key == "chapter_drafts") {
             val draft = pendingDraft ?: return emptyList()
             return listOf(
@@ -1336,6 +1348,42 @@ internal object MobileProjectPackageWriter {
                 if (entityType != "project") put("project_id", JsonPrimitive(projectId))
             }
             normalizeRow(spec, JsonObject(payload), projectId, index, profile, now)
+        }
+    }
+
+    private fun linkParents(spec: MobileCollectionSpec, snapshot: List<ReplicaEntity>): Pair<String, Set<String>>? {
+        val (collection, field, parent) = when (spec.key) {
+            "outline_characters" -> Triple("outline_nodes", "linked_characters", "outline_node_id")
+            "chapter_characters" -> Triple("chapters", "characters", "chapter_id")
+            "chapter_worldbuilding" -> Triple("chapters", "worldbuilding_ids", "chapter_id")
+            else -> return null
+        }
+        return parent to snapshot.filter { SPECS_BY_KEY.getValue(collection).matches(it) &&
+            (it.operation == "delete" || field in it.payloadObject()) }.map { it.entityId }.toSet()
+    }
+
+    private fun localLinkRows(spec: MobileCollectionSpec, snapshot: List<ReplicaEntity>, now: String): List<JsonObject> {
+        val parents = linkParents(spec, snapshot) ?: return emptyList()
+        return snapshot.filter { it.entityId in parents.second && it.operation == "upsert" }.flatMap { row ->
+            val payload = row.payloadObject()
+            val field = when (spec.key) { "outline_characters" -> "linked_characters"; "chapter_characters" -> "characters"; else -> "worldbuilding_ids" }
+            (payload[field] as? JsonArray).orEmpty().map { item ->
+                val target = when (spec.key) {
+                    "outline_characters" -> (item as JsonObject).string("id")
+                    "chapter_characters" -> (item as JsonObject).string("character_id")
+                    else -> item.jsonPrimitive.content
+                }
+                JsonObject(mapOf(
+                    "id" to JsonPrimitive(com.siming.mobile.data.cataloging.catalogingId(spec.key, row.entityId, target)),
+                    parents.first to JsonPrimitive(row.entityId),
+                    (if (spec.key == "chapter_worldbuilding") "worldbuilding_entry_id" else "character_id") to JsonPrimitive(target),
+                    "created_at" to JsonPrimitive(now),
+                ) + when (spec.key) {
+                    "outline_characters" -> mapOf("role_in_scene" to ((item as JsonObject)["role_in_scene"] ?: JsonNull))
+                    "chapter_characters" -> mapOf("appearance_type" to ((item as JsonObject)["appearance_type"] ?: JsonPrimitive("出场")), "description" to (item["description"] ?: JsonNull))
+                    else -> mapOf("description" to JsonPrimitive("建档关联"))
+                })
+            }.distinctBy { it.string("id") }
         }
     }
 

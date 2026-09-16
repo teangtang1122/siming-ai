@@ -14,6 +14,7 @@ internal fun chapterDraftSaveState(
     online: Boolean,
     busy: Boolean,
     viewingFormalText: Boolean,
+    directApiConfigured: Boolean = false,
 ): ChapterDraftSaveState {
     val blockedReason = when {
         draft.generating -> "AI 正在写作，生成完成后可审阅并保存。"
@@ -26,11 +27,13 @@ internal fun chapterDraftSaveState(
     }
     return ChapterDraftSaveState(
         canSave = blockedReason == null,
-        canCatalog = blockedReason == null && online,
+        canCatalog = blockedReason == null && (online || directApiConfigured),
         hint = blockedReason ?: if (online) {
             "正文尚未保存。保存正文只保留本次编辑；保存并建档还会根据正文更新故事资料。"
+        } else if (directApiConfigured) {
+            "正文尚未保存。保存正文只保留本次编辑；保存并建档会使用手机 API 更新故事资料，完成后可继续下一章。"
         } else {
-            "正文尚未保存。可以先保存到手机并继续修改；建档需要连接 Gateway。"
+            "正文尚未保存。可以先保存到手机；配置手机 API 或连接 Gateway 后可建档。"
         },
     )
 }

@@ -4,6 +4,16 @@ import android.content.Context
 import androidx.room.withTransaction
 import com.siming.mobile.BuildConfig
 import com.siming.mobile.data.agent.MobileWorkspaceAgent
+import com.siming.mobile.data.cataloging.CatalogingContract
+import com.siming.mobile.data.cataloging.MobileCataloging
+import com.siming.mobile.data.cataloging.catalogingHash
+import com.siming.mobile.data.cataloging.catalogingId
+import com.siming.mobile.data.cataloging.CatalogRecord
+import com.siming.mobile.data.cataloging.catalogingCommitRequest
+import com.siming.mobile.data.cataloging.catalogingChangedKeys
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import com.siming.mobile.data.agent.mobileChapterPayloadForSave
 import com.siming.mobile.data.agent.MobileAssistantConversationStore
 import com.siming.mobile.data.agent.MobileAssistantTurnContext
@@ -150,6 +160,10 @@ class SimingRepository(
         }
 
     fun directApiSummary(): DirectApiSummary? = directApiStore.read()?.summary()
+
+    fun catalogingRuns(projectId: String) = dao.observeCatalogingRuns(projectId)
+
+    suspend fun recoverInterruptedCataloging() = MobileCataloging.recoverInterrupted(database)
 
     suspend fun discoverDirectModels(baseUrl: String, apiKey: String): List<String> {
         val effectiveKey = apiKey.trim().ifBlank { directApiStore.read()?.apiKey.orEmpty() }
@@ -695,7 +709,11 @@ class SimingRepository(
             val encoded = json.encodeToString(storedPayload)
             val mutationEncoded = canonicalMutationJson(projectId, entityType, entityId, encoded)
                 ?: error("同步写入缺少 payload")
-            val existingPending = dao.pendingMutation(projectId, entityType, entityId)
+            val existingPending = dao.pendingMutation(projectId, entityType, entityId)?.takeIf { pending ->
+                // Each changed chapter body has its own version on both devices.
+                // Coalescing these saves would skip PC versions before plan replay.
+                entityType != "chapter" || pending.payloadJson?.let { json.parseToJsonElement(it) as? JsonObject }?.get("content") == storedPayload["content"]
+            }
             dao.saveEntity(
                 ReplicaEntity(
                     key = key,
@@ -711,6 +729,20 @@ class SimingRepository(
                     conflicted = current?.conflicted ?: false,
                 ),
             )
+            if (entityType == "chapter" && storedPayload.string("content").isNotBlank()) {
+                val version = (storedPayload["current_version"] as? JsonPrimitive)?.intOrNull ?: 1
+                val snapshotId = catalogingId("chapter_snapshot", entityId, version.toString(), catalogingHash(storedPayload.string("content")))
+                val snapshotKey = ReplicaEntity.key(projectId, "chapter_version", snapshotId)
+                if (dao.entity(snapshotKey) == null) {
+                    val snapshot = buildJsonObject {
+                        put("id", snapshotId); put("project_id", projectId); put("chapter_id", entityId)
+                        put("_record_type", "chapter_snapshot"); put("version_number", version)
+                        put("content", storedPayload.string("content")); put("word_count", storedPayload.string("content").count { !it.isWhitespace() })
+                        put("trigger_type", "manual_save"); put("created_at", now)
+                    }.toString()
+                    dao.saveEntity(ReplicaEntity(snapshotKey, projectId, "chapter_version", snapshotId, 0, "upsert", snapshot, sha256(snapshot), now))
+                }
+            }
             dao.saveMutation(
                 (existingPending ?: OutboxMutation(
                     mutationId = UUID.randomUUID().toString(),
@@ -785,6 +817,7 @@ class SimingRepository(
             dao.deleteProjectConflicts(projectId)
             dao.deleteProjectReplica(projectId)
             dao.deleteProjectPackage(projectId)
+            dao.deleteProjectCatalogingRuns(projectId)
         }
         storedPackage?.localFilePath?.let(::File)?.delete()
     }
@@ -1013,14 +1046,24 @@ class SimingRepository(
 
 suspend fun runCataloging(
     projectId: String,
+    chapterIds: List<String>? = null,
     onProgress: suspend (MobileCatalogingProgress, String?) -> Unit,
 ): MobileCatalogingProgress {
-    val connection = canonicalCommandConnection()
     val chapters = orderReplicaEntities(
         "chapter",
-        dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" },
+        dao.projectSnapshot(projectId).filter { it.entityType == "chapter" && it.operation == "upsert" &&
+            (chapterIds == null || it.entityId in chapterIds) },
     )
+    require(chapterIds == null || chapterIds.toSet() == chapters.map { it.entityId }.toSet()) { "建档章节 ID 不存在或不属于本作品" }
     require(chapters.isNotEmpty()) { "作品没有可建档章节" }
+    if (dao.connection() == null) {
+        val config = resolvedDirectConfig("cataloging")
+        return MobileCataloging(database, CatalogingContract(appContext), config.model) { messages, tools ->
+            directApi.streamAgentTurn(config, messages, tools, toolChoice = "auto", temperature = 0.1,
+                maxOutputTokens = minOf(config.maxOutputTokens, 20_000))
+        }.run(projectId, chapters.map { it.entityId }, onProgress)
+    }
+    val connection = canonicalCommandConnection()
     val started = api.startCataloging(connection, projectId, chapters.map { it.entityId })
     var latest = started.toMobileCatalogingProgress()
     onProgress(latest, "作品建档任务已创建")
@@ -1041,6 +1084,12 @@ suspend fun runCataloging(
 }
 
 suspend fun cancelCataloging(projectId: String, jobId: String) {
+    if (jobId.startsWith("local-cat-")) {
+        val job = dao.catalogingRun(jobId) ?: error("本机建档任务不存在")
+        require(job.projectId == projectId) { "建档任务不属于本作品" }
+        dao.stopCatalogingRun(jobId, "cancelled", "作者已取消建档；正文和计划已保留", Instant.now().toString())
+        return
+    }
     val connection = requireConnection()
     api.cancelCataloging(connection, projectId, jobId)
 }
@@ -1268,6 +1317,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     private suspend fun refreshUploadedProjectPackage(
         connection: GatewayConnection,
         projectId: String,
+        rebaseKeys: Set<Pair<String, String>>? = null,
     ) {
         val response = api.bootstrap(connection, listOf(projectId))
         database.withTransaction {
@@ -1282,8 +1332,8 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                             serverModifiedAt = snapshot.serverModifiedAt,
                         ),
                     )
-                    dao.pendingMutation(snapshot.projectId, snapshot.entityType, snapshot.entityId)?.let { mutation ->
-                        dao.updateMutation(mutation.copy(baseRevision = snapshot.revision))
+                    if (rebaseKeys == null || (snapshot.entityType to snapshot.entityId) in rebaseKeys) {
+                        dao.rebaseUnsentMutations(snapshot.projectId, snapshot.entityType, snapshot.entityId, snapshot.revision)
                     }
                 } else {
                     dao.saveEntity(
@@ -1317,6 +1367,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         val localProjectIds = dao.localProjectIds()
         return try {
             uploadPendingProjectPackages(connection)
+            syncCatalogingCommits(connection)
             pushPending(connection)
             refreshConflicts(connection)
             if (localProjectIds.isNotEmpty()) pullAll(connection, localProjectIds)
@@ -1335,9 +1386,52 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         }
     }
 
-    private suspend fun pushPending(connection: GatewayConnection) {
+    private suspend fun syncCatalogingCommits(connection: GatewayConnection) {
+        for (run in dao.pendingCatalogingCommits()) {
+            if (run.syncState == "pending") {
+                val cutoff = Instant.parse(run.createdAt)
+                pushPending(connection, cutoff, run.id)
+                check(dao.pendingMutations(Int.MAX_VALUE).none {
+                    it.catalogingBarrierId == run.id || Instant.ofEpochMilli(it.createdAt).isBefore(cutoff)
+                } && dao.openConflictsSnapshot().none { it.projectId == run.projectId }) {
+                    "请先处理建档前的正文或资料同步冲突，手机建档结果已保留"
+                }
+                try {
+                    val result = api.commitMobileCataloging(connection, run.projectId, catalogingCommitRequest(run, CatalogingContract(appContext)))
+                    check(result["status"]?.jsonPrimitive?.content == "completed") { "Gateway 尚未确认手机建档完成" }
+                    dao.saveCatalogingRun(run.copy(syncState = "refresh_pending", error = null))
+                } catch (error: Exception) {
+                    dao.saveCatalogingRun(run.copy(error = "建档同步失败：${error.toUserFacingMessage()}"))
+                    throw error
+                }
+            }
+            // Clear only the exact projection that was accepted. Later author edits and
+            // later chapter projections retain their dirty state and ordered outbox.
+            database.withTransaction {
+                val changes = json.parseToJsonElement(requireNotNull(run.changesJson)).jsonObject
+                for (operation in listOf("upserts", "deletes")) {
+                    changes.getValue(operation).jsonArray.forEach { value ->
+                        val row = CatalogRecord.fromJson(value.jsonObject)
+                        val current = dao.entity(ReplicaEntity.key(run.projectId, row.entityType, row.id))
+                        val matches = current != null && if (operation == "deletes") current.operation == "delete"
+                            else current.operation == "upsert" && current.payloadJson?.let { json.parseToJsonElement(it) } == row.payload
+                        if (matches) dao.saveEntity(requireNotNull(current).copy(dirty = false))
+                    }
+                }
+            }
+            refreshUploadedProjectPackage(connection, run.projectId, catalogingChangedKeys(run))
+            dao.saveCatalogingRun(run.copy(syncState = "synced", error = null))
+        }
+    }
+
+    private suspend fun pushPending(connection: GatewayConnection, before: Instant? = null, barrierId: String? = null) {
         while (true) {
-            val candidates = dao.pendingMutations(100)
+            val candidates = dao.pendingMutations(100).filter {
+                before == null || (barrierId != null && it.catalogingBarrierId == barrierId) || Instant.ofEpochMilli(it.createdAt).isBefore(before)
+            }.distinctBy { Triple(it.projectId, it.entityType, it.entityId) }
+            val covered = dao.pendingCatalogingCommits().flatMap { run ->
+                catalogingChangedKeys(run).map { (type, id) -> Triple(run.projectId, type, id) }
+            }.toSet()
             val pending = buildList {
                 var estimatedBytes = 0
                 for (mutation in candidates) {
@@ -1394,6 +1488,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                         "applied", "duplicate" -> {
                             val revision = result.revision ?: current?.revision ?: sent.baseRevision
                             dao.deleteMutation(sent.mutationId)
+                            dao.rebaseUnsentMutations(sent.projectId, sent.entityType, sent.entityId, revision)
                             if (current != null) {
                                 val currentMutation = if (current.operation == "delete") {
                                     null
@@ -1414,7 +1509,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                                         conflicted = false,
                                     ),
                                 )
-                                if (!unchanged && dao.pendingMutation(
+                                if (!unchanged && Triple(sent.projectId, sent.entityType, sent.entityId) !in covered && dao.pendingMutation(
                                         sent.projectId,
                                         sent.entityType,
                                         sent.entityId,
@@ -1551,7 +1646,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             mutation.entityType,
             mutation.entityId,
         )
-        if (newer != null && newer.mutationId != mutation.mutationId) {
+        if (mutation.catalogingBarrierId == null && newer != null && newer.mutationId != mutation.mutationId) {
             // A save made while this request was in flight already contains the
             // latest payload at the same base revision, so the older send can
             // be discarded instead of creating an avoidable self-conflict.
@@ -2150,7 +2245,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         title: String,
         content: String,
         catalogingMode: String,
-    ): String {
+    ): String = draftSaveMutex.withLock {
         require(title.isNotBlank()) { "章节标题不能为空" }
         require(catalogingMode in setOf("save_only", "save_and_catalog")) { "未知的章节保存方式" }
         val connection = dao.connection()
@@ -2184,11 +2279,22 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             saveCanonicalReplica(draft.projectId, "chapter", chapterId, response)
             markChapterDraftConsumed(draft)
             SyncScheduler.enqueue(appContext)
-            return chapterId
+            return@withLock chapterId
         }
         require(!draft.revision) { "修订已有章节需要连接 PC，以核对正式章节版本后保存" }
-        require(catalogingMode == "save_only") { "手机独立模式需先仅保存；连接 PC Gateway 后才能启动建档" }
-        val chapterId = UUID.randomUUID().toString()
+        if (catalogingMode == "save_and_catalog") require(directApiStore.read() != null) { "请先配置手机 API，再使用保存并建档" }
+        val chapterId = catalogingId("saved_draft", draft.projectId, draft.draftId)
+        val snapshot = dao.projectSnapshot(draft.projectId)
+        require(snapshot.any { it.entityType == "project" && it.entityId == draft.projectId }) { "作品不存在" }
+        draft.outlineNodeId?.let { id ->
+            val outline = snapshot.firstOrNull { it.entityType == "outline" && it.entityId == id }
+                ?.payloadJson?.let { json.parseToJsonElement(it) as? JsonObject }
+            require(outline?.string("node_type") == "chapter") { "只能绑定当前作品的章级大纲" }
+            require(snapshot.none { it.entityType == "chapter" && it.entityId != chapterId &&
+                it.payloadJson?.let { raw -> (json.parseToJsonElement(raw) as? JsonObject)?.string("outline_node_id") } == id }) {
+                "该大纲已关联正式章节，请刷新草稿"
+            }
+        }
         val payload = buildJsonObject {
             put("id", chapterId)
             put("project_id", draft.projectId)
@@ -2196,12 +2302,21 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             put("content", content)
             put("word_count", content.count { !it.isWhitespace() })
             put("current_version", 1)
+            put("_record_type", "chapter")
+            put("sort_order", snapshot.filter { it.entityType == "chapter" }.maxOfOrNull {
+                (it.payloadJson?.let(json::parseToJsonElement) as? JsonObject)?.get("sort_order")?.let { value -> (value as? JsonPrimitive)?.intOrNull } ?: 0
+            }?.plus(1) ?: 0)
+            put("created_at", Instant.now().toString())
             draft.outlineNodeId?.let { put("outline_node_id", it) }
             draft.contextManifestId?.let { put("context_manifest_id", it) }
         }
-        saveEntity(draft.projectId, "chapter", chapterId, payload)
+        val existing = dao.entity(ReplicaEntity.key(draft.projectId, "chapter", chapterId))
+        if (existing == null) saveOfflineEntity(draft.projectId, "chapter", chapterId, payload)
+        else require(existing.payloadJson?.let { (json.parseToJsonElement(it) as JsonObject).string("content") } == content) {
+            "该草稿已保存；请在正式章节中继续修改"
+        }
         markChapterDraftConsumed(draft)
-        return chapterId
+        return@withLock chapterId
     }
 
     suspend fun discardPendingChapterDraft(draft: MobilePendingChapterDraft) {
@@ -3489,6 +3604,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 dao.clearConflicts()
                 dao.clearReplicas()
                 dao.clearProjectPackages()
+                dao.clearCatalogingRuns()
             }
         }
         packageFiles.distinct().forEach { File(it).delete() }
@@ -3562,6 +3678,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         )
         private val syncMutex = Mutex()
         private val canonicalCommandMutex = Mutex()
+        private val draftSaveMutex = Mutex()
     }
 }
 

@@ -772,19 +772,19 @@ if (ui.pendingCatalogingProjectId == project.projectId) {
                 if (connection != null) {
                     "正文已经导入作品库。现在可以启动与 PC 相同的作品建档流程，让司命从现有章节整理摘要、角色变化和世界观资料。"
                 } else {
-                    "正文已经保存在手机。完整作品建档需要连接 PC Gateway；你可以先阅读、编辑或导出 TXT，连接后再到“工具”启动建档。"
+                    "正文已经保存在手机。配置手机 API 后，可到“工具”独立完成章节建档；也可以先阅读和编辑。"
                 },
             )
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (connection != null) viewModel.startCataloging(project.projectId)
+                    if (connection != null || ui.directApi != null) viewModel.startCataloging(project.projectId)
                     section = "tools"
                     viewModel.dismissImportCatalogingPrompt()
                 },
             ) {
-                Text(if (connection != null) "开始建档" else "打开作品工具")
+                Text(if (connection != null || ui.directApi != null) "开始建档" else "打开作品工具")
             }
         },
         dismissButton = {

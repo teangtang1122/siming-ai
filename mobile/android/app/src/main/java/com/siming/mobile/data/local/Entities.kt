@@ -49,6 +49,7 @@ data class OutboxMutation(
     val clientModifiedAt: String,
     val state: String = "pending",
     val sentPayloadHash: String? = null,
+    val catalogingBarrierId: String? = null,
     val lastError: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ...database.models import CatalogingCandidate, Chapter, OutlineNode
 from ...modules.continuity.domain.outline_character_contract import outline_character_ids
+from ...modules.continuity.domain.portable_identity import portable_cataloging_id
 from ..story_granularity import (
     normalize_section_scene_state,
 )
@@ -63,7 +64,11 @@ def apply_outline(
         parent_id = chapter_parent.id
     old = outline_snapshot(node) if node else None
     if not node:
+        client_id = payload.get("client_id")
+        if client_id and db.get(OutlineNode, client_id) is not None:
+            raise ValueError("新大纲 client_id 已被占用")
         node = OutlineNode(
+            **({"id": client_id} if client_id else {}),
             project_id=chapter.project_id,
             parent_id=parent_id,
             node_type=node_type,
@@ -258,6 +263,7 @@ def _volume_for_chapter(db: Session, chapter: Chapter) -> OutlineNode:
         raise ValueError("新章节尚未绑定大纲，请读取大纲索引并填写所属卷的真实 parent_id")
 
     volume = OutlineNode(
+        id=portable_cataloging_id("cataloging_default_volume", chapter.project_id),
         project_id=chapter.project_id,
         parent_id=None,
         node_type="volume",

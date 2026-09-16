@@ -155,7 +155,7 @@ internal fun AssistantWorkspace(
                         icon = Icons.Outlined.PhoneAndroid,
                         title = if (standaloneMobile) "手机独立工作区" else "PC 工作流使用手机模型",
                         detail = if (standaloneMobile) {
-                            "可在手机读取资料、生成和保存草稿；当前版本的建档需要连接 Gateway。"
+            "可在手机读取资料、生成和保存草稿；配置手机 API 后可独立建档，完成后继续下一章。"
                         } else {
                             "API Key 只在手机持久化；本轮加密交给自己的 Gateway，任务结束后释放。"
                         },

@@ -44,7 +44,9 @@ class MobileChapterWritingStateTest {
         assertEquals(JsonPrimitive(false), renamed["cataloging_required"])
         val edited = mobileChapterPayloadForSave(completed, obj("""{"content":"修改后的正文","cataloging_required":false}"""))
         assertEquals(JsonPrimitive(true), edited["cataloging_required"])
-        assertEquals(JsonPrimitive(2), edited["current_version"])
+        assertEquals(JsonPrimitive(3), edited["current_version"])
+        assertEquals(JsonPrimitive(6), edited["word_count"])
+        assertEquals(JsonPrimitive(2), renamed["current_version"])
         assertEquals(JsonPrimitive(true), mobileChapterPayloadForSave(edited, obj("""{"title":"另一个标题","cataloging_required":false}"""))["cataloging_required"])
         assertEquals(JsonPrimitive(false), mobileChapterPayloadForSave(edited, obj("""{"content":""}"""))["cataloging_required"])
         // Derived mobile state must not become an author-supplied override on the canonical API.

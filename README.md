@@ -23,9 +23,9 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前源码版本 3.4.2** 修复手机导入完整项目包后缺少章节建档状态、无法续写的问题，并纠正本机导入作品被误判为已同步、必须连接 Gateway 才能删除的问题；PC/Gateway 导入也按同一依据恢复建档状态。AI 实际运行测试仍主要基于 DeepSeek API 的 `deepseek-flash`，其他模型或 CLI 可能存在未知问题。完整变化及旧项目处理说明见 [3.4.2 发布说明](docs/release-notes-3.4.2.md)。
+> **当前源码版本 3.4.3** 支持手机配置 API 后独立“保存并建档”，无需连接 Gateway；建档会更新角色资料、剧情状态、写作约束及大纲关联，并支持取消、失败重试和后续同步。将手机建档结果同步到 PC 时，PC/Gateway 也需升级。完整变化及验证范围见 [3.4.3 发布说明](docs/release-notes-3.4.3.md)。
 >
-> **测试范围：本次实际模型测试基于 DeepSeek。其他模型或 CLI 接入尚未完成同等范围的实机验证，可能存在未知 bug。**
+> **测试范围：既有 AI 实际运行测试主要基于 DeepSeek API 的 `deepseek-flash`；本次独立建档自动化测试使用模拟模型调用，尚未完成真实 DeepSeek 端到端验收。其他模型或 CLI 接入可能存在未知 bug，尚未完成同等范围的实机验证。**
 
 ## 它解决什么问题
 

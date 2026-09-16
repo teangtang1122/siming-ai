@@ -338,12 +338,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
+            repository.recoverInterruptedCataloging()
             runCatching { repository.refreshCreationDrafts() }
         }
     }
 
     fun entities(projectId: String, entityType: String) =
         repository.entities(projectId, entityType)
+
+    fun catalogingRuns(projectId: String) = repository.catalogingRuns(projectId)
 
     fun beginCreation(input: CreationStartInput, route: CreationExecutionRoute) {
         launchCreation("正在建立对话式立项会话…") {
@@ -687,18 +690,19 @@ fun dismissImportCatalogingPrompt() {
     uiState.value = uiState.value.copy(pendingCatalogingProjectId = null, importedChapterCount = 0)
 }
 
-fun startCataloging(projectId: String) {
+fun startCataloging(projectId: String, chapterIds: List<String>? = null) {
     if (catalogingJob?.isActive == true) return
     catalogingJob = viewModelScope.launch {
         uiState.value = uiState.value.copy(
             pendingCatalogingProjectId = null,
             catalogingProjectId = projectId,
+            catalogingJobId = null,
             catalogingRunning = true,
             catalogingActivity = "正在准备作品建档…",
             error = null,
         )
         try {
-            val result = repository.runCataloging(projectId) { progress, message ->
+            val result = repository.runCataloging(projectId, chapterIds) { progress, message ->
                 updateCatalogingProgress(projectId, progress, message)
             }
             updateCatalogingProgress(projectId, result, "作品建档已结束")
@@ -724,9 +728,9 @@ fun startCataloging(projectId: String) {
 }
 
 fun cancelCataloging(projectId: String) {
-    val jobId = uiState.value.catalogingJobId ?: return
+    val jobId = uiState.value.catalogingJobId
     viewModelScope.launch {
-        runCatching { repository.cancelCataloging(projectId, jobId) }
+        runCatching { if (jobId != null) repository.cancelCataloging(projectId, jobId) }
             .onFailure(::showError)
         catalogingJob?.cancel(CancellationException("用户取消作品建档"))
         uiState.value = uiState.value.copy(
@@ -1293,6 +1297,9 @@ private fun updateCatalogingProgress(
                     },
                 )
                 onSaved(chapterId)
+                if (catalogingMode == "save_and_catalog" && connection.value == null) {
+                    startCataloging(draft.projectId, listOf(chapterId))
+                }
             } catch (error: Exception) {
                 refreshPendingChapterDraft(draft.projectId)
                 uiState.value = uiState.value.copy(
