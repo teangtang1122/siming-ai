@@ -2353,6 +2353,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                     stage,
                     instruction.trim(),
                     resolvedDirectConfig(DirectApiConfig.TASK_PLANNING),
+                    onProgress = onProgress,
                 ),
                 route,
                 CREATION_HOST_DEVICE,
@@ -2389,7 +2390,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         stage: String,
         data: JsonObject,
     ): JsonObject {
-        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(stage in CREATION_STAGE_ORDER) { "不支持的立项阶段：$stage" }
         require(data.isNotEmpty()) { "阶段内容不能为空" }
         val current = loadCreationSession(sessionId)
         val route = creationRoute(current)
@@ -2426,7 +2427,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         stage: String,
         data: JsonObject,
     ): JsonObject {
-        require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
+        require(stage in CREATION_STAGE_ORDER) { "不支持的立项阶段：$stage" }
         require(data.isNotEmpty()) { "阶段内容不能为空" }
         var current = loadCreationSession(sessionId)
         val route = creationRoute(current)

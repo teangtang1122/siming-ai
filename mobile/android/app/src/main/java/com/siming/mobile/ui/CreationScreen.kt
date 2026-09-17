@@ -93,6 +93,7 @@ internal fun CreationScreen(
     val ui by viewModel.uiState
     val active = drafts.firstOrNull { it.entityId == ui.activeCreationId }?.creationPayload()
     var showDossier by rememberSaveable(ui.activeCreationId) { mutableStateOf(false) }
+    var dossierStage by rememberSaveable(ui.activeCreationId) { mutableStateOf<String?>(null) }
 
 
     when {
@@ -100,6 +101,7 @@ internal fun CreationScreen(
             CircularProgressIndicator()
         }
         active != null && showDossier -> CreationDossierWorkspace(
+            initialStage = dossierStage,
             modifier = modifier,
             session = active,
             stages = stages,
@@ -127,7 +129,7 @@ internal fun CreationScreen(
             replyDelta = ui.creationReplyDelta,
             progressEvents = ui.creationProgressEvents,
             onBack = viewModel::closeCreation,
-            onOpenDossier = { showDossier = true },
+            onOpenDossier = { stage -> dossierStage = stage; showDossier = true },
             onSend = { message -> viewModel.sendCreationMessage(active.string("id"), message) },
             onDiscard = { viewModel.discardCreation(active.string("id")) },
             onContinueOnPhone = { viewModel.continueCreationOnPhone(active.string("id")) },

@@ -980,6 +980,36 @@ def test_entity_generation_cannot_report_old_baseline_as_new_model_output(bad_pa
     assert session.draft_json["stages"]["world_style"]["data"] == before
 
 
+def test_compact_concept_repair_receives_complete_schema_and_preserves_one_direction():
+    from app.services.workspace.tools.novel_creation_v2 import _generate_compact_concepts
+    from app.services.novel_creation_prompting import COMPACT_CONCEPT_REPAIR_CONTRACT
+
+    db = _db()
+    session = _ready_session(db)
+    before = deepcopy(session.draft_json)
+    requests = []
+
+    def stream(**kwargs):
+        requests.append(kwargs)
+
+        async def generate():
+            if len(requests) == 1:
+                yield json.dumps({"concepts": _concept_seed()}, ensure_ascii=False)
+            else:
+                assert COMPACT_CONCEPT_REPAIR_CONTRACT in kwargs["messages"][-1]["content"]
+                yield json.dumps({"concepts": [_concept_seed()]}, ensure_ascii=False)
+
+        return generate()
+
+    with patch("app.services.workspace.tools.novel_creation_v2.LLMGateway.stream_chat_completion", side_effect=stream):
+        cards, metadata = asyncio.run(_generate_compact_concepts(session, "fixture:test"))
+    assert len(cards) == 1
+    assert len(requests) == 2
+    assert requests[0]["timeout"] == requests[1]["timeout"] == 300
+    assert metadata["repair_method"] == "model_json"
+    assert session.draft_json == before
+
+
 def test_generation_does_not_auto_select_the_first_concept():
     db = _db()
     session = NovelCreationSession(

@@ -8,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -245,7 +246,7 @@ fun SimingApp(
     ) { padding ->
         when (rootTab) {
             RootTab.Create -> CreationScreen(
-                modifier = Modifier.padding(padding),
+                modifier = Modifier.padding(padding).consumeWindowInsets(padding),
                 viewModel = viewModel,
                 connection = connection,
                 directApi = ui.directApi,

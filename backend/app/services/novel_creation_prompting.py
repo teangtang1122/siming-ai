@@ -25,6 +25,19 @@ COMPACT_CONCEPT_SHAPE: dict[str, Any] = {
     }],
 }
 
+COMPACT_CONCEPT_REPAIR_CONTRACT = (
+    "顶层 concepts 必须是非空数组；即使只有一个方向也必须放在数组中。"
+    "保留原有方案数量，不得为了满足数量而复制方案。每张卡必须符合以下完整结构：\n"
+    + json.dumps(COMPACT_CONCEPT_SHAPE, ensure_ascii=False)
+)
+
+CREATION_MODEL_REQUEST = {
+    "stream_idle_timeout_seconds": 300,
+    "concept_max_output_tokens": 3200,
+    "concept_temperature": 0.8,
+    "stage_temperature": 0.65,
+}
+
 
 CREATION_STAGE_TASK_RULES = (
     "只深化当前阶段的 baseline，顶层只返回 data 字段；"

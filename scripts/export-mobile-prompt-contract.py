@@ -83,11 +83,13 @@ from app.services.novel_creation_contract import (
     STAGE_ORDER,
 )
 from app.services.novel_creation_prompting import (
+    COMPACT_CONCEPT_REPAIR_CONTRACT,
     COMPACT_CONCEPT_SHAPE,
     CONCEPT_TASK_KINDS,
     CONCEPT_TASK_RULES,
     CONCEPT_USER_INTROS,
     CREATION_REPAIR_SYSTEM_PROMPT,
+    CREATION_MODEL_REQUEST,
     CREATION_REPAIR_USER_TEMPLATE,
     CREATION_STAGE_TASK_RULES,
     CREATION_STAGE_USER_PREFIX,
@@ -516,6 +518,8 @@ def build_contract() -> dict:
             "stage_user_prefix": CREATION_STAGE_USER_PREFIX,
             "repair_system_prompt": CREATION_REPAIR_SYSTEM_PROMPT,
             "repair_user_template": CREATION_REPAIR_USER_TEMPLATE,
+            "concept_repair_contract": COMPACT_CONCEPT_REPAIR_CONTRACT,
+            "model_request": CREATION_MODEL_REQUEST,
             "stage_contracts": {
                 stage: _stage_contract(stage)
                 for stage in STAGE_ORDER

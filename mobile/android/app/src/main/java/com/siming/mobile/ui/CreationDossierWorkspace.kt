@@ -75,6 +75,7 @@ import kotlinx.serialization.json.intOrNull
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun CreationDossierWorkspace(
+    initialStage: String? = null,
     modifier: Modifier,
     session: JsonObject,
     stages: List<Pair<String, String>>,
@@ -90,7 +91,8 @@ internal fun CreationDossierWorkspace(
     val stageOrder = remember(stages) { stages.map { it.first } }
     val labels = remember(stages) { stages.toMap() }
     var selectedStage by rememberSaveable(session.string("id")) {
-        mutableStateOf(CreationWorkbenchContract.recommendedStage(session, stageOrder))
+        mutableStateOf(initialStage?.takeIf { it in stageOrder }
+            ?: CreationWorkbenchContract.recommendedStage(session, stageOrder))
     }
     LaunchedEffect(session.int("revision"), stageOrder) {
         if (selectedStage !in stageOrder) {
