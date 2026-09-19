@@ -2337,7 +2337,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         operation: String = "generate",
         instruction: String = "",
         onProgress: suspend (String) -> Unit = {},
-    ): JsonObject {
+    ): JsonObject = com.siming.mobile.data.observability.MobileTrace.turn(
+        "creation_session", sessionId, buildJsonObject { put("stage", stage); put("operation", operation) },
+    ) {
         require(stage in CREATION_STAGE_ORDER && stage != "constraints") { "不支持的立项阶段：$stage" }
         require(operation in setOf("generate", "regenerate", "refine")) { "不支持的生成操作：$operation" }
         if (operation == "refine") require(instruction.isNotBlank()) { "请先填写本次调整要求" }
@@ -2382,7 +2384,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             )
         }
         saveCreationSession(updated)
-        return updated
+        updated
     }
 
     suspend fun updateCreationStage(
