@@ -80,6 +80,8 @@ from ....services.novel_creation_imports import (
     serialize_material_import,
 )
 from ....services.novel_creation_prompting import (
+    COMPACT_CONCEPT_REPAIR_CONTRACT,
+    CREATION_MODEL_REQUEST,
     CREATION_REPAIR_SYSTEM_PROMPT,
     CREATION_REPAIR_USER_TEMPLATE,
     build_compact_concept_messages,
@@ -316,7 +318,7 @@ async def _stream_model_text(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
-        timeout=300,
+        timeout=CREATION_MODEL_REQUEST["stream_idle_timeout_seconds"],
         retry=1,
         extra_body=extra_body,
         resume=8,
@@ -392,8 +394,8 @@ async def _generate_compact_concepts(
         raw, attempt = await _stream_model_text(
             messages=messages,
             model=model,
-            temperature=0.8,
-            max_tokens=3200,
+            temperature=CREATION_MODEL_REQUEST["concept_temperature"],
+            max_tokens=CREATION_MODEL_REQUEST["concept_max_output_tokens"],
             extra_body=LLMGateway.local_cli_extra_body(
                 model,
                 cwd=str(content_root()),
@@ -428,8 +430,8 @@ async def _generate_compact_concepts(
                 raw=raw,
                 error=parse_error,
                 model=model,
-                contract="顶层 concepts 必须是非空数组，每张卡的字段与示例一致，不得为了满足数量而复制方案",
-                max_tokens=3200,
+                contract=COMPACT_CONCEPT_REPAIR_CONTRACT,
+                max_tokens=CREATION_MODEL_REQUEST["concept_max_output_tokens"],
                 extra_body=LLMGateway.local_cli_extra_body(
                     model,
                     cwd=str(content_root()),
@@ -506,7 +508,7 @@ async def _enhance_with_model(
         raw, attempt = await _stream_model_text(
             messages=messages,
             model=model,
-            temperature=0.65,
+            temperature=CREATION_MODEL_REQUEST["stage_temperature"],
             max_tokens=max_output_tokens,
             extra_body=LLMGateway.local_cli_extra_body(
                 model,

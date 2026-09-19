@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing release whose Android assets will be refreshed
+        description: Version label for this signed artifact (this workflow does not publish a release)
         required: true
         default: v3.3.9
         type: string
@@ -14,7 +14,6 @@ permissions:
 
 jobs:
   build-signed-apk:
-    if: github.ref_name == 'main'
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -25,11 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Require main and matching Android version
+      - name: Require repository branch and matching Android version
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if ($env:GITHUB_REF_NAME -ne "main") { throw "Android refresh must run from main." }
+          if ($env:GITHUB_REF_TYPE -ne "branch") { throw "Signed device builds must run from a repository branch." }
           if ($env:SIMING_RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw "Invalid release tag." }
           $androidBuild = Get-Content mobile/android/app/build.gradle.kts -Raw
           $version = [regex]::Match($androidBuild, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value

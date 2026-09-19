@@ -378,9 +378,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendCreationMessage(sessionId: String, message: String) {
         if (message.isBlank()) return
-        launchCreation("Creation Agent 正在处理…") {
+        launchCreation("正在处理立项要求…") {
             repository.runCreationAgentTurn(sessionId, message, ::showCreationProgress)
-            "本轮已完成；确定事实已立即写入结构化立项资料"
+            "本轮对话已结束，请查看回复和资料状态"
         }
     }
 

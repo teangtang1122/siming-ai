@@ -1,6 +1,14 @@
 package com.siming.mobile.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -71,7 +79,7 @@ internal fun CreationConversationWorkspace(
     replyDelta: String,
     progressEvents: List<CreationAgentProgressEvent>,
     onBack: () -> Unit,
-    onOpenDossier: () -> Unit,
+    onOpenDossier: (String?) -> Unit,
     onSend: (String) -> Unit,
     onDiscard: () -> Unit,
     onContinueOnPhone: () -> Unit,
@@ -89,264 +97,128 @@ internal fun CreationConversationWorkspace(
         .asReversed()
         .firstNotNullOfOrNull { it.string("user_content").takeIf(String::isNotBlank) }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 10.dp, 16.dp, 112.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item { ContextInspectorButton(kind = "creation_session", scopeId = session.string("id")) }
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回 AI 立项") }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        session.string("display_title").ifBlank { session.string("user_brief") }.ifBlank { "新书立项" },
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 21.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        when {
-                            route == "pc" -> "电脑线路 · PC 对话式 Creation Agent"
-                            else -> "手机独立 · PC 同源 Creation Agent"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (route == "pc") SimingBlue else SimingGreen,
-                    )
-                }
-                IconButton(onClick = onOpenDossier, enabled = !running) {
-                    Icon(Icons.Outlined.FolderOpen, "打开结构化建档页")
-                }
-                IconButton(onClick = onDiscard, enabled = !running) {
-                    Icon(Icons.Outlined.DeleteOutline, "移除立项草稿")
-                }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var showDetails by rememberSaveable(session.string("id")) { mutableStateOf(false) }
+    val confirmedCount = stages.count { session.stageState(it.first).string("status") == "confirmed" }
+    LaunchedEffect(session.string("id"), messages.size, running) {
+        // Scroll on a new turn, never on each token while the author reads history.
+        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+        listState.scrollToItem(Int.MAX_VALUE)
+    }
+    Column(modifier.fillMaxSize().imePadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回立项列表") }
+            Column(Modifier.weight(1f)) {
+                Text(session.string("display_title").ifBlank { "新书立项" },
+                    fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("已确认 $confirmedCount / ${stages.size} 项 · ${if (route == "pc") "电脑线路" else "手机独立"}",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = { onOpenDossier(null) }) { Text("资料") }
+            IconButton(onClick = { showDetails = !showDetails }) {
+                Icon(if (showDetails) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown, "立项详情与管理")
             }
         }
-
-        if (route == "pc" && projectId.isBlank()) {
-            item {
-                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("可从手机已保存的资料继续立项，编辑、确认和建立作品都在手机完成；AI 对话使用手机 API。", style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = onContinueOnPhone, enabled = !running) { Text("转为手机独立立项") }
+        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(stages, key = { it.first }) { (stage, label) ->
+                val status = when (session.stageState(stage).string("status")) {
+                    "confirmed" -> "已确认"
+                    "generated" -> "待确认"
+                    "stale", "conflict" -> "待复核"
+                    else -> "待完善"
+                }
+                AssistChip(onClick = { onOpenDossier(stage) }, label = { Text("$label · $status") })
+            }
+        }
+        HorizontalDivider()
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (showDetails) {
+                item {
+                    ContextInspectorButton(kind = "creation_session", scopeId = session.string("id"))
+                    Text("资料已保存在当前立项中。点上方阶段可查看、编辑和确认。",
+                        style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = onDiscard, enabled = !running) { Text("移除立项草稿") }
+                }
+            }
+            if (route == "pc" && projectId.isBlank()) {
+                item {
+                    OutlinedButton(onClick = onContinueOnPhone, enabled = !running) { Text("转为手机独立立项") }
+                }
+            }
+            if (capacityUnknown) {
+                item { OutlinedButton(onClick = onConfigureApi, enabled = !running) { Text("配置模型上下文容量") } }
+            }
+            conversationContext?.let { state ->
+                if (showDetails || state.status in setOf("failed", "compressing", "pending")) {
+                    item {
+                        CreationConversationContextCard(state, onConfigureApi,
+                            onRetry = { lastAuthorRequest?.let(onSend) }, onNewCreation = onBack,
+                            canRetry = !running && !lastAuthorRequest.isNullOrBlank())
+                    }
+                }
+            }
+            if (messages.isEmpty()) {
+                item {
+                    AgentBubble("assistant", "告诉我你的故事想法。生成的资料会先保存为草稿，等你审阅确认。")
+                }
+            } else {
+                items(messages, key = { it.string("id").ifBlank { "${it.string("role")}:${it.string("created_at")}:${it.string("content").hashCode()}" } }) { message ->
+                    AgentBubble(role = message.string("role"), content = message.string("content"),
+                        progress = (message["progress_events"] as? JsonArray).orEmpty().mapNotNull { event ->
+                            val line = event as? JsonObject ?: return@mapNotNull null
+                            ProgressLine(line.string("type"), line.string("message"))
+                        })
+                    if (showDetails && message.string("role") == "assistant") {
+                        ContextInspectorButton(kind = "creation_session", scopeId = session.string("id"),
+                            correlationId = message.string("id").removeSuffix(":assistant"), label = "查看本轮调用")
+                    }
+                }
+            }
+            if (running && replyDelta.isNotBlank()) {
+                item { AgentBubble("assistant", replyDelta) }
+            }
+            if (projectId.isNotBlank()) {
+                item {
+                    Button(onClick = { onOpenProject(projectId) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("打开正式作品")
                     }
                 }
             }
         }
-
-        item {
-            Surface(
-                color = Color(0xFFEAF4EF),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.AutoAwesome, null, tint = SimingGreen)
-                        Spacer(Modifier.width(8.dp))
-                        Text("对话就是立项过程", fontWeight = FontWeight.Bold)
-                    }
-                    Text(
-                        "每一轮 AI 都会先读取当前结构化资料，把你刚确认的事实立即写入，再基于真实数据决定下一步问题。没有“先采访完再统一生成”的阶段。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+        if (listState.canScrollForward) {
+            TextButton(onClick = { scope.launch { listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) } },
+                modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("回到最新消息 ↓") }
         }
-
-        if (capacityUnknown) {
-            item {
-                OutlinedCard(
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                        Text("模型上下文容量尚未配置", fontWeight = FontWeight.Bold)
-                        Text(
-                            "司命不会猜测模型窗口。配置上下文窗口、输出预留和安全余量后，再重新发送本轮要求。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        OutlinedButton(onClick = onConfigureApi, enabled = !running) {
-                            Text("配置上下文容量")
-                        }
-                    }
-                }
-            }
-        }
-
-        conversationContext?.let { contextState ->
-            item {
-                CreationConversationContextCard(
-                    state = contextState,
-                    onConfigureApi = onConfigureApi,
-                    onRetry = { lastAuthorRequest?.let(onSend) },
-                    onNewCreation = onBack,
-                    canRetry = !running && !lastAuthorRequest.isNullOrBlank(),
-                )
-            }
-        }
-
-        item {
-            Text("实时立项资料", fontWeight = FontWeight.Bold, fontSize = 17.sp)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                stages.forEach { (stage, label) ->
-                    val state = session.stageState(stage)
-                    val status = state.string("status").ifBlank { "pending" }
-                    val marker = when (status) {
-                        "confirmed" -> "✓"
-                        "generated" -> "•"
-                        "stale", "conflict" -> "!"
-                        else -> "○"
-                    }
-                    AssistChip(
-                        onClick = { onSend("请读取并告诉我目前“$label”已经记录了什么，还缺什么；只在我给出新事实时再写入。") },
-                        enabled = !running,
-                        label = { Text("$marker $label") },
-                    )
-                }
-            }
-            Text(
-                "修订 ${session.int("revision")} · 这些对象不再是强制顺序；你可以直接在聊天里跳到任意角色、设定、地点或大纲。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        item {
-            OutlinedButton(
-                onClick = onOpenDossier,
-                enabled = !running,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Outlined.FolderOpen, null)
-                Spacer(Modifier.width(8.dp))
-                Text("打开 PC 同款结构化建档页", fontWeight = FontWeight.Bold)
-            }
-        }
-
-        item { HorizontalDivider() }
-
-        if (messages.isEmpty()) {
-            item {
-                AgentBubble(
-                    role = "assistant",
-                    content = "我已经建立立项会话。你继续像聊天一样说想法即可；我会边聊边把确定内容写入资料。",
-                )
-            }
-        } else {
-            items(messages, key = { it.string("id").ifBlank { "${it.string("role")}:${it.string("created_at")}:${it.string("content").hashCode()}" } }) { message ->
-                if (message.string("role") == "assistant") ContextInspectorButton(
-                    kind = "creation_session", scopeId = session.string("id"),
-                    correlationId = message.string("id").removeSuffix(":assistant"), label = "查看本轮调用")
-                AgentBubble(
-                    role = message.string("role"),
-                    content = message.string("content"),
-                    progress = (message["progress_events"] as? JsonArray).orEmpty().mapNotNull { event ->
-                        val item = event as? JsonObject ?: return@mapNotNull null
-                        ProgressLine(item.string("type"), item.string("message"))
-                    },
-                )
-            }
-        }
-
         if (running) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF272725)),
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = Color(0xFFFFC6B3))
-                        Spacer(Modifier.width(11.dp))
-                        Column {
-                            Text("Creation Agent 正在工作", color = Color.White, fontWeight = FontWeight.Bold)
-                            Text(
-                                replyDelta.ifBlank { activity.ifBlank { "正在读取资料、执行工具并写入确定事实…" } },
-                                color = Color.White.copy(alpha = 0.72f),
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            ProgressTimeline(
-                                progressEvents
-                                    .filter { it.type != "reply_delta" }
-                                    .map { ProgressLine(it.type, it.message) },
-                                dark = true,
-                            )
-                        }
-                    }
-                }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text(activity.ifBlank { "正在处理，请稍候…" }, style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
-
-        if (projectId.isNotBlank()) {
-            item {
-                Button(onClick = { onOpenProject(projectId) }, modifier = Modifier.fillMaxWidth(), enabled = !running) {
-                    Icon(Icons.Outlined.FolderOpen, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("打开已创建的正式作品")
-                }
-            }
-        } else {
-            item {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    listOf(
-                        "继续完善最关键的缺口",
-                        "我想先聊主角和人物关系",
-                        "我想先补世界观规则",
-                        "检查一下现在是否可以建档",
-                    ).forEach { prompt ->
-                        AssistChip(onClick = { onSend(prompt) }, enabled = !running, label = { Text(prompt) })
+        if (projectId.isBlank()) {
+            Surface(tonalElevation = 2.dp) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                    OutlinedTextField(value = input, onValueChange = { input = it },
+                        placeholder = { Text("说说你的想法…") }, minLines = 1, maxLines = 4,
+                        modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp))
+                    Button(onClick = {
+                        val message = input.trim()
+                        if (message.isNotBlank()) { input = ""; onSend(message) }
+                    }, enabled = input.isNotBlank() && !running,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp)) {
+                        Text("发送")
                     }
                 }
             }
-            item {
-                OutlinedCard(
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                        OutlinedTextField(
-                            value = input,
-                            onValueChange = { input = it },
-                            label = { Text("继续和 AI 一起立项") },
-                            placeholder = { Text("例如：主角叫陆糖，她最怕失去父亲；这一点先写进人物设定") },
-                            minLines = 3,
-                            maxLines = 8,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            enabled = !running,
-                        )
-                        Button(
-                            onClick = {
-                                val text = input.trim()
-                                if (text.isNotBlank()) {
-                                    input = ""
-                                    onSend(text)
-                                }
-                            },
-                            enabled = input.isNotBlank() && !running,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Outlined.AutoAwesome, null)
-                            Spacer(Modifier.width(7.dp))
-                            Text("发送给 Creation Agent", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Text(
-                "你也可以打开结构化建档页，按 PC 相同的阶段逐项生成、编辑、确认并最终建档；对话与建档页始终读取同一份 V3 草稿。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

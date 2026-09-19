@@ -121,11 +121,14 @@ class PcCreationOpeningContractTest {
         for (succeeds in listOf(true, false)) {
             MockWebServer().use { server ->
                 listOf(invalid, if (succeeds) valid else invalid).forEach { data ->
-                    server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(buildJsonObject {
+                    val chunk = buildJsonObject {
                         put("choices", buildJsonArray { add(buildJsonObject {
-                            put("message", buildJsonObject { put("role", "assistant"); put("content", buildJsonObject { put("data", data) }.toString()) })
+                            put("delta", buildJsonObject { put("role", "assistant"); put("content", buildJsonObject { put("data", data) }.toString()) })
+                            put("finish_reason", "stop")
                         }) })
-                    }.toString()))
+                    }
+                    server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
+                        .setBody("data: $chunk\n\ndata: [DONE]\n\n"))
                 }
                 server.start()
                 val config = DirectApiConfig(displayName = "test", baseUrl = server.url("/").toString(),

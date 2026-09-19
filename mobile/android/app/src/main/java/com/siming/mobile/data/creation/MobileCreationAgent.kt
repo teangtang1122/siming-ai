@@ -119,6 +119,7 @@ internal class MobileCreationAgent(
     entityTarget: JsonObject? = null,
     entityBaseline: JsonObject? = null,
     contextEntities: List<JsonObject> = emptyList(),
+    onProgress: suspend (String) -> Unit = {},
 ): JsonObject {
     require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
     val currentData = source.objectValue("draft").objectValue("stages").objectValue(stage)["data"] as? JsonObject
@@ -131,19 +132,7 @@ internal class MobileCreationAgent(
     }
     val volumes = if (stage == "opening_outline") contract.entities.opening.volumeIndex(source) else null
     val characters = if (stage == "opening_outline") contract.entities.opening.characterIndex(source) else null
-    val maxTokens = if (stage == "concepts") 3_200 else 6_000
-    val temperature = if (stage == "concepts") 0.8 else 0.65
-    val creationExtraBody = if (config.isDeepSeekProvider()) buildJsonObject {
-        put("thinking", buildJsonObject { put("type", "disabled") })
-    } else null
-    val raw = directApi.complete(
-        config,
-        system,
-        user,
-        maxOutputTokens = maxTokens,
-        temperature = temperature,
-        extraBody = creationExtraBody,
-    )
+    val raw = contract.modelRequest.execute(directApi, config, stage, system, user, onProgress = onProgress)
     var sourceLabel = "model"
     var warning = ""
     var repairMethod = ""
@@ -160,14 +149,9 @@ internal class MobileCreationAgent(
             characters,
         )
         val repaired = try {
-            directApi.complete(
-                config,
-                repairSystem,
-                repairUser,
-                maxOutputTokens = maxTokens,
-                temperature = 0.0,
-                extraBody = creationExtraBody,
-            )
+            onProgress("正在校验并修复资料结构…")
+            contract.modelRequest.execute(directApi, config, stage, repairSystem, repairUser,
+                repair = true, onProgress = onProgress)
         } catch (error: CancellationException) {
             throw error
         } catch (repairError: Exception) {

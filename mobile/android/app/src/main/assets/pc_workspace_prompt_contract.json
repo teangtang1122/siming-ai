@@ -7284,6 +7284,13 @@
     "stage_user_prefix": "当前阶段：{stage_label}\n结构契约：{stage_contract}\n请只依据下方显式证据深化 baseline；不要改变已经确认的专名，也不要猜测未提供的项目事实。\n",
     "repair_system_prompt": "你是司命的阶段结构修复器。只修复 JSON 语法和结构契约，不改写作者事实、专名、已确认内容或创作方向。只输出一个 JSON 对象，不要解释。",
     "repair_user_template": "结构契约：{contract}\n校验错误：{error}\n请把下面的模型原始输出修复为合法结构；无法确定的内容保持原样，不要另写故事。\n原始输出：{raw}",
+    "concept_repair_contract": "顶层 concepts 必须是非空数组；即使只有一个方向也必须放在数组中。保留原有方案数量，不得为了满足数量而复制方案。每张卡必须符合以下完整结构：\n{\"concepts\": [{\"title\": \"不超过20字的标题\", \"subtitle\": \"一句定位\", \"logline\": \"不超过120字的一句话梗概\", \"protagonist_seed\": {\"name\": \"主角名\", \"identity\": \"身份\", \"goal\": \"即时目标\", \"lack\": \"内在缺口\"}, \"world_hook\": \"不超过100字的世界钩子\", \"core_conflict\": \"不超过100字的核心冲突\", \"story_engine\": \"持续推进故事的机制\", \"opening_hook\": \"不超过100字的开篇钩子\", \"differentiators\": [\"差异点一\", \"差异点二\"], \"risks\": [\"一个创作风险\"]}]}",
+    "model_request": {
+      "stream_idle_timeout_seconds": 300,
+      "concept_max_output_tokens": 3200,
+      "concept_temperature": 0.8,
+      "stage_temperature": 0.65
+    },
     "stage_contracts": {
       "world_style": "保留 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups 字段；writing_style、world_tone、story_structure、pacing 必须各自是非空字符串，不得返回对象或数组；worldbuilding 使用司命六维分类。",
       "characters": "返回 characters 数组和 relationships 数组。每个角色必须含 name、role_type（主角固定为 protagonist，其余为 supporting）和 goal；并保留年龄、外貌、位置、状态，以及 profile 的 core_motivation、inner_lack、core_belief、public_persona、hidden_persona、reveal_chapter、moral_taboo、voice、action_habit、trauma_trigger。不得把 characters 改成以人名为键的对象。",
@@ -9151,5 +9158,5 @@
       }
     }
   },
-  "source_sha256": "49a4a25b4ce4782877cb0f7ba94f49ffde7a72dddc5e6fddf0b20eddac0bbdb4"
+  "source_sha256": "7441104b77bcc33a31d7a1df26d95bcbecd6f38c9e85151d7fa038032bef3c5c"
 }

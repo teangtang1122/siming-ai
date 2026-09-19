@@ -27,6 +27,7 @@ internal class PcCreationPromptContract private constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     val entities = PcCreationEntityContract(creation)
+    val modelRequest = CreationModelRequest(creation.objectValue("model_request"))
 
     constructor(context: Context) : this(
         context.assets.open(PcPromptContract.ASSET_NAME)
@@ -161,7 +162,7 @@ internal class PcCreationPromptContract private constructor(
 
     fun repairMessages(raw: String, error: String, stage: String, entityTarget: JsonObject? = null, volumes: JsonArray? = null, openingLocks: JsonArray = JsonArray(emptyList()), characters: JsonArray? = null): Pair<String, String> {
         val structure = if (stage == "concepts") {
-            "顶层 concepts 必须是非空数组，每张卡的字段与示例一致，不得为了满足数量而复制方案"
+            creation.string("concept_repair_contract")
         } else {
             stageContract(stage, entityTarget) + (volumes?.let { "\nvolume_index=" + pythonJson(it) + "\n必须保持原值的 locked_paths=" + pythonJson(openingLocks) } ?: "") + (characters?.let { "\ncharacter_index=" + pythonJson(it) } ?: "")
         }
