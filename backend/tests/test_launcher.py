@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import launcher
 from app.routers import config
+from app.services import application_settings
 
 
 class LauncherDataDirectoryTestCase(unittest.TestCase):
@@ -653,7 +654,12 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
             home = Path(temp_dir)
             with patch.dict(
                 os.environ,
-                {"SIMING_HOME": str(home), "SIMING_DESKTOP_WEBVIEW": "1"},
+                {
+                    "SIMING_HOME": str(home),
+                    "SIMING_DESKTOP_WEBVIEW": "1",
+                    "SIMING_RUNTIME_PROFILE": "desktop-standalone",
+                    "SIMING_GATEWAY_HEADLESS": "0",
+                },
                 clear=False,
             ):
                 response = config.update_launcher_settings(
@@ -671,9 +677,36 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
             self.assertEqual(response.data["desktop_pet_opacity"], 0.8)
             self.assertFalse(response.data["desktop_pet_muted"])
             self.assertFalse(response.data["desktop_pet_on_top"])
-            self.assertTrue(response.data["desktop_pet_runtime_active"])
+            self.assertEqual(response.data["desktop_pet_supported"], os.name == "nt")
+            self.assertEqual(response.data["desktop_pet_runtime_active"], os.name == "nt")
             saved = launcher._load_launcher_settings(home)
             self.assertEqual(saved["desktop_pet_scale"], 1.2)
+
+    def test_desktop_pet_availability_respects_platform_and_runtime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for platform_name in ("nt", "posix"):
+                for profile, headless, webview in (
+                    ("desktop-standalone", "0", "1"),
+                    ("desktop-standalone", "0", "0"),
+                    ("gateway", "1", "1"),
+                    ("gateway", "1", "0"),
+                ):
+                    with self.subTest(platform=platform_name, profile=profile, webview=webview):
+                        with patch.dict(os.environ, {
+                            "SIMING_HOME": temp_dir,
+                            "SIMING_RUNTIME_PROFILE": profile,
+                            "SIMING_GATEWAY_HEADLESS": headless,
+                            "SIMING_DESKTOP_WEBVIEW": webview,
+                        }), patch.object(application_settings, "os", types.SimpleNamespace(
+                            name=platform_name, environ=os.environ,
+                        )):
+                            payload = application_settings.launcher_settings_payload()
+
+                        supported = platform_name == "nt" and headless == "0"
+                        self.assertEqual(payload["desktop_pet_supported"], supported)
+                        self.assertEqual(
+                            payload["desktop_pet_runtime_active"], supported and webview == "1"
+                        )
 
     def test_desktop_pet_window_size_has_a_bounded_minimum(self):
         self.assertEqual(
