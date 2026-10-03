@@ -33,4 +33,4 @@
 - Android：`Siming.apk` 与 `Siming-apk-sha256.txt`。
 - Gateway：`ghcr.io/teangtang1122/siming-ai-gateway:3.5.0`，支持 amd64 和 arm64。
 
-桌宠实现与验证方式见 [桌宠说明](desktop-pet.md)。
+桌宠实现与验证方式见 [桌宠说明](https://github.com/teangtang1122/siming-ai/blob/v3.5.0/docs/desktop-pet.md)。

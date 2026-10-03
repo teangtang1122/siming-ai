@@ -1,6 +1,7 @@
 """Release packaging must include modules loaded only by migration scripts."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -147,8 +148,11 @@ def test_windows_packaging_requires_verified_current_desktop_pet_assets():
     assert not (ROOT / "frontend/public/desktop-pet/live2d").exists()
     assert not (ROOT / "frontend/src/features/desktopPet/live2d").exists()
     assert not any(name.startswith("live2d:") for name in package["scripts"])
-    # Editable art is retained, not packaged as a second renderer.
-    assert (ROOT / "docs/live2d/source/siming/shared-body/Siming_shared_body.cmo3").is_file()
+    # A clean checkout must contain every runtime texture without needing local art archives.
+    texture_dir = ROOT / "frontend/public/desktop-pet/poses"
+    assert {path.name for path in texture_dir.iterdir()} == set(manifest["sha256"])
+    for name, expected_hash in manifest["sha256"].items():
+        assert hashlib.sha256((texture_dir / name).read_bytes()).hexdigest() == expected_hash
 
 
 def test_windows_ci_reads_the_same_pinned_toolchain():
