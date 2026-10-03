@@ -29,6 +29,19 @@ function Write-Step {
   Write-Host "[package] $Message" -ForegroundColor Cyan
 }
 
+function Get-Sha256Hex {
+  param([Parameter(Mandatory=$true)][string]$Path)
+
+  $Stream = [System.IO.File]::OpenRead($Path)
+  $Hasher = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $Hasher.Dispose()
+    $Stream.Dispose()
+  }
+}
+
 function Require-Command {
   param([string[]]$Names, [string]$Hint)
   foreach ($Name in $Names) {
@@ -316,6 +329,7 @@ Write-Step "Building frontend static files..."
 Push-Location $FrontendDir
 try {
   Invoke-Native $NpmExe @("ci")
+  Invoke-Native $NpmExe @("run", "pet:check")
   Invoke-Native $NpmExe @("run", "build")
 } finally {
   Pop-Location
@@ -431,7 +445,7 @@ Assert-WindowsVersionInfo -ExecutablePath $ExePath -Version $Version
 Write-Step "Verifying packaged MCP stdio and critical write tools..."
 Invoke-Native $VenvPython @((Join-Path $ScriptDir "smoke-packaged-mcp.py"), $ExePath)
 
-$Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
+$Sha256 = Get-Sha256Hex -Path $ExePath
 $IsPrerelease = $Version.Contains("-")
 $ReleaseTag = "v$Version"
 $UpdateChannel = if ($IsPrerelease) { "preview" } else { "stable" }

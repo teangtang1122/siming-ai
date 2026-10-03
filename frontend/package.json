@@ -1,7 +1,7 @@
 {
   "name": "siming-frontend",
   "private": true,
-  "version": "3.4.7",
+  "version": "3.5.0",
   "packageManager": "npm@11.11.0",
   "engines": {
     "node": "24.14.1",
@@ -10,7 +10,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "npm run pet:check && tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx",
     "test": "vitest run --config vitest.config.ts",
@@ -19,6 +19,7 @@
     "duplicates": "jscpd src ../backend/app --config ../.jscpd.json",
     "api:generate": "node scripts/openapi-types.mjs",
     "api:check": "node scripts/openapi-types.mjs --check",
+    "pet:check": "node scripts/check-desktop-pet-assets.mjs",
     "quality": "npm run architecture && npm run duplicates && npm run api:check",
     "screenshots:readme": "node scripts/capture-readme-screenshots.mjs"
   },
@@ -50,6 +51,7 @@
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.2.1",
     "dependency-cruiser": "^18.1.0",
+    "esbuild": "^0.25.12",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^4.6.2",
     "jscpd": "^5.0.12",

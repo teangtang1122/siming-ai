@@ -24,6 +24,19 @@ function Write-Step {
   Write-Host "[installer] $Message" -ForegroundColor Cyan
 }
 
+function Get-Sha256Hex {
+  param([Parameter(Mandatory=$true)][string]$Path)
+
+  $Stream = [System.IO.File]::OpenRead($Path)
+  $Hasher = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $Hasher.Dispose()
+    $Stream.Dispose()
+  }
+}
+
 function Invoke-Native {
   param(
     [Parameter(Mandatory=$true)][string]$FilePath,
@@ -165,7 +178,7 @@ if (-not (Test-Path -LiteralPath $InstallerExe -PathType Leaf)) {
   throw "Inno Setup completed without producing $InstallerExe"
 }
 
-$InstallerSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerExe).Hash.ToLowerInvariant()
+$InstallerSha = Get-Sha256Hex -Path $InstallerExe
 [System.IO.File]::WriteAllText(
   $InstallerShaPath,
   "$InstallerSha  Siming-Setup.exe" + [Environment]::NewLine,

@@ -7951,6 +7951,16 @@ export interface components {
         };
         /** LauncherSettingsUpdateRequest */
         LauncherSettingsUpdateRequest: {
+            /** Desktop Pet Enabled */
+            desktop_pet_enabled?: boolean | null;
+            /** Desktop Pet Muted */
+            desktop_pet_muted?: boolean | null;
+            /** Desktop Pet On Top */
+            desktop_pet_on_top?: boolean | null;
+            /** Desktop Pet Opacity */
+            desktop_pet_opacity?: number | null;
+            /** Desktop Pet Scale */
+            desktop_pet_scale?: number | null;
             /** Gateway Advertised Url */
             gateway_advertised_url?: string | null;
             /** Gateway Allowed Hosts */

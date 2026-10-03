@@ -19,12 +19,15 @@ from ..installer_updater import (
     schedule_staged_update_install,
 )
 from ..services.application_settings import (
+    DESKTOP_PET_MAX_OPACITY,
+    DESKTOP_PET_MAX_SCALE,
+    DESKTOP_PET_MIN_OPACITY,
+    DESKTOP_PET_MIN_SCALE,
     app_home,
     launcher_settings_payload,
-    load_launcher_settings,
     normalize_gateway_advertised_url,
     normalize_gateway_allowed_hosts,
-    save_launcher_settings,
+    update_launcher_preferences,
 )
 
 router = APIRouter(tags=["config"])
@@ -38,6 +41,19 @@ class LauncherSettingsUpdateRequest(BaseModel):
     gateway_enabled: bool | None = None
     gateway_advertised_url: str | None = Field(default=None, max_length=2048)
     gateway_allowed_hosts: str | None = Field(default=None, max_length=4096)
+    desktop_pet_enabled: bool | None = None
+    desktop_pet_scale: float | None = Field(
+        default=None,
+        ge=DESKTOP_PET_MIN_SCALE,
+        le=DESKTOP_PET_MAX_SCALE,
+    )
+    desktop_pet_opacity: float | None = Field(
+        default=None,
+        ge=DESKTOP_PET_MIN_OPACITY,
+        le=DESKTOP_PET_MAX_OPACITY,
+    )
+    desktop_pet_muted: bool | None = None
+    desktop_pet_on_top: bool | None = None
 
     @field_validator("gateway_advertised_url")
     @classmethod
@@ -81,18 +97,8 @@ def get_launcher_settings():
 
 @router.put("/config/launcher")
 def update_launcher_settings(payload: LauncherSettingsUpdateRequest):
-    settings = load_launcher_settings()
-    if payload.launch_mode is not None:
-        settings["launch_mode"] = payload.launch_mode
-    if payload.update_channel is not None:
-        settings["update_channel"] = payload.update_channel
-    if payload.gateway_enabled is not None:
-        settings["gateway_enabled"] = payload.gateway_enabled
-    if payload.gateway_advertised_url is not None:
-        settings["gateway_advertised_url"] = payload.gateway_advertised_url
-    if payload.gateway_allowed_hosts is not None:
-        settings["gateway_allowed_hosts"] = payload.gateway_allowed_hosts
-    save_launcher_settings(settings)
+    updates = payload.model_dump(exclude_none=True)
+    update_launcher_preferences(updates)
     return ApiResponse.success(
         data=launcher_settings_payload(),
         message="应用设置已保存",

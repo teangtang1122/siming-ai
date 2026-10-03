@@ -1,0 +1,30 @@
+{
+  "version": "poses-pickup-20260929",
+  "width": 384,
+  "height": 576,
+  "floor": 560,
+  "poses": [
+    {"id":"standing","label":"抱书待机","files":["standing-0.webp","standing-1.webp","standing-2.webp","standing-3.webp","standing-4.webp"],"frameMode":"whole_sprite","neckY":267,"hipY":421,"visibleBounds":[54,71,331,560]},
+    {"id":"reading","label":"低头读书","files":["reading.webp","reading-half.webp","reading-closed.webp"],"frameMode":"local_eyes","neckY":266.82105263157894,"hipY":409.24210526315784,"visibleBounds":[67,97,317,560],"eyeRegions":[[124.08947368421053,236.25263157894733,17.36842105263158,15.28421052631579,18],[173.06842105263158,233.8210526315789,24.315789473684212,17.02105263157895,-9]]},
+    {"id":"peeking","label":"贴边偷看","files":["peeking.webp","peeking-half.webp","peeking-closed.webp"],"frameMode":"local_eyes","neckY":256.88,"hipY":390.8,"visibleBounds":[41,71,342,560],"eyeRegions":[[210.36,200,21.96,17.28,22],[270.48,222.32,20.16,16.92,22]],"edge":{"boundaryX":220.44,"visibleStripBounds":[220,71,342,405]}},
+    {"id":"dozing","label":"坐着打盹","files":["dozing.webp"],"frameMode":"whole_sprite","neckY":397.2077464788732,"hipY":493.07042253521126,"visibleBounds":[23,226,362,560]},
+    {"id":"picked_up","label":"被轻轻拎起","files":["picked-up.png","picked-up-half.png","picked-up-closed.png"],"frameMode":"local_eyes","neckY":250.625,"hipY":421.8125,"visibleBounds":[43.70625,62.9375,340.29375,560],"source":{"width":1024,"height":1536,"scale":0.4125,"x":-26.00625,"y":9.3125},"eyeRegions":[[142.70625,206.4875,22.6875,20.625,-17],[206.23125,183.8,23.1,21.45,-17]]}
+  ],
+  "sha256": {
+    "standing-0.webp":"104396bf950af007e19cb34b38c2a66324547694ba0c84273dcf4b051eaba769",
+    "standing-1.webp":"bb19a18c783dfa8d5cde8e7c0941851dcc1cf9cda25daa324eb51987acb3e909",
+    "standing-2.webp":"920d06b4a3c7a78fc370c0dd8b2354b5951332261233066c4f6fa6db7c20631e",
+    "standing-3.webp":"4b677878bceaee26c6d82eaf58835783b6ebadb284fd0ae9911e1b0b7d0496d5",
+    "standing-4.webp":"3db08331f839780fa72c2ac76309e15af25e967c430a95d1478a938e56ff06ad",
+    "reading.webp":"7f8e3267588e8b882ef4c4fc1799e674f2ccb6ee7730e74e7a6d54e61dcc820d",
+    "reading-half.webp":"a298225d563856f8f1115bc16c13eee8a02db07f0f0cdc6f4283b6ebbbf008c1",
+    "reading-closed.webp":"a9e5b484384322f42799969f0b05c550cc4a0d69c0bc8190bc84456b190f24f8",
+    "peeking.webp":"1353db000d525c8f6815d24fe4152be8559603829e8a3e5b7b2e89158ca5aebd",
+    "peeking-half.webp":"85767946b210270f95f3ed39997bd828dde23ce71c21d659872de4b977a92aa7",
+    "peeking-closed.webp":"ada457b02861df8b50925150ff65fccdbd049c269daa717f2eef94d4a32f4a35",
+    "dozing.webp":"b533095afa3e460f6d3cfcfb98a35cfe160b37ed6b4516a5ee156f4f5f95b6ff",
+    "picked-up.png":"b368985ab7e45ec1bc007b61acd674da7f7acf97b43f96b8dbecc8de8f549c36",
+    "picked-up-half.png":"ee8b00e9b5a3d00f9aab89774eb31ba8f667bcc8b72e039904863373a759b56a",
+    "picked-up-closed.png":"9f30251d79dbb359226c9b7ca0be98af327194f63742ab09455919960e645e0d"
+  }
+}

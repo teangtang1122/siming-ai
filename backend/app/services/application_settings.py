@@ -4,11 +4,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from ..core.legacy_env import get_compatible_env
 from ..updater import resolve_update_channel
+
+DESKTOP_PET_MIN_SCALE = 0.7
+DESKTOP_PET_MAX_SCALE = 1.35
+DESKTOP_PET_MIN_OPACITY = 0.55
+DESKTOP_PET_MAX_OPACITY = 1.0
+_SETTINGS_LOCK = threading.RLock()
 
 
 def app_home() -> Path:
@@ -26,22 +34,72 @@ def launcher_settings_path() -> Path:
 
 
 def load_launcher_settings() -> dict:
-    path = launcher_settings_path()
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return {}
+    with _SETTINGS_LOCK:
+        path = launcher_settings_path()
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
 
 
 def save_launcher_settings(settings: dict) -> None:
-    path = launcher_settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with _SETTINGS_LOCK:
+        path = launcher_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(settings, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
+def update_launcher_preferences(values: Mapping[str, object]) -> dict:
+    """Merge launcher preferences through one process-wide write boundary."""
+
+    with _SETTINGS_LOCK:
+        settings = load_launcher_settings()
+        settings.update(values)
+        save_launcher_settings(settings)
+        return settings
+
+
+def _bounded_number(value: object, *, default: float, minimum: float, maximum: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return round(min(maximum, max(minimum, number)), 2)
+
+
+def _boolean_setting(settings: Mapping[str, object], key: str, default: bool) -> bool:
+    value = settings.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def normalize_desktop_pet_settings(settings: Mapping[str, object] | None = None) -> dict:
+    """Return the canonical fixed-character desktop-pet preferences."""
+
+    source = settings or {}
+    return {
+        "desktop_pet_enabled": _boolean_setting(source, "desktop_pet_enabled", True),
+        "desktop_pet_scale": _bounded_number(
+            source.get("desktop_pet_scale"),
+            default=0.8,
+            minimum=DESKTOP_PET_MIN_SCALE,
+            maximum=DESKTOP_PET_MAX_SCALE,
+        ),
+        "desktop_pet_opacity": _bounded_number(
+            source.get("desktop_pet_opacity"),
+            default=0.96,
+            minimum=DESKTOP_PET_MIN_OPACITY,
+            maximum=DESKTOP_PET_MAX_OPACITY,
+        ),
+        "desktop_pet_muted": _boolean_setting(source, "desktop_pet_muted", True),
+        "desktop_pet_on_top": _boolean_setting(source, "desktop_pet_on_top", True),
+    }
 
 
 _HOST_PATTERN = re.compile(
@@ -100,6 +158,7 @@ def launcher_settings_payload() -> dict:
         if str(settings.get("launch_mode") or "").strip().lower() == "browser"
         else "desktop"
     )
+    desktop_pet_supported = os.name == "nt" and not gateway_headless
     return {
         "launch_mode": launch_mode,
         "update_channel": resolve_update_channel(settings.get("update_channel")),
@@ -126,15 +185,27 @@ def launcher_settings_payload() -> dict:
             "Use the default browser on the next launch instead of the embedded "
             "WebView2 window."
         ),
+        **normalize_desktop_pet_settings(settings),
+        "desktop_pet_supported": desktop_pet_supported,
+        "desktop_pet_runtime_active": (
+            desktop_pet_supported
+            and os.environ.get("SIMING_DESKTOP_WEBVIEW") == "1"
+        ),
     }
 
 
 __all__ = [
     "app_home",
+    "DESKTOP_PET_MAX_OPACITY",
+    "DESKTOP_PET_MAX_SCALE",
+    "DESKTOP_PET_MIN_OPACITY",
+    "DESKTOP_PET_MIN_SCALE",
     "launcher_settings_payload",
     "launcher_settings_path",
     "load_launcher_settings",
     "normalize_gateway_advertised_url",
     "normalize_gateway_allowed_hosts",
+    "normalize_desktop_pet_settings",
     "save_launcher_settings",
+    "update_launcher_preferences",
 ]
