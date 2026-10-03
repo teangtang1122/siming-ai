@@ -121,9 +121,34 @@ def test_frontend_build_uses_the_exact_node_npm_and_package_lock():
         "npm": toolchain["npm"],
     }
     assert package_lock["lockfileVersion"] == 3
+    assert package_lock["version"] == package["version"]
+    assert package_lock["packages"][""]["version"] == package["version"]
     assert package_lock["packages"][""]["engines"] == package["engines"]
     assert 'Invoke-Native $NpmExe @("ci")' in script
     assert 'Invoke-Native "npm" @("install")' not in script
+
+
+def test_windows_packaging_requires_verified_current_desktop_pet_assets():
+    package = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (ROOT / "frontend/src/features/desktopPet/poses/manifest.json").read_text(encoding="utf-8")
+    )
+    script = (ROOT / "scripts/build-exe.ps1").read_text(encoding="utf-8")
+    checker = (ROOT / "frontend/scripts/check-desktop-pet-assets.mjs").read_text(encoding="utf-8")
+    assert package["scripts"]["pet:check"] == "node scripts/check-desktop-pet-assets.mjs"
+    assert package["scripts"]["build"].startswith("npm run pet:check &&")
+    assert script.index('Invoke-Native $NpmExe @("run", "pet:check")') < script.index(
+        'Invoke-Native $NpmExe @("run", "build")'
+    )
+    assert {pose["id"] for pose in manifest["poses"]} == {"standing", "reading", "peeking", "dozing", "picked_up"}
+    assert len(manifest["sha256"]) == 15
+    assert "createHash('sha256')" in checker
+    assert "Only the current pose runtime may ship" in checker
+    assert not (ROOT / "frontend/public/desktop-pet/live2d").exists()
+    assert not (ROOT / "frontend/src/features/desktopPet/live2d").exists()
+    assert not any(name.startswith("live2d:") for name in package["scripts"])
+    # Editable art is retained, not packaged as a second renderer.
+    assert (ROOT / "docs/live2d/source/siming/shared-body/Siming_shared_body.cmo3").is_file()
 
 
 def test_windows_ci_reads_the_same_pinned_toolchain():

@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import math
 import socket
 import sys
 import tempfile
@@ -17,6 +18,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from app.core.system_trust import configure_system_trust
 
@@ -33,6 +35,12 @@ from app.version import APP_VERSION
 APP_NAME = "Siming"
 LEGACY_APP_NAMES = ("Moshu", "NovelWritingAgent")
 DEFAULT_PORT = 8765
+DESKTOP_PET_BASE_WIDTH = 340
+DESKTOP_PET_BASE_HEIGHT = 300
+DESKTOP_PET_MIN_WIDTH = 238
+DESKTOP_PET_MIN_HEIGHT = 210
+DESKTOP_PET_EDGE_MARGIN = 24
+DESKTOP_PET_TRANSPARENCY_KEY = "#FF00FF"
 _STDIO_LOG_HANDLES = []
 _MCP_STDIO_HANDLES = []
 
@@ -42,11 +50,31 @@ class DesktopApi:
 
     def __init__(self) -> None:
         self._window = None
+        self._pet_window = None
         self._folder_dialog_type = None
+        self._gui_url = None
+        self._pet_input_overlay = None
+        self._position_lock = threading.Lock()
+        self._position_timer: threading.Timer | None = None
+        self._pending_position: tuple[int, int] | None = None
+        self._drag_lock = threading.Lock()
+        self._desktop_pet_drag: tuple[float, float, int, int] | None = None
 
-    def bind(self, window, folder_dialog_type) -> None:
+    def bind(
+        self,
+        window,
+        folder_dialog_type,
+        *,
+        pet_window=None,
+        gui_url: str | None = None,
+    ) -> None:
         self._window = window
+        self._pet_window = pet_window
         self._folder_dialog_type = folder_dialog_type
+        self._gui_url = gui_url
+
+    def attach_desktop_pet_input_overlay(self, overlay) -> None:
+        self._pet_input_overlay = overlay
 
     def select_export_directory(self) -> str:
         if self._window is None or self._folder_dialog_type is None:
@@ -60,6 +88,346 @@ class DesktopApi:
         if isinstance(selected, (list, tuple)):
             return str(selected[0]) if selected else ""
         return str(selected)
+
+    @staticmethod
+    def _safe_app_route(route: object) -> str:
+        value = str(route or "/gui")
+        parsed = urlsplit(value)
+        if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+            return "/gui"
+        if parsed.path.startswith("//"):
+            return "/gui"
+        suffix = f"?{parsed.query}" if parsed.query else ""
+        if parsed.fragment:
+            suffix += f"#{parsed.fragment}"
+        return f"{parsed.path}{suffix}"
+
+    def show_main_window(self, route: str = "/gui") -> bool:
+        if self._window is None:
+            return False
+        target = self._safe_app_route(route)
+        for method_name in ("restore", "show"):
+            try:
+                getattr(self._window, method_name)()
+            except Exception:
+                continue
+        try:
+            self._window.evaluate_js(
+                f"window.location.assign({json.dumps(target, ensure_ascii=False)});"
+            )
+        except Exception as exc:
+            _log(f"Could not navigate the main window from desktop pet: {exc}")
+        return True
+
+    def show_desktop_pet(self) -> bool:
+        if self._pet_window is None:
+            return False
+        if self._pet_input_overlay is not None:
+            try:
+                self._pet_input_overlay.show()
+                return True
+            except Exception as exc:
+                _log(f"Could not show desktop pet: {exc}")
+                return False
+        for method_name in ("restore", "show"):
+            try:
+                getattr(self._pet_window, method_name)()
+            except Exception:
+                continue
+        return True
+
+    def hide_desktop_pet(self) -> bool:
+        if self._pet_window is None:
+            return False
+        try:
+            if self._pet_input_overlay is not None:
+                self._pet_input_overlay.hide()
+            else:
+                self._pet_window.hide()
+            return True
+        except Exception as exc:
+            _log(f"Could not hide desktop pet: {exc}")
+            return False
+
+    @staticmethod
+    def _desktop_pet_pointer_position(
+        screen_x: object,
+        screen_y: object,
+    ) -> tuple[float, float] | None:
+        try:
+            return float(screen_x), float(screen_y)
+        except (TypeError, ValueError):
+            return None
+
+    def begin_desktop_pet_drag(self, screen_x: object, screen_y: object) -> bool:
+        if self._pet_window is None:
+            return False
+        pointer = self._desktop_pet_pointer_position(screen_x, screen_y)
+        if pointer is None:
+            return False
+        try:
+            if self._pet_input_overlay is not None:
+                self._pet_input_overlay.restore_inside()
+                window_x, window_y, _width, _height = (
+                    self._pet_input_overlay.bounds()
+                )
+                window_position = (window_x, window_y)
+            else:
+                window_position = (int(self._pet_window.x), int(self._pet_window.y))
+        except (AttributeError, TypeError, ValueError):
+            return False
+        with self._drag_lock:
+            self._desktop_pet_drag = (*pointer, *window_position)
+        return True
+
+    def move_desktop_pet_drag(self, screen_x: object, screen_y: object) -> bool:
+        if self._pet_window is None:
+            return False
+        pointer = self._desktop_pet_pointer_position(screen_x, screen_y)
+        if pointer is None:
+            return False
+        with self._drag_lock:
+            drag = self._desktop_pet_drag
+        if drag is None:
+            return False
+        pointer_x, pointer_y, window_x, window_y = drag
+        target_x = window_x + int(round(pointer[0] - pointer_x))
+        target_y = window_y + int(round(pointer[1] - pointer_y))
+        try:
+            if self._pet_input_overlay is not None:
+                self._pet_input_overlay.move(target_x, target_y)
+            else:
+                self._pet_window.move(target_x, target_y)
+            return True
+        except Exception as exc:
+            _log(f"Could not move desktop pet: {exc}")
+            return False
+
+    def end_desktop_pet_drag(self) -> bool:
+        with self._drag_lock:
+            was_dragging = self._desktop_pet_drag is not None
+            self._desktop_pet_drag = None
+        return was_dragging
+
+    def get_desktop_pet_window_context(self) -> dict[str, int] | None:
+        if self._pet_window is None or self._pet_input_overlay is None:
+            return None
+        try:
+            return self._pet_input_overlay.window_context()
+        except Exception as exc:
+            _log(f"Could not read desktop-pet window context: {exc}")
+            return None
+
+    def move_desktop_pet_to_edge(self, side: object, compact: object) -> dict[str, int] | None:
+        if side not in ("left", "right") or self._pet_input_overlay is None:
+            return None
+        if not _valid_desktop_pet_compact_request(compact):
+            return None
+        with self._drag_lock:
+            if self._desktop_pet_drag is not None:
+                return None
+        try:
+            if self._pet_input_overlay.move_to_edge(side, compact):
+                return self._pet_input_overlay.window_context()
+        except Exception as exc:
+            _log(f"Could not move desktop pet to edge: {exc}")
+        return None
+
+    def cancel_desktop_pet_edge_move(self) -> bool:
+        if self._pet_input_overlay is None:
+            return False
+        try:
+            self._pet_input_overlay.cancel_edge_move()
+            return True
+        except Exception as exc:
+            _log(f"Could not cancel desktop pet edge movement: {exc}")
+            return False
+
+    def update_desktop_pet_hit_region(self, region: object) -> bool:
+        if self._pet_input_overlay is None or not _valid_desktop_pet_hit_region(region):
+            return False
+        try:
+            self._pet_input_overlay.update_hit_region(region)
+            return True
+        except Exception as exc:
+            _log(f"Could not update desktop-pet input region: {exc}")
+            return False
+
+    def apply_desktop_pet_preferences(self, preferences: object, notify_pet: object = True,
+                                     resize_anchor: object = None) -> bool:
+        if self._pet_window is None or not isinstance(preferences, dict) or not isinstance(notify_pet, bool):
+            return False
+        if resize_anchor is not None and (not isinstance(resize_anchor, dict)
+                or set(resize_anchor) != {"x", "y"}
+                or resize_anchor.get("x") not in ("left", "right")
+                or resize_anchor.get("y") not in ("top", "bottom")):
+            return False
+        try:
+            from app.services.application_settings import normalize_desktop_pet_settings
+
+            normalized = normalize_desktop_pet_settings(preferences)
+            new_width, new_height = _desktop_pet_window_size(normalized)
+            preference_script = (
+                "window.dispatchEvent(new CustomEvent('siming:desktop-pet-preferences',"
+                f"{{detail:{json.dumps(normalized, ensure_ascii=False)}}}));"
+            ) if notify_pet else ""
+            if self._pet_input_overlay is not None:
+                self._pet_input_overlay.apply_preferences(
+                    new_width,
+                    new_height,
+                    normalized["desktop_pet_on_top"],
+                    preference_script,
+                    resize_anchor,
+                )
+            else:
+                try:
+                    old_width = int(self._pet_window.width)
+                    old_height = int(self._pet_window.height)
+                    old_x = int(self._pet_window.x)
+                    old_y = int(self._pet_window.y)
+                except Exception:
+                    old_width, old_height = new_width, new_height
+                    old_x = old_y = None
+                self._pet_window.resize(new_width, new_height)
+                if old_x is not None and old_y is not None:
+                    self._pet_window.move(
+                        old_x if resize_anchor and resize_anchor["x"] == "left" else old_x + old_width - new_width,
+                        old_y if resize_anchor and resize_anchor["y"] == "top" else old_y + old_height - new_height,
+                    )
+                self._pet_window.on_top = normalized["desktop_pet_on_top"]
+                if preference_script:
+                    self._pet_window.evaluate_js(preference_script)
+            return True
+        except Exception as exc:
+            _log(f"Could not apply desktop-pet preferences: {exc}")
+            return False
+
+    def _remember_desktop_pet_position(self, x: object, y: object) -> None:
+        try:
+            position = (int(round(float(x))), int(round(float(y))))
+        except (TypeError, ValueError):
+            return
+        with self._position_lock:
+            self._pending_position = position
+            if self._position_timer is not None:
+                self._position_timer.cancel()
+            timer = threading.Timer(0.45, self._flush_desktop_pet_position)
+            timer.daemon = True
+            self._position_timer = timer
+            timer.start()
+
+    def _flush_desktop_pet_position(self) -> None:
+        with self._position_lock:
+            position = self._pending_position
+            self._pending_position = None
+            self._position_timer = None
+        if position is None:
+            return
+        try:
+            from app.services.application_settings import update_launcher_preferences
+
+            update_launcher_preferences(
+                {"desktop_pet_position": {"x": position[0], "y": position[1]}}
+            )
+        except Exception as exc:
+            _log(f"Could not remember desktop-pet position: {exc}")
+
+    def _close(self) -> None:
+        self.end_desktop_pet_drag()
+        if self._pet_input_overlay is not None:
+            self._pet_input_overlay.close()
+            self._pet_input_overlay = None
+        with self._position_lock:
+            timer = self._position_timer
+            self._position_timer = None
+        if timer is not None:
+            timer.cancel()
+        self._flush_desktop_pet_position()
+
+
+def _valid_desktop_pet_hit_region(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    width, height, rects = value.get("viewport_width"), value.get("viewport_height"), value.get("rects")
+    def finite(number):
+        return isinstance(number, (int, float)) and not isinstance(number, bool) and math.isfinite(number)
+    if not all(finite(size) and 1 <= size <= 4096 for size in (width, height)):
+        return False
+    if not isinstance(rects, list) or not 1 <= len(rects) <= 2048:
+        return False
+    for rect in rects:
+        if not isinstance(rect, (list, tuple)) or len(rect) != 4 or not all(finite(n) for n in rect):
+            return False
+        x, y, w, h = rect
+        if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width + 0.01 or y + h > height + 0.01:
+            return False
+    return True
+
+
+def _valid_desktop_pet_compact_request(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    keys = ("width", "height", "viewport_width", "viewport_height")
+    if any(not isinstance(value.get(key), (int, float))
+           or isinstance(value[key], bool) or not math.isfinite(value[key]) for key in keys):
+        return False
+    return (64 <= value["width"] <= value["viewport_width"] <= 4096
+            and 64 <= value["height"] <= value["viewport_height"] <= 4096)
+
+
+def _desktop_pet_window_size(preferences: dict) -> tuple[int, int]:
+    scale = float(preferences.get("desktop_pet_scale", 0.8))
+    return (
+        max(DESKTOP_PET_MIN_WIDTH, round(DESKTOP_PET_BASE_WIDTH * scale)),
+        max(DESKTOP_PET_MIN_HEIGHT, round(DESKTOP_PET_BASE_HEIGHT * scale)),
+    )
+
+
+def _desktop_pet_window_position(
+    settings: dict,
+    width: int,
+    height: int,
+) -> tuple[int | None, int | None]:
+    if os.name != "nt":
+        return None, None
+
+    user32 = ctypes.windll.user32
+    virtual_left = int(user32.GetSystemMetrics(76))
+    virtual_top = int(user32.GetSystemMetrics(77))
+    virtual_width = max(width, int(user32.GetSystemMetrics(78)))
+    virtual_height = max(height, int(user32.GetSystemMetrics(79)))
+    max_x = virtual_left + virtual_width - width
+    max_y = virtual_top + virtual_height - height
+
+    saved = settings.get("desktop_pet_position")
+    if (
+        isinstance(saved, dict)
+        and isinstance(saved.get("x"), int)
+        and isinstance(saved.get("y"), int)
+    ):
+        return (
+            min(max_x, max(virtual_left, saved["x"])),
+            min(max_y, max(virtual_top, saved["y"])),
+        )
+
+    class WorkArea(ctypes.Structure):
+        _fields_ = [
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        ]
+
+    work_area = WorkArea()
+    if user32.SystemParametersInfoW(48, 0, ctypes.byref(work_area), 0):
+        return (
+            max(work_area.left, work_area.right - width - DESKTOP_PET_EDGE_MARGIN),
+            max(work_area.top, work_area.bottom - height - DESKTOP_PET_EDGE_MARGIN),
+        )
+    return (
+        max(virtual_left, max_x - DESKTOP_PET_EDGE_MARGIN),
+        max(virtual_top, max_y - DESKTOP_PET_EDGE_MARGIN),
+    )
 
 
 def _launcher_log_path() -> Path:
@@ -80,6 +448,645 @@ def _log(message: str) -> None:
             file.write(f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n")
     except Exception:
         pass
+
+
+def _set_windows_pet_display_passthrough(native) -> None:
+    """Keep WebView2 unshaped; the separate input window owns hit testing.
+
+    WS_EX_TRANSPARENT on a layered HWND passes pointer input to windows below
+    it. A Region on the WebView2 host instead breaks its color-key composition
+    and paints opaque black blocks around otherwise transparent content.
+    """
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    pointer_sized = ctypes.sizeof(ctypes.c_void_p) == 8
+    get_style = user32.GetWindowLongPtrW if pointer_sized else user32.GetWindowLongW
+    set_style = user32.SetWindowLongPtrW if pointer_sized else user32.SetWindowLongW
+    get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+    get_style.restype = ctypes.c_ssize_t
+    set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    set_style.restype = ctypes.c_ssize_t
+    hwnd = int(native.Handle.ToInt64())
+    ctypes.set_last_error(0)
+    style = get_style(hwnd, -20)  # GWL_EXSTYLE
+    if not style and ctypes.get_last_error():
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not style & 0x00080000:  # WS_EX_LAYERED is required for cross-thread pass-through.
+        raise RuntimeError("Desktop-pet display window is not layered")
+    if not style & 0x00000020:  # WS_EX_TRANSPARENT
+        ctypes.set_last_error(0)
+        previous = set_style(hwnd, -20, style | 0x00000020)
+        if not previous and ctypes.get_last_error():
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
+class _WindowsDesktopPetInputOverlay:
+    """Receive input above a color-keyed WebView2 and forward it to Chromium."""
+
+    def __init__(self, pet_window) -> None:
+        _log("Initializing desktop-pet input overlay")
+        import clr
+
+        clr.AddReference("System.Windows.Forms")
+        import System.Windows.Forms as WinForms
+        from System import Action
+        from System.Drawing import Color, Rectangle, Size, Region
+
+        native = getattr(pet_window, "native", None)
+        if native is None:
+            raise RuntimeError("Desktop-pet native window is unavailable")
+
+        self._native = native
+        self._WinForms = WinForms
+        self._Action = Action
+        self._Color = Color
+        self._Rectangle = Rectangle
+        self._Size = Size
+        self._Region = Region
+        self._browser = None
+        self._form = None
+        self._handlers: list[object] = []
+        self._dispatch_error_logged = False
+        self._edge_motion = None
+        self._expanded_geometry = None
+        self._hit_region_request = None
+        self._hit_region_size = None
+
+        # Build the WinForms layer on its UI thread. CoreWebView2 is resolved
+        # lazily by the mouse handlers on this same thread; reading it while
+        # the page-load callback is still unwinding can deadlock WebView2.
+        self._invoke_native(self._initialize_on_ui_thread)
+        _log("Desktop-pet input overlay native layer initialized")
+        if self._form is None or self._browser is None:
+            raise RuntimeError("Desktop-pet input overlay did not initialize")
+
+    def _invoke_control(self, control, callback, *, operation: str) -> None:
+        if not bool(getattr(control, "InvokeRequired", False)):
+            callback()
+            return
+
+        # WinForms.Control.Invoke is synchronous. Calling it from pywebview's
+        # boot thread can keep the Python runtime occupied while the UI thread
+        # is trying to enter a Python callback, intermittently freezing both
+        # WebView2 and the local API server. BeginInvoke lets the current native
+        # event unwind; Event.wait releases Python for the queued UI callback.
+        completed = threading.Event()
+        errors: list[BaseException] = []
+
+        def run_on_ui_thread() -> None:
+            try:
+                callback()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        control.BeginInvoke(self._Action(run_on_ui_thread))
+        if not completed.wait(timeout=5.0):
+            raise RuntimeError(f"Timed out while {operation} on the UI thread")
+        if errors:
+            raise errors[0]
+
+    def _invoke_native(self, callback) -> None:
+        self._invoke_control(
+            self._native,
+            callback,
+            operation="initializing the desktop-pet input overlay",
+        )
+
+    def _invoke_form(self, callback) -> None:
+        form = self._form
+        if form is None or bool(getattr(form, "IsDisposed", False)):
+            return
+        self._invoke_control(
+            form,
+            callback,
+            operation="updating the desktop-pet input overlay",
+        )
+
+    def _initialize_on_ui_thread(self) -> None:
+        WinForms = self._WinForms
+        native = self._native
+        browser = getattr(getattr(native, "browser", None), "webview", None)
+        if browser is None:
+            raise RuntimeError("Desktop-pet WebView2 surface is not ready")
+
+        native.AllowTransparency = True
+        native.BackColor = self._Color.Magenta
+        native.TransparencyKey = self._Color.Magenta
+        browser.DefaultBackgroundColor = self._Color.Transparent
+        _set_windows_pet_display_passthrough(native)
+
+        form = WinForms.Form()
+        form.Text = "司命桌宠输入层"
+        form.FormBorderStyle = getattr(WinForms.FormBorderStyle, "None")
+        form.StartPosition = WinForms.FormStartPosition.Manual
+        form.Bounds = native.Bounds
+        form.ShowInTaskbar = False
+        form.TopMost = bool(native.TopMost)
+        form.BackColor = self._Color.Black
+        # A one-alpha layered form is visually imperceptible but still receives
+        # Windows hit testing. The color-keyed WebView below remains fully clear.
+        form.Opacity = 1.0 / 255.0
+
+        self._browser = browser
+        self._form = form
+
+        handlers = (
+            self._on_mouse_down,
+            self._on_mouse_move,
+            self._on_mouse_up,
+            self._on_mouse_leave,
+            self._on_mouse_wheel,
+            self._on_native_bounds_changed,
+            self._on_native_closed,
+            self._on_native_handle_created,
+        )
+        self._handlers.extend(handlers)
+        form.MouseDown += handlers[0]
+        form.MouseMove += handlers[1]
+        form.MouseUp += handlers[2]
+        form.MouseLeave += handlers[3]
+        form.MouseWheel += handlers[4]
+        native.LocationChanged += handlers[5]
+        native.SizeChanged += handlers[5]
+        native.FormClosed += handlers[6]
+        native.HandleCreated += handlers[7]
+
+        native.Show()
+        form.Show(native)
+        form.BringToFront()
+
+    def _on_native_handle_created(self, _sender, _event) -> None:
+        # WinForms can replace its HWND; pointer transparency belongs to that
+        # handle, not to the managed Form, and must be restored on recreation.
+        _set_windows_pet_display_passthrough(self._native)
+
+    def _button(self, event) -> str:
+        buttons = self._WinForms.MouseButtons
+        if event.Button == buttons.Right:
+            return "right"
+        if event.Button == buttons.Middle:
+            return "middle"
+        return "left"
+
+    def _buttons(self, event) -> int:
+        pressed = int(event.Button)
+        buttons = self._WinForms.MouseButtons
+        return (
+            (1 if pressed & int(buttons.Left) else 0)
+            | (2 if pressed & int(buttons.Right) else 0)
+            | (4 if pressed & int(buttons.Middle) else 0)
+        )
+
+    def _dispatch(self, event_type: str, event, **extra: object) -> object | None:
+        try:
+            screen = self._form.PointToScreen(event.Location)
+            payload: dict[str, object] = {
+                "type": event_type,
+                "x": int(event.X),
+                "y": int(event.Y),
+                "screenX": int(screen.X),
+                "screenY": int(screen.Y),
+                **extra,
+            }
+            return self._browser.CoreWebView2.CallDevToolsProtocolMethodAsync(
+                "Input.dispatchMouseEvent",
+                json.dumps(payload, separators=(",", ":")),
+            )
+        except Exception:
+            if not self._dispatch_error_logged:
+                self._dispatch_error_logged = True
+                _log(
+                    "Desktop-pet input forwarding failed:\n"
+                    + traceback.format_exc()
+                )
+            return None
+
+    def _on_mouse_down(self, _sender, event) -> None:
+        # Stop on the native UI thread before WebView2 forwards the press, so
+        # the input target cannot keep sliding while the bridge catches up.
+        self._finish_edge_move_on_ui_thread(False)
+        # Retain OS-level capture while a drag crosses gaps in the silhouette.
+        self._form.Capture = True
+        self._dispatch(
+            "mousePressed",
+            event,
+            button=self._button(event),
+            buttons=self._buttons(event),
+            clickCount=max(int(event.Clicks), 1),
+        )
+
+    def _on_mouse_move(self, _sender, event) -> None:
+        self._dispatch(
+            "mouseMoved",
+            event,
+            button="none",
+            buttons=self._buttons(event),
+        )
+
+    def _on_mouse_up(self, _sender, event) -> None:
+        self._dispatch(
+            "mouseReleased",
+            event,
+            button=self._button(event),
+            buttons=0,
+            clickCount=max(int(event.Clicks), 1),
+        )
+        self._form.Capture = False
+
+    def _on_mouse_leave(self, _sender, _event) -> None:
+        try:
+            self._browser.CoreWebView2.CallDevToolsProtocolMethodAsync(
+                "Input.dispatchMouseEvent",
+                '{"type":"mouseMoved","x":-1,"y":-1,"button":"none","buttons":0}',
+            )
+        except Exception:
+            pass
+
+    def _on_mouse_wheel(self, _sender, event) -> None:
+        self._dispatch(
+            "mouseWheel",
+            event,
+            button="none",
+            buttons=self._buttons(event),
+            deltaX=0,
+            deltaY=-int(event.Delta),
+        )
+
+    def _on_native_bounds_changed(self, _sender, _event) -> None:
+        self.sync()
+
+    def _on_native_closed(self, _sender, _event) -> None:
+        self.close()
+
+    def bounds(self) -> tuple[int, int, int, int]:
+        captured: list[tuple[int, int, int, int]] = []
+
+        def capture_on_ui_thread() -> None:
+            bounds = self._native.Bounds
+            captured.append(
+                (
+                    int(bounds.X),
+                    int(bounds.Y),
+                    int(bounds.Width),
+                    int(bounds.Height),
+                )
+            )
+
+        self._invoke_native(capture_on_ui_thread)
+        if not captured:
+            raise RuntimeError("Desktop-pet native bounds are unavailable")
+        return captured[0]
+
+    def window_context(self) -> dict[str, int]:
+        captured: list[dict[str, int]] = []
+
+        def capture_on_ui_thread() -> None:
+            bounds = self._native.Bounds
+            work = self._WinForms.Screen.FromControl(self._native).WorkingArea
+            captured.append({
+                "x": int(bounds.X),
+                "y": int(bounds.Y),
+                "width": int(bounds.Width),
+                "height": int(bounds.Height),
+                "work_x": int(work.X),
+                "work_y": int(work.Y),
+                "work_width": int(work.Width),
+                "work_height": int(work.Height),
+                "compact": self._expanded_geometry is not None,
+            })
+
+        self._invoke_native(capture_on_ui_thread)
+        if not captured:
+            raise RuntimeError("Desktop-pet screen context is unavailable")
+        return captured[0]
+
+    def restore_inside(self) -> None:
+        def restore_on_ui_thread() -> None:
+            self._finish_edge_move_on_ui_thread(False)
+            self._restore_size_on_ui_thread()
+            bounds = self._native.Bounds
+            work = self._WinForms.Screen.FromControl(self._native).WorkingArea
+            width = int(bounds.Width)
+            height = int(bounds.Height)
+            target_x = min(
+                max(int(bounds.X), int(work.X)),
+                int(work.X + work.Width - width),
+            )
+            target_y = min(
+                max(int(bounds.Y), int(work.Y)),
+                int(work.Y + work.Height - height),
+            )
+            if target_x == int(bounds.X) and target_y == int(bounds.Y):
+                return
+            self._native.SetBounds(target_x, target_y, width, height)
+            self._form.Bounds = self._native.Bounds
+
+        self._invoke_native(restore_on_ui_thread)
+
+    def _restore_size_on_ui_thread(self) -> None:
+        saved = self._expanded_geometry
+        if saved is None:
+            return
+        width, height, side, minimum = saved
+        bounds = self._native.Bounds
+        work = self._WinForms.Screen.FromControl(self._native).WorkingArea
+        x = int(bounds.X) if side == "left" else int(bounds.X + bounds.Width) - width
+        x = min(max(x, int(work.X)), int(work.X + work.Width) - width)
+        y = min(max(int(bounds.Y), int(work.Y)), int(work.Y + work.Height) - height)
+        self._native.SetBounds(x, y, width, height)
+        self._native.MinimumSize = minimum
+        self._form.Bounds = self._native.Bounds
+        self._expanded_geometry = None
+
+    def _compact_on_ui_thread(self, side: str, width: int, height: int) -> None:
+        bounds = self._native.Bounds
+        work = self._WinForms.Screen.FromControl(self._native).WorkingArea
+        target = int(work.X) if side == "left" else int(work.X + work.Width - bounds.Width)
+        if abs(int(bounds.X) - target) > 1:
+            raise RuntimeError("Cannot compact a desktop pet away from the monitor edge")
+        if self._expanded_geometry is not None:
+            raise RuntimeError("Desktop pet is already compact")
+        self._expanded_geometry = (int(bounds.Width), int(bounds.Height), side, self._native.MinimumSize)
+        # The normal user-scale minimum must not stop an intentional compact
+        # presentation. Settings and normal drag restore that original minimum.
+        try:
+            self._native.MinimumSize = self._Size(1, 1)
+            x = int(work.X) if side == "left" else int(work.X + work.Width) - width
+            self._native.SetBounds(x, int(bounds.Y), width, height)
+            self._form.Bounds = self._native.Bounds
+        except Exception:
+            self._restore_size_on_ui_thread()
+            raise
+
+    def move(self, x: object, y: object) -> None:
+        target_x = int(round(float(x)))
+        target_y = int(round(float(y)))
+
+        def move_on_ui_thread() -> None:
+            self._finish_edge_move_on_ui_thread(False)
+            self._restore_size_on_ui_thread()
+            bounds = self._native.Bounds
+            width = int(bounds.Width)
+            height = int(bounds.Height)
+            target_screen = self._WinForms.Screen.FromRectangle(
+                self._Rectangle(target_x, target_y, width, height)
+            )
+            work = target_screen.WorkingArea
+            clamped_x = min(
+                max(target_x, int(work.X)),
+                int(work.X + work.Width - width),
+            )
+            clamped_y = min(
+                max(target_y, int(work.Y)),
+                int(work.Y + work.Height - height),
+            )
+            self._native.SetBounds(
+                clamped_x,
+                clamped_y,
+                width,
+                height,
+            )
+            self._form.Bounds = self._native.Bounds
+
+        self._invoke_native(move_on_ui_thread)
+
+    def _finish_edge_move_on_ui_thread(self, success: bool) -> None:
+        motion = self._edge_motion
+        if motion is None:
+            return
+        self._edge_motion = None
+        timer, finished, result, compact = motion
+        timer.Stop()
+        timer.Dispose()
+        if success:
+            try:
+                self._compact_on_ui_thread(*compact)
+            except Exception as exc:
+                _log(f"Desktop-pet compact layout failed: {exc}")
+                self._restore_size_on_ui_thread()
+                success = False
+        result.append(success)
+        finished.set()
+
+    def cancel_edge_move(self) -> None:
+        def cancel_on_ui_thread() -> None:
+            self._finish_edge_move_on_ui_thread(False)
+            self._restore_size_on_ui_thread()
+        self._invoke_native(cancel_on_ui_thread)
+
+    def _start_edge_move_on_ui_thread(self, side: str, compact: dict, finished, result: list[bool]) -> None:
+        self._finish_edge_move_on_ui_thread(False)
+        self._restore_size_on_ui_thread()
+        bounds = self._native.Bounds
+        work = self._WinForms.Screen.FromControl(self._native).WorkingArea
+        width, height = int(bounds.Width), int(bounds.Height)
+        # Request dimensions are CSS pixels; native bounds can be device pixels.
+        compact_width = min(width, max(64, math.ceil(width * compact["width"] / compact["viewport_width"])))
+        compact_height = min(height, max(64, math.ceil(height * compact["height"] / compact["viewport_height"])))
+        # Both native windows stay wholly in this monitor. Only the rendered
+        # character leans beyond its edge; neighbouring monitors cannot expose it.
+        if width > int(work.Width) or height > int(work.Height):
+            result.append(False)
+            finished.set()
+            return
+        start_x = min(max(int(bounds.X), int(work.X)), int(work.X + work.Width - width))
+        target_x = int(work.X) if side == "left" else int(work.X + work.Width - width)
+        target_y = min(max(int(bounds.Y), int(work.Y)), int(work.Y + work.Height - height))
+        distance = abs(target_x - start_x)
+        if distance <= 1:
+            self._native.SetBounds(target_x, target_y, width, height)
+            self._form.Bounds = self._native.Bounds
+            self._compact_on_ui_thread(side, compact_width, compact_height)
+            result.append(True)
+            finished.set()
+            return
+        duration = min(1.1, max(0.3, distance / 1500))
+        started = time.monotonic()
+        timer = self._WinForms.Timer()
+        timer.Interval = 16
+        motion = (timer, finished, result, (side, compact_width, compact_height))
+        self._edge_motion = motion
+
+        def tick(_sender, _event) -> None:
+            if self._edge_motion is not motion:
+                return
+            try:
+                progress = min(1.0, (time.monotonic() - started) / duration)
+                eased = progress * progress * (3 - 2 * progress)
+                x = round(start_x + (target_x - start_x) * eased)
+                self._native.SetBounds(x, target_y, width, height)
+                self._form.Bounds = self._native.Bounds
+                if progress >= 1:
+                    self._finish_edge_move_on_ui_thread(True)
+            except Exception as exc:
+                _log(f"Desktop-pet edge animation failed: {exc}")
+                self._finish_edge_move_on_ui_thread(False)
+
+        timer.Tick += tick
+        timer.Start()
+
+    def move_to_edge(self, side: str, compact: dict) -> bool:
+        if side not in ("left", "right") or not _valid_desktop_pet_compact_request(compact):
+            return False
+        finished = threading.Event()
+        result: list[bool] = []
+        self._invoke_native(lambda: self._start_edge_move_on_ui_thread(side, compact, finished, result))
+        # Bridge calls run outside the UI thread. The WinForms timer continues
+        # painting and receiving input while this wait releases the Python GIL.
+        if not finished.wait(timeout=2.0):
+            def cancel_if_current() -> None:
+                if self._edge_motion is not None and self._edge_motion[1] is finished:
+                    self._finish_edge_move_on_ui_thread(False)
+            self._invoke_native(cancel_if_current)
+        return bool(result and result[0])
+
+    def apply_preferences(
+        self,
+        width: object,
+        height: object,
+        on_top: object,
+        preference_script: str,
+        resize_anchor: dict | None = None,
+    ) -> None:
+        new_width = int(round(float(width)))
+        new_height = int(round(float(height)))
+        keep_on_top = bool(on_top)
+
+        def apply_on_ui_thread() -> None:
+            self._finish_edge_move_on_ui_thread(False)
+            self._restore_size_on_ui_thread()
+            bounds = self._native.Bounds
+            work = self._WinForms.Screen.FromControl(self._native).WorkingArea
+            target_x = min(
+                max(
+                    int(bounds.X) if resize_anchor and resize_anchor["x"] == "left"
+                    else int(bounds.X) + int(bounds.Width) - new_width,
+                    int(work.X),
+                ),
+                int(work.X + work.Width - new_width),
+            )
+            target_y = min(
+                max(
+                    int(bounds.Y) if resize_anchor and resize_anchor["y"] == "top"
+                    else int(bounds.Y) + int(bounds.Height) - new_height,
+                    int(work.Y),
+                ),
+                int(work.Y + work.Height - new_height),
+            )
+            if (int(bounds.X), int(bounds.Y), int(bounds.Width), int(bounds.Height)) != (
+                target_x, target_y, new_width, new_height,
+            ):
+                self._native.SetBounds(target_x, target_y, new_width, new_height)
+            if bool(self._native.TopMost) != keep_on_top:
+                self._native.TopMost = keep_on_top
+            self._form.Bounds = self._native.Bounds
+            if bool(self._form.TopMost) != keep_on_top:
+                self._form.TopMost = keep_on_top
+                if self._form.Visible:
+                    self._form.BringToFront()
+            core = getattr(self._browser, "CoreWebView2", None)
+            if core is not None and preference_script:
+                core.ExecuteScriptAsync(preference_script)
+
+        self._invoke_native(apply_on_ui_thread)
+
+    def _apply_hit_region_on_ui_thread(self) -> None:
+        request = self._hit_region_request
+        if request is None:
+            return
+        bounds = self._native.Bounds
+        size = (int(bounds.Width), int(bounds.Height))
+        if size == self._hit_region_size:
+            return
+        sx, sy = size[0] / request["viewport_width"], size[1] / request["viewport_height"]
+        region = self._Region()
+        region.MakeEmpty()
+        for x, y, width, height in request["rects"]:
+            left, top = math.floor(x * sx), math.floor(y * sy)
+            right, bottom = math.ceil((x + width) * sx), math.ceil((y + height) * sy)
+            region.Union(self._Rectangle(left, top, right - left, bottom - top))
+        # Only the one-alpha input HWND is shaped. The WebView display stays
+        # rectangular and mouse-transparent, preserving its alpha composition.
+        old_input = self._form.Region
+        self._form.Region = region
+        if old_input is not None:
+            old_input.Dispose()
+        self._hit_region_size = size
+
+    def update_hit_region(self, request: dict) -> None:
+        if not _valid_desktop_pet_hit_region(request):
+            raise ValueError("Invalid desktop-pet input region")
+        def apply_on_ui_thread() -> None:
+            self._hit_region_request = request
+            self._hit_region_size = None
+            self._apply_hit_region_on_ui_thread()
+        self._invoke_native(apply_on_ui_thread)
+
+    def sync(self) -> None:
+        def sync_on_ui_thread() -> None:
+            self._form.Bounds = self._native.Bounds
+            self._apply_hit_region_on_ui_thread()
+        self._invoke_native(sync_on_ui_thread)
+
+    def set_on_top(self, on_top: object) -> None:
+        keep_on_top = bool(on_top)
+
+        def set_on_ui_thread() -> None:
+            self._native.TopMost = keep_on_top
+            self._form.TopMost = keep_on_top
+            if self._form.Visible:
+                self._form.BringToFront()
+
+        self._invoke_native(set_on_ui_thread)
+
+    def show(self) -> None:
+        def show_on_ui_thread() -> None:
+            if not self._native.Visible:
+                self._native.Show()
+            _set_windows_pet_display_passthrough(self._native)
+            if not self._form.Visible:
+                self._form.Show(self._native)
+            self._form.Bounds = self._native.Bounds
+            self._form.TopMost = bool(self._native.TopMost)
+            self._form.BringToFront()
+
+        self._invoke_native(show_on_ui_thread)
+
+    def hide(self) -> None:
+        def hide_on_ui_thread() -> None:
+            self._finish_edge_move_on_ui_thread(False)
+            self._form.Hide()
+            self._native.Hide()
+
+        self._invoke_native(hide_on_ui_thread)
+
+    def close(self) -> None:
+        form = self._form
+        if form is None:
+            return
+        def close_on_ui_thread() -> None:
+            self._finish_edge_move_on_ui_thread(False)
+            if not form.IsDisposed:
+                form.Close()
+
+        self._invoke_form(close_on_ui_thread)
+        self._form = None
+
+
+def _install_windows_desktop_pet_input_overlay(pet_window):
+    if os.name != "nt":
+        return None
+    try:
+        return _WindowsDesktopPetInputOverlay(pet_window)
+    except Exception:
+        _log(
+            "Could not install desktop-pet input overlay:\n"
+            + traceback.format_exc()
+        )
+        return None
 
 
 def _show_error(title: str, message: str) -> None:
@@ -564,6 +1571,13 @@ SPLASH_HTML = """<!DOCTYPE html>
 </html>"""
 
 
+DESKTOP_PET_SPLASH_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>司命桌宠</title></head>
+<body style="margin:0;background:transparent;overflow:hidden"></body>
+</html>"""
+
+
 def _run_mcp_server() -> None:
     """Run the MCP server over stdio."""
     _ensure_mcp_stdio()
@@ -679,6 +1693,7 @@ def main() -> None:
         return
 
     server_controller: UvicornServerController | None = None
+    desktop_api: DesktopApi | None = None
     try:
         port = _find_free_port()
         home = _prepare_environment(port)
@@ -687,6 +1702,7 @@ def main() -> None:
             force_browser=force_browser,
             force_desktop=force_desktop,
         )
+        os.environ["SIMING_DESKTOP_WEBVIEW"] = "0" if use_browser else "1"
         server_host = (
             "0.0.0.0"
             if os.environ.get("SIMING_RUNTIME_PROFILE") == "gateway"
@@ -753,6 +1769,11 @@ def main() -> None:
         # cancels those downloads by default; enabling them keeps the response
         # streamed and lets WebView2 present its native Save As dialog.
         webview.settings["ALLOW_DOWNLOADS"] = True
+
+        from app.services.application_settings import normalize_desktop_pet_settings
+
+        launcher_settings = _load_launcher_settings(home)
+        desktop_pet_preferences = normalize_desktop_pet_settings(launcher_settings)
         desktop_api = DesktopApi()
         window = webview.create_window(
             title=f"{APP_NAME}",
@@ -763,7 +1784,43 @@ def main() -> None:
             text_select=True,
             js_api=desktop_api,
         )
-        desktop_api.bind(window, webview.FileDialog.FOLDER)
+        pet_window = None
+        if desktop_pet_preferences["desktop_pet_enabled"]:
+            pet_width, pet_height = _desktop_pet_window_size(desktop_pet_preferences)
+            pet_x, pet_y = _desktop_pet_window_position(
+                launcher_settings,
+                pet_width,
+                pet_height,
+            )
+            pet_window = webview.create_window(
+                title="司命桌宠",
+                html=DESKTOP_PET_SPLASH_HTML,
+                width=pet_width,
+                height=pet_height,
+                x=pet_x,
+                y=pet_y,
+                min_size=(DESKTOP_PET_MIN_WIDTH, DESKTOP_PET_MIN_HEIGHT),
+                resizable=False,
+                hidden=True,
+                frameless=True,
+                easy_drag=False,
+                shadow=False,
+                focus=False,
+                on_top=desktop_pet_preferences["desktop_pet_on_top"],
+                background_color=DESKTOP_PET_TRANSPARENCY_KEY,
+                transparent=True,
+                text_select=False,
+                zoomable=False,
+                js_api=desktop_api,
+            )
+        desktop_api.bind(
+            window,
+            webview.FileDialog.FOLDER,
+            pet_window=pet_window,
+            gui_url=gui_url,
+        )
+        if pet_window is not None:
+            pet_window.events.moved += desktop_api._remember_desktop_pet_position
 
         def _activate_window() -> None:
             # Restore handles minimized windows; show handles native backends
@@ -792,6 +1849,43 @@ def main() -> None:
                     instance.update_metadata(status="ready")
                     time.sleep(0.3)
                     window.load_url(gui_url)
+                    if pet_window is not None:
+                        try:
+                            pet_window.events.loaded.clear()
+                            pet_window.load_url(f"http://127.0.0.1:{port}/desktop-pet")
+                            if pet_window.events.loaded.wait(timeout=10):
+                                _log("Desktop pet page loaded; installing input overlay")
+                                input_overlay = (
+                                    _install_windows_desktop_pet_input_overlay(
+                                        pet_window
+                                    )
+                                    if os.name == "nt"
+                                    else None
+                                )
+                                if os.name != "nt" or input_overlay is not None:
+                                    desktop_api.attach_desktop_pet_input_overlay(
+                                        input_overlay
+                                    )
+                                    # On Windows the overlay constructor shows the
+                                    # native WebView and its input form together on
+                                    # the WinForms UI thread. Calling pywebview.show
+                                    # again from this boot thread can deadlock while
+                                    # NavigationCompleted is still unwinding.
+                                    if input_overlay is None:
+                                        pet_window.show()
+                                    _log("Desktop pet window is ready")
+                                else:
+                                    _log(
+                                        "Desktop pet input overlay is unavailable; "
+                                        "window remains hidden"
+                                    )
+                            else:
+                                _log(
+                                    "Desktop pet page did not finish loading; "
+                                    "window remains hidden"
+                                )
+                        except Exception:
+                            _log("Desktop pet boot failed:\n" + traceback.format_exc())
                 else:
                     _log("Server timeout (30s)")
                     _close_failed_desktop_window(
@@ -811,6 +1905,8 @@ def main() -> None:
         webview.start(_boot)
         _log("pywebview closed; graceful server shutdown requested")
     finally:
+        if desktop_api is not None:
+            desktop_api._close()
         if server_controller is not None:
             stopped = server_controller.stop(timeout=20.0)
             _log(f"Embedded server stopped cleanly={stopped}")

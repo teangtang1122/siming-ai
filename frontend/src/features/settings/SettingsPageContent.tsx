@@ -53,6 +53,10 @@ import { useModelOptions } from '../../hooks/useModelOptions'
 import GatewaySettingsPanel from '../gateway/GatewaySettingsPanel'
 import type { LauncherGatewaySettings } from '../gateway/types'
 import {
+  DesktopPetSettingsCard,
+  type DesktopPetSettings,
+} from '../desktopPet'
+import {
   UpdateSettingsCard,
   type UpdateChannel,
   type UpdateDownloadSourceKey,
@@ -144,7 +148,7 @@ interface ContentRootSettings {
 
 type LaunchMode = 'desktop' | 'browser'
 
-interface LauncherSettings extends LauncherGatewaySettings {
+interface LauncherSettings extends LauncherGatewaySettings, DesktopPetSettings {
   launch_mode: LaunchMode
   update_channel: UpdateChannel
   restart_required: boolean
@@ -1017,6 +1021,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           />
         </Space>
       </Card>
+
+      <DesktopPetSettingsCard
+        settings={launcherSettings}
+        loading={launcherLoading}
+        onSaved={(next) => setLauncherSettings((current) => current ? { ...current, ...next } : current)}
+      />
 
       <UpdateSettingsCard
         updateChannel={updateChannel}

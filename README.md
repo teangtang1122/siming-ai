@@ -23,9 +23,9 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前源码版本 3.4.6** 对齐手机与 PC 的立项模型请求参数和结构修复契约，手机阶段生成支持流式进度；立项对话固定输入区，资料支持展开完整字段和继续查看长列表。Android、PC 和 Gateway 同步发布。完整变化及验证范围见 [3.4.6 发布说明](docs/release-notes-3.4.6.md)。
+> **当前源码版本 3.5.0** 正式加入 Windows 司命桌宠：透明悬浮、点击说话、拎起拖动、贴边探头与五套姿势；保留 3.4.7 的立项、写作、大纲保存和本地模型修复。Android、PC 和 Gateway 同步版本号，桌宠仅在 Windows 桌面模式可用。完整变化及验证范围见 [3.5.0 发布说明](docs/release-notes-3.5.0.md)。
 >
-> **测试范围：既有 AI 实际运行测试主要基于 DeepSeek API 的 `deepseek-flash`；本次立项请求与界面回归使用合成资料和模拟模型响应，未进行真实模型 API 或 CLI 的端到端联调。其他模型或 CLI 尚未完成同等范围的实机验证。**
+> **测试范围：桌宠已验证 Windows 原生透明合成、点击区域、姿势切换和连续缩放；写作回归使用合成资料与模拟模型响应，不代表所有模型或 CLI 的实机验证。既有 AI 实际运行测试主要基于 DeepSeek API，详见对应版本验证记录。**
 
 ## 它解决什么问题
 
@@ -87,6 +87,7 @@ opencode_cli:opencode/big-pickle
 | 叙事账本 | 跟踪已完成节拍、已揭露线索、读者承诺和故事线状态，写后归档并为下一章注入关键事实。 |
 | 版本与回退 | 每次写章前后保留快照；对新章不满意时，可查看差异并恢复旧版，同步回退相关档案和文件镜像。 |
 | 长任务运行 | 展示阶段、最近活动、模型和健康度；支持暂停、继续、取消和重试当前单元，已完成章节不会因后续失败而丢失。 |
+| 司命桌宠 | Windows 透明悬浮角色直接展示待机、思考、写作、等待作者、完成和错误状态；只负责状态与导航，不写入作品。详见[桌宠设计与开发边界](docs/desktop-pet.md)。 |
 | 跨设备创作 | Android 保留可写离线副本；Gateway 按有序修订同步并在分岔时保留双方版本，不静默覆盖。 |
 
 ## Android 与自己的 Gateway
@@ -192,4 +193,4 @@ cd mobile\android
 - [全部版本发布记录](https://github.com/teangtang1122/siming-ai/releases)
 - [功能建议与问题反馈](https://github.com/teangtang1122/siming-ai/issues)
 
-本项目采用 [Apache License 2.0](LICENSE)。
+本项目自有代码采用 [Apache License 2.0](LICENSE)。桌宠人物素材及保留的历史第三方 SDK 不随项目代码改用 Apache-2.0 许可；当前姿势渲染方案和资源边界见 [桌宠设计与开发边界](docs/desktop-pet.md)。
