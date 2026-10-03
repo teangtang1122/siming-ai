@@ -315,7 +315,13 @@ class GatewayAuthenticationMiddleware:
             or not is_api_path
             or path in self.PUBLIC_API_PATHS
             or (method in {"GET", "HEAD"} and path in self.PUBLIC_READ_PATHS)
-            or is_loopback_client(scope)
+            # USB reverse forwarding makes an Android Gateway request arrive
+            # from loopback. A presented bearer token still identifies a
+            # remote device and must populate its platform/role context.
+            or (
+                is_loopback_client(scope)
+                and not _header(scope, b"authorization").lower().startswith("bearer ")
+            )
             or method == "OPTIONS"
         ):
             await self.app(scope, receive, send)

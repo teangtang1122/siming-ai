@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.architecture.tool_result_policy import ModelResultPolicy
-from app.architecture.tool_status import TOOL_COMPLETED_STATUSES, TOOL_ERROR_STATUSES
+from app.architecture.tool_status import TOOL_COMPLETED_STATUSES, TOOL_ERROR_STATUSES, TOOL_SUCCESS_STATUSES
 from app.architecture.uow import commit_session
 from app.core.utils import utc_isoformat
 from app.services.operation_runtime import record_operation_signal
@@ -98,7 +98,34 @@ def _resolve_workspace_failures(
     recovered_tools = {terminal_tool}
     if has_context_receipt:
         recovered_tools.update(_TERMINAL_CONTEXT_PREREQUISITES)
-    recovered = [log for log in failed if str(log.get("tool") or "") in recovered_tools]
+
+    def retried_capacity_read(index: int, log: dict) -> bool:
+        remediation = log.get("remediation")
+        if not isinstance(remediation, dict) or remediation.get("retryable") is not True:
+            return False
+        if remediation.get("code") not in {
+            "tool_result_batch_over_capacity", "native_assistant_transaction_over_capacity",
+        }:
+            return False
+        tool = str(log.get("tool") or "")
+        from app.services.workspace.registry import registry
+
+        definition = registry.get(tool)
+        if definition is None or definition.tool_type != "read":
+            return False
+        return any(
+            str(later.get("tool") or "") == tool
+            and str(later.get("status") or "").lower() in TOOL_SUCCESS_STATUSES
+            for later in tool_logs[index + 1:]
+        )
+
+    recovered = [
+        log for index, log in enumerate(tool_logs)
+        if log in failed and (
+            str(log.get("tool") or "") in recovered_tools
+            or retried_capacity_read(index, log)
+        )
+    ]
     unresolved = [log for log in failed if log not in recovered]
     return WorkspaceFailureResolution(
         unresolved=unresolved,
@@ -114,25 +141,9 @@ def _append_workspace_failure_notice(
 ) -> str:
     notices: list[str] = []
     terminal_label = resolution.terminal_draft_label
-    recovered_length_checks = [
-        log
-        for log in resolution.recovered
-        if str(log.get("tool") or "") == "save_external_chapter_draft"
-        and str(log.get("status") or "").lower() == "needs_confirmation"
-        and isinstance(log.get("remediation"), dict)
-        and str(log["remediation"].get("code") or "") == "draft_below_minimum"
-    ]
-    other_recovered = [
-        log for log in resolution.recovered if log not in recovered_length_checks
-    ]
-    if recovered_length_checks:
+    if resolution.recovered:
         notices.append(
-            f"补充：本轮经过 {len(recovered_length_checks)} 次篇幅校验与补写，"
-            f"最终{terminal_label}已达到要求并成功暂存。"
-        )
-    if other_recovered:
-        notices.append(
-            f"补充：本轮有 {len(other_recovered)} 次前序工具调用未通过，"
+            f"补充：本轮有 {len(resolution.recovered)} 次前序工具调用未通过，"
             f"后续流程已纠正；{terminal_label}已成功生成并暂存。"
         )
     errors = [

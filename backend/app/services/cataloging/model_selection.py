@@ -28,6 +28,11 @@ def cataloging_extra_body(
     base: dict | None = {"moshu_task_type": "cataloging"}
     if provider in CATALOGING_NON_THINKING_PROVIDERS:
         base["thinking"] = {"type": "disabled"}
+    if model == "local_llama_cpp:qwen3.8-27b-q3":
+        # Cataloging has a fixed tool set. Its prior thinking turn generated
+        # 9,732 tokens over 315 seconds before making a four-record repair;
+        # the same model can call the corrected cataloging schema directly.
+        base["chat_template_kwargs"] = {"enable_thinking": False}
     if is_local_cli_provider(provider):
         return LLMGateway.local_cli_extra_body(
             model,

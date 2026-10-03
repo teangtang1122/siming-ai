@@ -5,11 +5,14 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.conversation_context import (
     CapacityAssurance,
     ContextFrame,
     ContextFrameIntegrity,
     ConversationCheckpoint,
+    ConversationContextError,
     ConversationIdentity,
     ConversationKind,
     ConversationMessage,
@@ -518,6 +521,71 @@ def test_prepare_generates_durable_segments_before_business_context() -> None:
     assert all(record.status in {"ready", "superseded"} for record in store.records)
     assert store.commits >= calls * 2
     assert prepared.provider_messages[-1]["content"] == "continue"
+
+
+def test_failed_checkpoint_can_be_retried_without_reusing_failed_attempt() -> None:
+    turns = tuple(_turn(index, size=900) for index in range(1, 9))
+    current = ConversationMessage(
+        message_id="current", sequence_no=17, role=ConversationRole.USER, content="继续"
+    )
+    store = _Store()
+
+    async def failed_completion(**_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    async def successful_completion(**_kwargs):
+        return {
+            "content": json.dumps(
+                {
+                    "schema": "conversation_checkpoint_navigation.v1",
+                    "semantic_navigation": {
+                        "authority": "non_authoritative_navigation",
+                        "current_objectives": [],
+                        "resolved_decisions": [],
+                        "superseded_directions": [],
+                        "unresolved_questions": [],
+                        "next_context_needed": [],
+                    },
+                    "author_quote_positions": [],
+                    "prior_author_quote_states": [],
+                }
+            )
+        }
+
+    async def prepare(completion):
+        return await prepare_conversation_context(
+            store=store,
+            orchestrator=_Orchestrator(known=True, window=8_000),
+            conversation=ConversationIdentity(
+                kind=ConversationKind.WORKSPACE,
+                id="conversation",
+                revision=17,
+                project_id="project",
+            ),
+            owner_id="project",
+            turns=turns,
+            current_user_message=current,
+            model="openai:test",
+            task_type="assistant",
+            protocol="chat_completions",
+            system_prompt="system",
+            current_tools=(),
+            reload_turns=lambda: turns,
+            checkpoint_completion=completion,
+        )
+
+    with pytest.raises(ConversationContextError):
+        asyncio.run(prepare(failed_completion))
+    failed = store.records[-1]
+    assert failed.status == "failed"
+
+    prepared = asyncio.run(prepare(successful_completion))
+
+    assert prepared.checkpoint is not None
+    assert store.records[0] is failed
+    assert failed.status == "failed"
+    assert any(item.status == "ready" for item in store.records)
+    assert len({item.idempotency_key for item in store.records}) == len(store.records)
 
 
 def test_checkpoint_publish_allows_closed_turns_appended_after_immutable_source() -> None:

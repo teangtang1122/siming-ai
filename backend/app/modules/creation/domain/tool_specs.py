@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
+from ....services.novel_creation_contract import STAGE_ORDER
 from .entity_contract import ENTITY_TYPES_BY_ARTIFACT
 
 
@@ -19,10 +21,45 @@ _CREATION_MODEL_DESCRIPTION = (
 )
 
 _PATCH_CHANGES_DESCRIPTION = (
-    "原生 JSON 操作数组，不是 JSON 编码字符串。每个元素是包含 path、action 和 value 的对象；"
+    "原生 JSON 操作数组，不是 JSON 编码字符串。每项必须有 path，"
+    "action 与标准 JSON Patch op 二选一；"
     "完整阶段使用 [{\"path\":\"/\",\"action\":\"set\",\"value\":{...}}]，"
-    "value 中的对象和数组也必须直接传入，不要转成字符串。"
+    "写入动作须传原生 JSON value；remove 不需要 value，resize 须传 target_count。"
 )
+
+
+def _creation_patch_json_schema(schema: dict[str, Any]) -> None:
+    """Publish one compact operation schema to every transport and model."""
+    properties = schema["properties"]
+    for field_name in ("action", "op", "target_count"):
+        property_schema = properties[field_name]
+        non_null = next(
+            branch for branch in property_schema.pop("anyOf")
+            if branch.get("type") != "null"
+        )
+        property_schema.pop("default", None)
+        property_schema.update(non_null)
+    schema["oneOf"] = [{"required": ["action"]}, {"required": ["op"]}]
+    schema["allOf"] = [
+        {
+            "if": {
+                "required": ["action"],
+                "properties": {"action": {"enum": ["set", "replace", "append"]}},
+            },
+            "then": {"required": ["value"]},
+        },
+        {
+            "if": {
+                "required": ["op"],
+                "properties": {"op": {"enum": ["add", "replace"]}},
+            },
+            "then": {"required": ["value"]},
+        },
+        {
+            "if": {"required": ["action"], "properties": {"action": {"const": "resize"}}},
+            "then": {"required": ["target_count"]},
+        },
+    ]
 
 
 class StartNovelCreationSessionInput(CompatibleInput):
@@ -42,10 +79,65 @@ class GetCreationOperationInput(CompatibleInput):
     run_id: str = ""
 
 
+class CreationSessionFormPatch(CompatibleInput):
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"minProperties": 1})
+
+    brief: str = Field(
+        default="", description="仅在作者明确给出或修改整书意向时填写；不转存设定细节",
+    )
+    preset_id: str = ""
+    theme_id: str = ""
+    genre: str = Field(default="", description="作品题材，例如玄幻")
+    target_audience: str = ""
+    platform: str = ""
+    target_words: int = Field(default=600000, ge=10000, le=10000000)
+    target_chapters: int = Field(default=240, ge=1, le=5000)
+    world_tone: str = ""
+    story_structure: str = ""
+    pacing: str = ""
+    writing_style: str = ""
+    special_requirements: list[str] = Field(
+        default_factory=list,
+        description=(
+            "仅作者额外指定的全书硬约束；不复述 brief 中的书名、角色、世界或剧情，没有则填空数组"
+        ),
+    )
+    avoid: list[str] = Field(
+        default_factory=list, description="作者明确禁止的全书内容或写法；不是设定暂存区",
+    )
+    author_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreationSessionChanges(CompatibleInput):
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"minProperties": 1})
+
+    form: CreationSessionFormPatch = Field(
+        default_factory=CreationSessionFormPatch,
+        description="仅存作者明确的全书创作要求；剧情、角色和世界事实写对应阶段资料",
+    )
+    selected_concept_id: str = ""
+    quick_mode: bool = False
+    creation_mode: Literal["author_led", "explore"] = "explore"
+    author_brief: str = ""
+    author_outline: str = ""
+    locked_requirements: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_effective_fields(self) -> CreationSessionChanges:
+        if not self.model_fields_set:
+            raise ValueError("changes 必须包含要修改的字段")
+        if "form" in self.model_fields_set and not self.form.model_fields_set:
+            raise ValueError("form 必须包含要修改的创作约束字段")
+        return self
+
+
 class PatchCreationSessionInput(CompatibleInput):
     session_id: str
     expected_revision: int
-    changes: dict[str, Any]
+    changes: CreationSessionChanges = Field(
+        description="会话级修改；例如 {\"form\":{\"genre\":\"玄幻\",\"target_words\":600000}}",
+        examples=[{"form": {"genre": "玄幻", "target_words": 600000}}],
+    )
 
 
 class CreationArtifactInput(CompatibleInput):
@@ -53,38 +145,20 @@ class CreationArtifactInput(CompatibleInput):
     artifact: str
 
 
+class GetCreationArtifactInput(CreationArtifactInput):
+    artifact: str = Field(
+        description=(
+            "必须使用立项快照 artifacts 中的阶段 ID；全书卷纲为 macro_outline，"
+            "前三章细纲为 opening_outline。"
+        ),
+        json_schema_extra={"enum": list(STAGE_ORDER)},
+    )
+
+
 class CreationPatchOperation(CompatibleInput):
     model_config = ConfigDict(
-        json_schema_extra={
-            "oneOf": [
-                {
-                    "required": ["action"],
-                    "properties": {
-                        "action": {"enum": ["set", "replace", "append", "remove", "resize"]},
-                        "op": {"type": "null"},
-                    },
-                },
-                {
-                    "required": ["op"],
-                    "properties": {
-                        "op": {"enum": ["add", "replace", "remove"]},
-                        "action": {"type": "null"},
-                    },
-                },
-            ],
-            "allOf": [
-                {
-                    "if": {
-                        "required": ["action"],
-                        "properties": {"action": {"const": "resize"}},
-                    },
-                    "then": {
-                        "required": ["target_count"],
-                        "properties": {"target_count": {"type": "integer", "minimum": 0}},
-                    },
-                }
-            ],
-        }
+        extra="forbid",
+        json_schema_extra=_creation_patch_json_schema,
     )
     action: Literal["set", "replace", "append", "remove", "resize"] | None = Field(
         default=None,
@@ -101,7 +175,12 @@ class CreationPatchOperation(CompatibleInput):
         ),
     )
     path: str = Field(
-        description="目标 JSON Pointer，例如 /special_requirements 或 /volumes/0/title"
+        min_length=1,
+        pattern=r"^/",
+        description=(
+            "必填 JSON Pointer；完整阶段用 /，"
+            "局部字段如 /special_requirements 或 /volumes/0/title"
+        ),
     )
     value: Any = Field(default=None, description="set、replace、append 或 add 写入的值")
     target_count: int | None = Field(default=None, ge=0, description="resize 的目标数组长度")
@@ -109,8 +188,18 @@ class CreationPatchOperation(CompatibleInput):
 
     @model_validator(mode="after")
     def require_one_operation_form(self) -> CreationPatchOperation:
+        if any(
+            field_name in self.model_fields_set and getattr(self, field_name) is None
+            for field_name in ("action", "op", "target_count")
+        ):
+            raise ValueError("action、op 或 target_count 不能显式传 null")
         if (self.action is None) == (self.op is None):
             raise ValueError("action 与 op 必须且只能提供一个")
+        writes_value = self.action in {"set", "replace", "append"} or self.op in {
+            "add", "replace",
+        }
+        if writes_value and "value" not in self.model_fields_set:
+            raise ValueError("写入操作必须提供 value")
         if self.action == "resize" and self.target_count is None:
             raise ValueError("resize 操作必须提供 target_count")
         return self
@@ -270,7 +359,7 @@ _INPUTS: dict[str, type[BaseModel]] = {
     "get_creation_snapshot": CreationSessionInput,
     "get_creation_operation": GetCreationOperationInput,
     "patch_creation_session": PatchCreationSessionInput,
-    "get_creation_artifact": CreationArtifactInput,
+    "get_creation_artifact": GetCreationArtifactInput,
     "list_creation_artifacts": ListCreationArtifactsInput,
     "get_creation_dependencies": CreationArtifactInput,
     "get_creation_dependency_graph": ListCreationArtifactsInput,
@@ -308,14 +397,32 @@ def build_creation_tool_specs(definitions: Mapping[str, Any]) -> list[ToolSpec]:
     specs: list[ToolSpec] = []
     for name, input_model in _INPUTS.items():
         tool = definitions[name]
-        specs.append(
-            project_typed_tool_spec(
-                tool,
-                input_model=input_model,
-                version="3.0.0",
-            )
+        spec = project_typed_tool_spec(
+            tool,
+            input_model=input_model,
+            version="3.0.0",
         )
+        if name in {"patch_creation_artifact", "patch_creation_entity"}:
+            # Inline the same operation schema used by REST request bodies so
+            # native tool parsers can see the required path inside array items.
+            schema = input_model.model_json_schema()
+            operation = schema.pop("$defs")["CreationPatchOperation"]
+            schema["properties"]["changes"]["items"] = operation
+            spec = replace(spec, input_schema_override=schema)
+        elif name == "patch_creation_session":
+            # Inline both levels for native model parsers. REST, MCP and the
+            # runtime still derive their fields from these same typed models.
+            schema = input_model.model_json_schema()
+            schema_defs = schema.pop("$defs")
+            changes_schema = schema_defs["CreationSessionChanges"]
+            changes_schema["properties"]["form"] = schema_defs["CreationSessionFormPatch"]
+            schema["properties"]["changes"] = changes_schema
+            spec = replace(spec, input_schema_override=schema)
+        specs.append(spec)
     return specs
 
 
-__all__ = ["build_creation_tool_specs"]
+__all__ = [
+    "build_creation_tool_specs", "CreationPatchOperation", "CreationSessionChanges",
+    "CreationSessionFormPatch",
+]

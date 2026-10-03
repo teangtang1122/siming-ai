@@ -32,6 +32,225 @@ import okhttp3.mockwebserver.RecordedRequest
 
 class MobileCreationConversationAgentTest {
     @Test
+    fun `review data rejects absent or string readiness before replacement`() {
+        val stageAgent = MobileCreationAgent(contractJson(), DirectApiClient())
+        listOf(
+            buildJsonObject { put("readiness", "ready") },
+            buildJsonObject { put("ready", "true") },
+            buildJsonObject { put("ready", 1) },
+        ).forEach { invalid ->
+            assertFailsWith<IllegalArgumentException> {
+                stageAgent.replaceArtifact(session(), "final_review", invalid, "assistant")
+            }
+        }
+    }
+
+    @Test
+    fun `standalone final review admits actual chapter and character read batch without saving`() {
+        val requests = AtomicInteger()
+        val writes = AtomicInteger()
+        val source = JsonObject(session().toMutableMap().apply {
+            put("draft", JsonObject(session().getValue("draft").jsonObject.toMutableMap().apply {
+                put("stages", buildJsonObject {
+                    put("characters", buildJsonObject {
+                        put("status", "confirmed")
+                        put("data", buildJsonObject {
+                            put("characters", JsonArray(listOf(buildJsonObject {
+                                put("name", "林七"); put("role_type", "protagonist")
+                                put("goal", "追出感染源")
+                            })))
+                            put("relationships", JsonArray(emptyList()))
+                        })
+                    })
+                    put("opening_outline", buildJsonObject {
+                        put("status", "confirmed")
+                        put("data", buildJsonObject {
+                            put("chapters", JsonArray((1..3).map { index -> buildJsonObject {
+                                put("client_id", "chapter-$index"); put("title", "第${index}章")
+                                put("summary", "追查线索，确定下一步行动。")
+                            } }))
+                            put("sections", JsonArray(emptyList()))
+                        })
+                    })
+                })
+            }))
+        })
+        fun tool(id: String, name: String, args: JsonObject) = buildJsonObject {
+            put("id", id); put("type", "function")
+            put("function", buildJsonObject { put("name", name); put("arguments", args.toString()) })
+        }
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                val message = when (requests.getAndIncrement()) {
+                    0 -> buildJsonObject {
+                        put("role", "assistant")
+                        put("tool_calls", JsonArray(listOf(tool("categories", "set_tool_categories", buildJsonObject {
+                            put("enabled_categories", JsonArray(listOf(JsonPrimitive("creation_entities"))))
+                        }))))
+                    }
+                    1 -> buildJsonObject {
+                        put("role", "assistant")
+                        put("tool_calls", JsonArray(listOf("opening_outline", "characters").map { artifact ->
+                            tool(artifact, "list_creation_entities", buildJsonObject {
+                                put("artifact", artifact); put("limit", 10)
+                            })
+                        }))
+                    }
+                    else -> {
+                        val receipts = body.getValue("messages").jsonArray.map { it.jsonObject }
+                            .filter { it.string("role") == "tool" && it.string("tool_call_id") in setOf("opening_outline", "characters") }
+                        assertEquals(2, receipts.size)
+                        receipts.forEach { receipt ->
+                            val result = Json.parseToJsonElement(receipt.string("content")).jsonObject
+                            assertEquals("ok", result.string("status"))
+                            assertTrue(result.getValue("data").jsonObject.getValue("entities").jsonArray.isNotEmpty())
+                        }
+                        buildJsonObject { put("role", "assistant"); put("content", "已读取前3章和角色资料，可以继续最终审阅。") }
+                    }
+                }
+                return chatStreamResponse(buildJsonObject {
+                    put("choices", JsonArray(listOf(buildJsonObject { put("message", message) })))
+                }.toString())
+            }
+        }) { server ->
+            val outcome = runBlocking {
+                agent { writes.incrementAndGet() }.run(source, "最终审阅", config(server).copy(contextWindowTokens = 100_000))
+            }
+            assertEquals(3, requests.get())
+            assertEquals(0, writes.get())
+            assertEquals(source, outcome.session)
+            assertEquals("read_only", outcome.replyStatus)
+            assertTrue(outcome.reply.startsWith(PcCreationAgentContract(contractJson()).readOnlyNotice))
+            assertEquals(2, outcome.toolResults.count { it.jsonObject.string("tool") == "list_creation_entities" })
+            assertTrue(outcome.toolResults.all { it.jsonObject.string("status") == "ok" })
+        }
+    }
+
+    @Test
+    fun `standalone review saves a structured report before reporting generation`() {
+        val requests = AtomicInteger()
+        val writes = AtomicInteger()
+        val contract = PcCreationAgentContract(contractJson())
+        val review = buildJsonObject {
+            put("ready", true)
+            put("blocking", JsonArray(emptyList()))
+            put("warnings", JsonArray(emptyList()))
+            put("counts", buildJsonObject { put("reviewed_stages", 7) })
+        }
+        fun tool(name: String, args: JsonObject) = buildJsonObject {
+            put("role", "assistant")
+            put("tool_calls", JsonArray(listOf(buildJsonObject {
+                put("id", "call-$name"); put("type", "function")
+                put("function", buildJsonObject { put("name", name); put("arguments", args.toString()) })
+            })))
+        }
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                val message = when (requests.getAndIncrement()) {
+                    0 -> tool("set_tool_categories", buildJsonObject {
+                        put("enabled_categories", JsonArray(listOf("creation_artifacts", "creation_generation").map(::JsonPrimitive)))
+                    })
+                    1 -> tool("get_creation_artifact", buildJsonObject { put("artifact", "final_review") })
+                    2 -> {
+                        assertTrue(body.getValue("messages").jsonArray.first().jsonObject.string("content")
+                            .contains(contract.readOnlyCompletionInstruction))
+                        tool("generate_creation_artifact", buildJsonObject {
+                            put("artifact", "final_review"); put("expected_revision", 1)
+                            put("instruction", "完成末轮审查并保留报告")
+                        })
+                    }
+                    3 -> buildJsonObject {
+                        put("role", "assistant")
+                        put("content", buildJsonObject { put("data", review) }.toString())
+                    }
+                    else -> buildJsonObject {
+                        put("role", "assistant"); put("content", "最终审阅已保存，等待作者确认。")
+                    }
+                }
+                val payload = buildJsonObject {
+                    put("choices", JsonArray(listOf(buildJsonObject { put("message", message) })))
+                }.toString()
+                return if (body["stream"]?.jsonPrimitive?.content == "true") chatStreamResponse(payload)
+                else MockResponse().setHeader("Content-Type", "application/json").setBody(payload)
+            }
+        }) { server ->
+            val outcome = runBlocking {
+                agent { writes.incrementAndGet() }.run(session(), "请完成末轮审查并保留报告", config(server))
+            }
+            assertEquals(5, requests.get())
+            assertEquals(1, writes.get())
+            assertFalse(outcome.reply.startsWith(contract.readOnlyNotice))
+            val saved = outcome.session.getValue("draft").jsonObject.getValue("stages").jsonObject
+                .getValue("final_review").jsonObject
+            assertEquals("generated", saved.string("status"))
+            assertEquals(review, saved["data"])
+        }
+    }
+
+    @Test
+    fun `standalone patch accepts both declared forms and rejects missing operation fields`() {
+        val mobile = agent().agent
+        val source = Json.parseToJsonElement("""{"genre":"玄幻","tags":["冒险"]}""").jsonObject
+        fun change(json: String) = Json.parseToJsonElement(json).jsonObject
+
+        val patched = mobile.applyChanges(source, listOf(
+            change("""{"path":"/genre","action":"set","value":"悬疑"}"""),
+            change("""{"path":"/tags/-","op":"add","value":"推理"}"""),
+        ))
+        assertEquals("悬疑", patched.getValue("genre").jsonPrimitive.content)
+        assertEquals(2, patched.getValue("tags").jsonArray.size)
+        listOf(
+            """{"action":"set","value":"无路径"}""",
+            """{"path":"/genre","value":"无动作"}""",
+            """{"path":"/genre","action":"set"}""",
+            """{"path":"/genre","action":"set","op":"replace","value":"双动作"}""",
+            """{"path":"/tags","action":"resize"}""",
+            """{"path":"/genre","action":"set","value":"未知字段","unexpected":true}""",
+        ).forEach { invalid ->
+            assertFailsWith<IllegalArgumentException> {
+                mobile.applyChanges(source, listOf(change(invalid)))
+            }
+        }
+    }
+
+    @Test
+    fun `standalone reply contract rejects literal tool markup`() {
+        val contract = PcCreationAgentContract(contractJson())
+        assertEquals(
+            "tool_protocol_text",
+            contract.replyError("<tool_call><function=patch_creation_artifact></function></tool_call>"),
+        )
+    }
+
+    @Test
+    fun `standalone artifact read rejects unknown stage id`() {
+        val requests = AtomicInteger()
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (requests.getAndIncrement()) {
+                0 -> chatStreamResponse(
+                    """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_artifacts\"]}"}}]}}]}""",
+                )
+                1 -> chatStreamResponse(
+                    """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-artifact","type":"function","function":{"name":"get_creation_artifact","arguments":"{\"artifact\":\"outline\"}"}}]}}]}""",
+                )
+                else -> chatStreamResponse(
+                    """{"choices":[{"message":{"role":"assistant","content":"请使用真实阶段 ID。"}}]}""",
+                )
+            }
+        }) { server ->
+            val source = session()
+            val result = runBlocking { agent().run(source, "读取卷纲", config(server)) }
+            val failure = result.toolResults.last().jsonObject
+            assertEquals(3, requests.get())
+            assertEquals("error", failure.string("status"))
+            assertEquals("creation_unknown_artifact", failure.getValue("data").jsonObject.string("reason"))
+            assertEquals(source["revision"], result.session["revision"])
+        }
+    }
+
+    @Test
     fun `standalone first outline generation reports five saved volumes`() {
         listOf("whole", "new").forEach(::exerciseOutlineGeneration)
     }
@@ -46,12 +265,19 @@ class MobileCreationConversationAgentTest {
         exerciseOutlineGeneration("existing")
     }
 
+    @Test
+    fun `standalone whole artifact tools save new collections after an existing generation`() {
+        listOf("whole_generate", "whole_refine", "whole_regenerate", "whole_locked").forEach(::exerciseOutlineGeneration)
+    }
+
     private fun exerciseOutlineGeneration(mode: String) {
         val calls = AtomicInteger()
         val writes = AtomicInteger()
-        val initial = mode != "existing"
-        val repairs = mode == "repair" || mode == "invalid"
-        val succeeds = mode != "invalid"
+        val wholeExisting = mode.startsWith("whole_")
+        val locked = mode == "whole_locked"
+        val initial = mode != "existing" && !wholeExisting
+        val repairs = mode == "repair" || mode == "invalid" || locked
+        val succeeds = mode != "invalid" && !locked
         val volumes = JsonArray((0..4).map { index -> buildJsonObject {
             put("title", "第${index + 1}卷"); put("start_chapter", index * 48 + 1)
             put("end_chapter", (index + 1) * 48); put("summary", "调查取得新证据。")
@@ -63,11 +289,16 @@ class MobileCreationConversationAgentTest {
         }
         val replacement = JsonObject(volumes.first().jsonObject + ("summary" to JsonPrimitive("修订后的卷摘要。")))
         val base = session()
-        val source = if (initial) base else JsonObject(base + ("draft" to JsonObject(
+        val sourceBase = if (initial) base else JsonObject(base + ("draft" to JsonObject(
             base.getValue("draft").jsonObject + ("stages" to buildJsonObject {
                 put("macro_outline", buildJsonObject { put("status", "generated"); put("data", outline) })
             }),
         )))
+        val source = if (locked) JsonObject(sourceBase + ("draft" to JsonObject(
+            sourceBase.getValue("draft").jsonObject + ("artifact_locks" to buildJsonObject {
+                put("macro_outline", JsonArray(listOf(JsonPrimitive("/volumes/0/summary"))))
+            }),
+        ))) else sourceBase
         fun tool(name: String, args: JsonObject) = buildJsonObject {
             put("role", "assistant")
             put("tool_calls", JsonArray(listOf(buildJsonObject {
@@ -81,20 +312,22 @@ class MobileCreationConversationAgentTest {
                 val index = calls.getAndIncrement()
                 val message = when {
                     index == 0 -> tool("set_tool_categories", buildJsonObject {
-                        put("enabled_categories", JsonArray(listOf("creation_data", "creation_flow").map(::JsonPrimitive)))
+                        put("enabled_categories", JsonArray(listOf("creation_session", "creation_generation").map(::JsonPrimitive)))
                     })
                     index == 1 -> tool("get_creation_snapshot", buildJsonObject {})
-                    index == 2 -> tool(if (initial) "generate_creation_artifact" else "refine_creation_artifact", buildJsonObject {
+                    index == 2 -> tool(if (locked) "refine_creation_artifact" else if (wholeExisting) "${mode.removePrefix("whole_")}_creation_artifact" else if (initial) "generate_creation_artifact" else "refine_creation_artifact", buildJsonObject {
                         put("artifact", "macro_outline"); put("expected_revision", 1)
                         put("instruction", if (initial) "生成首版全书主线与五卷卷纲" else "只修订第一卷摘要")
-                        if (!initial) put("entity_id", MobileCreationAgent(contractJson(), DirectApiClient()).openingContract.volumeId(source, volumes.first().jsonObject))
-                        else if (mode != "whole") put("entity_type", "volume")
+                        if (!initial && !wholeExisting) put("entity_id", MobileCreationAgent(contractJson(), DirectApiClient()).openingContract.volumeId(source, volumes.first().jsonObject))
+                        else if (mode != "whole" && !wholeExisting) put("entity_type", "volume")
                     })
                     index == 3 || (repairs && index == 4) -> {
                         val prompt = body.getValue("messages").jsonArray.last().jsonObject.string("content")
-                        if (mode != "whole") assertTrue("initialize_stage=$initial" in prompt, prompt)
-                        if (index == 4) assertTrue("$.data.story_overview" in prompt, prompt)
+                        if (mode != "whole" && !wholeExisting) assertTrue("initialize_stage=$initial" in prompt, prompt)
+                        if (wholeExisting) assertTrue("调查取得新证据。" in prompt, prompt)
+                        if (index == 4) assertTrue((if (locked) "/volumes/0/summary" else "$.data.story_overview") in prompt, prompt)
                         val data = when {
+                            wholeExisting -> JsonObject(outline + ("volumes" to JsonArray(listOf(replacement) + volumes.drop(1))))
                             !initial -> buildJsonObject { put("volumes", JsonArray(listOf(replacement))) }
                             repairs && (index == 3 || !succeeds) -> buildJsonObject { put("volumes", volumes) }
                             else -> outline
@@ -118,8 +351,8 @@ class MobileCreationConversationAgentTest {
                             assertTrue(wire.toByteArray(Charsets.UTF_8).size <= 4_096)
                         } else {
                             assertEquals("error", result.string("status"))
-                            assertEquals("creation_generated_stage_fields_missing", data.string("reason"))
-                            assertEquals("$.data.story_overview", data.string("path"))
+                            assertEquals(if (locked) "creation_artifact_locked_changed" else "creation_generated_stage_fields_missing", data.string("reason"))
+                            assertEquals(if (locked) "/volumes/0/summary" else "$.data.story_overview", data.string("path"))
                         }
                         buildJsonObject {
                             put("role", "assistant")
@@ -185,7 +418,7 @@ class MobileCreationConversationAgentTest {
                     val index = calls.getAndIncrement()
                     val message = when (index) {
                         0 -> tool("set_tool_categories", buildJsonObject {
-                            put("enabled_categories", JsonArray(listOf("creation_data", "creation_flow").map(::JsonPrimitive)))
+                            put("enabled_categories", JsonArray(listOf("creation_entities", "creation_generation").map(::JsonPrimitive)))
                         })
                         1 -> tool("list_creation_entities", buildJsonObject {
                             put("artifact", "locations"); put("entity_type", "location")
@@ -296,7 +529,7 @@ class MobileCreationConversationAgentTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 return when (requests.getAndIncrement()) {
-                    0 -> response(name = "set_tool_categories", arguments = """{"enabled_categories":["creation_data"]}""")
+                    0 -> response(name = "set_tool_categories", arguments = """{"enabled_categories":["creation_entities"]}""")
                     1 -> response(name = "get_creation_entity", arguments = """{"entity_id":"$entityId"}""")
                     2 -> response(name = "patch_creation_entity", arguments = """{"entity_id":"$entityId","expected_revision":1,"changes":[{"action":"set","path":"/name","value":"林遥"}]}""")
                     else -> {
@@ -369,7 +602,7 @@ class MobileCreationConversationAgentTest {
             withServer(object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when (requests.getAndIncrement()) {
                     0 -> tool("set_tool_categories", buildJsonObject {
-                        put("enabled_categories", JsonArray(listOf(JsonPrimitive("creation_flow"))))
+                        put("enabled_categories", JsonArray(listOf(JsonPrimitive("creation_generation"))))
                     })
                     1 -> tool("generate_creation_artifact", buildJsonObject {
                         put("artifact", "characters"); put("expected_revision", 1); put(field, value)
@@ -463,7 +696,7 @@ class MobileCreationConversationAgentTest {
                 val index = calls.getAndIncrement()
                 val message = when (index) {
                     0 -> toolMessage("set_tool_categories", buildJsonObject {
-                        put("enabled_categories", JsonArray(listOf(JsonPrimitive("creation_flow"))))
+                        put("enabled_categories", JsonArray(listOf(JsonPrimitive("creation_generation"))))
                     })
                     1 -> toolMessage("refine_creation_artifact", buildJsonObject {
                         put("artifact", "world_style")
@@ -518,7 +751,7 @@ class MobileCreationConversationAgentTest {
                     0 -> {
                         assertEquals("required", body.getValue("tool_choice").jsonPrimitive.content)
                         chatStreamResponse(
-                            """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}],"usage":{"prompt_tokens":88}}""",
+                            """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}],"usage":{"prompt_tokens":88}}""",
                         )
                     }
                     1 -> {
@@ -556,7 +789,7 @@ class MobileCreationConversationAgentTest {
             assertEquals(3, requests.get())
             assertEquals("completed", result.status)
             assertTrue(result.replayable)
-            assertEquals("已读取当前立项资料，没有修改数据。", result.reply)
+            assertEquals(PcCreationAgentContract(contractJson()).readOnlyNotice + "\n\n已读取当前立项资料，没有修改数据。", result.reply)
             assertEquals(
                 listOf("user", "assistant", "tool", "assistant", "tool", "assistant"),
                 result.modelMessages.map { (it as JsonObject).string("role") },
@@ -619,7 +852,7 @@ class MobileCreationConversationAgentTest {
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 return when (val step = requests.getAndIncrement()) {
                     0 -> chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
                     )
                     in 1..6 -> {
                         assertTrue(body.getValue("tools").jsonArray.isNotEmpty())
@@ -641,7 +874,7 @@ class MobileCreationConversationAgentTest {
 
             assertEquals(8, requests.get())
             assertEquals("completed", result.status)
-            assertEquals("已在超过旧上限后完成检查。", result.reply)
+            assertEquals(PcCreationAgentContract(contractJson()).readOnlyNotice + "\n\n已在超过旧上限后完成检查。", result.reply)
         }
     }
 
@@ -655,7 +888,7 @@ class MobileCreationConversationAgentTest {
                 assertFalse("thinking" in body)
                 return if (requests.getAndIncrement() == 0) {
                     chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
                     )
                 } else {
                     chatStreamResponse(
@@ -713,10 +946,10 @@ class MobileCreationConversationAgentTest {
                 assertTrue(body.getValue("stream").jsonPrimitive.content.toBoolean())
                 return when (requests.getAndIncrement()) {
                     0 -> chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
                     )
                     1 -> chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-write-one","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"genre\":\"玄幻\"}}"}},{"id":"call-write-two","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"target_chapters\":1000}}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-write-one","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"form\":{\"genre\":\"玄幻\"}}}"}},{"id":"call-write-two","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"form\":{\"target_chapters\":1000}}}"}}]}}]}""",
                     )
                     else -> {
                         assertTrue(body.getValue("tools").jsonArray.isEmpty())
@@ -748,10 +981,69 @@ class MobileCreationConversationAgentTest {
             assertEquals(3, requests.get())
             assertEquals(1, persisted.get())
             assertEquals(2, result.session.getValue("revision").jsonPrimitive.content.toInt())
+            assertEquals("玄幻", result.session.getValue("genre").jsonPrimitive.content)
+            val draft = result.session.getValue("draft").jsonObject
+            assertEquals("玄幻", draft.getValue("form").jsonObject.getValue("genre").jsonPrimitive.content)
+            assertEquals("玄幻", draft.getValue("stages").jsonObject.getValue("constraints").jsonObject.getValue("data").jsonObject.getValue("genre").jsonPrimitive.content)
             val businessResults = result.toolResults.map { it.jsonObject }
                 .filter { it.string("tool") == "patch_creation_session" }
             assertEquals(listOf("ok", "denied"), businessResults.map { it.string("status") })
             assertEquals("本轮只记录了题材。下一步想补充什么？", result.reply)
+        }
+    }
+
+    @Test
+    fun `small standalone creation reads use exact results when declarations exceed capacity`() {
+        val requests = AtomicInteger()
+        withServer(object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                return when (requests.getAndIncrement()) {
+                    0 -> chatStreamResponse(
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
+                    )
+                    1 -> chatStreamResponse(
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"session","type":"function","function":{"name":"get_creation_session","arguments":"{}"}},{"id":"snapshot","type":"function","function":{"name":"get_creation_snapshot","arguments":"{}"}}]}}]}""",
+                    )
+                    else -> {
+                        val toolMessages = body.getValue("messages").jsonArray.map { it.jsonObject }
+                            .filter { it.string("role") == "tool" }
+                        assertEquals(2, toolMessages.count {
+                            it.string("tool_call_id") in setOf("session", "snapshot")
+                        })
+                        chatStreamResponse(
+                            """{"choices":[{"message":{"role":"assistant","content":"已读取立项资料，尚未修改。"}}]}""",
+                        )
+                    }
+                }
+            }
+        }) { server ->
+            val client = DirectApiClient(allowCleartextForTests = true, retryDelaysMillis = emptyList())
+            val contract = contractJson()
+            val store = MobileAssistantConversationStore(Files.createTempDirectory("creation-read-budget").toFile())
+            val standalone = MobileCreationConversationAgent(
+                contract = PcCreationAgentContract(contract),
+                stageAgent = MobileCreationAgent(contract, client),
+                directApi = client,
+                conversationStore = store,
+                persistSession = { error("纯读取不应持久化修改") },
+                finalizeSession = { source -> source to "project-1" },
+            )
+
+            val result = runBlocking {
+                AgentHarness(standalone, store).run(
+                    source = session(),
+                    message = "查看当前立项资料",
+                    config = config(server).copy(contextWindowTokens = 100_000),
+                )
+            }
+
+            assertEquals(3, requests.get())
+            assertEquals(PcCreationAgentContract(contractJson()).readOnlyNotice + "\n\n已读取立项资料，尚未修改。", result.reply)
+            assertEquals(2, result.toolResults.count {
+                it.jsonObject.string("status") == "ok" &&
+                    it.jsonObject.string("tool") in setOf("get_creation_session", "get_creation_snapshot")
+            })
         }
     }
 
@@ -764,11 +1056,11 @@ class MobileCreationConversationAgentTest {
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 return when (requests.getAndIncrement()) {
                     0 -> chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
                     )
                     1 -> {
                         val calls = (1..60).joinToString(",") { index ->
-                            """{"id":"call-write-$index","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"genre\":\"类型$index\"}}"}}"""
+                            """{"id":"call-write-$index","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"form\":{\"genre\":\"类型$index\"}}}"}}"""
                         }
                         chatStreamResponse(
                             """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[$calls]}}]}""",
@@ -823,7 +1115,7 @@ class MobileCreationConversationAgentTest {
         val persisted = AtomicInteger()
         withServer(object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = chatStreamResponse(
-                """{"choices":[{"message":{"role":"assistant","content":"$oversizedContent","tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                """{"choices":[{"message":{"role":"assistant","content":"$oversizedContent","tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
             )
         }) { server ->
             val client = DirectApiClient(allowCleartextForTests = true, retryDelaysMillis = emptyList())
@@ -873,11 +1165,11 @@ class MobileCreationConversationAgentTest {
             override fun dispatch(request: RecordedRequest): MockResponse =
                 if (requests.getAndIncrement() == 0) {
                     chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
                     )
                 } else {
                     chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"duplicate","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"genre\":\"玄幻\"}}"}},{"id":"duplicate","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"genre\":\"科幻\"}}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"duplicate","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"form\":{\"genre\":\"玄幻\"}}}"}},{"id":"duplicate","type":"function","function":{"name":"patch_creation_session","arguments":"{\"changes\":{\"form\":{\"genre\":\"科幻\"}}}"}}]}}]}""",
                     )
                 }
         }) { server ->
@@ -942,39 +1234,32 @@ class MobileCreationConversationAgentTest {
     }
 
     @Test
-    fun `standalone failed write limit enters summary without another tool step`() {
+    fun `standalone failed write limit reports verified no-write receipt`() {
         val requests = AtomicInteger()
-        val expectedReply = "修改未保存，请检查当前资料版本。"
         withServer(object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
-                val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 return when (requests.getAndIncrement()) {
                     0 -> chatStreamResponse(
-                        """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_data\"]}"}}]}}]}""",
+                        """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"categories","type":"function","function":{"name":"set_tool_categories","arguments":"{\"enabled_categories\":[\"creation_session\"]}"}}]}}]}""",
                     )
                     1 -> {
                         val calls = (1..4).joinToString(",") { index ->
-                            """{"id":"write-$index","type":"function","function":{"name":"patch_creation_session","arguments":"{\"expected_revision\":999,\"changes\":{\"genre\":\"玄幻\"}}"}}"""
+                            """{"id":"write-$index","type":"function","function":{"name":"patch_creation_session","arguments":"{\"expected_revision\":999,\"changes\":{\"form\":{\"genre\":\"玄幻\"}}}"}}"""
                         }
                         chatStreamResponse("""{"choices":[{"message":{"role":"assistant","tool_calls":[$calls]}}]}""")
                     }
-                    else -> {
-                        check(requests.get() == 3)
-                        assertTrue(body.getValue("tools").jsonArray.isEmpty())
-                        assertFalse("tool_choice" in body)
-                        assertTrue(body.getValue("messages").jsonArray.first().jsonObject.string("content").contains("工具已关闭"))
-                        chatStreamResponse("""{"choices":[{"message":{"role":"assistant","content":"$expectedReply"}}]}""")
-                    }
+                    else -> error("失败写入后不得再请求模型总结")
                 }
             }
         }) { server ->
             val outcome = runBlocking { agent().run(session(), "把题材设为玄幻", config(server)) }
-            assertEquals(3, requests.get())
+            assertEquals(2, requests.get())
             assertEquals(1, outcome.session.getValue("revision").jsonPrimitive.content.toInt())
-            assertEquals(expectedReply, outcome.reply)
+            assertTrue(outcome.reply.startsWith("本轮没有保存任何修改"))
+            assertTrue(outcome.reply.contains("本轮写入失败已达上限"))
             assertEquals(listOf("error", "error", "error", "denied"), outcome.toolResults.map { it.jsonObject }
                 .filter { it.string("tool") == "patch_creation_session" }.map { it.string("status") })
-            assertEquals("summary", outcome.promptMetrics.last().jsonObject.string("phase"))
+            assertEquals("receipt_only", outcome.replyStatus)
         }
     }
 
@@ -1010,9 +1295,9 @@ class MobileCreationConversationAgentTest {
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 assertEquals("deepseek-flash", body.string("model"))
                 return when (val step = requests.getAndIncrement()) {
-                    0 -> response("", call("categories", "set_tool_categories", """{"enabled_categories":["creation_data"]}"""))
+                    0 -> response("", call("categories", "set_tool_categories", """{"enabled_categories":["creation_session"]}"""))
                     1 -> response("", call("read", "get_creation_snapshot", "{}"))
-                    2 -> response("", call("write", "patch_creation_session", """{"changes":{"genre":"玄幻"}}"""))
+                    2 -> response("", call("write", "patch_creation_session", """{"changes":{"form":{"genre":"玄幻"}}}"""))
                     else -> {
                         check(step in 3..4) { "Summary correction must be bounded" }
                         assertTrue(body.getValue("tools").jsonArray.isEmpty())
@@ -1028,7 +1313,7 @@ class MobileCreationConversationAgentTest {
                         if (transportFailure) {
                             MockResponse().setResponseCode(401).setBody("""{"error":{"message":"summary request unavailable"}}""")
                         } else if (step == 3 && nativeCall) {
-                            response("", call("unoffered-write", "patch_creation_session", """{"changes":{"genre":"科幻"}}"""))
+                            response("", call("unoffered-write", "patch_creation_session", """{"changes":{"form":{"genre":"科幻"}}}"""))
                         } else response(if (step == 3 || persistentFailure) invalid else expectedReply)
                     }
                 }

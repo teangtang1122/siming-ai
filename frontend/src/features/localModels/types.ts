@@ -6,8 +6,8 @@ export interface HardwareProfile {
   gpu_name?: string | null
   vram_gb: number
   nvidia_available: boolean
-  profile: 'light' | 'standard' | 'quality'
-  recommended_model: string
+  profile: 'unsupported' | 'standard' | 'quality'
+  recommended_model: string | null
   recommended_context: number
   training_supported: boolean
 }
@@ -24,6 +24,7 @@ export interface LocalModel {
   file_size?: number | null
   sha256?: string | null
   license_name?: string
+  source?: 'catalog' | 'custom'
   source_urls: string[]
   min_ram_gb?: number
   recommended_vram_gb?: number
@@ -49,6 +50,25 @@ export interface RuntimeStatus {
   pid?: number | null
   context_length?: number | null
   requested_context_length?: number | null
+  executable_path?: string | null
+  adjustment?: string | null
+}
+
+export interface RuntimeLaunchSettings {
+  context_length: number
+  gpu_layers: number
+  threads: number | null
+  flash_attention: 'auto' | 'on' | 'off'
+  fit: 'auto' | 'on' | 'off'
+  kv_cache_type: 'f16' | 'q8_0' | 'q4_0'
+  mtp_draft_tokens: number
+  cache_ram_mb: number
+  reasoning_effort: 'low' | 'medium' | 'high' | null
+  temperature: number | null
+  top_p: number | null
+  top_k: number | null
+  min_p: number | null
+  repeat_penalty: number | null
 }
 
 export interface ModelAdapter {

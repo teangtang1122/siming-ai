@@ -129,7 +129,7 @@ class Span:
         if self.trace:
             if status == "completed":
                 status = self.trace.span_outcomes.pop(self.id, status)
-            if self.kind == "turn" and status != "completed":
+            if (self.kind == "turn" or self.parent is None) and status != "completed":
                 self.trace.status = status
             self.trace.emit(
                 "span_finished",

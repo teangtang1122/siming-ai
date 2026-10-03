@@ -140,7 +140,7 @@ async def get_moshu_usage_guide(
                 "模型按需调用 search_task_context，复核候选后调用 submit_context_evidence。",
                 "按 next_arguments 逐页读完 context_page；末页取得选择令牌后，才在下一模型步骤生成章级节点及其 section。",
                 "携带同一 manifest 与 context_selection_token 调用 save_external_outline_draft，然后立即结束本轮。",
-                "不得调用 create_outline_nodes 或继续写正文；作者可编辑、确认、重新生成或放弃提案。",
+                "新增正式大纲须由作者确认草稿，不继续写正文；作者可编辑、确认、重新生成或放弃提案。",
             ],
             "forbidden_tools": INTERNAL_LLM_TOOLS,
         },

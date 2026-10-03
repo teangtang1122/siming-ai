@@ -808,8 +808,15 @@ def patch_session(
     *,
     source: str = "author",
 ) -> dict[str, Any]:
-    draft = initialize_session_draft(session)
+    from app.modules.creation.domain.tool_specs import CreationSessionChanges
+
+    # All entry points use the same nested contract. Reject unknown keys before
+    # touching the session so a tool cannot report a phantom write.
+    patch = CreationSessionChanges.model_validate(patch).model_dump(exclude_unset=True)
+    draft = initialize_session_draft(session, persist=False)
     before_form = _dict(draft.get("form"))
+    before_selected_concept_id = draft.get("selected_concept_id")
+    before_quick_mode = bool(draft.get("quick_mode", False))
     before_author_source = {
         "creation_mode": _text(draft.get("creation_mode"), "explore"),
         "author_brief": _text(draft.get("author_brief")),
@@ -859,6 +866,13 @@ def patch_session(
             concept_stage["stale_reason"] = "作者方案或不可改动设定已修改"
             draft["stages"]["concepts"] = concept_stage
         _invalidate_after(draft, "concepts")
+    if (
+        draft["form"] == before_form
+        and after_author_source == before_author_source
+        and draft.get("selected_concept_id") == before_selected_concept_id
+        and bool(draft.get("quick_mode", False)) == before_quick_mode
+    ):
+        return draft
     draft["updated_at"] = _now()
     session.draft_json = deepcopy(draft)
     session.revision = int(session.revision or 0) + 1

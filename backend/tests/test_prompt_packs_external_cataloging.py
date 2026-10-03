@@ -104,7 +104,7 @@ class ExternalCatalogingPackTest(unittest.TestCase):
     def test_pack_requires_plan_before_dependent_records_and_explicit_finalization(self):
         pack = next(p for p in BUILTIN_PACKS if p["pack_id"] == "cataloging_external_no_api")
         prompt = pack["system_prompt"]
-        self.assertIn("先提交摘要计划", prompt)
+        self.assertIn("先保存 chapter_summary", prompt)
         self.assertIn("candidate_errors", prompt)
         self.assertIn("finalize=true", prompt)
         self.assertIn("candidates=[]", prompt)

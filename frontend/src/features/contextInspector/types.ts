@@ -69,14 +69,24 @@ export const statusNames: Record<string, string> = {
   running: '运行中', completed: '已完成', error: '失败', cancelled: '已取消',
   superseded: '已被新回合替换', partial: '部分记录', interrupted: '采集中断',
   recording: '记录中', recorded: '已记录',
+  incomplete: '缺少结束记录', pending_record: '待加载后续记录',
 }
 
-export function buildSpans(events: TraceEvent[]) {
+export function formatTraceDuration(duration?: number) {
+  return duration == null ? '耗时未知' : duration < 1 ? '<1 ms' : `${Math.round(duration)} ms`
+}
+
+export function buildSpans(events: TraceEvent[], trace?: Pick<ContextTrace, 'finished' | 'capture_status'>, complete = true) {
   const spans = new Map<string, TraceEvent['data'] & { id: string; sequence: number }>()
   events.forEach(event => {
     const id = event.data.span_id ?? event.span_id
     if (!id || !['span_started', 'span_finished', 'http_response', 'usage'].includes(event.event_type)) return
     spans.set(id, { id, sequence: event.sequence, ...spans.get(id), ...event.data })
   })
-  return [...spans.values()].sort((a, b) => a.sequence - b.sequence)
+  return [...spans.values()].map(span => {
+    if (trace?.finished != null && span.status === 'running') {
+      return { ...span, status: !complete ? 'pending_record' : trace.capture_status === 'interrupted' ? 'interrupted' : 'incomplete' }
+    }
+    return span
+  }).sort((a, b) => a.sequence - b.sequence)
 }

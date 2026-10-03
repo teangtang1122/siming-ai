@@ -149,6 +149,8 @@ def compose_chapter_writer_messages(
     recent_summaries: str,
     requirements: str = "",
     source_draft: str = "",
+    minimum_han_characters: int | None = None,
+    length_instruction: str | None = None,
 ) -> list[dict[str, str]]:
     """Compose chapter writer messages from a chapter pack.
 
@@ -171,15 +173,20 @@ def compose_chapter_writer_messages(
         user_parts.append(f"【前文摘要】\n{recent_summaries}")
     if source_draft:
         user_parts.append(f"【当前未保存草稿（完整原文）】\n{source_draft}")
-    word_target = "1800-2500"
     if source_draft:
         user_parts.append(
             "\n请按作者本轮要求修改上面的当前未保存草稿。必须输出修改后的完整章节正文，"
             "不要只给差异、建议或说明；结果仍是同一份未保存草稿。"
         )
     else:
+        resolved_length_instruction = length_instruction if length_instruction is not None else (
+            f"本次篇幅参考为 {minimum_han_characters} 个汉字；充分展开场景，标点不计入汉字数。"
+            if minimum_han_characters is not None
+            else "充分展开场景与人物行动。"
+        )
         user_parts.append(
-            f"\n请根据以上素材，写出完整的章节正文（{word_target} 字）。直接输出正文，不要加任何说明。"
+            f"\n请根据以上素材写出完整章节正文，{resolved_length_instruction}"
+            "直接输出正文，不要加任何说明。"
         )
 
     return [

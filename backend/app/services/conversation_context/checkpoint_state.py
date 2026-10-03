@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from app.modules.operations.application.trace_decorators import observed
-
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -12,6 +10,7 @@ from app.architecture.resource_references import (
     public_resource_identity,
     public_resource_reference,
 )
+from app.modules.operations.application.trace_decorators import observed
 
 from .contracts import ConversationIdentity, ConversationKind
 from .errors import ConversationContextError, ConversationContextErrorCode
@@ -394,6 +393,17 @@ def _active_source_count(records: Sequence[Any], active: Any) -> int:
     )
 
 
+def _prepared_after_failed_attempt(latest: Any, cached: Mapping[str, Any]) -> bool:
+    completed_at = getattr(latest, "completed_at", None)
+    prepared_at = cached.get("prepared_at")
+    if not isinstance(completed_at, datetime) or not isinstance(prepared_at, str):
+        return False
+    try:
+        return datetime.fromisoformat(prepared_at) > completed_at
+    except (TypeError, ValueError):
+        return False
+
+
 def context_state_payload(
     *,
     store: ConversationContextStore,
@@ -433,11 +443,20 @@ def context_state_payload(
     cached_value = getattr(state, "last_budget_json", None)
     cached = dict(cached_value) if isinstance(cached_value, Mapping) else {}
     binding = _record_model_binding(active or latest)
-    code = (
-        ConversationContextErrorCode.SOURCE_CHANGED.value
-        if active_reference_invalid
-        else _state_error_code(latest, latest_status, active, error)
+    recovered_without_checkpoint = (
+        error is None
+        and not active_reference_invalid
+        and active is None
+        and latest_status in {"failed", "cancelled", "superseded"}
+        and _prepared_after_failed_attempt(latest, cached)
     )
+    if recovered_without_checkpoint:
+        status, code = "ready", None
+    elif active_reference_invalid:
+        status, code = "failed", ConversationContextErrorCode.SOURCE_CHANGED.value
+    else:
+        status = _state_status(latest_status, active, error)
+        code = _state_error_code(latest, latest_status, active, error)
     combined_warnings = list(
         dict.fromkeys(
             [
@@ -448,9 +467,7 @@ def context_state_payload(
         )
     )
     return {
-        "status": (
-            "failed" if active_reference_invalid else _state_status(latest_status, active, error)
-        ),
+        "status": status,
         "policy_version": CONVERSATION_CONTEXT_POLICY_VERSION,
         "active_checkpoint_id": active_id,
         "latest_checkpoint_id": (

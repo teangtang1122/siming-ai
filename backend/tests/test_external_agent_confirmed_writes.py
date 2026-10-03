@@ -17,8 +17,9 @@ class WriteTypesTest(unittest.TestCase):
         self.assertIn("create_character", WRITE_TYPES)
         self.assertIn("create_worldbuilding", WRITE_TYPES)
 
-    def test_write_types_count(self):
-        self.assertGreaterEqual(len(WRITE_TYPES), 6)
+    def test_outline_creation_requires_author_confirmed_draft(self):
+        self.assertNotIn("create_outline", WRITE_TYPES)
+        self.assertIn("update_outline", WRITE_TYPES)
 
 
 class RequestWriteTest(unittest.TestCase):

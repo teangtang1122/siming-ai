@@ -207,6 +207,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         input_schema={"session_id": {"type": "string", "description": "Creation session ID"}},
         required=["session_id"],
         tool_type="read",
+        capacity_preflight_safe=True,
         estimated_cost="free",
         handler_name="get_creation_session",
     ),
@@ -216,6 +217,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         input_schema={"session_id": {"type": "string", "description": "Creation session ID"}},
         required=["session_id"],
         tool_type="read",
+        capacity_preflight_safe=True,
         estimated_cost="free",
         handler_name="get_creation_snapshot",
     ),
@@ -235,7 +237,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="patch_creation_session",
-        description="Atomically patch session-level form, interview, model, or selected-concept fields with revision protection.",
+        description="修改会话字段；changes.form 只存作者明确的全书要求，剧情、角色和世界事实写对应阶段资料。",
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},
             "expected_revision": {
@@ -263,6 +265,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         },
         required=["session_id", "artifact"],
         tool_type="read",
+        capacity_preflight_safe=True,
         estimated_cost="free",
         handler_name="get_creation_artifact",
     ),
@@ -272,6 +275,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         input_schema={"session_id": {"type": "string", "description": "Creation session ID"}},
         required=["session_id"],
         tool_type="read",
+        capacity_preflight_safe=True,
         estimated_cost="free",
         handler_name="list_creation_artifacts_tool",
     ),
@@ -307,7 +311,10 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="patch_creation_artifact",
-        description="Atomically apply lock-aware JSON Pointer changes to one creation artifact and return an impact summary.",
+        description=(
+            "Atomically edit one creation artifact. When concepts has no saved options, "
+            "call generate_creation_artifact first; then patch fields inside its options."
+        ),
         input_schema={
             "session_id": {"type": "string", "description": "Creation session ID"},
             "artifact": {"type": "string", "description": "Creation artifact identifier"},
@@ -400,6 +407,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         },
         required=["session_id"],
         tool_type="read",
+        capacity_preflight_safe=True,
         estimated_cost="free",
         handler_name="list_creation_entities_tool",
     ),
@@ -409,6 +417,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         input_schema={"entity_id": {"type": "string", "description": "Creation entity ID"}},
         required=["entity_id"],
         tool_type="read",
+        capacity_preflight_safe=True,
         estimated_cost="free",
         handler_name="get_creation_entity_tool",
     ),

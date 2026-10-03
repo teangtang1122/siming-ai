@@ -102,7 +102,7 @@
       "title"
     ],
     "required_over_budget_status": "needs_confirmation",
-    "search_excerpt_chars": 600,
+    "search_excerpt_chars": 160,
     "search_page_limit": 10,
     "search_source_types": [
       "assistant_memory",
@@ -116,7 +116,7 @@
     ],
     "unknown_model_uses_defaults": true
   },
-  "source_sha256": "6b46afbd2827bcd9faa477e44bee985c3d28fb16ca0d8fb7e22a9e0dea24ae1c",
+  "source_sha256": "f7da4850d65f2e3c9ab99214111076f98fbe4d1e516e03cae477a772d4d3be73",
   "task_policies": {
     "outline_planning": {
       "categories": {
@@ -230,7 +230,7 @@
           "title"
         ],
         "required_over_budget_status": "needs_confirmation",
-        "search_excerpt_chars": 600,
+        "search_excerpt_chars": 160,
         "search_page_limit": 10,
         "search_source_types": [
           "assistant_memory",
@@ -359,7 +359,7 @@
           "title"
         ],
         "required_over_budget_status": "needs_confirmation",
-        "search_excerpt_chars": 600,
+        "search_excerpt_chars": 160,
         "search_page_limit": 10,
         "search_source_types": [
           "assistant_memory",

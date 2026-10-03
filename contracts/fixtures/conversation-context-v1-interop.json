@@ -49,6 +49,7 @@
         "base_json_bytes": 4096,
         "item_json_bytes": 6144,
         "max_items": 2,
+        "default_items": 1,
         "text_argument": "summary_chars",
         "default_text_chars": 500,
         "max_text_chars": 1000,
@@ -58,8 +59,8 @@
     },
     "standalone_result_json_bytes_by_tool": {
       "set_tool_categories": 4096,
-      "chapter_writer": 16384,
-      "outline_writer": 16384,
+      "chapter_writer": 2048,
+      "outline_writer": 4096,
       "character_writer": 16384,
       "worldbuilding_writer": 16384,
       "get_project_info": 16384,
@@ -77,8 +78,6 @@
       "update_project_info": 4096,
       "create_character": 4096,
       "update_character": 4096,
-      "create_outline_node": 4096,
-      "create_outline_nodes": 12288,
       "update_outline_node": 4096,
       "create_worldbuilding_entry": 4096,
       "update_worldbuilding_entry": 4096

@@ -248,6 +248,16 @@ _REQUIRED_FIELDS = {
     "character_merge_candidate": ("primary_name", "secondary_name"),
 }
 
+CATALOGING_OUTLINE_SELECTIONS = {
+    "outline_create_chapter": ("outline_create", "chapter"),
+    "outline_create_section": ("outline_create", "section"),
+    "outline_update_chapter": ("outline_update", "chapter"),
+    "outline_update_section": ("outline_update", "section"),
+}
+CATALOGING_SELECTION_TYPES = tuple(
+    name for name in CANDIDATE_FIELDS if name not in {"outline_create", "outline_update"}
+) + tuple(CATALOGING_OUTLINE_SELECTIONS) + ("scene_outline_replace",)
+
 
 def candidate_payload_schema(item_type: str) -> dict[str, Any]:
     properties = {
@@ -264,21 +274,10 @@ def candidate_payload_schema(item_type: str) -> dict[str, Any]:
     return deepcopy(_object(properties))
 
 
-def candidate_record_schema() -> dict[str, Any]:
-    variants = []
-    for item_type in CANDIDATE_FIELDS:
-        schema = candidate_payload_schema(item_type)
-        schema["properties"]["type"] = _enum(item_type)
-        schema["required"] = ["type", *_REQUIRED_FIELDS.get(item_type, ())]
-        schema["description"] = (
-            "One aggregate chapter link per chapter; use native arrays, "
-            "and amend only missing links."
-            if item_type == "chapter_link"
-            else item_type
-        )
-        variants.append(schema)
-    variants.append(
-        _object(
+def candidate_record_schema_for_type(item_type: str) -> dict[str, Any]:
+    """The strict, model-visible shape for one selected candidate type."""
+    if item_type == "scene_outline_replace":
+        return _object(
             {
                 "type": _enum("scene_outline_replace"),
                 "expected_candidate_ids": _strings(),
@@ -297,8 +296,122 @@ def candidate_record_schema() -> dict[str, Any]:
             },
             ("type", "expected_candidate_ids", "sections"),
         )
+    if item_type not in CANDIDATE_FIELDS:
+        raise ValueError(f"Unsupported cataloging candidate type: {item_type}")
+    schema = candidate_payload_schema(item_type)
+    schema["required"] = ["type", *_REQUIRED_FIELDS.get(item_type, ())]
+    schema["description"] = (
+        "One aggregate chapter link per chapter; use native arrays, "
+        "and amend only missing links."
+        if item_type == "chapter_link"
+        else item_type
     )
+    return schema
+
+
+def candidate_record_schema() -> dict[str, Any]:
+    variants = []
+    for item_type in CANDIDATE_FIELDS:
+        variants.append(candidate_record_schema_for_type(item_type))
+    variants.append(candidate_record_schema_for_type("scene_outline_replace"))
     return {"anyOf": variants}
+
+
+def candidate_record_schema_for_selection(
+    selection_type: str, *, target_ids: list[str] | None = None,
+    scene_count: int | None = None,
+    link_characters: list[str] | None = None,
+    link_worldbuilding: list[str] | None = None,
+) -> dict[str, Any]:
+    """Constrain an explicit model choice without changing its candidate type."""
+    outline = CATALOGING_OUTLINE_SELECTIONS.get(selection_type)
+    if outline is None:
+        if selection_type not in CATALOGING_SELECTION_TYPES:
+            raise ValueError(f"Unsupported cataloging selection: {selection_type}")
+        schema = candidate_record_schema_for_type(selection_type)
+        identity_field = (
+            "client_id" if selection_type in {"character_create", "worldbuilding_create"}
+            else "id" if selection_type in {
+                "character_update", "character_state_update", "worldbuilding_update",
+            } else None
+        )
+        if identity_field and target_ids is not None:
+            schema["properties"][identity_field] = _enum(*target_ids)
+        if selection_type in {"worldbuilding_create", "worldbuilding_update"}:
+            schema["properties"]["content"] = {"type": "string", "minLength": 1}
+            schema["required"] = list(dict.fromkeys([*schema["required"], "content"]))
+        if selection_type == "chapter_link":
+            schema["required"] = list(dict.fromkeys([
+                *schema["required"], "characters", "worldbuilding_titles",
+            ]))
+            if link_characters is not None:
+                character_array = schema["properties"]["characters"]
+                character_array["minItems"] = character_array["maxItems"] = len(link_characters)
+                character_array["items"]["properties"]["name"] = _enum(*link_characters)
+            if link_worldbuilding is not None:
+                world_array = schema["properties"]["worldbuilding_titles"]
+                world_array["minItems"] = world_array["maxItems"] = len(link_worldbuilding)
+                world_array["items"] = _enum(*link_worldbuilding)
+        return schema
+    item_type, node_type = outline
+    schema = candidate_record_schema_for_type(item_type)
+    schema["properties"]["node_type"] = _enum(node_type)
+    if node_type == "section":
+        schema["required"] = list(dict.fromkeys([*schema["required"], "scene_number"]))
+        if scene_count is not None:
+            schema["properties"]["scene_number"]["maximum"] = scene_count
+    if item_type == "outline_update" and target_ids is not None:
+        schema["properties"]["id"] = _enum(*target_ids)
+    return schema
+
+
+def candidate_type_selection_schema(allowed_types: list[str] | None = None) -> dict[str, Any]:
+    """The model selects one write shape until it explicitly selects another."""
+    types = allowed_types if allowed_types is not None else list(CATALOGING_SELECTION_TYPES)
+    return _object(
+        {
+            "types": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "uniqueItems": True,
+                "items": _enum(*types),
+                "description": "只选择一个候选类型；同类可分批提交，直到你重新选择其他类型。",
+            },
+        },
+        ("types",),
+    )
+
+
+def candidate_generation_schema() -> dict[str, Any]:
+    """Model-facing shape derived from the strict candidate contract.
+
+    llama.cpp's tool grammar picks the first matching `anyOf` object branch
+    for this record, even when the model explicitly selects another `type`.
+    Keep one flat generation shape; the write boundary still validates the
+    chosen type against ``candidate_record_schema``.
+    """
+    variants = candidate_record_schema()["anyOf"]
+    properties: dict[str, Any] = {}
+    for variant in variants:
+        for name, schema in variant["properties"].items():
+            if name == "type":
+                continue
+            previous = properties.get(name)
+            if previous is None:
+                properties[name] = deepcopy(schema)
+            elif previous != schema:
+                # `characters` is a list of names in summaries/outlines and
+                # a list of link objects in chapter_link. The strict selected
+                # type schema validates its items after generation.
+                if previous.get("type") == schema.get("type"):
+                    properties[name] = {"type": previous["type"]}
+                else:
+                    properties[name] = {}
+    properties["type"] = _enum(*(
+        variant["properties"]["type"]["enum"][0] for variant in variants
+    ))
+    return _object(properties, ("type",))
 
 
 def validate_candidate_fields(item_type: str, payload: dict[str, Any]) -> None:

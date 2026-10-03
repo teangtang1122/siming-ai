@@ -207,6 +207,12 @@
   gap: 14px;
 }
 
+.outline-draft-node-fields {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+}
+
 /* ── Responsive ── */
 @media (max-width: 1180px) {
   .outline-shell {

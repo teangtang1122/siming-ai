@@ -1,12 +1,29 @@
 package com.siming.mobile.ui
 
 import com.siming.mobile.data.local.ReplicaEntity
+import com.siming.mobile.data.MobileOutlineDraftNode
+import com.siming.mobile.data.MobilePendingOutlineDraft
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ManagementUiWorkspaceTest {
+    @Test
+    fun `saved draft edits remain pending until author confirmation`() {
+        val node = MobileOutlineDraftNode(title = "第四章", summary = "待确认剧情")
+        val draft = MobilePendingOutlineDraft(
+            draftId = "draft-1", projectId = "p1", nodes = listOf(node), designNotes = "设计说明",
+        )
+        assertEquals("草稿已保存 · 待确认", outlineDraftSaveLabel(draft, draft.nodes, draft.designNotes))
+        val editedNodes = listOf(node.copy(summary = "作者修改的剧情"))
+        assertEquals("有未保存修改 · 待确认", outlineDraftSaveLabel(draft, editedNodes, draft.designNotes))
+        assertEquals("有未保存修改 · 待确认", outlineDraftSaveLabel(draft, draft.nodes, "修改设计说明"))
+        val saved = draft.copy(nodes = editedNodes)
+        assertEquals("草稿已保存 · 待确认", outlineDraftSaveLabel(saved, editedNodes, saved.designNotes))
+        assertEquals("pending", saved.status)
+    }
+
     @Test
     fun `outline labels stay author facing`() {
         assertEquals("进行中", outlineStatusLabel("in_progress"))

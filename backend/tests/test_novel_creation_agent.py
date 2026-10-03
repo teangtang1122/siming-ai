@@ -34,6 +34,7 @@ from app.services.conversation_context.checkpoint_state import (
     safe_public_error_detail,
 )
 from app.services.creation_agent_execution import run_native_steps
+from app.services.creation_agent_reply import CREATION_READ_ONLY_NOTICE
 from app.services.creation_agent_turn_records import (
     creation_agent_turn_records,
     creation_current_user_context_message,
@@ -315,7 +316,7 @@ def test_creation_agent_rejects_missing_native_call_id_without_running_handler()
             "type": "function",
             "function": {
                 "name": "set_tool_categories",
-                "arguments": '{"enabled_categories":["creation_data"]}',
+                "arguments": '{"enabled_categories":["creation_session"]}',
             },
         }],
     })
@@ -357,7 +358,7 @@ def test_creation_agent_rejects_missing_native_call_id_without_running_handler()
                     "type": "function",
                     "function": {
                         "name": "set_tool_categories",
-                        "arguments": '{"enabled_categories":["creation_data"]}',
+                        "arguments": '{"enabled_categories":["creation_session"]}',
                     },
                 },
                 {
@@ -378,7 +379,7 @@ def test_creation_agent_rejects_missing_native_call_id_without_running_handler()
                     "type": "function",
                     "function": {
                         "name": "set_tool_categories",
-                        "arguments": '{"enabled_categories":["creation_data"]}',
+                        "arguments": '{"enabled_categories":["creation_session"]}',
                     },
                 },
                 {
@@ -399,7 +400,7 @@ def test_creation_agent_rejects_missing_native_call_id_without_running_handler()
                     "type": "function",
                     "function": {
                         "name": "set_tool_categories",
-                        "arguments": '{"enabled_categories":["creation_data"]}',
+                        "arguments": '{"enabled_categories":["creation_session"]}',
                     },
                 },
                 {
@@ -589,7 +590,7 @@ def test_creation_agent_terminates_invalid_native_assistant_before_handler(
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_session"]}',
                 },
             }],
         })
@@ -638,6 +639,155 @@ def test_creation_agent_terminates_invalid_native_assistant_before_handler(
     assert pending[0]["results"][0]["call_id"] == "call-too-large"
 
 
+def test_creation_agent_admits_exact_small_read_results_when_declared_batch_does_not_fit():
+    db = _db()
+    session = _ready_session(db)
+    completion = _stream_completion([
+        {"content": "", "tool_calls": [{
+            "id": "categories", "type": "function", "function": {
+                "name": "set_tool_categories",
+                "arguments": '{"enabled_categories":["creation_artifacts","creation_session"]}',
+            },
+        }]},
+        {"content": "", "tool_calls": [
+            {"id": "session", "type": "function", "function": {
+                "name": "get_creation_session", "arguments": "{}",
+            }},
+            {"id": "snapshot", "type": "function", "function": {
+                "name": "get_creation_snapshot", "arguments": "{}",
+            }},
+        ]},
+        {"content": "", "tool_calls": [{
+            "id": "artifact", "type": "function", "function": {
+                "name": "get_creation_artifact",
+                "arguments": '{"artifact":"constraints"}',
+            },
+        }]},
+        {"content": "已经读取立项资料，尚未修改。", "tool_calls": []},
+    ])
+
+    with patch(
+        "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
+        new=completion,
+    ):
+        result = asyncio.run(run_creation_agent(
+            db,
+            session=session,
+            message="查看当前立项资料",
+            model="openai:test",
+            provider_request_budget=lambda: _test_request_budget(17_942),
+            prepare_model_messages=_test_context_preparer("查看当前立项资料"),
+        ))
+
+    assert [item["status"] for item in result["tool_results"]] == [
+        "ok", "ok", "ok", "ok",
+    ]
+    assert result["write_count"] == 0
+    assert result["reply"] == CREATION_READ_ONLY_NOTICE + "\n\n已经读取立项资料，尚未修改。"
+    delivered = [
+        item for item in result["_turn_trace"]["messages"]
+        if item["role"] == "tool"
+    ]
+    assert len(delivered) == 4
+    assert json.loads(delivered[2]["content"])["data"]["session"]["id"] == session.id
+
+
+def test_creation_agent_patches_artifact_with_observed_five_thousand_token_budget():
+    db = _db()
+    session = _ready_session(db)
+    before = int(session.revision or 0)
+    completion = _stream_completion([
+        {"content": "", "tool_calls": [{
+            "id": "categories", "type": "function", "function": {
+                "name": "set_tool_categories",
+                "arguments": '{"enabled_categories":["creation_artifacts","creation_session"]}',
+            },
+        }]},
+        {"content": "", "tool_calls": [{
+            "id": "read-session", "type": "function", "function": {
+                "name": "get_creation_session", "arguments": "{}",
+            },
+        }]},
+        {"content": "", "tool_calls": [{
+            "id": "write-artifact", "type": "function", "function": {
+                "name": "patch_creation_artifact",
+                "arguments": json.dumps({
+                    "artifact": "constraints", "expected_revision": before,
+                    "changes": [{
+                        "path": "/genre", "action": "replace", "value": "玄幻",
+                    }],
+                }, ensure_ascii=False),
+            },
+        }]},
+        {"content": "题材已写入立项资料。", "tool_calls": []},
+    ])
+
+    with patch(
+        "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
+        new=completion,
+    ):
+        result = asyncio.run(run_creation_agent(
+            db, session=session, message="把题材改为玄幻", model="openai:test",
+            provider_request_budget=lambda: _test_request_budget(
+                5_559 if completion.call_count >= 3 else 17_942
+            ),
+            prepare_model_messages=_test_context_preparer("把题材改为玄幻"),
+        ))
+
+    assert [item["status"] for item in result["tool_results"]] == ["ok", "ok", "ok"]
+    assert result["write_count"] == 1
+    assert int(session.revision or 0) == before + 1
+    assert session.draft_json["stages"]["constraints"]["data"]["genre"] == "玄幻"
+    assert result["reply"] == "题材已写入立项资料。"
+
+
+def test_low_budget_artifact_patch_reports_missing_path_without_writing():
+    db = _db()
+    session = _ready_session(db)
+    before = int(session.revision or 0)
+    completion = _stream_completion([
+        {"content": "", "tool_calls": [{
+            "id": "categories", "type": "function", "function": {
+                "name": "set_tool_categories",
+                "arguments": '{"enabled_categories":["creation_artifacts","creation_session"]}',
+            },
+        }]},
+        {"content": "", "tool_calls": [{
+            "id": "read-session", "type": "function", "function": {
+                "name": "get_creation_session", "arguments": "{}",
+            },
+        }]},
+        {"content": "", "tool_calls": [{
+            "id": "invalid-write", "type": "function", "function": {
+                "name": "patch_creation_artifact",
+                "arguments": json.dumps({
+                    "artifact": "constraints", "expected_revision": before,
+                    "changes": [{"action": "set", "op": None}],
+                }),
+            },
+        }]},
+        {"content": "参数缺少 path，本轮未写入。", "tool_calls": []},
+    ])
+
+    with patch(
+        "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
+        new=completion,
+    ):
+        result = asyncio.run(run_creation_agent(
+            db, session=session, message="废材逆袭", model="openai:test",
+            provider_request_budget=lambda: _test_request_budget(
+                5_559 if completion.call_count >= 3 else 17_942
+            ),
+            prepare_model_messages=_test_context_preparer("废材逆袭"),
+        ))
+
+    assert result["write_count"] == 0
+    assert int(session.revision or 0) == before
+    invalid = result["tool_results"][-1]
+    assert invalid["data"]["reason"] == "native_tool_contract_invalid"
+    assert "$.changes[0].path" in invalid["detail"]
+
+
 def test_creation_agent_hides_native_projection_exception_from_all_outputs():
     db = _db()
     session = _ready_session(db)
@@ -648,7 +798,7 @@ def test_creation_agent_hides_native_projection_exception_from_all_outputs():
             "type": "function",
             "function": {
                 "name": "set_tool_categories",
-                "arguments": '{"enabled_categories":["creation_data"]}',
+                "arguments": '{"enabled_categories":["creation_session"]}',
             },
         }],
     })
@@ -781,7 +931,7 @@ def test_creation_agent_endpoint_persists_backend_owned_turns_and_passes_context
             "budget": type(
                 "PreparedBudget",
                 (),
-                {"output_reserve_tokens": 4096},
+                {"output_reserve_tokens": kwargs["output_reserve_tokens"] or 16_000},
             )(),
         },
     )())
@@ -819,7 +969,7 @@ def test_creation_agent_endpoint_persists_backend_owned_turns_and_passes_context
                 },
             )
         invoke_count += 1
-        assert kwargs["provider_max_tokens"]() == 4096
+        assert kwargs["provider_max_tokens"]() == (4_096 if invoke_count == 1 else 16_000)
         return next(agent_results)
 
     agent = AsyncMock(side_effect=invoke_agent)
@@ -926,6 +1076,8 @@ def test_creation_agent_endpoint_persists_backend_owned_turns_and_passes_context
     assert prepared_context.await_count == 2
     first_context = prepared_context.call_args_list[0].kwargs
     second_context = prepared_context.call_args_list[1].kwargs
+    assert first_context["output_reserve_tokens"] == 4_096
+    assert second_context["output_reserve_tokens"] is None
     assert first_context["turns"] == ()
     assert first_context["trusted_execution_ledger"] == ()
     assert first_context["execution_source_hashes"] == {}
@@ -1364,7 +1516,7 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
                     "type": "function",
                     "function": {
                         "name": "set_tool_categories",
-                        "arguments": '{"enabled_categories":["creation_data","creation_flow"]}',
+                        "arguments": '{"enabled_categories":["creation_session","creation_generation"]}',
                     },
                 },
             ],
@@ -1450,7 +1602,7 @@ def test_creation_agent_lets_model_select_categories_then_call_creation_tools():
     }
     assert first_schema_names == {"set_tool_categories"}
     assert "generate_creation_artifact" in second_schema_names
-    assert "patch_creation_entity" in second_schema_names
+    assert "patch_creation_entity" not in second_schema_names
     assert [item["role"] for item in result["_turn_trace"]["messages"]] == [
         "user", "assistant", "tool", "assistant", "tool", "assistant", "tool", "assistant",
     ]
@@ -1533,7 +1685,7 @@ def test_native_creation_agent_allows_same_read_after_result_is_consumed():
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_session"]}',
                 },
             }],
         },
@@ -1609,7 +1761,7 @@ def test_native_creation_agent_keeps_failed_write_signature_deduped():
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_session"]}',
                 },
             }],
         },
@@ -1679,7 +1831,7 @@ def test_native_creation_agent_keeps_failed_write_signature_deduped():
     duplicate = result["tool_results"][-1]
     assert duplicate["tool"] == "patch_creation_session"
     assert duplicate["status"] == "skipped"
-    assert duplicate["data"]["reason"] == "creation_tool_skipped"
+    assert duplicate["data"]["reason"] == "duplicate_tool_call"
 
 
 def test_creation_tool_failure_is_public_before_model_event_and_persistence():
@@ -1695,7 +1847,7 @@ def test_creation_tool_failure_is_public_before_model_event_and_persistence():
                 "function": {
                     "name": "set_tool_categories",
                     "arguments": (
-                        '{"enabled_categories":["creation_data","creation_flow"]}'
+                        '{"enabled_categories":["creation_generation","creation_session"]}'
                     ),
                 },
             }],
@@ -1796,7 +1948,7 @@ def test_creation_agent_persists_partial_batch_receipt_before_next_handler():
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_session"]}',
                 },
             }],
         },
@@ -1898,7 +2050,7 @@ def test_native_summary_uses_server_instruction_without_replacing_latest_user():
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_session"]}',
                 },
             }],
         },
@@ -1960,7 +2112,7 @@ def test_native_creation_agent_blocks_a_second_successful_write_in_one_user_turn
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_artifacts","creation_session"]}',
                 },
             }],
         },
@@ -2045,7 +2197,7 @@ def test_native_creation_agent_defers_same_step_write_until_read_result_is_seen(
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_session"]}',
                 },
             }],
         },
@@ -2130,7 +2282,7 @@ def test_native_oversized_entity_result_is_rejected_without_character_truncation
                 "type": "function",
                 "function": {
                     "name": "set_tool_categories",
-                    "arguments": '{"enabled_categories":["creation_data"]}',
+                    "arguments": '{"enabled_categories":["creation_entities"]}',
                 },
             }],
         },
@@ -2372,7 +2524,7 @@ def test_creation_context_turns_never_project_historical_tool_protocol():
                     "type": "function",
                     "function": {
                         "name": "set_tool_categories",
-                        "arguments": '{"enabled_categories":["creation_data"]}',
+                        "arguments": '{"enabled_categories":["creation_session"]}',
                     },
                 },
             ],
@@ -2755,6 +2907,79 @@ def test_creation_execution_ledger_keeps_only_verified_committed_artifact_ref():
     assert set(projection.source_hashes) == {"creation-step:write-1"}
 
 
+def test_creation_execution_ledger_keeps_prior_write_for_checkpoint_validation():
+    first = {
+        "tool": "patch_creation_session",
+        "status": "ok",
+        "data": {"session_id": "session-1", "revision": 1},
+    }
+    second = {
+        "tool": "patch_creation_session",
+        "status": "ok",
+        "data": {"session_id": "session-1", "revision": 2},
+    }
+    projection = creation_execution_ledger_from_conversation(
+        {"messages": [
+            _creation_ledger_message(
+                assistant_id="assistant-first",
+                sequence_no=2,
+                session_id="session-1",
+                step_id="creation-step:first-write",
+                tool="patch_creation_session",
+                result=first,
+                write_committed=True,
+            ),
+            _creation_ledger_message(
+                assistant_id="assistant-second",
+                sequence_no=4,
+                session_id="session-1",
+                step_id="creation-step:second-write",
+                tool="patch_creation_session",
+                result=second,
+                write_committed=True,
+            ),
+        ]},
+        session_id="session-1",
+    )
+
+    assert [entry.step_id for entry in projection.entries] == ["creation-step:second-write"]
+    assert [entry.step_id for entry in projection.trusted_entries] == [
+        "creation-step:first-write",
+        "creation-step:second-write",
+    ]
+    assert set(projection.source_hashes) == {
+        "creation-step:first-write",
+        "creation-step:second-write",
+    }
+
+
+def test_creation_execution_ledger_excludes_current_running_turn():
+    result = {
+        "tool": "patch_creation_session",
+        "status": "ok",
+        "data": {"session_id": "session-1", "revision": 1},
+    }
+    current = _creation_ledger_message(
+        assistant_id="assistant-current",
+        sequence_no=2,
+        session_id="session-1",
+        step_id="creation-step:current-write",
+        tool="patch_creation_session",
+        result=result,
+        write_committed=True,
+    )
+    current["status"] = "running"
+
+    projection = creation_execution_ledger_from_conversation(
+        {"messages": [current]},
+        session_id="session-1",
+    )
+
+    assert projection.entries == ()
+    assert projection.trusted_entries == ()
+    assert projection.source_hashes == {}
+
+
 def test_creation_execution_ledger_rejects_tampered_result_ref():
     original = {
         "tool": "patch_creation_artifact",
@@ -2869,7 +3094,10 @@ def test_creation_execution_ledger_does_not_accumulate_successful_reads():
     )
 
     assert projection.entries == ()
-    assert projection.source_hashes == {}
+    assert [entry.step_id for entry in projection.trusted_entries] == [
+        "creation-step:read-1"
+    ]
+    assert set(projection.source_hashes) == {"creation-step:read-1"}
 
 
 def test_creation_execution_ledger_accepts_server_verified_direct_mcp_write():
@@ -2913,7 +3141,7 @@ def test_creation_agent_rejects_non_creation_tools_even_if_model_requests_one():
                 {
                     "id": "call-groups",
                     "type": "function",
-                    "function": {"name": "set_tool_categories", "arguments": '{"enabled_categories":["project_files"]}'},
+                    "function": {"name": "set_tool_categories", "arguments": '{"enabled_categories":["project_info"]}'},
                 },
             ],
         },
@@ -2964,7 +3192,7 @@ def test_creation_agent_returns_a_deterministic_formal_project_handoff():
                     "type": "function",
                     "function": {
                         "name": "set_tool_categories",
-                        "arguments": '{"enabled_categories":["creation_data","creation_flow"]}',
+                        "arguments": '{"enabled_categories":["creation_completion","creation_session"]}',
                     },
                 },
             ],
@@ -3028,7 +3256,7 @@ def test_known_non_opencode_cli_uses_direct_session_scoped_mcp():
         captured_requests.append(kwargs)
         state_file = kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"]
         if len(captured_requests) == 1:
-            replace_tool_categories(state_file, ["creation_data"])
+            replace_tool_categories(state_file, ["creation_session"])
             return {"content": "", "tool_calls": []}
         db.query(type(session)).filter(type(session).id == session.id).update(
             {"revision": baseline_revision + 1},
@@ -3082,8 +3310,8 @@ def test_known_non_opencode_cli_uses_direct_session_scoped_mcp():
     assert first_request["retry"] == 0
     assert [item["role"] for item in first_request["messages"]].count("system") == 1
     assert "临时 Siming MCP" in first_request["messages"][0]["content"]
-    assert "方案数量完全服从用户语义" in first_request["messages"][0]["content"]
-    assert "用户未指定数量时只生成一套" in first_request["messages"][0]["content"]
+    assert "作者本轮明确要求多个时按要求生成" in first_request["messages"][0]["content"]
+    assert "默认只生成 1 张创意卡（options 长度为 1）" in first_request["messages"][0]["content"]
     assert "不要创建或宣称创建后台生成任务" in first_request["messages"][0]["content"]
     executor.assert_not_awaited()
     assert result["write_count"] == 1
@@ -3144,7 +3372,7 @@ def test_direct_cli_rejects_text_before_category_controller_call():
         ))
 
 
-@pytest.mark.parametrize("category_choices", [[[]], [["creation_data"], []]])
+@pytest.mark.parametrize("category_choices", [[[]], [["creation_session"], []]])
 def test_direct_cli_accepts_a_reply_after_explicitly_selecting_no_business_tools(
     category_choices,
 ):
@@ -3221,7 +3449,7 @@ def test_direct_cli_creation_continues_past_the_old_six_step_limit():
         if call_count <= 7:
             replace_tool_categories(
                 kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"],
-                ["creation_data" if call_count % 2 else "creation_flow"],
+                ["creation_session" if call_count % 2 else "creation_generation"],
             )
             return {"content": "", "tool_calls": []}
         return {"content": "已在超过旧上限后完成立项检查。", "tool_calls": []}
@@ -3264,7 +3492,7 @@ def test_opencode_uses_direct_session_scoped_mcp():
         captured_requests.append(kwargs)
         state_file = kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"]
         if len(captured_requests) == 1:
-            replace_tool_categories(state_file, ["creation_data"])
+            replace_tool_categories(state_file, ["creation_session"])
             return {"content": "", "tool_calls": []}
         append_tool_category_audit(
             state_file,
@@ -3391,7 +3619,7 @@ def test_direct_cli_does_not_start_a_third_summary_call_after_verified_write():
         if call_count == 1:
             replace_tool_categories(
                 kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"],
-                ["creation_data"],
+                ["creation_session"],
             )
             return {"content": "", "tool_calls": []}
         db.query(type(session)).filter(type(session).id == session.id).update(
@@ -3440,7 +3668,7 @@ def test_direct_cli_cancels_a_runaway_process_after_a_second_write_is_blocked():
         call_count += 1
         state_file = kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"]
         if call_count == 1:
-            replace_tool_categories(state_file, ["creation_data"])
+            replace_tool_categories(state_file, ["creation_session","creation_artifacts"])
             return {"content": "", "tool_calls": []}
         db.query(type(session)).filter(type(session).id == session.id).update(
             {"revision": baseline_revision + 1},
@@ -3500,7 +3728,7 @@ def test_direct_cli_transport_error_after_committed_write_returns_verified_succe
         if call_count == 1:
             replace_tool_categories(
                 kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"],
-                ["creation_data"],
+                ["creation_session"],
             )
             return {"content": "", "tool_calls": []}
         db.query(type(session)).filter(type(session).id == session.id).update(
@@ -3553,7 +3781,7 @@ def test_direct_cli_interruption_settles_stage_run_created_by_stale_mcp_surface(
         if call_count == 1:
             replace_tool_categories(
                 kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"],
-                ["creation_flow"],
+                ["creation_session"],
             )
             return {"content": "", "tool_calls": []}
         create_run(db, session, "concepts", {
@@ -3610,7 +3838,7 @@ def test_creation_agent_resolves_default_model_once_and_propagates_it_to_generat
                     "type": "function",
                     "function": {
                         "name": "set_tool_categories",
-                        "arguments": '{"enabled_categories":["creation_data","creation_flow"]}',
+                        "arguments": '{"enabled_categories":["creation_generation","creation_session"]}',
                     },
                 },
             ],

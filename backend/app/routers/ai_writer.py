@@ -94,7 +94,9 @@ async def _execute_workspace_action(
     )
     if model and accepts_model and not args.get("model"):
         action = {**action, "arguments": {**args, "model": model}}
-    return await execute_workspace_action(db, project_id, action)
+    return await execute_workspace_action(
+        db, project_id, action, internal_generator=True,
+    )
 
 
 async def _sse_writer_stream(

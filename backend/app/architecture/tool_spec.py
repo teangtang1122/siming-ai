@@ -148,14 +148,20 @@ class ToolSpec(Generic[InputT, OutputT]):
     direct_mcp_project_scoped: bool = False
     direct_mcp_transactional: bool = False
     input_schema_override: dict[str, Any] | None = None
+    input_validation_schema_override: dict[str, Any] | None = None
     model_result_contract: ModelResultContract = DEFAULT_MODEL_RESULT_CONTRACT
 
     def validate_input(self, value: InputT | dict[str, Any]) -> InputT:
         validated = (
             value if isinstance(value, self.input_model) else self.input_model.model_validate(value)
         )
-        raw_value = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
-        _validate_exported_schema(self.parameters_schema(), raw_value)
+        raw_value = (
+            value.model_dump(mode="json", exclude_unset=True)
+            if isinstance(value, BaseModel) else value
+        )
+        _validate_exported_schema(
+            self.input_validation_schema_override or self.parameters_schema(), raw_value
+        )
         return validated
 
     def openai_schema(self) -> dict[str, Any]:

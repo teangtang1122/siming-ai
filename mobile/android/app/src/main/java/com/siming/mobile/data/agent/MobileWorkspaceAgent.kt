@@ -275,10 +275,34 @@ internal class MobileWorkspaceAgent(
                 requestBudget = prepared.budget,
                 rejectionCount = nativeToolNameRejections + 1,
             )
+            val exactReadCalls = turn.toolCalls.takeIf { calls ->
+                nameRejection == null && calls.isNotEmpty() && calls.all { it.name in EXACT_ADMISSION_READS }
+            }
+            val priorManifests = if (exactReadCalls == null) null else LinkedHashMap(contextManifests)
+            val stagedRawResults = mutableMapOf<String, JsonObject>()
+            val exactResultContents = exactReadCalls?.map { call ->
+                val beforeCall = LinkedHashMap(contextManifests)
+                val raw = try {
+                    execute(projectId, call.name, call.arguments, config) { }
+                } catch (error: CancellationException) {
+                    priorManifests?.let { restoreContextManifests(it) }
+                    throw error
+                } catch (error: Exception) {
+                    restoreContextManifests(beforeCall)
+                    errorResult(call.name, error.message ?: "工具执行失败")
+                }
+                val projected = modelVisibleToolResult(call.name, raw, call.arguments)
+                stagedRawResults[call.id] = if (projected.string("status") == "error" && raw.string("status") != "error") {
+                    restoreContextManifests(beforeCall)
+                    projected
+                } else raw
+                projected.toString()
+            }
             val admission = if (nameRejection == null) MobileNativeToolBudgetContract.admitExactAssistantTransaction(
                 assistantPayload = turn.assistantMessage,
                 orderedToolNames = calledToolNames,
                 requestBudget = prepared.budget,
+                resultContents = exactResultContents,
             ) else null
             currentConversation = consumeDeliveredTransactions(
                 projectId = projectId,
@@ -308,6 +332,7 @@ internal class MobileWorkspaceAgent(
             }
             var batchAdmission = requireNotNull(admission)
             if (!batchAdmission.accepted) {
+                priorManifests?.let { restoreContextManifests(it) }
                 consecutiveCapacityRejections += 1
                 batchAdmission = batchAdmission.copy(recoveryFits = batchAdmission.recoveryFits &&
                     consecutiveCapacityRejections < MobileNativeToolBudgetContract.MAX_CONSECUTIVE_CAPACITY_REJECTIONS)
@@ -343,6 +368,7 @@ internal class MobileWorkspaceAgent(
                         (categoryCall.arguments["enabled_categories"] as? JsonArray)
                             .orEmpty()
                             .mapNotNull { (it as? JsonPrimitive)?.contentOrNull },
+                        contract.toolNames,
                     )
                 }
                 val categoryResult = selected.fold(
@@ -382,7 +408,8 @@ internal class MobileWorkspaceAgent(
                     project = { rawResult = it; modelVisibleToolResult(call.name, it, call.arguments) }) {
                     if (call.name in availableTools) {
                     try {
-                        execute(projectId, call.name, call.arguments, config, onEvent)
+                        stagedRawResults[call.id]
+                            ?: execute(projectId, call.name, call.arguments, config, onEvent)
                     } catch (error: CancellationException) {
                         throw error
                     } catch (error: Exception) {
@@ -409,7 +436,9 @@ internal class MobileWorkspaceAgent(
                             data = draftData,
                         ),
                     )
-                    onEvent(event("done", "章节草稿已生成，本轮已停止"))
+                    onEvent(event("done", "章节草稿已生成，本轮已停止。" + rawResult["data"]?.let {
+                        (it as? JsonObject)?.string("length_notice")
+                    }.orEmpty()))
                     return
                 }
                 if (call.name == "chapter_writer" && result.string("status") == "blocked") {
@@ -730,13 +759,13 @@ internal class MobileWorkspaceAgent(
             tool == "submit_context_evidence" -> contextSelectionReceipt(raw)
             tool == "chapter_writer" -> artifactReferenceReceipt(tool, raw) { data ->
                 buildJsonObject {
-                    data.string("content").take(1_200).takeIf(String::isNotBlank)?.let { preview ->
+                    data.string("content").take(80).takeIf(String::isNotBlank)?.let { preview ->
                         put("content_preview", preview)
                     }
                 }
             }
             tool == "outline_writer" -> artifactReferenceReceipt(tool, raw) { data ->
-                val nodes = (data["nodes"] as? JsonArray).orEmpty().take(8)
+                val nodes = (data["nodes"] as? JsonArray).orEmpty()
                 buildJsonObject {
                     put("nodes_preview", buildJsonArray {
                         nodes.forEach { rawNode ->
@@ -867,8 +896,6 @@ internal class MobileWorkspaceAgent(
         )
         "create_character" -> createCharacter(projectId, args)
         "update_character" -> updateCharacter(projectId, args)
-        "create_outline_node" -> createOutlineNode(projectId, args)
-        "create_outline_nodes" -> createOutlineNodes(projectId, args)
         "update_outline_node" -> updateOutlineNode(projectId, args)
         "create_worldbuilding_entry" -> createWorldbuilding(projectId, args)
         "update_worldbuilding_entry" -> updateWorldbuilding(projectId, args)
@@ -1043,7 +1070,7 @@ internal class MobileWorkspaceAgent(
         val characterNamesById = records.asSequence()
             .filter { it.entity.entityType == "character" }
             .associate { it.entity.entityId to it.payload.string("name") }
-        val limit = args.limit(2, 2)
+        val limit = args.limit(1, 2)
         val cursor = args.int("cursor").coerceAtLeast(0)
         val nodeId = args.string("node_id")
         if (nodeId.isNotBlank()) {
@@ -1218,20 +1245,11 @@ internal class MobileWorkspaceAgent(
             )
         }
         val selectionReady = !manifest.selectionToken.isNullOrBlank()
-        val delivery = try {
-            if (selectionReady) {
-                deliverMobileNextContextPage(manifest, manifest.renderedContext(), args)
-            } else {
-                null
-            }
-        } catch (error: IllegalArgumentException) {
-            return skipped("prepare_task_context", error.message.orEmpty())
-        }
-        val page = delivery?.page ?: try { mobileContextPage(manifest.renderedContext(), args) }
-        catch (error: IllegalArgumentException) { return skipped("prepare_task_context", error.message.orEmpty()) }
-        manifest = delivery?.manifest ?: manifest
+        // The mobile writer reads the selected manifest in its own model call.
+        // The outer agent needs only the verified selection token.
+        val page: JsonObject? = null
         cacheManifest(manifest)
-        val hasMore = page["next_cursor"] != JsonNull
+        val hasMore = page != null && page["next_cursor"] != JsonNull
         val needsSelection = manifest.selectionToken.isNullOrBlank()
         val deliveryReady = selectionReady && mobileContextDeliveryReady(
             manifest,
@@ -1241,7 +1259,7 @@ internal class MobileWorkspaceAgent(
             put("manifest_id", manifest.id)
             put("context_manifest_id", manifest.id)
             put("context_manifest", compactMobileContextManifest(manifest))
-            put("context_page", page)
+            if (page != null) put("context_page", page)
             if (deliveryReady) put("context_selection_token", manifest.selectionToken.orEmpty())
             put("context_delivery_ready", deliveryReady)
             put("context_delivery", mobileContextDeliveryStatus(manifest.contextDelivery))
@@ -1253,13 +1271,13 @@ internal class MobileWorkspaceAgent(
                     add(JsonPrimitive("submit_context_evidence"))
                 }
             })
-            if (hasMore) put("next_arguments", mobileContextPageArguments(manifest, page))
+            if (hasMore && page != null) put("next_arguments", mobileContextPageArguments(manifest, page))
         }
         val taskLabel = if (taskType == "writing") "写章" else "大纲规划"
         val detail = if (deliveryReady) {
-            "已按顺序读完全部精确上下文；可使用末页返回的选择令牌执行$taskLabel"
+            "已复核来源；内部生成器将读取完整上下文，可使用选择令牌执行$taskLabel"
         } else if (selectionReady) {
-            "精确上下文尚未读完；必须原样复制 next_arguments 继续读取，末页才返回选择令牌"
+            "已选来源的内部生成状态尚未就绪，请重新提交证据"
         } else if (manifest.status == "ready") {
             "已建立精简$taskLabel 基线；请由模型检索并复核本任务需要的资料"
         } else {
@@ -1369,16 +1387,9 @@ internal class MobileWorkspaceAgent(
             references.itemIds,
             references.rejected,
         )
-        val firstPage = if (selection.ready) {
-            mobileContextPage(selection.manifest.renderedContext())
-        } else {
-            null
-        }
-        val deliveredManifest = if (firstPage != null) {
-            beginMobileContextDelivery(selection.manifest, firstPage)
-        } else {
-            selection.manifest
-        }
+        val deliveredManifest = if (selection.ready) {
+            beginMobileInternalGeneratorContext(selection.manifest)
+        } else selection.manifest
         cacheManifest(deliveredManifest)
         val deliveryReady = selection.ready && mobileContextDeliveryReady(
             deliveredManifest,
@@ -1399,11 +1410,6 @@ internal class MobileWorkspaceAgent(
                 }
                 put("context_delivery_ready", deliveryReady)
                 put("context_delivery", mobileContextDeliveryStatus(deliveredManifest.contextDelivery))
-                put("context_page", firstPage!!)
-                if (firstPage["next_cursor"] != JsonNull) {
-                    put("next_tool", "prepare_task_context")
-                    put("next_arguments", mobileContextPageArguments(deliveredManifest, firstPage))
-                }
                 put("estimated_input_tokens", deliveredManifest.estimatedInputTokens)
                 put("input_budget_tokens", deliveredManifest.inputBudgetTokens)
                 put("soft_target_tokens", deliveredManifest.softInputTargetTokens)
@@ -1418,9 +1424,9 @@ internal class MobileWorkspaceAgent(
             ok(
                 "submit_context_evidence",
                 if (deliveryReady) {
-                    "已复核 ${selection.accepted.size} 个完整来源并送达全部上下文；可使用返回的选择令牌执行任务"
+                    "已复核 ${selection.accepted.size} 个完整来源；内部生成器将读取完整上下文，可使用选择令牌执行任务"
                 } else {
-                    "已复核 ${selection.accepted.size} 个完整来源；选择令牌暂不返回，必须按 next_arguments 逐页读到末页"
+                    "已复核 ${selection.accepted.size} 个完整来源；内部生成尚未就绪"
                 },
                 data,
             )
@@ -1661,6 +1667,7 @@ internal class MobileWorkspaceAgent(
             recentSummaries = recentSummaries,
             requirements = requirements,
             sourceDraft = manifest.categoryText("target_draft", ""),
+            minimumHanCharacters = request.minimumHanCharacters,
         )
         var checkpointContent = checkpointRun.content
         var persistedChars = checkpointContent.length
@@ -1750,27 +1757,6 @@ internal class MobileWorkspaceAgent(
                 error = "模型返回空正文",
             )
             return errorResult("chapter_writer", "生成的章节正文为空")
-        }
-        val actualHanCharacters = countHanCharacters(content)
-        val minimumHanCharacters = request.minimumHanCharacters
-        if (minimumHanCharacters != null && actualHanCharacters < minimumHanCharacters) {
-            chapterWriteStore.transition(
-                checkpointRun.copy(content = content),
-                MobileChapterWriteState.FAILED,
-                error = "正文只有 $actualHanCharacters 个汉字，低于 $minimumHanCharacters 个汉字的硬下限",
-            )
-            return result(
-                "chapter_writer",
-                "needs_confirmation",
-                "模型正文只有 $actualHanCharacters 个汉字，低于作者明确的 $minimumHanCharacters 个汉字硬下限；未创建待审草稿，请重新建立上下文后重试。",
-                buildJsonObject {
-                    put("context_manifest_id", manifest.id)
-                    put("outline_node_id", request.outlineNodeId)
-                    put("actual_han_characters", actualHanCharacters)
-                    put("minimum_han_characters", minimumHanCharacters)
-                    put("draft_stored", false)
-                },
-            )
         }
         val finalSnapshot = loadSnapshot(projectId)
         val finalWritingState = mobileChapterWritingState(projectId, finalSnapshot, pendingChapterDraft(projectId, finalSnapshot))
@@ -1883,6 +1869,12 @@ internal class MobileWorkspaceAgent(
             put("word_count", countWords(run.content))
             put("han_character_count", countHanCharacters(run.content))
             request.minimumHanCharacters?.let { put("minimum_han_characters", it) }
+            val actual = countHanCharacters(run.content)
+            val minimum = request.minimumHanCharacters
+            val goalMet = minimum == null || actual >= minimum
+            put("length_goal_met", goalMet)
+            put("length_notice", if (goalMet) "" else
+                "正文有 $actual 个汉字，低于本次篇幅参考 $minimum 个汉字；完整草稿已保留，可由作者决定是否扩写。")
             put("model", run.model)
             put("write_run_state", run.state)
             put("draft_status", "pending")
@@ -1914,7 +1906,7 @@ internal class MobileWorkspaceAgent(
                 put("write_run_id", run.id)
             })
         }
-        return ok("chapter_writer", detail, data)
+        return ok("chapter_writer", detail + data.string("length_notice"), data)
     }
 
     private suspend fun characterWriter(
@@ -2048,7 +2040,7 @@ internal class MobileWorkspaceAgent(
         }
         val manifest = selectedManifest.copy(selectionToken = null)
         cacheManifest(manifest)
-        val turn = directApi.agentTurn(
+        val turn = directApi.streamAgentTurn(
             config = config,
             messages = listOf(
                 message("system", contract.writerSystem("outline", "")),
@@ -2064,6 +2056,8 @@ internal class MobileWorkspaceAgent(
             toolChoice = "required",
             maxOutputTokens = manifest.outputReserveTokens.coerceAtLeast(1),
             temperature = 0.7,
+            streamIdleTimeoutMillis = contract.outlineWriterIdleTimeoutMillis(),
+            extraBody = contract.outlineWriterExtraBody(config.model),
         )
         val parsed = structuredArguments(turn, "propose_outline_nodes")
             ?: return errorResult("outline_writer", "大纲生成结果解析失败")
@@ -2222,66 +2216,6 @@ internal class MobileWorkspaceAgent(
         return ok("update_character", "已更新角色：${payload.string("name")}", clean(payload))
     }
 
-    private suspend fun createOutlineNode(projectId: String, args: JsonObject): JsonObject {
-        if (args.string("title").isBlank()) return skipped("create_outline_node", "大纲标题为空")
-        val id = UUID.randomUUID().toString()
-        val payload = mergeRecord(null, args, "outline", projectId, id)
-            .withDefaults(
-                mapOf(
-                    "node_type" to JsonPrimitive("chapter"),
-                    "status" to JsonPrimitive("pending"),
-                    "sort_order" to JsonPrimitive(nextSortOrder(records(projectId, "outline"))),
-                ),
-            )
-        val savedId = saveEntity(projectId, "outline", id, payload)
-        return ok("create_outline_node", "已创建大纲节点：${payload.string("title")}", clean(payload).withDerived("id", JsonPrimitive(savedId)))
-    }
-
-    private suspend fun createOutlineNodes(projectId: String, args: JsonObject): JsonObject {
-        val rawNodes = (args["nodes"] as? JsonArray).orEmpty()
-        if (rawNodes.isEmpty()) return skipped("create_outline_nodes", "大纲节点列表为空", JsonArray(emptyList()))
-        if (rawNodes.size > 8) {
-            return errorResult("create_outline_nodes", "单次最多创建 8 个大纲节点；本次未写入任何节点")
-        }
-        val existing = records(projectId, "outline")
-        var sortOrder = nextSortOrder(existing)
-        val titleIds = existing.associate { it.payload.string("title") to it.entity.entityId }.toMutableMap()
-        val created = mutableListOf<JsonObject>()
-        rawNodes.forEach { raw ->
-            val node = raw as? JsonObject ?: return@forEach
-            val title = node.string("title")
-            if (title.isBlank()) return@forEach
-            val id = UUID.randomUUID().toString()
-            val parentId = node.string("parent_id")
-                .ifBlank { titleIds[node.string("parent_title")].orEmpty() }
-                .ifBlank { args.string("parent_id") }
-            var normalized = node
-            if (parentId.isNotBlank()) normalized = normalized.withDerived("parent_id", JsonPrimitive(parentId))
-            val payload = mergeRecord(
-                null,
-                normalized,
-                "outline",
-                projectId,
-                id,
-                excluded = setOf("parent_title", "related_characters"),
-            ).withDefaults(
-                mapOf(
-                    "node_type" to JsonPrimitive("chapter"),
-                    "status" to JsonPrimitive("pending"),
-                    "sort_order" to JsonPrimitive(sortOrder++),
-                ),
-            )
-            val savedId = saveEntity(projectId, "outline", id, payload)
-            titleIds[title] = savedId
-            created += clean(payload).withDerived("id", JsonPrimitive(savedId))
-        }
-        return ok(
-            "create_outline_nodes",
-            "已创建 ${created.size} 个大纲节点",
-            buildJsonObject { put("items", JsonArray(created)) },
-        )
-    }
-
     private suspend fun updateOutlineNode(projectId: String, args: JsonObject): JsonObject {
         val all = records(projectId, "outline")
         val ids = listOf("id", "outline_node_id", "node_id")
@@ -2367,6 +2301,11 @@ internal class MobileWorkspaceAgent(
         while (contextManifests.size > MAX_CONTEXT_MANIFESTS) {
             contextManifests.remove(contextManifests.keys.first())
         }
+    }
+
+    private fun restoreContextManifests(previous: Map<String, MobileContextManifest>) {
+        contextManifests.clear()
+        contextManifests.putAll(previous)
     }
 
     private fun MobileContextManifest.categoryText(category: String, fallback: String): String =
@@ -2628,13 +2567,16 @@ internal class MobileWorkspaceAgent(
             "items_or_assets",
         )
         private val DEFAULT_CHARACTER_RANGE_FIELDS = listOf("appearance", "personality", "background")
+        private val EXACT_ADMISSION_READS = setOf(
+            "get_project_info",
+            "list_chapters", "search_outline", "search_outline_tree",
+            "prepare_task_context", "search_task_context", "submit_context_evidence",
+        )
         private val TERMINAL_DRAFT_TOOLS = setOf("chapter_writer", "outline_writer")
         private val STATUS_ONLY_RESULT_TOOLS = setOf(
             "update_project_info",
             "create_character",
             "update_character",
-            "create_outline_node",
-            "create_outline_nodes",
             "update_outline_node",
             "create_worldbuilding_entry",
             "update_worldbuilding_entry",
@@ -2660,10 +2602,9 @@ internal class MobileWorkspaceAgent(
             "model",
             "parent_id",
             "insert_after_id",
-            "design_notes",
         )
         private val OUTLINE_PREVIEW_FIELDS = listOf(
-            "id", "parent_id", "node_type", "title", "summary", "status",
+            "id", "node_type",
         )
         private val CONTEXT_SELECTION_RECEIPT_FIELDS = listOf(
             "manifest_id",

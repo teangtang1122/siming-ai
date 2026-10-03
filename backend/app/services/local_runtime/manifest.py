@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from copy import deepcopy
 
 import httpx
@@ -17,33 +18,35 @@ from .paths import siming_home
 
 MODEL_CATALOG = [
     {
-        "model_key": "qwen3.5-4b-q4",
-        "display_name": "Qwen3.5 4B UD-Q4_K_XL",
-        "family": "qwen3.5",
-        "parameter_size": "4B",
+        "model_key": "qwen3.6-27b-q4",
+        "display_name": "Qwen3.6 27B UD-Q4_K_XL",
+        "family": "qwen3.6",
+        "parameter_size": "27B",
         "quantization": "UD-Q4_K_XL",
         "context_length": 262144,
-        "file_name": "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+        "file_name": "Qwen3.6-27B-UD-Q4_K_XL.gguf",
         "license_name": "Apache-2.0",
-        "min_ram_gb": 8,
-        "recommended_vram_gb": 4,
+        "min_ram_gb": 32,
+        "recommended_vram_gb": 24,
         "sources": [
-            "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-UD-Q4_K_XL.gguf",
+            "https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-UD-Q4_K_XL.gguf",
         ],
     },
     {
-        "model_key": "qwen3.5-9b-q4",
-        "display_name": "Qwen3.5 9B UD-Q4_K_XL",
-        "family": "qwen3.5",
-        "parameter_size": "9B",
-        "quantization": "UD-Q4_K_XL",
+        "model_key": "qwen3.8-27b-q3",
+        "display_name": "Qwen3.8 27B UD-Q3_K_XL（16GB / 文本）",
+        "family": "qwen3.8",
+        "parameter_size": "27B",
+        "quantization": "UD-Q3_K_XL",
         "context_length": 262144,
-        "file_name": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+        "file_name": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
         "license_name": "Apache-2.0",
-        "min_ram_gb": 12,
-        "recommended_vram_gb": 8,
+        "min_ram_gb": 32,
+        "recommended_vram_gb": 16,
+        "sha256": "8c2a45ff85e7674ca185ec8eb6cdeab0e617ed9d8018caed0b64380eb2a67a5e",
         "sources": [
-            "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+            "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q3_K_XL.gguf",
+            "https://modelscope.cn/models/unsloth/Qwen3.8-27B-GGUF/resolve/master/Qwen3.8-27B-UD-Q3_K_XL.gguf",
         ],
     },
     {
@@ -64,10 +67,27 @@ MODEL_CATALOG = [
 ]
 
 
+def _is_curated_size(item: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if (
+        str(item.get("family", "")).lower() == "qwen3.5"
+        or str(item.get("model_key", "")).lower().startswith("qwen3.5-")
+    ):
+        return False
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)B", str(item.get("parameter_size", "")).upper())
+    return bool(match and float(match.group(1)) >= 27)
+
+
 def model_catalog() -> list[dict]:
     remote = _load_verified_remote_manifest()
     models = remote.get("models") if isinstance(remote, dict) else None
-    return deepcopy(models if isinstance(models, list) and models else MODEL_CATALOG)
+    curated = (
+        [item for item in models if _is_curated_size(item)]
+        if isinstance(models, list)
+        else []
+    )
+    return deepcopy(curated or MODEL_CATALOG)
 
 
 def model_spec(model_key: str) -> dict | None:

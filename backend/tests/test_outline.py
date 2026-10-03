@@ -109,14 +109,14 @@ class OutlineTestCase(unittest.TestCase):
 
 class TestWorkspaceOutlineBatch(unittest.TestCase):
     def test_oversized_batch_is_rejected_without_silent_truncation(self):
-        from app.services.workspace.tools.outline import create_outline_nodes
+        from app.services.workspace.outline_draft_apply import apply_confirmed_outline_nodes as create_outline_nodes
 
         nodes = [
             {"node_type": "chapter", "title": f"Chapter {index}"}
             for index in range(1, 14)
         ]
         with patch(
-            "app.services.workspace.tools.outline.create_outline_node"
+            "app.services.workspace.outline_draft_apply._create_node"
         ) as create_node:
             result = asyncio.run(
                 create_outline_nodes(MagicMock(), "p1", {"nodes": nodes})
@@ -613,6 +613,33 @@ class TestOutlineDraftReview(OutlineTestCase):
             ).json()["data"]
         )
 
+    def test_formal_volume_save_preserves_unedited_range_and_pending_draft(self):
+        project_id = self.create_project()
+        volume = self.create_node(
+            project_id, "Volume One", "volume",
+            metadata={"start_chapter": 1, "end_chapter": 40},
+        )
+        draft_id = self.create_draft(project_id, parent_id=volume["id"])
+        response = self.client.put(
+            f"{API_PREFIX}/projects/{project_id}/outline/{volume['id']}",
+            json={
+                "parent_id": None, "node_type": "volume", "title": volume["title"],
+                "summary": volume["summary"], "status": volume["status"],
+                "sort_order": volume["sort_order"], "character_ids": [],
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["metadata"], {"start_chapter": 1, "end_chapter": 40})
+        with SessionLocal() as db:
+            draft = db.get(OutlineDraft, draft_id)
+            self.assertEqual(draft.status, "pending")
+            self.assertEqual(draft.base_outline_hash, _outline_tree_hash(db, project_id))
+        response = self.client.post(
+            f"{API_PREFIX}/projects/{project_id}/outline-drafts/{draft_id}/confirm",
+            json={"write_after_confirm": False},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
     def test_editor_noop_save_preserves_cataloged_roles_and_draft_confirmation(self):
         project_id = self.create_project()
         character = self.create_character(project_id)
@@ -706,7 +733,7 @@ class TestOutlineDraftReview(OutlineTestCase):
         db = SessionLocal()
         try:
             with patch(
-                "app.services.workspace.tools.outline.create_outline_nodes",
+                "app.services.workspace.outline_draft_apply.apply_confirmed_outline_nodes",
                 new=partial_create,
             ), self.assertRaises(ValidationError):
                 asyncio.run(confirm_outline_draft(db, project_id, draft_id))
@@ -722,8 +749,8 @@ class TestOutlineDraftReview(OutlineTestCase):
 
 class TestWorkspaceOutlineLinks(OutlineTestCase):
     def test_ai_outline_links_replace_clear_and_preserve_authoritatively(self):
+        from app.services.workspace.outline_draft_apply import _create_node as create_outline_node
         from app.services.workspace.tools.outline import (
-            create_outline_node,
             update_outline_node,
         )
 
@@ -787,8 +814,8 @@ class TestWorkspaceOutlineLinks(OutlineTestCase):
             db.close()
 
     def test_ai_outline_unknown_character_is_rejected_before_any_mutation(self):
+        from app.services.workspace.outline_draft_apply import _create_node as create_outline_node
         from app.services.workspace.tools.outline import (
-            create_outline_node,
             update_outline_node,
         )
 

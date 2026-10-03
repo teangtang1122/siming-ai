@@ -33,13 +33,16 @@ class McpAutoConfigTest(unittest.TestCase):
                 child_cwd.mkdir()
                 os.chdir(child_cwd)
                 self.assertEqual(
-                    Path(make_url(env["DATABASE_URL"]).database),
-                    Path(directory) / "novel_agent.db",
+                    Path(make_url(env["DATABASE_URL"]).database).resolve(),
+                    (Path(directory) / "novel_agent.db").resolve(),
                 )
                 self.assertEqual(env["SIMING_KEY_FILE"], str(Path(directory) / "owner.key"))
-                self.assertEqual(env["SIMING_CONTENT_ROOT"], str(Path(directory) / "content"))
+                self.assertEqual(
+                    Path(env["SIMING_CONTENT_ROOT"]).resolve(),
+                    (Path(directory) / "content").resolve(),
+                )
                 for name in ("SIMING_HOME", "MOSHU_HOME", "NOVEL_AGENT_HOME"):
-                    self.assertEqual(env[name], str(Path(directory)))
+                    self.assertEqual(Path(env[name]).resolve(), Path(directory).resolve())
                 self.assertFalse((Path(directory) / "owner.key").exists())
             finally:
                 os.chdir(original_cwd)

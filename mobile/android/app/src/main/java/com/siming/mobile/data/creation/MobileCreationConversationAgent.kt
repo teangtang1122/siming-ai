@@ -166,6 +166,16 @@ internal class MobileCreationConversationAgent(
             ))
             val scopedTools = contract.toolSchemas(activeCategories)
             val requestToolChoice = if (categorySelected) "auto" else "required"
+            val hasBusinessReads = toolResults.any {
+                val result = it as? JsonObject ?: return@any false
+                result.string("status") == "ok" && result.string("tool") != contract.categoryController &&
+                    result.string("tool") !in contract.writeToolNames
+            }
+            val stepSystemPrompt = contract.systemPrompt(source.string("id")) +
+                if (hasBusinessReads && successfulWriteCount == 0) {
+                    "\n\n[SERVER_RUNTIME_INSTRUCTION]\nauthority: server_current_turn\n" +
+                        contract.readOnlyCompletionInstruction + "\n[/SERVER_RUNTIME_INSTRUCTION]"
+                } else ""
             val prepared = conversationContextRuntime.prepare(
                 resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
                 storageId = storageId,
@@ -173,7 +183,7 @@ internal class MobileCreationConversationAgent(
                 config = config,
                 conversation = currentConversation,
                 turnContext = turnContext,
-                systemPrompt = contract.systemPrompt(source.string("id")),
+                systemPrompt = stepSystemPrompt,
                 scopedTools = scopedTools,
                 taskType = DirectApiConfig.TASK_PLANNING,
                 maxOutputTokens = CREATION_OUTPUT_TOKENS,
@@ -298,6 +308,37 @@ internal class MobileCreationConversationAgent(
                 requestBudget = prepared.budget,
                 resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
             )
+            val stagedReadResults = mutableMapOf<String, Pair<ToolExecution, JsonObject>>()
+            if (!batchAdmission.accepted &&
+                batchAdmission.reason == MobileNativeToolBudgetContract.TOOL_RESULT_BATCH_OVER_CAPACITY &&
+                calls.isNotEmpty() && calls.all { it.name in contract.capacityPreflightReadToolNames }
+            ) {
+                // Only audited, side-effect-free local reads may run before
+                // result admission. Writes still use declared pre-handler bounds.
+                calls.forEach { call ->
+                    val execution = try {
+                        execute(working, call.name, call.arguments, config)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        ToolExecution(working, result(call.name, "error", "工具读取失败"))
+                    }
+                    check(!execution.wrote && execution.session == working) {
+                        "容量预检读取不得修改立项资料"
+                    }
+                    stagedReadResults[call.id] = execution to
+                        creationModelVisibleResult(call.name, execution.result)
+                }
+                batchAdmission = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+                    assistantPayload = turn.assistantMessage,
+                    orderedToolNames = calls.map(DirectAgentToolCall::name),
+                    requestBudget = prepared.budget,
+                    resultJsonBytes = { tool, _ -> creationDeclaredResultBytes(tool) },
+                    resultContents = calls.map { call ->
+                        mobileCanonicalJson(stagedReadResults.getValue(call.id).second)
+                    },
+                )
+            }
             if (!batchAdmission.accepted) {
                 consecutiveCapacityRejections += 1
                 batchAdmission = batchAdmission.copy(recoveryFits = batchAdmission.recoveryFits &&
@@ -427,7 +468,8 @@ internal class MobileCreationConversationAgent(
                                 message = "正在${toolLabel(call.name)}…",
                                 data = buildJsonObject { put("tool", call.name) },
                             ))
-                            execute(working, call.name, call.arguments, config)
+                            stagedReadResults[call.id]?.first
+                                ?: execute(working, call.name, call.arguments, config)
                         }
                     }
                 } catch (error: CancellationException) {
@@ -472,7 +514,8 @@ internal class MobileCreationConversationAgent(
                         },
                     ))
                 }
-                val modelVisibleResult = creationModelVisibleResult(call.name, execution.result)
+                val modelVisibleResult = stagedReadResults[call.id]?.second
+                    ?: creationModelVisibleResult(call.name, execution.result)
                 com.siming.mobile.data.observability.MobileTrace.toolOutcome(modelVisibleResult)
                 com.siming.mobile.data.observability.MobileTrace.payload("model_visible_tool_result", modelVisibleResult)
                 val toolMessage = buildJsonObject {
@@ -494,6 +537,10 @@ internal class MobileCreationConversationAgent(
             iteration += 1
         }
 
+        if (failedWriteCount > 0 && successfulWriteCount == 0 && createdProjectId == null) {
+            replyStatus = "receipt_only"
+            finalReply = truthfulNoWrite(toolResults)
+        }
         if (finalReply.isBlank() && toolResults.isNotEmpty() && createdProjectId == null) {
             for (attempt in replyDiagnostics.size until contract.maxReplyAttempts) {
                 onProgress(CreationAgentProgressEvent(
@@ -593,6 +640,14 @@ internal class MobileCreationConversationAgent(
             } else truthfulNoWrite(toolResults)
             if (replyDiagnostics.isNotEmpty()) finalReply += contract.replyFailureNotice
         }
+        if (replyStatus == "model" && successfulWriteCount == 0 && toolResults.any {
+            val result = it as? JsonObject ?: return@any false
+            result.string("status") == "ok" && result.string("tool") != contract.categoryController &&
+                result.string("tool") !in contract.writeToolNames
+        }) {
+            replyStatus = "read_only"
+            finalReply = contract.readOnlyNotice + "\n\n" + finalReply
+        }
         // A terminal server receipt can close the turn without another model request.
         if (deliveredTransactions.any { it.state == MobileToolTransactionState.DELIVERED }) {
             conversationStore.markDeliveredToolTransactionsConsumed(storageId, turnContext)
@@ -668,7 +723,7 @@ internal class MobileCreationConversationAgent(
 
     private fun creationDeclaredResultBytes(tool: String): Int = when {
         tool == contract.categoryController -> CREATION_STATUS_RESULT_BYTES
-        tool in contract.writeToolNames -> contract.writeResultMaxBytes
+        tool in contract.writeToolNames -> contract.writeResultMaxBytesFor(tool)
         tool in CREATION_LARGE_READ_TOOLS -> CREATION_LARGE_READ_RESULT_BYTES
         else -> CREATION_STANDARD_RESULT_BYTES
     }
@@ -779,7 +834,13 @@ internal class MobileCreationConversationAgent(
             )
             "get_creation_artifact" -> {
                 val artifact = args.string("artifact")
-                ToolExecution(source, result(tool, "ok", "已读取${stageLabel(artifact)}", artifactSnapshot(source, artifact)))
+                if (artifact !in contract.stageOrder) {
+                    ToolExecution(source, result(tool, "error", "阶段 ID 无效；请使用立项快照中的 artifact 原值", buildJsonObject {
+                        put("reason", "creation_unknown_artifact")
+                    }))
+                } else {
+                    ToolExecution(source, result(tool, "ok", "已读取${stageLabel(artifact)}", artifactSnapshot(source, artifact)))
+                }
             }
             "list_creation_artifacts" -> ToolExecution(
                 source,
@@ -849,27 +910,59 @@ internal class MobileCreationConversationAgent(
     private fun patchSession(source: JsonObject, args: JsonObject): ToolExecution {
         val changes = args["changes"] as? JsonObject ?: JsonObject(emptyMap())
         if (changes.isEmpty()) return ToolExecution(source, result("patch_creation_session", "skipped", "没有可写入的会话变化"))
+        val sessionFields = setOf("form", "creation_mode", "author_brief", "author_outline", "locked_requirements", "selected_concept_id", "quick_mode")
+        val formFields = setOf("brief", "preset_id", "theme_id", "genre", "target_audience", "platform", "target_words", "target_chapters", "world_tone", "story_structure", "pacing", "writing_style", "special_requirements", "avoid", "author_overrides")
+        val unknownSessionFields = changes.keys - sessionFields
+        val formPatch = changes["form"] as? JsonObject
+        val unknownFormFields = formPatch?.keys?.minus(formFields).orEmpty()
+        if (unknownSessionFields.isNotEmpty() || unknownFormFields.isNotEmpty() || ("form" in changes && formPatch.isNullOrEmpty())) {
+            return ToolExecution(source, result("patch_creation_session", "error", "立项会话字段无效；创作约束须放在 changes.form 内"))
+        }
         val draft = source.objectValue("draft").toMutableMap()
         val form = (draft["form"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
         changes.forEach { (key, value) ->
             when (key) {
                 "creation_mode", "author_brief", "author_outline", "locked_requirements", "selected_concept_id", "quick_mode" -> draft[key] = value
                 "form" -> (value as? JsonObject)?.forEach { (formKey, formValue) -> form[formKey] = formValue }
-                "display_title" -> Unit
-                else -> form[key] = value
             }
+        }
+        val formChanged = JsonObject(form) != source.objectValue("draft").objectValue("form")
+        if (!formChanged && changes.keys.all { key -> key == "form" || draft[key] == source.objectValue("draft")[key] }) {
+            return ToolExecution(source, result("patch_creation_session", "skipped", "立项会话资料没有变化"))
         }
         draft["form"] = JsonObject(form)
         val stages = (draft["stages"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
-        val constraints = (stages["constraints"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
-        constraints["status"] = JsonPrimitive("generated")
-        constraints["data"] = JsonObject(form)
-        constraints["source"] = JsonPrimitive("assistant")
-        constraints["updated_at"] = JsonPrimitive(Instant.now().toString())
-        stages["constraints"] = JsonObject(constraints)
+        if (formChanged) {
+            val constraints = (stages["constraints"] as? JsonObject ?: JsonObject(emptyMap())).toMutableMap()
+            constraints["status"] = JsonPrimitive("generated")
+            constraints["data"] = JsonObject(form)
+            constraints["source"] = JsonPrimitive("assistant")
+            constraints["updated_at"] = JsonPrimitive(Instant.now().toString())
+            stages["constraints"] = JsonObject(constraints)
+            contract.impactDependencies["constraints"].orEmpty().forEach { downstream ->
+                val state = stages[downstream] as? JsonObject ?: return@forEach
+                if (state.string("status") in setOf("generated", "confirmed")) {
+                    stages[downstream] = JsonObject(state.toMutableMap().apply {
+                        put("status", JsonPrimitive("stale"))
+                        put("stale_reason", JsonPrimitive("创作约束已修改"))
+                        put("stale_source", JsonPrimitive("constraints"))
+                    })
+                }
+            }
+        }
         draft["stages"] = JsonObject(stages)
         val updated = bump(source, draft) { root ->
-            changes["display_title"]?.let { root["display_title"] = it }
+            if (formChanged) {
+                root["user_brief"] = form["brief"] ?: JsonPrimitive("")
+                if ((draft["concepts"] as? JsonArray).isNullOrEmpty()) {
+                    root["display_title"] = (form["brief"] as? JsonPrimitive)
+                        ?.contentOrNull?.takeIf { it.isNotBlank() }?.let { JsonPrimitive(it) }
+                        ?: JsonPrimitive("未命名作品")
+                }
+                listOf("genre", "target_audience", "platform").forEach { field ->
+                    root[field] = form[field] ?: JsonPrimitive("")
+                }
+            }
         }
         return ToolExecution(
             updated,
@@ -1195,23 +1288,57 @@ internal class MobileCreationConversationAgent(
     private fun entityFieldMapping(artifact: String, entityType: String): Pair<String, String>? =
         contract.entities.output(artifact, entityType)?.let { it.string("field") to entityType }
 
-    private fun applyChanges(source: JsonObject, changes: List<JsonObject>): JsonObject {
+    internal fun applyChanges(source: JsonObject, changes: List<JsonObject>): JsonObject {
         var current: JsonElement = source
         changes.forEach { change ->
-            val action = change.string("action").ifBlank {
-                when (change.string("op")) {
-                    "add" -> if (change.string("path").endsWith("/-")) "append" else "set"
-                    "replace" -> "replace"
-                    "remove" -> "remove"
-                    else -> "set"
-                }
+            require(change.keys.all { it in setOf("path", "action", "op", "value", "target_count", "fill_value") }) {
+                "patch changes 含未声明字段"
+            }
+            val declaredAction = change.string("action")
+            val declaredOp = change.string("op")
+            require(("action" in change) != ("op" in change)) {
+                "action 与 op 必须且只能提供一个"
             }
             var path = change.string("path")
-            if (path.endsWith("/-")) path = path.removeSuffix("/-")
+            require((change["path"] as? JsonPrimitive)?.isString == true && path.startsWith("/")) {
+                "patch path 必须是 JSON Pointer"
+            }
+            if ("action" in change) {
+                require(declaredAction in setOf("set", "replace", "append", "remove", "resize")) {
+                    "不支持的 patch action：$declaredAction"
+                }
+            } else {
+                require(declaredOp in setOf("add", "replace", "remove")) {
+                    "不支持的 JSON Patch op：$declaredOp"
+                }
+            }
+            val action = if (declaredAction.isNotBlank()) declaredAction else when (declaredOp) {
+                "add" -> if (path.endsWith("/-")) "append" else "set"
+                else -> declaredOp
+            }
+            if (action in setOf("set", "replace", "append")) {
+                require("value" in change) { "写入操作必须提供 value" }
+            }
+            if (declaredOp == "add" && path.endsWith("/-")) path = path.removeSuffix("/-").ifBlank { "/" }
+            if ("target_count" in change) {
+                require((change["target_count"] as? JsonPrimitive)?.isString == false &&
+                    change.intOrNull("target_count")?.let { it >= 0 } == true) {
+                    "target_count 必须是非负整数"
+                }
+            }
+            if (action == "resize") require(change.intOrNull("target_count")?.let { it >= 0 } == true) {
+                "resize 操作必须提供非负 target_count"
+            }
             val parts = path.trim('/').takeIf(String::isNotBlank)?.split('/')
                 ?.map { it.replace("~1", "/").replace("~0", "~") }
                 ?: emptyList()
-            current = mutate(current, parts, action, change["value"], change.intOrNull("target_count"), change["fill_value"])
+            require(parts.isNotEmpty() || action in setOf("set", "replace")) {
+                "the artifact root cannot be removed or appended"
+            }
+            current = mutate(
+                current, parts, action, change["value"], change.intOrNull("target_count"),
+                change["fill_value"] ?: JsonObject(emptyMap()),
+            )
         }
         return current as? JsonObject ?: error("立项对象根节点必须保持为 JSON 对象")
     }
@@ -1226,16 +1353,18 @@ internal class MobileCreationConversationAgent(
     ): JsonElement {
         if (parts.isEmpty()) {
             return when (action) {
-                "append" -> JsonArray((current as? JsonArray).orEmpty() + (value ?: JsonNull))
+                "append" -> JsonArray((current as? JsonArray
+                    ?: error("append target is not a list")) + (value ?: JsonNull))
                 "resize" -> {
-                    val rows = (current as? JsonArray).orEmpty().toMutableList()
-                    val target = targetCount ?: rows.size
+                    val rows = (current as? JsonArray
+                        ?: error("resize target is not a list")).toMutableList()
+                    val target = requireNotNull(targetCount) { "resize 操作必须提供 target_count" }
                     while (rows.size > target) rows.removeAt(rows.lastIndex)
                     while (rows.size < target) rows += fillValue ?: JsonNull
                     JsonArray(rows)
                 }
-                "remove" -> JsonNull
-                else -> value ?: current
+                "set", "replace" -> value ?: current
+                else -> error("the artifact root cannot be removed or appended")
             }
         }
         return when (current) {
@@ -1243,7 +1372,7 @@ internal class MobileCreationConversationAgent(
                 val key = parts.first()
                 val map = current.toMutableMap()
                 if (parts.size == 1 && action == "remove") {
-                    map.remove(key)
+                    require(map.remove(key) != null) { "remove target does not exist: $key" }
                 } else {
                     val child = map[key] ?: if (parts.size == 1) JsonNull else JsonObject(emptyMap())
                     map[key] = mutate(child, parts.drop(1), action, value, targetCount, fillValue)

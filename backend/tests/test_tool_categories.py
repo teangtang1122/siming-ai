@@ -12,6 +12,7 @@ from app.architecture.tool_categories import (
     TOOL_CATEGORY_METADATA,
     TOOL_NAMES_BY_CATEGORY,
     normalize_tool_categories,
+    tool_categories_for_names,
     tool_names_for_categories,
 )
 from app.mcp.schemas import make_text_result
@@ -20,7 +21,11 @@ from app.modules.creation.interfaces.agent_progress import (
     creation_tool_completed_event,
     creation_tool_started_event,
 )
-from app.services.novel_creation_agent import _domain_tool_schemas, _tool_schemas
+from app.services.novel_creation_agent import (
+    _category_tool_result,
+    _domain_tool_schemas,
+    _tool_schemas,
+)
 from app.services.tool_category_state import (
     activate_tool_categories,
     append_tool_category_audit,
@@ -56,35 +61,75 @@ def test_global_category_catalog_covers_registry_once_and_is_balanced():
     assert set(categorized) == registered
     assert len(categorized) == len(set(categorized)) == len(TOOL_CATEGORY_BY_NAME)
     sizes = [len(names) for names in TOOL_NAMES_BY_CATEGORY.values()]
-    assert min(sizes) >= 16
-    assert max(sizes) - min(sizes) <= 13
+    assert min(sizes) >= 2
+    assert max(sizes) <= 6
 
 
-def test_category_selection_is_deduplicated_unbounded_replacement():
+def test_category_selection_is_deduplicated_bounded_replacement():
     assert normalize_tool_categories([
-        "creation_data", "creation_data", "creation_flow", "story_knowledge",
-    ]) == ("creation_data", "creation_flow", "story_knowledge")
-    assert "patch_creation_entity" in tool_names_for_categories(["creation_data"])
-    assert "finalize_creation_session" not in tool_names_for_categories(["creation_data"])
-    assert "finalize_creation_session" in tool_names_for_categories(["creation_flow"])
-    with pytest.raises(ValueError, match="未知工具类别"):
+        "creation_entities", "creation_entities", "creation_completion",
+    ]) == ("creation_entities", "creation_completion")
+    assert "patch_creation_entity" in tool_names_for_categories(["creation_entities"])
+    assert "finalize_creation_session" not in tool_names_for_categories(["creation_entities"])
+    assert "finalize_creation_session" in tool_names_for_categories(["creation_completion"])
+    with pytest.raises(ValueError, match="最多开放"):
+        normalize_tool_categories(["creation_entities", "creation_completion", "creation_session"])
+    with pytest.raises(ValueError, match="未开放"):
         normalize_tool_categories(["unknown"])
     with pytest.raises(ValueError, match="必须是数组"):
-        normalize_tool_categories("creation_data")
+        normalize_tool_categories("creation_session")
 
 
 def test_creation_agent_uses_global_category_intersection():
     domain_names = _schema_names(_domain_tool_schemas())
     assert _schema_names(_tool_schemas()) == {TOOL_CATEGORY_CONTROLLER}
 
-    data_names = _schema_names(_tool_schemas(("creation_data",)))
-    flow_names = _schema_names(_tool_schemas(("creation_flow",)))
+    data_names = _schema_names(_tool_schemas(("creation_session", "creation_entities")))
+    flow_names = _schema_names(_tool_schemas(("creation_completion",)))
     assert "get_creation_snapshot" in data_names
     assert "patch_creation_entity" in data_names
     assert "finalize_creation_session" not in data_names
     assert "finalize_creation_session" in flow_names
     assert "patch_creation_entity" not in flow_names
     assert data_names | flow_names <= domain_names | {TOOL_CATEGORY_CONTROLLER}
+
+
+def test_creation_menu_only_offers_its_32_tools_in_ten_small_groups():
+    domain_names = _schema_names(_domain_tool_schemas())
+    controller = _tool_schemas()[0]["function"]
+    menu = controller["parameters"]["properties"]["enabled_categories"]["items"]["enum"]
+    assert len(domain_names) == 32
+    assert len(menu) == 10
+    assert set(menu) == set(tool_categories_for_names(domain_names))
+    assert all(2 <= len(TOOL_NAMES_BY_CATEGORY[name] & domain_names) <= 5 for name in menu)
+    assert "chapter_writing" not in menu
+    assert "creation_setup" not in menu
+    assert "chapter_writer" not in controller["description"]
+    assert len(json.dumps(_tool_schemas(("creation_session", "creation_artifacts")))) < len(
+        json.dumps(_domain_tool_schemas())
+    ) / 2
+    for categories in (["chapter_writing"], ["creation_setup"], menu[:3]):
+        result, selection = _category_tool_result({"enabled_categories": categories})
+        assert result["status"] == "error"
+        assert selection is None
+
+
+def test_creation_mcp_controller_rejects_categories_outside_its_menu():
+    state_file = create_tool_category_state()
+    try:
+        response = json.loads(handle_message(
+            json.dumps({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": TOOL_CATEGORY_CONTROLLER,
+                           "arguments": {"enabled_categories": ["chapter_writing"]}},
+            }),
+            permission_pack="creation_session", tool_category_state_file=state_file,
+        ))
+        assert response["result"]["isError"] is True
+        assert read_tool_category_state(state_file)["version"] == 0
+        assert _mcp_names(state_file) == {TOOL_CATEGORY_CONTROLLER}
+    finally:
+        remove_tool_category_state(state_file)
 
 
 def test_process_scoped_mcp_activates_categories_at_next_step_boundary():
@@ -98,7 +143,7 @@ def test_process_scoped_mcp_activates_categories_at_next_step_boundary():
                 "method": "tools/call",
                 "params": {
                     "name": TOOL_CATEGORY_CONTROLLER,
-                    "arguments": {"enabled_categories": ["creation_data"]},
+                    "arguments": {"enabled_categories": ["creation_session"]},
                 },
             }),
             permission_pack="creation_session",
@@ -107,7 +152,7 @@ def test_process_scoped_mcp_activates_categories_at_next_step_boundary():
         assert controller["result"]["isError"] is False
         state = read_tool_category_state(state_file)
         assert state["active_categories"] == []
-        assert state["requested_categories"] == ["creation_data"]
+        assert state["requested_categories"] == ["creation_session"]
         assert "patch_creation_session" not in _mcp_names(state_file)
 
         hidden = json.loads(handle_message(
@@ -126,7 +171,7 @@ def test_process_scoped_mcp_activates_categories_at_next_step_boundary():
             TOOL_CATEGORY_CONTROLLER,
             "patch_creation_session",
         ]
-        assert audits[0]["arguments"] == {"enabled_categories": ["creation_data"]}
+        assert audits[0]["arguments"] == {"enabled_categories": ["creation_session"]}
         assert audits[1]["status"] == "denied"
 
         activate_tool_categories(state_file)
@@ -140,7 +185,7 @@ def test_process_scoped_mcp_activates_categories_at_next_step_boundary():
 def test_reselecting_active_categories_does_not_restart_the_model_step():
     state_file = create_tool_category_state()
     try:
-        replace_tool_categories(state_file, ["story_knowledge", "writing_context"])
+        replace_tool_categories(state_file, ["creation_session", "creation_artifacts"])
         activated = activate_tool_categories(state_file)
         version = activated["version"]
 
@@ -152,7 +197,7 @@ def test_reselecting_active_categories_does_not_restart_the_model_step():
                 "params": {
                     "name": TOOL_CATEGORY_CONTROLLER,
                     "arguments": {
-                        "enabled_categories": ["story_knowledge", "writing_context"]
+                        "enabled_categories": ["creation_session", "creation_artifacts"]
                     },
                 },
             }),
@@ -165,12 +210,12 @@ def test_reselecting_active_categories_does_not_restart_the_model_step():
         state = read_tool_category_state(state_file)
         assert state["version"] == version
         assert state["active_version"] == version
-        assert state["active_categories"] == ["story_knowledge", "writing_context"]
+        assert state["active_categories"] == ["creation_session", "creation_artifacts"]
     finally:
         remove_tool_category_state(state_file)
 
 
-@pytest.mark.parametrize("initial_categories", [[], ["creation_data"]])
+@pytest.mark.parametrize("initial_categories", [[], ["creation_session"]])
 def test_empty_category_choice_is_recorded_once_and_keeps_business_tools_closed(
     initial_categories: list[str],
 ):
@@ -299,7 +344,7 @@ def test_creation_mcp_allows_only_one_successful_write_per_user_turn():
                 "method": "tools/call",
                 "params": {
                     "name": TOOL_CATEGORY_CONTROLLER,
-                    "arguments": {"enabled_categories": ["creation_data"]},
+                    "arguments": {"enabled_categories": ["creation_session", "creation_artifacts"]},
                 },
             }),
             permission_pack="creation_session",
@@ -314,7 +359,7 @@ def test_creation_mcp_allows_only_one_successful_write_per_user_turn():
                     "jsonrpc": "2.0",
                     "id": 2,
                     "method": "tools/call",
-                    "params": {"name": "patch_creation_session", "arguments": {"changes": {"genre": "玄幻"}}},
+                    "params": {"name": "patch_creation_session", "arguments": {"changes": {"form": {"genre": "玄幻"}}}},
                 }),
                 db=object(),
                 permission_pack="creation_session",
@@ -369,7 +414,7 @@ def test_creation_mcp_stops_after_three_failed_write_attempts():
                 "method": "tools/call",
                 "params": {
                     "name": TOOL_CATEGORY_CONTROLLER,
-                    "arguments": {"enabled_categories": ["creation_data"]},
+                    "arguments": {"enabled_categories": ["creation_session", "creation_artifacts"]},
                 },
             }),
             permission_pack="creation_session",

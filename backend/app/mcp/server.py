@@ -11,11 +11,11 @@ import asyncio
 import json
 import logging
 import sys
-from contextlib import suppress
 from typing import Any, TextIO
 
 from app.architecture.tool_categories import (
     TOOL_CATEGORY_CONTROLLER,
+    normalize_tool_categories,
     tool_category_controller_schema,
 )
 from app.architecture.uow import commit_session
@@ -28,6 +28,10 @@ from app.mcp.adapter import (
     tool_result_payload,
 )
 from app.mcp.prompts import list_prompts, render_prompt
+from app.mcp.protocol import _configure_stdio_utf8 as _configure_stdio_utf8
+from app.mcp.protocol import _jsonrpc_error as _jsonrpc_error
+from app.mcp.protocol import _jsonrpc_result as _jsonrpc_result
+from app.mcp.protocol import _tool_result_to_dict as _tool_result_to_dict
 from app.mcp.schemas import McpToolResult, make_text_result
 from app.modules.creation.interfaces.agent_progress import (
     creation_tool_completed_event,
@@ -73,34 +77,6 @@ TOOL_NOT_FOUND = -32000
 PERMISSION_DENIED = -32001
 PROJECT_NOT_FOUND = -32002
 TOOL_EXECUTION_FAILED = -32003
-
-
-def _jsonrpc_error(id: Any, code: int, message: str, data: Any = None) -> str:
-    """Build a JSON-RPC error response string."""
-    err: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        err["data"] = data
-    resp = {"jsonrpc": "2.0", "id": id, "error": err}
-    # Keep the wire payload ASCII-safe for Windows stdio MCP clients. JSON
-    # parsers still recover the original Unicode strings after decoding.
-    return json.dumps(resp, ensure_ascii=True)
-
-
-def _jsonrpc_result(id: Any, result: Any) -> str:
-    """Build a JSON-RPC success response string."""
-    resp = {"jsonrpc": "2.0", "id": id, "result": result}
-    # Keep the wire payload ASCII-safe for Windows stdio MCP clients. JSON
-    # parsers still recover the original Unicode strings after decoding.
-    return json.dumps(resp, ensure_ascii=True)
-
-
-def _configure_stdio_utf8() -> None:
-    """Prefer UTF-8 stdio when the host process supports reconfiguration."""
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            with suppress(Exception):
-                reconfigure(encoding="utf-8", errors="replace")
 
 
 def handle_message(
@@ -214,22 +190,26 @@ def _handle_tools_list(
             definition.name for definition in registry.list_for_workspace_direct_mcp()
         }
         tools = [tool for tool in tools if tool.name in allowed_names]
+    authorized_names = {tool.name for tool in tools}
+    category_controlled = bool(tool_category_state_file) and permission_pack != "cataloging_worker"
     if tool_category_state_file:
         try:
             state = read_tool_category_state(tool_category_state_file)
         except ValueError as exc:
             return _jsonrpc_error(msg_id, PERMISSION_DENIED, str(exc))
+    if category_controlled:
+        if permission_pack == "creation_session" and creation_turn_write_tools_closed(state):
+            tools = [tool for tool in tools if tool.name not in CREATION_AGENT_WRITE_TOOL_NAMES]
+            authorized_names -= CREATION_AGENT_WRITE_TOOL_NAMES
         enabled = set(state.get("active_categories") or [])
         tools = [
             tool for tool in tools
             if (definition := registry.get(tool.name)) is not None
             and definition.agent_category in enabled
         ]
-        if permission_pack == "creation_session" and creation_turn_write_tools_closed(state):
-            tools = [tool for tool in tools if tool.name not in CREATION_AGENT_WRITE_TOOL_NAMES]
     tool_dicts = []
-    if tool_category_state_file:
-        controller = tool_category_controller_schema()["function"]
+    if category_controlled:
+        controller = tool_category_controller_schema(authorized_names)["function"]
         tool_dicts.append({
             "name": controller["name"],
             "description": controller["description"],
@@ -329,6 +309,7 @@ def _category_scoped_call_result(
     tool_name: str,
     arguments: dict[str, Any],
     tool_category_state_file: str,
+    authorized_tool_names: set[str],
 ) -> McpToolResult | None:
     """Handle the category controller and reject tools outside the active set."""
 
@@ -341,6 +322,12 @@ def _category_scoped_call_result(
         )
     if tool_name == TOOL_CATEGORY_CONTROLLER:
         try:
+            if creation_turn_write_tools_closed(state):
+                authorized_tool_names = authorized_tool_names - CREATION_AGENT_WRITE_TOOL_NAMES
+            normalize_tool_categories(
+                arguments.get("enabled_categories"),
+                available_tool_names=authorized_tool_names,
+            )
             payload = replace_tool_categories(
                 tool_category_state_file,
                 arguments.get("enabled_categories"),
@@ -739,8 +726,18 @@ def _scoped_call_gate_result(
     lease_token: str,
     tool_name: str,
     arguments: dict[str, Any],
+    allowed_tiers: set[str],
 ) -> McpToolResult | None:
     if not state_file:
+        return None
+    if permission_pack == "cataloging_worker":
+        try:
+            read_tool_category_state(state_file)
+        except ValueError as exc:
+            return make_text_result(
+                json.dumps({"status": "denied", "detail": str(exc)}, ensure_ascii=False),
+                is_error=True,
+            )
         return None
     guarded = _turn_guard_scoped_call_result(
         db,
@@ -751,7 +748,16 @@ def _scoped_call_gate_result(
     )
     if guarded is not None:
         return guarded
-    scoped = _category_scoped_call_result(tool_name, arguments, state_file)
+    authorized_names = {
+        tool.name for tool in list_mcp_tools(
+            allowed_tiers=allowed_tiers, permission_pack=permission_pack,
+        )
+    }
+    if permission_pack == "project_management":
+        authorized_names &= {
+            tool.name for tool in registry.list_for_workspace_direct_mcp()
+        }
+    scoped = _category_scoped_call_result(tool_name, arguments, state_file, authorized_names)
     if scoped is not None or permission_pack != "creation_session":
         return scoped
     write_scoped = _creation_turn_write_scoped_call_result(
@@ -844,6 +850,7 @@ def _handle_tools_call(
         lease_token=direct_mcp_lease_token,
         tool_name=tool_name,
         arguments=arguments,
+        allowed_tiers=allowed_tiers,
     )
     if gated is not None:
         return _jsonrpc_result(msg_id, _tool_result_to_dict(gated))
@@ -919,14 +926,6 @@ def _handle_tools_call(
             run_step=started,
         )
     return _jsonrpc_result(msg_id, _tool_result_to_dict(result))
-
-
-def _tool_result_to_dict(result: McpToolResult) -> dict:
-    """Convert McpToolResult to MCP protocol dict."""
-    return {
-        "content": result.content,
-        "isError": result.is_error,
-    }
 
 
 def serve_stdio(

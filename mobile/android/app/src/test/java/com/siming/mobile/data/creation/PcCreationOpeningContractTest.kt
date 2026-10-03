@@ -159,9 +159,9 @@ class PcCreationOpeningContractTest {
         val chapters = baseline.getValue("chapters").jsonArray.toMutableList()
         chapters[0] = JsonObject(chapters[0].jsonObject + ("summary" to JsonPrimitive("改写已锁定正文")))
         val paths = JsonArray(listOf(JsonPrimitive("/chapters/0/summary")))
-        contract.validateLocks(baseline, baseline, paths)
+        entities.validateLocks("opening_outline", baseline, baseline, paths)
         assertFailsWith<CreationGenerationException> {
-            contract.validateLocks(JsonObject(baseline + ("chapters" to JsonArray(chapters))), baseline, paths)
+            entities.validateLocks("opening_outline", JsonObject(baseline + ("chapters" to JsonArray(chapters))), baseline, paths)
         }
     }
 
@@ -211,6 +211,38 @@ class PcCreationOpeningContractTest {
         assertEquals(setOf("pc-character-0", "pc-character-1"), transferred.getValue("sections").jsonArray.first().jsonObject.getValue("character_ids").jsonArray.map { it.jsonPrimitive.content }.toSet())
         val foreign = JsonObject(source + ("id" to JsonPrimitive("other-session")))
         assertFailsWith<CreationGenerationException> { contract.validate(linked, characters = contract.characterIndex(foreign)) }
+    }
+
+    @Test
+    fun gatewaySavedOutlineUsesServerOwnedVolumeAndCharacterIndices() {
+        val characterData = buildJsonObject { put("characters", buildJsonArray {
+            add(buildJsonObject { put("name", "陆生"); put("role_type", "protagonist") })
+        }) }
+        val source = replaceStage(readySession(), "characters", characterData)
+        val localVolumes = contract.volumeIndex(source)
+        val remoteVolumes = JsonArray(localVolumes.mapIndexed { index, row ->
+            JsonObject(row.jsonObject + ("id" to JsonPrimitive("pc-volume-$index")))
+        })
+        val remoteCharacters = JsonArray(listOf(buildJsonObject {
+            put("id", "pc-character-1"); put("name", "陆生")
+        }))
+        val volumeIds = localVolumes.mapIndexed { index, row ->
+            row.jsonObject.text("id") to remoteVolumes[index].jsonObject.text("id")
+        }.toMap()
+        val opening = source.stage("opening_outline").getValue("data").jsonObject
+        val remoteOpening = JsonObject(opening.toMutableMap().apply {
+            listOf("chapters", "sections").forEach { field ->
+                put(field, JsonArray(opening.getValue(field).jsonArray.map { raw ->
+                    JsonObject(raw.jsonObject.toMutableMap().apply {
+                        if (field == "chapters") put("volume_id", JsonPrimitive(volumeIds.getValue(raw.jsonObject.text("volume_id"))))
+                        put("character_ids", buildJsonArray { add("pc-character-1") })
+                    })
+                }))
+            }
+        })
+        val gateway = replaceStage(source, "opening_outline", remoteOpening)
+        assertFailsWith<CreationGenerationException> { contract.validateSaved(gateway) }
+        contract.validateSaved(gateway, remoteVolumes, remoteCharacters)
     }
 
     private fun readySession(): JsonObject {

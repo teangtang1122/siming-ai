@@ -23,9 +23,9 @@ from app.ai.local_cli_adapter import (
     DEFAULT_CLI_MODELS,
     OPENCODE_FAMILY_PROVIDERS,
     CLILaunch,
-    CLITurnTerminal,
-    CLIStalledError,
     CLIQuotaLimitError,
+    CLIStalledError,
+    CLITurnTerminal,
     LocalCLIAdapter,
     communicate_with_cli_quota_detection,
     detect_cli_quota_error,
@@ -57,26 +57,26 @@ from app.services.cataloging.job_control import complete_cataloging_job, refresh
 from app.services.cataloging.local_cli_mcp import (
     opencode_cataloging_permission_env,
 )
+from app.services.cataloging.local_cli_progress import (
+    CHECKPOINT_TERMINAL,
+    STALL_PREFIX,
+    CandidateProgressProbe,
+)
 from app.services.cataloging.local_cli_result import (
     agent_tool_event_count,
     handle_cli_turn_exception,
     handle_cli_turn_result,
 )
-from app.services.cataloging.local_cli_progress import (
-    CandidateProgressProbe, CHECKPOINT_TERMINAL, STALL_PREFIX,
-)
 from app.services.external_agent.run_service import add_event, create_run, update_run_status
-from app.services.tool_category_state import (
-    activate_tool_categories,
-    create_tool_category_state,
-    read_tool_category_audits,
-    read_tool_category_state,
-    remove_tool_category_state,
-)
 from app.services.operation_runtime import (
     record_operation_signal,
     register_operation_actions,
     unregister_operation_actions,
+)
+from app.services.tool_category_state import (
+    create_tool_category_state,
+    read_tool_category_audits,
+    remove_tool_category_state,
 )
 
 _COORDINATORS: dict[str, asyncio.Task] = {}
@@ -312,7 +312,11 @@ async def _cancel_cataloging_operation(job_id: str) -> None:
 
 
 async def _retry_cataloging_operation(job_id: str, provider: str) -> None:
-    from app.services.cataloging.job_control import first_retryable_run, refresh_job_progress, reset_run_for_retry
+    from app.services.cataloging.job_control import (
+        first_retryable_run,
+        refresh_job_progress,
+        reset_run_for_retry,
+    )
 
     db = SessionLocal()
     try:
@@ -428,11 +432,9 @@ def _task_text(
 - 每个 MCP 调用都必须带 `project_id="{job.project_id}"` 和 `run_id="{agent_run_id}"`。
 - 不要创建 candidates.jsonl、临时档案或其他旁路数据文件。
 
-## 工具类别
-每个新模型回合最初只有 `set_tool_categories`。先根据本轮任务选择类别，
-例如建档工具属于 cataloging，上报计划和进度属于 agent_runtime。
-类别切换会立即结束当前模型步骤；下一步骤使用已经开放的工具，不要再次选择相同类别。
-下方“立即调用”的业务步骤均在所需类别已开放后执行。
+## 任务工具
+系统已直接开放本章建档和进度上报所需工具，无需选择类别。
+按下方步骤执行；其他作品能力不在本任务授权范围内。
 
 {stage_steps}
 
@@ -459,7 +461,7 @@ def _task_prompt(
         "你是司命本机作品建档 Agent。本轮是全新的单章任务，禁止沿用任何旧会话或旧章节绑定。\n"
         f"当前阶段={stage}；job_id={job.id}；agent_run_id={agent_run_id}；"
         f"chapter_run_id={run.id}；chapter_id={chapter.id}；章节={chapter.title}。\n"
-        "首先按当前开放类别调用 set_tool_categories；类别已开放时直接调用 report_agent_plan，"
+        "首先调用 report_agent_plan，"
         "然后严格按附件任务文件执行 MCP 工具链。"
         "不得回答“请告知章节”“是否沿用任务”或任何澄清问题。\n"
         "唯一允许读取的任务文件如下；缓存、历史或目录里的其他任务文件全部忽略：\n"
@@ -565,59 +567,48 @@ async def _run_cli_turn(
     for suffix, value in managed_env.items():
         set_compatible_env(f"SIMING_{suffix}", value, target=env)
 
+    # Keep the shared audit transport; this fixed task has no category selector.
     category_file = create_tool_category_state()
     try:
         progress_probe = CandidateProgressProbe(
             category_file=category_file, chapter_run_id=run.id,
             session_factory=SessionLocal,
         ) if stage == "planning" else None
-        for _step in range(8):
-            state = read_tool_category_state(category_file)
-            prompt = _task_prompt(task_file, job, run, chapter, agent_run_id, stage)
-            prompt += "\n当前已经开放的工具类别：" + json.dumps(
-                state["active_categories"], ensure_ascii=False,
-            ) + "。已开放时直接执行本阶段业务，不要重复选择相同类别。"
-            launch = _build_cataloging_cli_launch(
-                config=config, prompt=prompt, model=model, task_file=task_file,
-                project_folder=project_folder, run=run,
+        prompt = _task_prompt(task_file, job, run, chapter, agent_run_id, stage)
+        launch = _build_cataloging_cli_launch(
+            config=config, prompt=prompt, model=model, task_file=task_file,
+            project_folder=project_folder, run=run,
+        )
+        step_env = dict(env)
+        if config.provider in OPENCODE_FAMILY_PROVIDERS:
+            step_env = prepare_opencode_mcp_environment(
+                provider=config.provider, cwd=str(run_dir), base_env=step_env,
+                permission_pack="cataloging_worker", project_id=job.project_id,
+                tool_category_state_file=category_file,
+                permissions=json.loads(opencode_cataloging_permission_env()),
             )
-            step_env = dict(env)
-            if config.provider in OPENCODE_FAMILY_PROVIDERS:
-                step_env = prepare_opencode_mcp_environment(
-                    provider=config.provider, cwd=str(run_dir), base_env=step_env,
-                    permission_pack="cataloging_worker", project_id=job.project_id,
-                    tool_category_state_file=category_file,
-                    permissions=json.loads(opencode_cataloging_permission_env()),
-                )
-            elif supports_direct_mcp(config.provider):
-                launch, step_env = prepare_direct_mcp_launch(
-                    LocalCLIAdapter(api_key="", base_url=config.provider), launch,
-                    cwd=str(run_dir), env=step_env,
-                    permission_pack="cataloging_worker", project_id=job.project_id,
-                    tool_category_state_file=category_file,
-                )
-            try:
-                result = await _execute_cataloging_cli_step(
-                    resolved=resolved, launch=launch, env=step_env,
-                    project_folder=project_folder, job=job, run=run, chapter=chapter,
-                    model=model, agent_run_id=agent_run_id, stage=stage,
-                    category_file=category_file,
-                    progress_probe=progress_probe,
-                )
-            except CLITurnTerminal as exc:
-                if str(exc).startswith(STALL_PREFIX):
-                    raise CLIStalledError(str(exc)[len(STALL_PREFIX):]) from exc
-                if str(exc) == CHECKPOINT_TERMINAL:
-                    return 0, exc.stdout, exc.stderr
-                if not str(exc).startswith("set_tool_categories:"):
-                    raise
-                result = (0, exc.stdout, exc.stderr)
-            latest = read_tool_category_state(category_file)
-            if latest["version"] > latest["active_version"]:
-                activate_tool_categories(category_file)
-                continue
-            return result
-        raise RuntimeError("建档 Agent 工具类别切换次数达到上限，未完成当前章节")
+        elif supports_direct_mcp(config.provider):
+            launch, step_env = prepare_direct_mcp_launch(
+                LocalCLIAdapter(api_key="", base_url=config.provider), launch,
+                cwd=str(run_dir), env=step_env,
+                permission_pack="cataloging_worker", project_id=job.project_id,
+                tool_category_state_file=category_file,
+            )
+        try:
+            result = await _execute_cataloging_cli_step(
+                resolved=resolved, launch=launch, env=step_env,
+                project_folder=project_folder, job=job, run=run, chapter=chapter,
+                model=model, agent_run_id=agent_run_id, stage=stage,
+                category_file=category_file,
+                progress_probe=progress_probe,
+            )
+        except CLITurnTerminal as exc:
+            if str(exc).startswith(STALL_PREFIX):
+                raise CLIStalledError(str(exc)[len(STALL_PREFIX):]) from exc
+            if str(exc) == CHECKPOINT_TERMINAL:
+                return 0, exc.stdout, exc.stderr
+            raise
+        return result
     finally:
         try:
             (run_dir / f"{run.chapter_order + 1:04d}-{stage}-category-audit.json").write_text(
@@ -633,7 +624,7 @@ async def _execute_cataloging_cli_step(
     job: CatalogingJob, run: CatalogingChapterRun, chapter: Chapter, model: str,
     agent_run_id: str, stage: str, category_file: str, progress_probe=None,
 ) -> tuple[int, str, str]:
-    """Execute one model step; a committed category change stops its process."""
+    """Execute the fixed task until completion, cancellation or a checkpoint."""
     process = await asyncio.create_subprocess_exec(
         resolved,
         *launch.args,
@@ -666,14 +657,6 @@ async def _execute_cataloging_cli_step(
             )
         finally:
             operation_db.close()
-    category_probe = LocalCLIAdapter._terminal_turn_probe({
-        "local_cli_mcp_authorized": True,
-        "local_cli_mcp_tool_category_state_file": category_file,
-    })
-
-    def terminal_probe():
-        return (progress_probe() if progress_probe else None) or (category_probe() if category_probe else None)
-
     try:
         stdout, stderr = await communicate_with_cli_quota_detection(
             process,
@@ -681,7 +664,7 @@ async def _execute_cataloging_cli_step(
             timeout_seconds=None,
             operation_id=job.operation_id,
             external_activity_probe=lambda: _latest_agent_event_at(agent_run_id),
-            terminal_probe=terminal_probe,
+            terminal_probe=progress_probe,
             poll_seconds=poll_seconds,
             # This worker owns an explicitly authorized, process-scoped MCP
             # configuration. Its stdout/stderr may contain arbitrary novel

@@ -80,23 +80,39 @@ internal class MobileCataloging(
         val records = Json.parseToJsonElement(job.sourceJson).jsonArray.map { CatalogRecord.fromJson(it.jsonObject) }
         val saved = Json.parseToJsonElement(job.candidatesJson).jsonArray.map { CatalogCandidate.fromJson(it.jsonObject) }
         val plan = CatalogingPlan(contract, job.projectId, job.chapterId, records, saved)
-        // A new attempt starts with the controller and persisted candidate IDs. Old tool transcripts
+        // A new attempt uses the fixed task contract and persisted candidate IDs. Old tool transcripts
         // are diagnostic only and never manufacture a fresh authorization.
         val messages = mutableListOf(message("system", contract.systemPrompt), message("user", buildJsonObject {
             put("task", "为当前已保存章节建档"); put("project_id", job.projectId); put("job_id", job.id)
             put("chapter_id", job.chapterId); put("chapter_run_id", job.id); put("chapter_version", job.chapterVersion)
             put("resume", buildJsonObject { put("accepted_candidates", JsonArray(saved.map(CatalogCandidate::toJson))) })
         }.toString()))
-        var categories = emptyList<String>()
-        var selected = false
         var chapterRead = false
         var failures = 0
+        var toolNameRejections = 0
+        var selectedType: String? = null
         for (step in 1..contract.maxSteps) {
             checkActive(job)
             onProgress("正在等待建档模型（步骤 $step，连续 ${contract.modelRequest.idleTimeoutSeconds} 秒无有效输出将超时）")
             var lastActivity: DirectAgentStreamActivity? = null
             var lastActivityAt = 0L
-            val response = turn(messages.toList(), contract.tools(categories)) { activity ->
+            val summaryRequired = plan.candidates.none { it.kind == "chapter_summary" }
+            if (summaryRequired) selectedType = null
+            val linkedOutlineId = plan.chapter.text("outline_node_id").takeIf { id ->
+                id.isNotBlank() && records.any { it.recordType == "outline_node" && it.id == id &&
+                    it.payload.text("node_type") == "chapter" }
+            }
+            val sectionOutlineIds = if (linkedOutlineId == null) emptyList() else records.filter {
+                it.recordType == "outline_node" && it.payload.text("node_type") == "section" &&
+                    it.payload.text("parent_id") == linkedOutlineId &&
+                    it.payload.text("source_chapter_id").let { source -> source.isBlank() || source == job.chapterId }
+            }.map { it.id }
+            val summary = plan.candidates.singleOrNull { it.kind == "chapter_summary" }?.payload
+            val sceneCount = summary?.get("scenes")?.let { (it as? JsonArray)?.size }
+            val offeredSchemas = contract.schemasForPlan(
+                summaryRequired, selectedType, linkedOutlineId, sectionOutlineIds, sceneCount, summary,
+            )
+            val response = turn(messages.toList(), offeredSchemas) { activity ->
                 val now = System.nanoTime()
                 if (activity != lastActivity || now - lastActivityAt >= 1_000_000_000L) {
                     checkActive(job)
@@ -112,19 +128,20 @@ internal class MobileCataloging(
             }
             checkActive(job)
             val calls = response.toolCalls
-            val allowed = contract.categories.availableToolNames(categories, contract.names)
-            // Reject the whole batch before executing any write. The controller always ends its step.
+            val allowed = offeredSchemas.map { it.jsonObject.getValue("function").jsonObject.text("name") }.toSet()
+            val unavailable = calls.map { it.name }.filter { it !in allowed }.distinct()
+            // Fixed task tools are supplied directly; reject the whole batch before any write.
             val batchError = when {
                 calls.isEmpty() -> "文字回复不能作为建档完成回执，请继续通过工具修正计划并 finalize"
-                calls.any { it.name !in allowed } -> "包含未授权工具，本批未执行"
-                !selected && (calls.size != 1 || calls.single().name != "set_tool_categories") -> "新回合只能先调用 set_tool_categories"
-                calls.any { it.name == "set_tool_categories" } && calls.size != 1 -> "类别切换必须单独调用，并立即结束当前步骤"
+                unavailable.isNotEmpty() -> "工具 ${unavailable.joinToString("、")} 本步骤未开放，整批未执行；请按当前工具名称和字段格式重新调用"
                 calls.any { it.name == "save_external_cataloging_candidates" } && calls.size != 1 -> "建档写入必须单独调用"
                 calls.map { it.id }.distinct().size != calls.size -> "工具调用 ID 重复"
                 else -> null
             }
             messages += response.assistantMessage
             var complete = false
+            if (unavailable.isNotEmpty()) toolNameRejections++
+            else if (calls.isNotEmpty() && batchError != null) failures++
             if (calls.isEmpty()) {
                 failures++
                 messages += message("user", requireNotNull(batchError) + "；" + plan.diagnostics().joinToString("；"))
@@ -133,15 +150,11 @@ internal class MobileCataloging(
                 val result = try {
                     require(batchError == null) { requireNotNull(batchError) }
                     val args = call.arguments
-                    contract.validateTool(call.name, args)
+                    contract.validateTool(call.name, args, offeredSchemas)
                     for ((key, expected) in listOf("project_id" to job.projectId, "job_id" to job.id, "chapter_id" to job.chapterId, "chapter_run_id" to job.id)) {
                         require(key !in args || args.text(key) == expected) { "$key 不属于当前建档任务" }
                     }
                     val data = when (call.name) {
-                        "set_tool_categories" -> {
-                            categories = contract.categories.normalize(args.strings("enabled_categories")); selected = true
-                            buildJsonObject { put("enabled_categories", jsonStrings(categories)); put("step_complete", true) }
-                        }
                         "get_next_external_cataloging_chapter" -> {
                             require(args["include_content"] != JsonPrimitive(false)) { "手机建档需要 include_content=true，必须读取完整正文" }
                             chapterRead = true
@@ -155,6 +168,13 @@ internal class MobileCataloging(
                         }
                         "read_cataloging_archive" -> archive(records, args)
                         "list_cataloging_candidates" -> candidates(plan, args, job)
+                        "select_cataloging_candidate_types" -> {
+                            selectedType = args.strings("types").single()
+                            buildJsonObject {
+                                put("selected_types", jsonStrings(listOf(requireNotNull(selectedType))))
+                                put("instruction", "同类可分批提交，重新选择才切换字段格式")
+                            }
+                        }
                         "save_external_cataloging_candidates" -> {
                             require(chapterRead) { "必须先读取本章完整正文，再提交建档计划" }
                             val submitted = plan.submit(args)
@@ -168,12 +188,25 @@ internal class MobileCataloging(
                         else -> error("没有可执行的建档工具：${call.name}")
                     }
                     val bad = data.objects("candidate_errors").isNotEmpty() || data.strings("missing_required_items").isNotEmpty()
-                    failures = if (bad && data.number("candidates_saved") == 0) failures + 1 else 0
+                    failures = when {
+                        data.number("candidates_saved") > 0 -> 0
+                        bad || data.strings("missing_required_items").isNotEmpty() -> failures + 1
+                        else -> failures
+                    }
                     buildJsonObject { put("tool", call.name); put("status", if (bad) "error" else "ok"); put("data", data) }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
-                    failures++
-                    buildJsonObject { put("tool", call.name); put("status", "error"); put("detail", e.message.orEmpty()) }
+                    if (batchError == null) failures++
+                    buildJsonObject {
+                        put("tool", call.name); put("status", "error"); put("detail", e.message.orEmpty())
+                        if (unavailable.isNotEmpty()) put("data", buildJsonObject {
+                            put("reason", "native_tool_not_open")
+                            put("unavailable_tools", jsonStrings(unavailable))
+                            put("available_tools", jsonStrings(allowed.sorted()))
+                            put("batch_call_count", calls.size); put("executed", false)
+                            put("retryable", toolNameRejections < contract.maxToolNameRejections)
+                        })
+                    }
                 }
                 messages += buildJsonObject { put("role", "tool"); put("tool_call_id", call.id); put("content", result.toString()) }
                 onProgress(if (result.text("status") == "error") "计划校验未通过，已将具体问题交给模型修正" else "已完成建档工具：${call.name}")
@@ -185,6 +218,9 @@ internal class MobileCataloging(
             database.withTransaction {
                 checkActive(job)
                 dao.saveCatalogingRun(job)
+            }
+            require(toolNameRejections < contract.maxToolNameRejections) {
+                "模型累计 ${contract.maxToolNameRejections} 次调用本步骤未开放的工具 ${unavailable.joinToString("、")}；整批未执行，候选已保留"
             }
             if (complete) { commit(job, plan); return }
             require(failures < contract.maxErrors) {

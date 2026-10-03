@@ -106,7 +106,7 @@ SEARCH_TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="search_outline",
-        description="分页搜索大纲节点或指定节点的直接子节点；摘要和关联角色均有显式范围/分页。",
+        description="分页搜索大纲节点或指定节点的直接子节点；摘要和关联角色均有显式范围/分页。容量不足时先设 limit=1，再缩小 summary_chars。",
         input_schema={
             "query": {
                 "type": "string",
@@ -121,7 +121,7 @@ SEARCH_TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 2,
-                "description": "本页节点数，默认/最大2",
+                "description": "本页节点数，默认1、最大2；本机模型容量紧张时使用1",
             },
             "cursor": {
                 "type": "integer",

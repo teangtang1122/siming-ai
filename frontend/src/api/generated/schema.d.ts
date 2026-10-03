@@ -1143,6 +1143,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/local-models/catalog/{model_key}/register-file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register Existing Catalog Model */
+        post: operations["register_existing_catalog_model_api_v1_local_models_catalog__model_key__register_file_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/local-models/custom/download": {
         parameters: {
             query?: never;
@@ -1205,6 +1222,23 @@ export interface paths {
         get: operations["downloads_api_v1_local_models_downloads_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/downloads/{task_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Model Download */
+        post: operations["cancel_model_download_api_v1_local_models_downloads__task_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1350,6 +1384,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/local-models/runtime/pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pick Runtime Executable */
+        post: operations["pick_runtime_executable_api_v1_local_models_runtime_pick_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/runtime/register-file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register Runtime Executable */
+        post: operations["register_runtime_executable_api_v1_local_models_runtime_register_file_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/runtime/settings/{model_key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Runtime Settings */
+        get: operations["get_runtime_settings_api_v1_local_models_runtime_settings__model_key__get"];
+        /** Put Runtime Settings */
+        put: operations["put_runtime_settings_api_v1_local_models_runtime_settings__model_key__put"];
+        post?: never;
+        /** Restore Runtime Settings */
+        delete: operations["restore_runtime_settings_api_v1_local_models_runtime_settings__model_key__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/local-models/runtime/start": {
         parameters: {
             query?: never;
@@ -1378,6 +1465,23 @@ export interface paths {
         put?: never;
         /** Stop Runtime */
         post: operations["stop_runtime_api_v1_local_models_runtime_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-models/runtime/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Runtime Usage */
+        put: operations["set_runtime_usage_api_v1_local_models_runtime_usage_put"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6272,6 +6376,11 @@ export interface components {
              */
             user_instruction: string;
         };
+        /** CatalogModelFileRequest */
+        CatalogModelFileRequest: {
+            /** File Path */
+            file_path: string;
+        };
         /** CatalogingCandidateBulkUpdate */
         CatalogingCandidateBulkUpdate: {
             /** Candidate Ids */
@@ -7160,6 +7269,120 @@ export interface components {
              */
             strategy: "merge" | "overwrite_unconfirmed" | "skip_conflicts";
         };
+        /** CreationPatchOperation */
+        CreationPatchOperation: ({
+            /**
+             * Action
+             * @description 司命 Patch 动作。向数组末尾增加元素时使用 append，并把 path 指向数组本身；也接受标准 JSON Patch 的 op 字段。
+             * @enum {string}
+             */
+            action?: "set" | "replace" | "append" | "remove" | "resize";
+            /**
+             * Fill Value
+             * @description resize 扩展数组时使用的填充值
+             */
+            fill_value?: unknown;
+            /**
+             * Op
+             * @description 兼容标准 JSON Patch。add 到 /- 会自动转换为 append；add 到对象字段会转换为 set。action 与 op 二选一。
+             * @enum {string}
+             */
+            op?: "add" | "replace" | "remove";
+            /**
+             * Path
+             * @description 必填 JSON Pointer；完整阶段用 /，局部字段如 /special_requirements 或 /volumes/0/title
+             */
+            path: string;
+            /**
+             * Target Count
+             * @description resize 的目标数组长度
+             */
+            target_count?: number;
+            /**
+             * Value
+             * @description set、replace、append 或 add 写入的值
+             */
+            value?: unknown;
+        } & (unknown & unknown & unknown)) & (unknown | unknown);
+        /** CreationSessionFormPatch */
+        CreationSessionFormPatch: {
+            /** Author Overrides */
+            author_overrides?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Avoid
+             * @description 作者明确禁止的全书内容或写法；不是设定暂存区
+             */
+            avoid?: string[];
+            /**
+             * Brief
+             * @description 仅在作者明确给出或修改整书意向时填写；不转存设定细节
+             * @default
+             */
+            brief: string;
+            /**
+             * Genre
+             * @description 作品题材，例如玄幻
+             * @default
+             */
+            genre: string;
+            /**
+             * Pacing
+             * @default
+             */
+            pacing: string;
+            /**
+             * Platform
+             * @default
+             */
+            platform: string;
+            /**
+             * Preset Id
+             * @default
+             */
+            preset_id: string;
+            /**
+             * Special Requirements
+             * @description 仅作者额外指定的全书硬约束；不复述 brief 中的书名、角色、世界或剧情，没有则填空数组
+             */
+            special_requirements?: string[];
+            /**
+             * Story Structure
+             * @default
+             */
+            story_structure: string;
+            /**
+             * Target Audience
+             * @default
+             */
+            target_audience: string;
+            /**
+             * Target Chapters
+             * @default 240
+             */
+            target_chapters: number;
+            /**
+             * Target Words
+             * @default 600000
+             */
+            target_words: number;
+            /**
+             * Theme Id
+             * @default
+             */
+            theme_id: string;
+            /**
+             * World Tone
+             * @default
+             */
+            world_tone: string;
+            /**
+             * Writing Style
+             * @default
+             */
+            writing_style: string;
+        };
         /** CustomModelDownloadRequest */
         CustomModelDownloadRequest: {
             /** Context Length */
@@ -7925,9 +8148,7 @@ export interface components {
              */
             allow_incomplete: boolean;
             /** Changes */
-            changes: {
-                [key: string]: unknown;
-            }[];
+            changes: components["schemas"]["CreationPatchOperation"][];
             /** Expected Revision */
             expected_revision: number;
             /**
@@ -7975,9 +8196,7 @@ export interface components {
         /** NovelCreationEntityPatchRequest */
         NovelCreationEntityPatchRequest: {
             /** Changes */
-            changes: {
-                [key: string]: unknown;
-            }[];
+            changes: components["schemas"]["CreationPatchOperation"][];
             /** Expected Revision */
             expected_revision: number;
         };
@@ -8065,10 +8284,7 @@ export interface components {
             creation_mode?: ("author_led" | "explore") | null;
             /** Expected Revision */
             expected_revision?: number | null;
-            /** Form */
-            form?: {
-                [key: string]: unknown;
-            } | null;
+            form?: components["schemas"]["CreationSessionFormPatch"] | null;
             /** Locked Requirements */
             locked_requirements?: string[] | null;
             /** Quick Mode */
@@ -9221,6 +9437,66 @@ export interface components {
             /** Training */
             training: unknown;
         };
+        /** RuntimeExecutableRequest */
+        RuntimeExecutableRequest: {
+            /** File Path */
+            file_path: string;
+        };
+        /**
+         * RuntimeLaunchSettings
+         * @description Validated llama-server options exposed by the desktop model center.
+         */
+        RuntimeLaunchSettings: {
+            /**
+             * Cache Ram Mb
+             * @default 0
+             */
+            cache_ram_mb: number;
+            /** Context Length */
+            context_length: number;
+            /**
+             * Fit
+             * @default auto
+             * @enum {string}
+             */
+            fit: "auto" | "on" | "off";
+            /**
+             * Flash Attention
+             * @default auto
+             * @enum {string}
+             */
+            flash_attention: "auto" | "on" | "off";
+            /**
+             * Gpu Layers
+             * @default 99
+             */
+            gpu_layers: number;
+            /**
+             * Kv Cache Type
+             * @default f16
+             * @enum {string}
+             */
+            kv_cache_type: "f16" | "q8_0" | "q4_0";
+            /** Min P */
+            min_p?: number | null;
+            /**
+             * Mtp Draft Tokens
+             * @default 0
+             */
+            mtp_draft_tokens: number;
+            /** Reasoning Effort */
+            reasoning_effort?: ("low" | "medium" | "high") | null;
+            /** Repeat Penalty */
+            repeat_penalty?: number | null;
+            /** Temperature */
+            temperature?: number | null;
+            /** Threads */
+            threads?: number | null;
+            /** Top K */
+            top_k?: number | null;
+            /** Top P */
+            top_p?: number | null;
+        };
         /** RuntimeStartRequest */
         RuntimeStartRequest: {
             /** Context Length */
@@ -9235,6 +9511,11 @@ export interface components {
              * @enum {string}
              */
             task_type: "assistant" | "planning" | "cataloging" | "writing" | "evaluation" | "deconstruct";
+        };
+        /** RuntimeUsageRequest */
+        RuntimeUsageRequest: {
+            /** Enabled */
+            enabled: boolean;
         };
         /** SaveImportedFileRequest */
         SaveImportedFileRequest: {
@@ -9883,7 +10164,7 @@ export interface components {
             /**
              * Outline Batch Count
              * @description Preferred number of consecutive outline chapters to plan
-             * @default 3
+             * @default 1
              */
             outline_batch_count: number;
             /** @description Typed data-only reference material for the current exact author message */
@@ -12299,6 +12580,41 @@ export interface operations {
             };
         };
     };
+    register_existing_catalog_model_api_v1_local_models_catalog__model_key__register_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CatalogModelFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_custom_model_api_v1_local_models_custom_download_post: {
         parameters: {
             query?: never;
@@ -12401,6 +12717,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    cancel_model_download_api_v1_local_models_downloads__task_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -12626,6 +12973,156 @@ export interface operations {
             };
         };
     };
+    pick_runtime_executable_api_v1_local_models_runtime_pick_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    register_runtime_executable_api_v1_local_models_runtime_register_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeExecutableRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_runtime_settings_api_v1_local_models_runtime_settings__model_key__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_runtime_settings_api_v1_local_models_runtime_settings__model_key__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeLaunchSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_runtime_settings_api_v1_local_models_runtime_settings__model_key__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     start_runtime_api_v1_local_models_runtime_start_post: {
         parameters: {
             query?: never;
@@ -12675,6 +13172,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    set_runtime_usage_api_v1_local_models_runtime_usage_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeUsageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -9,7 +9,7 @@ from .chapters import (
 from .character_writer import character_writer
 from .characters import create_character, delete_character, update_character
 from .character_merge import list_duplicate_characters, merge_duplicate_characters, preview_character_merge
-from .outline import create_outline_node, create_outline_nodes, delete_outline_node, update_outline_node
+from .outline import delete_outline_node, update_outline_node
 from .outline_writer import outline_writer
 from .plot import design_plot
 from .relationships import create_relationship, delete_relationship, update_relationship
@@ -163,8 +163,6 @@ __all__ = [
     "list_duplicate_characters",
     "preview_character_merge",
     "merge_duplicate_characters",
-    "create_outline_node",
-    "create_outline_nodes",
     "update_outline_node",
     "delete_outline_node",
     "create_relationship",

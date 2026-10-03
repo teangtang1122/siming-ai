@@ -53,28 +53,82 @@ class MobileCatalogingInstrumentedTest {
             })))
         })
     }
-    private fun scripted(db: SimingDatabase, intercept: suspend (Int) -> Unit = {}): MobileCataloging {
+    private fun scripted(
+        db: SimingDatabase, splitBatches: Boolean = false, denyFirstBatch: Boolean = false,
+        intercept: suspend (Int) -> Unit = {},
+    ): MobileCataloging {
         var step = 0
-        val batches = listOf(listOf(fixture.getValue("candidates").jsonArray.first())) + fixture.getValue("candidates").jsonArray.drop(1).chunked(3)
+        val candidates = fixture.getValue("candidates").jsonArray
+        val batches = candidates.drop(1).groupBy {
+            val candidate = it.jsonObject
+            val type = candidate.text("type")
+            if (type == "outline_create" || type == "outline_update") "${type}_${candidate.text("node_type")}" else type
+        }.toList()
+        val writes = batches.flatMap { (kind, rows) ->
+            listOf(kind to emptyList<JsonElement>()) +
+                (if (splitBatches) rows.map { listOf(it) } else listOf(rows)).map { "" to it }
+        }
         return MobileCataloging(db, contract, "mock/deepseek-contract") { messages, tools, _ ->
-            val index = step++
+            val index = step++ - if (denyFirstBatch) 1 else 0
             intercept(index)
             val jobId = Json.parseToJsonElement(messages[1].text("content")).jsonObject.text("job_id")
             when (index) {
-                0 -> {
-                    assertEquals(listOf("set_tool_categories"), tools.map { it.jsonObject.obj("function").text("name") })
-                    call("set_tool_categories", buildJsonObject { put("enabled_categories", jsonStrings(listOf("cataloging"))) })
+                -1 -> {
+                    val first = call("invented_cataloging_save", buildJsonObject {})
+                    val read = call("get_next_external_cataloging_chapter", buildJsonObject { put("job_id", jobId) })
+                    DirectAgentTurn("", "", first.toolCalls + read.toolCalls, JsonObject(first.assistantMessage +
+                        ("tool_calls" to JsonArray(first.assistantMessage.getValue("tool_calls").jsonArray +
+                            read.assistantMessage.getValue("tool_calls").jsonArray))))
                 }
-                1 -> call("get_next_external_cataloging_chapter", buildJsonObject { put("job_id", jobId); put("include_content", true) })
-                else -> {
-                    assertTrue("unexpected model call after finalize: ${messages.lastOrNull()}", index - 2 < batches.size)
+                0 -> {
+                    if (denyFirstBatch) {
+                        val denied = messages.takeLast(2).map { Json.parseToJsonElement(it.text("content")).jsonObject }
+                        assertTrue(denied.all { it.obj("data")["executed"] == JsonPrimitive(false) })
+                        assertTrue(denied.all { "save_external_cataloging_candidates" in it.obj("data").strings("available_tools") })
+                        assertTrue(Json.parseToJsonElement(db.dao().catalogingRun(jobId)!!.candidatesJson).jsonArray.isEmpty())
+                    }
+                    assertEquals(4, tools.size)
+                    assertFalse(tools.any { it.jsonObject.obj("function").text("name") == "set_tool_categories" })
+                    call("get_next_external_cataloging_chapter", buildJsonObject { put("job_id", jobId); put("include_content", true) })
+                }
+                1 -> call("read_cataloging_archive", buildJsonObject { put("kind", "character") })
+                2 -> {
+                    val item = tools.first { it.jsonObject.obj("function").text("name") == "save_external_cataloging_candidates" }
+                        .jsonObject.obj("function").obj("parameters").obj("properties").obj("candidates").obj("items")
+                    assertEquals(listOf("chapter_summary"), item.obj("properties").obj("type").strings("enum"))
                     call("save_external_cataloging_candidates", buildJsonObject {
-                        put("job_id", jobId); put("chapter_id", chapterId); put("candidates", JsonArray(batches[index - 2]))
-                        put("finalize", index - 2 == batches.lastIndex)
+                        put("job_id", jobId); put("chapter_id", chapterId)
+                        put("candidates", JsonArray(listOf(candidates.first()))); put("finalize", false)
+                    })
+                }
+                else -> {
+                    val phase = index - 3
+                    assertTrue("unexpected model call after finalize: ${messages.lastOrNull()}", phase < writes.size)
+                    val (kind, rows) = writes[phase]
+                    if (kind.isNotBlank()) call("select_cataloging_candidate_types", buildJsonObject {
+                        put("types", jsonStrings(listOf(kind)))
+                    }) else call("save_external_cataloging_candidates", buildJsonObject {
+                        put("job_id", jobId); put("chapter_id", chapterId); put("candidates", JsonArray(rows))
+                        put("finalize", phase == writes.lastIndex)
                     })
                 }
             }
         }
+    }
+
+    @Test fun independentPhoneKeepsTypeAcrossSplitBatchesAndCorrectsUnopenedBatch() = runBlocking {
+        val db = database()
+        try {
+            seed(db)
+            assertNull(db.dao().connection())
+            val runtime = scripted(db, splitBatches = true, denyFirstBatch = true)
+            assertEquals("completed", runtime.run(projectId, listOf(chapterId)) { _, _ -> }.status)
+            val run = db.dao().catalogingRuns(projectId).single()
+            assertEquals("completed", run.status)
+            assertEquals("pending", run.syncState)
+            assertNotNull(run.changesJson)
+            assertTrue(db.dao().projectSnapshot(projectId).any { it.entityType == "summary" })
+        } finally { db.close() }
     }
 
     @Test fun independentPhoneCommitsOnceAndUnlocksNextChapterWithNoGateway() = runBlocking {

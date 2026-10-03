@@ -21,8 +21,6 @@ WRITE_PROJECT_DATA = {
     "create_character",
     "update_character",
     "delete_character",
-    "create_outline_node",
-    "create_outline_nodes",
     "update_outline_node",
     "delete_outline_node",
     "create_worldbuilding_entry",

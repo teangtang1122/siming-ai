@@ -52,7 +52,7 @@ def test_portable_writing_policy_keeps_pc_contract_and_budget() -> None:
     assert selection["mode"] == "model_retrieval_then_exact_selection"
     assert selection["hard_source_count_limit"] is None
     assert selection["exact_source_content_limit_chars"] is None
-    assert selection["search_excerpt_chars"] == 600
+    assert selection["search_excerpt_chars"] == 160
     assert selection["search_page_limit"] == 10
     assert set(selection["search_source_types"]) == {
         "chapter",

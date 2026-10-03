@@ -124,39 +124,39 @@ def test_terminal_draft_does_not_hide_unrelated_failed_operation(tool, status):
     assert reply.count("notify_editor") == 1
 
 
-def test_recovered_short_draft_checks_are_presented_as_length_expansion():
-    short_draft_checks = [
-        {
-            "tool": "save_external_chapter_draft",
-            "status": "needs_confirmation",
-            "remediation": {
-                "code": "draft_below_minimum",
-                "actual_han_characters": count,
-                "minimum_han_characters": 3_400,
-            },
-        }
-        for count in (2_215, 2_631, 3_068, 3_322)
+def test_terminal_draft_resolves_retried_read_capacity_denials():
+    denied = [
+        {"tool": tool, "status": "error", "remediation": {
+            "code": "tool_result_batch_over_capacity", "retryable": True,
+        }}
+        for tool in ("list_chapters", "search_outline_tree")
     ]
-    applied_actions = [
-        {
-            "tool": "save_external_chapter_draft",
-            "status": "ok",
-            "data": {
-                "draft_id": "draft-39",
-                "draft_status": "pending",
-                "context_manifest_id": "manifest-39",
-            },
-        }
-    ]
+    retried = [{"tool": log["tool"], "status": "ok"} for log in denied]
+    draft = {"tool": "chapter_writer", "status": "ok", "data": {
+        "draft_id": "draft-12", "draft_status": "pending", "context_manifest_id": "manifest-12",
+    }}
+    logs = [*denied, *retried, draft]
 
-    resolution = _resolve_workspace_failures(short_draft_checks, applied_actions)
-    reply = _append_workspace_failure_notice("章节草稿已生成。", resolution)
+    resolution = _resolve_workspace_failures(logs, [draft])
 
+    assert resolution.recovered == denied
     assert resolution.unresolved == []
-    assert resolution.recovered == short_draft_checks
-    assert "经过 4 次篇幅校验与补写" in reply
-    assert "最终章节草稿已达到要求并成功暂存" in reply
-    assert "前序工具调用未通过" not in reply
+    assert _workspace_outcome("", applied_actions=[draft], tool_logs=logs,
+                              searched_context=[], failed_logs=resolution.unresolved) == "completed_with_tools"
+
+
+def test_read_denial_remains_unresolved_without_successful_retry():
+    denied = {"tool": "list_chapters", "status": "error", "remediation": {
+        "code": "tool_result_batch_over_capacity", "retryable": True,
+    }}
+    draft = {"tool": "chapter_writer", "status": "ok", "data": {
+        "draft_id": "draft-12", "draft_status": "pending", "context_manifest_id": "manifest-12",
+    }}
+
+    resolution = _resolve_workspace_failures([denied, draft], [draft])
+
+    assert resolution.unresolved == [denied]
+    assert resolution.recovered == []
 
 
 @pytest.mark.parametrize("action", [

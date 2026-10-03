@@ -99,7 +99,7 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertIn("chapter_writer", result)
 
-    def test_chapter_messages_use_quality_word_target(self):
+    def test_chapter_messages_follow_structured_length_target(self):
         messages = compose_chapter_writer_messages(
             pack=CQ,
             style_context="第三人称",
@@ -107,11 +107,14 @@ class TestPromptBuilder(unittest.TestCase):
             world_context="现实都市",
             character_profiles="林舟",
             recent_summaries="无",
+            minimum_han_characters=2000,
         )
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "system")
         self.assertEqual(messages[1]["role"], "user")
-        self.assertIn("1800-2500", messages[1]["content"])
+        self.assertIn("本次篇幅参考为 2000 个汉字", messages[1]["content"])
+        self.assertNotIn("2200", messages[1]["content"])
+        self.assertNotIn("1800-2500", messages[1]["content"])
 
 
 if __name__ == "__main__":

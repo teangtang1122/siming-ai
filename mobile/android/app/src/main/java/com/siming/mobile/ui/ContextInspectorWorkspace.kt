@@ -16,9 +16,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.siming.mobile.data.observability.TraceInspectionRepository
 import com.siming.mobile.data.observability.text
+import com.siming.mobile.data.observability.traceSpans
+import com.siming.mobile.data.observability.traceDuration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 
@@ -121,7 +124,7 @@ private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlati
         }
         if (loading || actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (selected != null) key(remote, selected!!.text("id")) {
-            TraceDetails(repository, remote, selected!!.text("id"), refresh)
+            TraceDetails(repository, remote, selected!!, refresh)
         } else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (traces.isEmpty() && !loading) item { Text(if (!showAll && (kind != null || correlationId != null)) "本次筛选暂无记录，可查看全部调用。" else "还没有调用记录。先开启完整记录，再去立项或与助手对话。") }
             items(traces, key = { it.text("id") }) { trace ->
@@ -129,7 +132,7 @@ private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlati
                     Column(Modifier.padding(12.dp)) {
                         Text(when (trace.text("scope_kind")) { "creation_session" -> "新书立项"; "project_conversation" -> "作品助手"; "system_conversation" -> "系统助手"; "operation" -> "后台任务"; else -> trace.text("scope_kind") })
                         Text(java.time.Instant.ofEpochMilli((trace["started"]!!.jsonPrimitive.double * 1000).toLong()).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString())
-                        Text("${trace.text("status")} · ${trace.text("mode")} · 采集 ${trace.text("capture_status")}")
+                        Text("${traceStatusName(trace.text("status"))} · ${trace.text("mode")} · 采集 ${traceStatusName(trace.text("capture_status"))}")
                         Text(trace.text("id").take(12), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall)
                     }
                 }
@@ -151,7 +154,9 @@ private fun ContextInspectorWorkspace(kind: String?, scopeId: String?, correlati
 }
 
 @Composable
-private fun ColumnScope.TraceDetails(repository: TraceInspectionRepository, remote: Boolean, id: String, refresh: Int) {
+private fun ColumnScope.TraceDetails(repository: TraceInspectionRepository, remote: Boolean, initial: JsonObject, refresh: Int) {
+    val id = initial.text("id")
+    var trace by remember { mutableStateOf(initial) }
     var events by remember { mutableStateOf(emptyList<JsonObject>()) }
     var after by remember { mutableIntStateOf(0) }
     var more by remember { mutableStateOf(false) }
@@ -163,7 +168,16 @@ private fun ColumnScope.TraceDetails(repository: TraceInspectionRepository, remo
     var nextOffset by remember { mutableIntStateOf(0) }
     LaunchedEffect(id, remote, after, refresh) {
         error = ""
-        try { val page = repository.events(remote, id, after); events = if (after == 0) page else (events + page).distinctBy { it.text("event_id") }; more = page.size == 100 }
+        try {
+            do {
+                trace = repository.trace(remote, id)
+                val page = repository.events(remote, id, after)
+                events = if (after == 0) page else (events + page).distinctBy { it.text("event_id") }
+                more = page.size == 100
+                if (trace["finished"] != JsonNull) break
+                delay(2_000)
+            } while (true)
+        }
         catch (failure: Exception) { if (failure is CancellationException) throw failure; error = failure.message.orEmpty() }
     }
     LaunchedEffect(id, remote, selected, offset) {
@@ -174,6 +188,8 @@ private fun ColumnScope.TraceDetails(repository: TraceInspectionRepository, remo
         catch (failure: Exception) { if (failure is CancellationException) throw failure; error = failure.message.orEmpty() }
     }
     if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+    val spans = traceSpans(events, trace, !more && error.isBlank())
+    val startedIds = events.filter { it.text("event_type") == "span_started" }.map { it.getValue("data").jsonObject.text("span_id") }.toSet()
     LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(events, key = { it.text("event_id") }) { event ->
             val data = event["data"]!!.jsonObject
@@ -196,8 +212,12 @@ private fun ColumnScope.TraceDetails(repository: TraceInspectionRepository, remo
             } else if (event.text("event_type") == "usage") {
                 Text("提供商实报用量：${data["usage"]}；未返回的字段未知", style = MaterialTheme.typography.bodySmall)
             } else if (event.text("event_type") in setOf("span_started", "span_finished", "http_response")) {
-                Text("#${event["sequence"]} ${data.text("kind")} ${data.text("label")} ${traceStatusName(data.text("status"))} ${data.text("status_code")}", style = MaterialTheme.typography.labelMedium)
-                if (data.text("parent_span_id").isNotBlank()) Text("↳ 上级步骤 ${data.text("parent_span_id").take(8)}", style = MaterialTheme.typography.labelSmall)
+                val spanId = data.text("span_id").ifBlank { event.text("span_id") }
+                if (event.text("event_type") == "span_started" || spanId !in startedIds) {
+                    val span = spans[spanId] ?: data
+                    Text("#${event["sequence"]} ${span.text("kind")} ${span.text("label")} ${traceStatusName(span.text("status"))} · ${traceDuration(span)} ${span.text("status_code")}", style = MaterialTheme.typography.labelMedium)
+                    if (span.text("parent_span_id").isNotBlank()) Text("↳ 上级步骤 ${span.text("parent_span_id").take(8)}", style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
         if (more) item { TextButton(onClick = { after = events.last()["sequence"]!!.jsonPrimitive.int }) { Text("加载后续步骤") } }
@@ -206,4 +226,4 @@ private fun ColumnScope.TraceDetails(repository: TraceInspectionRepository, remo
 
 private fun traceLayerName(layer: String) = mapOf("context_frame" to "上下文帧", "logical_request" to "应用请求", "provider_request" to "实际 API 请求", "provider_response" to "提供商返回", "adapter_output" to "适配后输出", "tool_arguments" to "工具参数", "tool_receipt" to "执行器回执", "model_visible_tool_result" to "模型可见结果", "cli_input" to "CLI 输入", "cli_event" to "CLI 事件")[layer] ?: layer
 
-private fun traceStatusName(status: String) = mapOf("running" to "运行中", "completed" to "已完成", "error" to "失败", "cancelled" to "已取消", "partial" to "部分记录", "interrupted" to "采集中断", "recorded" to "已记录")[status] ?: status
+private fun traceStatusName(status: String) = mapOf("running" to "运行中", "completed" to "已完成", "error" to "失败", "cancelled" to "已取消", "partial" to "部分记录", "interrupted" to "采集中断", "recorded" to "已记录", "incomplete" to "缺少结束记录", "pending_record" to "待加载后续记录")[status] ?: status

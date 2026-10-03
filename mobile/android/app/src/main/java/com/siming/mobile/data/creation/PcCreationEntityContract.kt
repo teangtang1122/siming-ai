@@ -1,6 +1,7 @@
 package com.siming.mobile.data.creation
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -29,6 +30,27 @@ internal class PcCreationEntityContract(creation: JsonObject) {
 
     fun output(artifact: String, entityType: String): JsonObject? = (outputs[entityType] as? JsonObject)
         ?.takeIf { it.string("artifact") == artifact }
+
+    fun validateLocks(stage: String, data: JsonObject, baseline: JsonObject, paths: JsonArray) {
+        fun read(root: JsonElement, path: String): JsonElement? {
+            var cursor: JsonElement? = root
+            val parts = if (path in setOf("", "/")) emptyList() else path.trimStart('/').split('/')
+            parts.forEach { part ->
+                val key = part.replace("~1", "/").replace("~0", "~")
+                cursor = when (val value = cursor) {
+                    is JsonObject -> value[key]
+                    is JsonArray -> key.toIntOrNull()?.let(value::getOrNull)
+                    else -> null
+                }
+            }
+            return cursor
+        }
+        val reason = if (stage == "opening_outline") "creation_opening_locked_changed" else "creation_artifact_locked_changed"
+        paths.forEach { raw ->
+            val path = (raw as JsonPrimitive).content
+            if (read(data, path) != read(baseline, path)) reject(reason, path)
+        }
+    }
 
     fun entityType(kind: String, row: JsonObject): String = when {
         kind != "place" -> kind

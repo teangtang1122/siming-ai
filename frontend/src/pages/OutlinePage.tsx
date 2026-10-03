@@ -263,6 +263,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
   const resizeStartX = useRef(0)
   const resizeStartWidth = useRef(panelWidth)
   const [creating, setCreating] = useState(false)
+  const [editingFormal, setEditingFormal] = useState(false)
   const creatingRef = useRef(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -278,6 +279,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     generatedOutlineDraft?.projectId === projectId
     && generatedOutlineDraft.status === 'pending'
   ) ? generatedOutlineDraft : null
+  const reviewingDraft = Boolean(pendingOutlineDraft && !editingFormal)
   const {
     saveStatus,
     saveError,
@@ -287,6 +289,10 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     markSaveFailed,
     confirmLeave,
   } = useUnsavedGuard()
+  const onDraftDirtyChange = useCallback((dirty: boolean) => {
+    if (dirty) markDirty()
+    else markSaved()
+  }, [markDirty, markSaved])
 
   const selectedNode = useMemo(
     () => flat.find((node) => node.id === selectedId) || null,
@@ -447,7 +453,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
       const dataNode: DataNode = {
         key: `outline-draft-${pendingOutlineDraft.draftId}-${index}`,
         className: 'outline-tree-draft-node',
-        selectable: false,
+        selectable: true,
         title: (
           <div className="outline-tree-title outline-tree-title-draft">
             <span className="outline-tree-main">
@@ -455,7 +461,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               <span title={node.title}>{node.title}</span>
             </span>
             <span className="outline-tree-meta">
-              <Tag color="gold">未保存</Tag>
+              <Tag color="gold">待确认</Tag>
             </span>
           </div>
         ),
@@ -491,6 +497,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
     confirmLeave(() => {
       saveRequestGate.current.invalidate()
       setSaving(false)
+      setEditingFormal(true)
       creatingRef.current = true
       selectedIdRef.current = null
       setCreating(true)
@@ -538,7 +545,9 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         status: values.status,
         sort_order: Number(values.sort_order || 0),
         character_ids: values.character_ids || [],
-        metadata: values.metadata || {},
+        ...(values.node_type === 'section' ? {
+          metadata: { ...selectedNode?.metadata, ...values.metadata },
+        } : {}),
       }
 
       if (targetCreating) {
@@ -738,19 +747,26 @@ function OutlinePage({ projectId }: OutlinePageProps) {
           ) : (
             <Tree
               blockNode
-              draggable
+              draggable={{ nodeDraggable: (node) => !String(node.key).startsWith('outline-draft-') }}
               treeData={treeData}
-              selectedKeys={selectedId ? [selectedId] : []}
+              selectedKeys={reviewingDraft && pendingOutlineDraft
+                ? [`outline-draft-${pendingOutlineDraft.draftId}-0`]
+                : selectedId ? [selectedId] : []}
               expandedKeys={visibleExpandedKeys}
               onExpand={(keys) => setExpandedKeys(keys.map(String))}
               onSelect={(keys) => {
+                if (keys.length === 0) return
                 confirmLeave(() => {
                   saveRequestGate.current.invalidate()
                   setSaving(false)
                   creatingRef.current = false
-                  selectedIdRef.current = keys.length > 0 ? String(keys[0]) : null
+                  const key = String(keys[0])
+                  const draftSelected = key.startsWith('outline-draft-')
+                  setEditingFormal(!draftSelected)
+                  selectedIdRef.current = draftSelected ? null : key
                   setCreating(false)
                   setSelectedId(selectedIdRef.current)
+                  markSaved()
                 })
               }}
               onDrop={handleDrop}
@@ -789,6 +805,15 @@ function OutlinePage({ projectId }: OutlinePageProps) {
         </aside>
 
         <main className="outline-editor">
+          {reviewingDraft && pendingOutlineDraft ? (
+            <OutlineDraftReviewPanel
+              key={pendingOutlineDraft.draftId}
+              projectId={projectId}
+              draft={pendingOutlineDraft}
+              onDirtyChange={onDraftDirtyChange}
+              onFormalOutlineChanged={fetchOutline}
+            />
+          ) : (<>
           <div className="outline-editor-head">
             <div>
               <Title level={4} style={{ margin: 0 }}>
@@ -822,21 +847,11 @@ function OutlinePage({ projectId }: OutlinePageProps) {
                   </Button>
                 </Popconfirm>
               )}
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => form.submit()}>
-                保存
+              <Button type="primary" icon={<SaveOutlined />} disabled={!creating && !selectedNode} loading={saving} onClick={() => form.submit()}>
+                保存正式节点
               </Button>
             </Space>
           </div>
-
-          {pendingOutlineDraft && (
-            <div style={{ marginBottom: 16 }}>
-              <OutlineDraftReviewPanel
-                projectId={projectId}
-                draft={pendingOutlineDraft}
-                onFormalOutlineChanged={fetchOutline}
-              />
-            </div>
-          )}
 
           {!creating && !selectedNode && tree.length === 0 ? (
             <Alert type="info" showIcon message="先创建一个大纲节点" />
@@ -922,7 +937,7 @@ function OutlinePage({ projectId }: OutlinePageProps) {
               )}
             </Form>
           )}
-
+          </>)}
         </main>
 
       </div>

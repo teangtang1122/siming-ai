@@ -192,7 +192,6 @@ def query_creation_entities(
 ) -> dict[str, Any]:
     """Fence, rank and paginate entity summaries for model-controlled retrieval."""
 
-    ensure_creation_entities(session)
     rows = [
         item
         for item in session.entities
@@ -281,24 +280,6 @@ def sync_creation_entities(
     return projected
 
 
-def ensure_creation_entities(session: NovelCreationSession) -> int:
-    draft = session.draft_json if isinstance(session.draft_json, dict) else {}
-    stages = draft.get("stages") if isinstance(draft.get("stages"), dict) else {}
-    count = 0
-    for artifact in ENTITY_COLLECTIONS:
-        state = stages.get(artifact) if isinstance(stages.get(artifact), dict) else {}
-        data = state.get("data")
-        if isinstance(data, dict):
-            count += len(sync_creation_entities(
-                session,
-                artifact,
-                data,
-                revision=int(session.revision or 0),
-                source=_text(state.get("source")) or "legacy_projection",
-            ))
-    return count
-
-
 def list_creation_entities(
     session: NovelCreationSession,
     *,
@@ -306,7 +287,6 @@ def list_creation_entities(
     entity_type: str | None = None,
     include_deleted: bool = False,
 ) -> list[dict[str, Any]]:
-    ensure_creation_entities(session)
     rows = [
         item
         for item in session.entities
@@ -486,7 +466,6 @@ def delete_creation_entity(
 
 __all__ = [
     "delete_creation_entity",
-    "ensure_creation_entities",
     "get_creation_entity",
     "list_creation_entities",
     "patch_creation_entity",

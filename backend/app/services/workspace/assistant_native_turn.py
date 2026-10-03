@@ -11,6 +11,7 @@ from typing import Any
 
 from app.architecture.tool_categories import TOOL_CATEGORY_CONTROLLER
 from app.architecture.tool_definition import ToolDef
+from app.architecture.uow import release_savepoint
 from app.core.exceptions import LLMError
 from app.services.conversation_context import (
     ConversationContextError,
@@ -21,7 +22,10 @@ from app.services.conversation_context import (
 )
 from app.services.workspace.assistant_public_errors import safe_tool_execution_failure
 from app.services.workspace.assistant_public_projection import public_tool_log
-from app.services.workspace.assistant_turn_state import WorkspaceAssistantTurnState
+from app.services.workspace.assistant_turn_state import (
+    WorkspaceAssistantTurnState,
+    WorkspaceTurnSuperseded,
+)
 from app.services.workspace.assistant_turn_support import workspace_category_result
 from app.services.workspace.native_tool_batch import (
     MAX_NATIVE_TOOL_NAME_REJECTIONS,
@@ -53,6 +57,18 @@ _CATEGORY_DEFINITION = ToolDef(
 )
 logger = logging.getLogger(__name__)
 
+# These handlers use the current SQL transaction only. A savepoint lets the
+# runtime size their complete model-visible result before admitting a native
+# tool transaction; a rejected batch leaves no manifest or evidence changes.
+_EXACT_ADMISSION_READS = frozenset({
+    "get_project_info",
+    "list_chapters", "search_chapters", "search_outline", "search_outline_tree",
+    "list_characters", "search_characters", "list_worldbuilding", "search_worldbuilding",
+    "search_context",
+    "prepare_task_context", "prepare_external_writing_context",
+    "search_task_context", "submit_context_evidence",
+})
+
 
 @dataclass
 class NativeStepCapture:
@@ -72,6 +88,7 @@ class WorkspaceNativeTurn:
         self.state = state
         self.gateway = gateway
         self.registry = registry
+        self._staged_results: dict[str, tuple[dict[str, Any], str, dict[str, Any] | None]] = {}
 
     async def run(
         self,
@@ -110,7 +127,7 @@ class WorkspaceNativeTurn:
             ):
                 yield event
             return
-        transaction, admission_error = self._admit(capture, tool_calls, iteration)
+        transaction, admission_error = await self._admit(capture, tool_calls, iteration)
         if admission_error is not None:
             async for event in self._persist_batch_denial(
                 capture, tool_calls, transaction, admission_error, iteration
@@ -274,7 +291,7 @@ class WorkspaceNativeTurn:
             ) from exc
         return list(validated.calls)
 
-    def _admit(
+    async def _admit(
         self,
         capture: NativeStepCapture,
         calls: list[dict[str, Any]],
@@ -285,21 +302,101 @@ class WorkspaceNativeTurn:
         names = [str(call["function"]["name"]) for call in calls]
         transaction = self._transaction(capture, calls, iteration)
         error: ToolResultBatchOverCapacity | None = None
+        staged_savepoint: Any | None = None
+        self._staged_results.clear()
         try:
             declared = declared_model_results_for_tool_names(names, resolve_tool=self.registry.get)
+            result_contents = None
+            if all(name in _EXACT_ADMISSION_READS for name in names):
+                # sqlite3 defers BEGIN even when SQLAlchemy has opened a
+                # logical transaction. Releasing its first SAVEPOINT would
+                # otherwise commit staged manifest changes on admission.
+                connection = self.state.db.connection()
+                raw_connection = connection.connection.driver_connection
+                if connection.dialect.name == "sqlite" and not raw_connection.in_transaction:
+                    connection.exec_driver_sql("BEGIN")
+                staged_savepoint = self.state.db.begin_nested()
+                contents: list[str] = []
+                for call, name in zip(calls, names, strict=True):
+                    arguments = json.loads(call["function"]["arguments"])
+                    call_savepoint = self.state.db.begin_nested()
+                    try:
+                        self.state.require_current_run()
+                        result = await self.state.execute_action(
+                            self.state.db, self.state.project_id,
+                            {"tool": name, "arguments": arguments},
+                            model=self.state.payload.model,
+                            authorized_tool_names=self.state.workspace_tool_name_set,
+                        )
+                        content, delivery_error = self._project_result(
+                            name, result, "staged", arguments,
+                        )
+                        if delivery_error:
+                            call_savepoint.rollback()
+                            result = delivery_error
+                            delivery_error = None
+                        else:
+                            self.state.require_current_run()
+                            release_savepoint(call_savepoint)
+                    except (ConversationContextError, WorkspaceTurnSuperseded):
+                        call_savepoint.rollback()
+                        raise
+                    except Exception as exc:
+                        call_savepoint.rollback()
+                        error_id = uuid.uuid4().hex
+                        logger.exception(
+                            "Staged workspace read failed error_id=%s run=%s tool=%s type=%s",
+                            error_id, getattr(self.state.assistant_run, "id", None),
+                            name, type(exc).__name__,
+                        )
+                        result = {"tool": name, **safe_tool_execution_failure(error_id)}
+                        content, delivery_error = self._project_result(
+                            name, result, "staged", arguments,
+                        )
+                    self._staged_results[str(call["id"])] = (
+                        result, content, delivery_error,
+                    )
+                    contents.append(content)
+                result_contents = tuple(contents)
+            elif names == [TOOL_CATEGORY_CONTROLLER]:
+                # Category selection is pure until _execute_one applies it.
+                # Its status receipt is much smaller than the declared 4 KiB
+                # ceiling, so size that exact receipt before admission.
+                arguments = json.loads(calls[0]["function"]["arguments"])
+                category_result, _ = workspace_category_result(
+                    arguments, self.state.authorized_tool_names,
+                )
+                content, _ = self._project_result(
+                    TOOL_CATEGORY_CONTROLLER, category_result, "staged", arguments,
+                )
+                result_contents = (content,)
             admit_native_assistant_transaction(
                 transaction.native_messages()[0], declared, request_budget=self.state.request_budget,
+                result_contents=result_contents,
             )
+            if staged_savepoint is not None:
+                self.state.require_current_run()
+                release_savepoint(staged_savepoint)
             self.state.consecutive_capacity_rejections = 0
         except ToolResultBatchOverCapacity as exc:
+            if staged_savepoint is not None:
+                staged_savepoint.rollback()
+            self._staged_results.clear()
             error = exc
         except ValueError as exc:
+            if staged_savepoint is not None:
+                staged_savepoint.rollback()
             raise self._protocol_error(
                 "原生工具结果契约无效，整批未执行。",
                 iteration,
                 tools=names,
                 reason="native_tool_contract_invalid",
             ) from exc
+        except Exception:
+            if staged_savepoint is not None:
+                staged_savepoint.rollback()
+            self._staged_results.clear()
+            raise
         return transaction, error
 
     def _transaction(
@@ -506,6 +603,7 @@ class WorkspaceNativeTurn:
                 is_write=is_write,
                 step_type=step_type,
                 step=step,
+                staged_result=self._staged_results.pop(str(call["id"]), None),
             )
             for event in state.pending_native_events:
                 yield event
@@ -553,11 +651,15 @@ class WorkspaceNativeTurn:
         is_write: bool,
         step_type: str,
         step: Any,
+        staged_result: tuple[dict[str, Any], str, dict[str, Any] | None] | None = None,
     ) -> tuple[ToolTransaction, str, bool]:
         state = self.state
         name = str(call["function"]["name"])
         arguments = json.loads(str(call["function"]["arguments"]))
-        if name == TOOL_CATEGORY_CONTROLLER:
+        if staged_result is not None:
+            result, projected_content, delivery_error = staged_result
+            category_changed = False
+        elif name == TOOL_CATEGORY_CONTROLLER:
             result, selected = workspace_category_result(arguments, state.authorized_tool_names)
             if selected is not None:
                 state.active_categories = selected
@@ -588,7 +690,8 @@ class WorkspaceNativeTurn:
                 }
         if step is None:
             raise LLMError("工具结果未能写入持久 RunStep，本轮已停止")
-        projected_content, delivery_error = self._project_result(name, result, step.id, arguments)
+        if staged_result is None:
+            projected_content, delivery_error = self._project_result(name, result, step.id, arguments)
         persisted_result = (
             {**result, "model_delivery": delivery_error} if delivery_error else result
         )

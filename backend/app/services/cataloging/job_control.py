@@ -242,6 +242,43 @@ def complete_cataloging_job(db: Session, job: CatalogingJob) -> None:
             agent_run.completed_at = completed_at
 
     refresh_job_progress(db, job)
+    _cancel_failed_jobs_replaced_by(db, job)
+
+
+def _cancel_failed_jobs_replaced_by(db: Session, completed_job: CatalogingJob) -> None:
+    """Close older pauses only when this job finished every missing chapter."""
+
+    completed_versions = {
+        run.chapter_id: int(run.chapter_version or 0)
+        for run in db.query(CatalogingChapterRun).filter(
+            CatalogingChapterRun.job_id == completed_job.id,
+            CatalogingChapterRun.status.in_(["completed", "completed_with_warnings"]),
+        )
+    }
+    if not completed_versions:
+        return
+
+    older_jobs = db.query(CatalogingJob).filter(
+        CatalogingJob.project_id == completed_job.project_id,
+        CatalogingJob.id != completed_job.id,
+        CatalogingJob.status == "paused_on_failure",
+        CatalogingJob.created_at < completed_job.created_at,
+    ).all()
+    for old_job in older_jobs:
+        unfinished = db.query(CatalogingChapterRun).filter(
+            CatalogingChapterRun.job_id == old_job.id,
+            CatalogingChapterRun.status.notin_([
+                "completed", "completed_with_warnings", "skipped_by_user",
+            ]),
+        ).all()
+        if not unfinished or any(
+            run.chapter_id not in completed_versions
+            or int(run.chapter_version or 0) > completed_versions[run.chapter_id]
+            for run in unfinished
+        ):
+            continue
+        cancel_job(old_job)
+        refresh_job_progress(db, old_job)
 
 
 def first_blocking_run(db: Session, job: CatalogingJob) -> CatalogingChapterRun | None:

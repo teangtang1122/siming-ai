@@ -23,12 +23,9 @@ import type { CatalogResponse, HardwareProfile, TrainingDataset, TrainingJob } f
 const { Paragraph } = Typography
 
 const TRAINABLE_MODEL_KEYS = new Set([
-  'qwen3.5-4b-q4',
-  'qwen3.5-9b-q4',
-  'qwen3.5-27b-q4',
+  'qwen3.6-27b-q4',
   'qwen3.8-27b-q4',
 ])
-const LARGE_TRAINING_MODEL_KEYS = new Set(['qwen3.5-27b-q4', 'qwen3.8-27b-q4'])
 
 interface Props {
   hardware: HardwareProfile | null
@@ -53,11 +50,8 @@ export default function TrainingPanel({
   const [jobForm] = Form.useForm()
 
   const trainableModels = useMemo(
-    () => (catalog?.items || []).filter((item) => (
-      TRAINABLE_MODEL_KEYS.has(item.model_key)
-      && (!LARGE_TRAINING_MODEL_KEYS.has(item.model_key) || (hardware?.vram_gb || 0) >= 24)
-    )),
-    [catalog, hardware],
+    () => (catalog?.items || []).filter((item) => TRAINABLE_MODEL_KEYS.has(item.model_key)),
+    [catalog],
   )
 
   const createDataset = async () => {
@@ -104,7 +98,7 @@ export default function TrainingPanel({
         showIcon
         type="warning"
         message="此设备暂不支持内置训练"
-        description="LoRA 训练 Beta 首版仅支持至少 8GB 显存的 NVIDIA 显卡。本地推理仍可正常使用。"
+        description="当前内置基座均为 27B，QLoRA 训练需要至少 24GB 显存的 NVIDIA 显卡。本地推理仍可单独尝试。"
       />
     )
   }
@@ -115,7 +109,7 @@ export default function TrainingPanel({
         showIcon
         type="warning"
         message="LoRA 训练 Beta"
-        description="首次训练会下载隔离环境。27B QLoRA 建议 24GB 以上显存；显存不足时优先选择 4B 或 9B。数据和产物只保存在本机。"
+        description="首次训练会下载隔离环境。27B QLoRA 需要至少 24GB 显存。数据和产物只保存在本机。"
       />
 
       <Card

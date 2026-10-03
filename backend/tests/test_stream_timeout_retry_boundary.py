@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.ai.base import BaseAdapter
-from app.core.exceptions import LLMError
+from app.core.exceptions import LLMError, LLMOutputLimitError
 from app.modules.model_runtime.infrastructure import gateway as gateway_module
 from app.modules.model_runtime.infrastructure.gateway import LLMGateway
 
@@ -26,6 +26,7 @@ class TimeoutBoundaryAdapter(BaseAdapter):
     tool_behaviors: list[str] = []
     text_messages: list[list[dict]] = []
     tool_messages: list[list[dict]] = []
+    tool_extra_bodies: list[dict | None] = []
     text_calls = 0
     tool_calls = 0
 
@@ -61,7 +62,12 @@ class TimeoutBoundaryAdapter(BaseAdapter):
     async def stream_chat_completion_with_tools(self, **kwargs):
         type(self).tool_calls += 1
         type(self).tool_messages.append(kwargs["messages"])
+        type(self).tool_extra_bodies.append(kwargs.get("extra_body"))
         behavior = type(self).tool_behaviors.pop(0)
+        if behavior == "reasoning_limit":
+            yield {"type": "reasoning_delta", "delta": "thinking"}
+            yield {"type": "done", "finish_reason": "length", "usage": None}
+            return
         if behavior == "timeout_before_output":
             raise TimeoutError("tool stream timed out before output")
         if behavior == "timeout_after_output":
@@ -101,6 +107,7 @@ def isolated_gateway(monkeypatch):
     TimeoutBoundaryAdapter.tool_behaviors = []
     TimeoutBoundaryAdapter.text_messages = []
     TimeoutBoundaryAdapter.tool_messages = []
+    TimeoutBoundaryAdapter.tool_extra_bodies = []
     TimeoutBoundaryAdapter.text_calls = 0
     TimeoutBoundaryAdapter.tool_calls = 0
     config = SimpleNamespace(
@@ -151,7 +158,10 @@ async def _collect_text(
     return received, None
 
 
-async def _collect_tools(*, retry: int, resume: int = 0) -> tuple[list[dict], LLMError | None]:
+async def _collect_tools(
+    *, retry: int, resume: int = 0, max_tokens: int | None = None,
+    extra_body: dict | None = None,
+) -> tuple[list[dict], LLMError | None]:
     received: list[dict] = []
     try:
         async for item in LLMGateway.stream_chat_completion_with_tools(
@@ -160,6 +170,8 @@ async def _collect_tools(*, retry: int, resume: int = 0) -> tuple[list[dict], LL
             timeout=1,
             retry=retry,
             resume=resume,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
             tools=[{
                 "type": "function",
                 "function": {"name": "write", "parameters": {"type": "object"}},
@@ -238,6 +250,62 @@ def test_text_stream_resumes_when_provider_stops_at_single_call_token_limit():
     assert "".join(received) == "prefix suffix"
     assert error is None
     assert TimeoutBoundaryAdapter.text_calls == 2
+
+
+def test_deepseek_reasoning_only_limit_retries_once_without_thinking(monkeypatch):
+    monkeypatch.setattr(
+        LLMGateway, "_parse_model",
+        staticmethod(lambda _model: ("deepseek", "deepseek-flash")),
+    )
+    TimeoutBoundaryAdapter.tool_behaviors = ["reasoning_limit", "tool_success"]
+
+    received, error = asyncio.run(_collect_tools(retry=0, resume=8, max_tokens=4096))
+
+    assert error is None
+    assert TimeoutBoundaryAdapter.tool_calls == 2
+    assert TimeoutBoundaryAdapter.tool_extra_bodies == [
+        None, {"thinking": {"type": "disabled"}},
+    ]
+    assert TimeoutBoundaryAdapter.tool_messages[1] == [{"role": "user", "content": "probe"}]
+    assert [item["id"] for item in received if item["type"] == "tool_call_delta"] == ["call-2"]
+
+
+def test_deepseek_output_limit_stops_after_one_fallback_with_specific_error(monkeypatch):
+    from app.services.workspace.assistant_public_errors import public_model_failure
+
+    monkeypatch.setattr(
+        LLMGateway, "_parse_model",
+        staticmethod(lambda _model: ("deepseek", "deepseek-flash")),
+    )
+    TimeoutBoundaryAdapter.tool_behaviors = ["reasoning_limit", "reasoning_limit"]
+
+    received, error = asyncio.run(_collect_tools(retry=0, resume=8, max_tokens=4096))
+
+    assert all(item["type"] == "reasoning_delta" for item in received)
+    assert isinstance(error, LLMOutputLimitError)
+    assert TimeoutBoundaryAdapter.tool_calls == 2
+    public = public_model_failure(error)
+    assert public.code == "model_output_limit"
+    assert public.details == {
+        "failure_class": "output_limit", "retryable": False, "max_tokens": 4096,
+    }
+
+
+def test_deepseek_explicit_thinking_is_not_overridden_on_output_limit(monkeypatch):
+    monkeypatch.setattr(
+        LLMGateway, "_parse_model",
+        staticmethod(lambda _model: ("deepseek", "deepseek-flash")),
+    )
+    TimeoutBoundaryAdapter.tool_behaviors = ["reasoning_limit"]
+
+    _received, error = asyncio.run(_collect_tools(
+        retry=0, resume=8, max_tokens=4096,
+        extra_body={"thinking": {"type": "enabled"}},
+    ))
+
+    assert isinstance(error, LLMOutputLimitError)
+    assert TimeoutBoundaryAdapter.tool_calls == 1
+    assert TimeoutBoundaryAdapter.tool_extra_bodies == [{"thinking": {"type": "enabled"}}]
 
 
 def test_text_stream_can_resume_more_than_once_without_repeating_committed_text():

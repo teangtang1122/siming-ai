@@ -832,6 +832,14 @@
   color: var(--ant-color-error-text);
 }
 
+.gui-chat-progress-failed {
+  color: var(--ant-color-error-text);
+}
+
+.gui-chat-progress-skipped {
+  color: var(--ant-color-warning-text);
+}
+
 .gui-chat-msg-status {
   margin: 0 8px 6px 0;
 }

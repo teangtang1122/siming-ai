@@ -5,8 +5,9 @@ import json
 import shutil
 import zipfile
 from urllib.request import Request, urlopen
+from typing import Callable
 
-from .downloads import download_with_fallback
+from .downloads import DownloadCancelled, download_with_fallback
 from .hardware import HardwareProfile
 from .paths import downloads_root, runtime_root
 
@@ -38,8 +39,14 @@ def _asset_score(name: str, hardware: HardwareProfile) -> int:
     return score
 
 
-def install_llama_cpp(task_id: str, hardware: HardwareProfile) -> dict:
+def install_llama_cpp(task_id: str, hardware: HardwareProfile, *, should_cancel: Callable[[], bool] | None = None) -> dict:
+    def check_cancelled() -> None:
+        if should_cancel and should_cancel():
+            raise DownloadCancelled("下载已取消")
+
+    check_cancelled()
     release = _release()
+    check_cancelled()
     assets = release.get("assets") or []
     candidates = sorted(
         assets,
@@ -51,13 +58,16 @@ def install_llama_cpp(task_id: str, hardware: HardwareProfile) -> dict:
     asset = candidates[0]
     version = str(release.get("tag_name") or "latest")
     archive = downloads_root() / str(asset["name"])
-    download_with_fallback(task_id, [str(asset["browser_download_url"])], archive)
+    download_with_fallback(task_id, [str(asset["browser_download_url"])], archive, should_cancel=should_cancel)
+    check_cancelled()
     target = runtime_root() / "llama_cpp" / version
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as bundle:
-        bundle.extractall(target)
+        for item in bundle.infolist():
+            check_cancelled()
+            bundle.extract(item, target)
     if hardware.nvidia_available and "cuda" in str(asset["name"]).lower():
         cudart = next(
             (
@@ -74,9 +84,13 @@ def install_llama_cpp(task_id: str, hardware: HardwareProfile) -> dict:
                 task_id,
                 [str(cudart["browser_download_url"])],
                 cudart_archive,
+                should_cancel=should_cancel,
             )
             with zipfile.ZipFile(cudart_archive) as bundle:
-                bundle.extractall(target)
+                for item in bundle.infolist():
+                    check_cancelled()
+                    bundle.extract(item, target)
+    check_cancelled()
     executables = list(target.rglob("llama-server.exe"))
     if not executables:
         raise RuntimeError("运行时压缩包中没有 llama-server.exe")

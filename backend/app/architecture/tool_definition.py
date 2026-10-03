@@ -24,6 +24,9 @@ class ToolDef:
     agent_category: str = ""
     required: list[str] = field(default_factory=list)
     tool_type: str = "read"
+    # Only audited, side-effect-free reads may be staged before exact native
+    # result-size admission. A generic "read" label alone is not sufficient.
+    capacity_preflight_safe: bool = False
     idempotent: bool = False
     requires_confirmation: bool = False
     estimated_cost: str = "free"

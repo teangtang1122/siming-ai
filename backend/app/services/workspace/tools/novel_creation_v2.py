@@ -59,7 +59,7 @@ from ....services.novel_creation_context_projection import (
     compact_creation_snapshot,
     project_creation_artifact,
 )
-from ....services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT
+from ....services.novel_creation_contract import OPENING_OUTLINE_CHAPTER_COUNT, STAGE_ORDER
 from ....services.novel_creation_entities import (
     get_creation_entity as get_creation_entity_record,
 )
@@ -99,6 +99,7 @@ from ...novel_creation_workspace import (
     STAGE_LABELS,
     confirm_run,
     creation_artifact_dependencies,
+    initialize_session_draft,
     patch_creation_artifact,
     patch_session,
     serialize_creation_artifact,
@@ -487,11 +488,12 @@ async def _enhance_with_model(
         opening_chapter_count=opening_chapter_count or OPENING_OUTLINE_CHAPTER_COUNT,
         entity_target=entity_target,
     )
-    opening_locks = ((draft.get("artifact_locks") or {}).get("opening_outline") or [])
+    artifact_locks = ((draft.get("artifact_locks") or {}).get(stage) or [])
     if stage == "opening_outline":
         stage_contract += "\nvolume_index=" + json.dumps(context["volume_index"], ensure_ascii=False)
         stage_contract += "\ncharacter_index=" + json.dumps(context["character_index"], ensure_ascii=False)
-        stage_contract += "\n必须保持原值的 locked_paths=" + json.dumps(opening_locks, ensure_ascii=False)
+    if not entity_target:
+        stage_contract += "\n必须保持原值的 locked_paths=" + json.dumps(artifact_locks, ensure_ascii=False)
     messages = build_creation_stage_messages(
         stage=stage,
         stage_label=STAGE_LABELS.get(stage, stage),
@@ -531,10 +533,10 @@ async def _enhance_with_model(
         data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
         validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"), character_index=context.get("character_index"))
         data = _normalize_stage_data(stage, data, baseline)
-        if stage == "opening_outline" and not entity_target:
-            from app.modules.creation.domain.opening_outline_contract import validate_opening_locks
+        if not entity_target:
+            from app.modules.creation.domain.artifact_lock_contract import validate_artifact_locks
 
-            validate_opening_locks(data, baseline, opening_locks)
+            validate_artifact_locks(stage, data, baseline, artifact_locks)
         if not entity_target or entity_target.get("initialize_stage"):
             _validate_stage(stage, data)
         metadata = {"attempt": attempt, "result_mode": "model", "warning": None}
@@ -569,12 +571,10 @@ async def _enhance_with_model(
             _raise_if_task_cancelled()
             validate_generated_entity(stage, data, entity_target, volume_index=context.get("volume_index"), character_index=context.get("character_index"))
             data = _normalize_stage_data(stage, data, baseline)
-            if stage == "opening_outline" and not entity_target:
-                from app.modules.creation.domain.opening_outline_contract import (
-                    validate_opening_locks,
-                )
+            if not entity_target:
+                from app.modules.creation.domain.artifact_lock_contract import validate_artifact_locks
 
-                validate_opening_locks(data, baseline, opening_locks)
+                validate_artifact_locks(stage, data, baseline, artifact_locks)
             if not entity_target or entity_target.get("initialize_stage"):
                 _validate_stage(stage, data)
             metadata = {
@@ -638,7 +638,23 @@ async def patch_creation_session_tool(db: Session, project_id: str, args: dict[s
         return _revision_error("patch_creation_session", session)
     changes = args.get("changes") if isinstance(args.get("changes"), dict) else {}
     try:
-        patch_session(session, changes, source="assistant")
+        previous_revision = int(session.revision or 0)
+        before = initialize_session_draft(session, persist=False)
+        after = patch_session(session, changes, source="assistant")
+        if int(session.revision or 0) == previous_revision:
+            return {
+                "tool": "patch_creation_session", "status": "skipped",
+                "detail": "No session fields changed", "data": None,
+            }
+        changed_fields = sorted(
+            f"form.{field}" if key == "form" else str(key)
+            for key, value in changes.items()
+            for field in (value if key == "form" and isinstance(value, dict) else [key])
+            if (
+                before.get("form", {}).get(field) != after.get("form", {}).get(field)
+                if key == "form" else before.get(key) != after.get(key)
+            )
+        )
         commit_session(db)
         return {
             "tool": "patch_creation_session",
@@ -649,7 +665,7 @@ async def patch_creation_session_tool(db: Session, project_id: str, args: dict[s
                 "revision": int(session.revision or 0),
                 "status": session.status,
                 "current_stage": session.current_stage,
-                "changed_fields": sorted(str(key) for key in changes),
+                "changed_fields": changed_fields,
             },
         }
     except Exception as exc:
@@ -662,6 +678,13 @@ async def get_creation_artifact(db: Session, project_id: str, args: dict[str, An
     stage = _text(args.get("artifact"))
     if not session:
         return {"tool": "get_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
+    if stage not in STAGE_ORDER:
+        return {
+            "tool": "get_creation_artifact",
+            "status": "error",
+            "detail": "Unknown creation artifact ID",
+            "data": {"reason": "creation_unknown_artifact"},
+        }
     try:
         return {
             "tool": "get_creation_artifact",
@@ -738,10 +761,21 @@ async def patch_creation_artifact_tool(db: Session, project_id: str, args: dict[
         return {"tool": "patch_creation_artifact", "status": "skipped", "detail": "Session not found", "data": None}
     if args.get("expected_revision") is None or int(args["expected_revision"]) != int(session.revision or 0):
         return _revision_error("patch_creation_artifact", session)
+    artifact_key = _text(args.get("artifact"))
+    if artifact_key == "concepts":
+        current_data = serialize_creation_artifact(session, artifact_key)["data"]
+        options = current_data.get("options") if isinstance(current_data, dict) else None
+        if not isinstance(options, list) or not options:
+            return {
+                "tool": "patch_creation_artifact",
+                "status": "error",
+                "detail": "创意方向尚未生成方案卡；请先生成，再修改卡片字段。",
+                "data": {"reason": "creation_artifact_requires_generation"},
+            }
     try:
         result = patch_creation_artifact(
             session,
-            _text(args.get("artifact")),
+            artifact_key,
             args.get("changes") if isinstance(args.get("changes"), list) else [],
             source="assistant",
             validator=_validate_stage,
@@ -754,7 +788,7 @@ async def patch_creation_artifact_tool(db: Session, project_id: str, args: dict[
             "tool": "patch_creation_artifact", "status": "ok", "detail": "Artifact patched",
             "data": {
                 "session_id": str(session.id),
-                "artifact": _text(args.get("artifact")),
+                "artifact": artifact_key,
                 "revision": int(session.revision or 0),
                 "changes": result["changes"],
                 "affected_artifacts": result["affected_artifacts"],
@@ -822,7 +856,6 @@ async def list_creation_entities_tool(db: Session, project_id: str, args: dict[s
         offset=int(args.get("offset") or 0),
         limit=int(args.get("limit") or 20),
     )
-    commit_session(db)
     return {
         "tool": "list_creation_entities",
         "status": "ok",

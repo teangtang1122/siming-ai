@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 from app.modules.operations.application.trace_capture import (
     Span,
     configure_trace_sink,
+    correlate,
     record_business_event,
     record_payload,
     trace_scope,
@@ -121,6 +122,45 @@ def test_handled_failure_and_cancel_keep_business_status(store):
     )
 
 
+@pytest.mark.parametrize("status", ["error", "denied", "blocked", "failed", "conflict"])
+def test_returned_tool_failures_are_not_successful_spans(store, status):
+    @observed(kind="executor")
+    async def execute():
+        return {"status": status}
+
+    @observed(kind="tool")
+    def preflight():
+        return {"status": status}
+
+    with trace_scope(TraceScope(kind="operation", id="rejected")) as trace:
+        asyncio.run(execute())
+        preflight()
+    store.flush()
+    finishes = [e["data"] for e in store.events("local", trace.id) if e["event_type"] == "span_finished"]
+    assert [item["status"] for item in finishes] == ["error", "error"]
+
+
+def test_all_run_correlations_survive_retries_and_store_upgrade(store):
+    with trace_scope(TraceScope(kind="creation_session", id="session"), assistant_message_id="reply") as trace:
+        correlate(run_id="first-run", operation_id="first-operation")
+        correlate(run_id="retry-run", operation_id="retry-operation")
+    store.flush()
+    links = ("reply", "first-run", "first-operation", "retry-run", "retry-operation")
+    for link in links:
+        assert store.list_traces("local", correlation_id=link)[0]["id"] == trace.id
+    with store.db:
+        store.db.execute("DROP TABLE trace_correlations")
+        store.db.execute("PRAGMA user_version=1")
+        store.db.execute("UPDATE traces SET status='running',capture_status='interrupted' WHERE id=?", (trace.id,))
+    reopened = TraceStore(store.path)
+    try:
+        assert reopened.trace("local", trace.id)["status"] == "interrupted"
+        for link in links:
+            assert reopened.list_traces("local", correlation_id=link)[0]["id"] == trace.id
+    finally:
+        reopened.close()
+
+
 def test_queue_full_content_limit_policy_expiry_and_recovery(store, monkeypatch):
     import app.modules.operations.infrastructure.trace_store as storage
 
@@ -144,7 +184,7 @@ def test_queue_full_content_limit_policy_expiry_and_recovery(store, monkeypatch)
     reopened = TraceStore(store.path)
     try:
         saved = reopened.trace("local", trace.id)
-        assert saved["capture_status"] == "interrupted" and saved["status"] == "running"
+        assert saved["capture_status"] == "interrupted" and saved["status"] == "interrupted"
     finally:
         reopened.close()
 

@@ -77,12 +77,14 @@ def workspace_category_result(
     authorized_tool_names: set[str],
 ) -> tuple[dict[str, Any], tuple[str, ...] | None]:
     try:
-        categories = normalize_tool_categories(arguments.get("enabled_categories"))
-    except ValueError:
+        categories = normalize_tool_categories(
+            arguments.get("enabled_categories"), available_tool_names=authorized_tool_names,
+        )
+    except ValueError as exc:
         return {
             "tool": TOOL_CATEGORY_CONTROLLER,
             "status": "error",
-            "detail": "工具类别参数无效，未切换能力。",
+            "detail": str(exc),
             "data": None,
         }, None
     labels = [TOOL_CATEGORY_METADATA[category]["label"] for category in categories]

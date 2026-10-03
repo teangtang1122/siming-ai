@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from app.modules.operations.application.trace_decorators import observed
-
 import asyncio
 import inspect
 from collections.abc import Mapping, Sequence
@@ -11,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.ai.local_cli_adapter import is_local_cli_provider
+from app.modules.operations.application.trace_decorators import observed
 
 from .assembly import _turn_cost
 from .budget import TokenCounter
@@ -38,6 +37,7 @@ from .checkpoint_state import (
 )
 from .checkpoint_validator import CheckpointSourceMessage, validate_checkpoint
 from .contracts import (
+    AuthorQuote,
     ConversationCheckpoint,
     ConversationIdentity,
     ConversationMessage,
@@ -211,6 +211,8 @@ async def _call_checkpoint_model(
     binding: GenerationModelBinding,
     counter: TokenCounter,
     safety_margin_tokens: int,
+    source_messages: Sequence[CheckpointSourceMessage] | None = None,
+    previous_author_quotes: Sequence[AuthorQuote] = (),
 ) -> Any:
     if is_local_cli_provider(binding.provider):
         # ``tools=[]`` controls an API request, but cannot remove the shell,
@@ -262,10 +264,21 @@ async def _call_checkpoint_model(
             )
         return result
 
+    def parse_and_validate(raw: str) -> Any:
+        proposal = parse_checkpoint_navigation(raw)
+        if source_messages is not None:
+            new_quotes = materialize_author_quotes(proposal, source_messages=source_messages)
+            rollup_author_quotes(
+                proposal,
+                previous_author_quotes=previous_author_quotes,
+                new_author_quotes=new_quotes,
+            )
+        return proposal
+
     first = await call(messages)
     raw = str(first.get("content") or "")
     try:
-        return parse_checkpoint_navigation(raw)
+        return parse_and_validate(raw)
     except ConversationContextError as first_error:
         repair = build_checkpoint_repair_messages(
             original_messages=messages,
@@ -273,7 +286,7 @@ async def _call_checkpoint_model(
             validation_error=str(first_error),
         )
         second = await call(repair)
-        return parse_checkpoint_navigation(str(second.get("content") or ""))
+        return parse_and_validate(str(second.get("content") or ""))
 
 
 @dataclass(frozen=True)
@@ -289,6 +302,7 @@ class _GenerationRequest:
     counter: TokenCounter
     safety_margin_tokens: int
     trusted_execution_ledger: tuple[ExecutionLedgerEntry, ...]
+    effective_execution_ledger: tuple[ExecutionLedgerEntry, ...]
     execution_source_hashes: Mapping[str, str]
     reload_turns: TurnReloader
     completion: CheckpointCompletion
@@ -319,7 +333,7 @@ def _merge_segment_ids(active: ActiveCheckpoint | None) -> tuple[str, ...]:
 
 
 def _plan_generation(request: _GenerationRequest) -> _GenerationPlan:
-    folded = fold_execution_ledger(request.trusted_execution_ledger)
+    folded = fold_execution_ledger(request.effective_execution_ledger)
     segment, messages = _checkpoint_segment_that_fits(
         desired_turns=request.desired_turns,
         active=request.active,
@@ -343,23 +357,43 @@ def _plan_generation(request: _GenerationRequest) -> _GenerationPlan:
         ]
     )
     active = request.active
-    key = canonical_sha256(
-        {
-            "schema": "conversation_checkpoint_attempt.v1",
-            "policy_version": CONVERSATION_CONTEXT_POLICY_VERSION,
-            "scope": request.conversation.kind.value,
-            "conversation_id": request.conversation.id,
-            # Context revision changes only when a derived checkpoint is
-            # published/invalidated.  Range-external transcript appends do not
-            # change it, so concurrent users reuse the same immutable attempt;
-            # a deliberately invalidated checkpoint can still be rebuilt.
-            "context_revision": int(getattr(request.state, "revision", 0) or 0),
-            "source_range": canonical_value(source_range),
-            "execution_provenance_hash": provenance_hash,
-            "parent_checkpoint_id": active.checkpoint_id if active else None,
-            "parent_checkpoint_hash": active.checkpoint.fingerprint if active else None,
-        }
+    key_source = {
+        "schema": "conversation_checkpoint_attempt.v1",
+        "policy_version": CONVERSATION_CONTEXT_POLICY_VERSION,
+        "scope": request.conversation.kind.value,
+        "conversation_id": request.conversation.id,
+        # Context revision changes only when a derived checkpoint is
+        # published/invalidated.  Range-external transcript appends do not
+        # change it, so concurrent users reuse the same immutable attempt;
+        # a deliberately invalidated checkpoint can still be rebuilt.
+        "context_revision": int(getattr(request.state, "revision", 0) or 0),
+        "source_range": canonical_value(source_range),
+        "execution_provenance_hash": provenance_hash,
+        "parent_checkpoint_id": active.checkpoint_id if active else None,
+        "parent_checkpoint_hash": active.checkpoint.fingerprint if active else None,
+    }
+    # A failed or cancelled attempt is immutable evidence, but a later user
+    # retry must be able to make a fresh attempt for the same source range.
+    # Count only matching terminal attempts so concurrent retries still share
+    # one idempotency key and cannot supersede each other's in-flight work.
+    retry_ordinal = sum(
+        1
+        for item in request.store.context_checkpoints(
+            request.conversation.kind.value,
+            request.conversation.id,
+            owner_id=request.owner_id,
+        )
+        if str(getattr(item, "status", "") or "") in {"failed", "cancelled"}
+        and getattr(item, "source_first_sequence", None) == source_range.first_sequence
+        and getattr(item, "source_last_sequence", None) == source_range.last_sequence
+        and getattr(item, "source_hash", None) == source_range.source_hash
+        and getattr(item, "parent_checkpoint_id", None)
+        == (active.checkpoint_id if active else None)
+        and getattr(item, "model_binding_fingerprint", None) == request.binding.fingerprint
     )
+    if retry_ordinal:
+        key_source["retry_ordinal"] = retry_ordinal
+    key = canonical_sha256(key_source)
     return _GenerationPlan(
         tuple(folded),
         segment,
@@ -581,19 +615,14 @@ async def _reload_and_validate_source(
     # boundary after its newest closed turn instead of treating an append
     # outside ``plan.segment_range`` as a source mutation.
     newest_sequence = max(
-        (
-            message.sequence_no
-            for turn in reloaded
-            for message in turn.messages
-        ),
+        (message.sequence_no for turn in reloaded for message in turn.messages),
         default=0,
     )
     validate_transcript_snapshot(
         reloaded,
         current_user_message=ConversationMessage(
             message_id=(
-                f"checkpoint-current-boundary:{request.conversation.id}:"
-                f"{newest_sequence + 1}"
+                f"checkpoint-current-boundary:{request.conversation.id}:{newest_sequence + 1}"
             ),
             sequence_no=newest_sequence + 1,
             role="user",
@@ -834,6 +863,10 @@ async def generate_checkpoint_segment(request: _GenerationRequest) -> ActiveChec
             binding=request.binding,
             counter=request.counter,
             safety_margin_tokens=request.safety_margin_tokens,
+            source_messages=plan.source_messages,
+            previous_author_quotes=(
+                request.active.checkpoint.author_quotes if request.active else ()
+            ),
         )
         await _reload_and_validate_source(request, plan)
         checkpoint = _materialize_checkpoint(request, plan, proposal)

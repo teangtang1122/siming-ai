@@ -32,7 +32,16 @@ internal class PcCreationAgentContract private constructor(
     val writeResultMaxBytes = writeResultContract.string("max_json_bytes").toInt().also {
         require(it > 0) { "立项写入回执容量无效" }
     }
+    private val writeResultMaxBytesByTool = writeResultContract["max_json_bytes_by_tool"] as? JsonObject
+        ?: error("手机内置契约缺少逐工具写入回执容量；请重新生成移动端 Prompt 契约")
+
+    fun writeResultMaxBytesFor(tool: String): Int =
+        (writeResultMaxBytesByTool[tool] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+            ?.takeIf { it > 0 }
+            ?: error("手机内置契约缺少 $tool 的写入回执容量")
     val replyInstruction = requiredReplyString("instruction")
+    val readOnlyCompletionInstruction = requiredReplyString("read_only_completion_instruction")
+    val readOnlyNotice = requiredReplyString("read_only_notice")
     val replyRepairInstruction = requiredReplyString("repair_instruction")
     val replyFailureNotice = requiredReplyString("failure_notice")
     val maxReplyAttempts = requiredReplyString("max_attempts").toInt().also {
@@ -49,6 +58,7 @@ internal class PcCreationAgentContract private constructor(
         .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
         .toSet()
     val excludedPcToolNames: Set<String> = requiredToolNames("excluded_pc_tool_names")
+    val capacityPreflightReadToolNames: Set<String> = requiredToolNames("capacity_preflight_read_tool_names")
     val revisionToolNames: Set<String> = requiredToolNames("revision_tool_names")
     val writeToolNames: Set<String> = requiredToolNames("write_tool_names")
     val maxSuccessfulWritesPerTurn: Int = agent.string("max_successful_writes_per_turn")
@@ -119,7 +129,7 @@ internal class PcCreationAgentContract private constructor(
         error("手机内置立项 reply_contract 缺少 $field")
     }
 
-    fun normalizeCategories(raw: List<String>): List<String> = toolCategories.normalize(raw)
+    fun normalizeCategories(raw: List<String>): List<String> = toolCategories.normalize(raw, toolNames)
 
     fun toolSchemas(activeCategories: List<String>): JsonArray = toolCategories.toolSchemas(
         allSchemas = allToolSchemas,

@@ -509,34 +509,29 @@ save_external_chapter_draft({
 ### Creating a New Novel Through the Shared Agent Contract
 
 ```
-# 1. Open the creation-data category. This controller call ends the model step.
-set_tool_categories({"enabled_categories": ["creation_data"]})
+# Standalone MCP may create a session through its explicit permission pack.
+# Managed creation chat is already bound to a session; it cannot start another.
+# 1. Select the small creation groups. Each selection ends its model step.
+set_tool_categories({"enabled_categories": ["creation_session", "creation_artifacts"]})
 
-# 2. Start the canonical structured session
-start_novel_creation_session({
-  "user_brief": "A xianxia novel about a female cultivator",
-  "genre": "xianxia",
-  "target_audience": "male",
-  "platform": "qidian"
-})
-
-# 3. Read real session/artifact data and save the model's structured decisions
+# 2. Read the bound session and the requested artifact before writing.
 get_creation_snapshot({"session_id": "SESSION_ID"})
+get_creation_artifact({"session_id": "SESSION_ID", "artifact": "constraints"})
 patch_creation_artifact({ ... })
-confirm_creation_artifact({ ... })
+# Stop after one successful write and wait for the author's next message.
+# confirm_creation_artifact is a separate author-confirmed turn.
 
-# 4. Open the creation-flow category. The replacement takes effect next step.
-set_tool_categories({"enabled_categories": ["creation_flow"]})
-
-# 5. Create the formal project only after the author explicitly asks for it
+# 3. Create the formal project only after the author explicitly requests it.
+set_tool_categories({"enabled_categories": ["creation_completion"]})
 finalize_creation_session({"session_id": "SESSION_ID"})
+# Continue chapter prose in the formal project's assistant, not creation chat.
 ```
 
 ### Cataloging Without Siming API
 
 After importing a novel, an external Agent can read the full chapter and real archive records, then submit one coherent cataloging plan without calling Siming's model API. See [the current cataloging workflow](../agent/external-no-api-cataloging.md) for the authoritative contract.
 
-Each model turn starts with `set_tool_categories`. Once the needed tools are open, read `get_prompt_pack(pack_id="cataloging_external_no_api")`, use the bound task or `start_external_cataloging_job`, then process each chapter in this order:
+Managed cataloging receives its fixed task tools directly and does not select categories. Standalone MCP uses its permission pack. Read `get_prompt_pack(pack_id="cataloging_external_no_api")`, use the bound task or `start_external_cataloging_job`, then process each chapter in this order:
 
 ```text
 get_next_external_cataloging_chapter(job_id)

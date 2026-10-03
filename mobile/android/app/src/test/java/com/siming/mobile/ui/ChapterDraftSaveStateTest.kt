@@ -32,10 +32,10 @@ class ChapterDraftSaveStateTest {
     }
 
     @Test
-    fun `a saved gateway does not enable cataloging without phone API`() {
+    fun `a connected gateway enables explicit cataloging without phone API`() {
         val state = chapterDraftSaveState(draft, draft.title, online = true, busy = false, viewingFormalText = false)
         assertTrue(state.canSave)
-        assertFalse(state.canCatalog)
+        assertTrue(state.canCatalog)
         assertTrue(state.hint.contains("尚未保存"))
     }
 

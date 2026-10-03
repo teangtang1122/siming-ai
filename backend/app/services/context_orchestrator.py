@@ -67,6 +67,7 @@ from ..modules.context.application.runtime import (
 from ..modules.model_runtime.application.request_capacity import active_request_capacity
 from ..modules.model_runtime.application.runtime import resolve_model_identity
 from .character_archive import character_archive_text
+from .context_manifest_runtime import clean_context_text as _clean_text
 from .context_manifest_runtime import manifest_payload as serialize_manifest
 from .context_manifest_runtime import (
     persist_search_candidates,
@@ -131,15 +132,6 @@ _MANIFEST_INVALIDATION_GUARD = "siming_context_manifest_invalidation_running"
 
 def _sha256(value: str) -> str:
     return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
-
-
-def _clean_text(value: Any, limit: int) -> str:
-    text = str(value or "").strip()
-    if len(text) <= limit:
-        return text
-    if limit <= 3:
-        return text[:limit]
-    return text[: limit - 3].rstrip() + "..."
 
 
 def _task_key(task_type: str) -> str:
@@ -1020,8 +1012,9 @@ class ContextOrchestrator:
         minimum_han_characters = arguments.get("minimum_han_characters")
         if minimum_han_characters:
             structured_constraint = (
-                "Hard structured length constraint: the chapter body must contain at least "
-                f"{minimum_han_characters} Han characters. The save boundary counts and enforces it."
+                "Requested chapter length reference: "
+                f"{minimum_han_characters} Han characters. Preserve the complete unsaved draft "
+                "and report its actual length; do not reject or automatically rewrite it for length."
             )
             text = "\n".join(part for part in (text, structured_constraint) if part)
         if not text:

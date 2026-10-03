@@ -51,6 +51,7 @@ def terminal_reply(result: dict[str, Any]) -> str:
             "章节草稿已生成并载入正文编辑器，尚未保存。"
             "你可以先使用“去除 AI 味”或“质量评分”；确认后请选择“保存并建档”或“仅保存”。"
             "建档完成前，AI 不会继续生成下一章。"
+            + str((result.get("data") or {}).get("length_notice") or "")
         )
 
     if _directive(result) == AssistantTurnDirective.END_AFTER_OUTLINE_DRAFT:

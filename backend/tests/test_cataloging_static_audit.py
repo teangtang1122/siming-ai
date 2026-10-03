@@ -111,7 +111,7 @@ def test_pause_interrupts_waiting_provider_and_resume_starts_a_fresh_worker(cata
             if len(calls) == 2:
                 resumed.set()
                 await release.wait()
-            async for event in native_step(kwargs["messages"], calls, job_id):
+            async for event in native_step(kwargs["messages"], calls[1:], job_id):
                 yield event
 
 
@@ -134,12 +134,12 @@ def test_pause_interrupts_waiting_provider_and_resume_starts_a_fresh_worker(cata
             await asyncio.wait_for(second, 5)
         with sessions() as db:
             assert db.get(CatalogingJob, job_id).status == "completed"
-        assert len(calls) == 4
+        assert len(calls) == 5
 
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("stage", ["first_step", "after_selection"])
+@pytest.mark.parametrize("stage", ["first_step", "after_read"])
 @pytest.mark.parametrize("status", [401, 403, 413, 422])
 def test_provider_request_rejection_does_not_repeat_identical_calls(catalog, monkeypatch, stage, status):
     _, sessions, job_id = catalog
@@ -150,9 +150,9 @@ def test_provider_request_rejection_does_not_repeat_identical_calls(catalog, mon
 
     async def model(**kwargs):
         calls.append(kwargs)
-        if stage == "after_selection" and len(calls) == 1:
-            yield {"type": "tool_call_delta", "index": 0, "id": "select", "name": "set_tool_categories",
-                   "arguments_delta": '{"enabled_categories":["cataloging"]}'}
+        if stage == "after_read" and len(calls) == 1:
+            yield {"type": "tool_call_delta", "index": 0, "id": "read", "name": "get_next_external_cataloging_chapter",
+                   "arguments_delta": json.dumps({"job_id": job_id})}
             return
         raise RejectedRequest("provider rejected request")
 

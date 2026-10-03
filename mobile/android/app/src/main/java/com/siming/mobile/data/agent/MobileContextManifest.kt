@@ -77,7 +77,7 @@ internal data class MobileContextPolicy(
                 minimumOutputReserveTokens = defaults.intValue("minimum_output_reserve_tokens", 2_048),
                 outputRatio = defaults.doubleValue("output_ratio", 0.45),
                 softInputTargetTokens = defaults.intValue("soft_input_target_tokens", 32_000),
-                searchExcerptChars = selection.intValue("search_excerpt_chars", 600),
+                searchExcerptChars = selection.intValue("search_excerpt_chars", 160),
                 searchSourceTypes = selection.stringList("search_source_types").toSet(),
                 categories = categoryRoot.mapValues { (_, raw) ->
                     val value = raw as? JsonObject ?: JsonObject(emptyMap())

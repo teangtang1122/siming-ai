@@ -11,9 +11,9 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 
 class DirectApiClientTimeoutTest {
-    private fun client() = DirectApiClient(
-        client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).readTimeout(120, TimeUnit.MILLISECONDS)
-            .callTimeout(150, TimeUnit.MILLISECONDS).build(),
+    private fun client(readTimeoutMillis: Long = 120, callTimeoutMillis: Long = 150) = DirectApiClient(
+        client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).readTimeout(readTimeoutMillis, TimeUnit.MILLISECONDS)
+            .callTimeout(callTimeoutMillis, TimeUnit.MILLISECONDS).build(),
         allowCleartextForTests = true,
         retryDelaysMillis = emptyList(),
     )
@@ -136,10 +136,11 @@ class DirectApiClientTimeoutTest {
 
     @Test fun `ordinary requests retain their existing timeout when no idle policy is supplied`() = runBlocking {
         MockWebServer().use { server ->
-            server.enqueue(response(sse(chatCall, "[DONE]")).setHeadersDelay(500, TimeUnit.MILLISECONDS))
+            server.enqueue(response(sse(chatCall, "[DONE]")).setHeadersDelay(2_000, TimeUnit.MILLISECONDS))
             server.start()
             val error = assertFailsWith<DirectApiTimeoutException> {
-                client().streamAgentTurn(config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS), messages, tools)
+                client(readTimeoutMillis = 1_000, callTimeoutMillis = 5_000)
+                    .streamAgentTurn(config(server, DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS), messages, tools)
             }
             assertNotEquals(DirectApiTimeoutException.Phase.STREAM_IDLE, error.phase)
             assertEquals(1, server.requestCount)

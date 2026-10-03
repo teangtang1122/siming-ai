@@ -17,6 +17,8 @@ from app.modules.creation.domain.entity_contract import (
     CreationReferenceError,
 )
 from app.modules.creation.domain.generation_contract import CreationGenerationError
+from app.modules.operations.application.trace_capture import correlate
+from app.modules.operations.application.trace_decorators import observed
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.novel_creation_authoring import (
     _validate_stage,
@@ -339,13 +341,10 @@ def _artifact_prompt_baseline(
     stage: str,
     storage_baseline: dict[str, Any],
 ) -> dict[str, Any]:
-    if stage == "opening_outline" and storage_baseline:
-        return deepcopy(storage_baseline)
     prompt_baseline = _generation_shape_baseline(context, stage)
-    collection_fields = {field for field, _kind in ENTITY_COLLECTIONS.get(stage, ())}
-    for key, value in storage_baseline.items():
-        if key not in collection_fields:
-            prompt_baseline[key] = deepcopy(value)
+    # A whole-artifact write must see the existing artifact it is replacing.
+    # Entity-scoped requests use the separate, bounded entity projection above.
+    prompt_baseline.update(deepcopy(storage_baseline))
     return prompt_baseline
 
 
@@ -430,6 +429,8 @@ def _prepare_execution(
         if existing_run_id
         else None
     )
+    if run:
+        correlate(run_id=run.id, operation_id=run.operation_id)
     run_request = run.request_json if run and isinstance(run.request_json, dict) else {}
     current_draft = session.draft_json if isinstance(session.draft_json, dict) else {}
     is_resume = bool(args.get("_resume") or run_request.get("_resume"))
@@ -517,12 +518,6 @@ def _merge_entity_generation(
     """Keep unrelated rows byte-for-byte stable during entity-level generation."""
     target = context.entity_target
     if not target:
-        if stage == "opening_outline":
-            return generated, None
-        for field, _entity_type in ENTITY_COLLECTIONS.get(stage, ()):
-            existing = baseline.get(field)
-            if isinstance(existing, list) and existing:
-                generated[field] = deepcopy(existing)
         return generated, None
     baseline_records = _extract_records(stage, baseline)
     generated_records = _extract_records(stage, generated)
@@ -824,6 +819,7 @@ def _finish_execution(context: StageExecution) -> dict[str, Any]:
     return stage_tool_result("ok", "Novel creation stage generated", context.run, context.session)
 
 
+@observed(kind="stage", scope_kind="creation_session", scope_id="args.session_id")
 async def execute_creation_artifact_generation(
     db: Session,
     project_id: str,

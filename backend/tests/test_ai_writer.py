@@ -142,12 +142,12 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                              "project_id": project_id, "title": "下一章", "content": "正文草稿",
                              "draft_status": "pending", "word_count": 4},
                 }
-            return {"tool": name, "status": "ok", "data": {"items": []}}
+            return {"tool": name, "status": "ok", "data": []}
 
         mock_execute.side_effect = execute
         mock_stream.side_effect = [
             native_test_batch(("categories", "set_tool_categories", {
-                "enabled_categories": ["story_knowledge", "writing_context"],
+                "enabled_categories": ["chapters", "outline"],
             })),
             # Captured 17:13 batch: a valid read plus an invented tool name.
             native_test_batch(
@@ -159,6 +159,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                 ("corrected-chapters", "list_chapters", {"limit": 10}),
                 ("corrected-outline", "search_outline_tree", {"limit": 10}),
             ),
+            native_test_batch(("writing-category", "set_tool_categories", {"enabled_categories": ["chapter_writing"]})),
             native_test_batch(("writer", "chapter_writer", {"outline_node_id": outline_id})),
         ]
         response = self.client.post(
@@ -167,7 +168,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         )
         self.assertIn("recovered-draft", response.text)
         self.assertIn("章节草稿已生成并载入正文编辑器", response.text)
-        self.assertEqual(mock_stream.call_count, 4)  # terminal draft needs no extra model step
+        self.assertEqual(mock_stream.call_count, 5)  # terminal draft needs no extra model step
         self.assertEqual([call.args[2]["tool"] for call in mock_execute.await_args_list],
                          ["list_chapters", "search_outline_tree", "chapter_writer"])
         correction = mock_stream.call_args_list[2].kwargs
@@ -205,9 +206,9 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         self, mock_execute, mock_stream, _mock_supports,
     ):
         project_id = self.create_project("Bounded name correction")
-        mock_execute.return_value = {"tool": "list_chapters", "status": "ok", "data": {"items": []}}
+        mock_execute.return_value = {"tool": "list_chapters", "status": "ok", "data": []}
         streams = [native_test_batch(("categories", "set_tool_categories", {
-            "enabled_categories": ["story_knowledge"],
+            "enabled_categories": ["chapters","characters"],
         }))]
         for attempt in range(3):
             if attempt:
@@ -331,7 +332,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "name": "set_tool_categories",
                     "arguments_delta": json.dumps(
                         {
-                            "enabled_categories": ["story_knowledge", "writing_context"],
+                            "enabled_categories": ["chapter_writing"],
                         }
                     ),
                 },
@@ -414,7 +415,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "call-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["writing_context"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["story_design"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -504,7 +505,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "call-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["writing_context"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["chapter_writing"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -616,6 +617,52 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["data"]["existing_chapter_id"], chapter_id)
         self.assertIn("不能覆盖", result["detail"])
+
+    @patch(
+        "app.services.workspace.tools.chapter_writer.LLMGateway.chat_completion",
+        new_callable=AsyncMock,
+    )
+    def test_chapter_writer_keeps_complete_short_draft_without_retry(self, mock_completion):
+        from app.services.context_orchestrator import ContextOrchestrator
+        from app.services.workspace.turn_control import terminal_reply
+
+        project_id = self.create_project("Advisory chapter length")
+        outline_id = self.create_outline(project_id, "第一章 山门")
+        content = "山门风起，少年拾起断剑。\n" * 180
+        mock_completion.return_value = {"content": content, "model": "gpt-test"}
+        db = SessionLocal()
+        try:
+            orchestrator = ContextOrchestrator(db)
+            manifest = orchestrator.prepare(
+                project_id=project_id,
+                task_type="writing",
+                model="openai:gpt-test",
+                arguments={"outline_node_id": outline_id, "minimum_han_characters": 3000},
+            )
+            selection = orchestrator.submit_evidence(manifest, [])
+            result = asyncio.run(_execute_workspace_action(db, project_id, {
+                "tool": "chapter_writer",
+                "arguments": {
+                    "outline_node_id": outline_id,
+                    "context_manifest_id": manifest.id,
+                    "context_selection_token": selection["context_selection_token"],
+                },
+            }))
+
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result["turn_terminal"])
+            self.assertFalse(result["data"]["length_goal_met"])
+            self.assertEqual(result["data"]["minimum_han_characters"], 3000)
+            self.assertIn("完整草稿已保留", terminal_reply(result))
+            draft = db.query(ChapterDraft).one()
+            self.assertEqual(draft.content, content.strip())
+            self.assertEqual(draft.status, "pending")
+            self.assertEqual(draft.id, result["data"]["draft_id"])
+            self.assertEqual(db.query(Chapter).count(), 0)
+            self.assertIsNotNone(db.get(ContextManifest, manifest.id).consumed_at)
+            mock_completion.assert_awaited_once()
+        finally:
+            db.close()
 
     @patch(
         "app.services.workspace.tools.chapter_writer.LLMGateway.chat_completion",
@@ -1168,7 +1215,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
             if stream_calls == 1:
                 replace_tool_categories(
                     kwargs["extra_body"]["local_cli_mcp_tool_category_state_file"],
-                    ["story_knowledge"],
+                    ["characters"],
                 )
                 return async_chunks("")
             return async_chunks("已完成安全预算检查。")
@@ -1312,7 +1359,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "call-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["characters"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -1592,7 +1639,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "privacy-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["characters"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -1669,7 +1716,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                 "type": "tool_call_delta",
                 "index": 0,
                 "name": "set_tool_categories",
-                "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                "arguments_delta": json.dumps({"enabled_categories": ["characters"]}),
             },
             {"type": "done", "finish_reason": "tool_calls", "usage": None},
         )
@@ -1722,7 +1769,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                 "id": "valid-category",
                 "name": "set_tool_categories",
                 "arguments_delta": json.dumps(
-                    {"enabled_categories": ["story_knowledge", "writing_context"]}
+                    {"enabled_categories": ["story_design", "writing_context"]}
                 ),
             },
             {"type": "done", "finish_reason": "tool_calls", "usage": None},
@@ -1821,7 +1868,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                         "id": "valid-external-category",
                         "name": "set_tool_categories",
                         "arguments_delta": json.dumps(
-                            {"enabled_categories": ["story_knowledge", "writing_context"]}
+                            {"enabled_categories": ["story_design", "writing_context"]}
                         ),
                     },
                     {"type": "done", "finish_reason": "tool_calls", "usage": None},
@@ -1896,131 +1943,6 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
     @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
     @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
     @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
-    def test_oversized_declared_tool_result_batch_is_rejected_before_any_handler(
-        self,
-        mock_execute,
-        mock_stream,
-        _mock_supports,
-    ):
-        project_id = self.create_project("Tool result batch admission")
-        db = SessionLocal()
-        try:
-            profile = db.query(ModelContextProfile).filter_by(provider="openai", model_name="gpt-test").one()
-            # One default page fits, but all three declared results do not.
-            profile.context_window_tokens = 128000
-            profile.max_output_tokens = 4096
-            db.commit()
-        finally:
-            db.close()
-        mock_stream.side_effect = [
-            async_dict_chunks(
-                {
-                    "type": "tool_call_delta",
-                    "index": 0,
-                    "id": "category-call",
-                    "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
-                },
-                {"type": "done", "finish_reason": "tool_calls", "usage": None},
-            ),
-            async_dict_chunks(
-                {
-                    "type": "tool_call_delta",
-                    "index": 0,
-                    "id": "search-chapters-call",
-                    "name": "search_chapters",
-                    "arguments_delta": json.dumps({"query": "山门"}),
-                },
-                {
-                    "type": "tool_call_delta",
-                    "index": 1,
-                    "id": "search-outline-call",
-                    "name": "search_outline",
-                    "arguments_delta": json.dumps({"query": "山门"}),
-                },
-                {
-                    "type": "tool_call_delta",
-                    "index": 2,
-                    "id": "search-characters-call",
-                    "name": "search_characters",
-                    "arguments_delta": json.dumps({"query": "守门人"}),
-                },
-                {"type": "done", "finish_reason": "tool_calls", "usage": None},
-            ),
-            async_dict_chunks(
-                {"type": "content_delta", "delta": "已改为分步读取。"},
-                {"type": "done", "finish_reason": "stop", "usage": None},
-            ),
-        ]
-
-        response = self.client.post(
-            f"{API_PREFIX}/projects/{project_id}/ai/workspace-assistant/stream",
-            json={
-                "scope": "project",
-                "message": "同时读取两类大结果",
-                "model": "openai:gpt-test",
-            },
-        )
-
-        events = [
-            json.loads(line.removeprefix("data: "))
-            for line in response.text.splitlines()
-            if line.startswith("data: {")
-        ]
-        rejected = [event for event in events if event.get("type") == "tool_result_batch_rejected"]
-        self.assertEqual(
-            [event["tool"] for event in rejected],
-            ["search_chapters", "search_outline", "search_characters"],
-        )
-        self.assertTrue(all(e["result"]["status"] == "error" for e in rejected))
-        self.assertTrue(all("剩余" in e["result"]["detail"] for e in rejected))
-        self.assertTrue(all(e["result"]["remediation"]["retryable"] for e in rejected))
-        self.assertFalse(any(event.get("type") == "error" for event in events))
-        self.assertTrue(any(event.get("type") == "complete" for event in events))
-        mock_execute.assert_not_awaited()
-        third_messages = mock_stream.call_args_list[2].kwargs["messages"]
-        result_call_ids = {
-            message.get("tool_call_id")
-            for message in third_messages
-            if message.get("role") == "tool"
-        }
-        self.assertEqual(
-            result_call_ids,
-            {
-                "category-call",
-                "search-chapters-call",
-                "search-outline-call",
-                "search-characters-call",
-            },
-        )
-        db = SessionLocal()
-        try:
-            steps = (
-                db.query(AssistantRunStep).filter(AssistantRunStep.project_id == project_id).all()
-            )
-            self.assertEqual(
-                [step.tool for step in steps],
-                [
-                    "set_tool_categories",
-                    "search_chapters",
-                    "search_outline",
-                    "search_characters",
-                ],
-            )
-            self.assertEqual(
-                [step.status for step in steps],
-                ["ok", "error", "error", "error"],
-            )
-            self.assertEqual(
-                [step.step_type for step in steps],
-                ["control", "search", "search", "search"],
-            )
-        finally:
-            db.close()
-
-    @patch("app.routers.ai_writer.LLMGateway.supports_tool_calling", return_value=True)
-    @patch("app.routers.ai_writer.LLMGateway.stream_chat_completion_with_tools")
-    @patch("app.routers.ai_writer._execute_workspace_action", new_callable=AsyncMock)
     def test_two_common_search_results_are_admitted_and_delivered_atomically(
         self,
         mock_execute,
@@ -2049,7 +1971,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "two-search-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["chapters","outline"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -2152,7 +2074,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "empty-recovery-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["chapters"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -2222,7 +2144,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "unbounded-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["chapters"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             )
@@ -2420,7 +2342,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "id": "checkpoint-category",
                     "name": "set_tool_categories",
                     "arguments_delta": json.dumps(
-                        {"enabled_categories": ["story_knowledge"]}
+                        {"enabled_categories": ["outline"]}
                     ),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
@@ -2519,7 +2441,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "capacity-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["outline"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),
@@ -2568,7 +2490,9 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
         )
         self.assertFalse(any(event.get("type") == "complete" for event in events))
         self.assertEqual(mock_stream.call_count, 2)
-        mock_execute.assert_not_awaited()
+        # Safe reads are staged under a savepoint to size their exact result;
+        # the oversized assistant transaction still cannot commit a tool step.
+        self.assertEqual(mock_execute.await_count, 1)
         db = SessionLocal()
         try:
             steps = (
@@ -2619,7 +2543,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
             )
 
         stream.side_effect = [
-            batch("set_tool_categories", 1, arguments={"enabled_categories": ["story_knowledge"]}),
+            batch("set_tool_categories", 1, arguments={"enabled_categories": ["chapters","outline"]}),
             batch("search_outline", 3),
             batch("list_chapters", 4, reasoning_text=reasoning),
             async_dict_chunks({"type": "content_delta", "delta": "资料核对完成。"},
@@ -2736,7 +2660,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "call-categories-1",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["characters"]}),
                 },
                 {
                     "type": "done",
@@ -2862,7 +2786,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                 "index": 0,
                 "id": "reference-categories",
                 "name": "set_tool_categories",
-                "arguments_delta": json.dumps({"enabled_categories": ["story_knowledge"]}),
+                "arguments_delta": json.dumps({"enabled_categories": ["characters"]}),
             }
             yield {"type": "done", "finish_reason": "tool_calls", "usage": None}
             tamper_db = SessionLocal()
@@ -3185,7 +3109,7 @@ class AIChapterDraftFlowTestCase(unittest.TestCase):
                     "index": 0,
                     "id": "call-categories",
                     "name": "set_tool_categories",
-                    "arguments_delta": json.dumps({"enabled_categories": ["writing_context"]}),
+                    "arguments_delta": json.dumps({"enabled_categories": ["chapter_writing"]}),
                 },
                 {"type": "done", "finish_reason": "tool_calls", "usage": None},
             ),

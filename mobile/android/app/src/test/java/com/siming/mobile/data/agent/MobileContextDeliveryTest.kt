@@ -18,6 +18,37 @@ import kotlinx.serialization.json.put
 
 class MobileContextDeliveryTest {
     @Test
+    fun `internal generator reads selected manifest without echoing full context to outer agent`() {
+        val token = "mobile-selection-token"
+        val manifest = MobileContextManifest(
+            id = "manifest-1",
+            projectId = "project-1",
+            model = "test-model",
+            policyVersion = 1,
+            indexVersion = 1,
+            policySourceHash = "policy",
+            status = "ready",
+            request = MobileContextRequest(outlineNodeId = "outline-1", requirements = ""),
+            requestFingerprint = "request",
+            selectionFingerprint = "selection",
+            contextWindowTokens = 64_000,
+            inputBudgetTokens = 48_000,
+            softInputTargetTokens = 32_000,
+            outputReserveTokens = 8_000,
+            safetyMarginTokens = 1_024,
+            items = emptyList(),
+            coverage = emptyMap(),
+            warnings = emptyList(),
+            selectionToken = token,
+        )
+        val ready = beginMobileInternalGeneratorContext(manifest)
+        assertEquals("internal_generator", ready.contextDelivery?.status)
+        assertTrue(mobileContextDeliveryReady(ready, token))
+        assertFalse(mobileContextDeliveryReady(ready, "other-token"))
+        assertFalse(compactMobileContextManifest(ready).toString().contains(token))
+    }
+
+    @Test
     fun `source failures retain bounded Unicode reasons and total count`() {
         val reason = "𠀀😀".repeat(500)
         val receipt = mobileContextSelectionDiagnostics(List(20) { reason })

@@ -174,7 +174,7 @@ class DeclarativeProjectionTest(unittest.TestCase):
         self.assertFalse(result.is_error)
         self.assertEqual(parsed["data"]["draft_id"], "draft-1")
         self.assertEqual(parsed["data"]["content_ref"], "workspace-draft://draft-1")
-        self.assertEqual(len(parsed["data"]["content_preview"]), 1_200)
+        self.assertEqual(len(parsed["data"]["content_preview"]), 80)
         self.assertTrue(parsed["data"]["content_preview_meta"]["truncated"])
         self.assertNotIn("provider_trace", text)
         self.assertNotIn("sk-private", text)

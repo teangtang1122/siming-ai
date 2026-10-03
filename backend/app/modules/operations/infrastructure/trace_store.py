@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS traces (
  status TEXT NOT NULL, mode TEXT NOT NULL, capture_status TEXT NOT NULL,
  correlations TEXT NOT NULL, dropped INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS trace_scope ON traces(owner, scope_kind, scope_id, cursor);
+CREATE TABLE IF NOT EXISTS trace_correlations (
+ trace_id TEXT NOT NULL REFERENCES traces(id) ON DELETE CASCADE, value TEXT NOT NULL,
+ PRIMARY KEY(trace_id, value));
+CREATE INDEX IF NOT EXISTS trace_correlation_value ON trace_correlations(value);
 CREATE TABLE IF NOT EXISTS events (
  id TEXT PRIMARY KEY, trace_id TEXT NOT NULL REFERENCES traces(id) ON DELETE CASCADE,
  sequence INTEGER NOT NULL, value TEXT NOT NULL, UNIQUE(trace_id, sequence));
@@ -38,7 +42,8 @@ class TraceStore:
         self.lock = threading.RLock()
         self.queue_lock = threading.Lock()
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=1)
-        if self.db.execute("PRAGMA user_version").fetchone()[0] > 1:
+        schema_version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if schema_version > 2:
             self.db.close()
             raise ValueError("Unsupported diagnostics schema version")
         self.db.row_factory = sqlite3.Row
@@ -48,12 +53,25 @@ class TraceStore:
         page_size = self.db.execute("PRAGMA page_size").fetchone()[0]
         self.db.execute(f"PRAGMA max_page_count={max_bytes // 2 // page_size:d}")
         self.db.executescript(_DDL)
-        self.db.execute("PRAGMA user_version=1")
         with self.db:
             self.db.execute(
-                "UPDATE traces SET capture_status='interrupted', finished=? WHERE finished IS NULL",
+                "UPDATE traces SET capture_status='interrupted', status='interrupted', "
+                "finished=coalesce(finished,?) WHERE finished IS NULL "
+                "OR (capture_status='interrupted' AND status='running')",
                 (time.time(),),
             )
+            if schema_version < 2:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO trace_correlations SELECT traces.id, j.value "
+                    "FROM traces, json_each(traces.correlations) j WHERE j.type='text'"
+                )
+                self.db.execute(
+                    "INSERT OR IGNORE INTO trace_correlations SELECT events.trace_id, j.value "
+                    "FROM events, json_each(events.value, '$.data') j "
+                    "WHERE json_extract(events.value, '$.event_type')='correlation' "
+                    "AND j.type='text'"
+                )
+                self.db.execute("PRAGMA user_version=2")
         self.policies = {
             row["owner"]: TracePolicy.model_validate_json(row["value"])
             for row in self.db.execute("SELECT * FROM policies")
@@ -183,6 +201,12 @@ class TraceStore:
                     "UPDATE traces SET correlations=json_patch(correlations,?) WHERE id=?",
                     (json.dumps(data), trace_id),
                 )
+            if kind in {"trace_started", "correlation"}:
+                links = data["correlations"] if kind == "trace_started" else data
+                self.db.executemany(
+                    "INSERT OR IGNORE INTO trace_correlations VALUES (?,?)",
+                    [(trace_id, value) for value in links.values() if isinstance(value, str)],
+                )
             if data.get("missing_reason") not in {None, "recording_not_enabled"}:
                 self.db.execute(
                     "UPDATE traces SET capture_status='partial' WHERE id=?", (trace_id,)
@@ -238,7 +262,10 @@ class TraceStore:
                 clauses.append(f"{field}=?")
                 values.append(value)
         if correlation_id:
-            clauses.append("EXISTS(SELECT 1 FROM json_each(traces.correlations) WHERE value=?)")
+            clauses.append(
+                "EXISTS(SELECT 1 FROM trace_correlations c "
+                "WHERE c.trace_id=traces.id AND c.value=?)"
+            )
             values.append(correlation_id)
         if before:
             clauses.append("cursor<?")

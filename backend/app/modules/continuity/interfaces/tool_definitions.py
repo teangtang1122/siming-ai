@@ -405,7 +405,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 100000,
-                "description": "Model-structured hard minimum when the author explicitly requires a Chinese-body length; enforced before any draft is stored and never inferred from requirements text",
+                "description": "Populate only for an explicit author length request; otherwise omit. A drafting reference reported with the preserved unsaved draft, never a rejection gate or an automatically increased retry target",
             },
             "context_manifest_id": {
                 "type": "string",

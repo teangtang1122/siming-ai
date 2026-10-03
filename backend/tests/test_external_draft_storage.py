@@ -149,7 +149,7 @@ class SaveExternalDraftTest(unittest.TestCase):
         return_value=None,
     )
     @patch(
-        "app.services.workspace.tools.external_writing._external_draft_length_error",
+        "app.services.workspace.tools.external_writing._external_draft_length_contract_error",
         return_value=None,
     )
     def test_saves_reviewable_revision_for_explicit_matching_target(

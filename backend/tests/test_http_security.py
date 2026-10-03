@@ -2,6 +2,8 @@
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,7 +13,49 @@ from app.bootstrap.app_factory import (
     create_app,
     resolve_frontend_file,
 )
-from app.bootstrap.http_security import GatewayRequestLimitMiddleware
+from app.bootstrap.http_security import (
+    GatewayAuthenticationMiddleware,
+    GatewayRequestLimitMiddleware,
+)
+
+
+def test_loopback_bearer_request_keeps_android_device_identity(monkeypatch) -> None:
+    observed: list[dict] = []
+
+    async def downstream(scope, receive, send) -> None:
+        observed.append(dict(scope.get("state") or {}))
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def send(message: dict) -> None:
+        return None
+
+    db = MagicMock()
+    monkeypatch.setattr("app.database.session.SessionLocal", lambda: db)
+    authenticate = MagicMock(return_value=SimpleNamespace(
+        device_id="paired-phone", role="member", platform="android",
+    ))
+    monkeypatch.setattr(
+        "app.modules.gateway.infrastructure.service.GatewayService",
+        lambda session: SimpleNamespace(authenticate=authenticate),
+    )
+    scope = {
+        "type": "http", "method": "POST", "path": "/api/v1/novel-creation/finalize",
+        "headers": [(b"authorization", b"Bearer paired-token")],
+        "client": ("127.0.0.1", 12345),
+    }
+
+    asyncio.run(GatewayAuthenticationMiddleware(downstream, enabled=True)(
+        scope, receive, send,
+    ))
+
+    authenticate.assert_called_once_with("paired-token")
+    assert observed == [{
+        "gateway_device_id": "paired-phone",
+        "gateway_device_role": "member",
+        "gateway_device_platform": "android",
+    }]
 
 
 def test_limited_streaming_post_delegates_disconnect_after_replaying_body() -> None:

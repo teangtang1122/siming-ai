@@ -76,12 +76,11 @@ def test_text_only_completion_is_corrected_in_the_same_agent_conversation(archiv
     async def model(**kwargs):
         index = len(seen)
         seen.append(deepcopy(kwargs))
-        if index == 1:
+        if index == 0:
             yield {"type": "content_delta", "delta": "候选齐了，建档完成。"}
         else:
-            name, args = (("set_tool_categories", {"enabled_categories": ["cataloging"]}) if index == 0 else
-                          ("save_external_cataloging_candidates", {"job_id": job.id, "chapter_id": run.chapter_id,
-                                                                   "candidates": [], "finalize": True}))
+            name, args = ("save_external_cataloging_candidates", {"job_id": job.id, "chapter_id": run.chapter_id,
+                                                                   "candidates": [], "finalize": True})
             yield {"type": "tool_call_delta", "index": 0, "id": f"call-{index}", "name": name,
                    "arguments_delta": json.dumps(args)}
         yield {"type": "done"}
@@ -89,7 +88,7 @@ def test_text_only_completion_is_corrected_in_the_same_agent_conversation(archiv
     async def execute():
         return [event async for event in orchestrator._extract_run(db, job, run)]
     asyncio.run(execute())
-    assert run.status == "awaiting_confirmation" and len(seen) == 3
+    assert run.status == "awaiting_confirmation" and len(seen) == 2
     feedback = json.loads(seen[-1]["messages"][-1]["content"])
     assert feedback["candidate_set_complete"] is False
     assert feedback["requires_explicit_finalization"] is True

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -281,6 +281,7 @@ def _prepare(
     current: ConversationMessage,
     captured: list[dict],
     ledger: tuple[ExecutionLedgerEntry, ...] = (),
+    effective_ledger: tuple[ExecutionLedgerEntry, ...] | None = None,
     source_hashes: dict[str, str] | None = None,
 ):
     return asyncio.run(
@@ -303,6 +304,7 @@ def _prepare(
             current_tools=(),
             reload_turns=lambda: turns,
             trusted_execution_ledger=ledger,
+            effective_execution_ledger=effective_ledger,
             execution_source_hashes=source_hashes,
             checkpoint_completion=_checkpoint_completion(captured),
         )
@@ -457,6 +459,82 @@ def test_run_step_retry_hash_is_superseded_and_uses_a_new_attempt_key() -> None:
     active_sources = store.sources[store.state.active_checkpoint_id]
     run_step = next(source for source in active_sources if source.source_kind == "run_step")
     assert run_step.source_hash == "b" * 64
+
+
+def test_later_write_to_same_resource_keeps_older_checkpoint_source_valid() -> None:
+    first_write = ExecutionLedgerEntry(
+        run_id="run-1",
+        step_id="step-revision-1",
+        tool="patch_creation_session",
+        status="ok",
+        resource_refs=(ResourceReference("creation_session", "session-1", 1),),
+    )
+    later_write = ExecutionLedgerEntry(
+        run_id="run-2",
+        step_id="step-revision-2",
+        tool="patch_creation_session",
+        status="ok",
+        resource_refs=(ResourceReference("creation_session", "session-1", 2),),
+    )
+    store, turns, current = _seed_checkpoint(
+        ledger=(first_write,),
+        source_hashes={"step-revision-1": "a" * 64},
+    )
+    checkpoint_id = store.state.active_checkpoint_id
+
+    _prepare(
+        store=store,
+        turns=turns,
+        current=current,
+        captured=[],
+        ledger=(first_write, later_write),
+        effective_ledger=(later_write,),
+        source_hashes={
+            "step-revision-1": "a" * 64,
+            "step-revision-2": "b" * 64,
+        },
+    )
+
+    assert store.state.active_checkpoint_id == checkpoint_id
+    assert store.context_checkpoint(
+        "workspace", "conversation", checkpoint_id, owner_id="project"
+    ).status == "ready"
+    assert store.invalidate_calls == 0
+
+
+def test_successful_full_context_clears_older_failed_attempt_notice() -> None:
+    store = _Store()
+    failed_at = datetime.utcnow()
+    store.records.append(SimpleNamespace(
+        id="checkpoint-failed",
+        status="superseded",
+        error_code=ConversationContextErrorCode.SOURCE_CHANGED.value,
+        completed_at=failed_at,
+        model_binding_json=None,
+        validation_json={},
+        source_message_count=2,
+    ))
+
+    def current_state() -> dict:
+        return context_state_payload(
+            store=store,
+            conversation_kind="workspace",
+            conversation_id="conversation",
+            owner_id="project",
+        )
+
+    store.state.last_budget_json = {
+        "prepared_at": (failed_at - timedelta(seconds=1)).isoformat(),
+    }
+    assert current_state()["status"] == "failed"
+
+    store.state.last_budget_json = {
+        "prepared_at": (failed_at + timedelta(seconds=1)).isoformat(),
+    }
+    recovered = current_state()
+    assert recovered["status"] == "ready"
+    assert recovered["active_checkpoint_id"] is None
+    assert recovered["error_code"] is None
 
 
 def test_resolved_retry_fold_still_invalidates_old_run_step_provenance() -> None:

@@ -117,7 +117,7 @@ def test_task_context_search_contract_has_one_pc_authority() -> None:
     parameter = inspect.signature(ContextOrchestrator.search_task_context).parameters["limit"]
     assert parameter.default == TASK_CONTEXT_SEARCH_PAGE_LIMIT == 10
     assert TASK_CONTEXT_SEARCH_MAX_CURSOR == 20
-    assert TASK_CONTEXT_SEARCH_EXCERPT_CHARS == 600
+    assert TASK_CONTEXT_SEARCH_EXCERPT_CHARS == 160
 
     schema = registry.get("search_task_context").input_schema
     assert schema["limit"] | {} == {

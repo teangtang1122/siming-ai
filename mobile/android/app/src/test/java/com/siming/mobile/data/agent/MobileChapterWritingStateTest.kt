@@ -31,9 +31,10 @@ class MobileChapterWritingStateTest {
         val completedState = state(listOf(pending, cataloged))
         assertTrue(completedState.values.all { it == JsonNull })
         assertNull(mobileCatalogingBlockReason(completedState, ""))
-        val runtime = mobileWorkspaceRuntimeData(obj("""{"id":"p1","title":"作品"}"""), completedState)
+        val runtime = mobileWorkspaceRuntimeData(obj("""{"id":"p1","title":"作品"}"""), completedState, 1)
         assertEquals(JsonNull, runtime["active_chapter_draft"])
         assertEquals(completedState, runtime["chapter_writing_state"])
+        assertEquals(JsonPrimitive(1), runtime["outline_batch_count"])
         assertFalse(runtime.toString().contains("draft-1"))
     }
 

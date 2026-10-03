@@ -91,8 +91,10 @@ internal class ContextSpan(val trace: ContextTrace?, val kind: String, label: St
     @Synchronized fun finish(status: String, errorType: String? = null) {
         if (finished) return
         finished = true
+        val outcome = if (status == "completed") trace?.outcomes?.remove(id) ?: status else status
+        if (kind == "turn" && outcome != "completed") trace?.businessStatus = outcome
         trace?.event("span_finished", buildJsonObject {
-            put("span_id", id); put("status", if (status == "completed") trace.outcomes.remove(id) ?: status else status)
+            put("span_id", id); put("status", outcome)
             put("duration_ms", (System.nanoTime() - started) / 1_000_000.0)
             errorType?.let { put("error_type", it) }
         })
@@ -134,8 +136,8 @@ internal object MobileTrace {
         val span = ContextSpan(current.get(), kind, label)
         return withContext(parent.asContextElement(span.id)) {
             try { block().also {
-                val status = (it as? JsonObject)?.text("status")
-                span.finish(if (status in setOf("error", "denied", "blocked")) "error" else "completed")
+                (it as? JsonObject)?.let(::toolOutcome)
+                span.finish("completed")
             } }
             catch (error: Throwable) {
                 span.finish(if (error is CancellationException) "cancelled" else "error", error.javaClass.simpleName)

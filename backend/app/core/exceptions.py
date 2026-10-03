@@ -50,6 +50,14 @@ class LLMError(AppException):
         super().__init__(code=502, message=message, status_code=502)
 
 
+class LLMOutputLimitError(LLMError):
+    """A model exhausted one response before completing a usable tool call."""
+
+    def __init__(self, max_tokens: int | None):
+        self.max_tokens = max_tokens
+        super().__init__("模型单次输出额度已用尽，仍未形成完整工具调用")
+
+
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """Handle custom application exceptions."""
     return JSONResponse(

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from app.architecture.tool_categories import TOOL_CATEGORY_CONTROLLER
+from app.architecture.tool_categories import CATALOGING_TOOL_CATEGORIES, TOOL_CATEGORY_CONTROLLER
 
 
 class NativeToolBatchValidationError(ValueError):
@@ -42,12 +42,16 @@ class NativeToolBatchNotOpen(NativeToolBatchValidationError):
         self.recovery_fits = False
 
     def model_error_result(self, tool_name: str) -> dict[str, Any]:
+        category_hint = (
+            "需要其他能力时单独调用 set_tool_categories。"
+            if TOOL_CATEGORY_CONTROLLER in self.allowed_tool_names else ""
+        )
         return {
             "tool": tool_name,
             "status": "error",
             "detail": (
                 "本批次含有当前未开放的工具，所有调用均未执行。请根据本步骤实际提供的工具名称与"
-                "参数 Schema 重新选择调用；需要其他能力时单独调用 set_tool_categories。"
+                f"参数 Schema 重新选择调用；{category_hint}"
                 "不要猜测工具别名，也不要把同批其他调用当作已成功。"
             ),
             "data": {
@@ -74,7 +78,7 @@ class ValidatedNativeToolBatch:
 def is_cataloging_mutation(definition: Any | None) -> bool:
     """Read-only preparation must not inherit cataloging control boundaries."""
     return (
-        getattr(definition, "agent_category", "") == "cataloging"
+        getattr(definition, "agent_category", "") in CATALOGING_TOOL_CATEGORIES
         and getattr(definition, "tool_type", "read") != "read"
     )
 

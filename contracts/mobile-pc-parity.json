@@ -35,6 +35,7 @@
         "novelCreationStage": "novel_creation.session",
         "conflictResolution": "sync.conflicts",
         "catalogingJob": "chapter.cataloging",
+        "catalogingStart": "chapter.cataloging",
         "catalogingCancel": "chapter.cataloging",
         "contextTrace": "context.inspector",
         "catalogingMobileCommit": "chapter.cataloging"
@@ -78,8 +79,6 @@
         "search_chapters": "authoring.chapter",
         "search_outline": "authoring.outline",
         "search_outline_tree": "authoring.outline",
-        "create_outline_node": "authoring.outline",
-        "create_outline_nodes": "authoring.outline",
         "update_outline_node": "authoring.outline",
         "list_worldbuilding": "authoring.worldbuilding",
         "search_worldbuilding": "authoring.worldbuilding",

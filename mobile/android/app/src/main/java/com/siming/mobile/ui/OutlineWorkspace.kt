@@ -94,6 +94,16 @@ internal fun outlineTypeLabel(raw: String): String = when (raw) {
     else -> "章"
 }
 
+internal fun outlineDraftSaveLabel(
+    draft: MobilePendingOutlineDraft,
+    nodes: List<MobileOutlineDraftNode>,
+    designNotes: String,
+): String = if (nodes == draft.nodes && designNotes == draft.designNotes) {
+    "草稿已保存 · 待确认"
+} else {
+    "有未保存修改 · 待确认"
+}
+
 internal fun outlineSuggestedChildType(parentType: String?): String = when (parentType) {
     "volume" -> "chapter"
     "chapter" -> "section"
@@ -295,6 +305,7 @@ private fun MobileOutlineDraftReviewCard(
     var nodes by remember(draft.draftId, draft.nodes) { mutableStateOf(draft.nodes) }
     var designNotes by remember(draft.draftId, draft.designNotes) { mutableStateOf(draft.designNotes) }
     val valid = nodes.isNotEmpty() && nodes.all { it.title.isNotBlank() }
+    val dirty = nodes != draft.nodes || designNotes != draft.designNotes
 
     OutlinedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -312,9 +323,9 @@ private fun MobileOutlineDraftReviewCard(
                 Column(Modifier.weight(1f)) {
                     Text("AI 大纲草稿", fontWeight = FontWeight.Bold)
                     Text(
-                        "未保存 · 确认前不会进入正式大纲",
+                        outlineDraftSaveLabel(draft, nodes, designNotes),
                         style = MaterialTheme.typography.bodySmall,
-                        color = SimingCinnabar,
+                        color = if (dirty) SimingCinnabar else SimingGreen,
                     )
                 }
                 MicroTag("${nodes.size} 节点", SimingBlue)
@@ -331,6 +342,7 @@ private fun MobileOutlineDraftReviewCard(
                         ) {
                             listOf("volume", "chapter", "section").forEach { type ->
                                 AssistChip(
+                                    enabled = !busy,
                                     onClick = {
                                         nodes = nodes.toMutableList().also {
                                             it[index] = node.copy(nodeType = type)
@@ -345,6 +357,7 @@ private fun MobileOutlineDraftReviewCard(
                             }
                         }
                         OutlinedTextField(
+                            enabled = !busy,
                             value = node.title,
                             onValueChange = { value ->
                                 nodes = nodes.toMutableList().also { it[index] = node.copy(title = value) }
@@ -354,6 +367,7 @@ private fun MobileOutlineDraftReviewCard(
                             singleLine = true,
                         )
                         OutlinedTextField(
+                            enabled = !busy,
                             value = node.summary,
                             onValueChange = { value ->
                                 nodes = nodes.toMutableList().also { it[index] = node.copy(summary = value) }
@@ -364,6 +378,7 @@ private fun MobileOutlineDraftReviewCard(
                         )
                         if (node.nodeType == "section") {
                             OutlinedTextField(
+                                enabled = !busy,
                                 value = node.parentTitle.orEmpty(),
                                 onValueChange = { value ->
                                     nodes = nodes.toMutableList().also {
@@ -379,6 +394,7 @@ private fun MobileOutlineDraftReviewCard(
                 }
             }
             OutlinedTextField(
+                enabled = !busy,
                 value = designNotes,
                 onValueChange = { designNotes = it },
                 label = { Text("设计说明") },
@@ -391,7 +407,7 @@ private fun MobileOutlineDraftReviewCard(
             ) {
                 OutlinedButton(
                     onClick = { onUpdate(draft, nodes, designNotes) },
-                    enabled = valid && !busy,
+                    enabled = valid && dirty && !busy,
                 ) { Text("保存修改") }
                 Button(
                     onClick = { onConfirm(draft, nodes, designNotes, false) },

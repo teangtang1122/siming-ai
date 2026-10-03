@@ -190,9 +190,9 @@ flowchart TD
    - 字段未提供才表示不修改；
    - 显式空列表必须调用权威 helper 清空关系；
    - 非空列表存在未知名称时返回结构化错误，不执行部分替换。
-3. `create_outline_node` 在建立节点前完成可预先执行的名称校验，避免节点已添加后才发现角色无效。
-4. `create_outline_node` 和 `update_outline_node` 在构造 `outline_node_payload()` 前满足关联已 flush 的后置条件。
-5. `create_outline_nodes` 与 `confirm_outline_draft` 返回的节点、已确认草稿中的 `nodes_json`、随后 GET 的正式大纲三者必须包含同一组角色关联。
+3. `outline_draft_apply._create_node` 在建立节点前完成可预先执行的名称校验，避免节点已添加后才发现角色无效。
+4. `outline_draft_apply._create_node` 和 `update_outline_node` 在构造 `outline_node_payload()` 前满足关联已 flush 的后置条件。
+5. `outline_draft_apply.apply_confirmed_outline_nodes` 与 `confirm_outline_draft` 返回的节点、已确认草稿中的 `nodes_json`、随后 GET 的正式大纲三者必须包含同一组角色关联。
 6. 保留现有工具结果结构；校验失败使用现有 `status="error"` 语义并列出无法解析的名称，不暴露内部异常。
 
 ### 阶段 D：修复建档生成 ID 生命周期（P1）
@@ -397,3 +397,5 @@ Android 以项目现有 JDK/Gradle 约束执行单测、lint 与 release 构建�
 - [ ] Windows 与 Android 四个正式资产已发布并通过摘要/安装验证。
 - [ ] Release Notes 明确写明“大纲一次关联多个角色无法保存”和“新建失败无提示”已修复。
 - [ ] 临时分支在合并和发布验证完成后关闭/删除。
+
+上述创建函数是作者确认草稿时使用的内部事务函数，不向 PC/API/CLI/MCP 或手机 Agent 开放。新大纲只能生成待确认草稿。

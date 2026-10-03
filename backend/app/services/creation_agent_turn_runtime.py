@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.orm import Session
+
 from app.architecture.uow import commit_session
 from app.database.session import SessionLocal
 from app.modules.assistant.application.system_conversations import SystemConversationStore
@@ -23,7 +25,6 @@ from app.modules.operations.application.trace_decorators import observed
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.conversation_context import (
     ConversationContextError,
-    ConversationContextErrorCode,
     ConversationIdentity,
     ConversationKind,
     ModelToolCapability,
@@ -33,8 +34,8 @@ from app.services.conversation_context import (
     prepare_conversation_context,
 )
 from app.services.conversation_context.canonical import canonical_sha256
-from app.services.conversation_context.checkpoint_state import (
-    safe_public_error_detail,
+from app.services.creation_agent_errors import (
+    safe_creation_agent_error as safe_creation_agent_error,
 )
 from app.services.creation_agent_turn_records import (
     creation_agent_turn_records,
@@ -47,20 +48,22 @@ from app.services.creation_agent_turn_records import (
 )
 from app.services.model_readiness import sanitize_readiness_message
 from app.services.novel_creation_agent import run_creation_agent
-from app.services.observability.run_events import classify_failure
 from app.services.persistence.assistant_workspace import SqlAlchemyAssistantWorkspace
 from app.services.workspace.registry import registry
 from app.services.workspace.tool_result_projection import (
     max_model_visible_result_tokens_for_open_tool_schemas,
     max_native_tool_transaction_wrapper_tokens,
 )
-from sqlalchemy.orm import Session
 
 TurnPublisher = Callable[[dict[str, Any]], Awaitable[None]]
 TurnProducer = Callable[[TurnPublisher], Awaitable[None]]
 
 _TURN_RETENTION_SECONDS = 15 * 60
 _HEARTBEAT_SECONDS = 10
+# Creation tool steps need room for the assistant call and its complete result
+# in the following request, including an exact failed turn on retry. Tool-free
+# final replies retain the model's configured output limit.
+_CREATION_TOOL_STEP_OUTPUT_TOKENS = 4_096
 logger = logging.getLogger(__name__)
 
 
@@ -189,57 +192,6 @@ def _persist_creation_agent_turn(
             "payload": payload,
         },
     )
-
-
-def safe_creation_agent_error(exc: Exception) -> tuple[str, dict[str, Any]]:
-    if isinstance(exc, ConversationContextError):
-        if exc.code is ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY:
-            from .workspace.assistant_public_errors import public_context_failure
-
-            failure = public_context_failure(exc)
-            return failure.message, {
-                "error_type": "conversation_context",
-                "failure_class": failure.failure_class,
-                **failure.to_dict(),
-                "next_action": failure.details["remediation"],
-            }
-        code = exc.code.value
-        message = safe_public_error_detail(exc.code) or (
-            "对话上下文处理失败，本次任务未执行。"
-        )
-        next_action = (
-            "请缩小当前请求、检查模型容量或重试上下文整理；"
-            "在上下文通过校验前不会执行任何业务工具。"
-        )
-        return message, {
-            "error_type": "conversation_context",
-            "failure_class": "conversation_context",
-            "code": code,
-            "message": message,
-            "details": {"remediation": next_action},
-            "next_action": next_action,
-        }
-    failure_class = classify_failure(str(exc)) or "unknown"
-    message, next_action = {
-        "quota_or_rate_limit": (
-            "模型额度已耗尽或请求受限",
-            "请等待额度恢复，或切换到有额度的模型后重试。",
-        ),
-        "auth": ("模型授权已失效", "请到模型设置重新登录或填写凭据，测试成功后重试。"),
-        "timeout": ("模型响应超时", "后台状态已保留，可稍后重试或切换更快的模型。"),
-        "network": ("模型网络连接中断", "请检查网络或本机模型进程后重试。"),
-        "empty_response": ("模型没有返回有效内容", "请重试本轮或切换模型。"),
-        "invalid_response": ("模型返回格式无法解析", "请重试本轮或切换模型。"),
-        "provider_protocol": (
-            "模型接口拒绝了工具或思考协议",
-            "请检查模型设置中的接口协议，或切换模型后重试；仍失败时请提供错误编号和诊断日志。",
-        ),
-    }.get(failure_class, ("立项助手处理失败", "请检查模型状态后重试本轮。"))
-    return message, {
-        "error_type": type(exc).__name__,
-        "failure_class": failure_class,
-        "next_action": next_action,
-    }
 
 
 async def _emit(
@@ -570,9 +522,17 @@ class _CreationModelContextRuntime:
                 before_sequence=current_user.sequence_no,
             )
 
+        orchestrator = ContextOrchestrator(context.db)
+        output_reserve_tokens = None
+        if protocol == "native" and budget_tool_schemas:
+            profile = orchestrator.resolve_model_profile(model, "new_project")
+            output_reserve_tokens = min(
+                _CREATION_TOOL_STEP_OUTPUT_TOKENS,
+                profile.max_output_tokens,
+            )
         prepared = await prepare_conversation_context(
             store=SqlAlchemyAssistantWorkspace(context.db),
-            orchestrator=ContextOrchestrator(context.db),
+            orchestrator=orchestrator,
             conversation=conversation,
             owner_id=request.session_id,
             turns=turns,
@@ -590,11 +550,13 @@ class _CreationModelContextRuntime:
             ),
             current_ledger=tuple(current_ledger),
             delivered_transactions=tuple(delivered_transactions),
-            trusted_execution_ledger=execution_ledger.entries,
+            trusted_execution_ledger=execution_ledger.trusted_entries,
+            effective_execution_ledger=execution_ledger.entries,
             execution_source_hashes=execution_ledger.source_hashes,
             provider_protocol_state=provider_protocol_state,
             provider_state=provider_state,
             extra_runtime_instruction=extra_runtime_instruction,
+            output_reserve_tokens=output_reserve_tokens,
             max_model_visible_result_tokens_for_open_tools=result_token_reserve,
             next_step_wrapper=(
                 max_native_tool_transaction_wrapper_tokens()
@@ -800,7 +762,16 @@ async def _persist_turn_error(
     await publish({"type": "error", "message": safe_message, "data": safe_error_data})
 
 
-@observed(kind="turn", scope_kind="creation_session", scope_id="request.session_id", correlations={"turn_id": "request.client_turn_id", "conversation_id": "request.conversation_id", "assistant_message_id": "request.assistant_message_id"})
+@observed(
+    kind="turn",
+    scope_kind="creation_session",
+    scope_id="request.session_id",
+    correlations={
+        "turn_id": "request.client_turn_id",
+        "conversation_id": "request.conversation_id",
+        "assistant_message_id": "request.assistant_message_id",
+    },
+)
 async def produce_creation_agent_turn(
     request: CreationAgentTurnInput,
     publish: TurnPublisher,
@@ -830,7 +801,10 @@ async def produce_creation_agent_turn(
         if await _recover_existing_turn(context, publish):
             return
         _bind_pending_turn(context)
-        correlate(conversation_id=context.conversation_id, assistant_message_id=context.assistant_message_id)
+        correlate(
+            conversation_id=context.conversation_id,
+            assistant_message_id=context.assistant_message_id,
+        )
         await _execute_agent(context, source_session, publish)
     except CreationTurnSuperseded:
         record_business_event({"type": "superseded"})

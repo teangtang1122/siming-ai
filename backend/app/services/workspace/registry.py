@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 
 from ...architecture.tool_categories import (
+    PROJECT_TOOL_CATEGORIES,
     TOOL_CATEGORY_BY_NAME,
     normalize_tool_categories,
     tool_category_for_name,
@@ -129,6 +130,14 @@ _CREATION_WRITE_RECEIPT_CONTRACT = replace(
     ),
 )
 
+# Session and artifact patches return bounded persisted-revision metadata; the
+# submitted changes and any full artifact document remain in storage. Reserve
+# only their model-visible receipts before executing a write.
+_CREATION_PATCH_RECEIPT_CONTRACT = replace(
+    _CREATION_WRITE_RECEIPT_CONTRACT,
+    max_json_bytes=2 * 1024,
+)
+
 _CATALOGING_LAUNCH_RECEIPT_CONTRACT = ModelResultContract(
     policy=ModelResultPolicy.STATUS_ONLY,
     max_json_bytes=8 * 1024,
@@ -163,7 +172,9 @@ _CATALOGING_LAUNCH_RECEIPT_CONTRACT = ModelResultContract(
 
 _CHAPTER_DRAFT_RESULT_CONTRACT = ModelResultContract(
     policy=ModelResultPolicy.ARTIFACT_REFERENCE,
-    max_json_bytes=16 * 1024,
+    # The complete draft is durable and the writer ends this Agent turn.
+    # Keep only a small audit preview in the outer tool transcript.
+    max_json_bytes=2 * 1024,
     data_fields=(
         "draft_id",
         "project_id",
@@ -175,26 +186,22 @@ _CHAPTER_DRAFT_RESULT_CONTRACT = ModelResultContract(
         "next_actions",
         "word_count",
         "context_manifest_id",
-        # A rejected short draft is not an artifact, but the model and author
-        # still need the deterministic retry receipt.  Keep only the declared
-        # counts and booleans; prose and tokens remain outside the projection.
         "reason_code",
-        "actual_han_characters",
+        "han_character_count",
         "minimum_han_characters",
-        "missing_han_characters",
-        "draft_stored",
-        "context_selection_token_consumed",
+        "length_goal_met",
+        "length_notice",
     ),
     reference_fields=("draft_id", "content_ref"),
     preview=ModelResultPreview(
         source_field="content",
         output_field="content_preview",
-        max_chars=1_200,
+        max_chars=80,
     ),
 )
 _OUTLINE_DRAFT_RESULT_CONTRACT = ModelResultContract(
     policy=ModelResultPolicy.ARTIFACT_REFERENCE,
-    max_json_bytes=16 * 1024,
+    max_json_bytes=4 * 1024,
     data_fields=(
         "draft_id",
         "project_id",
@@ -202,15 +209,21 @@ _OUTLINE_DRAFT_RESULT_CONTRACT = ModelResultContract(
         "parent_id",
         "insert_after_id",
         "draft_status",
-        "design_notes",
         "saved_outline_node_ids",
         "chapter_outline_node_ids",
         "next_actions",
     ),
     reference_fields=("draft_id",),
+    author_data_fields=("design_notes",),
     preview=ModelResultPreview(
         source_field="nodes",
         output_field="nodes_preview",
+        item_fields=("id", "node_type"),
+        max_items=OUTLINE_PROPOSAL_MAX_NODES,
+    ),
+    author_preview=ModelResultPreview(
+        source_field="nodes",
+        output_field="nodes",
         item_fields=(
             "id",
             "parent_id",
@@ -228,6 +241,8 @@ _OUTLINE_DRAFT_RESULT_CONTRACT = ModelResultContract(
 )
 
 _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
+    "patch_creation_artifact": _CREATION_PATCH_RECEIPT_CONTRACT,
+    "patch_creation_session": _CREATION_PATCH_RECEIPT_CONTRACT,
     # REST, native-agent and CLI/MCP callers must be able to distinguish a
     # newly queued job from an idempotently reused current-version result.
     # Hiding these launch fields makes repeated catalog clicks look like fresh
@@ -300,6 +315,7 @@ _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
         page_budget=ModelResultPageBudget(
             4096, 6144, 2, text_argument="summary_chars", default_text_chars=500,
             max_text_chars=1000, text_fields_per_item=3, min_text_fields=4,
+            default_items=1,
         ),
     ),
     "search_outline_tree": ModelResultContract(
@@ -316,7 +332,7 @@ _MODEL_RESULT_CONTRACTS_BY_NAME: dict[str, ModelResultContract] = {
     # default 16 KiB read contract makes a valid Chinese page fail projection
     # once a real project has enough current context.
     "prepare_external_writing_context": ModelResultContract(max_json_bytes=32 * 1024),
-    # Twelve 600-character evidence previews plus stable IDs/hashes fit this
+    # Ten 160-character evidence previews plus stable IDs/hashes fit this
     # single-call envelope; the bound request budget admits the full batch.
     "search_task_context": ModelResultContract(max_json_bytes=32 * 1024),
     "submit_context_evidence": ModelResultContract(
@@ -365,19 +381,6 @@ def _model_result_contract_for(tool_def: ToolDef) -> ModelResultContract:
     if tool_def.name in CREATION_AGENT_WRITE_TOOL_NAMES:
         return _CREATION_WRITE_RECEIPT_CONTRACT
     if tool_def.tool_type in {"write", "scheduler"}:
-        if tool_def.name == "create_outline_nodes":
-            return replace(
-                _STATUS_ONLY_CONTRACT,
-                max_json_bytes=12 * 1024,
-                list_projections=(
-                    ModelResultListProjection(
-                        source_field="nodes",
-                        output_field="nodes",
-                        item_fields=("id", "parent_id", "node_type", "title", "status"),
-                        max_items=OUTLINE_PROPOSAL_MAX_NODES,
-                    ),
-                ),
-            )
         return _STATUS_ONLY_CONTRACT
     if tool_def.name in {"remember", "forget"}:
         return _STATUS_ONLY_CONTRACT
@@ -476,7 +479,7 @@ class ToolRegistry(ToolSpecRegistryMixin):
         )
         result = []
         for td in self._tools.values():
-            if not td.expose_to_internal_agent:
+            if not td.expose_to_internal_agent or td.agent_category not in PROJECT_TOOL_CATEGORIES:
                 continue
             if selected_categories is not None and td.agent_category not in selected_categories:
                 continue
@@ -607,6 +610,7 @@ class ToolRegistry(ToolSpecRegistryMixin):
             for definition in self.list_for_mcp(permission_pack="project_management")
             if definition.direct_mcp_project_scoped
             and definition.direct_mcp_transactional
+            and definition.agent_category in PROJECT_TOOL_CATEGORIES
         ]
 
     def list_for_frontend(self) -> list[dict]:
@@ -702,8 +706,6 @@ _TOOL_REGISTRATION_ORDER = (
     "create_worldbuilding_entry",
     "update_worldbuilding_entry",
     "delete_worldbuilding_entry",
-    "create_outline_node",
-    "create_outline_nodes",
     "update_outline_node",
     "delete_outline_node",
     "create_character",

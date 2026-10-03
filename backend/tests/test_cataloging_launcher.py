@@ -26,6 +26,7 @@ from app.services.cataloging.launcher import (
     mark_cataloging_worker_failure,
     mark_interrupted_cataloging_jobs,
 )
+from app.services.cataloging.job_control import complete_cataloging_job, refresh_job_progress
 
 
 def _database():
@@ -104,6 +105,78 @@ def test_new_author_trigger_supersedes_only_same_chapter_job():
         assert first.status == "cancelled"
         assert second.status == "queued"
         assert launch["superseded_job_ids"] == [first.id]
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_successful_retry_closes_older_failed_job_and_task_center_pause():
+    engine, db = _database()
+    try:
+        _chapter(db)
+        old_job, _ = create_and_queue_cataloging_job(
+            db, "project-1", ["chapter-1"],
+            backend_override="external_agent", trigger_source="manual", run_now=False,
+        )
+        old_run = db.query(CatalogingChapterRun).filter_by(job_id=old_job.id).one()
+        old_run.status = "failed"
+        old_job.status = "paused_on_failure"
+        refresh_job_progress(db, old_job)
+        db.commit()
+
+        retry_job, _ = create_and_queue_cataloging_job(
+            db, "project-1", ["chapter-1"],
+            backend_override="external_agent", trigger_source="manual", run_now=False,
+        )
+        retry_run = db.query(CatalogingChapterRun).filter_by(job_id=retry_job.id).one()
+        retry_run.status = "completed"
+        complete_cataloging_job(db, retry_job)
+        db.commit()
+
+        assert old_job.status == "cancelled"
+        assert db.get(OperationRun, old_job.operation_id).status == "cancelled"
+        assert retry_job.status == "completed"
+        assert db.get(Chapter, "chapter-1").cataloging_required is False
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_successful_retry_keeps_old_job_when_another_chapter_is_unresolved():
+    engine, db = _database()
+    try:
+        _chapter(db)
+        db.add(Chapter(
+            id="chapter-2", project_id="project-1", title="第二章",
+            content="正文", word_count=2, cataloging_required=True,
+        ))
+        db.commit()
+        old_job, _ = create_and_queue_cataloging_job(
+            db, "project-1", ["chapter-1", "chapter-2"],
+            backend_override="external_agent", trigger_source="manual", run_now=False,
+        )
+        old_run = db.query(CatalogingChapterRun).filter_by(
+            job_id=old_job.id, chapter_id="chapter-1",
+        ).one()
+        old_run.status = "failed"
+        old_job.status = "paused_on_failure"
+        refresh_job_progress(db, old_job)
+        db.commit()
+
+        retry_job, _ = create_and_queue_cataloging_job(
+            db, "project-1", ["chapter-1"],
+            backend_override="external_agent", trigger_source="manual", run_now=False,
+        )
+        retry_run = db.query(CatalogingChapterRun).filter_by(job_id=retry_job.id).one()
+        retry_run.status = "completed"
+        complete_cataloging_job(db, retry_job)
+        db.commit()
+
+        assert old_job.status == "paused_on_failure"
+        assert db.get(OperationRun, old_job.operation_id).status == "paused"
+        assert db.get(Chapter, "chapter-2").cataloging_required is True
     finally:
         db.close()
         Base.metadata.drop_all(engine)

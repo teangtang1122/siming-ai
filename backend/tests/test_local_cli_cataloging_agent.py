@@ -237,10 +237,8 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
         self.assertIn("0007", launch.args[launch.args.index("--title") + 1])
 
 
-    def test_managed_cataloging_uses_scoped_mcp_and_model_selected_categories(self):
-        from app.ai.local_cli_monitor import CLITurnTerminal
+    def test_managed_cataloging_directly_supplies_fixed_task_tools(self):
         from app.mcp.server import handle_message
-        from app.services.tool_category_state import read_tool_category_state, replace_tool_categories
 
         job_id = self._create_job("auto")
         db = self.Session()
@@ -273,11 +271,8 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                 ))
                 names = {tool["name"] for tool in listed["result"]["tools"]}
                 calls.append(names)
-                if len(calls) == 1:
-                    self.assertEqual(names, {"set_tool_categories"})
-                    replace_tool_categories(state_file, ["cataloging", "agent_runtime"])
-                    self.assertEqual(read_tool_category_state(state_file)["active_categories"], [])
-                    raise CLITurnTerminal("set_tool_categories:1", stdout="category receipt", stderr="")
+                self.assertNotIn("set_tool_categories", names)
+                self.assertEqual(len(names), 9)
                 self.assertIn("read_cataloging_archive", names)
                 self.assertIn("report_agent_plan", names)
                 self.assertNotIn("delete_project", names)
@@ -299,7 +294,7 @@ class LocalCLICatalogingAgentTestCase(unittest.TestCase):
                     stage="planning",
                 ))
             self.assertEqual(result[0], 0)
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 1)
         finally:
             db.close()
 

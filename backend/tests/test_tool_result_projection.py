@@ -25,6 +25,7 @@ from app.services.workspace.tool_result_projection import (
     model_tool_result_projector,
     sanitize_diagnostic_tool_result,
 )
+from app.services.creation_agent_native_protocol import safe_creation_tool_result
 from tests.tool_budget_helpers import request_budget
 
 
@@ -471,36 +472,6 @@ def test_draft_prerequisite_failure_does_not_require_an_artifact_reference() -> 
     assert "draft_id" not in (projected.payload.get("data") or {})
 
 
-def test_short_draft_projection_keeps_deterministic_retry_receipt() -> None:
-    tool = registry.get("save_external_chapter_draft")
-    assert tool is not None
-    projected = model_tool_result_projector.project(tool, {
-        "tool": tool.name,
-        "status": "needs_confirmation",
-        "detail": "正文低于硬下限；未保存草稿。",
-        "data": {
-            "reason_code": "draft_below_minimum",
-            "context_manifest_id": "manifest-1",
-            "actual_han_characters": 3_202,
-            "minimum_han_characters": 3_400,
-            "missing_han_characters": 198,
-            "draft_stored": False,
-            "context_selection_token_consumed": False,
-            "context_selection_token": "must-not-be-projected",
-        },
-    })
-
-    assert projected.payload["data"] == {
-        "context_manifest_id": "manifest-1",
-        "reason_code": "draft_below_minimum",
-        "actual_han_characters": 3_202,
-        "minimum_han_characters": 3_400,
-        "missing_han_characters": 198,
-        "draft_stored": False,
-        "context_selection_token_consumed": False,
-    }
-
-
 def test_registry_declares_authoritative_policies_for_generators_writes_and_searches() -> None:
     assert registry.get_model_result_contract("chapter_writer").policy is (
         ModelResultPolicy.ARTIFACT_REFERENCE
@@ -520,6 +491,29 @@ def test_registry_declares_authoritative_policies_for_generators_writes_and_sear
     assert registry.get_model_result_contract("search_chapters").policy is (
         ModelResultPolicy.INLINE_BOUNDED
     )
+
+
+def test_full_outline_is_durable_while_native_receipt_stays_small() -> None:
+    from app.services.workspace.assistant_public_projection import public_tool_log
+
+    nodes = [{"id": f"proposal-{index}", "node_type": "chapter", "title": f"Chapter {index}",
+              "summary": "完整规划" * 2000, "planned_summary": "完整规划" * 2000,
+              "character_names": ["甲"], "status": "pending"} for index in range(12)]
+    result = {"tool": "outline_writer", "status": "ok", "detail": "Draft ready", "data": {
+        "draft_id": "draft-1", "project_id": "p1", "draft_status": "pending",
+        "nodes": nodes, "design_notes": "完整设计说明" * 1000,
+        "chapter_outline_node_ids": [node["id"] for node in nodes],
+        "saved_outline_node_ids": [], "next_actions": ["edit", "confirm", "discard"],
+    }}
+    projected = model_tool_result_projector.project(registry.get("outline_writer"), result)
+    assert projected.projected_json_bytes <= 4 * 1024
+    assert projected.payload["data"]["nodes_preview"] == [
+        {"id": node["id"], "node_type": "chapter"} for node in nodes
+    ]
+    assert "design_notes" not in projected.payload["data"]
+    editor = public_tool_log(result, include_success_data=True)["data"]
+    assert editor["nodes"] == nodes
+    assert editor["design_notes"] == result["data"]["design_notes"]
 
 
 def test_cataloging_launch_projection_keeps_idempotent_reuse_receipt() -> None:
@@ -618,7 +612,7 @@ def test_tool_spec_frontend_metadata_exposes_model_result_policy() -> None:
     metadata = registry.get_spec("chapter_writer").frontend_metadata()
 
     assert metadata["model_result_policy"] == "artifact_reference"
-    assert metadata["model_result_max_json_bytes"] == 16 * 1024
+    assert metadata["model_result_max_json_bytes"] == 2 * 1024
 
 
 def test_registered_chapter_writer_projection_never_echoes_full_draft() -> None:
@@ -640,7 +634,7 @@ def test_registered_chapter_writer_projection_never_echoes_full_draft() -> None:
     projected = model_tool_result_projector.project(tool, result)
 
     assert projected.payload["data"]["draft_id"] == "draft-1"
-    assert len(projected.payload["data"]["content_preview"]) == 1_200
+    assert len(projected.payload["data"]["content_preview"]) == 80
     assert "content" not in projected.payload["data"]
     assert "context_snapshot" not in projected.payload["data"]
 
@@ -666,6 +660,139 @@ def _native_calls(names, arguments=None):
             "name": name, "arguments": json.dumps(arguments or {}, ensure_ascii=False)}}
         for i, name in enumerate(names)
     ]}
+
+
+@pytest.mark.parametrize("name", [
+    "get_creation_session", "get_creation_snapshot", "list_creation_artifacts",
+])
+def test_single_creation_index_read_fits_observed_64k_remaining_budget(name):
+    tool = registry.get(name)
+    payload = _native_calls([name], {"session_id": "session-1"})
+    content = json.dumps({"tool": name, "status": "ok", "data": {"revision": 0}})
+
+    with pytest.raises(ToolResultBatchOverCapacity):
+        admit_native_assistant_transaction(
+            payload, [tool], request_budget=request_budget(17_942),
+        )
+    required = admit_native_assistant_transaction(
+        payload, [tool], request_budget=request_budget(17_942),
+        result_contents=(content,),
+    )
+
+    assert required <= 17_942
+    assert tool.capacity_preflight_safe is True
+
+
+def test_exact_native_read_budget_counts_the_messages_actually_delivered():
+    names = ["get_creation_session", "get_creation_snapshot"]
+    payload = _native_calls(names, {"session_id": "session-1"})
+    tools = declared_model_results_for_tool_names(names, resolve_tool=registry.get)
+    contents = tuple(
+        json.dumps({"tool": name, "status": "ok", "data": {"label": '玄幻"新书"'}},
+                   ensure_ascii=False, separators=(",", ":"))
+        for name in names
+    )
+    expected_messages = [payload, *(
+        {"role": "tool", "tool_call_id": call["id"], "content": content}
+        for call, content in zip(payload["tool_calls"], contents, strict=True)
+    )]
+    expected = len(json.dumps(
+        expected_messages, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+    ).encode("utf-8"))
+
+    assert admit_native_assistant_transaction(
+        payload, tools, request_budget=request_budget(expected),
+        result_contents=contents,
+    ) == expected
+    with pytest.raises(ToolResultBatchOverCapacity):
+        admit_native_assistant_transaction(
+            payload, tools, request_budget=request_budget(expected - 1),
+            result_contents=contents,
+        )
+
+
+def test_only_audited_pure_creation_reads_may_preflight_before_admission():
+    assert registry.get("get_creation_artifact").capacity_preflight_safe is True
+    assert registry.get("patch_creation_session").capacity_preflight_safe is False
+    assert registry.get("list_creation_entities").capacity_preflight_safe is True
+    # Dependency graph reads still commit derived state in their handler.
+    assert registry.get("get_creation_dependency_graph").capacity_preflight_safe is False
+
+
+def test_artifact_patch_reserves_its_metadata_receipt_before_writing():
+    tool = registry.get("patch_creation_artifact")
+    assert tool.model_result_contract.max_json_bytes == 2 * 1024
+    assert tool.capacity_preflight_safe is False
+
+    payload = _native_calls(["patch_creation_artifact"], {
+        "artifact": "constraints",
+        "expected_revision": 7,
+        "changes": [{"path": "/genre", "action": "replace", "value": "玄幻"}],
+    })
+    assert admit_native_assistant_transaction(
+        payload, [tool], request_budget=request_budget(5_559),
+    ) <= 5_559
+
+    # The committed document and submitted patch are retained by the tool,
+    # but only the bounded revision receipt is sent back to the model.
+    success = model_tool_result_projector.project(tool, {
+        "tool": tool.name, "status": "ok", "detail": "Artifact patched",
+        "data": {
+            "session_id": "a" * 36, "artifact": "constraints", "revision": 8,
+            "changes": [{"value": "正文" * 100_000}],
+            "affected_artifacts": ["characters"],
+        },
+    })
+    assert len(success.content.encode("utf-8")) < tool.model_result_contract.max_json_bytes
+    assert success.payload["data"] == {
+        "session_id": "a" * 36, "artifact": "constraints", "revision": 8,
+    }
+
+    diagnostic = model_tool_result_projector.project(tool, {
+        "tool": tool.name, "status": "error", "detail": "untrusted",
+        "data": {
+            "failure_class": "invalid_tool_arguments",
+            "path": "$" + ".a" * 127 + ".",
+            "rule": "r" * 80,
+        },
+    })
+    assert len(diagnostic.content.encode("utf-8")) < tool.model_result_contract.max_json_bytes
+
+
+def test_single_session_patch_fits_the_observed_64k_request_remainder():
+    tool = registry.get("patch_creation_session")
+    assert tool.model_result_contract.max_json_bytes == 2 * 1024
+    payload = _native_calls([tool.name], {
+        "session_id": "a" * 36,
+        "expected_revision": 0,
+        "changes": {"form": {"genre": "玄幻"}},
+    })
+    payload["reasoning_content"] = "The user chose the fantasy genre; save it now."
+    required = admit_native_assistant_transaction(
+        payload, [tool], request_budget=request_budget(7_034),
+    )
+    assert required <= 7_034
+    projected = model_tool_result_projector.project(tool, {
+        "tool": tool.name, "status": "ok", "detail": "Creation session patched",
+        "data": {
+            "session_id": "a" * 36, "revision": 1, "status": "drafting",
+            "current_stage": "constraints", "changed_fields": ["form.genre"],
+        },
+    })
+    assert len(projected.content.encode("utf-8")) < tool.model_result_contract.max_json_bytes
+    assert projected.payload["data"]["revision"] == 1
+
+
+def test_single_tool_capacity_error_does_not_suggest_reducing_parallel_calls():
+    error = ToolResultBatchOverCapacity(
+        tool_names=("patch_creation_session",), required_tokens=8_692,
+        available_tokens=7_034, call_count=1,
+    )
+    projected = safe_creation_tool_result(
+        "patch_creation_session", error.model_error_result("patch_creation_session"),
+    )
+    assert "缩窄当前步骤开放的工具类别" in projected["detail"]
+    assert "并行" not in projected["detail"]
 
 
 @pytest.mark.parametrize("names", [["search_outline"] * 3, ["list_chapters"] * 4])
@@ -696,7 +823,9 @@ def test_budget_shortage_preserves_whole_denial_protocol_when_it_fits():
         admit_native_assistant_transaction(payload, tools, request_budget=request_budget(20_000))
     error = caught.value
     assert error.reason == "tool_result_batch_over_capacity"
-    assert error.declared_result_json_bytes == 103_152
+    assert error.declared_result_json_bytes == 3 * registry.get(
+        "search_outline"
+    ).model_result_contract.bytes_for_arguments({})
     assert error.recovery_fits
     assert error.model_error_result("search_outline")["data"]["available_tokens"] == 20_000
 
@@ -734,7 +863,7 @@ def test_missing_bound_budget_does_not_silently_fall_back():
                                            [registry.get("list_chapters")], request_budget=None)
 
 
-@pytest.mark.parametrize("tool_name", ["list_chapters", "search_outline_tree", "search_outline"])
+@pytest.mark.parametrize("tool_name", ["list_chapters", "search_outline_tree"])
 def test_smaller_page_has_smaller_enforced_result_ceiling(tool_name):
     tool = registry.get(tool_name)
     contract = tool.model_result_contract
@@ -748,6 +877,22 @@ def test_smaller_page_has_smaller_enforced_result_ceiling(tool_name):
         model_tool_result_projector.project(tool, raw, arguments={"limit": 1})
 
 
+def test_targeted_outline_read_defaults_to_one_child_and_fits_observed_local_budget():
+    tool = registry.get("search_outline")
+    assert tool.model_result_contract.bytes_for_arguments({"summary_chars": 200}) == (
+        tool.model_result_contract.bytes_for_arguments({"limit": 1, "summary_chars": 200})
+    )
+    assert tool.model_result_contract.bytes_for_arguments({"limit": 2, "summary_chars": 200}) > (
+        tool.model_result_contract.bytes_for_arguments({"summary_chars": 200})
+    )
+    payload = _native_calls(["search_outline"], {
+        "node_id": "53f62a20-9098-4b9e-8634-3bb3fee92e90", "summary_chars": 200,
+    })
+    assert admit_native_assistant_transaction(
+        payload, [tool], request_budget=request_budget(30_781),
+    ) <= 30_781
+
+
 def test_new_budget_contract_matches_cross_platform_fixture():
     fixture = json.loads((Path(__file__).parents[2] / "contracts/fixtures/conversation-context-v1-interop.json").read_text(encoding="utf-8"))
     budget = fixture["native_tool_budget"]
@@ -756,6 +901,9 @@ def test_new_budget_contract_matches_cross_platform_fixture():
     assert "max_native_assistant_transaction_json_bytes" not in budget
     for tool, page in budget["page_budgets"].items():
         contract = registry.get(tool).model_result_contract
+        assert contract.bytes_for_arguments({}) == contract.bytes_for_arguments({
+            "limit": page.get("default_items", page["max_items"]),
+        })
         for count in (1, page["max_items"]):
             text_bytes = 6 * page.get("default_text_chars", 0) * max(
                 page.get("min_text_fields", 0), count * page.get("text_fields_per_item", 0))
@@ -858,9 +1006,12 @@ def test_cataloging_projection_preserves_actionable_receipts_without_prose(name,
     assert projected.projected_json_bytes <= tool.model_result_contract.max_json_bytes
 
 
-def test_cataloging_schema_has_one_native_plan_record_union():
+def test_cataloging_generation_schema_keeps_strict_plan_validation():
     tool = registry.get_spec("save_external_cataloging_candidates")
-    variants = tool.parameters_schema()["properties"]["candidates"]["items"]["anyOf"]
+    generation = tool.parameters_schema()["properties"]["candidates"]["items"]
+    assert "anyOf" not in generation
+    assert generation["required"] == ["type"]
+    variants = tool.input_validation_schema_override["properties"]["candidates"]["items"]["anyOf"]
     summary = next(v for v in variants if v["properties"]["type"]["enum"] == ["chapter_summary"])
     assert {"character_bindings", "worldbuilding_bindings", "scenes"} <= set(summary["required"])
     assert summary["additionalProperties"] is False

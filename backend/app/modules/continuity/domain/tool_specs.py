@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ....architecture.tool_spec import ToolSpec, project_typed_tool_spec
 from ...story.interfaces.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
-from .candidate_contract import candidate_record_schema
+from .candidate_contract import candidate_generation_schema, candidate_record_schema
 
 
 class CompatibleInput(BaseModel):
@@ -63,7 +64,7 @@ class SaveExternalCatalogingCandidatesInput(CompatibleInput):
             "After rejection, correct candidate_errors using recovery_context; "
             "do not resend accepted records."
         ),
-        json_schema_extra={"items": candidate_record_schema()},
+        json_schema_extra={"items": candidate_generation_schema()},
     )
 
 
@@ -118,13 +119,16 @@ def build_continuity_tool_specs(definitions: Mapping[str, Any]) -> list[ToolSpec
     specs: list[ToolSpec] = []
     for name, input_model in _INPUTS.items():
         tool = definitions[name]
-        specs.append(
-            project_typed_tool_spec(
-                tool,
-                input_model=input_model,
-                version="3.0.0",
-            )
+        spec = project_typed_tool_spec(
+            tool,
+            input_model=input_model,
+            version="3.0.0",
         )
+        if name == "save_external_cataloging_candidates":
+            strict_schema = spec.parameters_schema()
+            strict_schema["properties"]["candidates"]["items"] = candidate_record_schema()
+            spec = replace(spec, input_validation_schema_override=strict_schema)
+        specs.append(spec)
     return specs
 
 

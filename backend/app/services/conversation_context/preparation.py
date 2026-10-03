@@ -61,6 +61,7 @@ class _PreparationRequest:
     current_ledger: Sequence[ToolExecutionReceipt]
     delivered_transactions: Sequence[ToolTransaction]
     trusted_execution_ledger: Sequence[ExecutionLedgerEntry]
+    effective_execution_ledger: Sequence[ExecutionLedgerEntry]
     execution_source_hashes: Mapping[str, str]
     generator_template: str
     provider_wrapper: Any
@@ -172,6 +173,7 @@ async def _generate_required_checkpoint(
             counter=counter,
             safety_margin_tokens=safety_margin_tokens,
             trusted_execution_ledger=tuple(request.trusted_execution_ledger),
+            effective_execution_ledger=tuple(request.effective_execution_ledger),
             execution_source_hashes=request.execution_source_hashes,
             reload_turns=request.reload_turns,
             completion=completion,
@@ -194,6 +196,7 @@ async def _finalize_prepared(
     active_tokens = step.budget.checkpoint_tokens + step.budget.recent_exact_turn_tokens
     metrics = {
         **step.budget.to_dict(),
+        "prepared_at": datetime.utcnow().isoformat(),
         "trigger": trigger,
         "recent_exact_turn_count": len(step.frame.recent_turns),
         "original_history_tokens": original_tokens,
@@ -335,6 +338,7 @@ async def prepare_conversation_context(
     current_ledger: Sequence[ToolExecutionReceipt] = (),
     delivered_transactions: Sequence[ToolTransaction] = (),
     trusted_execution_ledger: Sequence[ExecutionLedgerEntry] = (),
+    effective_execution_ledger: Sequence[ExecutionLedgerEntry] | None = None,
     execution_source_hashes: Mapping[str, str] | None = None,
     generator_template: str = "",
     provider_wrapper: Any = None,
@@ -369,6 +373,11 @@ async def prepare_conversation_context(
             current_ledger=current_ledger,
             delivered_transactions=delivered_transactions,
             trusted_execution_ledger=trusted_execution_ledger,
+            effective_execution_ledger=(
+                trusted_execution_ledger
+                if effective_execution_ledger is None
+                else effective_execution_ledger
+            ),
             execution_source_hashes=dict(execution_source_hashes or {}),
             generator_template=generator_template,
             provider_wrapper=provider_wrapper,

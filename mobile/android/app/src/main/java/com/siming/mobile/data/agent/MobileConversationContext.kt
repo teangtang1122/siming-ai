@@ -865,15 +865,15 @@ internal object MobileNativeToolBudgetContract {
     const val TOOL_RESULT_BATCH_OVER_CAPACITY = "tool_result_batch_over_capacity"
 
     private const val STATUS_ONLY_RESULT_BYTES = 4 * 1024
-    private const val OUTLINE_BATCH_STATUS_RESULT_BYTES = 12 * 1024
-    private const val ARTIFACT_REFERENCE_RESULT_BYTES = 16 * 1024
+    private const val ARTIFACT_REFERENCE_RESULT_BYTES = 4 * 1024
+    private const val CHAPTER_DRAFT_RESULT_BYTES = 2 * 1024
     private const val STANDARD_RESULT_BYTES = 16 * 1024
     private const val LARGE_READ_RESULT_BYTES = 32 * 1024
     private const val CONTEXT_SELECTION_RECEIPT_BYTES = 24 * 1024
 
     private val resultBytesByTool = mapOf(
         "set_tool_categories" to STATUS_ONLY_RESULT_BYTES,
-        "chapter_writer" to ARTIFACT_REFERENCE_RESULT_BYTES,
+        "chapter_writer" to CHAPTER_DRAFT_RESULT_BYTES,
         "outline_writer" to ARTIFACT_REFERENCE_RESULT_BYTES,
         "character_writer" to STANDARD_RESULT_BYTES,
         "worldbuilding_writer" to STANDARD_RESULT_BYTES,
@@ -892,8 +892,6 @@ internal object MobileNativeToolBudgetContract {
         "update_project_info" to STATUS_ONLY_RESULT_BYTES,
         "create_character" to STATUS_ONLY_RESULT_BYTES,
         "update_character" to STATUS_ONLY_RESULT_BYTES,
-        "create_outline_node" to STATUS_ONLY_RESULT_BYTES,
-        "create_outline_nodes" to OUTLINE_BATCH_STATUS_RESULT_BYTES,
         "update_outline_node" to STATUS_ONLY_RESULT_BYTES,
         "create_worldbuilding_entry" to STATUS_ONLY_RESULT_BYTES,
         "update_worldbuilding_entry" to STATUS_ONLY_RESULT_BYTES,
@@ -912,7 +910,8 @@ internal object MobileNativeToolBudgetContract {
             else -> return maximum
         }
         val requested = (arguments["limit"] as? JsonPrimitive)?.content?.toIntOrNull()
-        val count = if (requested == null || requested == 0) page.third else requested.coerceIn(1, page.third)
+        val defaultCount = if (toolName == "search_outline") 1 else page.third
+        val count = if (requested == null || requested == 0) defaultCount else requested.coerceIn(1, page.third)
         val textBytes = if (toolName == "search_outline") {
             val requestedChars = (arguments["summary_chars"] as? JsonPrimitive)?.content?.toIntOrNull()
             val chars = if (requestedChars == null || requestedChars == 0) 500 else requestedChars.coerceIn(1, 1000)
@@ -941,15 +940,24 @@ internal object MobileNativeToolBudgetContract {
         orderedToolNames: List<String>,
         requestBudget: MobileRequestBudgetEnvelope,
         resultJsonBytes: (String, JsonObject) -> Int = ::declaredResultJsonBytes,
+        resultContents: List<String>? = null,
     ): MobileNativeToolBatchAdmission {
         val rawCalls = validateMobileNativeAssistantCalls(assistantPayload, orderedToolNames)
+        if (resultContents != null && resultContents.size != rawCalls.size) {
+            throw MobileConversationContextException(
+                MobileConversationContextErrorCode.PROTOCOL_INVALID,
+                "实际工具结果数量与原生调用批次不一致",
+            )
+        }
         val assistantBytes = mobileCanonicalJson(assistantPayload).toByteArray(Charsets.UTF_8).size
         val available = requestBudget.toolTransactionBudgetTokens
-        val declared = rawCalls.zip(orderedToolNames).sumOf { (call, tool) ->
-            val function = call.getValue("function") as JsonObject
-            val arguments = Json.parseToJsonElement(function.string("arguments")) as JsonObject
-            resultJsonBytes(tool, arguments).toLong()
-        }
+        val declared = if (resultContents == null) {
+            rawCalls.zip(orderedToolNames).sumOf { (call, tool) ->
+                val function = call.getValue("function") as JsonObject
+                val arguments = Json.parseToJsonElement(function.string("arguments")) as JsonObject
+                resultJsonBytes(tool, arguments).toLong()
+            }
+        } else resultContents.sumOf { it.toByteArray(Charsets.UTF_8).size.toLong() }
         val wrappers = 2L + rawCalls.sumOf { call ->
             1L + mobileCanonicalJson(buildJsonObject {
                 put("role", "tool")
@@ -957,7 +965,18 @@ internal object MobileNativeToolBudgetContract {
                 put("content", "")
             }).toByteArray(Charsets.UTF_8).size
         }
-        val required = assistantBytes + wrappers + 2L * declared
+        val required = if (resultContents == null) {
+            assistantBytes + wrappers + 2L * declared
+        } else mobileCanonicalJson(buildJsonArray {
+            add(assistantPayload)
+            rawCalls.zip(resultContents).forEach { (call, content) ->
+                add(buildJsonObject {
+                    put("role", "tool")
+                    put("tool_call_id", call.string("id"))
+                    put("content", content)
+                })
+            }
+        }).toByteArray(Charsets.UTF_8).size.toLong()
         val admission = MobileNativeToolBatchAdmission(
             accepted = required <= available,
             reason = if (required <= available) null else if (assistantBytes + wrappers > available) {
@@ -1367,8 +1386,8 @@ private val TOOL_RECEIPT_RESOURCE_ID_FIELDS = listOf(
 )
 
 private val MOBILE_WRITE_TOOLS = setOf(
-    "update_project_info", "create_character", "update_character", "create_outline_node",
-    "create_outline_nodes", "update_outline_node", "create_worldbuilding_entry",
+    "update_project_info", "create_character", "update_character",
+    "update_outline_node", "create_worldbuilding_entry",
     "update_worldbuilding_entry", "chapter_writer", "outline_writer",
 )
 

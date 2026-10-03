@@ -11,6 +11,7 @@ from app.services.cataloging.applier import apply_candidate
 from app.services.cataloging.candidate_store import create_candidate_from_raw
 from app.services.cataloging.character_ops import apply_character_create, apply_character_state, apply_character_update
 from app.services.cataloging.orchestrator import create_cataloging_job
+from app.services.cataloging.plan_validation import inspect_complete_plan
 from app.services.cataloging.snapshots import character_snapshot
 from app.services.workspace.tools.external_cataloging import save_external_cataloging_candidates
 
@@ -354,6 +355,59 @@ def test_state_appearance_change_requires_current_snapshot_and_verbatim_chapter_
     )
     apply_candidate(db, safe["candidate"])
     assert character.appearance == "齐肩长发"
+
+
+def test_new_character_state_requires_evidence_before_staging_or_finalization(archive):
+    db, chapter, _, job, run = archive
+    new_id = "00000000-0000-4000-8000-000000000001"
+    chapter.content = "老陈剪去长发，露出一头灰发。"
+    summary_row = db.query(CatalogingCandidate).filter_by(
+        chapter_run_id=run.id, item_type="chapter_summary",
+    ).one()
+    summary = json.loads(summary_row.raw_payload)
+    summary["character_bindings"].append({
+        "name": "老陈", "id": new_id, "decision": "new",
+        "source_labels": ["老陈"], "reason": "本章出现老陈",
+    })
+    summary["coverage_manifest"]["characters"].append("老陈")
+    summary_row.raw_payload = json.dumps(summary, ensure_ascii=False)
+    db.flush()
+
+    created = create_candidate_from_raw(db, job, run, {
+        "type": "character_create", "client_id": new_id, "name": "老陈",
+        "appearance": "长发",
+    }, 0)
+    assert created.get("candidate") is not None, created
+
+    state = {"type": "character_state_update", "id": new_id, "name": "老陈",
+             "appearance_before": "长发", "appearance": "灰发"}
+    missing_evidence = create_candidate_from_raw(db, job, run, state, 1)
+    assert "bad_line" in missing_evidence
+    assert "appearance_evidence" in missing_evidence["error"]
+    assert db.query(CatalogingCandidate).filter_by(item_type="character_state_update").count() == 0
+    assert db.get(Character, new_id) is None
+
+    # A retained candidate from an older interrupted job must also be caught
+    # before the formal chapter transaction starts.
+    invalid_row = staged(archive, "character_state_update", {
+        "id": new_id, "name": "老陈", "appearance_before": "长发", "appearance": "灰发",
+    })
+    report = inspect_complete_plan(db, run)
+    assert any(error["candidate_id"] == invalid_row.id
+               and "appearance_evidence" in error["message"]
+               for error in report["candidate_errors"])
+    repaired = create_candidate_from_raw(db, job, run, {
+        **state, "appearance_evidence": "露出一头灰发",
+    }, 2)
+    assert repaired.get("candidate") is not None, repaired
+    assert repaired["candidate"].id == invalid_row.id
+    assert not any(error["candidate_id"] == invalid_row.id
+                   for error in inspect_complete_plan(db, run)["candidate_errors"])
+    apply_character_create(db, created["candidate"], chapter,
+                           json.loads(created["candidate"].raw_payload))
+    apply_character_state(db, repaired["candidate"], chapter,
+                          json.loads(repaired["candidate"].raw_payload))
+    assert db.get(Character, new_id).appearance == "灰发"
 
 
 def test_unchanged_age_and_appearance_do_not_require_change_evidence(archive):

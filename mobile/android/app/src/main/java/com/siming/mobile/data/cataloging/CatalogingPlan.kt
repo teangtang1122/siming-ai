@@ -39,6 +39,17 @@ internal class CatalogingPlan(
 
     fun submit(args: JsonObject): JsonObject {
         val errors = mutableListOf<JsonObject>()
+        val submitted = args.objects("candidates")
+        val sections = submitted.filter { it.text("type") in setOf("outline_create", "outline_update") &&
+            it.text("node_type") == "section" }
+        val declaredScenes = submitted.singleOrNull { it.text("type") == "chapter_summary" }
+            ?.get("scenes") as? JsonArray ?: candidates.singleOrNull { it.kind == "chapter_summary" }
+            ?.payload?.get("scenes") as? JsonArray
+        if (declaredScenes != null) require(sections.size <= declaredScenes.size) {
+            "本次场景小节超过本章场景数；请按 chapter_summary.scenes 合并同场事件，每个场景只提交一条"
+        }
+        val numbers = sections.map { it.number("scene_number") }.filter { it > 0 }
+        require(numbers.distinct().size == numbers.size) { "同一批场景小节的 scene_number 重复；每个场景只提交一条" }
         val rejected = args.strings("reject_candidate_ids")
         require(rejected.toSet().size == rejected.size && rejected.all { id -> candidates.any { it.id == id } }) {
             "reject_candidate_ids 必须引用本章尚未应用的候选 ID"

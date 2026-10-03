@@ -14,6 +14,7 @@ from app.services.conversation_context import (
     Utf8ByteTokenCounter,
 )
 from app.services.conversation_context.assembly import assemble_context_step
+from app.services.conversation_context.budget import RequestTokenComponents, build_request_budget
 from app.services.conversation_context.canonical import canonical_sha256
 from app.services.conversation_context.contracts import (
     ConversationIdentity,
@@ -27,11 +28,58 @@ from app.services.conversation_context.recent_turns import (
     MandatoryExactTurnsOverCapacity,
     select_recent_turns,
 )
+from app.services.workspace.registry import registry
 from app.services.workspace.tool_result_projection import (
     ToolResultBatchOverCapacity,
     admit_native_assistant_transaction,
 )
 from tests.test_conversation_context_runtime import _binding, _turn
+
+
+def test_creation_64k_confirmation_fits_after_tool_step_output_is_bounded():
+    # Captured from a failed 64K creation turn after two successful reads.
+    binding = replace(_binding(), context_window_tokens=64_000, max_output_tokens=16_384)
+    components = RequestTokenComponents(
+        system_prompt_tokens=4_275,
+        tool_schema_tokens=24_780,
+        message_wrapper_tokens=2_921,
+        checkpoint_tokens=7_622,
+        current_user_tokens=60,
+        pending_tool_transaction_tokens=6_945,
+    )
+    tool = registry.get("confirm_creation_artifact")
+    assert tool is not None
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [NativeToolCall(
+            "confirm-constraints",
+            "confirm_creation_artifact",
+            json.dumps({"session_id": "session", "artifact": "constraints", "expected_revision": 20}),
+        ).to_provider_dict()],
+    }
+    old_budget = build_request_budget(
+        binding=binding,
+        counter=Utf8ByteTokenCounter(),
+        components=components,
+        output_reserve_tokens=16_384,
+        safety_margin_tokens=512,
+    )
+    with pytest.raises(ToolResultBatchOverCapacity):
+        admit_native_assistant_transaction(assistant, [tool], request_budget=old_budget)
+    retry_components = replace(components, recent_exact_turn_tokens=512)
+    bounded_budget = build_request_budget(
+        binding=binding,
+        counter=Utf8ByteTokenCounter(),
+        components=retry_components,
+        output_reserve_tokens=4_096,
+        safety_margin_tokens=512,
+    )
+    assert bounded_budget.current_input_tokens == 47_115
+    assert bounded_budget.tool_transaction_budget_tokens == 12_277
+    assert admit_native_assistant_transaction(
+        assistant, [tool], request_budget=bounded_budget,
+    ) <= bounded_budget.tool_transaction_budget_tokens
 
 
 def test_rejected_batch_remains_sendable_when_future_largest_result_would_not_fit():

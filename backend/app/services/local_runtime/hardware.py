@@ -19,7 +19,7 @@ class HardwareProfile:
     vram_gb: float
     nvidia_available: bool
     profile: str
-    recommended_model: str
+    recommended_model: str | None
     recommended_context: int
     training_supported: bool
 
@@ -81,12 +81,13 @@ def _nvidia_gpu() -> tuple[str | None, float]:
 def detect_hardware() -> HardwareProfile:
     gpu_name, vram_gb = _nvidia_gpu()
     ram_gb = _ram_gb()
-    if vram_gb >= 24 and ram_gb >= 32:
+    if vram_gb >= 24:
         profile, model, context = "quality", "qwen3.8-27b-q4", 32768
-    elif vram_gb >= 12 or ram_gb >= 32:
-        profile, model, context = "standard", "qwen3.5-9b-q4", 16384
+    elif vram_gb >= 16 and ram_gb >= 30:
+        # Windows reserves part of a nominal 32 GB RAM kit (31.6 GB here).
+        profile, model, context = "standard", "qwen3.8-27b-q3", 32768
     else:
-        profile, model, context = "light", "qwen3.5-4b-q4", 8192
+        profile, model, context = "unsupported", None, 8192
     return HardwareProfile(
         os=platform.system(),
         arch=platform.machine(),
@@ -98,7 +99,7 @@ def detect_hardware() -> HardwareProfile:
         profile=profile,
         recommended_model=model,
         recommended_context=context,
-        training_supported=bool(gpu_name and vram_gb >= 8),
+        training_supported=bool(gpu_name and vram_gb >= 24),
     )
 
 

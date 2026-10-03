@@ -20,13 +20,18 @@ def test_native_agent_repairs_only_invalid_fields_in_same_conversation(archive, 
     db, job, run = archive
     rows = plan_rows()
     calls = [
-        ("set_tool_categories", {"enabled_categories": ["cataloging"]}),
         ("save_external_cataloging_candidates", {"job_id": job.id, "chapter_id": run.chapter_id,
             "candidates": [rows[0]], "finalize": False}),
+        ("select_cataloging_candidate_types", {"types": ["outline_create_chapter"]}),
         ("save_external_cataloging_candidates", {"job_id": job.id, "chapter_id": run.chapter_id,
-            "candidates": [{"type": "chapter_link", "importance": "high"}], "finalize": True}),
+            "candidates": [rows[1]], "finalize": False}),
+        ("select_cataloging_candidate_types", {"types": ["chapter_link"]}),
         ("save_external_cataloging_candidates", {"job_id": job.id, "chapter_id": run.chapter_id,
-            "candidates": [rows[1], {"type": "chapter_link", "importance": "major"}], "finalize": True}),
+            "candidates": [{"type": "chapter_link", "characters": [], "worldbuilding_titles": [],
+                            "importance": "high"}], "finalize": False}),
+        ("save_external_cataloging_candidates", {"job_id": job.id, "chapter_id": run.chapter_id,
+            "candidates": [{"type": "chapter_link", "characters": [], "worldbuilding_titles": [],
+                            "importance": "major"}], "finalize": True}),
     ]
     seen, accepted_ids = [], []
     async def model(**kwargs):
@@ -43,12 +48,12 @@ def test_native_agent_repairs_only_invalid_fields_in_same_conversation(archive, 
     async def execute():
         return [event async for event in orchestrator._extract_run(db, job, run)]
     asyncio.run(execute())
-    assert run.status == "awaiting_confirmation"
+    assert run.status == "awaiting_confirmation", (run.error, run.raw_output)
     assert len(calls) == len(seen)
     assert len(set(accepted_ids)) == 1
     assert "importance" in seen[-1][-1]["content"]
     assert "enum" in seen[-1][-1]["content"]
-    assert seen[-1][:len(seen[1])] == seen[1]
+    assert seen[-1][:len(seen[-2])] == seen[-2]
     assert db.query(CatalogingApplyLog).count() == 0
 
 

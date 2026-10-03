@@ -41,6 +41,9 @@ internal class TraceInspectionRepository(context: Context) {
     suspend fun events(remote: Boolean, id: String, after: Int): List<JsonObject> =
         if (remote) api.contextTraceRequest(connection(), "$id/events?after=$after")["items"]!!.jsonArray.map { it.jsonObject }
         else store.events(id, after)
+    suspend fun trace(remote: Boolean, id: String): JsonObject =
+        if (remote) api.contextTraceRequest(connection(), id)
+        else traceJson(requireNotNull(store.trace(id)) { "记录已清理" })
     suspend fun payload(remote: Boolean, id: String, payloadId: String, offset: Int): JsonObject =
         if (remote) api.contextTraceRequest(connection(), "$id/payloads/$payloadId?offset=$offset") else store.payload(id, payloadId, offset)
     suspend fun clear(remote: Boolean) { if (remote) api.contextTraceRequest(connection(), "", "DELETE") else store.clear() }

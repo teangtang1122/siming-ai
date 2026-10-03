@@ -28,15 +28,28 @@ def test_android_prompt_contract_has_no_pc_source_drift():
     assert committed == generated
     assert committed["source_sha256"]
     assert committed["source_versions"] == {
-        "workspace": "assistant.workspace.quality@3.2.6",
+        "workspace": "assistant.workspace.quality@3.4.7",
         "chapter_quality": "assistant.chapter.quality@3.1.0",
         "novel_creation": "creation.novel.stage@3.1.0",
     }
 
 
+def test_pc_and_mobile_default_to_one_outline_without_overriding_explicit_count():
+    from app.modules.story.domain.outline_contract import DEFAULT_OUTLINE_BATCH_COUNT
+    from app.schemas.ai_writer import WorkspaceAssistantRequest
+
+    contract = json.loads(ASSET.read_text(encoding="utf-8"))
+    assert contract["outline_generation"]["default_batch_count"] == DEFAULT_OUTLINE_BATCH_COUNT == 1
+    assert WorkspaceAssistantRequest(message="Plan ahead").outline_batch_count == 1
+    assert WorkspaceAssistantRequest(message="Plan ahead", outline_batch_count=5).outline_batch_count == 5
+    assert "“下一章”只规划一章，batch_count=1" in contract["workspace_system_template"]
+
+
 def test_mobile_cataloging_request_policy_matches_pc_execution():
     from app.services.cataloging.constants import (
-        CATALOGING_MAX_TOKENS, CATALOGING_TIMEOUT_SECONDS, CATALOGING_TEMPERATURE,
+        CATALOGING_MAX_TOKENS,
+        CATALOGING_TEMPERATURE,
+        CATALOGING_TIMEOUT_SECONDS,
     )
     from app.services.cataloging.model_selection import cataloging_extra_body
 
@@ -64,6 +77,9 @@ def test_android_prompt_contract_contains_full_nested_writer_pipeline():
     assert "update_chapter" not in names
     assert "只调用本轮实际提供的工具" in contract["workspace_system_template"]
     assert "质量模式宁可多检查一次因果" in contract["chapter"]["quality_system_template"]
+    assert "{{length_instruction}}" in contract["chapter"]["user_template"]
+    assert "1800-2500" not in contract["chapter"]["user_template"]
+    assert "{{source_draft}}" in contract["chapter"]["revision_user_template"]
     assert set(contract["writer_output_tools"]) == {"character", "outline", "world"}
 
 
@@ -86,6 +102,9 @@ def test_android_prompt_contract_contains_pc_novel_creation_pipeline():
     assert "可按任意顺序工作" in agent["system_template"]
     assert "立即增量写入" in agent["system_template"]
     assert "最多完成一次成功的写工具调用" in agent["system_template"]
+    assert "创意方向 data 为空时" in agent["system_template"]
+    assert "默认只生成 1 张创意卡（options 长度为 1）" in agent["system_template"]
+    assert "默认只返回 1 张创意卡（concepts 数组长度为 1）" in contract["concept_task_rules"]["explore"]
     assert agent["max_successful_writes_per_turn"] == 1
     assert agent["max_failed_writes_per_turn"] == 3
     assert "confirm_creation_artifact" in agent["write_tool_names"]
@@ -107,18 +126,43 @@ def test_android_prompt_contract_contains_pc_novel_creation_pipeline():
     assert unsupported.isdisjoint(agent["tool_names"])
     assert unsupported.isdisjoint(agent["revision_tool_names"])
     assert unsupported.isdisjoint(agent["write_tool_names"])
-    assert payload["tool_categories"]["controller"] == "set_tool_categories"
-    assert set(payload["tool_categories"]["categories"]) == {
-        "project_files",
-        "story_knowledge",
-        "writing_context",
-        "cataloging",
-        "analysis_governance",
-        "creation_data",
-        "creation_flow",
-        "agent_runtime",
-        "extensions",
+    assert set(agent["capacity_preflight_read_tool_names"]) == {
+        "get_creation_session", "get_creation_snapshot",
+        "get_creation_artifact", "list_creation_artifacts",
+        "list_creation_entities", "get_creation_entity",
     }
+    from app.services.novel_creation_contract import STAGE_ORDER
+
+    artifact_schema = next(
+        tool["function"]["parameters"] for tool in agent["tool_schemas"]
+        if tool["function"]["name"] == "get_creation_artifact"
+    )
+    assert artifact_schema["properties"]["artifact"]["enum"] == list(STAGE_ORDER)
+    write_limits = agent["write_result_contract"]["max_json_bytes_by_tool"]
+    assert set(write_limits) == set(agent["write_tool_names"])
+    assert write_limits["patch_creation_artifact"] == 2 * 1024
+    patch_schema = next(
+        tool["function"]["parameters"] for tool in agent["tool_schemas"]
+        if tool["function"]["name"] == "patch_creation_artifact"
+    )
+    patch_change = patch_schema["properties"]["changes"]["items"]
+    assert patch_change["required"] == ["path"]
+    assert patch_change["properties"]["action"]["type"] == "string"
+    assert patch_change["properties"]["op"]["type"] == "string"
+    assert patch_change["oneOf"] == [
+        {"required": ["action"]}, {"required": ["op"]},
+    ]
+    assert payload["tool_categories"]["controller"] == "set_tool_categories"
+    assert payload["tool_categories"]["max_active_categories"] == 2
+    assert all(2 <= len(group["tools"]) <= 6 for group in payload["tool_categories"]["categories"].values())
+    def offered_categories(schemas):
+        return next(tool["function"]["parameters"]["properties"]["enabled_categories"]["items"]["enum"]
+                    for tool in schemas if tool["function"]["name"] == "set_tool_categories")
+    assert all(name.startswith("creation_") for name in offered_categories(agent["tool_schemas"]))
+    assert not any(name.startswith("creation_") for name in offered_categories(payload["tool_schemas"]))
+    assert "chapter_writing" in offered_categories(payload["tool_schemas"])
+    assert len(payload["cataloging"]["tool_schemas"]) == 4
+    assert "set_tool_categories" not in str(payload["cataloging"]["tool_schemas"])
     advertised_schema_names = {
         schema["function"]["name"] for schema in agent["tool_schemas"]
     }

@@ -325,7 +325,7 @@ def test_real_creation_turn_retains_category_and_read_with_thinking_protocol():
                 )
         if len(requests) == 1:
             assert {item["function"]["name"] for item in kwargs["tools"]} == {"set_tool_categories"}
-            name, arguments = "set_tool_categories", {"enabled_categories": ["creation_data"]}
+            name, arguments = "set_tool_categories", {"enabled_categories": ["creation_session"]}
         elif len(requests) == 2:
             name, arguments = "get_creation_session", {"session_id": session_id}
         else:

@@ -118,10 +118,10 @@ internal class PcCreationPromptContract private constructor(
             put("refinement_instruction", instruction)
             put("entity_target", entityTarget ?: JsonNull)
             put("retrieved_entities", JsonArray(contextEntities))
+            if (entityTarget == null) put("locked_paths", draft.objectValue("artifact_locks")[stage] ?: JsonArray(emptyList()))
             if (stage == "opening_outline") {
                 put("volume_index", entities.opening.volumeIndex(session))
                 put("character_index", entities.opening.characterIndex(session))
-                put("locked_paths", draft.objectValue("artifact_locks")["opening_outline"] ?: JsonArray(emptyList()))
             }
         }
         val system = creation.string("stage_system_template").fill(

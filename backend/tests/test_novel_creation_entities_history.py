@@ -6,7 +6,6 @@ from copy import deepcopy
 import pytest
 
 from app.services.novel_creation_entities import (
-    ensure_creation_entities,
     get_creation_entity,
     list_creation_entities,
 )
@@ -76,11 +75,9 @@ def test_version_diff_and_restore_keep_the_newer_state_in_history():
     assert any(item.snapshot_json["volumes"][0]["title"] == "修改后的卷名" for item in restored_history)
 
 
-def test_legacy_artifacts_project_to_independent_entities_with_stable_ids():
+def test_saved_artifacts_project_to_independent_entities_with_stable_ids():
     db = _db()
     session = _ready_session(db)
-    assert ensure_creation_entities(session) > 0
-    db.commit()
     entities = list_creation_entities(session)
     types = {item["entity_type"] for item in entities}
     assert {"character", "relationship", "location", "faction", "volume", "chapter_outline", "scene_outline"} <= types
@@ -105,8 +102,6 @@ def test_legacy_artifacts_project_to_independent_entities_with_stable_ids():
 def test_entity_delete_is_soft_and_locked_entity_patch_is_rejected():
     db = _db()
     session = _ready_session(db)
-    ensure_creation_entities(session)
-    db.commit()
     entities = list_creation_entities(session)
     faction_data = next(item for item in entities if item["entity_type"] == "faction")
     faction = get_creation_entity(db, faction_data["id"])

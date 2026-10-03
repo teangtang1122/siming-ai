@@ -1,7 +1,7 @@
 """Tests for external agent cataloging gap — current failure mode capture.
 
 Captures the current failure mode before changing behavior:
-- External agent can create outline/character/worldbuilding entries
+- External agent proposes outline drafts and can create character/worldbuilding entries
 - Successful calls are committed and visible from a fresh DB session
 - Failed calls roll back and return isError=true
 - Agent cannot report cataloging complete unless verification counts are nonzero
@@ -16,13 +16,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 class ExternalCatalogingGapTest(unittest.TestCase):
     """Capture current failure modes in external cataloging workflow."""
 
-    def test_external_agent_can_create_outline(self):
-        """External agent should be able to create outline nodes."""
+    def test_external_agent_only_proposes_outline_drafts(self):
         from app.services.workspace.registry import registry
-        td = registry.get("create_outline_node")
-        self.assertIsNotNone(td)
-        self.assertEqual(td.tool_type, "write")
-        self.assertTrue(td.writes_project_data)
+        self.assertIsNone(registry.get("create_outline_node"))
+        self.assertIsNone(registry.get("create_outline_nodes"))
+        self.assertIsNotNone(registry.get("save_external_outline_draft"))
 
     def test_external_agent_can_create_character(self):
         """External agent should be able to create characters."""
@@ -74,11 +72,13 @@ class ExternalCatalogingGapTest(unittest.TestCase):
 class CatalogingToolPermissionsTest(unittest.TestCase):
     """Verify cataloging tool permission assignments."""
 
-    def test_create_outline_in_project_writing(self):
+    def test_outline_draft_in_project_writing(self):
         from app.mcp.adapter import list_mcp_tools
         tools = list_mcp_tools(permission_pack="project_writing")
         names = {t.name for t in tools}
-        self.assertIn("create_outline_node", names)
+        self.assertNotIn("create_outline_node", names)
+        self.assertNotIn("create_outline_nodes", names)
+        self.assertIn("save_external_outline_draft", names)
 
     def test_create_character_in_project_writing(self):
         from app.mcp.adapter import list_mcp_tools

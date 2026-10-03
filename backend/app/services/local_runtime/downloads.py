@@ -22,10 +22,16 @@ DOWNLOAD_ATTEMPTS_PER_SOURCE = 4
 DOWNLOAD_RETRY_DELAYS_SECONDS = (1, 2, 4)
 
 
-def _sha256(path: Path) -> str:
+class DownloadCancelled(Exception):
+    """The user stopped a download; never retry it as a network failure."""
+
+
+def _sha256(path: Path, should_cancel: Callable[[], bool] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+            if should_cancel and should_cancel():
+                raise DownloadCancelled("下载已取消")
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -51,7 +57,13 @@ def download_with_fallback(
     *,
     expected_sha256: str | None = None,
     on_progress: ProgressCallback | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Path:
+    def check_cancelled() -> None:
+        if should_cancel and should_cancel():
+            raise DownloadCancelled("下载已取消")
+
+    check_cancelled()
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".part")
     last_error: Exception | None = None
@@ -60,7 +72,7 @@ def download_with_fallback(
     # result when a later step in a multi-archive install needs to be retried;
     # otherwise a CUDA dependency failure would download the main runtime again.
     if destination.is_file():
-        if expected_sha256 and _sha256(destination).lower() != expected_sha256.lower():
+        if expected_sha256 and _sha256(destination, should_cancel).lower() != expected_sha256.lower():
             destination.unlink(missing_ok=True)
         else:
             size = destination.stat().st_size
@@ -78,10 +90,13 @@ def download_with_fallback(
         source_completed = False
         for attempt in range(DOWNLOAD_ATTEMPTS_PER_SOURCE):
             try:
+                check_cancelled()
                 offset = partial.stat().st_size if partial.exists() else 0
                 headers = {"Range": f"bytes={offset}-"} if offset else {}
                 with httpx.stream("GET", url, headers=headers, follow_redirects=True, timeout=60) as response:
                     if response.status_code == 416 and partial.exists():
+                        check_cancelled()
+                        _persist_progress(task_id)
                         partial.replace(destination)
                         source_completed = True
                         break
@@ -98,6 +113,7 @@ def download_with_fallback(
                     with partial.open("ab" if offset else "wb") as handle:
                         downloaded = offset
                         for chunk in response.iter_bytes(1024 * 1024):
+                            check_cancelled()
                             handle.write(chunk)
                             downloaded += len(chunk)
                             payload = {
@@ -109,9 +125,13 @@ def download_with_fallback(
                             _persist_progress(task_id, **payload)
                             if on_progress:
                                 on_progress(payload)
+                check_cancelled()
+                _persist_progress(task_id)
                 partial.replace(destination)
                 source_completed = True
                 break
+            except DownloadCancelled:
+                raise
             except Exception as exc:
                 last_error = exc
                 can_retry = _is_transient_download_error(exc) and attempt < DOWNLOAD_ATTEMPTS_PER_SOURCE - 1
@@ -134,7 +154,8 @@ def download_with_fallback(
         raise RuntimeError(f"所有下载源均失败: {last_error}")
 
     if expected_sha256:
-        actual = _sha256(destination)
+        check_cancelled()
+        actual = _sha256(destination, should_cancel)
         if actual.lower() != expected_sha256.lower():
             destination.unlink(missing_ok=True)
             raise RuntimeError("下载文件 SHA256 校验失败")
@@ -146,6 +167,8 @@ def _persist_progress(task_id: str, **values) -> None:
         task = db.query(ModelDownloadTask).filter(ModelDownloadTask.id == task_id).first()
         if not task:
             return
+        if task.status == "cancelled":
+            raise DownloadCancelled("下载已取消")
         for key, value in values.items():
             if hasattr(task, key):
                 setattr(task, key, value)

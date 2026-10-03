@@ -50,7 +50,7 @@ The result contains `draft_id`, the draft content, `turn_terminal=true`, and the
 5. Call `save_external_outline_draft` with the same manifest, one-use selection token, and insertion position.
 6. Stop immediately. The proposal remains outside the formal outline until the author edits and confirms it.
 
-When a user asks to write the next chapter but no chapter-level outline exists, this outline-proposal flow is the only allowed result for that turn. It must not call `create_outline_nodes` or continue into chapter writing. “Confirm outline and write” is a later author action that confirms the proposal, receives a real chapter outline ID, and starts a new Agent turn.
+When a user asks to write the next chapter but no chapter-level outline exists, this outline-proposal flow is the only allowed result for that turn. The Agent cannot directly create formal outline nodes or continue into chapter writing. “Confirm outline and write” is a later author action that confirms the proposal, receives a real chapter outline ID, and starts a new Agent turn.
 
 ## Separate author actions
 

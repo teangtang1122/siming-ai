@@ -122,17 +122,20 @@ def model_rows():
 
 
 async def native_step(messages, calls, job_id):
-    step = (len(messages) - 2) // 2
+    step = len(calls) - 1
     if step == 0:
-        name, args = "set_tool_categories", {"enabled_categories": ["cataloging"]}
-    elif step == 1:
         name, args = "get_next_external_cataloging_chapter", {"job_id": job_id, "include_prompt_pack": False}
+    elif step == 2:
+        name, args = "select_cataloging_candidate_types", {"types": ["outline_create_chapter"]}
     else:
-        chapter = json.loads(messages[-1]["content"])["data"]
+        chapter = next(json.loads(message["content"])["data"] for message in messages
+                       if message.get("role") == "tool" and
+                       json.loads(message["content"]).get("tool") == "get_next_external_cataloging_chapter")
         rows = model_rows()
         rows[1]["title"] = chapter["title"]
         name, args = "save_external_cataloging_candidates", {"job_id": job_id,
-            "chapter_id": chapter["chapter_id"], "candidates": rows, "finalize": True}
+            "chapter_id": chapter["chapter_id"],
+            "candidates": [rows[0] if step == 1 else rows[1]], "finalize": step == 3}
     yield {"type": "tool_call_delta", "index": 0, "id": f"call-{len(calls)}", "name": name,
            "arguments_delta": json.dumps(args, ensure_ascii=False)}
 
@@ -186,7 +189,7 @@ def test_retry_worker_runs_once_with_two_observers_and_disconnect_reconnect(cata
                 )
                 assert db.query(CatalogingCandidate).count() == 2
                 assert all(row.status == "applied" for row in db.query(CatalogingCandidate))
-            assert len(calls) == 3  # Category selection, source read, one plan submission.
+            assert len(calls) == 4  # Source read, summary, type selection, outline.
             for observer in (phone, reconnected):
                 events = observer.events()
                 assert events[-1]["type"] == "completed"
@@ -198,7 +201,7 @@ def test_retry_worker_runs_once_with_two_observers_and_disconnect_reconnect(cata
             observers.append(finished)
             await asyncio.wait_for(finished.task, 3)
             assert finished.events()[-1]["type"] == "completed"
-            assert len(calls) == 3
+            assert len(calls) == 4
         finally:
             release.set()
             for observer in observers:
@@ -298,7 +301,7 @@ def test_manual_confirmation_continues_without_opening_a_progress_stream(
             job = db.get(CatalogingJob, job_id)
             assert job.status == "completed", job.error
             assert all(c.status == "applied" for c in db.query(CatalogingCandidate))
-        assert len(calls) == 3
+        assert len(calls) == 4
 
     asyncio.run(check())
 
@@ -345,6 +348,6 @@ def test_explicit_skip_queues_the_next_chapter_without_a_stream(catalog, monkeyp
                 "completed",
             ]
             assert db.query(CatalogingFact).filter_by(chapter_id="c").count() == 0
-        assert len(calls) == 3
+        assert len(calls) == 4
 
     asyncio.run(check())

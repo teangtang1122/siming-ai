@@ -1216,7 +1216,7 @@ private fun updateCatalogingProgress(
         if (!force && uiState.value.assistantRunning && uiState.value.pendingChapterDraft?.generating == true) return
         val request = chapterDraftRefreshGuard.begin(uiState.value.pendingChapterDraft)
         try {
-            val draft = repository.pendingChapterDraft(projectId)
+            val draft = repository.pendingChapterDraft(projectId, activeAssistantModelRoute)
             if (chapterDraftRefreshGuard.accepts(request, uiState.value.pendingChapterDraft)) {
                 uiState.value = uiState.value.copy(pendingChapterDraft = draft)
             }

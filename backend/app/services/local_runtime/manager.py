@@ -9,8 +9,10 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -19,11 +21,17 @@ from app.architecture.uow import commit_session
 from ...database.models import (
     LocalModel,
     LocalRuntimeInstallation,
-    ModelTaskSetting,
     ModelAdapter,
+    ModelTaskSetting,
 )
 from ...database.session import SessionLocal
+from ...modules.model_runtime.domain.policy import (
+    local_runtime_disabled,
+    local_runtime_disabled_message,
+)
+from ...schemas.local_model import RuntimeLaunchSettings
 from .hardware import detect_hardware
+from .launch_settings import default_launch_settings, load_launch_settings
 from .paths import siming_home
 
 LOCAL_SERVER_PARALLEL_SLOTS = 1
@@ -74,6 +82,16 @@ class LocalRuntimeManager:
 
         return self._api_key
 
+    def request_token_counter(
+        self,
+        model_key: str,
+        tools: Sequence[Mapping[str, Any]],
+    ):
+        """Bind the loaded model's tokenizer and native request template."""
+        from .token_counter import make_request_token_counter
+
+        return make_request_token_counter(self, model_key, tools)
+
     def status(self) -> dict:
         running = bool(self._port and self._healthy())
         pid = None
@@ -100,11 +118,11 @@ class LocalRuntimeManager:
         return min(capacity, recommendation) if capacity > 0 else recommendation
 
     @staticmethod
-    def _launch_profiles(nvidia_available: bool, context: int) -> list[tuple[int, int]]:
+    def _launch_profiles(nvidia_available: bool, context: int, gpu_layers: int = 99) -> list[tuple[int, int]]:
         """Try GPU first, then preserve the same context on CPU/RAM."""
 
-        if nvidia_available:
-            return [(99, context), (0, context)]
+        if nvidia_available and gpu_layers:
+            return [(gpu_layers, context), (0, context)]
         return [(0, context)]
 
     def ensure_running(
@@ -117,24 +135,34 @@ class LocalRuntimeManager:
         adapter_ids: list[str] | None = None,
     ) -> str:
         with self._lock:
+            if local_runtime_disabled():
+                raise RuntimeError(local_runtime_disabled_message())
             model, runtime, adapters = self._load_assets(
                 model_key,
                 task_type,
                 project_id,
                 adapter_ids,
             )
-            signature = json.dumps(
-                [(adapter.file_path, adapter.weight) for adapter in adapters],
-                ensure_ascii=False,
-            )
             profile = detect_hardware()
             # The catalog value is a useful starting point, not a ceiling.
             # Users with large VRAM/unified memory may select a model's full
             # or RoPE-scaled context window.
-            context = context_length or self._default_context_length(
+            default_context = self._default_context_length(
                 model.context_length,
                 profile.recommended_context,
             )
+            launch_settings, saved = load_launch_settings(
+                model_key,
+                context_length=default_context,
+                gpu_layers=99 if profile.nvidia_available else 0,
+                threads=max(2, profile.cpu_count - 1),
+            )
+            context = launch_settings.context_length if saved else context_length or launch_settings.context_length
+            signature = json.dumps({
+                "adapters": [(adapter.file_path, adapter.weight) for adapter in adapters],
+                "model_file": model.file_path,
+                "settings": launch_settings.model_dump(),
+            }, ensure_ascii=False, sort_keys=True)
             if (
                 self._model_key == model_key
                 and self._requested_context_length == context
@@ -150,7 +178,7 @@ class LocalRuntimeManager:
             # Never silently shrink a context selected by the user. A failed
             # launch reports llama.cpp's diagnostic so the user can choose a
             # lower value deliberately, instead of losing project evidence.
-            launch_profiles = self._launch_profiles(profile.nvidia_available, context)
+            launch_profiles = self._launch_profiles(profile.nvidia_available, context, launch_settings.gpu_layers)
             last_error = "本地模型运行时启动失败"
             for attempt, (gpu_layers, attempt_context) in enumerate(launch_profiles):
                 port = _free_port()
@@ -161,10 +189,11 @@ class LocalRuntimeManager:
                     model.model_key,
                     port,
                     attempt_context,
-                    max(2, profile.cpu_count - 1),
+                    launch_settings.threads or max(2, profile.cpu_count - 1),
                     gpu_layers,
                     adapters,
                     api_key=runtime_api_key,
+                    launch_settings=launch_settings,
                 )
                 stdout_path, stderr_path = self._launch_log_paths(model.model_key, attempt)
                 self._last_log_path = str(stderr_path)
@@ -200,6 +229,9 @@ class LocalRuntimeManager:
                 deadline = started_at + 120
                 detached_grace_deadline = started_at + 10
                 while time.monotonic() < deadline:
+                    if local_runtime_disabled():
+                        self.stop()
+                        raise RuntimeError(local_runtime_disabled_message())
                     if self._healthy():
                         self._mark_runtime_running()
                         with SessionLocal() as db:
@@ -242,8 +274,6 @@ class LocalRuntimeManager:
             self._context_length = None
             self._requested_context_length = None
             self._adapter_signature = ""
-            if process is None and port is None:
-                return
             if process and process.poll() is None:
                 try:
                     process.terminate()
@@ -277,7 +307,12 @@ class LocalRuntimeManager:
         gpu_layers: int,
         adapters: list[ModelAdapter],
         api_key: str | None = None,
+        launch_settings: RuntimeLaunchSettings | None = None,
     ) -> list[str]:
+        settings = launch_settings or default_launch_settings(
+            model_key, context_length=context_length,
+            gpu_layers=gpu_layers, threads=thread_count,
+        )
         command = [
             executable_path,
             "--model",
@@ -303,6 +338,28 @@ class LocalRuntimeManager:
         ]
         if api_key:
             command.extend(["--api-key", api_key])
+        if settings.fit != "auto":
+            command.extend(["--fit", settings.fit])
+        if settings.flash_attention != "auto":
+            command.extend(["--flash-attn", settings.flash_attention])
+        if settings.kv_cache_type != "f16":
+            command.extend(["--cache-type-k", settings.kv_cache_type,
+                            "--cache-type-v", settings.kv_cache_type])
+        if settings.mtp_draft_tokens:
+            command.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max",
+                            str(settings.mtp_draft_tokens)])
+        if settings.cache_ram_mb:
+            command.extend(["--cache-ram", str(settings.cache_ram_mb)])
+        for option, value in (
+            ("--reasoning-effort", settings.reasoning_effort),
+            ("--temp", settings.temperature),
+            ("--top-p", settings.top_p),
+            ("--top-k", settings.top_k),
+            ("--min-p", settings.min_p),
+            ("--repeat-penalty", settings.repeat_penalty),
+        ):
+            if value is not None:
+                command.extend([option, str(value)])
         for adapter in adapters:
             command.extend(["--lora-scaled", adapter.file_path, str(adapter.weight or 1.0)])
         return command

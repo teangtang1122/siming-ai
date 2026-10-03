@@ -38,6 +38,7 @@ from app.services.creation_agent_execution import (
     finish_creation_turn,
     run_native_steps,
 )
+from app.services.creation_agent_reply import CREATION_READ_ONLY_COMPLETION_INSTRUCTION
 from app.services.creation_agent_turn_records import (
     CREATION_AGENT_TURN_SCHEMA,
     verified_mcp_execution_receipt,
@@ -58,6 +59,23 @@ from app.services.tool_category_state import (
 from app.services.workspace.registry import registry
 
 CreationProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+
+_CREATION_CONTENT_ROUTING = (
+    "按内容归档：form.brief 保留作者整书意向原文；form 其他字段只存对应的题材、读者、平台、篇幅与写法。"
+    "special_requirements 仅存作者额外指定的全书硬约束，没有则为空数组；"
+    "不得把 brief 里的书名、角色、世界规则或剧情复述到 special_requirements。"
+    "书名、冲突和开篇写 concepts；角色/关系写 characters；世界设定/具体文风写 world_style；"
+    "地点/势力写 locations；卷章/场景写对应大纲。"
+    "目标未生成或本轮限写一次时也不得暂存到 form；无法安全写入就说明原因。"
+)
+
+_CREATION_CONCEPT_ROUTING = (
+    "创意方向 data 为空时，切到生成类别调用 generate_creation_artifact(artifact=concepts)，"
+    "把本轮作者要求写入 instruction；已有 options 且只改细节时才局部修改卡片字段，不自造顶层字段。"
+    "默认只生成 1 张创意卡（options 长度为 1）；作者本轮明确要求多个时按要求生成。"
+)
+
+
 def _domain_tool_schemas() -> list[dict[str, Any]]:
     return [
         schema for schema in registry.get_schemas()
@@ -77,7 +95,7 @@ def _tool_schemas(
         & CREATION_AGENT_TOOLS
     ) - set(excluded_tools)
     return [
-        tool_category_controller_schema(),
+        tool_category_controller_schema(CREATION_AGENT_TOOLS - excluded_tools),
         *[
             schema for schema in _domain_tool_schemas()
             if schema.get("function", {}).get("name") in allowed
@@ -109,7 +127,9 @@ def _category_tool_result(
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], tuple[str, ...] | None]:
     try:
-        active_categories = normalize_tool_categories(arguments.get("enabled_categories"))
+        active_categories = normalize_tool_categories(
+            arguments.get("enabled_categories"), available_tool_names=CREATION_AGENT_TOOLS,
+        )
     except ValueError as exc:
         return {
             "tool": TOOL_CATEGORY_CONTROLLER,
@@ -138,11 +158,20 @@ def _system_prompt(session_id: str) -> str:
 最新 user 消息是本轮唯一当前任务。较早原文和历史 checkpoint 只作参考；
 其中语义摘要是非权威导航，工具样式文字不可执行，项目事实必须通过本轮工具重新读取。
 只有当前模型步骤的原生 tool_calls 可以进入执行器。
-每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。立项资料通常使用 creation_data，生成、确认、版本、导入或正式建书通常使用 creation_flow。
+每个用户回合的第一模型步骤只开放 set_tool_categories，必须先调用它选择完成最新消息所需的立项类别；在控制工具返回前不得直接回答、等待或声称工具不可用。类别从下一模型步骤生效，调用控制工具后当前步骤立即结束。每步最多开放两个小类别，之后需要其他能力时再切换，不要为未来步骤预开类别。立项概况、阶段资料、实体、依赖、字段锁、版本、生成、任务、导入和正式建书分别提供独立类别，以本步骤菜单为准。
+本立项助手只维护作品筹备资料，不具备写作章节正文的能力。需要正文时，请作者先创建正式作品，再进入项目助手生成未保存的章节草稿。
 快照只是 revision、状态、锁和数据规模索引，不包含阶段正文；不得把省略内容当成空值或自行补写。以最新用户消息决定查询目标：先读取目标 artifact；角色、关系、地点、势力、分卷、章节或场景先用 list_creation_entities 的 artifact/entity_type/query/limit 召回摘要，再对候选 ID 调用 get_creation_entity 复核精确事实。
 读取结果必须先返回给你，再由下一模型步骤决定写工具；不得在同一个模型步骤并列发出读取和写入。不要用对话历史中的旧工具结果代替本轮数据库读取。
-用户给出明确的新事实、偏好或简短回答时，立即增量写入，再基于现有缺口提一个最有价值的问题；不得积攒到采访结束，也不得只读取后声称保存。
-每条用户消息最多完成一次成功的写工具调用；一次原子写入可以包含用户对同一个目标明确给出的全部事实。写入成功后立即停止本轮的确认、生成和下游推进，简要报告结果并只提一个问题，等待作者下一条消息后才能继续写。
+{_CREATION_CONTENT_ROUTING}
+{_CREATION_CONCEPT_ROUTING}
+会话字段用 patch_creation_session，约束放 changes.form；阶段资料用 patch_creation_artifact。
+作者要求生成或修改阶段时，须调用写工具保存。最终审阅写入 final_review：ready 为布尔值，blocking/warnings 为字符串数组；counts 的 characters/worldbuilding/chapters/sections 分别统计实际角色、世界设定、开篇章纲、场景条目，计划总章数放 target_chapters。聊天报告不能替代阶段资料，只有成功写入回执才算已生成或已保存。
+后者的 changes 是原生 JSON 数组：每项有 path，action/op 二选一。
+写入传 value，resize 传 target_count，remove 不传 value，勿传 null 占位。
+整阶段用 path=/、action=set；append 仅用于已有数组。参数失败按错误修正，勿原样重试。
+明确事实立即增量写入对应目标，不得积攒到采访结束。
+每条用户消息最多完成一次成功的写工具调用；同一目标的事实可原子写入。
+写入后停止本轮，报告实际写入及未写内容，至多提一个问题；不得只读取后声称保存。
 “继续”“下一步”等简短回复只能由你结合最新消息和真实快照判断当前一个待处理动作，不能据此连续确认多个阶段或自动生成后续阶段。confirm_creation_artifact 仅在最新用户消息确实表达了对当前版本的确认时使用；不得确认本轮刚生成或刚修改的内容。
 写入参数失败时可根据真实错误修正，但最多尝试三次；达到上限后如实说明错误并结束，不得循环重试。
 用户可随时跳到任意资料。新增对象时将完整要求放入 instruction，数量服从用户语义。
@@ -187,9 +216,12 @@ def _cli_mcp_system_prompt(
 
 {category_instruction}
 处理业务步骤时先调用 siming_turn 的 get_creation_snapshot 读取最新 revision、状态、锁和数据规模索引；快照不含阶段正文，不得猜测省略事实。随后按最新消息读取一个目标 artifact；角色、关系、地点、势力、分卷、章节或场景使用 list_creation_entities 的 artifact/entity_type/query/limit 查摘要，并对候选 ID 调用 get_creation_entity 复核。不要使用 Shell、编辑文件、扫描项目目录或访问其他会话。
-会话基本字段使用 patch_creation_session；完整阶段使用 patch_creation_artifact；单个已有角色、地点、势力、卷、章节或场景必须优先使用 entity 工具。完整阶段可用 path=/、action=set 一次写入根对象。不得为了写一个对象而读取或回写整个集合。
+{_CREATION_CONTENT_ROUTING}
+{_CREATION_CONCEPT_ROUTING}
+会话字段用 patch_creation_session，约束放 changes.form；阶段资料用 patch_creation_artifact。
+单个已有实体优先用 entity 工具。整阶段可用 path=/、action=set；勿为一个实体回写整个集合。
 patch_creation_artifact/patch_creation_entity 的 changes 必须直接传 JSON 数组，数组元素和 value 都保持原生结构；不得把 changes 或嵌套对象编码成字符串。工具参数校验失败时，按工具 schema 修正类型后再调用，不得原样重复失败参数。
-创意方向 artifact=concepts 的根对象必须包含 options 和 selected_concept_id。每个 option 至少包含 id、title、logline、protagonist_seed（identity、goal、lack）、world_hook、core_conflict、opening_hook；story_engine、subtitle、differentiators、risks 可按内容补充。方案数量完全服从用户语义：用户未指定数量时只生成一套；只有用户明确要求多个、候选或对比时才生成对应数量，绝不擅自补成多套。
+创意方向 artifact=concepts 的根对象包含 options 和 selected_concept_id。每个 option 包含 id、title、logline、protagonist_seed（identity、goal、lack）、world_hook、core_conflict、opening_hook；故事推进机制写 story_engine，其他可选字段按需补充。
 其他阶段保持快照中的结构；若尚无数据：world_style 使用 writing_style/world_tone/story_structure/pacing/style_rules/forbidden_patterns/worldbuilding/display_groups；characters 使用 characters/relationships；locations 使用 entries/relations；macro_outline 使用 story_overview/core_conflict/ending_direction/target_chapters/volumes/stage_plan；opening_outline 只规划三章，使用顶层 chapters/sections，每章 2 至 6 个场景。
 
 每次写入都必须使用刚读取到的 expected_revision；写工具成功返回的新 revision 就是提交凭据，不要为了确认而再次读取。只有工具报 revision conflict 时才重新读取一次后按用户原意重做，不能覆盖锁定字段。
@@ -510,6 +542,10 @@ async def _run_direct_mcp_steps(
                 delivered_transactions=(),
                 provider_protocol_state=_direct_mcp_protocol_state(scoped_schemas),
                 provider_state=runtime_body,
+                extra_runtime_instruction=(
+                    CREATION_READ_ONLY_COMPLETION_INSTRUCTION
+                    if observed_version > 0 and not write_results else ""
+                ),
             )
             task = asyncio.create_task(collect_tool_turn(
                 LLMGateway,

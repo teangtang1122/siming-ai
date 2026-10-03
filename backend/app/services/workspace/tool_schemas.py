@@ -11,7 +11,7 @@ def select_workspace_tool_names(categories: Iterable[str] | None = None) -> list
 
     Natural-language intent and target selection belong to the model. This
     function applies only deterministic server authorization and therefore
-    never branches on user wording, UI selection, or conversational scope.
+    only includes project capabilities and never branches on user wording or UI selection.
     """
     return sorted({
         tool.name

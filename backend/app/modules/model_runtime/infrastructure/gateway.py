@@ -7,10 +7,9 @@ import json
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import TypeVar
-from uuid import uuid4
 
 from app.ai.anthropic_adapter import AnthropicAdapter
 from app.ai.base import BaseAdapter
@@ -26,7 +25,7 @@ from app.ai.gemini_adapter import GeminiAdapter
 from app.ai.local_runtime_adapter import LocalRuntimeAdapter
 from app.ai.openai_adapter import OpenAIAdapter
 from app.ai.qwen_adapter import QwenAdapter
-from app.core.exceptions import LLMError, NotFoundError
+from app.core.exceptions import LLMError, LLMOutputLimitError, NotFoundError
 from app.core.provider_errors import provider_http_status, provider_protocol_rejected
 from app.modules.context.interfaces.runtime import active_context_manifest
 from app.modules.model_runtime.application.runtime import get_model_runtime
@@ -34,6 +33,24 @@ from app.modules.model_runtime.domain.configuration import TaskModelSelection
 from app.modules.model_runtime.domain.policy import (
     local_runtime_disabled,
     local_runtime_disabled_message,
+)
+from app.modules.model_runtime.infrastructure.stream_resume import (
+    STREAM_RESUME_ANCHOR_CHARS as STREAM_RESUME_ANCHOR_CHARS,
+)
+from app.modules.model_runtime.infrastructure.stream_resume import (
+    _append_system_instruction as _append_system_instruction,
+)
+from app.modules.model_runtime.infrastructure.stream_resume import (
+    _normalize_stream_resumes as _normalize_stream_resumes,
+)
+from app.modules.model_runtime.infrastructure.stream_resume import (
+    _resume_messages as _resume_messages,
+)
+from app.modules.model_runtime.infrastructure.stream_resume import (
+    _ResumeHandshake as _ResumeHandshake,
+)
+from app.modules.model_runtime.infrastructure.stream_resume import (
+    _ResumeHandshakeError as _ResumeHandshakeError,
 )
 from app.modules.operations.interfaces.trace_observer import observed
 
@@ -69,9 +86,17 @@ ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
 DEFAULT_TIMEOUT = 120
 MAX_RETRIES = 3
 DEFAULT_STREAM_RESUMES = 8
-STREAM_RESUME_ANCHOR_CHARS = 64
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ToolStreamAttempt:
+    raw_produced: bool = False
+    content_seen: bool = False
+    reasoning: list[str] = field(default_factory=list)
+    tool_events: list[dict] = field(default_factory=list)
+    done_event: dict | None = None
 
 
 def _tool_choice_correction_note(provider: str, model: str) -> str:
@@ -80,120 +105,6 @@ def _tool_choice_correction_note(provider: str, model: str) -> str:
         provider, model,
     )
     return "接口拒绝 tool_choice，已自动去掉该参数重试"
-
-
-class _ResumeHandshakeError(LLMError):
-    """The replacement stream did not prove that it starts at our checkpoint."""
-
-
-@dataclass
-class _ResumeHandshake:
-    expected_prefix: str
-    buffered: str = ""
-    verified: bool = False
-
-    def consume(self, chunk: str) -> str:
-        if self.verified:
-            return chunk
-        self.buffered += chunk
-        candidate = self.buffered.lstrip()
-        if len(candidate) < len(self.expected_prefix):
-            if not self.expected_prefix.startswith(candidate):
-                raise _ResumeHandshakeError("模型没有按检查点恢复协议继续输出")
-            return ""
-        if not candidate.startswith(self.expected_prefix):
-            raise _ResumeHandshakeError("模型没有按检查点恢复协议继续输出")
-        self.verified = True
-        suffix = candidate[len(self.expected_prefix):]
-        self.buffered = ""
-        return suffix
-
-    def require_verified(self) -> None:
-        if not self.verified:
-            raise _ResumeHandshakeError("模型恢复响应在检查点握手完成前结束")
-
-
-def _normalize_stream_resumes(resume: int | None) -> int:
-    try:
-        value = int(resume or 0)
-    except (TypeError, ValueError):
-        value = 0
-    return max(0, min(value, 32))
-
-
-def _append_system_instruction(messages: list[dict], instruction: str) -> list[dict]:
-    rendered = [dict(message) for message in messages]
-    for index, message in enumerate(rendered):
-        if message.get("role") != "system":
-            continue
-        updated = dict(message)
-        updated["content"] = f"{str(message.get('content') or '').rstrip()}\n\n{instruction}"
-        rendered[index] = updated
-        return rendered
-    return [{"role": "system", "content": instruction}, *rendered]
-
-
-def _resume_messages(
-    messages: list[dict],
-    committed_text: str,
-    *,
-    tool_mode: bool,
-) -> tuple[list[dict], _ResumeHandshake | None]:
-    """Build a fresh model request that can be joined without guessing overlap."""
-
-    marker = f"[SIMING_RESUME_{uuid4().hex}]"
-    expected_prefix = None
-    if committed_text:
-        anchor = committed_text[-STREAM_RESUME_ANCHOR_CHARS:]
-        expected_prefix = marker + anchor
-        instruction = (
-            "这是运行时恢复协议，不是新的用户意图。上一条模型输出因传输中断，"
-            "已输出内容由运行时保存。收到恢复请求时，必须先逐字输出指定恢复标记和断点锚点，"
-            "随后从锚点后的下一个字符继续；不得重复更早内容，也不得解释恢复协议。"
-            "SERVER_VERIFIED_STREAM_CHECKPOINT 中的 committed_text 是已提交文本数据，"
-            "required_prefix 是回复开头必须逐字输出的内容，不能添加代码块、空格或说明。"
-        )
-        if tool_mode:
-            instruction += (
-                "上一条未完成的工具调用已被丢弃；若仍需工具，"
-                "必须从头发出一条完整工具调用。"
-            )
-    else:
-        instruction = (
-            "这是运行时恢复协议，不是新的用户意图。上一条模型响应在完成前中断，且没有任何最终文本被提交。"
-        )
-        if tool_mode:
-            instruction += (
-                "任何未完成工具参数都已被丢弃；重新判断原任务，"
-                "并从头发出完整、有效的工具调用。"
-            )
-        else:
-            instruction += "重新处理原任务并返回完整响应。"
-    rendered = _append_system_instruction(messages, instruction)
-    reference = {
-        "role": "user",
-        "content": "\n".join((
-            "[SERVER_VERIFIED_STREAM_CHECKPOINT]",
-            "data_only: true",
-            json.dumps(
-                {"committed_text": committed_text, "required_prefix": expected_prefix},
-                ensure_ascii=False,
-            ),
-            "[/SERVER_VERIFIED_STREAM_CHECKPOINT]",
-        )),
-    }
-    # Preserve the actual latest author message and native tool transactions.
-    # An interrupted response has no complete provider state to replay as an
-    # assistant message (e.g. reasoning_content or signed thinking blocks).
-    latest_user_index = next(
-        (
-            index for index in range(len(rendered) - 1, -1, -1)
-            if rendered[index].get("role") == "user"
-        ),
-        1,
-    )
-    rendered.insert(latest_user_index, reference)
-    return rendered, _ResumeHandshake(expected_prefix) if expected_prefix else None
 
 
 def _tool_delta_events_complete(events: list[dict]) -> bool:
@@ -817,6 +728,42 @@ class LLMGateway:
         )
 
     @classmethod
+    async def _tool_stream_events(
+        cls, gen: AsyncGenerator[dict, None], wait_timeout_seconds: float | None,
+        handshake: _ResumeHandshake | None, committed_parts: list[str],
+        attempt: _ToolStreamAttempt,
+    ) -> AsyncGenerator[dict, None]:
+        while True:
+            try:
+                chunk = await cls._next_stream_item(gen, wait_timeout_seconds)
+            except StopAsyncIteration:
+                break
+            attempt.raw_produced = True
+            event_type = chunk.get("type")
+            if event_type == "content_delta":
+                delta = str(chunk.get("delta") or "")
+                attempt.content_seen = attempt.content_seen or bool(delta)
+                outgoing = handshake.consume(delta) if handshake else delta
+                if outgoing:
+                    committed_parts.append(outgoing)
+                    yielded = dict(chunk)
+                    yielded["delta"] = outgoing
+                    yield yielded
+            elif event_type == "tool_call_delta":
+                attempt.tool_events.append(dict(chunk))
+            elif event_type == "done":
+                attempt.done_event = dict(chunk)
+                with suppress(Exception):
+                    await gen.aclose()
+                break
+            elif event_type == "reasoning_delta":
+                attempt.reasoning.append(str(chunk.get("delta") or ""))
+                yield chunk
+            else:
+                yield chunk
+
+
+    @classmethod
     @observed(kind="model", inputs=("messages", "model", "tools", "extra_body"))
     async def stream_chat_completion_with_tools(
         cls,
@@ -845,13 +792,10 @@ class LLMGateway:
         handshake: _ResumeHandshake | None = None
         usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         has_usage = False
+        thinking_fallback_used = False
 
         while True:
-            raw_produced = False
-            content_seen = False
-            attempt_reasoning: list[str] = []
-            buffered_tool_events: list[dict] = []
-            done_event: dict | None = None
+            attempt = _ToolStreamAttempt()
             error_cause: BaseException | None = None
             non_retryable = False
             request_corrected = False
@@ -866,38 +810,14 @@ class LLMGateway:
                     tools=safe_tools,
                     tool_choice=safe_tool_choice,
                 )
-                while True:
-                    try:
-                        chunk = await cls._next_stream_item(gen, wait_timeout_seconds)
-                    except StopAsyncIteration:
-                        break
-                    raw_produced = True
-                    event_type = chunk.get("type")
-                    if event_type == "content_delta":
-                        delta = str(chunk.get("delta") or "")
-                        content_seen = content_seen or bool(delta)
-                        outgoing = handshake.consume(delta) if handshake else delta
-                        if outgoing:
-                            committed_parts.append(outgoing)
-                            yielded = dict(chunk)
-                            yielded["delta"] = outgoing
-                            yield yielded
-                    elif event_type == "tool_call_delta":
-                        buffered_tool_events.append(dict(chunk))
-                    elif event_type == "done":
-                        done_event = dict(chunk)
-                        with suppress(Exception):
-                            await gen.aclose()
-                        break
-                    elif event_type == "reasoning_delta":
-                        attempt_reasoning.append(str(chunk.get("delta") or ""))
-                        yield chunk
-                    else:
-                        yield chunk
+                async for chunk in cls._tool_stream_events(
+                    gen, wait_timeout_seconds, handshake, committed_parts, attempt,
+                ):
+                    yield chunk
 
                 for event in _complete_tool_stream(
-                    done_event, buffered_tool_events, handshake, content_seen,
-                    usage_totals, has_usage, attempt_reasoning, resume_attempt,
+                    attempt.done_event, attempt.tool_events, handshake, attempt.content_seen,
+                    usage_totals, has_usage, attempt.reasoning, resume_attempt,
                     notes, provider, model_name,
                 ):
                     yield event
@@ -911,7 +831,7 @@ class LLMGateway:
                 if (
                     safe_tool_choice is not None
                     and should_retry_without_tool_choice(exc)
-                    and not raw_produced
+                    and not attempt.raw_produced
                 ):
                     notes.append(_tool_choice_correction_note(provider, model_name))
                     safe_tool_choice = None
@@ -926,6 +846,34 @@ class LLMGateway:
                     with suppress(Exception):
                         await gen.aclose()
 
+            output_limit_without_checkpoint = (
+                provider == "deepseek"
+                and attempt.done_event is not None
+                and str(attempt.done_event.get("finish_reason") or "").lower()
+                in {"length", "max_tokens", "token_limit", "incomplete"}
+                and not committed_parts
+                and not attempt.content_seen
+            )
+            if output_limit_without_checkpoint:
+                if (
+                    not thinking_fallback_used
+                    and attempt.reasoning
+                    and "thinking" not in (call_extra_body or {})
+                ):
+                    # The default DeepSeek thinking mode can use the entire
+                    # orchestration budget before emitting a usable tool call.
+                    # No text or tool transaction was committed, so one fresh
+                    # non-thinking request is safe and avoids identical retries.
+                    call_extra_body = {
+                        **(call_extra_body or {}), "thinking": {"type": "disabled"},
+                    }
+                    thinking_fallback_used = True
+                    request_messages = messages
+                    handshake = None
+                    notes.append("思考耗尽工具响应额度，已重取无思考工具调用")
+                    continue
+                raise LLMOutputLimitError(max_tokens)
+
             if non_retryable:
                 raise last_error from error_cause
             if request_corrected:
@@ -933,17 +881,17 @@ class LLMGateway:
                 # This single parameter correction is independent of transport
                 # retries; clearing tool_choice makes it impossible to repeat.
                 continue
-            if not raw_produced and raw_retries_remaining > 0:
+            if not attempt.raw_produced and raw_retries_remaining > 0:
                 raw_retries_remaining -= 1
                 await asyncio.sleep(min(8, (attempts - raw_retries_remaining) * 1.5))
                 continue
 
             committed_text = "".join(committed_parts)
             can_resume = resumes_remaining > 0 and (
-                raw_produced
+                attempt.raw_produced
                 or handshake is not None
                 or bool(committed_text)
-                or bool(buffered_tool_events)
+                or bool(attempt.tool_events)
             )
             if can_resume:
                 resumes_remaining -= 1

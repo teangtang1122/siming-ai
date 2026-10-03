@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..external_results import external_tool_failure
-
 from sqlalchemy.orm import Session
 
 from ....core.utils import count_words
@@ -17,7 +15,6 @@ from ....services.chapter_writing_constraints import (
     check_chapter_length,
     manifest_minimum_han_characters,
     normalize_writing_arguments,
-    recommended_han_character_target,
 )
 from ....services.task_context_delivery import (
     build_context_page,
@@ -31,6 +28,7 @@ from ....services.task_context_selection import (
     TASK_CONTEXT_SOFT_TARGET_TOKENS,
     render_generation_context,
 )
+from ..external_results import external_tool_failure
 
 
 def _load_external_writing_prompt_pack(
@@ -190,7 +188,7 @@ def _external_writing_context_result(
             "writing_constraints": {
                 "minimum_han_characters": manifest_minimum_han_characters(manifest),
                 "metric": "cjk_unified_ideographs",
-                "enforced_before_draft_storage": True,
+                "enforced_before_draft_storage": False,
             },
             "warnings": list(dict.fromkeys(warnings)),
             "workflow_boundaries": {
@@ -207,6 +205,48 @@ def _external_writing_context_result(
     }
 
 
+def _writing_source_draft(
+    db: Session, project_id: str, outline_node_id: str, args: dict[str, Any],
+) -> tuple[Any, dict | None]:
+    from app.services.workspace.generated_drafts import (
+        find_chapter_draft,
+        find_pending_chapter_draft,
+    )
+
+    source_draft_id = str(args.get("source_draft_id") or "").strip() or None
+    source_draft = None
+    if source_draft_id:
+        pending = find_pending_chapter_draft(db, project_id)
+        source_draft = find_chapter_draft(db, project_id, source_draft_id)
+        if (
+            source_draft is None
+            or str(source_draft.status or "") != "pending"
+            or pending is None
+            or str(pending.id) != source_draft_id
+            or str(source_draft.outline_node_id or "") != outline_node_id
+        ):
+            return None, {
+                "tool": "prepare_external_writing_context",
+                "status": "skipped",
+                "detail": (
+                    "source_draft_id must identify the current pending draft for this outline."
+                ),
+                "data": {"source_draft_id": source_draft_id},
+            }
+        draft_target_id = str(source_draft.target_chapter_id or "").strip()
+        requested_target_id = str(args.get("target_chapter_id") or "").strip()
+        if requested_target_id and requested_target_id != draft_target_id:
+            return None, {
+                "tool": "prepare_external_writing_context",
+                "status": "skipped",
+                "detail": "target_chapter_id does not match the current pending draft.",
+                "data": {"source_draft_id": source_draft_id},
+            }
+        args["target_chapter_id"] = draft_target_id or None
+
+    return source_draft, None
+
+
 async def prepare_external_writing_context(
     db: Session,
     project_id: str,
@@ -215,10 +255,6 @@ async def prepare_external_writing_context(
     """Prepare one governed, API-free context package for chapter writing."""
     from app.database.models import Chapter, OutlineNode, Project
     from app.services.context_orchestrator import ContextOrchestrator
-    from app.services.workspace.generated_drafts import (
-        find_chapter_draft,
-        find_pending_chapter_draft,
-    )
 
     try:
         args = normalize_writing_arguments(args)
@@ -255,36 +291,9 @@ async def prepare_external_writing_context(
             "detail": "outline_node_id must identify a chapter node in the current project.",
             "data": {"outline_node_id": outline_node_id},
         }
-    source_draft_id = str(args.get("source_draft_id") or "").strip() or None
-    source_draft = None
-    if source_draft_id:
-        pending = find_pending_chapter_draft(db, project_id)
-        source_draft = find_chapter_draft(db, project_id, source_draft_id)
-        if (
-            source_draft is None
-            or str(source_draft.status or "") != "pending"
-            or pending is None
-            or str(pending.id) != source_draft_id
-            or str(source_draft.outline_node_id or "") != outline_node_id
-        ):
-            return {
-                "tool": "prepare_external_writing_context",
-                "status": "skipped",
-                "detail": (
-                    "source_draft_id must identify the current pending draft for this outline."
-                ),
-                "data": {"source_draft_id": source_draft_id},
-            }
-        draft_target_id = str(source_draft.target_chapter_id or "").strip()
-        requested_target_id = str(args.get("target_chapter_id") or "").strip()
-        if requested_target_id and requested_target_id != draft_target_id:
-            return {
-                "tool": "prepare_external_writing_context",
-                "status": "skipped",
-                "detail": "target_chapter_id does not match the current pending draft.",
-                "data": {"source_draft_id": source_draft_id},
-            }
-        args["target_chapter_id"] = draft_target_id or None
+    source_draft, draft_error = _writing_source_draft(db, project_id, outline_node_id, args)
+    if draft_error is not None:
+        return draft_error
 
     existing_chapter = db.query(Chapter).filter(
         Chapter.project_id == project_id,
@@ -322,6 +331,13 @@ async def prepare_external_writing_context(
                 "tool": "prepare_external_writing_context",
                 "status": "needs_confirmation",
                 "detail": "The requested context manifest was not found.",
+                "data": {"context_manifest_id": requested_manifest_id},
+            }
+        if manifest.execution_route == "internal_api":
+            return {
+                "tool": "prepare_external_writing_context",
+                "status": "needs_confirmation",
+                "detail": "Prepare a separate external writing context for this agent.",
                 "data": {"context_manifest_id": requested_manifest_id},
             }
     else:
@@ -403,6 +419,13 @@ def _external_draft_manifest_error(
                 "context_manifest_id": context_manifest_id,
             },
         }
+    if manifest.execution_route == "internal_api":
+        return {
+            "tool": "save_external_chapter_draft",
+            "status": "needs_confirmation",
+            "detail": "External drafts require an externally delivered context manifest.",
+            "data": {"context_manifest_id": context_manifest_id},
+        }
     selection_token = str(args.get("context_selection_token") or "").strip()
     usable, detail = orchestrator.validate_task_selection(
         manifest,
@@ -431,14 +454,12 @@ def _external_draft_manifest_error(
     }
 
 
-def _external_draft_length_error(
+def _external_draft_length_contract_error(
     db: Session,
     project_id: str,
     context_manifest_id: str | None,
-    outline_node_id: str,
-    content: str,
 ) -> dict[str, Any] | None:
-    """Reject a short draft before consuming its one-use evidence token."""
+    """Validate the structured length reference without rejecting short prose."""
     if not context_manifest_id:
         return None
 
@@ -448,7 +469,7 @@ def _external_draft_length_error(
     if not manifest:
         return None
     try:
-        check = check_chapter_length(content, manifest)
+        manifest_minimum_han_characters(manifest)
     except ValueError as error:
         return {
             "tool": "save_external_chapter_draft",
@@ -459,34 +480,7 @@ def _external_draft_length_error(
                 "context_manifest_id": context_manifest_id,
             },
         }
-    if check.accepted:
-        return None
-    minimum = int(check.minimum_han_characters or 0)
-    missing = minimum - check.actual_han_characters
-    recommended = recommended_han_character_target(minimum)
-    recommended_additional = recommended - check.actual_han_characters
-    return {
-        "tool": "save_external_chapter_draft",
-        "status": "needs_confirmation",
-        "detail": (
-            f"正文只有 {check.actual_han_characters} 个汉字，低于已绑定的硬下限 "
-            f"{minimum}；未保存草稿，也未消耗上下文令牌。至少还差 {missing} 个；"
-            f"为减少反复退回，建议一次补至 {recommended} 个汉字（约再补 "
-            f"{recommended_additional} 个），再用同一清单和令牌重试。"
-        ),
-        "data": {
-            "reason_code": "draft_below_minimum",
-            "context_manifest_id": context_manifest_id,
-            "outline_node_id": outline_node_id,
-            "actual_han_characters": check.actual_han_characters,
-            "minimum_han_characters": minimum,
-            "missing_han_characters": missing,
-            "recommended_han_characters": recommended,
-            "recommended_additional_han_characters": recommended_additional,
-            "draft_stored": False,
-            "context_selection_token_consumed": False,
-        },
-    }
+    return None
 
 
 def _resolve_external_draft_target(
@@ -705,12 +699,10 @@ async def save_external_chapter_draft(
         if required_chapter:
             return cataloging_required_block_result("save_external_chapter_draft", required_chapter)
 
-    length_error = _external_draft_length_error(
+    length_error = _external_draft_length_contract_error(
         db,
         project_id,
         context_manifest_id,
-        outline_node_id,
-        content,
     )
     if length_error:
         return length_error
@@ -814,7 +806,7 @@ async def save_external_chapter_draft(
             f"当前章节草稿已修改（{count_words(content)} 字），仍未保存；本轮必须结束"
             if source_draft_id
             else f"章节草稿已生成（{count_words(content)} 字），尚未保存；本轮必须结束"
-        ),
+        ) + length_check.notice,
         "data": {
             "draft_id": draft_id,
             "content_ref": draft_id,
@@ -839,8 +831,7 @@ async def save_external_chapter_draft(
             "source_draft_id": source_draft_id,
             "next_actions": ["revise_draft", "save_and_catalog", "save_only", "discard"],
             "word_count": count_words(content),
-            "han_character_count": length_check.actual_han_characters,
-            "minimum_han_characters": length_check.minimum_han_characters,
+            **length_check.result_data(),
             "source_agent": source_agent,
         },
     }, AssistantTurnDirective.END_AFTER_DRAFT)
@@ -882,6 +873,13 @@ async def save_external_outline_draft(
             "status": "needs_confirmation",
             "detail": "Prepare outline_planning task context first.",
             "data": {"context_manifest_id": manifest_id or None},
+        }
+    if manifest.execution_route == "internal_api":
+        return {
+            "tool": "save_external_outline_draft",
+            "status": "needs_confirmation",
+            "detail": "External outline drafts require an externally delivered context manifest.",
+            "data": {"context_manifest_id": manifest_id},
         }
     orchestrator = ContextOrchestrator(db)
     usable, detail = orchestrator.validate_task_selection(

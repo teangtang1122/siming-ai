@@ -1295,7 +1295,6 @@ function WorkspaceAssistantChat({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          outline_batch_count: 3,
           message: userText,
           conversation_id: activeConversationId || undefined,
           selected_text: selectedText || undefined,

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Protocol
@@ -108,6 +108,14 @@ _DIAGNOSTIC_DETAILS = {
 _DIAGNOSTIC_REASON_DETAILS = {
     **CREATION_REFERENCE_DETAILS,
     **CREATION_GENERATION_DETAILS,
+    "creation_artifact_requires_generation": (
+        "创意方向尚无方案卡；请切到生成类别调用 generate_creation_artifact(artifact=concepts)，"
+        "生成后再修改 options 内字段。本次未写入。"
+    ),
+    "creation_unknown_artifact": (
+        "阶段 ID 无效。请先读取立项快照的 artifacts，使用其中的 artifact 原值；"
+        "全书卷纲为 macro_outline，前三章细纲为 opening_outline。"
+    ),
     "native_assistant_transaction_invalid": (
         "模型工具消息结构无效，整批未执行；请按工具契约修正调用。"
     ),
@@ -139,6 +147,8 @@ _DIAGNOSTIC_REASON_DETAILS = {
 _SAFE_DIAGNOSTIC_REASONS = frozenset({
     *CREATION_REFERENCE_DETAILS,
     *CREATION_GENERATION_DETAILS,
+    "creation_artifact_requires_generation",
+    "creation_unknown_artifact",
     "failed_write_limit",
     "history_sequence_gap",
     "invalid_turn_state",
@@ -188,14 +198,22 @@ class ToolResultBatchOverCapacity(ValueError):
                  available_tokens: int, call_count: int,
                  reason: str = "tool_result_batch_over_capacity",
                  assistant_json_bytes: int = 0, declared_result_json_bytes: int = 0) -> None:
-        self.detail = (
-            "模型工具消息结构无效，整批未执行；请按工具契约修正调用。"
-            if reason == "native_assistant_transaction_invalid" else
-            f"本批工具消息与结果预计需要 {required_tokens} Token 安全预算，"
-            f"当前模型还可容纳 {available_tokens} Token；整批未执行。"
-            "请减少同一步查询数量，或缩小工具声明的分页、读取范围；"
-            "不要重复提交相同批次，也不要删减供应商要求回传的思考或状态字段。"
-        )
+        if reason == "native_assistant_transaction_invalid":
+            self.detail = "模型工具消息结构无效，整批未执行；请按工具契约修正调用。"
+        elif call_count == 1:
+            self.detail = (
+                f"单个工具消息与结果预计需要 {required_tokens} Token 安全预算，"
+                f"当前模型还可容纳 {available_tokens} Token；工具未执行。"
+                "请缩小该工具的 limit 和文本范围参数；若已是最小范围，请切换更大上下文模型。"
+                "不要原样重试，也不要删减供应商要求回传的思考或状态字段。"
+            )
+        else:
+            self.detail = (
+                f"本批工具消息与结果预计需要 {required_tokens} Token 安全预算，"
+                f"当前模型还可容纳 {available_tokens} Token；整批未执行。"
+                "请减少同一步查询数量，或缩小工具声明的分页、读取范围；"
+                "不要重复提交相同批次，也不要删减供应商要求回传的思考或状态字段。"
+            )
         super().__init__(self.detail)
         self.tool_names = tool_names
         self.required_tokens = required_tokens
@@ -309,13 +327,15 @@ def admit_native_assistant_transaction(
     tools: Iterable[ToolWithModelResultContract],
     *,
     request_budget: RequestBudgetEnvelope,
+    result_contents: Sequence[str] | None = None,
 ) -> int:
     """Validate exact native assistant state and declared results pre-handler.
 
     ``assistant_payload`` must be the exact assistant message that will be
     replayed, including content, reasoning content, provider state and the full
-    ordered ``tool_calls`` array.  Returns conservative whole-transaction
-    growth bytes/tokens.  Any failure means zero handlers may run.
+    ordered ``tool_calls`` array. For already staged side-effect-free reads,
+    ``result_contents`` measures the exact model-visible messages. Otherwise
+    the declared ceilings protect handlers that must not run before admission.
     """
 
     resolved = tuple(tools)
@@ -337,6 +357,11 @@ def admit_native_assistant_transaction(
     raw_calls = assistant_payload.get("tool_calls")
     if not isinstance(raw_calls, (list, tuple)) or len(raw_calls) != len(resolved):
         invalid(len(raw_calls) if isinstance(raw_calls, (list, tuple)) else 0)
+    if result_contents is not None and (
+        len(result_contents) != len(resolved)
+        or any(not isinstance(content, str) for content in result_contents)
+    ):
+        invalid(len(raw_calls))
     call_ids: set[str] = set()
     for raw_call, tool in zip(raw_calls, resolved, strict=True):
         if not isinstance(raw_call, Mapping):
@@ -357,20 +382,34 @@ def admit_native_assistant_transaction(
     assistant_bytes = len(payload.encode("utf-8"))
     declared = 0
     wrappers = 2
-    for call, tool in zip(raw_calls, resolved, strict=True):
+    exact_messages: list[dict[str, str]] = []
+    for index, (call, tool) in enumerate(zip(raw_calls, resolved, strict=True)):
         try:
             arguments = json.loads(call["function"]["arguments"])
             if not isinstance(arguments, dict):
                 invalid(len(raw_calls))
-            declared += tool.model_result_contract.bytes_for_arguments(arguments)
+            if result_contents is None:
+                declared += tool.model_result_contract.bytes_for_arguments(arguments)
         except (TypeError, ValueError):
             invalid(len(raw_calls))
         wrappers += 1 + len(_json_content(tool.name, {
             "role": "tool", "tool_call_id": call["id"], "content": "",
         }).encode("utf-8"))
-    # Valid result JSON at most doubles when quoted as tool-message content.
-    # UTF-8 bytes conservatively bound tokens. Reasoning/state are kept whole.
-    required = assistant_bytes + wrappers + 2 * declared
+        if result_contents is not None:
+            content = result_contents[index]
+            declared += len(content.encode("utf-8"))
+            exact_messages.append({
+                "role": "tool", "tool_call_id": call["id"], "content": content,
+            })
+    # UTF-8 bytes conservatively bound tokens. Preserve complete reasoning and
+    # provider state; never treat a partial native assistant message as safe.
+    required = (
+        len(_json_content("native_assistant_transaction", [
+            assistant_payload, *exact_messages,
+        ]).encode("utf-8"))
+        if result_contents is not None
+        else assistant_bytes + wrappers + 2 * declared
+    )
     logger.info(
         "Native tool budget calls=%d required=%d available=%d output_reserved=%d "
         "safety_margin=%d wrapper_bytes=%d remaining_after_batch=%d admitted=%s",

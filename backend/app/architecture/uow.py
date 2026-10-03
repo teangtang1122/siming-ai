@@ -8,7 +8,7 @@ from types import TracebackType
 from typing import Self
 
 from sqlalchemy.engine import Connection
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, SessionTransaction
 
 from ..database.session import SessionLocal
 
@@ -160,12 +160,19 @@ def rollback_connection(connection: Connection) -> None:
     connection.rollback()
 
 
+def release_savepoint(transaction: SessionTransaction) -> None:
+    """Release a nested transaction without committing its owning session."""
+
+    transaction.commit()
+
+
 __all__ = [
     "SqlAlchemyUnitOfWork",
     "UnitOfWork",
     "commit_connection",
     "commit_session",
     "defer_session_commits",
+    "release_savepoint",
     "rollback_connection",
     "session_commits_deferred",
 ]

@@ -34,6 +34,7 @@ from app.services.conversation_context import (
 )
 from app.services.conversation_context.execution_ledger import (
     execution_source_hashes_from_run_steps,
+    fold_execution_ledger,
 )
 from app.services.tool_category_state import (
     bind_tool_category_turn_guard,
@@ -93,6 +94,7 @@ from app.services.workspace.transcript_import import (
 
 _SCOPE = "project"
 _TIMEOUT_SECONDS = 300
+_NATIVE_ORCHESTRATION_MAX_OUTPUT_TOKENS = 4096
 _FINAL_SYNTHESIS_ATTEMPTS = 2
 _FINAL_SYNTHESIS_INSTRUCTION = (
     "业务工具阶段已经结束。禁止继续调用或建议调用任何工具；"
@@ -128,7 +130,13 @@ class WorkspaceAssistantTurnRunner:
         self.prepare_context = prepare_context
         self.encode_event = encode_event
 
-    @observed(kind="turn", scope_kind="project_conversation", scope_id="self.project_id", correlations={"conversation_id": "self.payload.conversation_id"}, output_layer="adapter_output")
+    @observed(
+        kind="turn",
+        scope_kind="project_conversation",
+        scope_id="self.project_id",
+        correlations={"conversation_id": "self.payload.conversation_id"},
+        output_layer="adapter_output",
+    )
     async def events(self, db: Any) -> AsyncGenerator[str, None]:
         supports_native = self._supports_native_tools()
         local_cli = is_local_cli_provider(self.selected_provider)
@@ -148,10 +156,18 @@ class WorkspaceAssistantTurnRunner:
             yield self.encode_event({"type": "error", **public_error.to_dict()})
             yield self.encode_event("[DONE]")
             return
+        # The outer native Agent emits one tool decision per model call. Its
+        # default reserve should not consume the nested writer's context
+        # budget; an explicit caller max_tokens remains authoritative.
+        payload = (
+            self.payload.model_copy(update={"max_tokens": _NATIVE_ORCHESTRATION_MAX_OUTPUT_TOKENS})
+            if supports_native and self.payload.max_tokens is None
+            else self.payload
+        )
         state = WorkspaceAssistantTurnState(
             db=db,
             project_id=self.project_id,
-            payload=self.payload,
+            payload=payload,
             selected_provider=self.selected_provider,
             supports_function_calling=supports_native,
             local_cli_selected=local_cli,
@@ -405,7 +421,7 @@ class WorkspaceAssistantTurnRunner:
                 for tool in self.registry.list_for_workspace_direct_mcp()
             }
         state.workspace_tool_name_set = {TOOL_CATEGORY_CONTROLLER}
-        state.workspace_tool_schemas = [tool_category_controller_schema()]
+        state.workspace_tool_schemas = [tool_category_controller_schema(state.authorized_tool_names)]
         state.base_system_prompt = build_system_prompt(
             get_workspace_pack(), outline_batch_count=payload.outline_batch_count
         )
@@ -639,7 +655,7 @@ class WorkspaceAssistantTurnRunner:
         state.workspace_tool_names = sorted(scoped)
         state.workspace_tool_name_set = {TOOL_CATEGORY_CONTROLLER, *state.workspace_tool_names}
         schemas = [
-            tool_category_controller_schema(),
+            tool_category_controller_schema(state.authorized_tool_names),
             *build_workspace_tool_schemas(state.workspace_tool_names),
         ]
         state.workspace_tool_schemas = schemas
@@ -683,9 +699,12 @@ class WorkspaceAssistantTurnRunner:
         final_synthesis: bool = False,
     ) -> list[dict[str, Any]]:
         durable_conversation, context_input = self._load_context_input(state)
-        durable_steps, trusted_ledger, source_hashes = self._execution_snapshot(
-            state, durable_conversation
-        )
+        (
+            durable_steps,
+            trusted_ledger,
+            effective_ledger,
+            source_hashes,
+        ) = self._execution_snapshot(state, durable_conversation)
         delivered = tuple(
             tx for tx in state.tool_transactions
             if tx.state in {ToolTransactionState.DELIVERED, ToolTransactionState.CONSUMED}
@@ -736,6 +755,7 @@ class WorkspaceAssistantTurnRunner:
             reload_turns=reload_turns,
             delivered_transactions=delivered,
             trusted_execution_ledger=trusted_ledger,
+            effective_execution_ledger=effective_ledger,
             execution_source_hashes=source_hashes,
             provider_wrapper=self._provider_wrapper(
                 state,
@@ -809,10 +829,16 @@ class WorkspaceAssistantTurnRunner:
     def _execution_snapshot(state: WorkspaceAssistantTurnState, conversation: Any):
         runs = tuple(state.workspace.conversation_runs(state.project_id, conversation.id))
         steps = tuple(step for run in runs for step in state.workspace.run_steps(run.id))
-        ledger = workspace_execution_ledger_from_run_steps(
-            conversation, runs, steps, project_id=state.project_id
+        trusted_ledger = workspace_execution_ledger_from_run_steps(
+            conversation, runs, steps, project_id=state.project_id, fold=False
         )
-        return steps, ledger, execution_source_hashes_from_run_steps(steps)
+        effective_ledger = fold_execution_ledger(trusted_ledger)
+        return (
+            steps,
+            trusted_ledger,
+            effective_ledger,
+            execution_source_hashes_from_run_steps(steps),
+        )
 
     @staticmethod
     def _finalize(state: WorkspaceAssistantTurnState) -> dict[str, Any]:

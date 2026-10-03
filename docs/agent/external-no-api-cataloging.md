@@ -1,6 +1,6 @@
 # 外部 Agent 建档
 
-更新日期：2026-09-13。本文描述当前唯一建档路径。
+更新日期：2026-09-26。本文描述当前唯一建档路径。
 
 司命以数据库为资料权威来源。API、托管 CLI、外部 MCP 和手机连接的服务共用同一建档工具契约、计划校验和整章应用器。外部模型可以独立生成计划，不需要配置司命模型 API；手机端连接自己的服务，不依赖 PC 客户端界面运行。
 
@@ -8,7 +8,7 @@
 
 ## 执行顺序
 
-1. 每个新模型回合先用 `set_tool_categories` 选择需要的类别，下一模型步骤才使用开放工具。通过 `get_prompt_pack(pack_id="cataloging_external_no_api")` 取得共享规则。
+1. 托管建档由系统直接开放当前任务工具，无需选择类别。普通外部 MCP 按其权限包开放工具；通过 `get_prompt_pack(pack_id="cataloging_external_no_api")` 取得共享规则。
 2. 已有托管任务直接使用其 `project_id`、`job_id`、`chapter_id`；无任务时调用 `start_external_cataloging_job`。所有调用绑定同一作品。
 3. `get_next_external_cataloging_chapter(job_id)` 返回当前可处理章节的真实 ID、正文版本、完整正文、只读镜像路径及恢复摘要。该工具不再接受 `phase` 参数。外部模型必须阅读完整正文。
 4. 按需调用 `read_cataloging_archive(kind=...)` 分页读取人物、设定、大纲、关系索引。省略 `ids` 读取索引；指定至多 5 个真实 ID 取得完整资料。翻页使用返回的 `next_arguments`。仅当前作品的有效资料可用。

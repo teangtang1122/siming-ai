@@ -30,6 +30,22 @@ def plan_scene_count(db: Session, run: CatalogingChapterRun) -> int | None:
     return len(scenes) if scenes is not None else None
 
 
+def validate_scene_submission(records: list[dict[str, Any]], scene_count: int | None) -> None:
+    """One submitted section per declared scene; no repeated batch overwrites."""
+    sections = [row for row in records if row.get("type") in {"outline_create", "outline_update"}
+                and row.get("node_type") == "section"]
+    if scene_count is not None and len(sections) > scene_count:
+        raise ValueError(
+            f"本次提交了 {len(sections)} 条场景小节，超过本章 {scene_count} 个场景；"
+            "请按 chapter_summary.scenes 合并同场事件，每个场景只提交一条。"
+        )
+    numbers = [row.get("scene_number") for row in sections]
+    valid_numbers = [number for number in numbers if isinstance(number, int)
+                     and not isinstance(number, bool) and number > 0]
+    if len(valid_numbers) != len(set(valid_numbers)):
+        raise ValueError("同一批场景小节的 scene_number 重复；每个场景只提交一条。")
+
+
 def active_scene_candidates(db: Session, run: CatalogingChapterRun) -> list[CatalogingCandidate]:
     return [row for row in db.query(CatalogingCandidate).filter(
         CatalogingCandidate.chapter_run_id == run.id,

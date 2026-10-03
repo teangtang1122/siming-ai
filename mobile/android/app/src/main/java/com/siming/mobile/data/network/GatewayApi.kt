@@ -275,6 +275,18 @@ suspend fun commitMobileCataloging(
     connection.baseUrl, PcApiPaths.catalogingMobileCommit(projectId), "POST", json.encodeToString(payload),
 ).data
 
+suspend fun startCataloging(
+    connection: GatewayConnection,
+    projectId: String,
+    chapterIds: List<String>,
+): JsonObject = request<ApiEnvelope<JsonObject>>(
+    connection.baseUrl, PcApiPaths.catalogingStart(projectId), "POST",
+    buildJsonObject {
+        put("execution_mode", "auto")
+        put("chapter_ids", JsonArray(chapterIds.map(::JsonPrimitive)))
+    }.toString(),
+).data
+
 suspend fun getCatalogingJob(
     connection: GatewayConnection,
     projectId: String,

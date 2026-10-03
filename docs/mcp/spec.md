@@ -9,41 +9,46 @@
 MCP、项目助手 API、立项 Agent 和手机独立 Agent 共用同一套业务工具契约：
 
 - `ToolRegistry` 保存工具名称、参数结构、处理器、权限类型和 Agent 类别。
-- `backend/app/architecture/tool_categories.py` 是宽粒度工具类别的唯一目录。
+- `backend/app/architecture/tool_categories.py` 是小型工具类别的唯一目录。
 - 每个已注册业务工具必须且只能属于一个类别；启动校验会拒绝漏分或重复分配。
 - MCP 不维护另一份业务工具表，也不解析模型输出中的 JSON 指令来模拟工具调用。
 
 ## 2. 模型控制的类别开放
 
-司命启动 API 或 CLI Agent 回合时，首个模型步骤只开放 `set_tool_categories`：
+司命启动自由对话的 API 或 CLI Agent 回合时，首个模型步骤只开放 `set_tool_categories`：
 
 1. 模型根据用户最新消息决定完成任务需要哪些能力类别。
-2. 模型调用 `set_tool_categories(enabled_categories=[...])`，以完整替换语义设置下一步骤的类别；空数组关闭全部业务工具。
+2. 模型调用 `set_tool_categories(enabled_categories=[...])`，每步最多选择两个类别，以完整替换语义设置下一步骤的类别；空数组关闭全部业务工具。
 3. 控制器调用立即结束当前模型步骤。该步骤里夹带的其他工具调用全部失效。
 4. 下一模型步骤只看到“所选类别 ∩ 当前权限包 ∩ 当前入口真实实现”的工具。
 5. 需要换类时，模型再次调用控制器并进入新的模型步骤。
 
 应用代码不会通过正则、关键词、界面选中项或固定短语替模型选择类别。类别控制器只接受结构化类别名，并不接受单个工具开关。
 
-当前类别如下：
+类别菜单只包含当前入口已授权的能力。立项助手的 32 个工具拆成 10 类，每类 2～5 个：
 
-| 类别 | 能力范围 |
-| --- | --- |
-| `project_files` | 作品资料、项目文件、导入导出和写作统计 |
-| `story_knowledge` | 大纲、章节、角色、关系和世界观实体 |
-| `writing_context` | 写作上下文、正文或资料生成、未保存草稿 |
-| `cataloging` | 建档任务、候选事实和状态控制 |
-| `analysis_governance` | 质量、冲突、拆书和叙事治理 |
-| `creation_data` | 立项会话、结构化资料、实体、依赖和字段锁 |
-| `creation_flow` | 立项生成、确认、版本、任务、导入和正式建书 |
-| `agent_runtime` | Agent 运行、进度、草稿缓冲、计划任务和记忆 |
-| `extensions` | Skill、联网、MCP 指南、提示词包和质量规范 |
+| 类别 | 能力范围 | 工具数 |
+| --- | --- | --- |
+| `creation_session` | 会话、快照、基本约束 | 3 |
+| `creation_artifacts` | 阶段资料读取、修改和确认 | 4 |
+| `creation_entities` | 具体设定实体 | 4 |
+| `creation_dependencies` | 依赖和一致性 | 3 |
+| `creation_fields` | 字段锁 | 2 |
+| `creation_versions` | 版本与撤销 | 4 |
+| `creation_generation` | 资料生成 | 3 |
+| `creation_operations` | 生成任务控制 | 5 |
+| `creation_completion` | 校验与正式建书 | 2 |
+| `creation_import` | 预览和应用导入 | 2 |
 
-具体成员由代码目录生成，文档不复制工具清单，避免形成第二事实源。
+立项菜单没有项目工具，且不具备章节正文写作能力；创建正式作品后进入项目助手。手机独立立项只显示其已实现的上述类别，既有后台任务、版本和文件导入差异不变。
+
+项目助手排除全部立项类别；正文使用独立的 `chapter_writing` 类，章节查询、大纲、人物、关系、世界观、上下文检索、正文润色等分别成组，每类最多 6 个工具。具体成员以 [唯一类别目录](../../backend/app/architecture/tool_categories.py) 为准。
+
+章节评分、去 AI 味按钮使用明确绑定目标的独立模型请求，不开放业务工具。固定建档流程直接提供本章读取、档案读取、候选查询和候选提交 4 个工具；托管 CLI 另含进度上报与验证等必要能力。这些固定流程不调用类别控制器，也不依据自然语言猜测任务入口。
 
 ## 3. MCP 回合状态
 
-司命启动的本机 CLI 使用临时 `siming_turn` MCP，并传入仅本轮有效的类别状态文件：
+自由对话启动的本机 CLI 使用临时 `siming_turn` MCP，并传入仅本轮有效的类别状态文件：
 
 - `tools/list` 初始只返回 `set_tool_categories`。
 - 控制器写入“请求类别版本”，但不会在同一 CLI 模型步骤激活。
@@ -67,7 +72,7 @@ MCP、项目助手 API、立项 Agent 和手机独立 Agent 共用同一套业�
 
 ## 5. 章节写作边界
 
-- API 模型在 `writing_context` 类别中使用 `chapter_writer`。
+- API 模型在 `chapter_writing` 类别中使用 `chapter_writer`。
 - 本机 CLI 在同一类别中使用 `prepare_external_writing_context` 和 `save_external_chapter_draft`。
 - 目标必须由 Agent 读取真实作品实体后提供章级 ID；界面当前章节不会暗中绑定到生成器。
 - 新章节生成一份独立未保存草稿，不更新正式章节。

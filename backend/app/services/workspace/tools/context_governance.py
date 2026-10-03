@@ -10,6 +10,7 @@ from ....database.models import AgentRun
 from ....services.context_orchestrator import ContextOrchestrator
 from ....services.task_context_delivery import (
     begin_context_delivery,
+    begin_internal_generator_context,
     build_context_page,
     compact_context_manifest,
     context_delivery_ready,
@@ -101,6 +102,15 @@ async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any
             "detail": "The requested context manifest was not found for this project.",
             "data": {"manifest_id": requested_manifest_id},
         }
+    if manifest is not None and (
+        manifest.execution_route == "internal_api"
+    ) != (args.get("execution_route") == "internal_api"):
+        return {
+            "tool": "prepare_task_context",
+            "status": "needs_confirmation",
+            "detail": "This manifest belongs to a different execution route; prepare a new task context.",
+            "data": {"context_manifest_id": manifest.id},
+        }
 
     if manifest is None and task_type == "writing" and not str(
         task_arguments.get("outline_node_id") or ""
@@ -178,22 +188,40 @@ async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any
         }
     if run:
         run.context_manifest_id = manifest.id
+    return _prepared_context_result(db, manifest, payload, args)
+
+
+def _prepared_context_result(
+    db: Session, manifest: Any, payload: dict[str, Any], args: dict[str, Any],
+) -> dict:
     selection = payload.get("selection") or {}
     selected = selection.get("status") == "ready" and bool(selection.get("token"))
     needs_selection = manifest.task_type in MODEL_SELECTED_TASK_TYPES and not selected
-    document = render_generation_context(manifest) if manifest.task_type in MODEL_SELECTED_TASK_TYPES else manifest.rendered_context
+    internal_generator = (
+        manifest.execution_route == "internal_api"
+        and manifest.task_type in MODEL_SELECTED_TASK_TYPES
+    )
+    document = (
+        render_generation_context(manifest)
+        if manifest.task_type in MODEL_SELECTED_TASK_TYPES and not internal_generator
+        else manifest.rendered_context
+    )
     selection_token = str(selection.get("token") or "")
     delivery_state = context_delivery_state(manifest)
     try:
-        if selected:
+        if selected and internal_generator:
+            page = None
+        elif selected:
             page, delivery_state = deliver_next_context_page(
                 manifest,
                 document,
                 args,
                 selection_token,
             )
-        else:
+        elif not needs_selection:
             page = build_context_page(document, args)
+        else:
+            page = None
     except ValueError as error:
         return {"tool": "prepare_task_context", "status": "skipped", "detail": str(error),
                 "data": {"context_manifest_id": manifest.id}}
@@ -214,18 +242,19 @@ async def prepare_task_context(db: Session, project_id: str, args: dict[str, Any
             "manifest_id": manifest.id,
             "context_manifest_id": manifest.id,
             "context_manifest": compact_context_manifest(payload),
-            "context_page": page,
+            **({"context_page": page} if page is not None else {}),
             "context_selection_token": selection_token if delivery_ready else None,
             "context_delivery_ready": delivery_ready,
             "context_delivery": context_delivery_status(delivery_state),
             "selection_required": needs_selection,
             "next_tools": (
-                ["prepare_task_context"] if page["has_more"]
+                ["prepare_task_context"] if page is not None and page["has_more"]
                 else ["search_task_context", "submit_context_evidence"]
                 if needs_selection
                 else []
             ),
-            "next_arguments": context_page_arguments(manifest.id, manifest.task_type, page) if page["has_more"] else None,
+            "next_arguments": context_page_arguments(manifest.id, manifest.task_type, page)
+            if page is not None and page["has_more"] else None,
         },
     }
 
@@ -347,6 +376,13 @@ async def submit_context_evidence(db: Session, project_id: str, args: dict[str, 
             "detail": "Context manifest not found",
             "data": {},
         }
+    if manifest.execution_route == "internal_api" and not args.get("_internal_generator_caller"):
+        return {
+            "tool": "submit_context_evidence",
+            "status": "needs_confirmation",
+            "detail": "This internal-generator manifest cannot be selected by an external caller.",
+            "data": {"manifest_id": manifest.id},
+        }
     usable, detail = orchestrator.validate(manifest)
     if not usable:
         return {
@@ -367,13 +403,20 @@ async def submit_context_evidence(db: Session, project_id: str, args: dict[str, 
     # envelope replaces the full document with a lossless bounded page.
     result.pop("task_context", None)
     if result.get("selection_ready"):
-        page = build_context_page(render_generation_context(manifest), {})
         selection_token = str(result.get("context_selection_token") or "")
-        delivery_state = begin_context_delivery(manifest, page, selection_token)
-        result["context_page"] = page
+        internal_generator = (
+            manifest.execution_route == "internal_api"
+            and manifest.task_type in MODEL_SELECTED_TASK_TYPES
+        )
+        if internal_generator:
+            delivery_state = begin_internal_generator_context(manifest, selection_token)
+        else:
+            page = build_context_page(render_generation_context(manifest), {})
+            delivery_state = begin_context_delivery(manifest, page, selection_token)
+            result["context_page"] = page
         result["context_delivery_ready"] = context_delivery_ready(manifest, selection_token)
         result["context_delivery"] = context_delivery_status(delivery_state)
-        if page["has_more"]:
+        if not internal_generator and page["has_more"]:
             # The token remains persisted with the selected evidence, but it is
             # deliberately absent from model-visible receipts until the final
             # contiguous page has been delivered.
@@ -383,16 +426,14 @@ async def submit_context_evidence(db: Session, project_id: str, args: dict[str, 
         db.flush()
     if manifest.task_type in MODEL_SELECTED_TASK_TYPES:
         status = "ok" if result.get("selection_ready") else "needs_confirmation"
-        detail = (
-            f"Finalized {result['accepted_count']} exact task source(s). "
-            + (
-                "Read every context_page in order; context_selection_token is withheld until the final page."
-                if not result.get("context_delivery_ready")
-                else "The complete context document was delivered and generation may use the returned token."
-            )
-            if status == "ok"
-            else "The proposed task evidence was not finalized; narrow or refresh the selection."
-        )
+        if status != "ok":
+            detail = "The proposed task evidence was not finalized; narrow or refresh the selection."
+        elif not result.get("context_delivery_ready"):
+            detail = "Read each context_page in order; the selection token appears on the final page."
+        elif manifest.execution_route == "internal_api":
+            detail = "Selected sources are ready for the nested generator; use the returned token."
+        else:
+            detail = "Complete context delivered; generation may use the returned token."
     else:
         status = "ok" if result["accepted_count"] else "needs_confirmation"
         detail = f"Verified {result['accepted_count']} context evidence source(s)."

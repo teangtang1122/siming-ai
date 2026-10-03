@@ -122,7 +122,7 @@ def test_scheduled_request_uses_explicit_profile_before_unknown_model_fallback()
                                    safety_margin_tokens=512))
         db.commit()
         messages = [{"role": "system", "content": "只读测试"}, {"role": "user", "content": "查询章节"}]
-        schemas = _tool_schemas({"list_chapters"}, ("story_knowledge",))
+        schemas = _tool_schemas({"list_chapters"}, ("chapters",))
         model, budget = _scheduled_request_budget(db, messages, schemas, "openai:query-capacity-test")
         assert model == "openai:query-capacity-test"
         assert budget.context_window_tokens == 1_000_000

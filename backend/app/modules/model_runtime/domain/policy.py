@@ -6,12 +6,10 @@ LOCAL_RUNTIME_PROVIDER = "local_llama_cpp"
 
 
 def local_runtime_enabled() -> bool:
-    """The desktop local runtime is a first-class provider.
+    """Read the desktop user's explicit model-center switch on every request."""
+    from ....services.application_settings import load_launcher_settings
 
-    Deployment settings (such as the Docker Gateway) decide whether it is
-    available.  Desktop users must not need a hidden environment opt-in.
-    """
-    return True
+    return load_launcher_settings().get("local_runtime_enabled") is not False
 
 
 def is_local_runtime_provider(provider: str | None) -> bool:
@@ -19,8 +17,8 @@ def is_local_runtime_provider(provider: str | None) -> bool:
 
 
 def local_runtime_disabled(provider: str | None = LOCAL_RUNTIME_PROVIDER) -> bool:
-    return False
+    return provider == LOCAL_RUNTIME_PROVIDER and not local_runtime_enabled()
 
 
 def local_runtime_disabled_message() -> str:
-    return "本地 AI 模型在当前部署中不可用。"
+    return "本地模型已在模型中心关闭；开启后才能使用。"

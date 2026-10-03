@@ -97,6 +97,12 @@ function Assert-InnoCompilerVersion {
     $CompilerExitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $SavedErrorActionPreference
+    $TempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $ResolvedProbeDir = [System.IO.Path]::GetFullPath($ProbeDir)
+    if (-not $ResolvedProbeDir.StartsWith($TempRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        ((Get-Item -LiteralPath $ResolvedProbeDir -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+      throw "Refusing to remove compiler probe outside the intended temp directory: $ResolvedProbeDir"
+    }
     Remove-Item -LiteralPath $ProbeDir -Recurse -Force -ErrorAction SilentlyContinue
   }
   if ($CompilerExitCode -ne 0) {

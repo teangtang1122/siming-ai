@@ -174,7 +174,7 @@ def test_creation_long_history_checkpoint_then_native_category_and_read() -> Non
                         "function": {
                             "name": "set_tool_categories",
                             "arguments": {
-                                "enabled_categories": ["creation_data"]
+                                "enabled_categories": ["creation_session"]
                             },
                         },
                     }
@@ -454,7 +454,7 @@ def test_append_during_checkpoint_supersedes_old_creation_and_latest_continues()
                         "type": "function",
                         "function": {
                             "name": "set_tool_categories",
-                            "arguments": {"enabled_categories": ["creation_data"]},
+                            "arguments": {"enabled_categories": ["creation_session"]},
                         },
                     }
                 ]

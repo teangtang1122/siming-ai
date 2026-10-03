@@ -25,6 +25,50 @@ class ContextTraceTest {
     }
     @AfterTest fun reset() { MobileTrace.sink = null }
 
+    @Test fun `explicit failed and conflict receipts finish as failed steps`() = runBlocking {
+        val sink = MemorySink("summary"); MobileTrace.sink = sink
+        MobileTrace.turn("creation_session", "session", buildJsonObject {}) {
+            listOf("error", "denied", "blocked", "failed", "conflict").forEach { status ->
+                val receipt = MobileTrace.span("tool", "refine_creation_artifact") { buildJsonObject { put("status", status) } }
+                assertEquals(status, receipt.text("status"))
+            }
+        }
+        val toolIds = sink.events.filter { it.text("event_type") == "span_started" && it.getValue("data").jsonObject.text("kind") == "tool" }
+            .map { it.getValue("data").jsonObject.text("span_id") }.toSet()
+        val finished = sink.events.filter { it.text("event_type") == "span_finished" && it.getValue("data").jsonObject.text("span_id") in toolIds }
+        assertEquals(5, finished.size)
+        assertEquals(List(5) { "error" }, finished.map { it.getValue("data").jsonObject.text("status") })
+        assertEquals("completed", sink.events.last().getValue("data").jsonObject.text("status"))
+    }
+
+    @Test fun `terminal trace never presents an unfinished span as running or zero milliseconds`() {
+        val started = buildJsonObject {
+            put("event_type", "span_started")
+            put("data", buildJsonObject { put("span_id", "tool"); put("status", "running") })
+        }
+        val interrupted = buildJsonObject { put("finished", 2); put("capture_status", "interrupted") }
+        assertEquals("interrupted", traceSpans(listOf(started), interrupted, true).getValue("tool").text("status"))
+        assertEquals("pending_record", traceSpans(listOf(started), interrupted, false).getValue("tool").text("status"))
+        assertEquals("incomplete", traceSpans(listOf(started), buildJsonObject { put("finished", 2) }, true).getValue("tool").text("status"))
+        assertEquals("running", traceSpans(listOf(started), buildJsonObject { put("finished", JsonNull) }, true).getValue("tool").text("status"))
+        val finished = buildJsonObject {
+            put("event_type", "span_finished")
+            put("data", buildJsonObject { put("span_id", "tool"); put("status", "error"); put("duration_ms", 0.2) })
+        }
+        val span = traceSpans(listOf(started, finished), interrupted, true).getValue("tool")
+        assertEquals("error", span.text("status")); assertEquals("<1 ms", traceDuration(span))
+        assertEquals("耗时未知", traceDuration(buildJsonObject {}))
+    }
+
+    @Test fun `returned turn failure is reflected in the trace status`() = runBlocking {
+        val sink = MemorySink("summary"); MobileTrace.sink = sink
+        val result = MobileTrace.turn("creation_session", "session", buildJsonObject {}) {
+            buildJsonObject { put("status", "failed") }
+        }
+        assertEquals("failed", result.text("status"))
+        assertEquals("error", sink.events.last().getValue("data").jsonObject.text("status"))
+    }
+
     @Test fun `actual streamed request and response are captured without changing content or endpoint`() = runBlocking {
         val sink = MemorySink(); MobileTrace.sink = sink
         val stream = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\",\"reasoning_content\":\"visible\"},\"finish_reason\":null}]}\n\n" +

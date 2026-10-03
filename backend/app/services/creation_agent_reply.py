@@ -7,6 +7,13 @@ from typing import Any
 from app.modules.creation.interfaces.agent_scope import CREATION_AGENT_WRITE_TOOL_NAMES
 
 CREATION_REPLY_MAX_ATTEMPTS = 2
+CREATION_READ_ONLY_COMPLETION_INSTRUCTION = (
+    "本轮目前只有读取，尚未生成或保存阶段资料。请按作者最新消息决定下一步："
+    "要求生成或修改资料时，继续用写工具保存对应 artifact，最终审阅也须写入 final_review；"
+    "拿到成功回执后才算完成。只询问或查看时可直接回答，并准确说明已有状态。"
+    "聊天中的报告和类别切换都不是保存回执。"
+)
+CREATION_READ_ONLY_NOTICE = "本轮只读取了立项资料，尚未生成或保存新的阶段资料。"
 CREATION_REPLY_INSTRUCTION = (
     "请根据以上真实工具返回，用两到四句中文说明本轮实际完成的读取、修改或任务启动，"
     "并提出至多一个基于当前立项数据的后续问题。不得声称未成功的写入已经保存；"
@@ -14,6 +21,7 @@ CREATION_REPLY_INSTRUCTION = (
     "data.saved=true 表示生成结果已经保存；requires_confirmation=true 表示等待作者审阅确认，"
     "不是等待生成。collection_counts 是保存后的实际条目数，已有结果应按回执说明，不再猜测数量。"
     "当前状态以最新写入回执的 revision 为准，不能把写入前快照中的空值当作当前状态。"
+    "没有成功写入时，只能说明查看了资料，不能说已生成、已保存或已完成阶段。"
     "本轮工具已关闭，当前唯一任务是向作者说明已有执行回执，不再规划或执行下一步。"
     "写入成功回执已经确认提交，不需要再次读取验证。"
     "只返回面向作者的自然语言，不得返回 tool_calls，也不得用 DSML、XML 或 JSON 模拟工具调用。"
@@ -24,8 +32,11 @@ CREATION_REPLY_REPAIR_INSTRUCTION = (
 )
 CREATION_REPLY_FAILURE_NOTICE = "模型未能生成有效总结；本轮已结束，不会自动重复执行操作。"
 # Protocol namespace validation only; never parse these strings into executable calls.
-CREATION_REPLY_TOOL_MARKUP_PATTERN = r"(?:<|&lt;)\s*\\?/?[｜|]+DSML(?:[｜|]+|(?=\s*$))"
-_TOOL_MARKUP = re.compile(CREATION_REPLY_TOOL_MARKUP_PATTERN)
+CREATION_REPLY_TOOL_MARKUP_PATTERN = (
+    r"(?i)(?:<|&lt;)\s*(?:\\?/?[｜|]+DSML(?:[｜|]+|(?=\s*$))"
+    r"|/?tool_call\b|/?function\s*=|/?parameter\s*=)"
+)
+_TOOL_MARKUP = re.compile(CREATION_REPLY_TOOL_MARKUP_PATTERN, re.IGNORECASE)
 
 
 def creation_reply_error(content: Any, tool_calls: Any = None) -> str | None:

@@ -12,7 +12,11 @@ from app.ai.capabilities import (
     TOOL_CAPABILITY_UNAVAILABLE_MESSAGE,
 )
 from app.architecture.uow import commit_session
-from app.modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from app.modules.story.domain.outline_contract import (
+    OUTLINE_GENERATION_IDLE_TIMEOUT_SECONDS,
+    OUTLINE_GENERATION_LOCAL_EXTRA_BODY,
+    OUTLINE_PROPOSAL_MAX_NODES,
+)
 
 from ....core.exceptions import ValidationError
 from ....database.models import Project
@@ -108,17 +112,44 @@ async def _generate_outline(
     output_tool = deepcopy(OUTLINE_PROPOSAL_TOOL)
     nodes_schema = output_tool["function"]["parameters"]["properties"]["nodes"]
     nodes_schema.update(minItems=batch_count, maxItems=batch_count)
-    return await LLMGateway.chat_completion(
+    buffers: dict[int, dict[str, str]] = {}
+    completed = False
+    content: list[str] = []
+    async for chunk in LLMGateway.stream_chat_completion_with_tools(
         messages=messages,
         model=model,
         temperature=0.7,
         max_tokens=max_tokens,
-        timeout=180,
-        retry=1,
+        timeout=OUTLINE_GENERATION_IDLE_TIMEOUT_SECONDS,
+        retry=0,
+        resume=0,
         extra_body=gateway_extra,
         tools=[output_tool],
         tool_choice="required",
-    )
+    ):
+        kind = chunk.get("type")
+        if kind == "content_delta":
+            content.append(str(chunk.get("delta") or ""))
+        elif kind == "tool_call_delta":
+            buffer = buffers.setdefault(int(chunk["index"]), {"id": "", "name": "", "arguments": ""})
+            if chunk.get("id"):
+                buffer["id"] = str(chunk["id"])
+            if chunk.get("name"):
+                buffer["name"] = str(chunk["name"])
+            buffer["arguments"] += str(chunk.get("arguments_delta") or "")
+        elif kind == "done":
+            completed = True
+    if not completed:
+        raise NativeStructuredOutputError("native_outline_stream_incomplete")
+    return {
+        "content": "".join(content),
+        "tool_calls": [
+            {"id": item["id"], "type": "function", "function": {
+                "name": item["name"], "arguments": item["arguments"],
+            }}
+            for _, item in sorted(buffers.items())
+        ],
+    }
 
 
 def _native_model_binding(
@@ -210,6 +241,8 @@ async def outline_writer(
             "local_cli_isolated": True,
         },
     )
+    if LLMGateway.provider_for_model(model) == "local_llama_cpp":
+        gateway_extra = {**(gateway_extra or {}), **deepcopy(OUTLINE_GENERATION_LOCAL_EXTRA_BODY)}
     commit_session(db)
     try:
         result = await _generate_outline(

@@ -45,7 +45,7 @@ These tools mutate the database. They are denied until a confirmation-token mode
 
 | Pattern | Matching Tools |
 |---------|---------------|
-| `create_*` | `create_project`, `create_character`, `create_outline_node`, `create_worldbuilding_entry`, `create_relationship`, `create_scheduled_task`, `create_skill` |
+| `create_*` | `create_project`, `create_character`, `create_worldbuilding_entry`, `create_relationship`, `create_scheduled_task`, `create_skill` |
 | `update_*` | `update_project_info`, `update_character`, `update_outline_node`, `update_worldbuilding_entry`, `update_relationship`, `update_scheduled_task`, `update_skill`, `update_cataloging_candidate` |
 | `delete_*` | `delete_project`, `delete_character`, `delete_chapter`, `delete_outline_node`, `delete_worldbuilding_entry`, `delete_relationship`, `delete_scheduled_task`, `delete_skill` |
 | `merge_*` | `merge_duplicate_characters` |

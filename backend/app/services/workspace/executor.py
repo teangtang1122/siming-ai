@@ -73,6 +73,8 @@ async def execute_workspace_action(
     db: Session,
     project_id: str,
     action: dict,
+    *,
+    internal_generator: bool = False,
 ) -> dict:
     tool = str(action.get("tool") or "").strip()
     if not tool:
@@ -89,6 +91,16 @@ async def execute_workspace_action(
             args = spec.validate_input(args).model_dump(exclude_unset=True)
         except (ToolInputSchemaValidationError, PydanticValidationError) as exc:
             return _invalid_arguments_result(tool, exc)
+    if tool == "prepare_task_context":
+        # The transport, never the model's tool arguments, owns this route.
+        # Internal generators read the selected manifest themselves; external
+        # agents must receive every selected context page before writing.
+        if internal_generator:
+            args["execution_route"] = "internal_api"
+        elif args.get("execution_route") != "local_cli_agent":
+            args["execution_route"] = "external_mcp"
+    elif tool == "submit_context_evidence":
+        args["_internal_generator_caller"] = internal_generator
     task_type = _GOVERNED_TASKS.get(tool)
     if not task_type:
         result = await handler(db, project_id, args)

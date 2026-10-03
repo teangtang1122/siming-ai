@@ -72,7 +72,7 @@ def _tool_schemas(
     active_categories: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     return [
-        tool_category_controller_schema(),
+        tool_category_controller_schema(authorized_names),
         *build_workspace_tool_schemas(
             sorted(_active_tool_names(authorized_names, active_categories))
         ),
@@ -84,12 +84,14 @@ def _category_result(
     authorized_names: set[str],
 ) -> tuple[dict[str, Any], tuple[str, ...] | None]:
     try:
-        categories = normalize_tool_categories(arguments.get("enabled_categories"))
-    except ValueError:
+        categories = normalize_tool_categories(
+            arguments.get("enabled_categories"), available_tool_names=authorized_names,
+        )
+    except ValueError as exc:
         return {
             "tool": TOOL_CATEGORY_CONTROLLER,
             "status": "error",
-            "detail": "工具类别参数无效，未切换能力。",
+            "detail": str(exc),
             "data": None,
         }, None
     labels = [TOOL_CATEGORY_METADATA[category]["label"] for category in categories]

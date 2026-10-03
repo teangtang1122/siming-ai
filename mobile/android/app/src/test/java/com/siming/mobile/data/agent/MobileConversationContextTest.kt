@@ -493,7 +493,7 @@ class MobileConversationContextTest {
             assertEquals(
                 bytes.toString().toInt(),
                 MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, buildJsonObject {
-                    if (tool == "search_outline") put("summary_chars", 1000)
+                    if (tool == "search_outline") { put("summary_chars", 1000); put("limit", 2) }
                     if (tool == "search_chapters") put("content_chars", 4000)
                 }),
                 tool,
@@ -517,7 +517,12 @@ class MobileConversationContextTest {
                 page["base_json_bytes"].toString().toInt() + page["item_json_bytes"].toString().toInt() + textBytes,
                 MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, one),
             )
-            assertTrue(MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, one) <
+            val defaultItems = page["default_items"]?.toString()?.toInt() ?: page["max_items"]!!.toString().toInt()
+            assertEquals(
+                MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, buildJsonObject { put("limit", defaultItems) }),
+                MobileNativeToolBudgetContract.declaredResultJsonBytes(tool),
+            )
+            if (defaultItems > 1) assertTrue(MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, one) <
                 MobileNativeToolBudgetContract.declaredResultJsonBytes(tool))
             assertFalse(MobileNativeToolBudgetContract.actualResultFits(
                 tool, buildJsonObject { put("detail", "x".repeat(MobileNativeToolBudgetContract.declaredResultJsonBytes(tool, one))) }, one,
@@ -556,11 +561,29 @@ class MobileConversationContextTest {
         )
         assertFalse(rejectedResults.accepted)
         assertTrue(rejectedResults.recoveryFits)
-        assertEquals(103_152, rejectedResults.declaredResultJsonBytes)
+        assertEquals(3 * MobileNativeToolBudgetContract.declaredResultJsonBytes("search_outline"), rejectedResults.declaredResultJsonBytes)
         assertEquals(
             MobileNativeToolBudgetContract.TOOL_RESULT_BATCH_OVER_CAPACITY,
             rejectedResults.reason,
         )
+        val creationReads = listOf("get_creation_session", "get_creation_snapshot")
+        val creationPayload = nativeAssistantPayload(creationReads)
+        val smallResults = creationReads.map { tool ->
+            """{"tool":"$tool","status":"ok","data":{"revision":0}}"""
+        }
+        assertFalse(MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            assistantPayload = creationPayload,
+            orderedToolNames = creationReads,
+            requestBudget = nativeBudget(17_942),
+            resultJsonBytes = { _, _ -> 16 * 1024 },
+        ).accepted)
+        assertTrue(MobileNativeToolBudgetContract.admitExactAssistantTransaction(
+            assistantPayload = creationPayload,
+            orderedToolNames = creationReads,
+            requestBudget = nativeBudget(17_942),
+            resultJsonBytes = { _, _ -> 16 * 1024 },
+            resultContents = smallResults,
+        ).accepted)
 
         val assistantBatch = MobileNativeToolBudgetContract.admitExactAssistantTransaction(
             requestBudget = nativeBudget(),
@@ -938,6 +961,60 @@ class MobileConversationContextTest {
                 assertEquals(maxOutputTokens, payload["max_tokens"].toString().toInt())
             }
         }
+    }
+
+    @Test
+    fun `checkpoint quote positions are validated before model repair decision`() {
+        val sources = listOf(
+            message(1L, "turn-1", "user", "纯靠自身努力+智谋", "completed"),
+            message(2L, "turn-1", "assistant", "收到", "completed"),
+        )
+        val request = MobileCheckpointGenerationRequest(
+            scope = "creation",
+            conversationId = "conversation-1",
+            transcriptRevision = 2L,
+            sourceRange = MobileConversationSourceRange(
+                firstSequence = 1L,
+                lastSequence = 2L,
+                messageCount = 2,
+                sourceHash = mobileConversationSourceHash(sources),
+            ),
+            sourceMessages = sources,
+            priorSegments = emptyList(),
+            deterministicExecutionLedger = emptyList(),
+            modelBinding = JsonObject(emptyMap()),
+        )
+        val config = DirectApiConfig(
+            displayName = "test",
+            baseUrl = "https://example.com/v1",
+            apiKey = "secret",
+            model = "checkpoint-model",
+        )
+        val generator = MobileDirectCheckpointGenerator(
+            DirectApiClient(), config, MobileUtf8ByteTokenCounter, 64_000, 4_096, 512,
+        )
+        fun output(endChar: Int) = buildJsonObject {
+            put("schema", "conversation_checkpoint_navigation.v1")
+            put("semantic_navigation", MobileConversationCheckpoint.emptySemanticNavigation())
+            put("author_quote_positions", buildJsonArray {
+                add(buildJsonObject {
+                    put("message_id", "message-1")
+                    put("start_char", 0)
+                    put("end_char", endChar)
+                    put("purpose", "preserve_author_constraint")
+                })
+            })
+            put("prior_author_quote_states", JsonArray(emptyList()))
+        }.toString()
+
+        assertFailsWith<IllegalArgumentException> {
+            generator.parseAndValidateCheckpointDraft(output(10), request)
+        }
+        assertEquals(
+            9,
+            generator.parseAndValidateCheckpointDraft(output(9), request)
+                .quoteSelections.single().endChar,
+        )
     }
 
     @Test

@@ -8,7 +8,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from app.services.novel_creation_entities import ensure_creation_entities, list_creation_entities
+from app.services.novel_creation_entities import list_creation_entities
 from app.services.novel_creation_consistency import (
     creation_dependency_graph,
     validate_creation_consistency,
@@ -119,8 +119,6 @@ def test_entity_generation_uses_all_model_selected_additions_when_count_is_unspe
 def test_entity_target_generation_runs_end_to_end_without_rewriting_siblings():
     db = _db()
     session = _ready_session(db)
-    ensure_creation_entities(session)
-    db.commit()
     baseline = deepcopy(session.draft_json["stages"]["characters"]["data"])
     antagonist = next(
         item

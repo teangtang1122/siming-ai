@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from ...core.model_limits import DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
 from ..rag.context_packer import estimate_tokens
-from .canonical import canonical_json, canonical_value
+from .canonical import canonical_json, canonical_sha256, canonical_value
 from .contracts import CapacityAssurance, GenerationModelBinding
 from .errors import ConversationContextError, ConversationContextErrorCode
 
@@ -106,6 +106,42 @@ class Utf8ByteTokenCounter:
 
     def count_value(self, value: Any) -> int:
         return self.count_text(canonical_json(value))
+
+
+@dataclass(frozen=True)
+class TemplateMeasuredRequestCounter:
+    """Model-runtime callbacks count text and the complete native template.
+
+    Summed fragment costs plus the measured template framing conservatively
+    cover the complete request, including assistant reasoning and call IDs.
+    The runtime owns tokenizer access and rejects a changed loaded model.
+    """
+
+    counter_id: str
+    tool_schema_hash: str
+    text_counter: Callable[[str], int]
+    request_counter: Callable[[Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]]], tuple[int, int]]
+    assurance: CapacityAssurance = CapacityAssurance.CONSERVATIVE
+
+    def __post_init__(self) -> None:
+        if not self.counter_id or not self.tool_schema_hash:
+            raise ValueError("measured request counter requires a bound model and tool schema")
+
+    def count_text(self, text: str) -> int:
+        return max(0, int(self.text_counter(str(text or ""))))
+
+    def count_value(self, value: Any) -> int:
+        return self.count_text(canonical_json(value))
+
+    def count_request_sections(
+        self, messages: Sequence[Mapping[str, Any]], schemas: Sequence[Mapping[str, Any]],
+    ) -> tuple[int, int]:
+        if canonical_sha256(list(schemas)) != self.tool_schema_hash:
+            raise ValueError("measured tool schemas changed after model binding")
+        message_tokens, tool_tokens = self.request_counter(messages, schemas)
+        if message_tokens < 0 or tool_tokens < 0:
+            raise ValueError("measured request sections must be nonnegative")
+        return message_tokens, tool_tokens
 
 
 @dataclass(frozen=True)
@@ -318,6 +354,7 @@ __all__ = [
     "RequestBudgetEnvelope",
     "RequestTokenComponents",
     "TokenCounter",
+    "TemplateMeasuredRequestCounter",
     "UnverifiedEstimateTokenCounter",
     "Utf8ByteTokenCounter",
     "build_request_budget",

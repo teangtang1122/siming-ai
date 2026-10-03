@@ -289,6 +289,7 @@ def create_candidate_from_raw(
             validate_character_state_target(
                 db, job.project_id, merged_item_type, merged_payload,
                 chapter_content=str(run.chapter.content or "") if run.chapter is not None else "",
+                chapter_run_id=run.id,
             )
             validate_coverage_manifest_relationships(merged_payload)
             from ...modules.continuity.domain.candidate_contract import validate_candidate_fields
@@ -431,6 +432,7 @@ def _prepare_candidate(
             normalized["item_type"],
             normalized["payload"],
             chapter_content=str(run.chapter.content or "") if run.chapter is not None else "",
+            chapter_run_id=run.id,
         )
         if normalized["item_type"] == "character_state_update" and state_target is None:
             payload = normalized["payload"]

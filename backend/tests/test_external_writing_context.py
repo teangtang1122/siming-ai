@@ -421,7 +421,6 @@ class PrepareExternalWritingContextTest(unittest.TestCase):
                 if item["source_id"] == future.id
             )
             excerpt = result["excerpt"]
-            self.assertIn("withheld_until_chapter", excerpt)
             self.assertIn('"reveal_chapter":14', excerpt)
             for secret in (
                 "小卖部",

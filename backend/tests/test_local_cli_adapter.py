@@ -855,7 +855,7 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
             })
             self.assertIsNotNone(probe)
             self.assertIsNone(probe())
-            replace_tool_categories(state_file, ["story_knowledge"])
+            replace_tool_categories(state_file, ["characters"])
             self.assertEqual(probe(), "set_tool_categories:1")
             activate_tool_categories(state_file)
             self.assertIsNone(probe())

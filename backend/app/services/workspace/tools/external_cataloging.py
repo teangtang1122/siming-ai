@@ -334,6 +334,14 @@ async def save_external_cataloging_candidates(db: Session, project_id: str, args
         return external_tool_failure(tool, "candidates 必须是原生 JSON 对象数组")
     if not isinstance(finalize, bool):
         return external_tool_failure(tool, "finalize 必须是 boolean")
+    from app.services.cataloging.scene_contract import plan_scene_count, validate_scene_submission
+    summary_in_batch = next((row for row in records if row.get("type") == "chapter_summary"), None)
+    declared_scenes = summary_in_batch.get("scenes") if summary_in_batch else None
+    scene_count = len(declared_scenes) if isinstance(declared_scenes, list) else plan_scene_count(db, run)
+    try:
+        validate_scene_submission(records, scene_count)
+    except ValueError as exc:
+        return external_tool_failure(tool, str(exc))
     rejected_ids = args.get("reject_candidate_ids", [])
     if not isinstance(rejected_ids, list) or any(not isinstance(value, str) for value in rejected_ids):
         return external_tool_failure(tool, "reject_candidate_ids 必须为当前章节候选 ID 数组")

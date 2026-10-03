@@ -33,7 +33,10 @@ from app.services.conversation_context.checkpoint_generation import (
     _call_checkpoint_model,
     _emit_attempt_started,
 )
+from app.services.conversation_context.checkpoint_prompt import build_checkpoint_messages
 from app.services.conversation_context.checkpoint_state import cancel_checkpoint_attempt
+from app.services.conversation_context.checkpoint_validator import CheckpointSourceMessage
+from app.services.conversation_context.contracts import ConversationRole
 from app.services.persistence.assistant_workspace import SqlAlchemyAssistantWorkspace
 from app.services.workspace.assistant_public_errors import public_context_failure
 
@@ -104,6 +107,46 @@ def test_api_checkpoint_call_has_no_tools_or_task_manifest() -> None:
     assert body["moshu_context_manifest_disabled"] is True
     assert "local_cli_mcp_project_id" not in body
     assert "local_cli_mcp_creation_session_id" not in body
+
+
+def test_checkpoint_repairs_out_of_bounds_author_quote_before_publishing() -> None:
+    source = (
+        CheckpointSourceMessage("user-1", 1, ConversationRole.USER, "纯靠自身努力+智谋"),
+        CheckpointSourceMessage("assistant-1", 2, ConversationRole.ASSISTANT, "收到"),
+    )
+    messages = build_checkpoint_messages(
+        scope="creation", conversation_id="conversation", source_messages=source
+    )
+    calls: list[dict[str, object]] = []
+
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        proposal = json.loads(_valid_checkpoint_result()["content"])
+        proposal["author_quote_positions"] = [
+            {
+                "message_id": "user-1",
+                "start_char": 0,
+                "end_char": 10 if len(calls) == 1 else 9,
+                "purpose": "preserve_author_constraint",
+            }
+        ]
+        return {"content": json.dumps(proposal, ensure_ascii=False)}
+
+    proposal = asyncio.run(
+        _call_checkpoint_model(
+            completion=completion,
+            messages=messages,
+            binding=_binding("openai"),
+            counter=Utf8ByteTokenCounter(),
+            safety_margin_tokens=512,
+            source_messages=source,
+        )
+    )
+
+    assert len(calls) == 2
+    assert proposal.author_quote_positions[0].end_char == 9
+    assert "位置超过来源消息" in calls[1]["messages"][-1]["content"]
+    assert '"content_char_length":9' in messages[-1]["content"]
 
 
 @pytest.mark.parametrize(
@@ -247,35 +290,51 @@ def test_creation_checkpoint_store_rejects_cross_session_and_cross_kind_access()
             assert checkpoint is not None
             db.commit()
 
-            assert store.context_state(
-                "creation", conversation.id, owner_id="creation-session-2"
-            ) is None
-            assert store.ensure_context_state(
-                "creation", conversation.id, owner_id="creation-session-2"
-            ) is None
-            assert store.context_checkpoint(
-                "creation",
-                conversation.id,
-                checkpoint.id,
-                owner_id="creation-session-2",
-            ) is None
-            assert store.context_checkpoints(
-                "creation", conversation.id, owner_id="creation-session-2"
-            ) == []
-            assert store.context_checkpoint_sources(
-                "creation",
-                conversation.id,
-                checkpoint.id,
-                owner_id="creation-session-2",
-            ) == []
-            assert store.update_context_checkpoint_status(
-                "creation",
-                conversation.id,
-                checkpoint.id,
-                "compressing",
-                owner_id="creation-session-2",
-                expected_statuses=["pending"],
-            ) is None
+            assert (
+                store.context_state("creation", conversation.id, owner_id="creation-session-2")
+                is None
+            )
+            assert (
+                store.ensure_context_state(
+                    "creation", conversation.id, owner_id="creation-session-2"
+                )
+                is None
+            )
+            assert (
+                store.context_checkpoint(
+                    "creation",
+                    conversation.id,
+                    checkpoint.id,
+                    owner_id="creation-session-2",
+                )
+                is None
+            )
+            assert (
+                store.context_checkpoints(
+                    "creation", conversation.id, owner_id="creation-session-2"
+                )
+                == []
+            )
+            assert (
+                store.context_checkpoint_sources(
+                    "creation",
+                    conversation.id,
+                    checkpoint.id,
+                    owner_id="creation-session-2",
+                )
+                == []
+            )
+            assert (
+                store.update_context_checkpoint_status(
+                    "creation",
+                    conversation.id,
+                    checkpoint.id,
+                    "compressing",
+                    owner_id="creation-session-2",
+                    expected_statuses=["pending"],
+                )
+                is None
+            )
             assert not store.publish_context_checkpoint(
                 "creation",
                 conversation.id,
@@ -289,9 +348,10 @@ def test_creation_checkpoint_store_rejects_cross_session_and_cross_kind_access()
                 checkpoint.id,
                 owner_id="creation-session-2",
             )
-            assert store.context_state(
-                "workspace", conversation.id, owner_id="creation-session-1"
-            ) is None
+            assert (
+                store.context_state("workspace", conversation.id, owner_id="creation-session-1")
+                is None
+            )
             with pytest.raises(ConversationContextError) as caught:
                 cancel_checkpoint_attempt(
                     store=store,
@@ -474,45 +534,57 @@ def test_workspace_checkpoint_source_rejects_inconsistent_cross_project_run() ->
             )
             assert checkpoint is not None
 
-            assert store.add_context_checkpoint_sources(
-                "workspace",
-                "conversation-1",
-                checkpoint.id,
-                [
-                    {
-                        "source_kind": "run_step",
-                        "source_id": "foreign-step",
-                        "source_sequence": None,
-                        "source_hash": "c" * 64,
-                    }
-                ],
-                owner_id="project-1",
-            ) is None
-            assert store.context_checkpoint_sources(
-                "workspace",
-                "conversation-1",
-                checkpoint.id,
-                owner_id="project-1",
-            ) == []
-            assert store.add_context_checkpoint_sources(
-                "workspace",
-                "conversation-1",
-                checkpoint.id,
-                [
-                    {
-                        "source_kind": "run_step",
-                        "source_id": "foreign-step-on-owned-run",
-                        "source_sequence": None,
-                        "source_hash": "d" * 64,
-                    }
-                ],
-                owner_id="project-1",
-            ) is None
-            assert store.context_checkpoint_sources(
-                "workspace",
-                "conversation-1",
-                checkpoint.id,
-                owner_id="project-1",
-            ) == []
+            assert (
+                store.add_context_checkpoint_sources(
+                    "workspace",
+                    "conversation-1",
+                    checkpoint.id,
+                    [
+                        {
+                            "source_kind": "run_step",
+                            "source_id": "foreign-step",
+                            "source_sequence": None,
+                            "source_hash": "c" * 64,
+                        }
+                    ],
+                    owner_id="project-1",
+                )
+                is None
+            )
+            assert (
+                store.context_checkpoint_sources(
+                    "workspace",
+                    "conversation-1",
+                    checkpoint.id,
+                    owner_id="project-1",
+                )
+                == []
+            )
+            assert (
+                store.add_context_checkpoint_sources(
+                    "workspace",
+                    "conversation-1",
+                    checkpoint.id,
+                    [
+                        {
+                            "source_kind": "run_step",
+                            "source_id": "foreign-step-on-owned-run",
+                            "source_sequence": None,
+                            "source_hash": "d" * 64,
+                        }
+                    ],
+                    owner_id="project-1",
+                )
+                is None
+            )
+            assert (
+                store.context_checkpoint_sources(
+                    "workspace",
+                    "conversation-1",
+                    checkpoint.id,
+                    owner_id="project-1",
+                )
+                == []
+            )
     finally:
         engine.dispose()

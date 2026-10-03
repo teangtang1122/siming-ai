@@ -36,23 +36,35 @@ from ..schemas.local_model import (
     DatasetCreateRequest,
     ModelInstallRequest,
     ModelRootUpdateRequest,
+    CatalogModelFileRequest,
     QualificationRequest,
+    RuntimeLaunchSettings,
+    RuntimeExecutableRequest,
     RuntimeStartRequest,
+    RuntimeUsageRequest,
     TrainingJobCreateRequest,
 )
 from ..services.local_runtime import get_runtime_manager
 from ..services.local_runtime.datasets import build_training_dataset
 from ..services.local_runtime.hardware import detect_hardware
+from ..services.local_runtime.launch_settings import (
+    load_launch_settings, reset_launch_settings, save_launch_settings,
+)
 from ..services.local_runtime.manifest import model_catalog
 from ..services.local_runtime.model_jobs import (
     create_custom_model_download,
     create_model_download,
     create_runtime_download,
+    cancel_download,
+    cancel_active_downloads,
     ensure_catalog_rows,
     import_custom_model,
+    register_catalog_model_file,
     resume_download,
 )
 from ..services.local_runtime.paths import model_root
+from ..services.local_runtime.runtime_files import register_runtime_file
+from ..services.application_settings import load_launcher_settings, save_launcher_settings
 from ..services.local_runtime.qualification import qualify_local_model
 from ..services.local_runtime.training import (
     control_training_job,
@@ -75,7 +87,7 @@ def _launcher_settings_path() -> Path:
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Siming" / "launcher-settings.json"
 
 
-def _pick_local_path(*, directory: bool) -> Path | None:
+def _pick_local_path(*, directory: bool, executable: bool = False) -> Path | None:
     try:
         import tkinter
         from tkinter import filedialog
@@ -87,8 +99,9 @@ def _pick_local_path(*, directory: bool) -> Path | None:
             filedialog.askdirectory(title="选择本地模型存储文件夹", parent=root)
             if directory
             else filedialog.askopenfilename(
-                title="选择本地 GGUF 模型",
-                filetypes=[("GGUF 模型", "*.gguf"), ("所有文件", "*.*")],
+                title="选择 llama-server.exe" if executable else "选择本地 GGUF 模型",
+                filetypes=([("llama.cpp 服务程序", "*.exe"), ("所有文件", "*.*")]
+                           if executable else [("GGUF 模型", "*.gguf"), ("所有文件", "*.*")]),
                 parent=root,
             )
         )
@@ -137,6 +150,26 @@ def _task_payload(task: Any) -> dict:
     }
 
 
+def _managed_model_file(model: Any, root: Path | None = None) -> bool:
+    if not model.file_path:
+        return False
+    base = (root or model_root()) / model.model_key
+    return Path(model.file_path).resolve().is_relative_to(base.resolve())
+
+
+def _launch_settings_for(model_key: str, db: Session) -> tuple[RuntimeLaunchSettings, bool]:
+    model = local_model_store(db).model(model_key)
+    if not model:
+        raise ValidationError("模型不存在")
+    hardware = detect_hardware()
+    return load_launch_settings(
+        model_key,
+        context_length=min(int(model.context_length or hardware.recommended_context), hardware.recommended_context),
+        gpu_layers=99 if hardware.nvidia_available else 0,
+        threads=max(2, hardware.cpu_count - 1),
+    )
+
+
 @router.get("/hardware")
 def hardware_profile():
     return ApiResponse.success(data=detect_hardware().to_dict())
@@ -146,7 +179,12 @@ def hardware_profile():
 def catalog(db: Session = Depends(get_db)):
     ensure_catalog_rows()
     store = local_model_store(db)
-    rows = store.catalog_models()
+    manifest = model_catalog()
+    catalog_keys = {item["model_key"] for item in manifest}
+    rows = [
+        row for row in store.catalog_models()
+        if row.source != "catalog" or row.model_key in catalog_keys
+    ]
     runtime = store.runtime_installation("llama_cpp")
     usage_enabled = not local_runtime_disabled("local_llama_cpp")
     runtime_state = get_runtime_manager().status()
@@ -157,7 +195,7 @@ def catalog(db: Session = Depends(get_db)):
         "usage_enabled": usage_enabled,
         "usage_disabled_reason": None if usage_enabled else local_runtime_disabled_message(),
         "items": [_model_payload(row) for row in rows],
-        "manifest": model_catalog(),
+        "manifest": manifest,
         "runtime": {
             # Live health is authoritative. Persisted startup state can lag if
             # the initiating browser request is cancelled after launch.
@@ -178,7 +216,7 @@ def update_model_root(payload: ModelRootUpdateRequest, db: Session = Depends(get
     current = model_root()
     if target != current:
         for model in local_model_store(db).installed_models():
-            if not model.file_path:
+            if not _managed_model_file(model, current):
                 continue
             source = Path(model.file_path)
             if not source.exists():
@@ -215,6 +253,20 @@ def pick_custom_model_file():
     return ApiResponse.success(data={"path": str(selected) if selected else None, "cancelled": selected is None})
 
 
+@router.post("/runtime/pick")
+def pick_runtime_executable():
+    selected = _pick_local_path(directory=False, executable=True)
+    if selected and selected.name.lower() != "llama-server.exe":
+        raise ValidationError("请选择 llama-server.exe")
+    return ApiResponse.success(data={"path": str(selected) if selected else None, "cancelled": selected is None})
+
+
+@router.post("/runtime/register-file")
+def register_runtime_executable(payload: RuntimeExecutableRequest, db: Session = Depends(get_db)):
+    register_runtime_file(db, payload.file_path)
+    return ApiResponse.success(message="已登记本机 llama.cpp，原文件不会复制或移动")
+
+
 @router.post("/runtime/install")
 def install_runtime():
     task_id = create_runtime_download()
@@ -242,6 +294,12 @@ def download_custom_model(payload: CustomModelDownloadRequest):
 def import_existing_custom_model(payload: CustomModelImportRequest):
     import_custom_model(**payload.model_dump())
     return ApiResponse.success(message="自有 GGUF 模型已登记")
+
+
+@router.post("/catalog/{model_key}/register-file")
+def register_existing_catalog_model(model_key: str, payload: CatalogModelFileRequest):
+    register_catalog_model_file(model_key, payload.file_path)
+    return ApiResponse.success(message="已登记本机模型文件；原文件不会复制或移动")
 
 
 @router.get("/downloads")
@@ -278,6 +336,43 @@ async def download_events(task_id: str):
 def resume_model_download(task_id: str):
     resume_download(task_id)
     return ApiResponse.success(message="已从保存的下载进度继续")
+
+
+@router.post("/downloads/{task_id}/cancel")
+def cancel_model_download(task_id: str):
+    cancel_download(task_id)
+    return ApiResponse.success(message="下载已取消，已下载的临时文件保留")
+
+
+@router.put("/runtime/usage")
+def set_runtime_usage(payload: RuntimeUsageRequest):
+    settings = load_launcher_settings()
+    settings["local_runtime_enabled"] = payload.enabled
+    save_launcher_settings(settings)
+    if not payload.enabled:
+        get_runtime_manager().stop()
+    return ApiResponse.success(data={"usage_enabled": payload.enabled, "runtime": get_runtime_manager().status()})
+
+
+@router.get("/runtime/settings/{model_key}")
+def get_runtime_settings(model_key: str, db: Session = Depends(get_db)):
+    profile, saved = _launch_settings_for(model_key, db)
+    return ApiResponse.success(data={"profile": profile.model_dump(), "saved": saved})
+
+
+@router.put("/runtime/settings/{model_key}")
+def put_runtime_settings(model_key: str, payload: RuntimeLaunchSettings, db: Session = Depends(get_db)):
+    _launch_settings_for(model_key, db)
+    save_launch_settings(model_key, payload)
+    return ApiResponse.success(data={"profile": payload.model_dump(), "saved": True})
+
+
+@router.delete("/runtime/settings/{model_key}")
+def restore_runtime_settings(model_key: str, db: Session = Depends(get_db)):
+    _launch_settings_for(model_key, db)
+    reset_launch_settings(model_key)
+    profile, saved = _launch_settings_for(model_key, db)
+    return ApiResponse.success(data={"profile": profile.model_dump(), "saved": saved})
 
 
 @router.post("/runtime/start")
@@ -329,14 +424,14 @@ def delete_model(model_key: str, db: Session = Depends(get_db)):
     # A manually registered file belongs to the user. Removing it from the
     # model center must not erase an arbitrary file outside Siming's model
     # directory.
-    if model.source == "custom" and not (model.source_urls or []):
+    if not _managed_model_file(model):
         store.delete(model)
         commit_session(db)
-        return ApiResponse.success(message="已移除自有 GGUF 的登记，原文件未改动")
+        return ApiResponse.success(message="已移除模型登记，原文件未改动")
     if model.file_path:
         path = Path(model.file_path)
         if path.exists():
-            shutil.rmtree(path.parent, ignore_errors=True)
+            path.unlink()
     model.file_path = None
     model.file_size = None
     model.status = "available"

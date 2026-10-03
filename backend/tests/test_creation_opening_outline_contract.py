@@ -275,15 +275,15 @@ def test_undo_cannot_restore_an_empty_outline_and_final_review_reports_the_probl
 
 
 def test_whole_stage_regeneration_cannot_change_a_locked_body():
-    from app.modules.creation.domain.opening_outline_contract import validate_opening_locks
+    from app.modules.creation.domain.artifact_lock_contract import validate_artifact_locks
 
     baseline = deepcopy(FIXTURE["data"])
     changed = deepcopy(baseline)
     changed["chapters"][0]["summary"] = "试图改写作者已经锁定的正文。"
     paths = ["/chapters/0/summary"]
-    validate_opening_locks(baseline, baseline, paths)
+    validate_artifact_locks("opening_outline", baseline, baseline, paths)
     with pytest.raises(CreationGenerationError) as caught:
-        validate_opening_locks(changed, baseline, paths)
+        validate_artifact_locks("opening_outline", changed, baseline, paths)
     assert caught.value.reason == "creation_opening_locked_changed"
 
 

@@ -67,6 +67,7 @@ import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -693,6 +694,24 @@ suspend fun runCataloging(
     )
     require(chapterIds == null || chapterIds.toSet() == chapters.map { it.entityId }.toSet()) { "建档章节 ID 不存在或不属于本作品" }
     require(chapters.isNotEmpty()) { "作品没有可建档章节" }
+    if (directApiStore.read() == null) {
+        syncNow()
+        val connection = requireConnection()
+        val launch = api.startCataloging(connection, projectId, chapters.map { it.entityId })
+        val jobId = launch["id"]?.jsonPrimitive?.content.orEmpty()
+        require(jobId.isNotBlank()) { "Gateway 没有返回建档任务 ID" }
+        while (true) {
+            val detail = api.getCatalogingJob(connection, projectId, jobId)
+            val job = detail["job"]?.jsonObject ?: error("Gateway 没有返回建档任务状态")
+            val progress = job.toMobileCatalogingProgress()
+            onProgress(progress, job["current_message"]?.jsonPrimitive?.contentOrNull)
+            if (progress.status in setOf("completed", "failed", "cancelled", "paused", "paused_on_failure", "waiting_confirmation")) {
+                syncNow()
+                return progress
+            }
+            delay(3000)
+        }
+    }
     val config = resolvedDirectConfig("cataloging")
     val contract = CatalogingContract(appContext)
     return MobileCataloging(database, contract, config.model) { messages, tools, activity ->
@@ -1500,9 +1519,19 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         return canonicalId
     }
 
-    suspend fun pendingChapterDraft(projectId: String): MobilePendingChapterDraft? {
-        val value = mobileWorkspaceAgent.pendingChapterDraft(projectId) ?: return null
-        return MobilePendingChapterDraft.fromJson(projectId, value)
+    suspend fun pendingChapterDraft(
+        projectId: String,
+        modelRoute: AssistantModelRoute = AssistantModelRoute.MobileKey,
+    ): MobilePendingChapterDraft? {
+        suspend fun localDraft() = mobileWorkspaceAgent.pendingChapterDraft(projectId)
+            ?.let { MobilePendingChapterDraft.fromJson(projectId, it) }
+        suspend fun gatewayDraft() = dao.connection()
+            ?.let { api.pendingChapterDraft(it, projectId) }
+            ?.let { MobilePendingChapterDraft.fromJson(projectId, it) }
+        return when (modelRoute) {
+            AssistantModelRoute.Pc -> gatewayDraft() ?: localDraft()
+            AssistantModelRoute.MobileKey -> localDraft() ?: gatewayDraft()
+        }
     }
 
     suspend fun updatePendingChapterDraft(
@@ -1749,7 +1778,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         require(catalogingMode in setOf("save_only", "save_and_catalog")) { "未知的章节保存方式" }
         require(!draft.generating && !draft.versionConflict) { "草稿尚未就绪或正式章节版本已变化" }
         if (draft.revision) {
-            if (catalogingMode == "save_and_catalog") require(directApiStore.read() != null) { "请先配置手机 API" }
+            if (catalogingMode == "save_and_catalog") require(directApiStore.read() != null || dao.connection() != null) { "请先配置手机 API 或连接 Gateway" }
             val id = requireNotNull(draft.targetChapterId) { "修订候选缺少目标章节" }
             val expected = requireNotNull(draft.baseChapterVersion) { "修订候选缺少基准版本" }
             database.withTransaction {
@@ -1761,7 +1790,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             }
             return@withLock id
         }
-        if (catalogingMode == "save_and_catalog") require(directApiStore.read() != null) { "请先配置手机 API，再使用保存并建档" }
+        if (catalogingMode == "save_and_catalog") require(directApiStore.read() != null || dao.connection() != null) { "请先配置手机 API 或连接 Gateway，再使用保存并建档" }
         val chapterId = catalogingId("saved_draft", draft.projectId, draft.draftId)
         val snapshot = dao.projectSnapshot(draft.projectId)
         require(snapshot.any { it.entityType == "project" && it.entityId == draft.projectId }) { "作品不存在" }
@@ -2533,10 +2562,17 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         sessionId: String,
         onProgress: suspend (String) -> Unit = {},
     ): String {
-        val current = loadCreationSession(sessionId)
+        val stored = loadCreationSession(sessionId)
+        val route = creationRoute(stored)
+        val executionHost = creationHost(stored)
+        val current = if (executionHost == CREATION_HOST_GATEWAY) {
+            val fresh = api.getNovelCreationSession(requireConnection(), sessionId)
+            tagCreationRoute(CreationAgentTurnRecords.mergeRemoteSession(fresh, stored), route, executionHost)
+                .also { saveCreationSession(it) }
+        } else {
+            stored
+        }
         requireCreationReady(current)
-        val route = creationRoute(current)
-        val executionHost = creationHost(current)
         val projectId = when {
             executionHost == CREATION_HOST_GATEWAY -> {
                 onProgress("正在通过 PC 立项服务创建正式作品…")
@@ -2696,7 +2732,15 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
     }
 
     private fun requireCreationReady(session: JsonObject) {
-        mobileCreationAgent.openingContract.validateSaved(session)
+        if (creationHost(session) == CREATION_HOST_GATEWAY) {
+            val volumes = session["volume_index"] as? JsonArray
+                ?: error("PC 立项数据缺少 volume_index，请刷新后重试")
+            val characters = session["character_index"] as? JsonArray
+                ?: error("PC 立项数据缺少 character_index，请刷新后重试")
+            mobileCreationAgent.openingContract.validateSaved(session, volumes, characters)
+        } else {
+            mobileCreationAgent.openingContract.validateSaved(session)
+        }
         val requiredStages = listOf("constraints", "concepts", "world_style", "characters", "locations", "macro_outline")
         val missing = requiredStages.filter { stage ->
             session.stageState(stage).string("status") != "confirmed"

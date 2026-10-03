@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class PcCreationAgentContractTest {
     @Test
@@ -51,6 +52,7 @@ class PcCreationAgentContractTest {
             java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
         ).first { it.isFile }
         val contract = PcCreationAgentContract(contractFile.readText(Charsets.UTF_8))
+        assertEquals(2 * 1024, contract.writeResultMaxBytesFor("patch_creation_artifact"))
         val fixture = checkNotNull(javaClass.classLoader?.getResourceAsStream("creation_write_receipts.json"))
             .bufferedReader(Charsets.UTF_8).use { it.readText() }
             .replace("DOCUMENT_BODY", "完整角色背景。".repeat(5_000))
@@ -106,7 +108,7 @@ class PcCreationAgentContractTest {
     }
 
     @Test
-    fun `mobile uses the same global category replacement as PC`() {
+    fun `mobile uses the same scoped small category replacement as PC`() {
         val contractFile = listOf(
             java.io.File("app/src/main/assets/pc_workspace_prompt_contract.json"),
             java.io.File("src/main/assets/pc_workspace_prompt_contract.json"),
@@ -120,18 +122,29 @@ class PcCreationAgentContractTest {
                     ?.contentOrNull
             }.toSet(),
         )
-        val entityNames = contract.toolSchemas(listOf("creation_data")).mapNotNull { schema ->
+        val entityNames = contract.toolSchemas(listOf("creation_entities")).mapNotNull { schema ->
             (((schema as? JsonObject)?.get("function") as? JsonObject)?.get("name") as? JsonPrimitive)
                 ?.contentOrNull
         }.toSet()
-        val flowNames = contract.toolSchemas(listOf("creation_flow")).mapNotNull { schema ->
+        val flowNames = contract.toolSchemas(listOf("creation_completion")).mapNotNull { schema ->
             (((schema as? JsonObject)?.get("function") as? JsonObject)?.get("name") as? JsonPrimitive)
                 ?.contentOrNull
         }.toSet()
         assertTrue("patch_creation_entity" in entityNames)
-        assertTrue("patch_creation_session" in entityNames)
+        assertFalse("patch_creation_session" in entityNames)
         assertFalse("finalize_creation_session" in entityNames)
         assertTrue("finalize_creation_session" in flowNames)
         assertFalse("patch_creation_entity" in flowNames)
+        assertEquals(5, entityNames.size)
+        assertTrue(runCatching { contract.normalizeCategories(listOf("chapter_writing")) }.isFailure)
+        assertTrue(runCatching { contract.normalizeCategories(listOf("creation_setup")) }.isFailure)
+        assertTrue(runCatching {
+            contract.normalizeCategories(listOf("creation_session", "creation_artifacts", "creation_entities"))
+        }.isFailure)
+        val controller = contract.toolSchemas(emptyList()).single().jsonObject.getValue("function").jsonObject
+        val menu = controller.getValue("parameters").jsonObject.getValue("properties").jsonObject
+            .getValue("enabled_categories").jsonObject.getValue("items").jsonObject.getValue("enum").jsonArray
+        assertTrue(menu.all { it.jsonPrimitive.content.startsWith("creation_") })
+        assertFalse(menu.any { it.jsonPrimitive.content == "creation_setup" })
     }
 }

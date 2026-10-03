@@ -8,7 +8,14 @@ import json
 from contextlib import nullcontext
 
 from ..domain.context_trace import PAYLOAD_LIMIT, TraceScope
-from .trace_capture import Span, active_trace, correlate, record_payload, trace_scope
+from .trace_capture import (
+    Span,
+    active_trace,
+    correlate,
+    record_payload,
+    record_tool_outcome,
+    trace_scope,
+)
 
 
 def _field(values: dict, path: str | None):
@@ -78,6 +85,8 @@ def observed(
                     result = function(*args, **kwargs)
                     if capture_output:
                         record_payload(output_layer, result)
+                    if isinstance(result, dict):
+                        record_tool_outcome(result)
                     return result
 
             return sync_call
@@ -91,18 +100,14 @@ def observed(
                     kind,
                     _field(values, label_field) or function.__name__,
                     **{key: _field(values, path) for key, path in (attributes or {}).items()},
-                ) as span,
+                ),
             ):
                 record_payload(input_layer, {key: values.get(key) for key in inputs})
                 result = await function(*args, **kwargs)
                 if capture_output:
                     record_payload(output_layer, result)
-                if isinstance(result, dict) and result.get("status") in {
-                    "error",
-                    "denied",
-                    "blocked",
-                }:
-                    span.finish("error")
+                if isinstance(result, dict):
+                    record_tool_outcome(result)
                 return result
 
         return call

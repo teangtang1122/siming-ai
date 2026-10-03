@@ -24,7 +24,12 @@ def test_api_and_mcp_export_the_same_non_opaque_candidate_schema():
     spec = registry.get_spec(TOOL)
     parameters = spec.parameters_schema()
     assert spec.openai_schema()["function"]["parameters"] == spec.mcp_schema()["inputSchema"]
-    variants = parameters["properties"]["candidates"]["items"]["anyOf"]
+    generation = parameters["properties"]["candidates"]["items"]
+    assert "anyOf" not in generation
+    assert generation["required"] == ["type"]
+    assert "character_state_update" in generation["properties"]["type"]["enum"]
+    assert generation["properties"]["characters"] == {"type": "array"}
+    variants = spec.input_validation_schema_override["properties"]["candidates"]["items"]["anyOf"]
     fields = {s["properties"]["type"]["enum"][0]: s["properties"] for s in variants}
     assert fields["character_create"]["role_type"]["enum"] == [
         "protagonist", "supporting", "antagonist", "mentor", "other",
@@ -40,6 +45,20 @@ def test_api_and_mcp_export_the_same_non_opaque_candidate_schema():
     assert "character_ids" in sections["required"]
     for example in candidate_contract_examples():
         spec.validate_input({"job_id": "job", "chapter_id": "chapter", "candidates": [example]})
+
+
+def test_flat_generation_schema_does_not_weaken_type_specific_write_validation():
+    spec = registry.get_spec(TOOL)
+    with pytest.raises(ToolInputSchemaValidationError) as caught:
+        spec.validate_input({"job_id": "job", "chapter_id": "chapter", "candidates": [{
+            "type": "character_create", "id": "existing-id", "name": "已有角色",
+        }]})
+    assert caught.value.rule == "required"
+    assert "client_id" in caught.value.expected
+    spec.validate_input({"job_id": "job", "chapter_id": "chapter", "candidates": [{
+        "type": "character_state_update", "id": "existing-id", "name": "已有角色",
+        "current_location": "宗门",
+    }]})
 
 
 def test_managed_cli_schema_exposes_its_actual_batch_limit_without_changing_unbound_api(monkeypatch):

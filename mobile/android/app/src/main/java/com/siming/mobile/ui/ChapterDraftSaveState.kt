@@ -26,11 +26,11 @@ internal fun chapterDraftSaveState(
     }
     return ChapterDraftSaveState(
         canSave = blockedReason == null,
-        canCatalog = blockedReason == null && directApiConfigured,
-        hint = blockedReason ?: if (directApiConfigured) {
-            "正文尚未保存。保存正文只保留本次编辑；保存并建档会使用手机 API 更新故事资料，完成后可继续下一章。"
+        canCatalog = blockedReason == null && (directApiConfigured || online),
+        hint = blockedReason ?: if (directApiConfigured || online) {
+            "正文尚未保存。保存正文只保留本次编辑；保存并建档会更新故事资料，完成后可继续下一章。"
         } else {
-            "正文尚未保存。可以先保存到手机；配置手机 API 后可建档。"
+            "正文尚未保存。可以先保存到手机；配置手机 API 或连接 Gateway 后可建档。"
         },
     )
 }

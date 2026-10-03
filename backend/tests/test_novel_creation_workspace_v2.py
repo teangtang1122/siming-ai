@@ -41,6 +41,7 @@ from app.services.novel_creation_workspace import (
     undo_creation_artifact,
 )
 from app.services.workspace.registry import registry
+from app.services.workspace.tool_result_projection import model_tool_result_projector
 from app.services.workspace.tools.novel_creation import finalize_creation_session
 from app.services.workspace.tools.novel_creation_v2 import (
     _normalize_stage_data,
@@ -48,10 +49,10 @@ from app.services.workspace.tools.novel_creation_v2 import (
     confirm_creation_artifact,
     generate_creation_artifact,
     get_creation_artifact,
-    run_creation_artifact_generation,
     get_creation_snapshot,
     list_creation_entities_tool,
     patch_creation_session_tool,
+    run_creation_artifact_generation,
     save_creation_artifact,
 )
 
@@ -783,15 +784,20 @@ def test_creation_snapshot_and_session_patch_are_revision_protected():
     patched = asyncio.run(patch_creation_session_tool(db, "", {
         "session_id": session.id,
         "expected_revision": initial_revision,
-        "changes": {"user_brief": "只保留悬疑主线，目标八卷"},
+        "changes": {"form": {"brief": "只保留悬疑主线，目标八卷"}},
     }))
     assert patched["status"] == "ok"
     assert patched["data"]["revision"] > initial_revision
+    assert patched["data"]["changed_fields"] == ["form.brief"]
+    db.refresh(session)
+    assert session.user_brief == "只保留悬疑主线，目标八卷"
+    assert session.draft_json["form"]["brief"] == session.user_brief
+    assert session.draft_json["stages"]["constraints"]["data"]["brief"] == session.user_brief
 
     conflict = asyncio.run(patch_creation_session_tool(db, "", {
         "session_id": session.id,
         "expected_revision": initial_revision,
-        "changes": {"user_brief": "不应覆盖"},
+        "changes": {"form": {"brief": "不应覆盖"}},
     }))
     assert conflict["status"] == "error"
     assert conflict["data"]["reason"] == "revision_conflict"
@@ -809,6 +815,59 @@ def test_creation_snapshot_and_session_patch_are_revision_protected():
     assert all("flow" not in item for item in snapshot["data"]["artifacts"])
     assert all("running_operation" not in item for item in snapshot["data"]["artifacts"])
     assert len(json.dumps(snapshot["data"], ensure_ascii=False)) < 8_000
+
+
+def test_session_patch_reports_success_only_after_nested_form_is_persisted():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting")
+    db.add(session)
+    initialize_session_draft(session)
+    db.commit()
+    session_id = session.id
+    original_revision = int(session.revision or 0)
+
+    invalid = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session_id,
+        "expected_revision": original_revision,
+        "changes": {"genre": "玄幻", "user_brief": "废柴逆袭"},
+    }))
+    assert invalid["status"] == "error"
+    db.expire_all()
+    assert int(db.get(NovelCreationSession, session_id).revision or 0) == original_revision
+
+    saved = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session_id,
+        "expected_revision": original_revision,
+        "changes": {"form": {"genre": "玄幻", "brief": "废柴逆袭"}},
+    }))
+    assert saved["status"] == "ok"
+    assert saved["data"]["changed_fields"] == ["form.brief", "form.genre"]
+    db.expunge_all()
+    persisted = db.get(NovelCreationSession, session_id)
+    assert persisted.revision == original_revision + 1
+    assert persisted.genre == "玄幻"
+    assert persisted.user_brief == "废柴逆袭"
+    assert persisted.draft_json["form"]["genre"] == "玄幻"
+    assert persisted.draft_json["form"]["brief"] == "废柴逆袭"
+    assert persisted.draft_json["stages"]["constraints"]["status"] == "generated"
+    assert persisted.draft_json["stages"]["constraints"]["data"]["brief"] == "废柴逆袭"
+
+    mixed = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session_id,
+        "expected_revision": persisted.revision,
+        "changes": {"form": {"genre": "玄幻", "brief": "废柴逆袭与宗门冲突"}},
+    }))
+    assert mixed["status"] == "ok"
+    assert mixed["data"]["changed_fields"] == ["form.brief"]
+
+    unchanged = asyncio.run(patch_creation_session_tool(db, "", {
+        "session_id": session_id,
+        "expected_revision": mixed["data"]["revision"],
+        "changes": {"form": {"genre": "玄幻"}},
+    }))
+    assert unchanged["status"] == "skipped"
+    db.refresh(persisted)
+    assert persisted.revision == mixed["data"]["revision"]
 
 
 def test_large_cast_snapshot_and_entity_search_stay_bounded():
@@ -832,6 +891,11 @@ def test_large_cast_snapshot_and_entity_search_stay_bounded():
     snapshot = asyncio.run(get_creation_snapshot(db, "", {"session_id": session.id}))
     snapshot_wire = json.dumps(snapshot["data"], ensure_ascii=False)
     assert len(snapshot_wire) < 8_000
+    projected = model_tool_result_projector.project(
+        registry.get("get_creation_snapshot"), snapshot,
+    )
+    assert projected.full_source_delivered is True
+    assert projected.projected_json_bytes <= 8 * 1024
     assert "同人角色-179" not in snapshot_wire
     character_overview = next(
         item for item in snapshot["data"]["artifacts"]
@@ -981,8 +1045,8 @@ def test_entity_generation_cannot_report_old_baseline_as_new_model_output(bad_pa
 
 
 def test_compact_concept_repair_receives_complete_schema_and_preserves_one_direction():
-    from app.services.workspace.tools.novel_creation_v2 import _generate_compact_concepts
     from app.services.novel_creation_prompting import COMPACT_CONCEPT_REPAIR_CONTRACT
+    from app.services.workspace.tools.novel_creation_v2 import _generate_compact_concepts
 
     db = _db()
     session = _ready_session(db)

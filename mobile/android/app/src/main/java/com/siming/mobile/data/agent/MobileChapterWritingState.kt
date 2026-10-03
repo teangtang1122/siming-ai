@@ -12,7 +12,9 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
-internal fun mobileWorkspaceRuntimeData(project: JsonObject, chapterWritingState: JsonObject): JsonObject =
+internal fun mobileWorkspaceRuntimeData(
+    project: JsonObject, chapterWritingState: JsonObject, outlineBatchCount: Int,
+): JsonObject =
     buildJsonObject {
         put("schema", "workspace_assistant_runtime.v1")
         put("data_only", true)
@@ -23,7 +25,7 @@ internal fun mobileWorkspaceRuntimeData(project: JsonObject, chapterWritingState
         put("editor_selection", JsonNull)
         put("active_chapter_draft", chapterWritingState["pending_draft"] ?: JsonNull)
         put("chapter_writing_state", chapterWritingState)
-        put("outline_batch_count", 3)
+        put("outline_batch_count", outlineBatchCount)
     }
 
 /** Persisted state only: these checks never interpret the author's message or choose a target. */

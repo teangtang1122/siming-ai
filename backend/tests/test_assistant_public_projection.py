@@ -77,64 +77,6 @@ def test_denied_sse_projection_never_includes_diagnostic_or_nested_data() -> Non
     assert secret not in json.dumps(projected, ensure_ascii=False)
 
 
-def test_short_draft_projection_exposes_only_safe_retry_counts() -> None:
-    secret = "private-draft-diagnostic"
-    raw = {
-        "tool": "save_external_chapter_draft",
-        "status": "needs_confirmation",
-        "detail": f"provider path /srv/private {secret}",
-        "data": {
-            "reason_code": "draft_below_minimum",
-            "actual_han_characters": 3_612,
-            "minimum_han_characters": 3_800,
-            "missing_han_characters": 999_999,
-            "context_manifest_id": secret,
-            "context_selection_token": secret,
-            "nested": {"apiKey": secret},
-        },
-    }
-
-    projected = public_tool_log(raw)
-
-    assert projected == {
-        "tool": "save_external_chapter_draft",
-        "status": "needs_confirmation",
-        "detail": "正文有 3612 个汉字，低于最低要求 3800 个；至少还差 188 个。为减少反复退回，建议一次补至 4180 个汉字（约再补 568 个）后重试。",
-        "remediation": {
-            "code": "draft_below_minimum",
-            "message": "正文有 3612 个汉字，低于最低要求 3800 个；至少还差 188 个。为减少反复退回，建议一次补至 4180 个汉字（约再补 568 个）后重试。",
-            "retryable": True,
-            "actual_han_characters": 3_612,
-            "minimum_han_characters": 3_800,
-            "missing_han_characters": 188,
-            "recommended_han_characters": 4_180,
-            "recommended_additional_han_characters": 568,
-        },
-    }
-    assert secret not in json.dumps(projected, ensure_ascii=False)
-
-    step = SimpleNamespace(
-        id="step-short-draft",
-        run_id="run-1",
-        step_type="write",
-        tool="save_external_chapter_draft",
-        status="needs_confirmation",
-        iteration=1,
-        attempt_no=1,
-        retry_of_step_id=None,
-        resolved_step_id=None,
-        request_json=json.dumps({"content": secret}),
-        result_json=json.dumps(raw, ensure_ascii=False),
-        output_refs=None,
-        started_at=None,
-        completed_at=None,
-    )
-    projected_step = public_step_payload(step, can_retry=True, retry_block_reason=None)
-    assert projected_step["detail"] == projected["detail"]
-    assert projected_step["remediation"] == projected["remediation"]
-    assert secret not in json.dumps(projected_step, ensure_ascii=False)
-
-
 def test_unknown_retry_reason_keeps_generic_projection() -> None:
     secret = "unregistered-retry-secret"
     projected = public_tool_log({

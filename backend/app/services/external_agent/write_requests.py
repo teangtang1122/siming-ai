@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Supported write types
 WRITE_TYPES = {
-    "create_outline",
     "update_outline",
     "create_character",
     "update_character",
@@ -125,7 +124,6 @@ def confirm_write(
     # Issue a confirmation token for the corresponding MCP tool
     # Map write_type to MCP tool name
     tool_map = {
-        "create_outline": "create_outline_node",
         "update_outline": "update_outline_node",
         "create_character": "create_character",
         "update_character": "update_character",

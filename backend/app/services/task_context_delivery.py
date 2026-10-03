@@ -121,14 +121,37 @@ def begin_context_delivery(
     return state
 
 
+def begin_internal_generator_context(
+    manifest: Any, selection_token: str,
+) -> dict[str, Any]:
+    """Authorize the nested generator to read its persisted selected manifest."""
+    if getattr(manifest, "execution_route", "") != "internal_api":
+        raise ValueError("Internal generator context requires the server-owned route")
+    now = datetime.now(timezone.utc).isoformat()
+    state = {
+        "status": "internal_generator",
+        "ready": True,
+        "selection_token_sha256": hashlib.sha256(selection_token.encode("utf-8")).hexdigest(),
+        "started_at": now,
+        "completed_at": now,
+    }
+    set_context_delivery_state(manifest, state)
+    return state
+
+
 def context_delivery_ready(manifest: Any, selection_token: str) -> bool:
     """Raw full-context callers have no page gate; paged callers must finish it."""
     state = context_delivery_state(manifest)
     if state is None:
         return True
     token_hash = hashlib.sha256(selection_token.encode("utf-8")).hexdigest()
+    allowed_statuses = (
+        {"complete", "internal_generator"}
+        if getattr(manifest, "execution_route", "") == "internal_api"
+        else {"complete"}
+    )
     return (
-        state.get("status") == "complete"
+        state.get("status") in allowed_statuses
         and state.get("ready") is True
         and state.get("selection_token_sha256") == token_hash
     )

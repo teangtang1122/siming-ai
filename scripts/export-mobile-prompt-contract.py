@@ -23,11 +23,15 @@ from app.architecture.tool_categories import (
     tool_category_controller_schema,
 )
 from app.database.models import NovelCreationSession
+from app.modules.story.domain.outline_contract import (
+    DEFAULT_OUTLINE_BATCH_COUNT,
+    OUTLINE_GENERATION_IDLE_TIMEOUT_SECONDS,
+    OUTLINE_GENERATION_LOCAL_EXTRA_BODY,
+)
 from app.modules.assistant.infrastructure.runtime import (
     get_compiled_prompt,
     render_prompt,
 )
-from app.modules.creation.domain.opening_outline_contract import SCENE_METADATA_FIELDS, CHAPTER_METADATA_FIELDS
 from app.modules.creation.domain.entity_contract import (
     CREATION_REFERENCE_DETAILS,
     ENTITY_COLLECTIONS,
@@ -39,6 +43,10 @@ from app.modules.creation.domain.entity_contract import (
 from app.modules.creation.domain.generation_contract import (
     CREATION_GENERATION_DETAILS,
     ENTITY_GENERATION_INSTRUCTION,
+)
+from app.modules.creation.domain.opening_outline_contract import (
+    CHAPTER_METADATA_FIELDS,
+    SCENE_METADATA_FIELDS,
 )
 from app.modules.creation.interfaces.agent_scope import (
     CREATION_AGENT_REVISION_TOOL_NAMES,
@@ -64,6 +72,8 @@ from app.services.agent.prompt_builder import (
     compose_chapter_writer_messages,
 )
 from app.services.creation_agent_reply import (
+    CREATION_READ_ONLY_COMPLETION_INSTRUCTION,
+    CREATION_READ_ONLY_NOTICE,
     CREATION_REPLY_FAILURE_NOTICE,
     CREATION_REPLY_INSTRUCTION,
     CREATION_REPLY_MAX_ATTEMPTS,
@@ -88,8 +98,8 @@ from app.services.novel_creation_prompting import (
     CONCEPT_TASK_KINDS,
     CONCEPT_TASK_RULES,
     CONCEPT_USER_INTROS,
-    CREATION_REPAIR_SYSTEM_PROMPT,
     CREATION_MODEL_REQUEST,
+    CREATION_REPAIR_SYSTEM_PROMPT,
     CREATION_REPAIR_USER_TEMPLATE,
     CREATION_STAGE_TASK_RULES,
     CREATION_STAGE_USER_PREFIX,
@@ -133,8 +143,6 @@ MOBILE_TOOL_NAMES = [
     "character_writer",
     "outline_writer",
     "worldbuilding_writer",
-    "create_outline_node",
-    "create_outline_nodes",
     "update_outline_node",
     "create_character",
     "update_character",
@@ -357,16 +365,29 @@ def _creation_normalization_fixture(baseline_fixture: dict) -> dict:
 
 
 def build_contract() -> dict:
-    from app.modules.continuity.domain.mobile_cataloging import MOBILE_CATALOGING_GUARD_FIELDS
-    from app.services.cataloging.agent import CATALOGING_AGENT_TOOLS
-    from app.services.cataloging.constants import (
-        APPLY_ORDER, CATALOGING_MAX_TOKENS, CATALOGING_TIMEOUT_SECONDS,
-        CATALOGING_TEMPERATURE, CATALOGING_NON_THINKING_PROVIDERS,
+    from app.modules.continuity.domain.candidate_contract import (
+        CATALOGING_SELECTION_TYPES,
+        candidate_record_schema,
+        candidate_record_schema_for_selection,
     )
-    from app.services.cataloging.character_ops import STATE_FIELD_LIMITS
-    from app.modules.continuity.domain.candidate_contract import candidate_record_schema
+    from app.modules.continuity.domain.mobile_cataloging import (
+        MOBILE_CATALOGING_GUARD_FIELDS,
+    )
     from app.prompts.cataloging_source import get_internal_cataloging_system_prompt
-    from app.services.story_granularity import CHARACTER_STATE_FIELDS, SECTION_SCENE_STATE_FIELDS
+    from app.services.cataloging.agent import CATALOGING_AGENT_TOOLS, cataloging_selection_tool_schema
+    from app.services.workspace.native_tool_batch import MAX_NATIVE_TOOL_NAME_REJECTIONS
+    from app.services.cataloging.character_ops import STATE_FIELD_LIMITS
+    from app.services.cataloging.constants import (
+        APPLY_ORDER,
+        CATALOGING_MAX_TOKENS,
+        CATALOGING_NON_THINKING_PROVIDERS,
+        CATALOGING_TEMPERATURE,
+        CATALOGING_TIMEOUT_SECONDS,
+    )
+    from app.services.story_granularity import (
+        CHARACTER_STATE_FIELDS,
+        SECTION_SCENE_STATE_FIELDS,
+    )
     missing = [name for name in MOBILE_TOOL_NAMES if registry.get(name) is None]
     if missing:
         raise RuntimeError(f"Missing workspace tools: {missing}")
@@ -383,6 +404,17 @@ def build_contract() -> dict:
         character_profiles="{{character_profiles}}",
         recent_summaries="{{recent_summaries}}",
         requirements="{{requirements}}",
+        length_instruction="{{length_instruction}}",
+    )
+    chapter_revision_messages = compose_chapter_writer_messages(
+        pack=CHAPTER_QUALITY_PACK,
+        style_context="{{style_context}}",
+        outline_context="{{outline_context}}",
+        world_context="{{world_context}}",
+        character_profiles="{{character_profiles}}",
+        recent_summaries="{{recent_summaries}}",
+        requirements="{{requirements}}",
+        source_draft="{{source_draft}}",
     )
     baseline_fixture = _creation_baseline_fixture()
     mobile_creation_names = set(MOBILE_CREATION_AGENT_TOOL_NAMES)
@@ -395,9 +427,14 @@ def build_contract() -> dict:
     contract = {
         "cataloging": {
             "system_prompt": get_internal_cataloging_system_prompt(),
-            "tool_schemas": [tool_category_controller_schema(), *[
+            "tool_schemas": [
                 registry.get_spec(name).openai_schema() for name in sorted(CATALOGING_AGENT_TOOLS)
-            ]],
+            ],
+            "selection_tool_schema": cataloging_selection_tool_schema(),
+            "selection_candidate_schemas": {
+                name: candidate_record_schema_for_selection(name)
+                for name in CATALOGING_SELECTION_TYPES
+            },
             "candidate_schema": candidate_record_schema(),
             "apply_order": APPLY_ORDER,
             "character_state_fields": list(CHARACTER_STATE_FIELDS),
@@ -405,6 +442,7 @@ def build_contract() -> dict:
             "scene_state_fields": list(SECTION_SCENE_STATE_FIELDS),
             "max_steps": 48,
             "max_consecutive_errors": 3,
+            "max_unopened_tool_batches": MAX_NATIVE_TOOL_NAME_REJECTIONS,
             "guard_fields": MOBILE_CATALOGING_GUARD_FIELDS,
             "model_request": {
                 "stream_idle_timeout_seconds": CATALOGING_TIMEOUT_SECONDS,
@@ -424,7 +462,7 @@ def build_contract() -> dict:
         },
         "tool_names": sorted({*tool_names, TOOL_CATEGORY_CONTROLLER}),
         "tool_schemas": [
-            tool_category_controller_schema(),
+            tool_category_controller_schema(tool_names),
             *build_workspace_tool_schemas(tool_names),
         ],
         "tool_categories": tool_category_contract(),
@@ -437,6 +475,7 @@ def build_contract() -> dict:
         "chapter": {
             "quality_system_template": chapter_messages[0]["content"],
             "user_template": chapter_messages[1]["content"],
+            "revision_user_template": chapter_revision_messages[1]["content"],
         },
         "style_templates": {
             f"short={str(short).lower()};rhetoric={str(rhetoric).lower()};custom={str(custom).lower()}":
@@ -452,12 +491,22 @@ def build_contract() -> dict:
             "outline": OUTLINE_PROPOSAL_TOOL,
             "world": WORLDBUILDING_ENTRY_TOOL,
         },
+        "outline_generation": {
+            "default_batch_count": DEFAULT_OUTLINE_BATCH_COUNT,
+            "stream_idle_timeout_ms": OUTLINE_GENERATION_IDLE_TIMEOUT_SECONDS * 1000,
+            "local_extra_body": OUTLINE_GENERATION_LOCAL_EXTRA_BODY,
+            "local_model_ids": ["qwen3.8-27b-q3"],
+        },
         "creation_agent": {
             "reference_diagnostics": CREATION_REFERENCE_DETAILS,
             "entity_types_by_artifact": {key: sorted(value) for key, value in ENTITY_TYPES_BY_ARTIFACT.items()},
             "system_template": creation_agent_system_prompt("{{session_id}}"),
             "write_result_contract": {
                 "max_json_bytes": creation_write_receipt.max_json_bytes,
+                "max_json_bytes_by_tool": {
+                    name: registry.get(name).model_result_contract.max_json_bytes
+                    for name in sorted(set(CREATION_AGENT_WRITE_TOOL_NAMES) & mobile_creation_names)
+                },
                 "data_fields": list(creation_write_receipt.data_fields),
                 "object_projections": [
                     {"source_field": item.source_field, "fields": list(item.fields)}
@@ -465,6 +514,8 @@ def build_contract() -> dict:
                 ],
             },
             "reply_contract": {
+                "read_only_completion_instruction": CREATION_READ_ONLY_COMPLETION_INSTRUCTION,
+                "read_only_notice": CREATION_READ_ONLY_NOTICE,
                 "instruction": CREATION_REPLY_INSTRUCTION,
                 "repair_instruction": CREATION_REPLY_REPAIR_INSTRUCTION,
                 "failure_notice": CREATION_REPLY_FAILURE_NOTICE,
@@ -472,6 +523,10 @@ def build_contract() -> dict:
                 "tool_markup_pattern": CREATION_REPLY_TOOL_MARKUP_PATTERN,
             },
             "tool_names": sorted({*mobile_creation_names, TOOL_CATEGORY_CONTROLLER}),
+            "capacity_preflight_read_tool_names": sorted(
+                name for name in mobile_creation_names
+                if registry.get(name).capacity_preflight_safe
+            ),
             "excluded_pc_tool_names": sorted(MOBILE_CREATION_UNSUPPORTED_TOOL_NAMES),
             "revision_tool_names": sorted(
                 set(CREATION_AGENT_REVISION_TOOL_NAMES) & mobile_creation_names
@@ -482,7 +537,7 @@ def build_contract() -> dict:
             "max_successful_writes_per_turn": CREATION_TURN_MAX_SUCCESSFUL_WRITES,
             "max_failed_writes_per_turn": CREATION_TURN_MAX_FAILED_WRITES,
             "tool_schemas": [
-                tool_category_controller_schema(),
+                tool_category_controller_schema(mobile_creation_names),
                 *mobile_creation_schemas,
             ],
         },

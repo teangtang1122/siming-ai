@@ -101,26 +101,6 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
         })
     }
 
-    fun validateLocks(data: JsonObject, baseline: JsonObject, paths: JsonArray) {
-        fun read(root: JsonElement, path: String): JsonElement? {
-            var cursor: JsonElement? = root
-            val parts = if (path in setOf("", "/")) emptyList() else path.trimStart('/').split('/')
-            parts.forEach { part ->
-                val key = part.replace("~1", "/").replace("~0", "~")
-                cursor = when (val value = cursor) {
-                    is JsonObject -> value[key]
-                    is JsonArray -> key.toIntOrNull()?.let(value::getOrNull)
-                    else -> null
-                }
-            }
-            return cursor
-        }
-        paths.forEach { raw ->
-            val path = raw.jsonPrimitive.content
-            if (read(data, path) != read(baseline, path)) entities.reject("creation_opening_locked_changed", path)
-        }
-    }
-
     fun volumeIndex(session: JsonObject): JsonArray = JsonArray(volumeRows(session).map { row ->
         buildJsonObject {
             put("id", volumeId(session, row))
@@ -149,10 +129,14 @@ internal class PcCreationOpeningContract(private val entities: PcCreationEntityC
         return "${session.text("id")}:$type:$digest"
     }
 
-    fun validateSaved(session: JsonObject) {
+    fun validateSaved(
+        session: JsonObject,
+        volumes: JsonArray = volumeIndex(session),
+        characters: JsonArray = characterIndex(session),
+    ) {
         val state = stages(session)["opening_outline"] as? JsonObject ?: return
         if (state.text("status") == "confirmed") {
-            validate(state["data"] as? JsonObject ?: JsonObject(emptyMap()), volumeIndex(session), characters = characterIndex(session))
+            validate(state["data"] as? JsonObject ?: JsonObject(emptyMap()), volumes, characters = characters)
         }
     }
 

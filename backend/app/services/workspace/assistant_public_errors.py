@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.exceptions import LLMOutputLimitError
 from app.modules.operations.interfaces.failures import classify_failure
 from app.services.conversation_context import (
     ConversationContextError,
@@ -80,6 +81,11 @@ _MODEL_FAILURE_RESPONSES: dict[str, tuple[str, str, bool]] = {
         "模型接口拒绝了工具或思考协议，请检查模型设置中的接口协议或切换模型后重试。",
         False,
     ),
+    "output_limit": (
+        "model_output_limit",
+        "模型单次输出额度耗尽，未形成完整工具调用。请缩小本次任务或切换模型后重试。",
+        False,
+    ),
 }
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
 _SAFE_REASON = re.compile(r"^[a-z0-9_]{1,100}$")
@@ -145,15 +151,21 @@ def native_tool_name_failure_message(details: dict[str, Any]) -> str:
 
 
 def public_model_failure(error: Exception) -> PublicAssistantFailure:
-    failure_class = classify_failure(str(error)) or "unknown"
+    failure_class = (
+        "output_limit" if isinstance(error, LLMOutputLimitError)
+        else classify_failure(str(error)) or "unknown"
+    )
     code, message, retryable = _MODEL_FAILURE_RESPONSES.get(
         failure_class,
         ("model_request_failed", "模型调用失败，请检查模型状态后重试。", True),
     )
+    details = {"failure_class": failure_class, "retryable": retryable}
+    if isinstance(error, LLMOutputLimitError) and isinstance(error.max_tokens, int):
+        details["max_tokens"] = error.max_tokens
     return PublicAssistantFailure(
         code=code,
         message=message,
-        details={"failure_class": failure_class, "retryable": retryable},
+        details=details,
         failure_class=failure_class,
     )
 

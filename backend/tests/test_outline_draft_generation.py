@@ -13,6 +13,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database.models import Base, Character, OutlineDraft, OutlineNode, Project
 from app.services.context_orchestrator import ContextOrchestrator
+from app.services.task_context_delivery import deliver_next_context_page
+from app.services.task_context_selection import render_generation_context
 from app.services.workspace.outline_drafts import confirm_outline_draft
 from app.services.workspace.tools.external_writing import save_external_outline_draft
 from app.services.workspace.tools.outline_writer import outline_writer
@@ -47,12 +49,28 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
-    def planning_context(self, batch_count=1):
+    def deliver_external_context(self, manifest, token):
+        text = render_generation_context(manifest)
+        args = {"content_cursor": 0, "content_limit": 7000}
+        while True:
+            page, state = deliver_next_context_page(manifest, text, args, token)
+            if not page["has_more"]:
+                self.assertTrue(state["ready"])
+                self.db.commit()
+                return
+            args = {
+                "expected_context_sha256": page["sha256"],
+                "content_cursor": page["next_cursor"],
+                "content_limit": page["limit"],
+            }
+
+    def planning_context(self, batch_count=1, execution_route="internal_api"):
         orchestrator = ContextOrchestrator(self.db)
         manifest = orchestrator.prepare(
             project_id="p1",
             task_type="outline_planning",
             model="openai:test",
+            execution_route=execution_route,
             arguments={
                 "insert_after_id": "o1",
                 "batch_count": batch_count,
@@ -61,10 +79,12 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         )
         selected = orchestrator.submit_evidence(manifest, [])
         self.assertTrue(selected["selection_ready"])
+        if execution_route != "internal_api":
+            self.deliver_external_context(manifest, selected["context_selection_token"])
         return manifest, selected["context_selection_token"]
 
     @patch(
-        "app.services.workspace.tools.outline_writer.LLMGateway.chat_completion",
+        "app.services.workspace.tools.outline_writer._generate_outline",
         new_callable=AsyncMock,
     )
     @patch(
@@ -139,9 +159,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         self.assertIn("outline_position", rendered_prompt)
         self.assertNotIn("SECRET CHARACTER DATA", rendered_prompt)
         self.assertEqual(call.kwargs["max_tokens"], manifest.output_reserve_tokens)
-        nodes_schema = call.kwargs["tools"][0]["function"]["parameters"]["properties"]["nodes"]
-        self.assertEqual(nodes_schema["minItems"], 1)
-        self.assertEqual(nodes_schema["maxItems"], 1)
+        self.assertEqual(call.kwargs["batch_count"], 1)
         self.assertIn("场景细节", rendered_prompt)
         self.assertNotIn("必须额外输出", rendered_prompt)
 
@@ -162,7 +180,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         completion.assert_not_awaited()
 
     @patch(
-        "app.services.workspace.tools.outline_writer.LLMGateway.chat_completion",
+        "app.services.workspace.tools.outline_writer._generate_outline",
         new_callable=AsyncMock,
     )
     def test_internal_writer_rejects_unobserved_selection_token(
@@ -188,7 +206,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         completion.assert_not_awaited()
 
     @patch(
-        "app.services.workspace.tools.outline_writer.LLMGateway.chat_completion",
+        "app.services.workspace.tools.outline_writer._generate_outline",
         new_callable=AsyncMock,
     )
     def test_internal_writer_rejects_unsupported_model_without_consuming_selection(
@@ -224,7 +242,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         "app.services.workspace.tools.outline_writer.store_outline_draft",
     )
     @patch(
-        "app.services.workspace.tools.outline_writer.LLMGateway.chat_completion",
+        "app.services.workspace.tools.outline_writer._generate_outline",
         new_callable=AsyncMock,
     )
     @patch(
@@ -279,7 +297,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         store_draft.assert_not_called()
 
     def test_external_agent_saves_the_same_draft_type_and_stops(self) -> None:
-        manifest, token = self.planning_context()
+        manifest, token = self.planning_context(execution_route="direct_mcp")
 
         result = asyncio.run(
             save_external_outline_draft(
@@ -325,6 +343,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
             project_id="p1",
             task_type="outline_planning",
             model="openai:test",
+            execution_route="direct_mcp",
             arguments={
                 "parent_id": volume.id,
                 "insert_after_id": chapter.id,
@@ -333,6 +352,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
             },
         )
         selected = orchestrator.submit_evidence(manifest, [])
+        self.deliver_external_context(manifest, selected["context_selection_token"])
 
         result = asyncio.run(
             save_external_outline_draft(
@@ -363,7 +383,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         self.assertNotIn("parent_title", draft.nodes_json[0])
 
     def test_confirm_links_existing_characters_and_preserves_future_names_without_creating_them(self) -> None:
-        manifest, token = self.planning_context()
+        manifest, token = self.planning_context(execution_route="direct_mcp")
         saved = asyncio.run(
             save_external_outline_draft(
                 self.db,
@@ -433,7 +453,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         )
 
     def test_external_invalid_batch_can_be_corrected_without_consuming_context(self):
-        manifest, token = self.planning_context(batch_count=6)
+        manifest, token = self.planning_context(batch_count=6, execution_route="direct_mcp")
         nodes = [
             {"title": f"第{index}章 新线索", "node_type": "chapter", "summary": f"未来规划{index}",
              "actual_summary": "尚未发生，不能写入事实", "source_chapter_id": "unwritten",
@@ -467,7 +487,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
             self.assertIsNone(node.cataloging_status)
 
     def test_external_agent_can_save_eleven_node_request_without_contract_drift(self):
-        manifest, token = self.planning_context(batch_count=11)
+        manifest, token = self.planning_context(batch_count=11, execution_route="direct_mcp")
         position = next(
             item for item in manifest.items if item.category == "outline_position"
         )
@@ -508,7 +528,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         )
 
     @patch("app.services.workspace.tools.outline_writer.LLMGateway.local_cli_extra_body", return_value={})
-    @patch("app.services.workspace.tools.outline_writer.LLMGateway.chat_completion", new_callable=AsyncMock)
+    @patch("app.services.workspace.tools.outline_writer._generate_outline", new_callable=AsyncMock)
     def test_internal_writer_does_not_accept_a_shortened_batch(self, completion, _extra):
         manifest, token = self.planning_context(batch_count=6)
         completion.return_value = {"content": "", "tool_calls": [{"id": "short-outline", "type": "function",
@@ -526,9 +546,7 @@ class OutlineDraftGenerationTestCase(unittest.TestCase):
         self.assertEqual(projected["data"]["expected_count"], 6)
         self.assertEqual(projected["data"]["actual_count"], 1)
         self.assertIn("数量", projected["detail"])
-        nodes_schema = completion.await_args.kwargs["tools"][0]["function"]["parameters"]["properties"]["nodes"]
-        self.assertEqual(nodes_schema["minItems"], 6)
-        self.assertEqual(nodes_schema["maxItems"], 6)
+        self.assertEqual(completion.await_args.kwargs["batch_count"], 6)
         self.assertEqual(self.db.query(OutlineDraft).count(), 0)
 
 

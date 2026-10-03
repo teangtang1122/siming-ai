@@ -5,7 +5,7 @@ import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons'
 import { CONTEXT_INSPECTOR_OPEN, openContextInspector } from '../../shared/contextInspector'
 import type { ContextInspectorRequest } from '../../shared/contextInspector'
 import { clearTraces, exportTrace, listTraces, setTraceMode, traceDetail, traceEvents, traceHealth, tracePayload } from './api'
-import { buildSpans, layerNames, missingNames, statusNames } from './types'
+import { buildSpans, formatTraceDuration, layerNames, missingNames, statusNames } from './types'
 import type { ContextTrace, TraceEvent, TraceScope } from './types'
 import './contextInspector.css'
 
@@ -105,7 +105,9 @@ function TraceDetail({ trace }: { trace: ContextTrace }) {
     refetchInterval: detail.data.finished ? false : 2000,
   })
   const records = useMemo(() => events.data?.pages.flat() ?? [], [events.data])
-  const spans = useMemo(() => buildSpans(records), [records])
+  const refetchEvents = events.refetch
+  useEffect(() => { if (detail.data.finished != null) void refetchEvents() }, [detail.data.finished, refetchEvents])
+  const spans = useMemo(() => buildSpans(records, detail.data, events.hasNextPage === false && !events.isError), [records, detail.data, events.hasNextPage, events.isError])
   const activeId = spanId ?? spans.find(span => span.status === 'error')?.id ?? spans[0]?.id
   const contents = records.filter(event => event.event_type === 'payload' && (event.data.span_id ?? event.span_id) === activeId)
   const download = useMutation({ mutationFn: () => exportTrace(trace.id) })
@@ -116,7 +118,7 @@ function TraceDetail({ trace }: { trace: ContextTrace }) {
     <div className="context-inspector-steps" aria-label="执行步骤">
       {spans.map(span => <button type="button" key={span.id} onClick={() => { setSpanId(span.id); setPayload(null) }} className={activeId === span.id ? 'trace-selected' : ''}>
         <span>{span.parent_span_id ? '↳ ' : ''}{({ provider_request: 'API 请求', tool: '工具调用', executor: '执行器', model: '模型步骤', cli: 'CLI 进程', checkpoint: '上下文压缩' } as Record<string, string>)[span.kind ?? ''] ?? '任务'} <code>{span.label}</code></span>
-        <span>{span.status_code && `HTTP ${span.status_code} · `}{statusNames[span.status ?? ''] ?? span.status} · {span.duration_ms == null ? '耗时未知' : `${Math.round(span.duration_ms)} ms`}</span>
+        <span>{span.status_code && `HTTP ${span.status_code} · `}{statusNames[span.status ?? ''] ?? span.status} · {formatTraceDuration(span.duration_ms)}</span>
       </button>)}
     </div>
     {spans.find(span => span.id === activeId)?.usage && <Text type="secondary">提供商实报用量：{JSON.stringify(spans.find(span => span.id === activeId)?.usage)}</Text>}

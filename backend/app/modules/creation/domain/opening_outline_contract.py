@@ -166,24 +166,3 @@ def outline_metadata(row: dict[str, Any]) -> dict[str, Any]:
         if field in row and field not in metadata:
             metadata[field] = deepcopy(row[field])
     return metadata
-
-
-def validate_opening_locks(
-    data: dict[str, Any], baseline: dict[str, Any], paths: list[str]
-) -> None:
-    """A whole-stage regeneration cannot overwrite the author's locked fields."""
-    missing = object()
-
-    def read(document: Any, path: str) -> Any:
-        parts = [] if path in {"", "/"} else path.lstrip("/").split("/")
-        try:
-            for part in parts:
-                key = part.replace("~1", "/").replace("~0", "~")
-                document = document[int(key)] if isinstance(document, list) else document[key]
-        except (KeyError, ValueError, IndexError, TypeError):
-            return missing
-        return document
-
-    for path in paths:
-        if read(data, path) != read(baseline, path):
-            _reject("creation_opening_locked_changed", path)

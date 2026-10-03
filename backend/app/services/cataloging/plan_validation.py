@@ -15,6 +15,7 @@ def inspect_complete_plan(db: Session, run: CatalogingChapterRun,
     """One validation report for submission, recovery and transactional application."""
     from ...modules.continuity.domain.candidate_contract import CANDIDATE_FIELDS, validate_candidate_fields
     from .candidate_validation import inspect_candidate_coverage, candidate_coverage_error_message
+    from .character_targets import validate_character_state_target
     from .scene_contract import validate_scene_candidate
 
     if rows is None:
@@ -45,6 +46,13 @@ def inspect_complete_plan(db: Session, run: CatalogingChapterRun,
                 raise ValueError(f"不支持的候选类型：{row.item_type}")
             validate_candidate_fields(row.item_type, payload)
             validate_scene_candidate(db, run, normalized)
+            if row.status != "applied":
+                validate_character_state_target(
+                    db, run.project_id, row.item_type, payload,
+                    chapter_content=(str(run.chapter.content or "")
+                                     if run.chapter is not None else ""),
+                    chapter_run_id=run.id,
+                )
             if references_ready or row.item_type == "chapter_summary":
                 validate_plan_references(db, run.project_id, run, normalized)
         except ValueError as exc:

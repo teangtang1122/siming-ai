@@ -27,7 +27,7 @@ internal interface ContextTraceDao {
     @Query("UPDATE context_traces SET finished=:finished,status=:status,captureStatus=CASE WHEN captureStatus='partial' THEN 'partial' ELSE :capture END WHERE id=:id")
     fun finish(id: String, finished: Double, status: String, capture: String)
     @Query("UPDATE context_traces SET captureStatus='partial' WHERE id=:id") fun partial(id: String)
-    @Query("UPDATE context_traces SET captureStatus='interrupted',finished=:now WHERE finished IS NULL") fun interrupt(now: Double)
+    @Query("UPDATE context_traces SET captureStatus='interrupted',status='interrupted',finished=coalesce(finished,:now) WHERE finished IS NULL OR (captureStatus='interrupted' AND status='running')") fun interrupt(now: Double)
     @Query("SELECT * FROM context_traces WHERE (:kind IS NULL OR scopeKind=:kind) AND (:scopeId IS NULL OR scopeId=:scopeId) AND (:correlationId IS NULL OR EXISTS (SELECT 1 FROM context_trace_correlations c WHERE c.traceId=context_traces.id AND c.value=:correlationId)) AND (:before IS NULL OR cursor<:before) ORDER BY cursor DESC LIMIT 30")
     fun list(kind: String?, scopeId: String?, correlationId: String?, before: Long?): List<TraceRow>
     @Query("SELECT * FROM context_traces WHERE id=:id") fun trace(id: String): TraceRow?

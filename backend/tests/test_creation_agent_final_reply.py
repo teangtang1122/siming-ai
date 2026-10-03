@@ -10,10 +10,15 @@ import pytest
 
 from app.ai.deepseek_adapter import DeepSeekAdapter
 from app.core.exceptions import LLMError
+from app.database.models import NovelCreationSession
 from app.services.agent_tool_stream import collect_tool_turn
 from app.services.creation_agent_reply import creation_receipt_reply, creation_reply_error
 from app.services.novel_creation_agent import run_creation_agent
-from app.services.novel_creation_workspace import save_stage, serialize_creation_artifact
+from app.services.novel_creation_workspace import (
+    initialize_session_draft,
+    save_stage,
+    serialize_creation_artifact,
+)
 from app.services.workspace.executor import execute_workspace_action
 from app.services.workspace.registry import registry
 from app.services.workspace.tools import novel_creation_v2
@@ -36,15 +41,18 @@ def _call(name: str, arguments: dict) -> dict:
     }]}
 
 
-def _run_after_write(*summaries: dict | BaseException) -> tuple[dict, list[dict], MagicMock]:
+def _run_after_write(
+    *summaries: dict | BaseException,
+    write_available_tokens: int | None = None,
+) -> tuple[dict, list[dict], MagicMock]:
     db = _db()
     session = _ready_session(db)
     baseline = int(session.revision)
     contexts: list[dict] = []
     responses = iter([
-        _call("set_tool_categories", {"enabled_categories": ["creation_data"]}),
+        _call("set_tool_categories", {"enabled_categories": ["creation_session"]}),
         _call("get_creation_snapshot", {}),
-        _call("patch_creation_session", {"changes": {"genre": "玄幻"}}),
+        _call("patch_creation_session", {"changes": {"form": {"genre": "玄幻"}}}),
         *summaries,
     ])
 
@@ -56,6 +64,14 @@ def _run_after_write(*summaries: dict | BaseException) -> tuple[dict, list[dict]
 
     completion = _stream_completion(response)
     executor = AsyncMock(wraps=execute_workspace_action)
+    def bound_budget():
+        available = (
+            write_available_tokens
+            if write_available_tokens is not None and completion.call_count == 3
+            else 250_000
+        )
+        return request_budget(available)
+
     try:
         with (
             patch("app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools", new=completion),
@@ -63,7 +79,7 @@ def _run_after_write(*summaries: dict | BaseException) -> tuple[dict, list[dict]
         ):
             result = asyncio.run(run_creation_agent(
                 db, session=session, message="把题材设为玄幻", model="openai:test",
-                provider_request_budget=request_budget,
+                provider_request_budget=bound_budget,
                 prepare_model_messages=_test_context_preparer("把题材设为玄幻", captured=contexts),
             ))
         db.refresh(session)
@@ -90,6 +106,53 @@ def test_successful_write_enters_explicit_summary_without_replanning():
     assert result["_turn_trace"]["prompt_metrics"][-1]["phase"] == "summary"
 
 
+def test_failed_pending_concepts_patch_cannot_be_reported_as_saved():
+    db = _db()
+    session = NovelCreationSession(mode="internal_llm", status="drafting", user_brief="属性系统玄幻")
+    db.add(session)
+    initialize_session_draft(session)
+    db.commit()
+    revision = session.revision
+    completion = _stream_completion([
+        _call("set_tool_categories", {"enabled_categories": ["creation_artifacts"]}),
+        _call("get_creation_artifact", {"artifact": "concepts"}),
+        _call("patch_creation_artifact", {
+            "artifact": "concepts", "expected_revision": revision,
+            "changes": [{"path": "/golden_finger", "action": "set", "value": "力量、敏捷、体质"}],
+        }),
+        {"content": "已记录属性面板。", "tool_calls": []},
+    ])
+    try:
+        with patch(
+            "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
+            new=completion,
+        ):
+            result = asyncio.run(run_creation_agent(
+                db, session=session, message="力量、敏捷、体质等基础属性", model="openai:test",
+                provider_request_budget=lambda: request_budget(250_000),
+                prepare_model_messages=_test_context_preparer("力量、敏捷、体质等基础属性"),
+            ))
+        assert result["write_count"] == 0
+        assert session.revision == revision
+        assert result["reply"].startswith("本轮没有保存任何修改")
+        assert "generate_creation_artifact" in result["reply"]
+        assert "已记录" not in result["reply"]
+    finally:
+        db.close()
+
+
+def test_session_genre_write_commits_with_observed_64k_remaining_budget():
+    result, _, _ = _run_after_write(
+        {"content": REPLY}, write_available_tokens=7_034,
+    )
+    receipt = next(
+        item for item in result["_turn_trace"]["execution_receipts"]
+        if item["tool"] == "patch_creation_session"
+    )
+    assert receipt["status"] == "ok"
+    assert receipt["write_committed"] is True
+
+
 def test_large_entity_patch_delivers_success_to_summary_without_replaying_write():
     db = _db()
     session = _ready_session(db)
@@ -103,7 +166,7 @@ def test_large_entity_patch_delivers_success_to_summary_without_replaying_write(
     limit = registry.get("patch_creation_entity").model_result_contract.max_json_bytes
     reply = "角色姓名已更新为林遥，原有背景已保留。"
     steps = iter([
-        _call("set_tool_categories", {"enabled_categories": ["creation_data"]}),
+        _call("set_tool_categories", {"enabled_categories": ["creation_entities"]}),
         _call("get_creation_entity", {"entity_id": entity_id}),
         _call("patch_creation_entity", {
             "entity_id": entity_id,
@@ -162,7 +225,7 @@ def test_generated_outline_delivers_saved_facts_to_summary_once(monkeypatch):
         baseline = session.revision
         reply = "全书主线与卷纲已生成并保存，等待审阅确认。"
         steps = iter([
-            _call("set_tool_categories", {"enabled_categories": ["creation_data", "creation_flow"]}),
+            _call("set_tool_categories", {"enabled_categories": ["creation_generation","creation_session"]}),
             _call("get_creation_snapshot", {}),
             _call("generate_creation_artifact", {"artifact": "macro_outline", "entity_type": "volume"}),
         ])
@@ -208,7 +271,7 @@ def test_generated_outline_delivers_saved_facts_to_summary_once(monkeypatch):
     {"content": DSML.replace("<", "&lt;")},
     {"content": "<｜｜DSML  "},
     {"content": ""},
-    _call("patch_creation_session", {"changes": {"genre": "科幻"}}),
+    _call("patch_creation_session", {"changes": {"form": {"genre": "科幻"}}}),
 ])
 def test_invalid_summary_is_repaired_without_replaying_any_tool(bad_summary):
     result, contexts, completion = _run_after_write(bad_summary, {"content": REPLY})
@@ -258,7 +321,7 @@ def test_created_project_closes_receipts_without_requesting_another_model_step()
     db = _db()
     session = _ready_session(db)
     completion = _stream_completion([
-        _call("set_tool_categories", {"enabled_categories": ["creation_data", "creation_flow"]}),
+        _call("set_tool_categories", {"enabled_categories": ["creation_completion","creation_session"]}),
         _call("get_creation_snapshot", {}),
         _call("finalize_creation_session", {}),
     ])
@@ -302,3 +365,45 @@ def test_deepseek_api_tool_free_stream_preserves_content_for_validation_not_exec
     assert sent["model"] == "deepseek-flash"
     assert "tools" not in sent
     assert "tool_choice" not in sent
+
+
+@pytest.mark.parametrize("markup", [
+    "<tool_call><function=patch_creation_artifact></function></tool_call>",
+    "&lt;tool_call&gt;&lt;function=patch_creation_artifact&gt;",
+    '<｜｜DSML｜｜ invoke name="patch_creation_artifact">',
+])
+def test_reply_contract_rejects_tool_protocol_text(markup):
+    assert creation_reply_error(markup, []) == "tool_protocol_text"
+
+
+def test_creation_agent_repairs_tool_markup_instead_of_showing_it_to_author():
+    db = _db()
+    session = _ready_session(db)
+    completion = _stream_completion([
+        _call("set_tool_categories", {"enabled_categories": ["creation_session"]}),
+        _call("get_creation_snapshot", {}),
+        {"content": "<tool_call><function=patch_creation_artifact></function></tool_call>",
+         "tool_calls": []},
+        {"content": "已读取立项资料，本轮没有保存修改。", "tool_calls": []},
+    ])
+
+    with patch(
+        "app.services.novel_creation_agent.LLMGateway.stream_chat_completion_with_tools",
+        new=completion,
+    ):
+        result = asyncio.run(run_creation_agent(
+            db,
+            session=session,
+            message="查看立项状态",
+            model="openai:test",
+            provider_request_budget=request_budget,
+            prepare_model_messages=_test_context_preparer("查看立项状态"),
+        ))
+
+    assert result["reply"] == (
+        "本轮只读取了立项资料，尚未生成或保存新的阶段资料。\n\n"
+        "已读取立项资料，本轮没有保存修改。"
+    )
+    assert result["_turn_trace"]["outcome"]["reply_diagnostics"] == [
+        {"reason": "tool_protocol_text", "attempt": 1},
+    ]

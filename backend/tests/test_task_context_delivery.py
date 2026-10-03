@@ -7,6 +7,7 @@ import pytest
 
 from app.services.task_context_delivery import (
     begin_context_delivery,
+    begin_internal_generator_context,
     build_context_page,
     context_delivery_ready,
     context_delivery_state,
@@ -168,3 +169,17 @@ def test_selected_context_token_is_gated_until_every_page_is_delivered_in_order(
             {**last_args, "content_cursor": last_args["content_cursor"] - 1},
             token,
         )
+
+
+def test_internal_generator_token_uses_server_owned_route_without_page_delivery():
+    manifest = SimpleNamespace(query_json={}, execution_route="internal_api")
+    state = begin_internal_generator_context(manifest, "selected-token")
+    assert state["status"] == "internal_generator"
+    assert context_delivery_ready(manifest, "selected-token") is True
+    assert context_delivery_ready(manifest, "another-token") is False
+    assert "selected-token" not in json.dumps(manifest.query_json)
+
+    manifest.execution_route = "external_mcp"
+    assert context_delivery_ready(manifest, "selected-token") is False
+    with pytest.raises(ValueError):
+        begin_internal_generator_context(manifest, "selected-token")

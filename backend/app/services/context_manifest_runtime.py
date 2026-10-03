@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..database.models import ContextManifest, ContextManifestItem
 from .task_context_selection import (
     MODEL_SELECTED_TASK_TYPES,
+    TASK_CONTEXT_SEARCH_EXCERPT_CHARS,
     TASK_CONTEXT_SOFT_TARGET_TOKENS,
     generation_items,
     selection_state,
@@ -200,7 +201,7 @@ def persist_search_candidates(
                 "chunk_id": item.chunk_id,
                 "source_hash": item.source_hash,
                 "title": item.title,
-                "excerpt": item.content_excerpt[:600],
+                "excerpt": item.content_excerpt[:TASK_CONTEXT_SEARCH_EXCERPT_CHARS],
                 "estimated_chunk_tokens": item.estimated_tokens,
                 "scores": {
                     "lexical": item.lexical_score,
@@ -216,3 +217,12 @@ def persist_search_candidates(
 
 
 __all__ = ["manifest_payload", "persist_search_candidates", "validate_manifest"]
+
+
+def clean_context_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."

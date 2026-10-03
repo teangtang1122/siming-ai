@@ -191,11 +191,11 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
             Base.metadata.drop_all(engine)
             engine.dispose()
 
-    def test_structured_han_minimum_rejects_short_draft_without_consuming_token(self):
+    def test_length_reference_keeps_short_draft_and_ends_the_turn(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
-        from app.database.models import Base, ChapterDraft, ContextManifest, OutlineNode, Project
+        from app.database.models import Base, Chapter, ChapterDraft, ContextManifest, OutlineNode, Project
         from app.services.workspace.tools.context_governance import submit_context_evidence
         from app.services.workspace.tools.external_writing import (
             prepare_external_writing_context,
@@ -206,13 +206,13 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
         Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()
         try:
-            project = Project(id="p-min", title="Length guard", writing_style="natural")
+            project = Project(id="p-min", title="Length reference", writing_style="natural")
             outline = OutlineNode(
                 id="o-min",
                 project_id=project.id,
                 title="长度边界",
                 node_type="chapter",
-                summary="写一段达到明确长度下限的正文。",
+                summary="潮痕出现。",
             )
             db.add_all([project, outline])
             db.commit()
@@ -232,7 +232,8 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
                 prepared["data"]["writing_constraints"]["minimum_han_characters"],
                 5,
             )
-            self.assertIn("at least 5 Han characters", prepared["data"]["context_page"]["text"])
+            self.assertIn("length reference: 5 Han characters", prepared["data"]["context_page"]["text"])
+            self.assertFalse(prepared["data"]["writing_constraints"]["enforced_before_draft_storage"])
             manifest_id = prepared["data"]["context_manifest_id"]
             selected = asyncio.run(submit_context_evidence(
                 db,
@@ -251,29 +252,17 @@ class ExternalWritingNoApiE2ETest(unittest.TestCase):
                     "context_selection_token": token,
                 },
             ))
-            self.assertEqual(short["status"], "needs_confirmation")
-            self.assertEqual(short["data"]["actual_han_characters"], 4)
-            self.assertFalse(short["data"]["context_selection_token_consumed"])
-            self.assertEqual(db.query(ChapterDraft).count(), 0)
-            self.assertIsNone(db.get(ContextManifest, manifest_id).consumed_at)
-
-            with patch(
-                "app.services.workspace.generated_drafts.store_chapter_draft",
-                return_value="draft-min",
-            ):
-                accepted = asyncio.run(save_external_chapter_draft(
-                    db,
-                    project.id,
-                    {
-                        "content": "潮痕三字够",
-                        "outline_node_id": outline.id,
-                        "context_manifest_id": manifest_id,
-                        "context_selection_token": token,
-                    },
-                ))
-            self.assertEqual(accepted["status"], "ok")
-            self.assertEqual(accepted["data"]["draft_id"], "draft-min")
-            self.assertEqual(accepted["data"]["han_character_count"], 5)
+            self.assertEqual(short["status"], "ok")
+            self.assertEqual(short["data"]["han_character_count"], 4)
+            self.assertEqual(short["data"]["minimum_han_characters"], 5)
+            self.assertFalse(short["data"]["length_goal_met"])
+            self.assertIn("完整草稿已保留", short["data"]["length_notice"])
+            self.assertTrue(short["turn_terminal"])
+            draft = db.query(ChapterDraft).one()
+            self.assertEqual(draft.id, short["data"]["draft_id"])
+            self.assertEqual(draft.content, "潮痕三字")
+            self.assertEqual(draft.status, "pending")
+            self.assertEqual(db.query(Chapter).count(), 0)
             self.assertIsNotNone(db.get(ContextManifest, manifest_id).consumed_at)
         finally:
             db.close()

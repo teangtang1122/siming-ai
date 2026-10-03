@@ -1,7 +1,7 @@
 """Schemas for the local model center and LoRA training beta."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +28,37 @@ class RuntimeStartRequest(LocalModelBase):
     context_length: Optional[int] = Field(None, ge=1)
     task_type: TaskModelType = "assistant"
     project_id: Optional[str] = Field(None, max_length=36)
+
+
+class RuntimeUsageRequest(LocalModelBase):
+    enabled: bool
+
+
+class RuntimeLaunchSettings(LocalModelBase):
+    """Validated llama-server options exposed by the desktop model center."""
+
+    context_length: int = Field(..., ge=1)
+    gpu_layers: int = Field(99, ge=0, le=999)
+    threads: Optional[int] = Field(None, ge=1, le=256)
+    flash_attention: Literal["auto", "on", "off"] = "auto"
+    fit: Literal["auto", "on", "off"] = "auto"
+    kv_cache_type: Literal["f16", "q8_0", "q4_0"] = "f16"
+    mtp_draft_tokens: int = Field(0, ge=0, le=4)
+    cache_ram_mb: int = Field(0, ge=0, le=65536)
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = None
+    temperature: Optional[float] = Field(None, ge=0, le=2)
+    top_p: Optional[float] = Field(None, ge=0, le=1)
+    top_k: Optional[int] = Field(None, ge=0, le=200)
+    min_p: Optional[float] = Field(None, ge=0, le=1)
+    repeat_penalty: Optional[float] = Field(None, ge=0.5, le=2)
+
+
+class CatalogModelFileRequest(LocalModelBase):
+    file_path: str = Field(..., min_length=1, max_length=4000)
+
+
+class RuntimeExecutableRequest(LocalModelBase):
+    file_path: str = Field(..., min_length=1, max_length=4000)
 
 
 class BenchmarkRequest(LocalModelBase):

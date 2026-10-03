@@ -120,6 +120,12 @@ internal fun CreationConversationWorkspace(
                 Icon(if (showDetails) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown, "立项详情与管理")
             }
         }
+        Text(
+            "立项助手仅筹备作品资料，不生成章节正文。创建正式作品后，请进入项目助手写作。",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(stages, key = { it.first }) { (stage, label) ->
                 val status = when (session.stageState(stage).string("status")) {

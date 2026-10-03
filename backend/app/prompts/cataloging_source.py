@@ -54,7 +54,7 @@ def get_cataloging_candidate_rules() -> str:
 临时称呼保留在 source_labels 或叙述中。身份未确认时可只保留 summary_text/scenes，不必生成空白角色卡。是否为同一人物必须由你结合真实资料判断，程序不会根据匿名标签或别名替你判断。
 coverage_manifest 五字段齐全：scene_count、characters、worldbuilding、relationships、character_profiles。所有持久人物/设定引用使用绑定的正式名称，大纲使用 character_ids。relationships 对应 character_relationship 候选，只列正文证实的稳定关系变化；同一有向端点只选一个 relationship_type。
 每个建档角色提交本章有依据的状态，只有新角色或稳定档案发生变化才提交 profile；普通出场不要求改写完整背景。没有变化时省略字段。
-角色已有非空 background/items_or_assets 的更新需附逐字 background_before/items_or_assets_before；新值保留原文并追加。appearance/age 的变化附 *_before 和逐字正文 *_evidence。不得把通话另一端或同场他人的地点、物件归给当前人物。
+角色已有非空 background/items_or_assets 的更新需附逐字 background_before/items_or_assets_before；新值保留原文并追加。已有角色本章再次出现或被静态描写，不等于 appearance/age 发生变化；此时省略这两个字段。只有正文明确写出相对旧档的新变化，才填写 appearance/age，并附 *_before 和逐字正文 *_evidence。不得把通话另一端或同场他人的地点、物件归给当前人物。
 只用字段契约中的原生类型和枚举。例如 profile.reveal_chapter 为整数或 null；items_or_assets 为字符串；importance 为 major|normal|minor；life_status 为 alive|dead|unknown。自然语言身份写 background，role_type 直接填枚举。
 世界观已有条目用真实 ID 更新；新条目先比较相关 active 档案，并在 worldbuilding_bindings.reason 说明为何需要新建。旧资料不得凭猜测被覆盖。
 全章仅一条聚合 chapter_link；characters 中每个人选择一个 appearance_type(出场|提及|回忆)，worldbuilding_titles 使用绑定的正式标题。
@@ -65,7 +65,9 @@ coverage_manifest 五字段齐全：scene_count、characters、worldbuilding、r
 def get_incremental_cataloging_repair_rules() -> str:
     return """【提交与修正】
 使用 save_external_cataloging_candidates 的原生 candidates 数组，type 与字段在同一层；不输出 JSONL，不序列化嵌套数组。
-先提交摘要计划，再提交依赖它的候选；可同一调用按此顺序提交。中间批次 finalize=false，完整时 finalize=true；已保存全部候选时可 candidates=[]、finalize=true。
+先保存摘要，再依据回执提交依赖它的候选；只使用本步实际提供的工具和字段格式。
+若提供 select_cataloging_candidate_types，每次只选一类；该格式持续开放，同类可分批提交，换类时重新选择。不能把不同类型混入同一批。
+中间批次 finalize=false；计划完整后 candidates=[]、finalize=true。只有完整计划通过校验才会应用，工具可见不代表计划已完整。
 查看返回 candidate_errors 与 missing_required_items；只修正失败字段/对象，保留已接受候选，不重发整章上下文。
 既有候选也可能不符合当前契约。candidate_errors 中的 candidate_id 指向待修正对象；结构错误都是阻塞项，不能当作旧版警告忽略。requires_author_action=true 的候选由作者处理，模型不能覆盖或撤回。
 只有工具返回 candidate_set_complete=true 才算完整提交；status=ok 或 candidates_saved>0 只说明某一步成功，不能据此宣称整章完成。finalize 失败后按同一回执继续修正，不能用总结文字代替提交。
@@ -90,7 +92,7 @@ def get_external_no_api_rules() -> str:
 def get_internal_cataloging_system_prompt() -> str:
     return "\n\n".join([
         "你是司命的作品建档 Agent。在同一决策回合中阅读正文与真实档案，提交一致的章节变更计划。",
-        "每个新回合先调用 set_tool_categories 选择所需类别；切换后当前步骤立即结束。建档工具属于 cataloging。",
+        "系统已提供当前建档任务所需工具，直接读取正文和档案，再提交候选；无需选择工具类别。",
         get_language_rules(), get_outline_granularity_rules(), get_cataloging_candidate_rules(),
         get_incremental_cataloging_repair_rules(),
     ])

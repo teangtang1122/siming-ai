@@ -1,6 +1,6 @@
 """Tests for novel creation tools exposure through MCP."""
-import sys
 import os
+import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -82,10 +82,10 @@ class MCPNovelCreationToolsTest(unittest.TestCase):
             operation = patch_tool.input_schema["$defs"][operation["$ref"].rsplit("/", 1)[-1]]
         properties = operation["properties"]
         self.assertEqual(
-            properties["action"]["anyOf"][0]["enum"],
+            properties["action"]["enum"],
             ["set", "replace", "append", "remove", "resize"],
         )
-        self.assertEqual(properties["op"]["anyOf"][0]["enum"], ["add", "replace", "remove"])
+        self.assertEqual(properties["op"]["enum"], ["add", "replace", "remove"])
         self.assertIn("JSON Pointer", properties["path"]["description"])
 
     def test_confirmation_schema_cannot_edit_and_confirm_in_one_call(self):

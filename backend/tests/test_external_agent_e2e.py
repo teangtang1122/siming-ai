@@ -100,7 +100,7 @@ class WriteRequestE2ETest(unittest.TestCase):
         """Test that all expected write types are supported."""
         from app.services.external_agent.write_requests import WRITE_TYPES
         expected = {
-            "create_outline", "update_outline",
+            "update_outline",
             "create_character", "update_character",
             "create_worldbuilding", "update_worldbuilding",
         }

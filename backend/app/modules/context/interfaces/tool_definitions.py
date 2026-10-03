@@ -74,7 +74,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="prepare_task_context",
-        description="建立或按原ID读取任务上下文。首次建立时直接提交当前任务的结构化目标：writing 必须提交 outline_node_id；cataloging 必须提交 chapter_id；review/rewrite 必须提交 chapter_id 或 text；outline_planning 直接提交 parent_id/insert_after_id。未选择证据时仅含目标/位置、文风、作者要求等硬锚点；选定后包含全部精确来源。正文只在 context_page.text 中分页返回；按 next_arguments 读取，直到 has_more=false，才能生成。页面有完整文档哈希，不丢弃后续内容。",
+        description="建立或读取任务上下文。首次传真实目标ID：写章用 outline_node_id，建档/评审用 chapter_id，规划用 parent_id/insert_after_id。写章和规划先返回精简锚点；提交证据后，内置生成器取得令牌并自行读取完整资料；外部 Agent 按 next_arguments 读完所有 context_page 后取得令牌。",
         input_schema={
             "task_type": {
                 "type": "string",
@@ -91,10 +91,6 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
             "model": {
                 "type": "string",
                 "description": "Provider:model used for budgeting by unbound external agents; managed CLI runs use their pinned executing model",
-            },
-            "execution_route": {
-                "type": "string",
-                "description": "external_mcp|local_cli_agent|internal_api",
             },
             "outline_node_id": {
                 "type": "string",
@@ -120,7 +116,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 100000,
-                "description": "仅当作者明确要求中文正文硬下限时，由模型结构化填写；保存边界按汉字数强制校验，不从 requirements 猜测",
+                "description": "仅当作者明确提出正文篇幅时填写，未提出则省略，不得自行设定或逐轮抬高。作为生成参考与草稿字数提示，未达到时仍保留完整未保存草稿，不自动重写",
             },
             "text": {"type": "string", "description": "review/rewrite 没有 chapter_id 时的目标文本"},
             "title": {"type": "string", "description": "内联目标文本的标题"},
@@ -143,7 +139,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         name="search_task_context",
         description="按模型自行提出的查询检索当前作品，返回带真实ID、哈希和短摘要的候选来源；结果只供复核，不会自动进入正文上下文。可多次从不同角度查询。",
         input_schema={
-            "context_manifest_id": {"type": "string", "description": "Baseline manifest ID"},
+            "context_manifest_id": {"type": "string", "description": "Copy the context_manifest_id returned by prepare_task_context; required for workspace Agent searches"},
             "run_id": {"type": "string", "description": "Agent run bound to a baseline manifest"},
             "query": {
                 "type": "string",
@@ -181,9 +177,9 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="submit_context_evidence",
-        description="提交模型复核后选中的 search_task_context 候选，校验归属与哈希并完整读取原文。返回首个 context_page；若 has_more=true，选择令牌会被暂扣，必须逐次原样复制 next_arguments 调用 prepare_task_context，直到最后一页才返回 context_selection_token。页游标跳跃、哈希或页大小变化都会被拒绝。32k token 是可超过的精简软目标，容量依模型窗口；确实无需额外资料时可提交原生空数组。",
+        description="提交选中的候选来源。必须原样填写 prepare_task_context 返回的 context_manifest_id；无需额外来源时 sources 提交空数组。内置生成器取得选择令牌，外部 Agent 逐页读取 context_page。",
         input_schema={
-            "context_manifest_id": {"type": "string", "description": "Baseline manifest ID"},
+            "context_manifest_id": {"type": "string", "description": "Copy the context_manifest_id returned by prepare_task_context; required for workspace Agent evidence submission"},
             "run_id": {"type": "string", "description": "Agent run bound to a baseline manifest"},
             "sources": {
                 "type": "array",
@@ -206,7 +202,7 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
                 "description": "从检索结果复制 item_id（推荐）或 chunk_id/source_type/source_id/source_hash；仅受模型实际输入预算约束",
             },
         },
-        required=["sources"],
+        required=["context_manifest_id", "sources"],
         tool_type="read",
         direct_mcp_project_scoped=True,
         direct_mcp_transactional=True,

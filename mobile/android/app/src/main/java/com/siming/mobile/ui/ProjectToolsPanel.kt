@@ -47,7 +47,7 @@ internal fun ProjectToolsPanel(
     val chapters by viewModel.entities(project.projectId, "chapter")
         .collectAsStateWithLifecycle(initialValue = emptyList())
     val runs by viewModel.catalogingRuns(project.projectId).collectAsStateWithLifecycle(initialValue = emptyList())
-    val canCatalog = ui.directApi != null
+    val canCatalog = ui.directApi != null || online
     val totalWords = chapters.sumOf { it.text("content").count { char -> !char.isWhitespace() } }
     val catalogingHere = ui.catalogingProjectId == project.projectId
     val progress = if (ui.catalogingTotal > 0) {
@@ -87,10 +87,10 @@ internal fun ProjectToolsPanel(
                         Text("作品建档", style = MaterialTheme.typography.titleMedium)
                     }
                     Text(
-                        if (ui.directApi != null) {
-                            "使用手机 API 逐章整理摘要、角色、设定、大纲和治理资料。每章通过校验后一起保存；中断时保留正文和计划，可在这里重试。"
+                        if (canCatalog) {
+                            "逐章整理摘要、角色、设定、大纲和治理资料。每章通过校验后一起保存；中断时保留正文和计划，可在这里重试。"
                         } else {
-                            "正文已保存在手机。配置手机 API 后即可开始建档。"
+                            "正文已保存在手机。配置手机 API 或连接 Gateway 后即可开始建档。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -119,7 +119,7 @@ internal fun ProjectToolsPanel(
                         ) {
                             Icon(Icons.Outlined.AutoAwesome, null)
                             Spacer(Modifier.width(7.dp))
-                            Text(if (canCatalog) "为待建档章节建档" else "配置 API 后可建档")
+                            Text(if (canCatalog) "为待建档章节建档" else "配置 API 或 Gateway 后可建档")
                         }
                     }
                     runs.take(8).forEach { run ->

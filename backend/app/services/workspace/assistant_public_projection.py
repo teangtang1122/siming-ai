@@ -23,7 +23,6 @@ from app.architecture.tool_status import (
     tool_status_detail,
 )
 from app.core.utils import utc_isoformat
-from app.services.chapter_writing_constraints import recommended_han_character_target
 from app.services.conversation_context import ConversationContextError, ConversationContextErrorCode
 from app.services.workspace.assistant_public_errors import public_context_failure, public_model_error_message
 
@@ -94,37 +93,7 @@ def _public_tool_remediation(
             "message": messages[reason_code],
             "retryable": True,
         }
-    if reason_code != "draft_below_minimum":
-        return None
-    actual = data.get("actual_han_characters")
-    minimum = data.get("minimum_han_characters")
-    if (
-        not isinstance(actual, int)
-        or isinstance(actual, bool)
-        or actual < 0
-        or not isinstance(minimum, int)
-        or isinstance(minimum, bool)
-        or minimum <= actual
-    ):
-        return None
-    missing = minimum - actual
-    recommended = recommended_han_character_target(minimum)
-    recommended_additional = recommended - actual
-    message = (
-        f"正文有 {actual} 个汉字，低于最低要求 {minimum} 个；至少还差 {missing} 个。"
-        f"为减少反复退回，建议一次补至 {recommended} 个汉字（约再补 "
-        f"{recommended_additional} 个）后重试。"
-    )
-    return {
-        "code": reason_code,
-        "message": message,
-        "retryable": True,
-        "actual_han_characters": actual,
-        "minimum_han_characters": minimum,
-        "missing_han_characters": missing,
-        "recommended_han_characters": recommended,
-        "recommended_additional_han_characters": recommended_additional,
-    }
+    return None
 
 
 def _capacity_remediation(value: Any) -> dict[str, Any] | None:
@@ -250,14 +219,14 @@ def _author_visible_draft_data(tool_name: str, value: Any) -> dict[str, Any] | N
     if definition is None or not definition.ends_agent_turn:
         return None
     contract = definition.model_result_contract
-    preview = contract.preview
+    preview = contract.author_preview or contract.preview
     if contract.policy is not ModelResultPolicy.ARTIFACT_REFERENCE or preview is None:
         return None
     if not any(value.get(field) for field in contract.reference_fields):
         return None
 
     projected: dict[str, Any] = {}
-    for field in contract.data_fields:
+    for field in (*contract.data_fields, *contract.author_data_fields):
         if field not in value:
             continue
         safe_value = _declared_public_value(value[field], full_strings=True)

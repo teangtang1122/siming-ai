@@ -1,4 +1,4 @@
-"""Structured, deterministic chapter-writing constraint enforcement."""
+"""Structured chapter-length references and advisory measurements."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ MAXIMUM_SUPPORTED_MINIMUM_HAN_CHARACTERS = 100_000
 
 
 def normalize_minimum_han_characters(value: Any) -> int | None:
-    """Validate a model-structured hard minimum without parsing user prose."""
+    """Validate a structured length reference without parsing user prose."""
     if value is None or value == "":
         return None
     if isinstance(value, bool):
@@ -32,7 +32,7 @@ def normalize_minimum_han_characters(value: Any) -> int | None:
 
 
 def normalize_writing_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Return arguments with the optional hard minimum in canonical form."""
+    """Return arguments with the optional length reference in canonical form."""
     normalized = dict(arguments)
     minimum = normalize_minimum_han_characters(
         normalized.get(MINIMUM_HAN_CHARACTERS_FIELD)
@@ -53,27 +53,34 @@ def manifest_minimum_han_characters(manifest: Any) -> int | None:
     )
 
 
-def recommended_han_character_target(minimum: int) -> int:
-    """Return a retry target with enough margin to avoid tiny failed rewrites."""
-
-    normalized = normalize_minimum_han_characters(minimum)
-    if normalized is None:  # pragma: no cover - guarded by the required argument
-        raise ValueError("minimum_han_characters is required")
-    buffer = max(10, min(400, (normalized + 9) // 10))
-    return normalized + buffer
-
-
 @dataclass(frozen=True, slots=True)
 class ChapterLengthCheck:
     actual_han_characters: int
     minimum_han_characters: int | None
 
     @property
-    def accepted(self) -> bool:
+    def goal_met(self) -> bool:
         return (
             self.minimum_han_characters is None
             or self.actual_han_characters >= self.minimum_han_characters
         )
+
+    @property
+    def notice(self) -> str:
+        if self.goal_met:
+            return ""
+        return (
+            f"正文有 {self.actual_han_characters} 个汉字，低于本次篇幅参考 "
+            f"{self.minimum_han_characters} 个汉字；完整草稿已保留，可由作者决定是否扩写。"
+        )
+
+    def result_data(self) -> dict[str, Any]:
+        return {
+            "han_character_count": self.actual_han_characters,
+            "minimum_han_characters": self.minimum_han_characters,
+            "length_goal_met": self.goal_met,
+            "length_notice": self.notice,
+        }
 
 
 def check_chapter_length(content: str, manifest: Any) -> ChapterLengthCheck:

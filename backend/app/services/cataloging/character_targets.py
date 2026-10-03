@@ -6,7 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from ...database.models import Character
+from ...database.models import CatalogingCandidate, Character
 
 
 class ArchiveValueMismatch(ValueError):
@@ -136,6 +136,7 @@ def validate_character_state_target(
     payload: dict[str, Any],
     *,
     chapter_content: str | None = None,
+    chapter_run_id: str | None = None,
 ) -> Character | None:
     """Protect full-replacement state fields from stale or partial model writes.
 
@@ -153,7 +154,30 @@ def validate_character_state_target(
         character = query.filter(Character.id == str(target_id)).first()
     else:
         raise ValueError("character_state_update.id 必须使用当前计划中模型选择的真实 ID")
-    # A new character may be staged in the same transaction before its state.
+    # A newly staged character is not in the formal archive yet. Validate its
+    # state against the create candidate that will be applied first, so the
+    # model can repair missing evidence before the chapter transaction starts.
+    if character is None and chapter_run_id:
+        from .candidate_io import candidate_payload
+
+        creates = db.query(CatalogingCandidate).filter(
+            CatalogingCandidate.chapter_run_id == chapter_run_id,
+            CatalogingCandidate.item_type == "character_create",
+            CatalogingCandidate.status != "rejected",
+        ).all()
+        for candidate in creates:
+            initial = candidate_payload(candidate)
+            if initial.get("client_id") == str(target_id):
+                character = Character(
+                    id=str(target_id),
+                    project_id=project_id,
+                    name=str(initial.get("name") or ""),
+                    appearance=initial.get("appearance"),
+                    age=initial.get("age"),
+                    items_or_assets=initial.get("items_or_assets"),
+                )
+                break
+    # An unbound ID is still rejected by the candidate store and plan contract.
     if character is None:
         return character
 

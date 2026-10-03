@@ -33,6 +33,9 @@ OPENING_OUTLINE_DETAILS = {
 }
 CREATION_GENERATION_DETAILS = {
     **OPENING_OUTLINE_DETAILS,
+    "creation_artifact_locked_changed": (
+        "生成结果修改了已锁定的资料字段；请保留该 JSON Pointer 对应的原值后修正输出。本次未写入。"
+    ),
     "creation_generated_collection_invalid": (
         "模型没有在目标阶段的原生集合中返回非空对象数组。"
         "请按目标实体输出契约将对象放入 data 内 field 指定的数组；本次生成未写入。"

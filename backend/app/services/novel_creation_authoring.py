@@ -148,7 +148,7 @@ def _stage_contract(
         ),
         "macro_outline": "返回 story_overview、core_conflict、ending_direction、target_chapters、volumes、stage_plan；每卷必须含 title、start_chapter、end_chapter、summary；只做全书宏观结构，不展开全部章节。",
         "opening_outline": OPENING_OUTLINE_INSTRUCTION.format(count=opening_chapter_count),
-        "final_review": "返回 ready、blocking、warnings、counts。只根据证据审阅，不擅自删改上游内容。",
+        "final_review": "返回 ready（布尔值）、blocking（阻塞问题字符串数组）、warnings（提醒字符串数组）、counts；其中 characters/worldbuilding/chapters/sections 分别是实际角色、世界设定、开篇章纲、场景条目数，计划总章数放 target_chapters。只根据证据审阅，不擅自删改上游内容。",
     }
     return (
         contracts.get(stage, "保持输入结构，只提高具体性、一致性和可执行性。")
@@ -161,6 +161,8 @@ def _validate_stage(stage: str, data: dict[str, Any]) -> None:
         raise ValueError("模型没有返回可用的阶段对象")
     if _looks_like_cli_metadata(data):
         raise ValueError("模型只返回了运行状态，没有返回可用的阶段正文")
+    if stage == "final_review" and not isinstance(data.get("ready"), bool):
+        raise ValueError("最终审阅缺少布尔字段 ready；请按契约返回 ready、blocking、warnings、counts")
     if stage == "concepts":
         options = data.get("options")
         _validate_compact_concepts(options)

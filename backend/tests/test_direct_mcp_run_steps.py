@@ -130,7 +130,7 @@ def _scoped_state_file(
             "iteration": iteration,
         },
     )
-    replace_tool_categories(state_file, categories or ["story_knowledge"])
+    replace_tool_categories(state_file, categories or ["characters", "outline"])
     activate_tool_categories(state_file)
     return state_file
 
@@ -288,55 +288,19 @@ def test_scoped_direct_mcp_write_persists_run_step_refs_and_replays_receipt() ->
         db.close()
 
 
-def test_direct_mcp_batch_write_refs_use_full_raw_result() -> None:
+def test_direct_mcp_cannot_bypass_outline_author_review() -> None:
     db = _db()
-    project, conversation, run = _workspace_run(db, "Direct MCP outline refs")
+    project, conversation, run = _workspace_run(db, "Direct MCP outline authority")
     state_file = _scoped_state_file(project, conversation, run)
     lease_token = _lease(db, run)
     try:
-        response = json.loads(
-            handle_message(
-                _create_outline_nodes_call(project.id),
-                db=db,
-                project_id=project.id,
-                permission_pack="project_management",
-                tool_category_state_file=state_file,
-                direct_mcp_lease_token=lease_token,
-            )
-        )
-        assert response["result"]["isError"] is False
-        nodes = (
-            db.query(OutlineNode)
-            .filter(OutlineNode.project_id == project.id)
-            .order_by(OutlineNode.sort_order.asc())
-            .all()
-        )
-        step = (
-            db.query(AssistantRunStep)
-            .filter(
-                AssistantRunStep.run_id == run.id,
-                AssistantRunStep.tool == "create_outline_nodes",
-            )
-            .one()
-        )
-        assert json.loads(step.output_refs or "{}") == {
-            "outline": [{"id": nodes[0].id}, {"id": nodes[1].id}]
-        }
-        raw_result = json.loads(step.result_json or "{}")
-        assert [item["id"] for item in raw_result["data"]["nodes"]] == [
-            nodes[0].id,
-            nodes[1].id,
-        ]
-        ledger = workspace_execution_ledger_from_run_steps(
-            conversation,
-            (run,),
-            (step,),
-            project_id=project.id,
-        )
-        assert [reference.id for reference in ledger[0].resource_refs] == [
-            nodes[0].id,
-            nodes[1].id,
-        ]
+        response = json.loads(handle_message(
+            _create_outline_nodes_call(project.id), db=db, project_id=project.id,
+            permission_pack="project_management", tool_category_state_file=state_file,
+            direct_mcp_lease_token=lease_token,
+        ))
+        assert response["result"]["isError"] is True
+        assert db.query(OutlineNode).count() == 0
     finally:
         remove_tool_category_state(state_file)
         db.close()
@@ -349,7 +313,7 @@ def test_ready_direct_mcp_receipt_replays_as_usable_without_handler() -> None:
         project,
         conversation,
         run,
-        categories=["story_knowledge"],
+        categories=["characters"],
     )
     lease_token = _lease(db, run)
     call_id = 11
@@ -507,7 +471,7 @@ def test_direct_mcp_final_text_never_creates_write_evidence(persisted_status: st
     state.assistant_run = run
     state.tool_category_state_file = state_file
     state.category_selected = True
-    state.active_categories = ("story_knowledge",)
+    state.active_categories = ("characters",)
     state.observed_category_version = 1
 
     class _Gateway:
@@ -603,7 +567,7 @@ def test_direct_mcp_preflight_denials_never_leave_running_steps() -> None:
         project,
         conversation,
         run,
-        categories=["story_knowledge"],
+        categories=["characters"],
     )
     lease_token = _lease(db, run)
     try:
@@ -633,7 +597,7 @@ def test_direct_mcp_preflight_denials_never_leave_running_steps() -> None:
         assert unauthorized["result"]["isError"] is True
         assert db.query(AssistantRunStep).filter(AssistantRunStep.run_id == run.id).count() == 0
 
-        replace_tool_categories(state_file, ["cataloging"])
+        replace_tool_categories(state_file, ["cataloging_jobs"])
         activate_tool_categories(state_file)
         handler = AsyncMock()
         with patch("app.services.workspace.executor.execute_workspace_action", new=handler):
@@ -1040,52 +1004,6 @@ def test_direct_mcp_execution_error_remains_visible_after_later_success() -> Non
     }]
 
 
-def test_direct_mcp_short_draft_keeps_actionable_public_retry_counts() -> None:
-    raw_result = {
-        "tool": "save_external_chapter_draft",
-        "status": "needs_confirmation",
-        "detail": "private diagnostic must not be copied",
-        "data": {
-            "reason_code": "draft_below_minimum",
-            "actual_han_characters": 3_202,
-            "minimum_han_characters": 3_400,
-            "missing_han_characters": 999_999,
-        },
-    }
-    step = SimpleNamespace(
-        project_id="project-1",
-        iteration=3,
-        tool="save_external_chapter_draft",
-        status="needs_confirmation",
-        result_json=json.dumps(raw_result, ensure_ascii=False),
-    )
-    state = SimpleNamespace(
-        local_cli_mcp_enabled=True,
-        project_id="project-1",
-        assistant_run=SimpleNamespace(id="run-1"),
-        workspace=SimpleNamespace(run_steps=lambda _run_id: [step]),
-        tool_logs=[],
-    )
-
-    WorkspaceDirectMcpTurn(state, SimpleNamespace())._collect_tool_failures(3)
-
-    assert state.tool_logs == [{
-        "tool": "save_external_chapter_draft",
-        "status": "needs_confirmation",
-        "detail": "正文有 3202 个汉字，低于最低要求 3400 个；至少还差 198 个。为减少反复退回，建议一次补至 3740 个汉字（约再补 538 个）后重试。",
-        "remediation": {
-            "code": "draft_below_minimum",
-            "message": "正文有 3202 个汉字，低于最低要求 3400 个；至少还差 198 个。为减少反复退回，建议一次补至 3740 个汉字（约再补 538 个）后重试。",
-            "retryable": True,
-            "actual_han_characters": 3_202,
-            "minimum_han_characters": 3_400,
-            "missing_han_characters": 198,
-            "recommended_han_characters": 3_740,
-            "recommended_additional_han_characters": 538,
-        },
-    }]
-
-
 def test_failed_step_closure_preserves_concurrent_cancelled_winner() -> None:
     db = _db()
     project, conversation, run = _workspace_run(db, "Direct MCP closure winner")
@@ -1235,54 +1153,6 @@ def test_stale_finalize_claim_rolls_back_business_write_and_closes_error() -> No
         db.close()
 
 
-def test_partial_outline_batch_error_rolls_back_every_node_and_ref() -> None:
-    db = _db()
-    project, conversation, run = _workspace_run(db, "Direct MCP partial batch")
-    state_file = _scoped_state_file(project, conversation, run)
-    lease_token = _lease(db, run)
-    from app.services.workspace.tools import outline as outline_tools
-
-    create_one = outline_tools.create_outline_node
-    calls = 0
-
-    async def fail_second(session, project_id, arguments):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return await create_one(session, project_id, arguments)
-        return {
-            "tool": "create_outline_node",
-            "status": "error",
-            "detail": "injected second-node failure",
-            "data": None,
-        }
-
-    try:
-        with patch(
-            "app.services.workspace.tools.outline.create_outline_node",
-            new=fail_second,
-        ):
-            response = json.loads(
-                handle_message(
-                    _create_outline_nodes_call(project.id, call_id=73),
-                    db=db,
-                    project_id=project.id,
-                    permission_pack="project_management",
-                    tool_category_state_file=state_file,
-                    direct_mcp_lease_token=lease_token,
-                )
-            )
-        assert response["result"]["isError"] is True
-        assert calls == 2
-        assert db.query(OutlineNode).count() == 0
-        step = db.query(AssistantRunStep).one()
-        assert step.status == "error"
-        assert step.output_refs is None
-    finally:
-        remove_tool_category_state(state_file)
-        db.close()
-
-
 def test_concurrent_same_call_key_has_one_winner_and_one_handler(tmp_path) -> None:
     database_path = tmp_path / "direct-mcp-race.db"
     engine = create_engine(
@@ -1378,7 +1248,7 @@ def test_draft_finalize_failure_has_no_phantom_cache_and_db_read_survives() -> N
         project,
         conversation,
         run,
-        categories=["writing_context"],
+        categories=["writing_context", "chapter_writing"],
     )
     lease_token = _lease(db, run)
     from app.mcp import server as mcp_server
@@ -1536,7 +1406,7 @@ def test_direct_pack_is_explicit_and_blocks_prompts_and_unsafe_tools() -> None:
         project,
         conversation,
         run,
-        categories=list(TOOL_CATEGORY_METADATA),
+        categories=["characters"],
     )
     lease_token = _lease(db, run)
     expected = {
@@ -1546,8 +1416,6 @@ def test_direct_pack_is_explicit_and_blocks_prompts_and_unsafe_tools() -> None:
         "search_worldbuilding",
         "create_worldbuilding_entry",
         "update_worldbuilding_entry",
-        "create_outline_node",
-        "create_outline_nodes",
         "update_outline_node",
         "create_character",
         "update_character",
@@ -1581,19 +1449,23 @@ def test_direct_pack_is_explicit_and_blocks_prompts_and_unsafe_tools() -> None:
             for definition in direct_defs
         )
 
-        listed = json.loads(
-            handle_message(
-                _tool_call("unused", {}, call_id=94).replace(
-                    '"method": "tools/call"', '"method": "tools/list"'
-                ),
-                db=db,
-                project_id=project.id,
-                permission_pack="project_management",
-                tool_category_state_file=state_file,
-                direct_mcp_lease_token=lease_token,
+        listed_names = set()
+        for category in {definition.agent_category for definition in direct_defs}:
+            replace_tool_categories(state_file, [category])
+            activate_tool_categories(state_file)
+            listed = json.loads(
+                handle_message(
+                    _tool_call("unused", {}, call_id=94).replace(
+                        '"method": "tools/call"', '"method": "tools/list"'
+                    ),
+                    db=db,
+                    project_id=project.id,
+                    permission_pack="project_management",
+                    tool_category_state_file=state_file,
+                    direct_mcp_lease_token=lease_token,
+                )
             )
-        )
-        listed_names = {item["name"] for item in listed["result"]["tools"]}
+            listed_names.update(item["name"] for item in listed["result"]["tools"])
         assert listed_names == expected | {"set_tool_categories"}
 
         with patch("app.services.workspace.executor.execute_workspace_action", new=executor):
@@ -1674,11 +1546,12 @@ def test_managed_cataloging_env_cannot_override_explicit_direct_workspace_pack()
         project,
         conversation,
         run,
-        categories=list(TOOL_CATEGORY_METADATA),
+        categories=["characters"],
     )
     lease_token = _lease(db, run)
     expected = {
         definition.name for definition in registry.list_for_workspace_direct_mcp()
+        if definition.agent_category == "characters"
     }
     stdin = io.StringIO(
         "\n".join(
@@ -1735,7 +1608,7 @@ def test_managed_writing_context_chain_produces_only_one_unsaved_draft() -> None
     outline = OutlineNode(project_id=project.id, title="潮声", node_type="chapter", summary="调查档案")
     db.add(outline)
     db.commit()
-    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context"])
+    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context", "chapter_writing"])
     lease_token = _lease(db, run)
 
     def call(name: str, arguments: dict, call_id: int) -> dict:
@@ -1807,7 +1680,7 @@ def test_managed_writing_context_withholds_token_until_lossless_pages_are_read()
     )
     db.add_all([outline, witness])
     db.commit()
-    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context"])
+    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context", "chapter_writing"])
     lease_token = _lease(db, run)
     call_id = 200
 
@@ -1923,7 +1796,7 @@ def test_managed_context_tools_reject_foreign_project_data(tool_name, argument_k
         project_id=foreign.id, task_type="writing", arguments={"outline_node_id": foreign_outline.id},
     )
     db.commit()
-    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context"])
+    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context", "chapter_writing"])
     lease_token = _lease(db, run)
     args = {"project_id": project.id, "task_type": "writing", "query": "private", "sources": []}
     args[argument_kind] = foreign_outline.id if argument_kind == "outline_node_id" else manifest.id
@@ -1961,7 +1834,7 @@ def test_managed_context_budget_uses_the_pinned_executing_model(tool_name, reque
         }],
     )])
     db.commit()
-    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context"])
+    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context", "chapter_writing"])
     lease_token = _lease(db, run)
     arguments = {"project_id": project.id, "outline_node_id": outline.id}
     if tool_name == "prepare_task_context":
@@ -1996,7 +1869,7 @@ def test_managed_context_preparation_rolls_back_when_lease_is_revoked() -> None:
     outline = OutlineNode(project_id=project.id, title="潮声", node_type="chapter")
     db.add(outline)
     db.commit()
-    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context"])
+    state_file = _scoped_state_file(project, conversation, run, categories=["writing_context", "chapter_writing"])
     lease_token = _lease(db, run)
     try:
         with patch("app.mcp.server.cas_workspace_direct_mcp_lease", return_value=False):

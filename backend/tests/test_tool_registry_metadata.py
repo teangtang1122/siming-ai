@@ -74,7 +74,8 @@ class ToolDefNewFieldsTest(unittest.TestCase):
         self.assertIn("chapter_id", definition.input_schema)
         self.assertIn("parent_id", definition.input_schema)
         self.assertNotIn("arguments", definition.input_schema)
-        self.assertIn("writing 必须提交 outline_node_id", definition.description)
+        self.assertIn("写章用 outline_node_id", definition.description)
+        self.assertIn("writing 的必填章级大纲ID", definition.input_schema["outline_node_id"]["description"])
 
     def test_read_tool_defaults(self):
         td = registry.get("list_projects")

@@ -138,9 +138,32 @@ internal fun beginMobileContextDelivery(
     )
 }
 
+internal fun beginMobileInternalGeneratorContext(manifest: MobileContextManifest): MobileContextManifest {
+    val token = manifest.selectionToken.orEmpty()
+    require(token.isNotBlank()) { "Selected context has no active selection token" }
+    val now = Instant.now().toString()
+    return manifest.copy(
+        contextDelivery = MobileContextDeliveryState(
+            status = "internal_generator",
+            ready = true,
+            sha256 = "",
+            totalChars = 0,
+            deliveredUntil = 0,
+            expectedCursor = null,
+            pageLimit = 0,
+            lastCursor = 0,
+            lastLimit = 0,
+            selectionTokenSha256 = mobileSha256(token),
+            startedAt = now,
+            completedAt = now,
+        ),
+    )
+}
+
 internal fun mobileContextDeliveryReady(manifest: MobileContextManifest, token: String): Boolean {
     val state = manifest.contextDelivery ?: return false
-    return state.status == "complete" && state.ready && state.selectionTokenSha256 == mobileSha256(token)
+    return state.status in setOf("complete", "internal_generator") &&
+        state.ready && state.selectionTokenSha256 == mobileSha256(token)
 }
 
 internal fun deliverMobileNextContextPage(

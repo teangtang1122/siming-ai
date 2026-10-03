@@ -36,7 +36,7 @@ prepare_task_context
 外层 Agent 查询部分资料
 → executor 隐式创建 planning manifest
 → outline_writer 自动拼装大纲、角色、世界观和其他资料
-→ create_outline_nodes
+→ 作者确认 OutlineDraft 后原子写入正式大纲
 → 正式大纲节点
 ```
 
@@ -187,7 +187,7 @@ prepare_task_context
 
 此时必须满足：
 
-- 不调用 `create_outline_nodes` 写入正式大纲。
+- Agent 不可直接新增正式大纲，必须等待作者确认草稿。
 - 不继续调用 `chapter_writer`。
 - 不因用户界面当前选中节点而绑定目标。
 - 不在后台等待作者或自动开启新回合。

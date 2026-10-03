@@ -17,6 +17,7 @@ from app.services.novel_creation_contract import STAGE_LABELS, STAGE_ORDER
 from app.services.novel_creation_failures import build_stage_failure
 from app.services.observability.run_events import classify_failure
 from app.services.operation_runtime import ensure_operation, input_snapshot_hash, update_operation
+from app.modules.operations.application.trace_capture import correlate
 
 
 def _text(value: Any, default: str = "") -> str:
@@ -93,6 +94,7 @@ def create_run(
         snapshot_hash=snapshot_hash,
     )
     run.operation_id = operation.id
+    correlate(run_id=run.id, operation_id=operation.id)
     if claim_id:
         from app.database.models import NovelCreationRunClaim
 

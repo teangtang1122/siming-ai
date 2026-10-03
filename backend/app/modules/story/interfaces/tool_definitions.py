@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from app.architecture.tool_definition import ToolDef
-from app.modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
 from app.modules.story.domain.project_read_contract import (
     PROJECT_INFO_FIELDS,
     PROJECT_READ_MAX_CHARS,
@@ -650,65 +649,8 @@ TOOL_DEFINITIONS: tuple[ToolDef, ...] = (
         handler_name="delete_worldbuilding_entry",
     ),
     ToolDef(
-        name="create_outline_node",
-        description="创建新的大纲节点。",
-        input_schema={
-            "title": {"type": "string", "description": "节点标题"},
-            "parent_id": {"type": "string", "description": "父节点ID，可空（作为根节点）"},
-            "node_type": {
-                "type": "string",
-                "description": "节点类型：volume|chapter|section，默认chapter",
-            },
-            "summary": {"type": "string", "description": "本节点剧情摘要"},
-            "status": {
-                "type": "string",
-                "description": "状态：pending|in_progress|completed，默认pending",
-            },
-            "character_names": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "本节点涉及的角色名列表",
-            },
-            "source_chapter_id": {"type": "string", "description": "关联的源章节ID"},
-            "actual_summary": {"type": "string", "description": "实际完成后的摘要"},
-            "planned_summary": {"type": "string", "description": "计划中的摘要"},
-            "cataloging_status": {"type": "string", "description": "编目状态"},
-            "metadata": {
-                "type": "object",
-                "description": "section 场景元数据：scene_number/purpose/location/timeline/pov_character/characters/entry_state/exit_state/emotional_residue/unresolved_actions",
-            },
-        },
-        required=["title"],
-        tool_type="write",
-        idempotent=True,
-        direct_mcp_project_scoped=True,
-        direct_mcp_transactional=True,
-        estimated_cost="free",
-        handler_name="create_outline_node",
-    ),
-    ToolDef(
-        name="create_outline_nodes",
-        description="按作者明确指令直接创建正式大纲节点。outline_writer 的提案必须通过作者可见的大纲草稿确认接口保存，不能在同一 Agent 轮继续调用此工具。",
-        input_schema={
-            "nodes": {
-                "type": "array",
-                "items": {"type": "object"},
-                "maxItems": OUTLINE_PROPOSAL_MAX_NODES,
-                "description": f"大纲节点列表（最多 {OUTLINE_PROPOSAL_MAX_NODES} 个），每个节点可包含 title/node_type/summary/status/character_names/parent_id",
-            },
-            "parent_id": {"type": "string", "description": "可选，批量节点的默认父节点ID"},
-        },
-        required=["nodes"],
-        tool_type="write",
-        idempotent=True,
-        direct_mcp_project_scoped=True,
-        direct_mcp_transactional=True,
-        estimated_cost="free",
-        handler_name="create_outline_nodes",
-    ),
-    ToolDef(
         name="update_outline_node",
-        description="更新大纲节点。用ID或标题定位。",
+        description="只编辑已有大纲节点。用ID或标题定位；新纲用 outline_writer 生成草稿，作者确认后入库。",
         input_schema={
             "id": {
                 "type": "string",

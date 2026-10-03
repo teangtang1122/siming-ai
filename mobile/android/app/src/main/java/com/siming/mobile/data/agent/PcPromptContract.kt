@@ -25,6 +25,12 @@ internal fun bindOutlineOutputNodeCount(template: JsonArray, batchCount: Int): J
     return JsonArray(listOf(JsonObject(tool + ("function" to boundedFunction))))
 }
 
+internal fun mobileChapterLengthInstruction(minimumHanCharacters: Int?): String {
+    if (minimumHanCharacters == null) return "充分展开场景与人物行动。"
+    require(minimumHanCharacters > 0) { "章节篇幅参考必须为正整数" }
+    return "本次篇幅参考为 $minimumHanCharacters 个汉字；充分展开场景，标点不计入汉字数。"
+}
+
 /** Runtime view of the build-generated PC PromptSpec and tool catalog. */
 internal class PcPromptContract(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -40,14 +46,17 @@ internal class PcPromptContract(context: Context) {
     val toolCategories = PcToolCategoryContract(root)
 
     fun workspaceSystem(): String = root.string("workspace_system_template").fill(
-        "outline_batch_count" to "3",
+        "outline_batch_count" to defaultOutlineBatchCount().toString(),
     )
+
+    fun defaultOutlineBatchCount(): Int = (root.getValue("outline_generation") as JsonObject)
+        .getValue("default_batch_count").toString().toInt()
 
     fun workspaceRuntimeSystem(
         project: JsonObject,
         chapterWritingState: JsonObject,
     ): String {
-        val runtime = mobileWorkspaceRuntimeData(project, chapterWritingState)
+        val runtime = mobileWorkspaceRuntimeData(project, chapterWritingState, defaultOutlineBatchCount())
         return listOf(
             workspaceSystem().trim(),
             listOf(
@@ -105,6 +114,7 @@ internal class PcPromptContract(context: Context) {
         recentSummaries: String,
         requirements: String,
         sourceDraft: String = "",
+        minimumHanCharacters: Int? = null,
     ): List<JsonObject> {
         val chapter = root["chapter"] as JsonObject
         val style = styleContext(project)
@@ -112,22 +122,18 @@ internal class PcPromptContract(context: Context) {
         val system = systemTemplate.fill(
             "style_context" to style,
         )
-        var user = chapter.string("user_template").fill(
+        val template = if (sourceDraft.isBlank()) "user_template" else "revision_user_template"
+        var user = chapter.string(template).fill(
             "requirements" to requirements,
             "outline_context" to outlineContext,
             "world_context" to worldContext,
             "character_profiles" to characterProfiles,
             "recent_summaries" to recentSummaries,
+            "source_draft" to sourceDraft,
+            "length_instruction" to mobileChapterLengthInstruction(minimumHanCharacters),
         )
         if (requirements.isBlank()) {
             user = user.replace("【写作要求】\n\n\n\n", "")
-        }
-        if (sourceDraft.isNotBlank()) {
-            user = listOf(
-                user,
-                "【当前未保存草稿（完整原文）】\n$sourceDraft",
-                "请按作者本轮要求修改上面的当前未保存草稿。必须输出修改后的完整章节正文，不要只给差异、建议或说明；结果仍是同一份未保存草稿。",
-            ).joinToString("\n\n")
         }
         return listOf(message("system", system), message("user", user))
     }
@@ -148,6 +154,13 @@ internal class PcPromptContract(context: Context) {
 
     fun outlineWriterOutputTool(batchCount: Int): JsonArray =
         bindOutlineOutputNodeCount(writerOutputTool("outline"), batchCount)
+
+    fun outlineWriterIdleTimeoutMillis(): Long =
+        (root.getValue("outline_generation") as JsonObject)
+            .getValue("stream_idle_timeout_ms").toString().toLong()
+
+    fun outlineWriterExtraBody(model: String): JsonObject? =
+        outlineGenerationExtraBody(root.getValue("outline_generation") as JsonObject, model)
 
     fun characterWriterUser(
         requirements: String,

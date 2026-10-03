@@ -25,7 +25,7 @@ from ....services.cataloging.launcher import (
 )
 from ....services.chapter_writing_constraints import (
     check_chapter_length,
-    recommended_han_character_target,
+    manifest_minimum_han_characters,
 )
 from ....services.context_orchestrator import ContextOrchestrator
 from ..generated_drafts import (
@@ -295,6 +295,7 @@ async def _generate_chapter_prose(
         recent_summaries=summaries,
         requirements=requirements,
         source_draft=source_draft,
+        minimum_han_characters=manifest_minimum_han_characters(manifest),
     )
     timeout_seconds, max_output_tokens = _chapter_writer_limits(model)
     max_output_tokens = min(max_output_tokens, max(1, manifest.output_reserve_tokens))
@@ -394,26 +395,6 @@ async def chapter_writer(
             f"写作上下文中的结构化正文长度约束无效：{error}",
             {"context_manifest_id": manifest_id},
         )
-    if not length_check.accepted:
-        minimum = int(length_check.minimum_han_characters or 0)
-        recommended = recommended_han_character_target(minimum)
-        return _writer_result(
-            "needs_confirmation",
-            (
-                f"模型正文只有 {length_check.actual_han_characters} 个汉字，低于作者明确的 "
-                f"{minimum} 汉字硬下限；未创建待审草稿。为减少反复退回，"
-                f"请重新建立上下文并以至少 {recommended} 个汉字为重试目标。"
-            ),
-            {
-                "context_manifest_id": manifest_id,
-                "outline_node_id": outline_node_id,
-                "actual_han_characters": length_check.actual_han_characters,
-                "minimum_han_characters": minimum,
-                "recommended_han_characters": recommended,
-                "draft_stored": False,
-            },
-        )
-
     stored_draft = None
     try:
         if source_draft_id:
@@ -497,7 +478,7 @@ async def chapter_writer(
             f"已修改当前章节草稿（{count_words(content)} 字），仍未保存"
             if source_draft_id
             else f"已生成章节草稿（{count_words(content)} 字），尚未保存"
-        ),
+        ) + length_check.notice,
         "data": {
             "draft_id": draft_id,
             "content_ref": draft_id,
@@ -511,8 +492,7 @@ async def chapter_writer(
             "source_draft_id": source_draft_id,
             "next_actions": ["revise_draft", "save_and_catalog", "save_only", "discard"],
             "word_count": count_words(content),
-            "han_character_count": length_check.actual_han_characters,
-            "minimum_han_characters": length_check.minimum_han_characters,
+            **length_check.result_data(),
             "model": generated.model_result.get("model", ""),
             "context_manifest_id": manifest_id,
             "context_snapshot": generated.context_snapshot,

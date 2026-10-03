@@ -477,7 +477,7 @@ async def confirm_outline_draft(db: Any, project_id: str, draft_id: str) -> dict
     """Atomically promote a reviewed proposal to formal outline nodes."""
     from ...core.exceptions import ValidationError
     from ...database.models import OutlineNode
-    from .tools.outline import create_outline_nodes
+    from .outline_draft_apply import apply_confirmed_outline_nodes
     from .utils import find_character_by_name_or_id
 
     _project_lock(db, project_id)
@@ -568,7 +568,7 @@ async def confirm_outline_draft(db: Any, project_id: str, draft_id: str) -> dict
             next_sort += 1
         prepared.append(item)
 
-    result = await create_outline_nodes(db, project_id, {"nodes": prepared})
+    result = await apply_confirmed_outline_nodes(db, project_id, {"nodes": prepared})
     result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
     skipped = result_data.get("skipped") if isinstance(result_data, dict) else []
     if result.get("status") != "ok" or skipped:

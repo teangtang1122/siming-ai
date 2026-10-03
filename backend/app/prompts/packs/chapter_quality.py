@@ -31,7 +31,7 @@ PACK = PromptPack(
         "禁止添加前言、后记、解释或元评论",
         "禁止添加章节标题",
         "禁止使用 Markdown 格式",
-        "正文必须控制在 1800-2500 字",
+        "正文篇幅遵循本轮已确认的长度要求",
     ],
     default_temperature=0.8,
     default_max_tokens=6000,

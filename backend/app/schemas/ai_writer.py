@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.modules.story.domain.outline_contract import OUTLINE_PROPOSAL_MAX_NODES
+from app.modules.story.domain.outline_contract import DEFAULT_OUTLINE_BATCH_COUNT, OUTLINE_PROPOSAL_MAX_NODES
 from app.services.conversation_context import ReferenceContext
 
 
@@ -53,7 +53,7 @@ class WorkspaceAssistantRequest(BaseModel):
     temperature: float | None = Field(0.3, ge=0.0, le=2.0)
     max_tokens: int | None = Field(None, ge=1)
     outline_batch_count: int = Field(
-        3,
+        DEFAULT_OUTLINE_BATCH_COUNT,
         ge=1,
         le=OUTLINE_PROPOSAL_MAX_NODES,
         description="Preferred number of consecutive outline chapters to plan",

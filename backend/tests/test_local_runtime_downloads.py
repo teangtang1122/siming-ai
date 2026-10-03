@@ -7,8 +7,10 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 from app.services.local_runtime.downloads import (
+    DownloadCancelled,
     _is_transient_download_error,
     download_with_fallback,
 )
@@ -122,3 +124,20 @@ def test_only_network_and_retryable_http_errors_are_automatically_retried():
     assert _is_transient_download_error(retryable)
     assert not _is_transient_download_error(permanent)
     assert not _is_transient_download_error(OSError("磁盘空间不足"))
+
+
+def test_cancelling_a_stream_preserves_partial_bytes_and_does_not_retry():
+    response = _stream_response(status=200, length=6, chunks=[b"abc", b"def"])
+    with TemporaryDirectory() as temp_dir:
+        destination = Path(temp_dir) / "model.gguf"
+        with patch("app.services.local_runtime.downloads.httpx.stream", return_value=response) as stream, patch(
+            "app.services.local_runtime.downloads._persist_progress"
+        ) as persist:
+            with pytest.raises(DownloadCancelled):
+                download_with_fallback(
+                    "task-1", ["https://example.test/model.gguf"], destination,
+                    should_cancel=lambda: persist.call_count >= 1,
+                )
+        assert stream.call_count == 1
+        assert not destination.exists()
+        assert destination.with_suffix(".gguf.part").read_bytes() == b"abc"

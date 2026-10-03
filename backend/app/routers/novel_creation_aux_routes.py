@@ -17,6 +17,7 @@ from app.architecture.uow import commit_session
 
 from ..core.response import ApiResponse
 from ..database.session import get_db
+from ..modules.creation.domain.tool_specs import CreationPatchOperation, CreationSessionFormPatch
 from ..modules.creation.interfaces.session_dependencies import novel_creation_session_store
 from ..services.novel_creation_actions import (
     delete_creation_entity,
@@ -147,7 +148,7 @@ async def finalize_creation(
 
 
 class NovelCreationSessionPatchRequest(BaseModel):
-    form: dict[str, Any] | None = None
+    form: CreationSessionFormPatch | None = None
     selected_concept_id: str | None = None
     quick_mode: bool | None = None
     creation_mode: Literal["author_led", "explore"] | None = None
@@ -158,7 +159,7 @@ class NovelCreationSessionPatchRequest(BaseModel):
 
 
 class NovelCreationArtifactPatchRequest(BaseModel):
-    changes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    changes: list[CreationPatchOperation] = Field(min_length=1, max_length=100)
     source: str = "author"
     expected_revision: int
     allow_incomplete: bool = False
@@ -179,7 +180,7 @@ class NovelCreationArtifactRestoreRequest(BaseModel):
 
 class NovelCreationEntityPatchRequest(BaseModel):
     expected_revision: int
-    changes: list[dict[str, Any]] = Field(min_length=1)
+    changes: list[CreationPatchOperation] = Field(min_length=1)
 
 
 class NovelCreationEntityDeleteRequest(BaseModel):
@@ -424,7 +425,7 @@ async def patch_creation_entity_endpoint(
         result = patch_creation_entity(
             session,
             entity,
-            payload.changes,
+            [change.model_dump(exclude_unset=True) for change in payload.changes],
             expected_revision=payload.expected_revision,
         )
         commit_session(db)
@@ -482,7 +483,7 @@ async def update_creation_session(session_id: str, payload: NovelCreationSession
             },
         )
     try:
-        patch_session(session, payload.model_dump(exclude_none=True, exclude={"expected_revision"}))
+        patch_session(session, payload.model_dump(exclude_unset=True, exclude_none=True, exclude={"expected_revision"}))
         commit_session(db)
         return ApiResponse.success(data=serialize_session(session), message="立项草稿已保存")
     except ValueError as exc:
@@ -530,7 +531,7 @@ async def patch_creation_artifact_endpoint(
         result = patch_creation_artifact(
             session,
             stage,
-            payload.changes,
+            [change.model_dump(exclude_unset=True) for change in payload.changes],
             source=payload.source,
             validator=None if payload.allow_incomplete else _validate_stage,
         )

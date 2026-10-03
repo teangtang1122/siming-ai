@@ -16,6 +16,7 @@ internal class PcToolCategoryContract(root: JsonObject) {
         ?: error("手机内置契约缺少 tool_categories.categories")
 
     val controller: String = contract.string("controller")
+    private val maxActiveCategories = contract.string("max_active_categories").toInt()
     val labels: Map<String, String> = categories.mapValues { (_, value) ->
         (value as? JsonObject)?.string("label").orEmpty()
     }
@@ -25,14 +26,17 @@ internal class PcToolCategoryContract(root: JsonObject) {
             .toSet()
     }
 
-    fun normalize(raw: List<String>): List<String> {
-        val normalized = raw.map(String::trim).filter(String::isNotBlank).distinct()
-        normalized.forEach { require(it in toolNamesByCategory) { "未知工具类别：$it" } }
+    fun normalize(raw: List<String>, eligibleNames: Set<String>): List<String> {
+        val normalized = raw.map(String::trim).distinct()
+        normalized.forEach {
+            require(toolNamesByCategory[it]?.any(eligibleNames::contains) == true) { "当前任务未开放工具类别：$it" }
+        }
+        require(normalized.size <= maxActiveCategories) { "每个模型步骤最多开放 $maxActiveCategories 个工具类别，请按需分步切换" }
         return normalized
     }
 
     fun availableToolNames(activeCategories: List<String>, eligibleNames: Set<String>): Set<String> {
-        val normalized = normalize(activeCategories)
+        val normalized = normalize(activeCategories, eligibleNames)
         return buildSet {
             add(controller)
             normalized.forEach { category ->
@@ -51,7 +55,7 @@ internal class PcToolCategoryContract(root: JsonObject) {
     }
 
     fun selectionResult(activeCategories: List<String>, eligibleNames: Set<String>): JsonObject {
-        val normalized = normalize(activeCategories)
+        val normalized = normalize(activeCategories, eligibleNames)
         val selectedLabels = normalized.mapNotNull(labels::get)
         val toolCount = availableToolNames(normalized, eligibleNames).size - 1
         return buildJsonObject {

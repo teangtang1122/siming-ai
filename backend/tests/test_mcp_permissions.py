@@ -76,7 +76,7 @@ class WriteDenyTest(unittest.TestCase):
     def test_create_tools_denied(self):
         create_tools = [
             "create_project", "create_character",
-            "create_outline_node", "create_worldbuilding_entry",
+            "save_external_outline_draft", "create_worldbuilding_entry",
             "create_relationship", "create_scheduled_task", "create_skill",
         ]
         for name in create_tools:

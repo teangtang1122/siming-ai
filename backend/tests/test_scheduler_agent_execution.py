@@ -118,7 +118,7 @@ class RunTaskPromptTest(unittest.TestCase):
 
     def test_collects_real_async_generator_and_opens_category_next_step(self) -> None:
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call("characters")]},
             {"content": "Here are the characters"},
         ])
 
@@ -150,7 +150,7 @@ class RunTaskPromptTest(unittest.TestCase):
         mock_execute: AsyncMock,
     ) -> None:
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call("characters")]},
             {
                 "tool_calls": [
                     _tool_call("character-call", "list_characters", {})
@@ -188,7 +188,7 @@ class RunTaskPromptTest(unittest.TestCase):
         mock_execute: AsyncMock,
     ) -> None:
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call("characters")]},
             *[
                 {
                     "tool_calls": [
@@ -216,7 +216,7 @@ class RunTaskPromptTest(unittest.TestCase):
         task = self._mock_task()
         task.tool_policy = ["list_characters"]
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call("characters")]},
             {"content": "Done"},
         ])
 
@@ -234,7 +234,7 @@ class RunTaskPromptTest(unittest.TestCase):
         task = self._mock_task()
         task.tool_policy = None
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call("characters")]},
             {"content": "Done"},
         ])
 
@@ -256,7 +256,7 @@ class RunTaskPromptTest(unittest.TestCase):
         task = self._mock_task()
         task.tool_policy = [""]
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call()]},
             {"content": "No authorized business tools"},
         ])
 
@@ -277,7 +277,7 @@ class RunTaskPromptTest(unittest.TestCase):
         mock_execute: AsyncMock,
     ) -> None:
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call("characters")]},
             {
                 "tool_calls": [
                     _tool_call("bad-call", "list_characters", "{not-json")
@@ -306,7 +306,7 @@ class RunTaskPromptTest(unittest.TestCase):
         task = self._mock_task()
         task.tool_policy = ["list_characters"]
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("story_knowledge")]},
+            {"tool_calls": [_category_call("characters")]},
             {
                 "tool_calls": [
                     _tool_call("hidden-call", "search_characters", {"query": "A"})
@@ -335,7 +335,7 @@ class RunTaskPromptTest(unittest.TestCase):
         gateway = _StreamGateway([
             {
                 "tool_calls": [
-                    _category_call("story_knowledge"),
+                    _category_call("characters"),
                     _tool_call("early-call", "list_characters", {}),
                 ]
             },
@@ -400,7 +400,7 @@ class RunTaskPromptTest(unittest.TestCase):
         task = self._mock_task()
         task.tool_policy = ["save_external_outline_draft"]
         gateway = _StreamGateway([
-            {"tool_calls": [_category_call("writing_context")]},
+            {"tool_calls": [_category_call("story_design")]},
             {
                 "tool_calls": [
                     _tool_call(
@@ -466,7 +466,7 @@ class RunTaskPromptTest(unittest.TestCase):
             with self.subTest(reason=reason):
                 mock_execute.reset_mock()
                 gateway = _StreamGateway([
-                    {"tool_calls": [_category_call("story_knowledge")]},
+                    {"tool_calls": [_category_call("characters")]},
                     {"tool_calls": calls},
                 ])
                 with self.assertRaisesRegex(

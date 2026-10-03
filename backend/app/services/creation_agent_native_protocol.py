@@ -27,6 +27,14 @@ _SAFE_TOOL_SUCCESS_STATUSES = frozenset({
     "waiting_user", "pending", "generated", "confirmed",
 })
 _SAFE_TOOL_DIAGNOSTICS = {
+    "creation_artifact_requires_generation": (
+        "创意方向尚无方案卡；请切到生成类别调用 generate_creation_artifact(artifact=concepts)，"
+        "生成后再修改 options 内字段。本次未写入。"
+    ),
+    "creation_unknown_artifact": (
+        "阶段 ID 无效。请先读取立项快照的 artifacts，使用其中的 artifact 原值；"
+        "全书卷纲为 macro_outline，前三章细纲为 opening_outline。"
+    ),
     "read_required": "写入前必须先读取真实立项数据，并在下一模型步骤重新决定写入。",
     "successful_write_limit": "本条作者消息已经成功写入一次；请结束本轮并等待下一条消息。",
     "failed_write_limit": "本轮写入失败次数已达上限；请结束本轮并等待作者调整要求。",
@@ -36,6 +44,7 @@ _SAFE_TOOL_DIAGNOSTICS = {
     "native_assistant_transaction_over_capacity": "原生工具事务超过协议容量；请减少调用或参数后重试。",
     "native_assistant_transaction_invalid": "原生工具事务无法安全验证；本批次未执行。",
     "model_result_projection_failed": "工具结果无法安全投影；请缩小范围或重试。",
+    "duplicate_tool_call": "相同参数的工具调用本轮已经尝试；请按上次错误修正参数，或结束本轮。",
 }
 _SAFE_DIAGNOSTIC_NUMERIC_FIELDS = frozenset({
     "actual_bytes", "max_bytes", "batch_call_count",
@@ -75,6 +84,8 @@ def safe_creation_tool_result(
         "creation_tool_skipped": "工具调用未执行；请重新读取当前状态或调整请求。",
         "creation_tool_cancelled": "工具调用已取消；请确认当前状态后再继续。",
     }.get(reason, "工具未能完成本次操作；请重新读取当前状态或调整请求后重试。")
+    if reason == "tool_result_batch_over_capacity" and raw_data.get("batch_call_count") == 1:
+        detail = "单个工具调用超过当前模型余量；请缩窄当前步骤开放的工具类别后重试。"
     data: dict[str, Any] = {"reason": reason}
     if reason in _SAFE_TOOL_DIAGNOSTICS:
         for field_name in _SAFE_DIAGNOSTIC_NUMERIC_FIELDS:

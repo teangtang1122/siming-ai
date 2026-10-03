@@ -337,7 +337,7 @@ async def search_outline(
             "data": [],
         }
     node_id = str(args.get("node_id") or "").strip() or None
-    limit = max(1, min(int(args.get("limit") or 2), 2))
+    limit = max(1, min(int(args.get("limit") or 1), 2))
     cursor = max(0, int(args.get("cursor") or 0))
     summary_offset = max(0, int(args.get("summary_offset_chars") or 0))
     summary_chars = max(1, min(int(args.get("summary_chars") or 500), 1000))

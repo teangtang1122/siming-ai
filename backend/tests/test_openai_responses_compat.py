@@ -138,7 +138,7 @@ def test_chat_probe_accepts_reasoning_only_response():
             provider="custom_proxy",
             api_key="secret",
             base_url="http://127.0.0.1:57783/v1",
-            model="qwen3.5-9b-q4",
+            model="qwen3.6-27b-q4",
             api_protocol="chat_completions",
         )))
 
@@ -157,7 +157,7 @@ def test_managed_local_model_verification_bypasses_readiness_gate():
     ) as completion:
         result = asyncio.run(ProviderModelVerification().verify(ModelProbeRequest(
             provider="local_llama_cpp",
-            model="qwen3.5-9b-q4",
+            model="qwen3.6-27b-q4",
         )))
 
     assert completion.await_count == 1

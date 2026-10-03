@@ -1,8 +1,6 @@
 """Persistent NVIDIA QLoRA training jobs."""
 from __future__ import annotations
 
-from app.architecture.uow import commit_session
-
 import json
 import os
 import subprocess
@@ -10,21 +8,18 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from app.architecture.uow import commit_session
+
 from ...database.models import LocalModel, ModelAdapter, TrainingDataset, TrainingJob
 from ...database.session import SessionLocal
 from .hardware import detect_hardware
 from .paths import training_root
 from .trainer_env import ensure_llama_conversion_tools, ensure_training_environment
 
-
 TRAINING_MODEL_IDS = {
-    "qwen3.5-4b-q4": "Qwen/Qwen3.5-4B",
-    "qwen3.5-9b-q4": "Qwen/Qwen3.5-9B",
-    "qwen3.5-27b-q4": "Qwen/Qwen3.5-27B",
+    "qwen3.6-27b-q4": "Qwen/Qwen3.6-27B",
     "qwen3.8-27b-q4": "Qwen/Qwen3.8-27B",
 }
-
-LARGE_TRAINING_MODEL_KEYS = {"qwen3.5-27b-q4", "qwen3.8-27b-q4"}
 
 _WORKERS: dict[str, threading.Thread] = {}
 _PROCESSES: dict[str, subprocess.Popen] = {}
@@ -121,11 +116,9 @@ def create_training_job(
 ) -> str:
     profile = detect_hardware()
     if not profile.training_supported:
-        raise ValueError("LoRA 训练 Beta 需要至少 8GB 显存的 NVIDIA 显卡")
+        raise ValueError("27B QLoRA 训练需要至少 24GB 显存的 NVIDIA 显卡")
     if base_model_key not in TRAINING_MODEL_IDS:
         raise ValueError("当前基座不支持内置 QLoRA 训练")
-    if base_model_key in LARGE_TRAINING_MODEL_KEYS and profile.vram_gb < 24:
-        raise ValueError("27B QLoRA 建议至少 24GB 显存；当前设备请使用 4B 或 9B")
     with SessionLocal() as db:
         dataset = db.query(TrainingDataset).filter(TrainingDataset.id == dataset_id).first()
         if not dataset or not dataset.rights_confirmed:
@@ -166,6 +159,8 @@ def control_training_job(job_id: str, action: str) -> None:
             job = db.query(TrainingJob).filter(TrainingJob.id == job_id).first()
             if not job:
                 raise ValueError("训练任务不存在")
+            if job.base_model_key not in TRAINING_MODEL_IDS:
+                raise ValueError("该训练基座已从内置目录移除，不能继续；请新建 27B 训练任务")
             job.status = "queued"
             job.error_message = None
             commit_session(db)
@@ -211,7 +206,9 @@ def _run_job(job_id: str) -> None:
             if not dataset:
                 raise RuntimeError("训练集已被删除")
             config = dict(job.config_json or {})
-            model_id = TRAINING_MODEL_IDS[job.base_model_key]
+            model_id = TRAINING_MODEL_IDS.get(job.base_model_key)
+            if model_id is None:
+                raise RuntimeError("该训练基座已从内置目录移除，不能继续；请新建 27B 训练任务")
             dataset_path = dataset.file_path
             job.status = "preparing"
             commit_session(db)

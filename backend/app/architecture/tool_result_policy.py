@@ -73,11 +73,15 @@ class ModelResultPageBudget:
     max_text_chars: int = 0
     text_fields_per_item: int = 0
     min_text_fields: int = 0
+    default_items: int | None = None
 
     def bytes_for(self, arguments: Mapping[str, Any]) -> int:
         value = arguments.get(self.argument)
         # Match the handler's declared default and clamping; never infer intent.
-        count = self.max_items if not value else max(1, min(int(value), self.max_items))
+        count = (
+            (self.default_items or self.max_items)
+            if not value else max(1, min(int(value), self.max_items))
+        )
         size = self.base_json_bytes + count * self.item_json_bytes
         if self.text_argument:
             chars = max(1, min(
@@ -112,6 +116,10 @@ class ModelResultContract:
     object_projections: tuple[ModelResultObjectProjection, ...] = ()
     reference_fields: tuple[str, ...] = ()
     preview: ModelResultPreview | None = None
+    # The author receives the complete editor artifact; a model only needs its
+    # durable receipt. Both field lists remain declared on this one contract.
+    author_data_fields: tuple[str, ...] = ()
+    author_preview: ModelResultPreview | None = None
     page_budget: ModelResultPageBudget | None = None
 
     def bytes_for_arguments(self, arguments: Mapping[str, Any] | None = None) -> int:
@@ -126,6 +134,8 @@ class ModelResultContract:
             page = self.page_budget
             if min(page.base_json_bytes, page.item_json_bytes, page.max_items) <= 0:
                 raise ValueError("page budget bounds must be positive")
+            if page.default_items is not None and not 1 <= page.default_items <= page.max_items:
+                raise ValueError("page budget default_items must fit max_items")
             if page.text_argument and not (
                 0 < page.default_text_chars <= page.max_text_chars and page.text_fields_per_item > 0
             ):

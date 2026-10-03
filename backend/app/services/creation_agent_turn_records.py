@@ -54,6 +54,7 @@ class CreationExecutionLedgerProjection:
     """Trusted cross-turn execution navigation derived from sealed receipts."""
 
     entries: tuple[ExecutionLedgerEntry, ...]
+    trusted_entries: tuple[ExecutionLedgerEntry, ...]
     source_hashes: dict[str, str]
 
 
@@ -747,7 +748,11 @@ def creation_execution_ledger_from_conversation(
     source_hashes: dict[str, str] = {}
     conflicted_step_ids: set[str] = set()
     for message in (conversation or {}).get("messages") or ():
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        if (
+            not isinstance(message, dict)
+            or message.get("role") != "assistant"
+            or message.get("status") != "completed"
+        ):
             continue
         payload = message.get("payload")
         runtime = validate_creation_runtime_snapshot(
@@ -826,16 +831,16 @@ def creation_execution_ledger_from_conversation(
             entries.append(entry)
             source_hashes[step_id] = source_hash
 
+    # Keep every verified receipt as immutable provenance. A newer write to
+    # the same resource may replace an older navigation entry, but it must not
+    # make a checkpoint of the earlier turn appear to have lost its source.
+    trusted_entries = tuple(entries)
     resolved = _resolve_creation_retry_errors(entries)
     folded = fold_execution_ledger(resolved)
-    kept_ids = {entry.step_id for entry in folded}
     return CreationExecutionLedgerProjection(
         entries=folded,
-        source_hashes={
-            step_id: source_hashes[step_id]
-            for step_id in source_hashes
-            if step_id in kept_ids
-        },
+        trusted_entries=trusted_entries,
+        source_hashes=source_hashes,
     )
 
 

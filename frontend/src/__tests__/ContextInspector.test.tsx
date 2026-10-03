@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import fixture from '../../../contracts/fixtures/context-trace-v1-interop.json'
 import { ContextInspectorHost } from '../features/contextInspector/ContextInspector'
-import { buildSpans } from '../features/contextInspector/types'
+import { buildSpans, formatTraceDuration } from '../features/contextInspector/types'
 import type { TraceEvent } from '../features/contextInspector/types'
 import { CONTEXT_INSPECTOR_OPEN } from '../shared/contextInspector'
 
@@ -32,6 +32,17 @@ beforeEach(() => {
 })
 
 describe('native context inspector', () => {
+  it('does not leave interrupted or incompletely recorded steps running', () => {
+    const events = fixture.events.filter(event => event.event_type === 'span_started') as TraceEvent[]
+    expect(buildSpans(events, { finished: null, capture_status: 'recording' })[0].status).toBe('running')
+    expect(buildSpans(events, { finished: 2, capture_status: 'interrupted' })[0].status).toBe('interrupted')
+    expect(buildSpans(events, { finished: 2, capture_status: 'partial' })[0].status).toBe('incomplete')
+    expect(buildSpans(events, { finished: 2, capture_status: 'recorded' }, false)[0].status).toBe('pending_record')
+    expect(buildSpans(fixture.events as TraceEvent[], { finished: 2, capture_status: 'interrupted' })[0].status).toBe('error')
+    expect(formatTraceDuration(0.2)).toBe('<1 ms')
+    expect(formatTraceDuration(undefined)).toBe('耗时未知')
+  })
+
   it('can enable continuous recording before any project or task exists', async () => {
     mount()
     act(() => window.dispatchEvent(new CustomEvent(CONTEXT_INSPECTOR_OPEN, { detail: {} })))

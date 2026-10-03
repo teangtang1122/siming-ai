@@ -2500,7 +2500,6 @@ function GuiAssistantChat() {
           max_tokens: undefined,
           local_cli_read_permission_grant: grantedReadPaths.length > 0 ? 'read_once' : 'none',
           local_cli_read_paths: grantedReadPaths,
-          outline_batch_count: 3,
         }),
         signal: abortRef.current.signal,
       })
@@ -3565,6 +3564,16 @@ function GuiAssistantChat() {
           </Space>
         </div>
 
+        {!activeProjectId && (
+          <Alert
+            className="gui-chat-creation-capability"
+            type="info"
+            showIcon
+            message="立项助手 · 仅筹备作品资料，不生成章节正文"
+            description="创建正式作品后，进入项目助手写作章节正文。"
+          />
+        )}
+
         <ConversationCheckpointNotice
           state={visibleCreationContextState}
           detail={visibleCreationCheckpointDetail}
@@ -3625,7 +3634,7 @@ function GuiAssistantChat() {
                 司命 AI 助手
               </Title>
               <Paragraph type="secondary" style={{ fontSize: 15, maxWidth: 460, textAlign: 'center' }}>
-                当前绑定作品：{activeProject?.title || '未选择'}。写章节、查角色会进入作品助手；创建新小说会自动切到系统立项流程。
+                当前绑定作品：{activeProject?.title || '未选择'}。项目助手可以生成章节草稿、查询角色和维护作品资料；新书筹备请切换到立项助手。
               </Paragraph>
               <Space wrap className="gui-chat-welcome-actions">
                 <Button type="primary" icon={<PlusOutlined />} size="large" onClick={() => void startNewConversation()}>
@@ -3682,14 +3691,20 @@ function GuiAssistantChat() {
                           label: `运行过程（${msg.progressEvents?.length || 0}）`,
                           children: (
                             <div className="gui-chat-progress-list">
-                              {msg.progressEvents?.map((event) => (
-                                <div key={event.sequence} className={`gui-chat-progress-item gui-chat-progress-${event.type}`}>
-                                  <span aria-hidden="true">
-                                    {event.type === 'error' ? '!' : event.type === 'tool_completed' ? '✓' : '•'}
-                                  </span>
-                                  <span>{event.message}</span>
-                                </div>
-                              ))}
+                              {msg.progressEvents?.map((event) => {
+                                const status = String(event.data?.status || '')
+                                const skipped = event.type === 'tool_completed' && status === 'skipped'
+                                const failed = event.type === 'error' || (event.type === 'tool_completed'
+                                  && ['error', 'failed', 'denied', 'conflict', 'cancelled', 'canceled'].includes(status))
+                                return (
+                                  <div key={event.sequence} className={`gui-chat-progress-item gui-chat-progress-${event.type}${failed ? ' gui-chat-progress-failed' : skipped ? ' gui-chat-progress-skipped' : ''}`}>
+                                    <span aria-hidden="true">
+                                      {failed ? '!' : skipped ? '–' : event.type === 'tool_completed' ? '✓' : '•'}
+                                    </span>
+                                    <span>{event.message}</span>
+                                  </div>
+                                )
+                              })}
                             </div>
                           ),
                         }]}

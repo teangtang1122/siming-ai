@@ -12,6 +12,7 @@ from .budget import (
     FallbackUtf8ByteTokenCounter,
     RequestBudgetEnvelope,
     RequestTokenComponents,
+    TemplateMeasuredRequestCounter,
     TokenCounter,
     Utf8ByteTokenCounter,
     build_request_budget,
@@ -71,6 +72,20 @@ def resolve_generation_model_binding(
     if profile.known:
         counter: TokenCounter = Utf8ByteTokenCounter()
         assurance = CapacityAssurance.CONSERVATIVE
+        if profile.provider == "local_llama_cpp" and protocol == "native":
+            # Only the runtime that owns the loaded model can measure its
+            # complete template. An unavailable measurement keeps this step
+            # on the explicitly identified conservative byte counter.
+            try:
+                from app.services.local_runtime import get_runtime_manager
+
+                measured = get_runtime_manager().request_token_counter(
+                    profile.model_name, current_tools
+                )
+            except Exception:
+                measured = None
+            if measured is not None:
+                counter = measured
     else:
         counter = FallbackUtf8ByteTokenCounter()
         assurance = CapacityAssurance.UNVERIFIED
@@ -221,7 +236,14 @@ def _count_rendered_components(
             cost += counter.count_text(message.tool_call_id)
         layer_tokens[message.layer] += cost
         atomic += cost
-    structural = max(0, counter.count_value(rendered.provider_messages()) - atomic)
+    if isinstance(counter, TemplateMeasuredRequestCounter):
+        message_tokens, tool_tokens = counter.count_request_sections(
+            rendered.provider_messages(), options.current_tools,
+        )
+    else:
+        message_tokens = counter.count_value(rendered.provider_messages())
+        tool_tokens = counter.count_value(list(options.current_tools))
+    structural = max(0, message_tokens - atomic)
     wrapper = _provider_wrapper(options)
     explicit_wrapper = counter.count_value(wrapper) if wrapper is not None else 0
     next_wrapper = options.next_step_wrapper
@@ -235,7 +257,7 @@ def _count_rendered_components(
     return RequestTokenComponents(
         system_prompt_tokens=layer_tokens[ContextLayer.SYSTEM_CONTRACT],
         generator_template_tokens=counter.count_text(options.generator_template),
-        tool_schema_tokens=counter.count_value(list(options.current_tools)),
+        tool_schema_tokens=tool_tokens,
         message_wrapper_tokens=structural + explicit_wrapper,
         provider_protocol_tokens=(
             counter.count_value(options.provider_protocol_state)

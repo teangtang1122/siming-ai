@@ -123,8 +123,8 @@ internal class MobileCreationAgent(
 ): JsonObject {
     require(stage in contract.stageOrder && stage != "constraints") { "未知立项阶段" }
     val currentData = source.objectValue("draft").objectValue("stages").objectValue(stage)["data"] as? JsonObject
-    val stageBaseline = entityBaseline ?: if (stage == "opening_outline" && currentData != null) currentData else baseline(source, stage)
-    val openingLocks = source.objectValue("draft").objectValue("artifact_locks").arrayValue("opening_outline")
+    val stageBaseline = entityBaseline ?: currentData ?: baseline(source, stage)
+    val artifactLocks = source.objectValue("draft").objectValue("artifact_locks").arrayValue(stage)
     val (system, user) = if (stage == "concepts") {
         contract.conceptMessages(source, instruction)
     } else {
@@ -137,7 +137,7 @@ internal class MobileCreationAgent(
     var warning = ""
     var repairMethod = ""
     val data = try {
-        parseStageData(stage, raw, stageBaseline, entityTarget, volumes, openingLocks, characters)
+        parseStageData(stage, raw, stageBaseline, entityTarget, volumes, artifactLocks, characters)
     } catch (initialError: Exception) {
         val (repairSystem, repairUser) = contract.repairMessages(
             raw,
@@ -145,7 +145,7 @@ internal class MobileCreationAgent(
             stage,
             entityTarget,
             volumes,
-            openingLocks,
+            artifactLocks,
             characters,
         )
         val repaired = try {
@@ -161,7 +161,7 @@ internal class MobileCreationAgent(
             )
         }
         val repairedData = try {
-            parseStageData(stage, repaired, stageBaseline, entityTarget, volumes, openingLocks, characters)
+            parseStageData(stage, repaired, stageBaseline, entityTarget, volumes, artifactLocks, characters)
         } catch (repairError: Exception) {
             if (repairError is CreationGenerationException) throw repairError
             throw IllegalArgumentException(
@@ -192,7 +192,7 @@ internal class MobileCreationAgent(
         stageBaseline: JsonObject,
         entityTarget: JsonObject?,
         volumes: JsonArray?,
-        openingLocks: JsonArray,
+        artifactLocks: JsonArray,
         characters: JsonArray?,
     ): JsonObject {
         val parsed = parseObject(raw)
@@ -203,7 +203,8 @@ internal class MobileCreationAgent(
         } else {
             normalizeStage(stage, rawData, stageBaseline)
         }
-        if (stage == "opening_outline" && entityTarget == null) contract.entities.opening.validateLocks(data, stageBaseline, openingLocks)
+        // Concepts use the separate compact-concept contract on both platforms.
+        if (stage != "concepts" && entityTarget == null) contract.entities.validateLocks(stage, data, stageBaseline, artifactLocks)
         if (entityTarget == null || entityTarget.string("initialize_stage") == "true") validateStage(stage, data)
         return data
     }
@@ -988,7 +989,9 @@ internal class MobileCreationAgent(
                 }) { "分卷缺少有效章节范围或摘要" }
             }
             "opening_outline" -> contract.entities.opening.validate(data)
-            "final_review" -> require((data["ready"] as? JsonPrimitive)?.booleanOrNull != null) { "最终审阅缺少 ready" }
+            "final_review" -> require((data["ready"] as? JsonPrimitive)?.let {
+                !it.isString && it.booleanOrNull != null
+            } == true) { "最终审阅缺少布尔字段 ready；请按契约返回 ready、blocking、warnings、counts" }
         }
     }
 
