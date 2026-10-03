@@ -4,6 +4,12 @@
 
 Siming is a free and open-source, local-first AI workspace for planning, writing, archiving, and maintaining continuity in long-form fiction.
 
+<p align="center">
+  <img src="frontend/public/desktop-pet/poses/standing-0.webp" width="144" alt="司命的 Q 版形象：黑红长发、白色宽袖，怀里抱着一本小书" />
+  <br />
+  <sub>小书抱好，陪你慢慢写 (｡•̀ᴗ-)✧</sub>
+</p>
+
 [![Latest Release](https://img.shields.io/github/v/release/teangtang1122/siming-ai?display_name=tag&sort=semver)](https://github.com/teangtang1122/siming-ai/releases/latest)
 ![Windows 10+ x64](https://img.shields.io/badge/Windows-10%2B%20x64-2979ff?logo=windows11&logoColor=white)
 ![Android 8+](https://img.shields.io/badge/Android-8%2B-3c7a57?logo=android&logoColor=white)
@@ -89,6 +95,39 @@ opencode_cli:opencode/big-pickle
 | 长任务运行 | 展示阶段、最近活动、模型和健康度；支持暂停、继续、取消和重试当前单元，已完成章节不会因后续失败而丢失。 |
 | 司命桌宠 | Windows 透明悬浮角色直接展示待机、思考、写作、等待作者、完成和错误状态；只负责状态与导航，不写入作品。详见[桌宠设计与开发边界](docs/desktop-pet.md)。 |
 | 跨设备创作 | Android 保留可写离线副本；Gateway 按有序修订同步并在分岔时保留双方版本，不静默覆盖。 |
+
+## 一只会陪你写作的司命
+
+她把小书抱在怀里，也把一点点陪伴留在你的桌面。Windows 桌面模式下，轻点司命会冒出一句带颜文字的小气泡，约 5 秒后收起；拖动时会换成被拎起的姿势，放到屏幕边缘就偷偷探头。长时间空闲时，她也可能抱书打个盹。
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="frontend/public/desktop-pet/poses/reading.webp" width="128" alt="司命低头翻开小书，认真读书的姿势" /><br />
+      <strong>读书陪写</strong><br />
+      <sub>翻翻小书，找找灵感 (๑•̀ㅂ•́)و✧</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="frontend/public/desktop-pet/poses/peeking.webp" width="128" alt="司命歪着身子，抱书偷偷探头的姿势" /><br />
+      <strong>贴边探头</strong><br />
+      <sub>没有催你，只是偷偷看一眼 |ω･)</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="frontend/public/desktop-pet/poses/dozing.webp" width="128" alt="司命坐下来抱着小书，闭眼打盹的姿势" /><br />
+      <strong>抱书打盹</strong><br />
+      <sub>灵感也要歇一小会儿 (－ω－) zzZ</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="frontend/public/desktop-pet/poses/picked-up.png" width="128" alt="司命被轻轻拎起，抱紧小书、双脚离地的姿势" /><br />
+      <strong>被轻轻拎起</strong><br />
+      <sub>欸？小书抱紧，准备搬家！Σ(っ °Д °;)っ</sub>
+    </td>
+  </tr>
+</table>
+
+以上是 3.5.0 内置素材的静态姿势预览，配文仅作形象介绍；实际桌宠还会眨眼并播放轻量动作。右键可以调整大小、透明度、置顶与静音；双击回到书斋。她只展示任务状态、提供导航，不会代替你保存、确认或续写作品。使用方式与实现边界见 [桌宠说明](docs/desktop-pet.md)。
 
 ## Android 与自己的 Gateway
 
