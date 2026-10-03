@@ -18,7 +18,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 [![Frontend CI](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml/badge.svg?branch=main)](https://github.com/teangtang1122/siming-ai/actions/workflows/frontend-ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-3c7a57.svg)](LICENSE)
 
-[下载 Windows 安装版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming-Setup.exe) · [Gitee 镜像下载（大陆网络较慢时备用）](https://gitee.com/teangtang13/siming-ai/releases) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
+[下载 Windows 安装版](https://github.com/teangtang1122/siming-ai/releases/latest/download/Siming-Setup.exe) · [Gitee 镜像下载（大陆网络较慢时备用）](https://gitee.com/teangtang13/siming-ai/releases) · [本地模型](#本地模型) · [跨设备指南](docs/gateway-mobile.md) · [反馈问题](https://github.com/teangtang1122/siming-ai/issues/new/choose) · [版本记录](https://github.com/teangtang1122/siming-ai/releases)
 
 > **系统要求：Windows 10 x64 或更高版本。Windows 7、Windows 8/8.1 以及 32 位 Windows 不在支持范围内。**
 
@@ -31,7 +31,7 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 > **当前源码版本 3.5.0** 正式加入 Windows 司命桌宠：透明悬浮、点击说话、拎起拖动、贴边探头与五套姿势；保留 3.4.7 的立项、写作、大纲保存和本地模型修复。Android、PC 和 Gateway 同步版本号，桌宠仅在 Windows 桌面模式可用。完整变化及验证范围见 [3.5.0 发布说明](docs/release-notes-3.5.0.md)。
 >
-> **测试范围：桌宠已验证 Windows 原生透明合成、点击区域、姿势切换和连续缩放；写作回归使用合成资料与模拟模型响应，不代表所有模型或 CLI 的实机验证。既有 AI 实际运行测试主要基于 DeepSeek API，详见对应版本验证记录。**
+> **测试范围：桌宠已验证 Windows 原生透明合成、点击区域、姿势切换和连续缩放；3.5.0 写作回归使用合成资料与模拟模型响应。此前已实际运行 DeepSeek API 和本机 Qwen3.8 27B Q3，覆盖部分立项、章节生成与下一章大纲流程；本地硬件、速度和验证边界见[本机评估](docs/qa/2026-09-24-qwen38-27b-local-evaluation.md)及下方[本地模型](#本地模型)。其他模型或 CLI 尚未完成同等范围的实机验证。**
 
 ## 它解决什么问题
 
@@ -66,6 +66,8 @@ opencode_cli:opencode/big-pickle
 
 免费模型、额度与数据政策由对应服务提供方决定，可能随时调整。若内置推荐不在本机 CLI 的实时列表中，司命会改选当前可用的免费模型，并在运行记录中明确显示实际模型；更多高质量模型仍需前往相应模型官网自行订阅。
 
+已有 API 可以在“系统设置”配置；希望使用自己电脑的 GPU，可以按下方[本地模型](#本地模型)步骤接入 GGUF。
+
 ### 3. 说一句故事想法
 
 输入一句梗概，司命会先形成一套轻量创意方向。之后可直接在聊天中持续调整，也可以使用完整向导逐步确认角色、世界观、卷纲和前 3 章细纲。正式作品只会在最终确认时创建。
@@ -90,6 +92,7 @@ opencode_cli:opencode/big-pickle
 | 新书立项 | 一套可持续对话调整的创意方向、可编辑的分阶段向导、全书卷纲与前 3 章细纲；每章包含 2–6 个场景节点。 |
 | 作品建档 | 逐章提取摘要、大纲、角色状态、关系、世界观、时间线、伏笔与故事线，可从检查点继续。 |
 | 写作与上下文 | 按任务预算选择大纲、场景、近期摘要、角色当前状态、有效线索和未解决动作，避免整本书硬塞给模型。 |
+| 本地模型 | 在 Windows 管理 llama.cpp 与 GGUF，使用自己的 GPU 进行立项、写作、建档和评估；可与 API、CLI 分别按任务配置。 |
 | 叙事账本 | 跟踪已完成节拍、已揭露线索、读者承诺和故事线状态，写后归档并为下一章注入关键事实。 |
 | 版本与回退 | 每次写章前后保留快照；对新章不满意时，可查看差异并恢复旧版，同步回退相关档案和文件镜像。 |
 | 长任务运行 | 展示阶段、最近活动、模型和健康度；支持暂停、继续、取消和重试当前单元，已完成章节不会因后续失败而丢失。 |
@@ -129,6 +132,40 @@ opencode_cli:opencode/big-pickle
 
 以上是 3.5.0 内置素材的静态姿势预览，配文仅作形象介绍；实际桌宠还会眨眼并播放轻量动作。右键可以调整大小、透明度、置顶与静音；双击回到书斋。她只展示任务状态、提供导航，不会代替你保存、确认或续写作品。使用方式与实现边界见 [桌宠说明](docs/desktop-pet.md)。
 
+## 本地模型
+
+Windows 桌面版可以通过 llama.cpp 在本机运行 GGUF。选择“司命本地 AI”后，模型推理和作品工具执行均在自己的电脑上完成，无需云端 API Key；首次下载运行时和模型需要联网。模型中心支持下载内置模型，也支持登记已有 GGUF 或自有模型。模型目录可以放到其他磁盘，登记已有文件会直接使用原路径，不复制文件。
+
+### 配置步骤
+
+1. 打开左侧“模型与训练”，开启“允许使用本地模型”。
+2. 点击“下载运行时”，或用“使用本机 llama-server.exe”选择已有运行时。
+3. 在模型目录选择模型。以已实测的 Qwen3.8 27B UD-Q3_K_XL 为例，可下载安装，或点击“登记已有 GGUF”选择已有文件；该目录项会核对 GGUF 和 SHA-256。
+4. 点击“启动参数”。默认启动上下文为 32K；复现当前成功完成全流程测试的配置时，将上下文设为 **64K（65,536 token）**，再点“保存并启动”。此 Q3 模型默认使用 Q4 KV 缓存、Flash Attention、MTP 2 和 2GB 内存缓存；保存的参数同时用于手动启动和任务自动启动。
+5. 启动并通过验证后，点击“设为默认”。也可在“系统设置”为项目助手、立项与大纲、建档、写作、质量评估和拆书分别指定模型。选择优先级为 **本次任务明确选择 > 任务默认 > 全局默认**。
+6. “停止当前模型”释放当前运行进程；下次任务可能自动启动。关闭“允许使用本地模型”可以同时停止进程并阻止自动启动。
+
+### 硬件与实测范围
+
+| 模型 | 模型中心初始硬件建议 | 默认启动上下文 | 验证范围 |
+| --- | --- | --- | --- |
+| Qwen3.8 27B UD-Q3_K_XL（文本） | 16GB NVIDIA 显存，约 32GB 系统内存 | 32K | RTX 4060 Ti 16GB 本机实测，**64K 上下文全流程测试通过** |
+| Qwen3.8 27B UD-Q4_K_XL | 24GB 及以上 NVIDIA 显存，约 32GB 系统内存 | 32K | 模型目录建议，未完成上述同等范围的实机验证 |
+
+Q3 模型文件约 13.1GB。内置 Q3 选项只安装文本模型，不包含视觉投影。未满足上述硬件条件时可以自行登记其他 GGUF，具体能否运行取决于模型、可用内存与启动参数。
+
+在 RTX 4060 Ti 16GB、31.6GB 内存、llama.cpp b10566 的[本机评估](docs/qa/2026-09-24-qwen38-27b-local-evaluation.md)中，Q3 的 32K 和 64K 上下文都完成了探针任务；64K 占用更多显存，默认 32K 留有更大余量。96K 虽能加载，但长提示处理显著变慢。一次短写作的服务端解码约 23 token/秒；完整 Agent 任务还包含选工具、检索、校验和多轮生成，会耗时更长。
+
+**当前成功完成全流程测试的本地上下文为 64K（65,536 token）**，使用 Qwen3.8 27B UD-Q3_K_XL、RTX 4060 Ti 16GB 和约 32GB 系统内存，覆盖立项、正文生成、作者保存与建档，以及后续章节大纲规划。模型中心的首次启动默认值为 32K，复现本轮完整创作流程时请在“启动参数”中保存 64K。
+
+实际流程记录见[本地章节生成](docs/qa/2026-10-01-local-chapter-length.md)、[立项最终审阅](docs/qa/2026-10-02-creation-review-write-receipt.md)和[下一章大纲规划](docs/qa/2026-10-02-next-outline-generation.md)。这些结果对应所记录的配置和操作，模型输出仍需要作者审阅。生成的正文、大纲先保留为草稿，由作者决定保存、确认和建档。
+
+本地模型与 API、CLI 使用同一业务工具契约。Q3 的外层工具决策保留推理，正文生成和固定大纲生成按各自任务关闭推理，这些选项由任务自动处理。受管理的 llama.cpp 使用已加载模型的完整请求模板和分词器核算上下文，保留输出与工具结果余量；超出容量会明确停止并保留进度。
+
+手机可以通过桌面 Gateway 显式选择 PC 本地模型，此时电脑及桌面 Gateway 需要保持运行。手机独立 API 写作无需电脑在线；Android 本身不运行 GGUF，Docker Gateway 镜像也不包含本地推理运行时。
+
+详细参数、自有文件登记、目录管理和 LoRA 训练 Beta 见[本地 AI 指南](docs/local-ai.md)，跨设备配置见[Android 与 Gateway 指南](docs/gateway-mobile.md)。
+
 ## Android 与自己的 Gateway
 
 司命没有官方小说数据服务器。Android 客户端连接的是你在桌面端启用或用 Docker 部署的 Gateway：
@@ -151,11 +188,12 @@ docker compose -f compose.gateway.yml up -d
 
 ## 模型与隐私
 
-司命可以使用 OpenAI、Anthropic Claude、DeepSeek、Google Gemini、通义千问、OpenAI 兼容中转站，也可以调用 Claude Code、Codex、OpenCode、DeepSeek Harness（DSH）等本机 CLI。仅“检测到命令”不等于可用；只有完成真实对话测试的模型才会进入新书、助手和写作流程。
+司命可以使用 OpenAI、Anthropic Claude、DeepSeek、Google Gemini、通义千问、OpenAI 兼容中转站，也可以调用 Claude Code、Codex、OpenCode、DeepSeek Harness（DSH）等本机 CLI，或使用 llama.cpp 运行本地 GGUF。仅“检测到命令”不等于可用；只有完成真实对话测试的模型才会进入新书、助手和写作流程。
 
 - 作品数据库、文件镜像、快照和任务记录保存在你选择的本机目录。
 - 司命不会自主把整个作品库上传到项目服务器。
 - 使用云端 API 或需联网的 CLI 时，当前任务选中的提示词、正文片段和上下文会发送给对应提供方处理。
+- 使用司命管理的本地 GGUF 时，当前模型请求由本机 llama.cpp 处理；模型文件下载与作者选择的跨设备同步分别需要访问对应服务。
 - API Key 由本机配置使用；OpenCode 的一次性登录凭据仅传递给当前登录进程，不保存、不回显、不写日志。
 
 请根据内容敏感程度阅读所选模型提供方的数据政策，不要向免费云端模型提交隐私或机密内容。
