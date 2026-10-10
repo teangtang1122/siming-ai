@@ -1,5 +1,10 @@
 package com.siming.mobile.ui
 
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material.icons.outlined.History
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,6 +79,7 @@ internal val assistantQuickActions = listOf(
     AssistantQuickAction("检查世界观冲突", "结合现有世界观设定和最近正文，检查规则冲突、时间线矛盾和新增但未建档的设定。"),
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AssistantWorkspace(
     projectId: String,
@@ -81,13 +87,14 @@ internal fun AssistantWorkspace(
     onConfigureDirectApi: () -> Unit,
 ) {
     var prompt by rememberSaveable { mutableStateOf("") }
+    var showModels by rememberSaveable { mutableStateOf(false) }
+    var showHistory by rememberSaveable { mutableStateOf(false) }
     val ui by viewModel.uiState
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val directApi = ui.directApi
     var modelRoute by rememberSaveable { mutableStateOf("mobile") }
     val listState = rememberLazyListState()
 
-    val standaloneMobile = modelRoute == "mobile" && directApi != null
     val canUseAi = if (modelRoute == "mobile") directApi != null else connection != null
 
     LaunchedEffect(projectId, modelRoute) {
@@ -113,74 +120,25 @@ internal fun AssistantWorkspace(
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { showModels = true }, enabled = !ui.assistantRunning, modifier = Modifier.weight(1f)) {
+                Text(if (modelRoute == "pc") "电脑模型" else directApi?.displayName ?: "配置手机 AI",
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Outlined.KeyboardArrowDown, "选择模型")
+            }
+            IconButton(onClick = { showHistory = true }, enabled = !ui.assistantRunning) { Icon(Icons.Outlined.History, "对话记录") }
+            IconButton(onClick = { viewModel.newAssistantConversation() }, enabled = !ui.assistantRunning) { Icon(Icons.Outlined.Add, "新对话") }
+        }
+        HorizontalDivider()
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(start = 14.dp, top = 14.dp, end = 14.dp, bottom = 18.dp),
             verticalArrangement = Arrangement.spacedBy(11.dp),
         ) {
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("AI 共创", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        when {
-                            standaloneMobile -> "手机独立 · ${directApi?.model.orEmpty()}"
-                            modelRoute == "pc" && connection != null -> "PC 工作流 · PC 已配置线路"
-                            else -> "尚未配置 AI"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
             if (!canUseAi) {
                 item {
-                    StatusBanner(
-                        icon = Icons.Outlined.CloudOff,
-                        title = "先配置 AI 线路",
-                        detail = "作品仍可离线编辑；到“设置”配置手机直连 API，或连接自己的 Gateway。",
-                        warning = true,
-                    )
-                }
-            } else if (standaloneMobile) {
-                item {
-                    StatusBanner(
-                        icon = Icons.Outlined.PhoneAndroid,
-                        title = "手机独立工作区",
-                        detail = "在手机读取资料、生成和保存草稿，并使用手机 API 完成建档。",
-                    )
-                }
-            }
-
-            if (canUseAi) {
-                item {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                        item {
-                            AssistChip(
-                                onClick = {
-                                    viewModel.newAssistantConversation()
-                                },
-                                enabled = !ui.assistantRunning,
-                                label = { Text("新对话") },
-                                leadingIcon = { Icon(Icons.Outlined.Add, null, Modifier.size(16.dp)) },
-                            )
-                        }
-                        items(ui.assistantConversations, key = { it.id }) { conversation ->
-                            AssistChip(
-                                onClick = {
-                                    viewModel.loadAssistantConversation(projectId, conversation.id)
-                                },
-                                enabled = !ui.assistantRunning,
-                                label = { Text(conversation.title, maxLines = 1) },
-                                colors = AssistChipDefaults.assistChipColors(
-                                    containerColor = if (conversation.id == ui.assistantConversationId) {
-                                        MaterialTheme.colorScheme.primaryContainer
-                                    } else Color.White,
-                                ),
-                            )
-                        }
-                    }
+                    OutlinedButton(onClick = { showModels = true }, modifier = Modifier.fillMaxWidth()) { Text("选择模型，开始共创") }
                 }
             }
 
@@ -200,7 +158,7 @@ internal fun AssistantWorkspace(
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Text(action.label, modifier = Modifier.weight(1f))
-                                Text("填入", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Icon(Icons.Outlined.Add, "填入输入框", Modifier.size(18.dp))
                             }
                         }
                     }
@@ -291,65 +249,43 @@ internal fun AssistantWorkspace(
             }
         }
 
-        Surface(color = SimingPaperWarm, tonalElevation = 4.dp) {
-            Column(
-                modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                if (connection != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        AssistChip(
-                            onClick = { modelRoute = "pc" },
-                            label = { Text("PC 线路") },
-                            leadingIcon = { Icon(Icons.Outlined.Devices, null, Modifier.size(16.dp)) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = if (modelRoute == "pc") MaterialTheme.colorScheme.primaryContainer else Color.White,
-                            ),
-                        )
-                        AssistChip(
-                            onClick = { modelRoute = "mobile" },
-                            label = { Text("手机 Key") },
-                            leadingIcon = { Icon(Icons.Outlined.Key, null, Modifier.size(16.dp)) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = if (modelRoute == "mobile") MaterialTheme.colorScheme.primaryContainer else Color.White,
-                            ),
-                        )
-                    }
+        MessageComposer(value = prompt, onValueChange = { prompt = it }, placeholder = "想写什么，直接告诉我…",
+            running = ui.assistantRunning, canSend = canUseAi,
+            onStop = { viewModel.cancelAssistant(projectId) }, onSend = {
+                val outgoing = prompt.trim()
+                if (outgoing.isNotBlank()) {
+                    prompt = ""
+                    viewModel.runAssistant(projectId, outgoing,
+                        if (modelRoute == "mobile") AssistantModelRoute.MobileKey else AssistantModelRoute.Pc)
                 }
-
-                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = prompt,
-                        onValueChange = { prompt = it },
-                        placeholder = { Text("给项目助手发消息…") },
-                        minLines = 1,
-                        maxLines = 5,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (ui.assistantRunning) {
-                        IconButton(onClick = { viewModel.cancelAssistant(projectId) }, modifier = Modifier.size(50.dp)) {
-                            Icon(Icons.Outlined.StopCircle, "停止", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(28.dp))
-                        }
-                    } else {
-                        Button(
-                            enabled = canUseAi && prompt.isNotBlank(),
-                            onClick = {
-                                val outgoing = prompt.trim()
-                                if (outgoing.isBlank()) return@Button
-                                prompt = ""
-                                viewModel.runAssistant(
-                                    projectId,
-                                    outgoing,
-                                    if (modelRoute == "mobile") AssistantModelRoute.MobileKey else AssistantModelRoute.Pc,
-                                )
-                            },
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 13.dp),
-                        ) {
-                            Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(19.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text("发送")
-                        }
-                    }
+            })
+    }
+    if (showModels) {
+        ModalBottomSheet(onDismissRequest = { showModels = false }) {
+            Text("使用哪个 AI？", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(20.dp))
+            WorkspaceActionRow("手机 AI", directApi?.let { "${it.displayName} · ${it.model}" } ?: "配置后可独立创作",
+                Icons.Outlined.PhoneAndroid, {
+                    showModels = false
+                    if (directApi == null) onConfigureDirectApi() else modelRoute = "mobile"
+                })
+            if (connection != null) WorkspaceActionRow("电脑模型", connection!!.gatewayName,
+                Icons.Outlined.Devices, { modelRoute = "pc"; showModels = false })
+            TextButton(onClick = { showModels = false; onConfigureDirectApi() }, modifier = Modifier.padding(16.dp)) { Text("管理手机 AI 配置") }
+        }
+    }
+    if (showHistory) {
+        ModalBottomSheet(onDismissRequest = { showHistory = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Text("对话记录", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(20.dp))
+            LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+                item { WorkspaceActionRow("新对话", "保留已有记录", Icons.Outlined.Add, {
+                    showHistory = false; viewModel.newAssistantConversation()
+                }) }
+                items(ui.assistantConversations, key = { it.id }) { conversation ->
+                    WorkspaceActionRow(conversation.title, if (conversation.id == ui.assistantConversationId) "当前对话" else "",
+                        Icons.Outlined.History, {
+                            showHistory = false; viewModel.loadAssistantConversation(projectId, conversation.id)
+                        })
                 }
             }
         }

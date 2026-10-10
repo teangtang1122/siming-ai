@@ -154,7 +154,7 @@ jobs:
         working-directory: backend
         run: |
           python scripts/run_quality.py
-          python -m pytest tests/test_architecture_foundation.py tests/test_config_llm.py tests/test_novel_creation_workspace_v2.py tests/test_packaging_contract.py tests/test_release_packaging_contract.py tests/test_installer_updater.py tests/test_windows_installer_contract.py
+          python -m pytest tests/test_architecture_foundation.py tests/test_config_llm.py tests/test_novel_creation_workspace_v2.py tests/test_packaging_contract.py tests/test_release_packaging_contract.py tests/test_installer_updater.py tests/test_windows_installer_contract.py tests/test_windows_installer_runtime.py
 
       - name: Validate performance baseline
         run: python scripts/run-performance-baseline.py --output .build/performance.json

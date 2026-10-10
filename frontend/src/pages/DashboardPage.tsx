@@ -38,7 +38,7 @@ import {
   useUpdateProject,
 } from '../features/projects'
 import type { ProjectCreateDraft, ProjectUpdateInput } from '../features/projects'
-import { useGettingStartedSummary } from '../features/onboarding'
+import { useGettingStartedStatus } from '../features/onboarding'
 import { QueryStateNotice } from '../shared/ui/runtime'
 import './DashboardPage.css'
 
@@ -128,7 +128,7 @@ function DashboardPage() {
   const createProjectMutation = useCreateProject()
   const updateProjectMutation = useUpdateProject()
   const deleteProjectMutation = useDeleteProject()
-  const setupQuery = useGettingStartedSummary()
+  const setupQuery = useGettingStartedStatus()
   const projects = projectsQuery.data?.items || []
   const loading = projectsQuery.isLoading || projectsQuery.isFetching
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
@@ -427,11 +427,11 @@ function DashboardPage() {
         <section className="dashboard-setup-banner" aria-label="首次使用设置">
           <div className="dashboard-setup-icon" aria-hidden="true"><RocketOutlined /></div>
           <div className="dashboard-setup-copy">
-            <Text strong>想让 AI 一起创作？先完成一次免费准备</Text>
-            <Text type="secondary">不用 API Key，也不用打开命令行。准备完成后，新书立项和项目助手都会自动使用可用模型。</Text>
+            <Text strong>想让 AI 一起创作？先连接一个模型</Text>
+            <Text type="secondary">从服务商官网获取 API Key，完成连接测试后即可用于创作。</Text>
           </div>
           <Button icon={<RocketOutlined />} onClick={() => navigate('/getting-started')}>
-            免费准备 AI <ArrowRightOutlined />
+            配置 AI <ArrowRightOutlined />
           </Button>
         </section>
       )}

@@ -1,5 +1,8 @@
 package com.siming.mobile.ui
 
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.foundation.layout.imePadding
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -112,12 +116,10 @@ internal fun CreationDossierWorkspace(
     }
 
     var editorOpen by rememberSaveable { mutableStateOf(false) }
-    var editorText by rememberSaveable { mutableStateOf("") }
-    var editorError by rememberSaveable { mutableStateOf<String?>(null) }
     var refineOpen by rememberSaveable { mutableStateOf(false) }
     var refineInstruction by rememberSaveable { mutableStateOf("") }
     var archiveConfirmOpen by rememberSaveable { mutableStateOf(false) }
-    val prettyJson = remember { Json { prettyPrint = true } }
+    var showStages by rememberSaveable { mutableStateOf(false) }
 
     fun currentDataForWrite(): JsonObject = if (selectedStage == "concepts") {
         CreationWorkbenchContract.conceptDataWithSelection(stageData, selectedConceptId)
@@ -125,83 +127,25 @@ internal fun CreationDossierWorkspace(
         stageData
     }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, 10.dp, 16.dp, 112.dp),
-        verticalArrangement = Arrangement.spacedBy(13.dp),
-    ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBackToChat) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回立项对话")
-                }
-                Column(Modifier.weight(1f)) {
-                    Text("新书建档工作台", fontWeight = FontWeight.Bold, fontSize = 22.sp)
-                    Text(
-                        session.string("display_title")
-                            .ifBlank { session.string("user_brief") }
-                            .ifBlank { "未命名立项" },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Text(
-                        creationRouteLabel(session) + " · 草稿修订 ${session.int("revision")}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                StatusPill(stageStatus)
+    val listState = rememberLazyListState()
+    LaunchedEffect(selectedStage) { listState.scrollToItem(0) }
+    Column(modifier.fillMaxSize().imePadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBackToChat) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回立项对话") }
+            TextButton(onClick = { showStages = true }, modifier = Modifier.weight(1f)) {
+                Text(stageLabel, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(" ▾")
             }
+            StatusPill(stageStatus)
         }
-
-        item {
-            Surface(
-                color = Color(0xFFF3EEE8),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Lock, null, tint = SimingCinnabar)
-                        Spacer(Modifier.width(8.dp))
-                        Text("与 PC 使用同一份 V3 建档资料", fontWeight = FontWeight.Bold)
-                    }
-                    Text(
-                        "这里的创作约束、创意、世界观、角色、地点、卷纲、开篇细纲和最终审阅，字段结构与确认规则都和 PC 一致。手机独立模式只把执行位置换成本机，不会另造一套数据。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
-        item {
-            Text("建档进度", fontWeight = FontWeight.Bold, fontSize = 17.sp)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                stages.forEach { (stage, label) ->
-                    val status = session.stageState(stage).string("status").ifBlank { "pending" }
-                    AssistChip(
-                        onClick = { selectedStage = stage },
-                        label = { Text("${stageMarker(status)} $label") },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = when {
-                                stage == selectedStage -> MaterialTheme.colorScheme.primaryContainer
-                                status == "confirmed" -> Color(0xFFEAF4EF)
-                                status in setOf("stale", "conflict") -> Color(0xFFFFEEE9)
-                                else -> Color.White
-                            },
-                        ),
-                    )
-                }
-            }
-        }
-
+        LinearProgressIndicator(progress = { stages.count { session.stageState(it.first).string("status") == "confirmed" }.toFloat() / stages.size.coerceAtLeast(1) },
+            modifier = Modifier.fillMaxWidth())
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(16.dp, 14.dp, 16.dp, 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
         if (stageStatus in setOf("stale", "conflict")) {
             item {
                 Surface(
@@ -243,13 +187,11 @@ internal fun CreationDossierWorkspace(
                         if (stageData.isNotEmpty()) {
                             IconButton(
                                 onClick = {
-                                    editorText = prettyJson.encodeToString(JsonObject.serializer(), currentDataForWrite())
-                                    editorError = null
                                     editorOpen = true
                                 },
                                 enabled = !running,
                             ) {
-                                Icon(Icons.Outlined.Edit, "完整编辑")
+                                Icon(Icons.Outlined.Edit, "编辑资料")
                             }
                         }
                     }
@@ -275,20 +217,6 @@ internal fun CreationDossierWorkspace(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 if (selectedStage != "constraints") {
-                    Button(
-                        onClick = {
-                            onGenerate(
-                                selectedStage,
-                                if (stageData.isEmpty()) "generate" else "regenerate",
-                                "",
-                            )
-                        },
-                        enabled = !running && CreationWorkbenchContract.stageCanGenerate(session, selectedStage),
-                    ) {
-                        Icon(if (stageData.isEmpty()) Icons.Outlined.AutoAwesome else Icons.Outlined.Refresh, null)
-                        Spacer(Modifier.width(7.dp))
-                        Text(if (stageData.isEmpty()) "生成$stageLabel" else "重新生成")
-                    }
                     OutlinedButton(
                         onClick = {
                             refineInstruction = ""
@@ -303,13 +231,11 @@ internal fun CreationDossierWorkspace(
                 }
                 OutlinedButton(
                     onClick = {
-                        editorText = prettyJson.encodeToString(JsonObject.serializer(), currentDataForWrite())
-                        editorError = null
                         editorOpen = true
                     },
                     enabled = !running && stageData.isNotEmpty(),
                 ) {
-                    Text("完整编辑")
+                    Text("编辑资料")
                 }
             }
         }
@@ -317,52 +243,10 @@ internal fun CreationDossierWorkspace(
         if (selectedStage == "constraints") {
             item {
                 Text(
-                    "创作约束是作者控制的事实。可在这里直接编辑，或回到对话中说明调整要求；修改后受影响的下游资料会与 PC 一样标记为需要重新校验。",
+                    "修改约束后，受影响的后续资料需要重新确认。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-        }
-
-        if (stageData.isNotEmpty()) {
-            item {
-                Button(
-                    onClick = {
-                        val data = currentDataForWrite()
-                        val next = CreationWorkbenchContract.nextStage(stageOrder, selectedStage)
-                        onConfirm(selectedStage, data) {
-                            if (next != null) selectedStage = next
-                        }
-                    },
-                    enabled = !running && CreationWorkbenchContract.stageCanConfirm(
-                        if (selectedStage == "concepts" && selectedConceptId.isNotBlank()) {
-                            session.withStageData("concepts", currentDataForWrite())
-                        } else {
-                            session
-                        },
-                        selectedStage,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(15.dp),
-                ) {
-                    Icon(Icons.Outlined.CheckCircle, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (CreationWorkbenchContract.nextStage(stageOrder, selectedStage) == null) {
-                            "确认$stageLabel"
-                        } else {
-                            "确认并进入下一项"
-                        },
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                if (selectedStage == "concepts" && selectedConceptId.isBlank()) {
-                    Text(
-                        "请先选择一个创意方向，再确认进入后续建档。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SimingCinnabar,
-                    )
-                }
             }
         }
 
@@ -389,7 +273,7 @@ internal fun CreationDossierWorkspace(
             }
         }
 
-        item {
+        if (canArchive || selectedStage == stageOrder.lastOrNull() || projectId.isNotBlank()) item {
             OutlinedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
@@ -416,7 +300,7 @@ internal fun CreationDossierWorkspace(
                         }
                     } else if (canArchive) {
                         Text(
-                            "最终审阅已通过。手机独立模式会把同一 V3 草稿投影为作品、角色、关系、世界观和大纲，并写入可同步的本地修订队列。",
+                            "资料已齐备。创建作品后，就可以开始写正文。",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Button(
@@ -438,60 +322,57 @@ internal fun CreationDossierWorkspace(
             }
         }
 
-        item {
-            Text(
-                "手机独立立项使用与 PC 相同的阶段结构、字段校验和确认门槛。选择手机 API 后，生成、编辑、确认和建立作品都在手机完成。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
+        Surface(color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (projectId.isNotBlank()) {
+                    Button(onClick = { onOpenProject(projectId) }, modifier = Modifier.fillMaxWidth()) { Text("打开正式作品") }
+                } else if (canArchive && selectedStage == stageOrder.lastOrNull()) {
+                    Button(onClick = { archiveConfirmOpen = true }, enabled = !running,
+                        modifier = Modifier.fillMaxWidth()) { Text("建立正式作品") }
+                } else if (stageStatus == "confirmed" && (selectedStage != "concepts" ||
+                        selectedConceptId == CreationWorkbenchContract.selectedConceptId(session, stageData))) {
+                    Button(onClick = {
+                        CreationWorkbenchContract.nextStage(stageOrder, selectedStage)?.let { selectedStage = it }
+                            ?: run { showStages = true }
+                    }, enabled = !running, modifier = Modifier.fillMaxWidth()) { Text("已确认 · 查看下一项") }
+                    if (selectedStage != "constraints") TextButton(
+                        onClick = { onGenerate(selectedStage, "regenerate", "") },
+                        enabled = !running && CreationWorkbenchContract.stageCanGenerate(session, selectedStage),
+                        modifier = Modifier.fillMaxWidth()) { Text("重新生成") }
+                } else if (stageData.isEmpty()) {
+                    Button(onClick = { onGenerate(selectedStage, "generate", "") },
+                        enabled = !running && selectedStage != "constraints" && CreationWorkbenchContract.stageCanGenerate(session, selectedStage),
+                        modifier = Modifier.fillMaxWidth()) { Text(if (running) "生成中…" else "生成$stageLabel") }
+                    if (!running && !CreationWorkbenchContract.stageCanGenerate(session, selectedStage))
+                        Text("请先在资料目录确认前面的阶段。", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Button(onClick = {
+                        val next = CreationWorkbenchContract.nextStage(stageOrder, selectedStage)
+                        onConfirm(selectedStage, currentDataForWrite()) { if (next != null) selectedStage = next }
+                    }, enabled = !running && CreationWorkbenchContract.stageCanConfirm(
+                        if (selectedStage == "concepts" && selectedConceptId.isNotBlank()) session.withStageData("concepts", currentDataForWrite()) else session, selectedStage),
+                        modifier = Modifier.fillMaxWidth()) {
+                        Text(if (CreationWorkbenchContract.nextStage(stageOrder, selectedStage) == null) "确认审阅" else "确认并继续")
+                    }
+                    if (selectedStage != "constraints") TextButton(
+                        onClick = { onGenerate(selectedStage, "regenerate", "") },
+                        enabled = !running && CreationWorkbenchContract.stageCanGenerate(session, selectedStage),
+                        modifier = Modifier.fillMaxWidth()) { Text("重新生成") }
+                }
+            }
+        }
+    }
+    if (showStages) {
+        CreationStageSheet(stages.map { CreationStageItem(it.first, it.second, session.stageState(it.first).string("status")) },
+            selected = selectedStage, onSelected = { selectedStage = it; showStages = false }, onDismiss = { showStages = false })
     }
 
     if (editorOpen) {
-        AlertDialog(
-            onDismissRequest = { if (!running) editorOpen = false },
-            title = { Text("完整编辑 · $stageLabel") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "字段名与 PC 完整编辑器一致。保存后，下游受影响阶段会按同一依赖规则重新校验。",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    OutlinedTextField(
-                        value = editorText,
-                        onValueChange = {
-                            editorText = it
-                            editorError = null
-                        },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 260.dp, max = 520.dp),
-                        minLines = 12,
-                        label = { Text("JSON 结构") },
-                        isError = editorError != null,
-                        supportingText = { editorError?.let { Text(it) } },
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val parsed = runCatching { Json.parseToJsonElement(editorText) as? JsonObject }
-                            .getOrNull()
-                        if (parsed == null) {
-                            editorError = "内容不是有效的 JSON 对象，请检查括号、逗号和引号。"
-                        } else {
-                            onSave(selectedStage, parsed) {
-                                editorOpen = false
-                                editorError = null
-                            }
-                        }
-                    },
-                    enabled = !running,
-                ) { Text("保存修改") }
-            },
-            dismissButton = {
-                TextButton(onClick = { editorOpen = false }, enabled = !running) { Text("取消") }
-            },
-        )
+        CreationArtifactEditor(title = stageLabel, initial = currentDataForWrite(), busy = running,
+            onDismiss = { editorOpen = false }, onSave = { data ->
+                onSave(selectedStage, data) { editorOpen = false }
+            })
     }
 
     if (refineOpen) {
@@ -564,28 +445,12 @@ private fun StatusPill(status: String) {
     }
 }
 
-private fun stageMarker(status: String): String = when (status) {
-    "confirmed" -> "✓"
-    "generated" -> "•"
-    "stale", "conflict" -> "!"
-    else -> "○"
-}
-
 private fun stageStatusDescription(status: String): String = when (status) {
     "confirmed" -> "作者已确认；仍可编辑或重新生成，受影响的下游会重新校验。"
     "generated" -> "内容已保存，等待作者检查与确认。"
     "stale" -> "上游资料已经变化，需要重新检查后确认。"
     "conflict" -> "当前内容与最新修订冲突，需要编辑或重新生成。"
     else -> "尚未生成；AI 生成后不会自动确认。"
-}
-
-private fun creationRouteLabel(session: JsonObject): String {
-    val draft = session.objectValue("draft")
-    return when {
-        draft.string("execution_route") == "pc" -> "电脑线路 · PC 权威建档服务"
-        draft.string("execution_host") == "gateway" -> "手机 Key · PC 权威建档服务"
-        else -> "手机独立 · PC 同源建档引擎"
-    }
 }
 
 private fun JsonObject.withStageData(stage: String, data: JsonObject): JsonObject {

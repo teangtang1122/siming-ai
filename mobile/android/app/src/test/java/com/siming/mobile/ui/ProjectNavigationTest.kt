@@ -6,15 +6,15 @@ import org.junit.Test
 class ProjectNavigationTest {
     @Test
     fun `reference sections share one primary destination`() {
-        listOf("outline", "character", "world", "foreshadowing", "governance").forEach { section ->
+        listOf("reference", "character", "world", "foreshadowing", "governance", "tools").forEach { section ->
             assertEquals("reference", projectPrimaryKey(section))
         }
     }
 
     @Test
-    fun `writing assistant and tools keep dedicated destinations`() {
+    fun `writing outline and assistant keep dedicated destinations`() {
         assertEquals("chapter", projectPrimaryKey("chapter"))
         assertEquals("assistant", projectPrimaryKey("assistant"))
-        assertEquals("tools", projectPrimaryKey("tools"))
+        assertEquals("outline", projectPrimaryKey("outline"))
     }
 }

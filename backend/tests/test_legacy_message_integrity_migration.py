@@ -15,7 +15,7 @@ from alembic import command
 from app.database.bootstrap import alembic_config, bootstrap_database
 from app.database.session import create_session_engine
 
-_HEAD = "300a38_candidate_envelope"
+_HEAD = "300a39_retire_free_onboarding"
 _INTEGRITY_REVISION = "300a33_legacy_message_integrity"
 _PRE_SEQUENCE_REVISION = "300a27_chapter_revision_drafts"
 _PRE_REPAIR_REVISION = "300a32_context_source_ids"

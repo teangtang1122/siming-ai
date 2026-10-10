@@ -51,10 +51,11 @@ class CreationConversationUiInstrumentedTest {
             screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
         }
         screenshot.recycle()
-        compose.onNodeWithText("创作约束 · 待确认").performClick()
+        compose.onNodeWithText("资料 0/2").performClick()
+        compose.onNodeWithText("创作约束").performClick()
         compose.runOnIdle { assertEquals("constraints", openedStage); assertTrue(sent.isEmpty()) }
         compose.onNode(hasSetTextAction()).performTextInput("继续完善灯塔规则")
-        compose.onNodeWithText("发送").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(listOf("继续完善灯塔规则"), sent) }
     }
 }

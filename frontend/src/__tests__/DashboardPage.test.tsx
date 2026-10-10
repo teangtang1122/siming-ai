@@ -104,7 +104,7 @@ vi.mock('../features/projects', () => ({
 }))
 
 vi.mock('../features/onboarding', () => ({
-  useGettingStartedSummary: () => ({ data: { needs_setup: mockNeedsSetup } }),
+  useGettingStartedStatus: () => ({ data: { needs_setup: mockNeedsSetup } }),
 }))
 
 // ---------------------------------------------------------------------------
@@ -434,15 +434,15 @@ describe('DashboardPage', () => {
     modalConfirmSpy.mockRestore()
   })
 
-  it('should guide an unconfigured first-time user to the free setup flow', async () => {
+  it('should guide an unconfigured first-time user to API setup', async () => {
     mockNeedsSetup = true
 
     renderDashboard()
 
-    expect(await screen.findByText('想让 AI 一起创作？先完成一次免费准备')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /免费准备 AI/ })).toHaveLength(1)
+    expect(await screen.findByText('想让 AI 一起创作？先连接一个模型')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /配置 AI/ })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: /创建新作品/ })).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: /免费准备 AI/ }))
+    fireEvent.click(screen.getByRole('button', { name: /配置 AI/ }))
     expect(mockNavigate).toHaveBeenCalledWith('/getting-started')
   })
 

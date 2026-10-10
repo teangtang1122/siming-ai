@@ -551,7 +551,7 @@ class McpAutoConfigTest(unittest.TestCase):
         self.assertEqual(existing.default_model, "xiaomi/mimo-v2.5-pro")
         db.commit.assert_called_once()
 
-    def test_retired_opencode_free_model_is_migrated_to_a_discovered_model(self):
+    def test_detecting_opencode_preserves_the_authors_explicit_model(self):
         existing = MagicMock()
         existing.provider = "opencode_cli"
         existing.default_model = "opencode/deepseek-v4-flash-free"
@@ -585,9 +585,9 @@ class McpAutoConfigTest(unittest.TestCase):
         ):
             mcp_auto_config.ensure_detected_local_cli_model_configs(db, explicit_consent=True)
 
-        self.assertEqual(existing.default_model, "opencode/hy3-free")
-        preferred.assert_called_once_with("opencode_cli", "opencode.cmd")
-        db.commit.assert_called_once()
+        self.assertEqual(existing.default_model, "opencode/deepseek-v4-flash-free")
+        preferred.assert_not_called()
+        db.commit.assert_not_called()
 
     def test_legacy_permission_defaults_are_migrated_once(self):
         settings = MagicMock()

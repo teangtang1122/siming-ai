@@ -497,10 +497,9 @@ async function mockUiApi(page: Page, assistantScenario: 'running' | 'recovery' =
     }
     if (path === '/api/v1/config/getting-started') {
       return fulfill(route, { code: 0, data: {
-        free_models: [], recommended_model: null, platform_supported: true, configured: true,
-        configured_model: model.default_model, is_global_default: true, needs_setup: false,
-        has_detected_models: true, has_usable_models: true,
-        global_model: { provider: model.provider, model: model.default_model }, activation_job: null,
+        has_any_model: true, has_usable_models: true, needs_setup: false,
+        global_model: { provider: model.provider, model: model.default_model },
+        available_model: { provider: model.provider, model: model.default_model },
       } })
     }
     if (path === '/api/v1/config/app-info') return fulfill(route, { code: 0, data: { name: 'Siming', version: '3.2.1' } })
@@ -638,7 +637,7 @@ test('keeps onboarding, model settings and governance visually focused', async (
   await mockUiApi(page)
 
   await page.goto('/getting-started', { waitUntil: 'networkidle' })
-  await expect(page.getByRole('heading', { name: 'OpenCode 已可用，再完成一步即可启用完整 Agent' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '模型已就绪，开始构思吧' })).toBeVisible()
   await expectViewportSafe(page)
   await expectVisualSnapshot(page, 'quick-start-ready-1920x1080.png')
 

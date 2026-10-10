@@ -59,7 +59,6 @@ from .local_cli import (
     CLIPermissionRequiredError,
     LocalCLIAdapter,
     detect_cli_quota_error,
-    effective_local_cli_model,
     is_local_cli_provider,
 )
 
@@ -370,8 +369,6 @@ class LLMGateway:
     ) -> tuple[str, str]:
         model = cls._model_for_task(model, extra_body)
         provider, model_name = cls._parse_model(model)
-        if is_local_cli_provider(provider):
-            model_name = effective_local_cli_model(provider, model_name)
         return provider, model_name
 
     @classmethod

@@ -1,6 +1,7 @@
 package com.siming.mobile.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -72,14 +73,16 @@ import com.siming.mobile.data.MobilePendingChapterDraft
 internal fun ChapterWorkspace(
     chapters: List<ReplicaEntity>,
     outlines: List<ReplicaEntity>,
-    online: Boolean,
     onOpen: (ReplicaEntity) -> Unit,
     onManageOrder: () -> Unit,
+    onCreate: () -> Unit,
+    onOpenAssistant: () -> Unit,
+    onOpenCataloging: () -> Unit,
 ) {
     val totalWords = chapters.sumOf(::chapterWordCount)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 104.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
@@ -89,7 +92,7 @@ internal fun ChapterWorkspace(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("正文", style = MaterialTheme.typography.headlineSmall)
+                        Text("章节", style = MaterialTheme.typography.headlineSmall)
                         Text(
                             "${chapters.size} 章 · ${formatWordCount(totalWords)}",
                             style = MaterialTheme.typography.bodyMedium,
@@ -105,13 +108,11 @@ internal fun ChapterWorkspace(
                         Text("排序")
                     }
                 }
-                if (chapters.size > 1) {
-                    Text(
-                        "章节顺序、正文和版本历史均可在手机管理。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onOpenAssistant, modifier = Modifier.weight(1f)) { Text("AI 写作") }
+                    OutlinedButton(onClick = onCreate, modifier = Modifier.weight(1f)) { Text("手动新建") }
                 }
+                if (chapters.isNotEmpty()) TextButton(onClick = onOpenCataloging) { Text("建档进度与导出 →") }
             }
         }
         if (chapters.isEmpty()) {
@@ -119,7 +120,7 @@ internal fun ChapterWorkspace(
                 EmptyPanel(
                     icon = Icons.Outlined.MenuBook,
                     title = "还没有正文",
-                    detail = "点击右下角“＋”创建第一章。",
+                    detail = "让助手根据大纲生成草稿，或手动写下第一章。",
                 )
             }
         } else {
@@ -191,17 +192,18 @@ internal fun PendingChapterDraftEditorScreen(
 
     Scaffold(
         containerColor = SimingPaper,
+        modifier = Modifier.imePadding(),
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            if (draft.generating) "AI 正在写作"
-                            else if (draft.revision) "审阅 AI 修订候选"
-                            else "确认 AI 章节草稿",
+                            if (draft.generating) "正在写作"
+                            else if (draft.revision) "修订草稿"
+                            else "章节草稿",
                         )
                         Text(
-                            "手机未保存草稿",
+                            "尚未写入正式章节",
                             style = MaterialTheme.typography.labelSmall,
                         )
                     }
@@ -273,8 +275,8 @@ internal fun PendingChapterDraftEditorScreen(
         Column(
             modifier = Modifier
                 .padding(padding)
+                .consumeWindowInsets(padding)
                 .fillMaxSize()
-                .imePadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -305,7 +307,7 @@ internal fun PendingChapterDraftEditorScreen(
             }
             if (!draft.generating && !showingFormalText) {
                 Text(
-                    "如果对草稿不满意，可以返回 AI 工作区直接要求司命修改当前草稿；无需先保存或建档。",
+                    "草稿可继续修改，保存后才成为正式章节。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -323,7 +325,7 @@ internal fun PendingChapterDraftEditorScreen(
                 onValueChange = { content = it },
                 enabled = !draft.generating && !busy && !showingFormalText,
                 placeholder = { Text(if (draft.generating) "模型正文会在这里实时出现…" else "检查并修改正文…") },
-                minLines = 16,
+                minLines = 3,
                 maxLines = Int.MAX_VALUE,
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 textStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
@@ -451,7 +453,7 @@ private fun ChapterDirectoryCard(
                     )
                 }
                 Text(
-                    formatWordCount(chapterWordCount(chapter)),
+                    formatWordCount(content.count { !it.isWhitespace() }),
                     style = MaterialTheme.typography.labelSmall,
                     color = SimingInkMuted,
                 )
@@ -471,7 +473,6 @@ internal fun ChapterEditorScreen(
     onOpenAi: () -> Unit,
     onOpenHistory: (() -> Unit)?,
 ) {
-    val connection by viewModel.connection.collectAsStateWithLifecycle()
     val originalTitle = chapter?.formText("title").orEmpty()
     val originalContent = chapter?.formText("content").orEmpty()
     var title by rememberSaveable(chapter?.key) {
@@ -505,10 +506,11 @@ internal fun ChapterEditorScreen(
         else onBack()
     }
 
-    BackHandler(enabled = editing, onBack = ::requestLeaveEditor)
+    BackHandler(onBack = ::requestLeaveEditor)
 
     Scaffold(
         containerColor = SimingPaper,
+        modifier = Modifier.imePadding(),
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
@@ -601,12 +603,7 @@ internal fun ChapterEditorScreen(
                         OutlinedButton(onClick = onOpenAi, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(5.dp))
-                            Text("AI 共创")
-                        }
-                        OutlinedButton(onClick = { showMore = true }, modifier = Modifier.weight(0.82f)) {
-                            Icon(Icons.Outlined.MoreHoriz, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text("更多")
+                            Text("AI 助手")
                         }
                         Button(onClick = { editing = true }, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Outlined.Edit, null, Modifier.size(18.dp))
@@ -622,8 +619,8 @@ internal fun ChapterEditorScreen(
             Column(
                 modifier = Modifier
                     .padding(padding)
+                    .consumeWindowInsets(padding)
                     .fillMaxSize()
-                    .imePadding()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -653,7 +650,7 @@ internal fun ChapterEditorScreen(
                     onValueChange = { content = it },
                     enabled = !saving,
                     placeholder = { Text("开始写正文…") },
-                    minLines = 16,
+                    minLines = 3,
                     maxLines = Int.MAX_VALUE,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
@@ -773,7 +770,7 @@ private fun ChapterReadingView(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        formatWordCount(chapterWordCount(chapter)),
+                        formatWordCount(content.count { !it.isWhitespace() }),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -781,8 +778,7 @@ private fun ChapterReadingView(
                     Text(
                         when {
                             chapter.conflicted -> "存在版本分岔"
-                            chapter.dirty -> "等待同步"
-                            else -> "已同步"
+                            else -> "正文已保存"
                         },
                         style = MaterialTheme.typography.labelMedium,
                         color = when {

@@ -23,7 +23,6 @@ def ensure_detected_local_cli_model_configs(
     from app.ai.local_cli_adapter import (
         DEFAULT_CLI_ARGS,
         DEFAULT_CLI_MODELS,
-        OPENCODE_RETIRED_MODELS,
         preferred_local_cli_model,
     )
     from app.core.crypto import encrypt
@@ -54,16 +53,7 @@ def ensure_detected_local_cli_model_configs(
             continue
         existing = db.query(APIConfig).filter(APIConfig.provider == provider).first()
         if existing:
-            if provider == "opencode_cli" and existing.default_model in OPENCODE_RETIRED_MODELS:
-                existing.default_model = preferred_local_cli_model(provider, command)
-                legacy_args = json.dumps(
-                    ["run", "--dangerously-skip-permissions", "{prompt}"],
-                    ensure_ascii=False,
-                )
-                if existing.cli_args == legacy_args:
-                    existing.cli_args = json.dumps(DEFAULT_CLI_ARGS[provider], ensure_ascii=False)
-                changed = True
-            elif provider == "mimocode_cli" and existing.default_model == "mimocode-cli":
+            if provider == "mimocode_cli" and existing.default_model == "mimocode-cli":
                 existing.default_model = preferred_local_cli_model(provider, command)
                 changed = True
             continue

@@ -21,6 +21,7 @@ on:
       - "backend/tests/test_installer_updater.py"
       - "backend/tests/test_release_packaging_contract.py"
       - "backend/tests/test_windows_installer_contract.py"
+      - "backend/tests/test_windows_installer_runtime.py"
   workflow_dispatch:
 
 jobs:
@@ -84,7 +85,7 @@ jobs:
 
       - name: Test installer update contracts
         working-directory: backend
-        run: python -m pytest tests/test_updater.py tests/test_installer_updater.py tests/test_packaging_contract.py tests/test_release_packaging_contract.py tests/test_windows_installer_contract.py
+        run: python -m pytest tests/test_updater.py tests/test_installer_updater.py tests/test_packaging_contract.py tests/test_release_packaging_contract.py tests/test_windows_installer_contract.py tests/test_windows_installer_runtime.py
 
       - name: Build Windows installer
         shell: cmd

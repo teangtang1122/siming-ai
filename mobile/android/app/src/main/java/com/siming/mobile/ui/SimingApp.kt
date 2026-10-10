@@ -1,6 +1,16 @@
 package com.siming.mobile.ui
 
 import android.os.Build
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -92,6 +102,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -124,7 +135,7 @@ import com.siming.mobile.data.network.PcFieldKind
 import com.siming.mobile.R
 
 private enum class RootTab(val label: String, val icon: ImageVector) {
-    Library("作品", Icons.AutoMirrored.Outlined.LibraryBooks),
+    Library("书架", Icons.AutoMirrored.Outlined.LibraryBooks),
     Create("立项", Icons.Outlined.AutoAwesome),
     Sync("同步", Icons.Outlined.Sync),
     Settings("设置", Icons.Outlined.Settings),
@@ -149,6 +160,7 @@ private val entitySections = listOf(
     EntitySection("tools", "工具", Icons.Outlined.Settings, ""),
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SimingApp(
     viewModel: MainViewModel,
@@ -163,6 +175,7 @@ fun SimingApp(
     val creationDrafts by viewModel.creationDrafts.collectAsStateWithLifecycle()
     val ui by viewModel.uiState
     val snackbar = remember { SnackbarHostState() }
+    val screenState = rememberSaveableStateHolder()
     var rootTab by rememberSaveable { mutableStateOf(RootTab.Library) }
     var selectedProjectId by rememberSaveable { mutableStateOf<String?>(null) }
     var showDirectApiSetup by rememberSaveable { mutableStateOf(false) }
@@ -172,6 +185,15 @@ fun SimingApp(
         val message = ui.error ?: ui.notice ?: return@LaunchedEffect
         snackbar.showSnackbar(message)
         viewModel.clearNotice()
+    }
+
+    BackHandler(enabled = showDirectApiSetup || showAbout || selectedProjectId != null || rootTab != RootTab.Library) {
+        when {
+            showDirectApiSetup -> showDirectApiSetup = false
+            showAbout -> showAbout = false
+            selectedProjectId != null -> selectedProjectId = null
+            else -> rootTab = RootTab.Library
+        }
     }
 
     if (showDirectApiSetup) {
@@ -207,6 +229,7 @@ fun SimingApp(
 
     val selectedProject = projects.firstOrNull { it.projectId == selectedProjectId }
     if (selectedProject != null) {
+        screenState.SaveableStateProvider("project:${selectedProject.projectId}") {
         ProjectScreen(
             viewModel = viewModel,
             project = selectedProject,
@@ -215,6 +238,7 @@ fun SimingApp(
             onSaveExport = onSaveExport,
             onConfigureDirectApi = { showDirectApiSetup = true },
         )
+        }
         return
     }
 
@@ -223,15 +247,14 @@ fun SimingApp(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             Column {
-                SimingTopBar(connection, ui.directApi)
+                if (!(rootTab == RootTab.Create && ui.activeCreationId != null)) SimingTopBar(connection, ui.directApi)
                 if (ui.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         },
         bottomBar = {
-            NavigationBar(
+            if (!(rootTab == RootTab.Create && ui.activeCreationId != null) && WindowInsets.ime.getBottom(LocalDensity.current) <= WindowInsets.navigationBars.getBottom(LocalDensity.current)) NavigationBar(
                 containerColor = SimingPaperWarm,
                 tonalElevation = 0.dp,
-                modifier = Modifier.navigationBarsPadding(),
             ) {
                 RootTab.entries.forEach { tab ->
                     NavigationBarItem(
@@ -244,6 +267,7 @@ fun SimingApp(
             }
         },
     ) { padding ->
+        screenState.SaveableStateProvider(rootTab.name) {
         when (rootTab) {
             RootTab.Create -> CreationScreen(
                 modifier = Modifier.padding(padding).consumeWindowInsets(padding),
@@ -259,11 +283,8 @@ fun SimingApp(
             RootTab.Library -> LibraryScreen(
                 modifier = Modifier.padding(padding),
                 projects = libraryProjects,
-                connection = connection,
-                directApi = ui.directApi,
                 viewModel = viewModel,
                 onOpenProject = { selectedProjectId = it },
-                onScanQr = onScanQr,
                 onPickText = onPickText,
                 onPickProjectPackage = onPickProjectPackage,
                 onStartAiCreation = { rootTab = RootTab.Create },
@@ -284,6 +305,7 @@ fun SimingApp(
                 onOpenAbout = { showAbout = true },
             )
         }
+        }
     }
 }
 
@@ -296,8 +318,8 @@ private fun SimingTopBar(connection: GatewayConnection?, directApi: DirectApiSum
                 Text("司命", fontWeight = FontWeight.SemiBold, letterSpacing = 2.sp)
                 Text(
                     when {
-                        connection != null -> "自己的 Gateway · 跨设备创作"
-                        directApi != null -> "手机独立 · ${directApi.model}"
+                        connection != null -> "已连接电脑"
+                        directApi != null -> "手机 AI 已配置"
                         else -> "离线创作"
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -316,7 +338,6 @@ private fun SimingTopBar(connection: GatewayConnection?, directApi: DirectApiSum
             )
         },
         actions = {
-            ContextInspectorButton(label = "调用记录")
             Icon(
                 when {
                     connection != null -> Icons.Outlined.CloudQueue
@@ -335,85 +356,87 @@ private fun SimingTopBar(connection: GatewayConnection?, directApi: DirectApiSum
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryScreen(
     modifier: Modifier,
     projects: List<ProjectSyncRecord>,
-    connection: GatewayConnection?,
-    directApi: DirectApiSummary?,
     viewModel: MainViewModel,
     onOpenProject: (String) -> Unit,
-    onScanQr: () -> Unit,
     onPickText: (((MobileNovelImportFile) -> Unit) -> Unit),
     onPickProjectPackage: (((MobileProjectPackageFile) -> Unit) -> Unit),
     onStartAiCreation: () -> Unit,
 ) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
+    var showActions by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<String?>(null) }
-    Column(modifier.fillMaxSize()) {
-        if (connection == null) {
-            StatusBanner(
-                icon = if (directApi == null) Icons.Outlined.CloudOff else Icons.Outlined.PhoneAndroid,
-                title = if (directApi == null) "当前离线，仍可继续写作" else "手机独立模式",
-                detail = if (directApi == null) {
-                    "修改已保存到手机；配置 API 后无需电脑也能使用 AI。"
-                } else {
-                    "${directApi.displayName} · ${directApi.model} 可直接使用；作品保存在本机。"
-                },
-                action = "连接",
-                onAction = onScanQr,
-                warning = directApi == null,
-            )
+    val visibleProjects = projects.filter {
+        query.isBlank() || it.project.formText("title").contains(query, ignoreCase = true)
+    }
+    LazyColumn(
+        modifier = modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text("我的书架", style = MaterialTheme.typography.headlineSmall)
+                    Text("${projects.size} 部作品", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Button(onClick = { showActions = true }) {
+                    Icon(Icons.Outlined.Add, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("新建")
+                }
+            }
         }
-        LazyColumn(
-            contentPadding = PaddingValues(18.dp, 18.dp, 18.dp, 96.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
+        if (projects.isNotEmpty()) {
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("作品", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        if (projects.isEmpty()) "创建或导入你的第一部小说" else "${projects.size} 部作品 · 继续上次的创作",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                OutlinedTextField(query, { query = it }, placeholder = { Text("搜索作品") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, null) }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium)
             }
+        }
+        if (projects.isEmpty()) {
             item {
-                LibraryActionPanel(
-                    onStartAiCreation = onStartAiCreation,
-                    onCreateBlank = { showCreate = true },
-                    onImportNovel = {
-                        onPickText { file ->
-                            viewModel.importNovel(file, onOpenProject)
-                        }
-                    },
-                    onImportProjectPackage = {
-                        onPickProjectPackage { file ->
-                            viewModel.importProjectPackage(file, onOpenProject)
-                        }
-                    },
-                )
-            }
-            if (projects.isEmpty()) {
-                item {
-                    EmptyPanel(
-                        icon = Icons.AutoMirrored.Outlined.LibraryBooks,
-                        title = "这里还没有作品",
-                        detail = "可以从零立项，也可以直接导入 TXT、Markdown 或 DOCX。导入、编辑和导出都在手机完成。",
-                    )
-                }
-            } else {
-                items(projects, key = { it.project.key }) { record ->
-                    MobileProjectCard(
-                        record = record,
-                        onClick = { onOpenProject(record.project.projectId) },
-                        onDelete = { deleteTarget = record.project.projectId },
-                    )
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Icon(Icons.AutoMirrored.Outlined.MenuBook, null, tint = SimingCinnabar, modifier = Modifier.size(36.dp))
+                        Text("故事，从这里开始", style = MaterialTheme.typography.titleLarge)
+                        Text("和 AI 一起构思新书，或导入已有作品继续写。", style = MaterialTheme.typography.bodyMedium)
+                        Button(onClick = onStartAiCreation, modifier = Modifier.fillMaxWidth()) { Text("开始立项") }
+                        TextButton(onClick = { showActions = true }, modifier = Modifier.fillMaxWidth()) { Text("导入或手动创建") }
+                    }
                 }
             }
+        } else if (visibleProjects.isEmpty()) {
+            item { EmptyPanel(Icons.Outlined.Search, "没有找到作品", "换个书名再试试。") }
+        } else {
+            items(visibleProjects, key = { it.project.key }) { record ->
+                MobileProjectCard(record, onClick = { onOpenProject(record.project.projectId) },
+                    onDelete = { deleteTarget = record.project.projectId })
+            }
+        }
+    }
+    if (showActions) {
+        ModalBottomSheet(onDismissRequest = { showActions = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Text("添加作品", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(20.dp))
+            LibraryActionPanel(
+                onStartAiCreation = { showActions = false; onStartAiCreation() },
+                onCreateBlank = { showActions = false; showCreate = true },
+                onImportNovel = {
+                    showActions = false
+                    onPickText { file -> viewModel.importNovel(file, onOpenProject) }
+                },
+                onImportProjectPackage = {
+                    showActions = false
+                    onPickProjectPackage { file -> viewModel.importProjectPackage(file, onOpenProject) }
+                },
+            )
+            Spacer(Modifier.height(20.dp))
         }
     }
     if (showCreate) {
@@ -452,7 +475,7 @@ private fun LibraryScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ProjectScreen(
     viewModel: MainViewModel,
@@ -463,7 +486,6 @@ private fun ProjectScreen(
     onConfigureDirectApi: () -> Unit,
 ) {
     var section by rememberSaveable(project.projectId) { mutableStateOf("chapter") }
-    var lastReferenceSection by rememberSaveable(project.projectId) { mutableStateOf("outline") }
     var editor by remember { mutableStateOf<EditorTarget?>(null) }
     var advanced by remember { mutableStateOf<EditorTarget?>(null) }
     var chapterEditor by remember { mutableStateOf<ReplicaEntity?>(null) }
@@ -482,6 +504,20 @@ private fun ProjectScreen(
         viewModel.restorePendingChapterDraft(project.projectId)
         viewModel.restorePendingOutlineDraft(project.projectId)
     }
+
+    fun navigateBack() {
+        when {
+            outlineTarget != null -> outlineTarget = null
+            narrativeTarget != null -> narrativeTarget = null
+            referenceTarget != null -> referenceTarget = null
+            editor != null -> editor = null
+            chapterEditor != null || creatingChapter -> { chapterEditor = null; creatingChapter = false }
+            section in projectReferenceSections.map { it.first } || section == "tools" -> section = "reference"
+            section != "chapter" -> section = "chapter"
+            else -> onBack()
+        }
+    }
+    BackHandler(onBack = ::navigateBack)
 
     val pendingChapterDraft = ui.pendingChapterDraft
         ?.takeIf { it.projectId == project.projectId }
@@ -620,14 +656,14 @@ if (editor != null) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(project.text("title").ifBlank { "未命名作品" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
-                                "手机独立工作台",
+                                currentSection?.label ?: if (section == "assistant") "项目助手" else "故事资料",
                                 style = MaterialTheme.typography.labelSmall,
                             )
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回作品库")
+                        IconButton(onClick = ::navigateBack) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, if (section == "chapter") "返回作品库" else "返回")
                         }
                     },
                     actions = {
@@ -640,14 +676,13 @@ if (editor != null) {
             }
         },
         bottomBar = {
-            ProjectPrimaryNavigation(
+            if (WindowInsets.ime.getBottom(LocalDensity.current) <= WindowInsets.navigationBars.getBottom(LocalDensity.current)) ProjectPrimaryNavigation(
                 selected = section,
-                preferredReferenceSection = lastReferenceSection,
                 onSelected = { section = it },
             )
         },
         floatingActionButton = {
-            if (section !in setOf("assistant", "tools")) {
+            if (section !in setOf("assistant", "tools", "reference", "chapter")) {
                 FloatingActionButton(
             onClick = {
                 if (section == "chapter") creatingChapter = true
@@ -662,23 +697,18 @@ if (editor != null) {
             }
         },
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            if (section in projectReferenceSections.map { it.first }) {
-                ProjectReferenceNavigation(
-                    selected = section,
-                    onSelected = {
-                        section = it
-                        lastReferenceSection = it
-                    },
-                )
-            }
+        Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
             when (section) {
+                "reference" -> ProjectReferenceHome(onSelected = { section = it },
+                    onEditProject = { editor = EditorTarget("project", project) })
                 "chapter" -> ChapterWorkspace(
                     chapters = records,
                     outlines = outlineRecords,
-                    online = connection != null,
                     onOpen = { chapterEditor = it },
                     onManageOrder = { showChapterOrder = true },
+                    onCreate = { creatingChapter = true },
+                    onOpenAssistant = { section = "assistant" },
+                    onOpenCataloging = { section = "tools" },
                 )
                 "assistant" -> AssistantScreen(
                     projectId = project.projectId,
@@ -1267,185 +1297,6 @@ private fun AssistantScreen(
 }
 
 @Composable
-private fun SyncScreen(
-    modifier: Modifier,
-    viewModel: MainViewModel,
-    connection: GatewayConnection?,
-    onScanQr: () -> Unit,
-) {
-    val pending by viewModel.pendingCount.collectAsStateWithLifecycle()
-    val cursor by viewModel.cursor.collectAsStateWithLifecycle()
-    val conflicts by viewModel.conflicts.collectAsStateWithLifecycle()
-    val ui by viewModel.uiState
-    var disconnectDialog by remember { mutableStateOf(false) }
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(18.dp, 18.dp, 18.dp, 96.dp),
-        verticalArrangement = Arrangement.spacedBy(13.dp),
-    ) {
-        item {
-            ScreenHeading(
-                kicker = "REVISIONED SYNC",
-                title = "同步中枢",
-                detail = "先上传本机队列，再拉取 Gateway 修订；同一资料两边都改动时保留双方。",
-            )
-        }
-        item {
-            if (connection == null) {
-                EmptyPanel(
-                    Icons.Outlined.CloudOff,
-                    "当前没有 Gateway 授权",
-                    if (ui.directApi == null) {
-                        "本机资料仍可编辑；配置直连 API 后可独立使用 AI。"
-                    } else {
-                        "手机直连 API 不受影响；跨设备同步仍需 Gateway。"
-                    },
-                )
-                Button(onClick = onScanQr, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Outlined.QrCodeScanner, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("扫描新的 Gateway")
-                }
-            } else {
-                GatewayConnectionCard(connection)
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.fillMaxWidth()) {
-                MetricCard("待上传", pending.toString(), "本机修订", Modifier.weight(1f))
-                MetricCard("同步游标", (cursor?.cursor ?: 0).toString(), "全局顺序", Modifier.weight(1f))
-                MetricCard("分岔", conflicts.size.toString(), "待选择", Modifier.weight(1f), conflicts.isNotEmpty())
-            }
-        }
-        if (cursor?.lastError != null) {
-            item { StatusBanner(Icons.Outlined.ErrorOutline, "上次同步没有完成", cursor?.lastError.orEmpty(), warning = true) }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = viewModel::syncNow,
-                    enabled = connection != null && !ui.busy,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(Icons.Outlined.Sync, null)
-                    Spacer(Modifier.width(7.dp))
-                    Text("立即同步")
-                }
-                OutlinedButton(
-                    onClick = viewModel::bootstrap,
-                    enabled = connection != null && !ui.busy,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(Icons.Outlined.Refresh, null)
-                    Spacer(Modifier.width(7.dp))
-                    Text("重新校验")
-                }
-            }
-        }
-        item {
-            Text("版本分岔", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text("双方原始快照会保留在 Gateway；选择只会追加一个新修订。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if (conflicts.isEmpty()) {
-            item { StatusBanner(Icons.Outlined.CheckCircle, "没有待处理分岔", "所有设备都沿同一条修订线继续。") }
-        } else {
-            items(conflicts, key = { it.id }) { conflict -> ConflictCard(conflict, viewModel) }
-        }
-        if (connection != null) {
-            item {
-                HorizontalDivider(Modifier.padding(vertical = 5.dp))
-                OutlinedButton(onClick = { disconnectDialog = true }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Outlined.CloudOff, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("断开这台设备")
-                }
-            }
-        }
-    }
-    if (disconnectDialog) {
-        AlertDialog(
-            onDismissRequest = { disconnectDialog = false },
-            title = { Text("断开 Gateway？") },
-            text = { Text("联网时会同时撤销 Gateway 授权。若 Gateway 暂时不可达，本机会先断开并提示你稍后到管理页补撤销。") },
-            confirmButton = {
-                TextButton(onClick = { disconnectDialog = false; viewModel.disconnect(false) }) { Text("保留离线作品") }
-            },
-            dismissButton = {
-                TextButton(onClick = { disconnectDialog = false; viewModel.disconnect(true) }) {
-                    Text("同时清除本机副本", color = MaterialTheme.colorScheme.error)
-                }
-            },
-        )
-    }
-}
-
-@Composable
-private fun GatewayConnectionCard(connection: GatewayConnection) {
-    OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = Color.White)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = CircleShape, modifier = Modifier.size(42.dp)) {
-                    Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Devices, null, tint = SimingGreen) }
-                }
-                Spacer(Modifier.width(11.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(connection.gatewayName, fontWeight = FontWeight.SemiBold)
-                    Text(connection.baseUrl, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                MicroTag("已授权", SimingGreen)
-            }
-            HorizontalDivider()
-            Text("指纹 ${compactFingerprint(connection.gatewayFingerprint)}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall)
-            Text("角色 ${connection.deviceRole} · 协议 v${connection.protocolVersion}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun ConflictCard(conflict: LocalConflict, viewModel: MainViewModel) {
-    var expanded by remember { mutableStateOf(false) }
-    OutlinedCard(
-        colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFFFFFAF0)),
-        border = BorderStroke(1.dp, Color(0xFFD8AD6F)),
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.WarningAmber, null, tint = Color(0xFFA66A16))
-                Spacer(Modifier.width(8.dp))
-                Text("${entityLabel(conflict.entityType)}有两个版本", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text("修订 ${conflict.serverRevision}", style = MaterialTheme.typography.labelSmall)
-            }
-            TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起双方快照" else "比较双方快照") }
-            if (expanded) {
-                SnapshotBox("Gateway 当前版本", conflict.serverPayloadJson)
-                SnapshotBox("手机离线版本", conflict.clientPayloadJson)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { viewModel.resolveConflict(conflict, "server") }, modifier = Modifier.weight(1f)) { Text("保留 Gateway") }
-                Button(onClick = { viewModel.resolveConflict(conflict, "client") }, modifier = Modifier.weight(1f)) { Text("采用手机") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SnapshotBox(label: String, raw: String?) {
-    Column {
-        Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-        SelectionContainer {
-            Text(
-                raw ?: "（删除记录）",
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
-                modifier = Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(6.dp)).padding(9.dp),
-                maxLines = 10,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
 private fun PairingScreen(
     viewModel: MainViewModel,
     allowBack: Boolean,
@@ -1485,9 +1336,9 @@ private fun PairingScreen(
                 }
             }
             Spacer(Modifier.height(18.dp))
-            Text("让手机独立工作", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text("随时，写下你的故事", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Text(
-                "直接配置云端 API 后，无需连接电脑即可让 AI 完成立项采访、结构生成、正式建档和后续共创。需要跨设备同步时，再连接自己的 Gateway。",
+                "可以先写作，也可以连接 AI 一起构思。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 8.dp),
@@ -1497,10 +1348,10 @@ private fun PairingScreen(
                 Button(onClick = onConfigureApi, modifier = Modifier.fillMaxWidth().height(50.dp)) {
                     Icon(Icons.Outlined.Key, null)
                     Spacer(Modifier.width(9.dp))
-                    Text("配置云端 API，开启 AI 立项")
+                    Text("配置手机 AI")
                 }
                 Text(
-                    "API Key 由 Android Keystore 加密保存。手机 API 直接连接你配置的模型服务，不通过 PC 转发。",
+                    "使用自己的 API，手机可独立完成创作。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
@@ -1512,7 +1363,7 @@ private fun PairingScreen(
                         modifier = Modifier.fillMaxWidth().padding(top = 12.dp).height(50.dp),
                     ) { Text("稍后配置") }
                     Text(
-                        "先导入、查看和编辑本机资料，需要 AI 时再到设置中配置。",
+                        "先进入书架，导入或手动写作。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp),
@@ -1523,7 +1374,7 @@ private fun PairingScreen(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
                 ) {
                     HorizontalDivider(Modifier.weight(1f))
-                    Text("  或连接自己的 Gateway  ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("  使用电脑模型 / 同步  ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     HorizontalDivider(Modifier.weight(1f))
                 }
                 OutlinedButton(onClick = onScanQr, modifier = Modifier.fillMaxWidth().height(50.dp)) {
@@ -1531,7 +1382,7 @@ private fun PairingScreen(
                     Spacer(Modifier.width(9.dp))
                     Text("扫描电脑上的二维码")
                 }
-                TextButton(onClick = { manual = !manual }) { Text(if (manual) "收起手动粘贴" else "相机不可用？手动粘贴配对内容") }
+                TextButton(onClick = { manual = !manual }) { Text(if (manual) "收起手动粘贴" else "粘贴配对内容") }
                 if (manual) {
                     OutlinedTextField(
                         value = raw,
@@ -1589,12 +1440,7 @@ private fun PairingScreen(
                 }
                 TextButton(onClick = viewModel::cancelPairing, enabled = !ui.busy) { Text("取消并清除二维码") }
             }
-            Spacer(Modifier.height(26.dp))
-            StatusBanner(
-                Icons.Outlined.Info,
-                "开源免费，不托管正文",
-                "无 Gateway 时由手机内置 PC 同源提示词直接调用 API；配对令牌和 API Key 均由 Android Keystore 加密。",
-            )
+            Spacer(Modifier.height(16.dp))
         }
     }
 }

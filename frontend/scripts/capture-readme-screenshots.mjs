@@ -9,7 +9,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const frontendRoot = path.resolve(scriptDir, '..')
 const outputDir = path.resolve(frontendRoot, '..', 'docs', 'images', 'readme')
 const timestamp = '2026-07-16T08:30:00.000Z'
-const modelId = 'opencode_cli:opencode/big-pickle'
+const modelId = 'deepseek:deepseek-chat'
 
 const project = {
   id: 'mistlight-project',
@@ -25,10 +25,10 @@ const project = {
 }
 
 const model = {
-  id: 'readme-opencode-model',
-  provider: 'opencode_cli',
-  name: 'OpenCode Big Pickle',
-  default_model: 'opencode/big-pickle',
+  id: 'readme-api-model',
+  provider: 'deepseek',
+  name: 'DeepSeek',
+  default_model: 'deepseek-chat',
   is_global_default: true,
   readiness_status: 'ready',
   readiness_message: '真实对话验证成功',
@@ -211,30 +211,20 @@ const operation = {
 }
 
 const gettingStartedEmpty = {
-  free_models: [{ id: 'opencode/big-pickle', display_name: 'Big Pickle', recommended: true }],
-  recommended_model: 'opencode/big-pickle',
-  platform_supported: true,
-  configured: false,
-  configured_model: null,
-  is_global_default: false,
   needs_setup: true,
-  has_detected_models: false,
+  has_any_model: false,
   has_usable_models: false,
-  recommended_action: '准备 OpenCode 并完成一次真实对话验证',
   global_model: null,
-  activation_job: null,
+  available_model: null,
 }
 
 const gettingStartedReady = {
   ...gettingStartedEmpty,
-  configured: true,
-  configured_model: 'opencode/big-pickle',
-  is_global_default: true,
   needs_setup: false,
-  has_detected_models: true,
+  has_any_model: true,
   has_usable_models: true,
-  recommended_action: '开始创作',
-  global_model: { provider: 'opencode_cli', model: 'opencode/big-pickle' },
+  global_model: { provider: 'deepseek', model: 'deepseek-chat' },
+  available_model: { provider: 'deepseek', model: 'deepseek-chat' },
 }
 
 const envelope = (data) => ({ code: 0, message: 'ok', data })
@@ -380,9 +370,14 @@ async function run() {
   try {
     const quickStart = await preparePage(context, 'quick-start')
     await quickStart.goto(new URL('/getting-started', baseUrl).href, { waitUntil: 'domcontentloaded' })
-    await quickStart.getByRole('heading', { name: '从一句故事想法开始' }).waitFor()
+    await quickStart.getByRole('heading', { name: '通过 API 连接模型' }).waitFor()
     results.push(await capture(quickStart, 'quick-start.png'))
     await quickStart.close()
+
+    if (process.argv.includes('--quick-start-only')) {
+      process.stdout.write(`quick-start.png: 1440x900, ${results[0].bytes} bytes\n`)
+      return
+    }
 
     const creation = await preparePage(context, 'novel-creation')
     await creation.goto(new URL(`/novel-creation?session=${creationSession.id}`, baseUrl).href, { waitUntil: 'domcontentloaded' })

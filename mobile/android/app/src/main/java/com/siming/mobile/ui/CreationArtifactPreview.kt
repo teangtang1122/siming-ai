@@ -106,7 +106,7 @@ internal fun ArtifactPreview(data: JsonObject) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         data.entries.forEach { (key, value) ->
             if (key !in setOf("selected_concept_id")) {
-                ArtifactField(fieldLabel(key), value, depth = 0)
+                ArtifactField(creationFieldLabel(key), value, depth = 0)
             }
         }
     }
@@ -178,15 +178,15 @@ private fun ObjectPreviewCard(
                     when (child) {
                         JsonNull -> Unit
                         is JsonPrimitive -> child.contentOrNull?.takeIf(String::isNotBlank)?.let {
-                            Text("${fieldLabel(key)}：${fieldValueLabel(key, it)}", style = MaterialTheme.typography.bodySmall, lineHeight = 19.sp)
+                            Text("${creationFieldLabel(key)}：${fieldValueLabel(key, it)}", style = MaterialTheme.typography.bodySmall, lineHeight = 19.sp)
                         }
                         else -> {
                             var expanded by rememberSaveable(title, key) { mutableStateOf(false) }
                             TextButton(onClick = { expanded = !expanded }) {
-                                Text("${if (expanded) "收起" else "查看"}${fieldLabel(key)}")
+                                Text("${if (expanded) "收起" else "查看"}${creationFieldLabel(key)}")
                             }
                             if (expanded) {
-                                if (depth < 4) ArtifactField(fieldLabel(key), child, depth + 1)
+                                if (depth < 4) ArtifactField(creationFieldLabel(key), child, depth + 1)
                                 else SelectionContainer { Text(child.toString(), style = MaterialTheme.typography.bodySmall) }
                             }
                         }
@@ -202,7 +202,7 @@ private fun ObjectPreviewCard(
 }
 
 
-private fun fieldLabel(key: String): String = mapOf(
+internal fun creationFieldLabel(key: String): String = mapOf(
     "brief" to "创作核心",
     "genre" to "作品类型",
     "target_audience" to "目标读者",

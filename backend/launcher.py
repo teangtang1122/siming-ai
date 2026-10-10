@@ -1089,6 +1089,17 @@ def _install_windows_desktop_pet_input_overlay(pet_window):
         return None
 
 
+def _bind_desktop_pet_lifetime(main_window, pet_window) -> None:
+    """A hidden pet must not keep the desktop process alive after its owner exits."""
+    def close_pet() -> None:
+        if not pet_window.events.closed.is_set():
+            pet_window.destroy()
+
+    # `closed` fires only after a close is accepted. `closing` can be cancelled.
+    # Pywebview otherwise waits for every window, including hidden pet windows.
+    main_window.events.closed += close_pet
+
+
 def _show_error(title: str, message: str) -> None:
     _log(f"{title}: {message}")
     try:
@@ -1820,6 +1831,7 @@ def main() -> None:
             gui_url=gui_url,
         )
         if pet_window is not None:
+            _bind_desktop_pet_lifetime(window, pet_window)
             pet_window.events.moved += desktop_api._remember_desktop_pet_position
 
         def _activate_window() -> None:

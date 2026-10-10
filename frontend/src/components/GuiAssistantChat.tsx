@@ -3597,8 +3597,8 @@ function GuiAssistantChat() {
               showIcon
               icon={<RocketOutlined />}
               message="还差一步：先连接一个模型"
-              description="可以免费开始，不需要 API Key，也不用打开命令行。"
-              action={<Button type="primary" onClick={() => navigate('/getting-started')}>免费设置</Button>}
+              description="请在快速开始获取并配置 API Key，通过真实对话测试后即可使用。"
+              action={<Button type="primary" onClick={() => navigate('/getting-started')}>配置模型</Button>}
             />
           )}
           <ModelContextCapacityAlert

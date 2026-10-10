@@ -15,7 +15,6 @@
     "backend/app/services/context_orchestrator.py": 2197,
     "backend/app/services/narrative_governance.py": 1084,
     "backend/app/services/novel_creation_workspace.py": 1389,
-    "backend/app/services/opencode_onboarding.py": 1483,
     "backend/app/services/story_granularity.py": 1302,
     "backend/app/services/workspace/tools/external_cataloging.py": 1919,
     "backend/app/services/workspace/tools/external_writing.py": 1140,

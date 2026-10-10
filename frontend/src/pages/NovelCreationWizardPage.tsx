@@ -687,7 +687,7 @@ function NovelCreationWizardPage() {
         </header>
 
         {!hasModels && (
-          <Alert className="creation-model-alert" type="warning" showIcon message="当前没有可用模型" description="你仍可填写并保存立项草稿。也可以先免费体验，不需要命令行或 API Key。" action={<Button type="primary" onClick={() => navigate('/getting-started')}>免费开始</Button>} />
+          <Alert className="creation-model-alert" type="warning" showIcon message="当前没有可用模型" description="你仍可填写并保存立项草稿。使用 AI 前，请先在快速开始配置 API 并完成验证。" action={<Button type="primary" onClick={() => navigate('/getting-started')}>配置模型</Button>} />
         )}
 
         {showPathChooser ? (

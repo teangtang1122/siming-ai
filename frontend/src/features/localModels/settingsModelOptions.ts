@@ -41,6 +41,14 @@ export const PROVIDER_OPTIONS = [
   { value: '__custom_openai_compatible__', label: '自定义 OpenAI 兼容' },
 ]
 
+export const API_KEY_PORTALS = [
+  { provider: 'deepseek', url: 'https://platform.deepseek.com/api_keys' },
+  { provider: 'qwen', url: 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key' },
+  { provider: 'openai', url: 'https://platform.openai.com/api-keys' },
+  { provider: 'anthropic', url: 'https://platform.claude.com/settings/keys' },
+  { provider: 'gemini', url: 'https://aistudio.google.com/apikey' },
+]
+
 export const CUSTOM_PROVIDER_VALUE = '__custom_openai_compatible__'
 export const PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]+$/
 

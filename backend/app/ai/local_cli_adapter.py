@@ -44,10 +44,7 @@ from .local_cli_models import (
     DEFAULT_CLI_COMMANDS,
     DEFAULT_CLI_MODELS,
     OPENCODE_DEFAULT_MODEL,
-    OPENCODE_MODELS,
-    OPENCODE_RETIRED_MODELS,
     discover_local_cli_models,
-    effective_local_cli_model,
     is_cli_model_sentinel,
     local_cli_model_options,
     preferred_local_cli_model,
@@ -813,7 +810,7 @@ class LocalCLIAdapter(BaseAdapter):
         permission_granted: bool = False,
         direct_prompt_safe: bool = False,
     ) -> tuple[CLILaunch, str]:
-        execution_model = effective_local_cli_model(self._provider, model)
+        execution_model = model
         flattened_prompt = " ".join(
             part.strip() for part in prompt.splitlines() if part.strip()
         )
@@ -1323,7 +1320,7 @@ class LocalCLIAdapter(BaseAdapter):
                     )
                 result = await self._continue_incomplete_opencode_turn(
                     command=context.command,
-                    model=effective_local_cli_model(self._provider, model),
+                    model=model,
                     cwd=context.cwd,
                     env=context.env,
                     session_id=state.session_id,

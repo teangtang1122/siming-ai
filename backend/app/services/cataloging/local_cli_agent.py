@@ -29,7 +29,6 @@ from app.ai.local_cli_adapter import (
     LocalCLIAdapter,
     communicate_with_cli_quota_detection,
     detect_cli_quota_error,
-    effective_local_cli_model,
     ensure_opencode_logging_args,
     hidden_subprocess_kwargs,
     parse_cli_launch,
@@ -548,10 +547,9 @@ async def _run_cli_turn(
     resolved = shutil.which(command) or (command if Path(command).exists() else None)
     if not resolved:
         raise RuntimeError(f"未找到本机 CLI 命令：{command}")
-    model = effective_local_cli_model(
-        config.provider,
+    model = (
         (job.model.split(":", 1)[1] if job.model and ":" in job.model else job.model)
-        or config.default_model or DEFAULT_CLI_MODELS.get(config.provider, config.provider),
+        or config.default_model or DEFAULT_CLI_MODELS.get(config.provider, config.provider)
     )
     env = os.environ.copy()
     env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")

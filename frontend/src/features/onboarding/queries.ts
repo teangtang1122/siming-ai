@@ -4,34 +4,22 @@ import type { ApiEnvelope, GettingStartedStatus } from '../../shared/api/contrac
 
 export const onboardingKeys = {
   all: ['getting-started'] as const,
-  summary: () => [...onboardingKeys.all, 'summary'] as const,
-  detail: () => [...onboardingKeys.all, 'detail'] as const,
+  status: () => [...onboardingKeys.all, 'status'] as const,
 }
 
-export async function getGettingStartedStatus(summary = false, refresh = false) {
+export async function getGettingStartedStatus() {
   const response = await apiClient.get<ApiEnvelope<GettingStartedStatus>>(
     '/config/getting-started',
-    summary || refresh ? { summary, refresh } : undefined,
   )
   return response.data.data
 }
 
-export function useGettingStartedSummary(enabled = true) {
+export function useGettingStartedStatus(enabled = true) {
   return useQuery({
-    queryKey: onboardingKeys.summary(),
-    queryFn: () => getGettingStartedStatus(true),
-    staleTime: 30_000,
+    queryKey: onboardingKeys.status(),
+    queryFn: getGettingStartedStatus,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
     enabled,
-  })
-}
-
-export function useGettingStartedStatus() {
-  return useQuery({
-    queryKey: onboardingKeys.detail(),
-    queryFn: async () => {
-      const summary = await getGettingStartedStatus(true)
-      return summary.needs_setup ? getGettingStartedStatus(false) : summary
-    },
-    staleTime: 10_000,
   })
 }

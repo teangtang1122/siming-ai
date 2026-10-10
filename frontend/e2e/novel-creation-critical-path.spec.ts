@@ -27,8 +27,6 @@ const zh = {
   runtime: '\u5f53\u524d\u6a21\u578b\u8fd0\u884c\u72b6\u6001',
   runtimeToggle: '\u67e5\u770b\u5f53\u524d\u6a21\u578b\u4e0e\u8fd0\u884c\u72b6\u6001',
   create: '\u786e\u8ba4\u5e76\u521b\u5efa\u6b63\u5f0f\u4f5c\u54c1',
-  freeStart: '\u514d\u8d39\u5f00\u59cb',
-  installOpenCode: '\u51c6\u5907 AI \u5e76\u5f00\u59cb\u6784\u601d',
 }
 
 const catalog = {
@@ -234,16 +232,28 @@ async function mockApi(page: Page, options: {
     if (path === '/api/v1/config/launcher') {
       return fulfill(route, { code: 0, data: { launch_mode: 'desktop', update_channel: 'stable', restart_required: false } })
     }
+    if (path === '/api/v1/config/content-root') {
+      return fulfill(route, {
+        code: 0,
+        data: {
+          current_path: 'D:/Siming/projects',
+          default_path: 'D:/Siming/projects',
+          is_default: true,
+          exists: true,
+          is_empty: false,
+          looks_like_siming_root: true,
+        },
+      })
+    }
     if (path === '/api/v1/config/getting-started') {
       return fulfill(route, {
         code: 0,
         data: options.gettingStarted ?? {
           needs_setup: !hasUsableModel,
-          has_any_model: hasUsableModel,
-          has_detected_models: configuredModels.length > 0,
+          has_any_model: configuredModels.length > 0,
           has_usable_models: hasUsableModel,
-          configured: hasUsableModel,
           global_model: hasUsableModel ? { provider: 'opencode_cli', model: 'free-model' } : null,
+          available_model: hasUsableModel ? { provider: 'opencode_cli', model: 'free-model' } : null,
         },
       })
     }
@@ -379,7 +389,7 @@ test('does not treat a detected Claude CLI as a usable writing model', async ({ 
   await page.goto('/gui', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByText(/还差一步：先连接一个模型/)).toBeVisible()
-  await expect(page.getByRole('button', { name: '免费设置' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '配置模型', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: zh.runtimeToggle })).toContainText('配置模型')
 })
 
@@ -486,51 +496,38 @@ test('enters the one shared creation workbench from the dashboard', async ({ pag
   await expect(page.getByRole('heading', { name: '司命系统助手' })).toBeVisible()
 })
 
-test('automatically guides a first-time user to one-click OpenCode setup', async ({ page }) => {
+test('guides a first-time user to API setup with official key portals', async ({ page }) => {
   await mockApi(page, {
     models: [],
     gettingStarted: {
-      installed: false,
-      command: null,
-      version: null,
-      managed_by_siming: false,
-      model_source: 'none',
-      free_models: [],
-      recommended_model: null,
-      platform_supported: true,
-      install_location: 'C:/Users/author/AppData/Local/Siming/managed-cli/opencode/bin/opencode.exe',
-      configured: false,
-      configured_model: null,
-      is_global_default: false,
       has_any_model: false,
+      has_usable_models: false,
       needs_setup: true,
       global_model: null,
-      official_links: {
-        releases: 'https://github.com/anomalyco/opencode/releases/latest',
-        install_docs: 'https://opencode.ai/docs/#install',
-        model_docs: 'https://opencode.ai/docs/providers/#opencode-zen',
-      },
+      available_model: null,
     },
   })
   await page.goto('/dashboard', { waitUntil: 'domcontentloaded' })
 
   await expect(page).toHaveURL(/\/getting-started$/)
-  await expect(page.getByRole('button', { name: new RegExp(zh.installOpenCode) })).toBeVisible()
-  await expect(page.getByText('\u65e0\u9700\u6253\u5f00\u547d\u4ee4\u884c')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '通过 API 连接模型' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'DeepSeek 官网获取 API Key' }))
+    .toHaveAttribute('href', 'https://platform.deepseek.com/api_keys')
+  await expect(page.getByRole('button', { name: '配置 CLI' })).toHaveCount(0)
+  await expectNoSeriousAccessibilityViolations(page)
+  await page.getByRole('button', { name: '配置 API' }).click()
+  await expect(page).toHaveURL(/\/settings\?section=ai&setup=api$/)
+  await expect(page.getByRole('dialog', { name: '添加模型配置' })).toBeVisible()
 })
 
 test('turns one story sentence into the first adjustable concept run after setup', async ({ page }) => {
   await mockApi(page, {
     gettingStarted: {
       needs_setup: false,
-      configured: true,
-      is_global_default: true,
-      platform_supported: true,
-      free_models: [],
-      has_detected_models: true,
+      has_any_model: true,
       has_usable_models: true,
-      global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
-      opencode_mcp_configured: true,
+      global_model: { provider: 'deepseek', model: 'author-model' },
+      available_model: { provider: 'deepseek', model: 'author-model' },
     },
   })
   await page.goto('/getting-started', { waitUntil: 'domcontentloaded' })

@@ -4,7 +4,7 @@ import { Alert, Layout, Spin } from 'antd'
 import { Suspense, lazy, useEffect } from 'react'
 import { useAppStore } from './stores'
 import GlobalOperationCenter from './features/operations/components/GlobalOperationCenter'
-import { useGettingStartedSummary } from './features/onboarding'
+import { useGettingStartedStatus } from './features/onboarding'
 import GatewayAdminGate, { useGatewayRuntime } from './features/gateway/GatewayAdminGate'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
@@ -59,13 +59,13 @@ function LoadingScreen() {
   )
 }
 
-/** Send a brand-new, unconfigured author to the zero-command setup once. */
+/** Send a brand-new, unconfigured author to the model setup once. */
 function FirstRunSetupGate() {
   const location = useLocation()
   const navigate = useNavigate()
   const { headless } = useGatewayRuntime()
   const onLibraryRoute = ['/', '/dashboard'].includes(location.pathname)
-  const { data } = useGettingStartedSummary(onLibraryRoute && !headless)
+  const { data } = useGettingStartedStatus(onLibraryRoute && !headless)
 
   useEffect(() => {
     if (!onLibraryRoute) return

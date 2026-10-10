@@ -49,86 +49,11 @@ internal fun LibraryActionPanel(
     onImportNovel: () -> Unit,
     onImportProjectPackage: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Card(
-            onClick = onStartAiCreation,
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(
-                    color = Color.White.copy(alpha = 0.68f),
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.size(46.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = SimingCinnabar)
-                    }
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("开始一个新故事", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "从想法、设定到章节细纲，让 AI 和你一起立项。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            LibrarySmallAction(
-                icon = Icons.Outlined.FileOpen,
-                title = "导入小说",
-                detail = "TXT / MD / DOCX",
-                modifier = Modifier.weight(1f),
-                onClick = onImportNovel,
-            )
-            LibrarySmallAction(
-                icon = Icons.Outlined.Add,
-                title = "空白作品",
-                detail = "直接开写",
-                modifier = Modifier.weight(1f),
-                onClick = onCreateBlank,
-            )
-        }
-        LibrarySmallAction(
-            icon = Icons.Outlined.Archive,
-            title = "导入司命项目包",
-            detail = ".siming-project · 完整或结构档位",
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onImportProjectPackage,
-        )
-    }
-}
-
-@Composable
-private fun LibrarySmallAction(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    detail: String,
-    modifier: Modifier,
-    onClick: () -> Unit,
-) {
-    OutlinedCard(
-        onClick = onClick,
-        modifier = modifier,
-        colors = CardDefaults.outlinedCardColors(containerColor = SimingSurfaceRaised),
-    ) {
-        Column(
-            modifier = Modifier.padding(15.dp),
-            verticalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+    Column {
+        WorkspaceActionRow("AI 立项", "从故事想法到开篇大纲", Icons.Outlined.AutoAwesome, onStartAiCreation)
+        WorkspaceActionRow("空白作品", "自己构思，直接开写", Icons.Outlined.Add, onCreateBlank)
+        WorkspaceActionRow("导入小说", "TXT / Markdown / DOCX", Icons.Outlined.FileOpen, onImportNovel)
+        WorkspaceActionRow("导入项目包", "恢复作品、设定与历史", Icons.Outlined.Archive, onImportProjectPackage)
     }
 }
 
@@ -163,7 +88,7 @@ internal fun MobileProjectCard(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
-                        title.take(1),
+                        title.firstOrNull { it.isLetterOrDigit() }?.toString() ?: "书",
                         color = if (project.conflicted) MaterialTheme.colorScheme.error else SimingCinnabar,
                         fontWeight = FontWeight.Bold,
                         fontSize = 21.sp,
@@ -186,7 +111,7 @@ internal fun MobileProjectCard(
                         description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -200,7 +125,6 @@ internal fun MobileProjectCard(
                             ProjectSyncStatus.UNCONFIRMED -> MicroTag("同步待确认", SimingBlue)
                         }
                     }
-                    if (project.revision > 0) MicroTag("r${project.revision}", SimingInkMuted)
                 }
             }
             Box {

@@ -127,6 +127,17 @@ describe('SettingsPage startup and update controls', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 
+  it('opens the existing API configuration form from Quick Start', async () => {
+    window.history.replaceState({}, '', '/settings?section=ai&setup=api')
+    renderSettings()
+    expect(await screen.findByRole('dialog', { name: '添加模型配置' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '返回快速开始' })).toHaveAttribute('href', '/getting-started')
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '提供商' }))
+    expect(await screen.findByText('DeepSeek', { exact: true })).toBeInTheDocument()
+    expect(screen.queryByText('opencode CLI（本机）')).not.toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
   it('assigns a secondary discovered model to a task without changing the global default', async () => {
     api.get.mockImplementation((url: string) => {
       if (url === '/config/models') return Promise.resolve({ data: { data: {

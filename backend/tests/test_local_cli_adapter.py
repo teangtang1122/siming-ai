@@ -13,8 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.ai.local_cli_adapter import (
     DEFAULT_CLI_MODELS,
     OPENCODE_DEFAULT_MODEL,
-    OPENCODE_MODELS,
-    OPENCODE_RETIRED_MODELS,
     CLIPermissionRequiredError,
     CLIStalledError,
     CLITurnTerminal,
@@ -24,7 +22,6 @@ from app.ai.local_cli_adapter import (
     detect_cli_permission_request,
     detect_cli_quota_error,
     discover_local_cli_models,
-    effective_local_cli_model,
     ensure_opencode_logging_args,
     extract_cli_error,
     extract_cli_runtime_error,
@@ -127,14 +124,27 @@ class LocalCLIAdapterHelperTestCase(unittest.TestCase):
     def test_opencode_default_uses_a_current_free_model(self):
         self.assertEqual(OPENCODE_DEFAULT_MODEL, "opencode/big-pickle")
         self.assertEqual(DEFAULT_CLI_MODELS["opencode_cli"], OPENCODE_DEFAULT_MODEL)
-        self.assertNotIn("opencode/deepseek-v4-flash-free", OPENCODE_MODELS)
 
-    def test_retired_opencode_models_are_mapped_to_the_current_default(self):
-        for model in OPENCODE_RETIRED_MODELS:
-            self.assertEqual(
-                effective_local_cli_model("opencode_cli", model),
-                OPENCODE_DEFAULT_MODEL,
-            )
+    def test_explicit_opencode_model_is_not_silently_replaced(self):
+        requested = "opencode/deepseek-v4-flash-free"
+        launch = parse_cli_launch(None, "opencode_cli", "hello", requested)
+        self.assertEqual(launch.args[launch.args.index("--model") + 1], requested)
+
+    @patch("app.ai.local_cli_models._configured_local_cli_model_options", return_value=[])
+    @patch("app.ai.local_cli_models.discover_local_cli_models", return_value=[])
+    def test_opencode_discovery_failure_does_not_invent_models(self, _discover, _configured):
+        self.assertEqual(local_cli_model_options("opencode_cli", "opencode"), [])
+
+    @patch("app.ai.local_cli_models.subprocess.run")
+    @patch("app.ai.local_cli_models.shutil.which", return_value=r"C:\tools\opencode.exe")
+    def test_opencode_refresh_updates_cli_catalog_without_changing_default_probes(self, _which, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = 'opencode/new-model-free\n{"id":"new-model-free","providerID":"opencode"}'
+        models = discover_local_cli_models("opencode_cli", "opencode", refresh=True)
+        self.assertEqual([item["id"] for item in models], ["opencode/new-model-free"])
+        self.assertEqual(run.call_args.args[0][-3:], ["models", "--verbose", "--refresh"])
+        discover_local_cli_models("opencode_cli", "opencode")
+        self.assertEqual(run.call_args.args[0][-2:], ["models", "--verbose"])
 
     @patch("app.ai.local_cli_models.discover_local_cli_models")
     def test_opencode_preferred_model_uses_a_discovered_current_free_model(self, discover):

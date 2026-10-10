@@ -16,7 +16,7 @@ vi.mock('react-router-dom', async () => {
 
 let needsSetup = false
 vi.mock('../features/onboarding', () => ({
-  useGettingStartedSummary: () => ({ data: { needs_setup: needsSetup } }),
+  useGettingStartedStatus: () => ({ data: { needs_setup: needsSetup } }),
 }))
 vi.mock('../stores', () => ({ useAppStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ error: null, setError: vi.fn() }) }))
 vi.mock('../features/operations/components/GlobalOperationCenter', () => ({ default: () => null }))
@@ -46,7 +46,7 @@ describe('App route behavior', () => {
     expect(await screen.findByTestId('dashboard-page')).toBeInTheDocument()
   })
 
-  it('sends an unconfigured first-time author to free setup', async () => {
+  it('sends an unconfigured first-time author to model setup', async () => {
     needsSetup = true
     render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/getting-started', { replace: true }))

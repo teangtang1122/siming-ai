@@ -203,27 +203,6 @@ def test_opencode_verification_retains_capacity_for_first_real_creation_turn():
     assert request.cli_command == config.cli_command
 
 
-def test_free_opencode_activation_persists_the_same_discovered_capacity():
-    from app.services import opencode_activation
-
-    db = _session()
-    models = [{
-        "id": "opencode/big-pickle", "context_window_tokens": 200000,
-        "max_output_tokens": 32000, "capacity_source": "opencode_cli_metadata",
-    }]
-    with patch(
-        "app.database.session.SessionLocal", sessionmaker(bind=db.get_bind()),
-    ), patch.object(opencode_activation, "local_cli_model_options", return_value=models):
-        opencode_activation.save_activated_config("opencode", "opencode/big-pickle")
-
-    config = db.query(APIConfig).filter_by(provider="opencode_cli").one()
-    data = config_router._config_payload(config, db=db)
-    assert data["is_usable"] is True
-    assert data["context_profile_known"] is True
-    assert data["context_window_tokens"] == 200000
-    assert data["context_profile_source"] == "opencode_cli_metadata"
-
-
 def test_saved_config_verification_persists_quota_failure():
     db = _session()
     config = APIConfig(

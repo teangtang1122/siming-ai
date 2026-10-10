@@ -337,7 +337,7 @@ internal fun MobileSettingsWorkspace(
         contentPadding = PaddingValues(18.dp, 18.dp, 18.dp, 104.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { ScreenHeading("", "设置", "模型、跨设备连接和本机数据边界集中放在这里。") }
+        item { ScreenHeading("", "设置", "管理 AI 模型与设备连接。") }
         item { SettingsSectionTitle("AI 模型") }
         item {
             OutlinedCard(Modifier.fillMaxWidth()) {
@@ -391,6 +391,7 @@ internal fun MobileSettingsWorkspace(
                 }
             }
         }
+        item { ContextInspectorButton(label = "调用记录与诊断") }
         item { SettingsSectionTitle("数据与隐私") }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = SimingPaperWarm), modifier = Modifier.fillMaxWidth()) {

@@ -17,7 +17,7 @@ from app.database.models import (
 from app.database.session import create_session_engine
 
 _PRE_CANONICAL_REVISION = "300a33_legacy_message_integrity"
-_HEAD = "300a38_candidate_envelope"
+_HEAD = "300a39_retire_free_onboarding"
 
 
 def test_upgrade_canonicalizes_legacy_deepseek_bindings_without_overwriting_profile(

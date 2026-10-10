@@ -100,6 +100,7 @@ internal fun CreationConversationWorkspace(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var showDetails by rememberSaveable(session.string("id")) { mutableStateOf(false) }
+    var showStages by rememberSaveable(session.string("id")) { mutableStateOf(false) }
     val confirmedCount = stages.count { session.stageState(it.first).string("status") == "confirmed" }
     LaunchedEffect(session.string("id"), messages.size, running) {
         // Scroll on a new turn, never on each token while the author reads history.
@@ -112,29 +113,12 @@ internal fun CreationConversationWorkspace(
             Column(Modifier.weight(1f)) {
                 Text(session.string("display_title").ifBlank { "新书立项" },
                     fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("已确认 $confirmedCount / ${stages.size} 项 · ${if (route == "pc") "电脑线路" else "手机独立"}",
+                Text(if (route == "pc") "电脑模型 · 立项中" else "手机 AI · 立项中",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            TextButton(onClick = { onOpenDossier(null) }) { Text("资料") }
+            TextButton(onClick = { showStages = true }) { Text("资料 $confirmedCount/${stages.size}") }
             IconButton(onClick = { showDetails = !showDetails }) {
                 Icon(if (showDetails) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown, "立项详情与管理")
-            }
-        }
-        Text(
-            "立项助手仅筹备作品资料，不生成章节正文。创建正式作品后，请进入项目助手写作。",
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(stages, key = { it.first }) { (stage, label) ->
-                val status = when (session.stageState(stage).string("status")) {
-                    "confirmed" -> "已确认"
-                    "generated" -> "待确认"
-                    "stale", "conflict" -> "待复核"
-                    else -> "待完善"
-                }
-                AssistChip(onClick = { onOpenDossier(stage) }, label = { Text("$label · $status") })
             }
         }
         HorizontalDivider()
@@ -210,22 +194,16 @@ internal fun CreationConversationWorkspace(
             }
         }
         if (projectId.isBlank()) {
-            Surface(tonalElevation = 2.dp) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                    OutlinedTextField(value = input, onValueChange = { input = it },
-                        placeholder = { Text("说说你的想法…") }, minLines = 1, maxLines = 4,
-                        modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp))
-                    Button(onClick = {
-                        val message = input.trim()
-                        if (message.isNotBlank()) { input = ""; onSend(message) }
-                    }, enabled = input.isNotBlank() && !running,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp)) {
-                        Text("发送")
-                    }
-                }
-            }
+            MessageComposer(value = input, onValueChange = { input = it }, placeholder = "说说你的想法…",
+                running = running, canSend = true, onSend = {
+                    val message = input.trim()
+                    if (message.isNotBlank()) { input = ""; onSend(message) }
+                })
         }
+    }
+    if (showStages) {
+        CreationStageSheet(stages.map { CreationStageItem(it.first, it.second, session.stageState(it.first).string("status")) },
+            onSelected = { showStages = false; onOpenDossier(it) }, onDismiss = { showStages = false })
     }
 }
 

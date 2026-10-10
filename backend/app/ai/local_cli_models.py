@@ -25,21 +25,7 @@ DEFAULT_CLI_COMMANDS: dict[str, str] = {
     "dsh_cli": "dsh",
     "custom_cli": "",
 }
-OPENCODE_LEGACY_MODEL = "opencode-cli"
 OPENCODE_DEFAULT_MODEL = "opencode/big-pickle"
-OPENCODE_RETIRED_MODELS = frozenset({
-    OPENCODE_LEGACY_MODEL,
-    "opencode/deepseek-v4-flash-free",
-})
-OPENCODE_MODELS = [
-    OPENCODE_DEFAULT_MODEL,
-    "opencode/mimo-v2.5-free",
-    "opencode/hy3-free",
-    "opencode/nemotron-3-ultra-free",
-    "opencode/nemotron-3.5-lightning-free",
-    "opencode/x-preview-f-free",
-    "opencode/muse-spark-1.2-contributor-free",
-]
 DEFAULT_CLI_MODELS: dict[str, str] = {
     "claude_cli": "claude-code",
     "codex_cli": "codex-cli",
@@ -276,12 +262,6 @@ def _configured_local_cli_model_options(provider: str, cli_args: str | None = No
     )
 
 
-def effective_local_cli_model(provider: str, model: str) -> str:
-    if provider == "opencode_cli" and model in OPENCODE_RETIRED_MODELS:
-        return OPENCODE_DEFAULT_MODEL
-    return model
-
-
 def is_cli_model_sentinel(provider: str, model: str | None) -> bool:
     return not model or model in CLI_MODEL_SENTINELS.get(provider, set())
 
@@ -377,6 +357,7 @@ def discover_local_cli_models(
     command: str | None = None,
     *,
     timeout: int = 15,
+    refresh: bool = False,
 ) -> list[dict]:
     discovery_args = CLI_MODEL_DISCOVERY_ARGS.get(provider)
     resolved = (
@@ -386,6 +367,8 @@ def discover_local_cli_models(
     )
     if not discovery_args or not resolved:
         return []
+    if provider == "opencode_cli" and refresh:
+        discovery_args = [*discovery_args, "--refresh"]
     try:
         completed = subprocess.run(
             _subprocess_command(resolved, discovery_args),
@@ -416,9 +399,8 @@ def preferred_local_cli_model(provider: str, command: str | None = None) -> str:
     if not models:
         return preferred
     if provider == "opencode_cli":
-        for candidate in OPENCODE_MODELS:
-            if candidate in ids:
-                return candidate
+        if preferred in ids:
+            return preferred
         for item in models:
             model_id = str(item.get("id") or "").strip().lower()
             if model_id.startswith("opencode/") and (
@@ -435,7 +417,7 @@ def local_cli_model_options(
 ) -> list[dict]:
     default_model = DEFAULT_CLI_MODELS.get(provider, f"{provider}-default")
     fallback = (
-        [_model_option(model) for model in OPENCODE_MODELS]
+        []
         if provider == "opencode_cli"
         else [_model_option(
             default_model,
@@ -457,10 +439,7 @@ __all__ = [
     "DEFAULT_CLI_COMMANDS",
     "DEFAULT_CLI_MODELS",
     "OPENCODE_DEFAULT_MODEL",
-    "OPENCODE_MODELS",
-    "OPENCODE_RETIRED_MODELS",
     "discover_local_cli_models",
-    "effective_local_cli_model",
     "is_cli_model_sentinel",
     "local_cli_model_options",
     "preferred_local_cli_model",

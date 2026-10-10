@@ -803,6 +803,7 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         class FakeWindowEvent:
             def __init__(self):
                 self.handlers = []
+                self.triggered = False
 
             def __iadd__(self, handler):
                 self.handlers.append(handler)
@@ -814,11 +815,20 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
             def wait(self, timeout=None):
                 return True
 
+            def is_set(self):
+                return self.triggered
+
+            def trigger(self):
+                self.triggered = True
+                for handler in self.handlers:
+                    handler()
+
         class FakeWindow:
             def __init__(self):
                 self.loaded_url = None
                 self.restore_count = 0
                 self.show_count = 0
+                self.destroy_count = 0
                 self.width = 360
                 self.height = 520
                 self.x = 100
@@ -828,7 +838,12 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
                 self.events = types.SimpleNamespace(
                     moved=FakeWindowEvent(),
                     loaded=FakeWindowEvent(),
+                    closed=FakeWindowEvent(),
                 )
+
+            def destroy(self):
+                self.destroy_count += 1
+                self.events.closed.trigger()
 
             def load_url(self, url):
                 self.loaded_url = url
@@ -865,7 +880,16 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         webview.settings = {}
         webview.FileDialog = types.SimpleNamespace(FOLDER="folder")
         webview.create_window = MagicMock(side_effect=[window, pet_window])
-        webview.start = MagicMock(side_effect=lambda callback: callback())
+
+        def run_webview(callback):
+            callback()
+            # Real pywebview returns only once ALL windows have closed. A mock
+            # that returns after boot hides the hidden-pet shutdown regression.
+            self.assertEqual(pet_window.destroy_count, 0)
+            window.destroy()
+            self.assertTrue(pet_window.events.closed.is_set())
+
+        webview.start = MagicMock(side_effect=run_webview)
         browser_app = types.ModuleType("app.main")
         browser_app.app = object()
 
@@ -914,6 +938,10 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         input_overlay.set_on_top.assert_not_called()
         input_overlay.sync.assert_not_called()
         self.assertEqual(pet_window.show_count, 0)
+        self.assertEqual(pet_window.destroy_count, 1)
+        # Restart Manager may close both windows; do not destroy a disposed pet.
+        window.events.closed.trigger()
+        self.assertEqual(pet_window.destroy_count, 1)
         activation_handler = instance.set_activation_handler.call_args.args[0]
         activation_handler()
         self.assertEqual(window.restore_count, 1)

@@ -180,6 +180,7 @@ interface SettingsPageProps {
 }
 
 function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
+  const apiSetupRequested = new URLSearchParams(window.location.search).get('setup') === 'api'
   const contextGovernanceRequested = typeof window !== 'undefined'
     && new URLSearchParams(window.location.search).get('section') === 'context-governance'
   const queryClient = useQueryClient()
@@ -194,7 +195,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
     provider: globalConfig?.provider || null,
     model: globalConfig?.default_model || null,
   }
-  const [modalOpen, setModalOpen] = useState(false)
+  const [modalOpen, setModalOpen] = useState(apiSetupRequested)
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [form] = Form.useForm()
   const modalProvider = Form.useWatch('provider', form)
@@ -273,7 +274,8 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       setLauncherSettings(res.data.data)
       setLaunchMode(res.data.data.launch_mode)
       setUpdateChannel(res.data.data.update_channel || 'stable')
-      if (res.data.data.gateway_headless && !embedded && !contextGovernanceRequested) setSettingsSection('gateway')
+      if (res.data.data.gateway_headless && !embedded && !contextGovernanceRequested
+        && new URLSearchParams(window.location.search).get('section') !== 'ai') setSettingsSection('gateway')
     } catch (err: any) {
       message.error(err.message || '获取启动方式失败')
     } finally {
@@ -949,9 +951,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const defaultModelOptions = modelOptions.length > 0 ? modelOptions : fallbackModelOptions(modalProvider)
   const customModelSelection = isCustomProviderSelection(modalProvider)
   const manualModelEntry = !isLocalCliProvider(modalProvider) && modelDiscovery.status === 'manual'
-  const providerOptions = launcherSettings?.gateway_headless
-    ? PROVIDER_OPTIONS.filter((option) => !isLocalCliProvider(option.value))
-    : PROVIDER_OPTIONS
+  const providerOptions = PROVIDER_OPTIONS.filter((option) => {
+    const cli = isLocalCliProvider(option.value)
+    if (launcherSettings?.gateway_headless && cli) return false
+    if (!editingProvider && apiSetupRequested) return !cli
+    return true
+  })
 
   return (
     <div className="settings-page">
@@ -1092,6 +1097,12 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
       </>}
 
       {settingsSection === 'ai' && <>
+      {apiSetupRequested && (
+        <Alert showIcon type="info" style={{ marginBottom: 16 }}
+          message="快速开始：连接云端 API"
+          description="选择提供商并保存配置，再点击“测试并启用”。测试通过后返回快速开始，即可输入故事想法。"
+          action={<Button href="/getting-started">返回快速开始</Button>} />
+      )}
       {launcherSettings?.gateway_headless && (
         <Alert
           showIcon

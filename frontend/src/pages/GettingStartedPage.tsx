@@ -1,40 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useDownloadRate } from '../hooks/useDownloadRate'
+import { Alert, Button, Input, Space, Spin, Steps, Typography, message } from 'antd'
 import {
-  Alert,
-  Button,
-  Collapse,
-  Input,
-  Modal,
-  Progress,
-  Select,
-  Space,
-  Spin,
-  Steps,
-  Tag,
-  Typography,
-  message,
-} from 'antd'
-import {
+  ApiOutlined,
   ArrowRightOutlined,
   CheckCircleOutlined,
+  ExportOutlined,
   ReloadOutlined,
   RocketOutlined,
-  SafetyCertificateOutlined,
-  SettingOutlined,
-  ThunderboltOutlined,
-  ToolOutlined,
 } from '@ant-design/icons'
-import { apiClient } from '../api/client'
-import {
-  getGettingStartedStatus,
-  onboardingKeys,
-  useGettingStartedStatus,
-} from '../features/onboarding'
 import PageWrapper from '../components/PageWrapper'
 import SystemNav from '../components/SystemNav'
+import { useGettingStartedStatus } from '../features/onboarding'
+import { API_KEY_PORTALS, providerLabel } from '../features/localModels/settingsModelOptions'
 import {
   startNovelCreationConceptRun,
   startNovelCreationSession,
@@ -42,646 +20,134 @@ import {
 } from '../services/novelCreationAgent'
 import './GettingStartedPage.css'
 
-const { Paragraph, Text, Title } = Typography
-const { TextArea } = Input
+const { Title, Paragraph, Text } = Typography
 
-interface FreeModelOption {
-  id: string
-  display_name: string
-  recommended: boolean
-  test_status?: 'untested' | 'testing' | 'ready' | 'rate_limited' | 'failed'
-  failure_kind?: string | null
-}
-
-type ActivationStatus = 'pending' | 'running' | 'auth_required' | 'ready' | 'failed'
-type ActivationPhase = 'checking' | 'checking_release' | 'selecting_source' | 'switching_source' | 'downloading' | 'verifying' | 'auth_required' | 'authenticating' | 'credential_required' | 'discovering_models' | 'testing' | 'ready' | 'failed'
-
-interface PathIntegrationStatus {
-  supported: boolean
-  managed_install: boolean
-  configured: boolean
-  directory: string
-  scope: 'user'
-  requires_new_terminal: boolean
-  changed?: boolean
-}
-
-interface ActivationJob {
-  id: string
-  status: ActivationStatus
-  phase: ActivationPhase
-  percent: number
-  message: string
-  error?: string | null
-  failure_kind?: string | null
-  next_action?: string | null
-  selected_model?: string | null
-  preferred_model?: string | null
-  free_models: FreeModelOption[]
-  download_source?: string | null
-  bytes_downloaded?: number
-  bytes_total?: number
-  estimated_seconds_remaining?: number | null
-  auth_url?: string
-  auth_mode?: 'browser' | 'credential' | null
-  auth_status?: 'running' | 'credential_required' | 'submitted' | 'completed' | 'failed' | 'interrupted' | null
-  auth_prompt?: string | null
-  command?: string | null
-  path_integration?: PathIntegrationStatus | null
-}
-
-interface GettingStartedStatus {
-  free_models: FreeModelOption[]
-  recommended_model?: string | null
-  platform_supported: boolean
-  configured: boolean
-  configured_model?: string | null
-  is_global_default: boolean
-  needs_setup: boolean
-  has_detected_models: boolean
-  has_usable_models: boolean
-  recommended_action?: string
-  global_model?: { provider: string; model: string } | null
-  available_model?: { provider: string; model: string } | null
-  activation_job?: ActivationJob | null
-  opencode_mcp_configured?: boolean
-  path_integration?: PathIntegrationStatus | null
-  official_links?: { model_docs?: string }
-}
-
-interface McpSetupResult {
-  ready: boolean
-  detail?: string
-  preflight?: { ready?: boolean; detail?: string; missing_tools?: string[] }
-}
-
-interface ApiEnvelope<T> {
-  code: number
-  message: string
-  data: T
-}
-
-const formatBytes = (bytes?: number) => {
-  if (!bytes) return '0 MB'
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-const formatRate = (bytesPerSecond?: number | null) => {
-  if (!bytesPerSecond || bytesPerSecond <= 0) return null
-  if (bytesPerSecond >= 1024 * 1024) return `${(bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`
-  return `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`
-}
-
-const errorText = (error: unknown) => error instanceof Error ? error.message : '操作没有完成，请重试'
-
-function FirstIdea({ modelReady, model }: { modelReady: boolean; model?: string }) {
+function FirstIdea({ model, label }: { model: string; label: string }) {
   const navigate = useNavigate()
   const [idea, setIdea] = useState('')
   const [creating, setCreating] = useState(false)
 
   const createIdeas = async () => {
     const brief = idea.trim()
-    if (!brief) return
+    if (!brief || creating) return
     setCreating(true)
     try {
       const session = await startNovelCreationSession({ userBrief: brief, mode: 'internal_llm' })
       const run = await startNovelCreationConceptRun(session.id, model)
       navigate(workbenchUrl(session.id, run.id, model))
     } catch (error) {
-      message.error(errorText(error))
+      message.error(error instanceof Error ? error.message : '创意生成未能启动，请重试')
       setCreating(false)
     }
   }
 
   return (
-    <div className="getting-started-first-idea">
-      <CheckCircleOutlined className="getting-started-ready-icon" />
-      <Title level={3}>免费写作能力已经准备好</Title>
-      <Paragraph>不用先学设置。说一句你想写的故事，司命会先生成一套包含书名、核心卖点、主角目标和开篇钩子的方向，再按你的反馈持续调整。</Paragraph>
+    <section className="getting-started-first-idea" aria-label="开始创作">
+      <CheckCircleOutlined aria-hidden className="getting-started-ready-icon" />
+      <Title level={3}>模型已就绪，开始构思吧</Title>
+      <Text className="getting-started-model">本次使用：{label}</Text>
+      <Paragraph>说一句你想写的故事，司命会先生成一套创意方向，再按你的反馈完善角色、世界观和大纲。</Paragraph>
       <label htmlFor="getting-started-idea">你想写什么故事？</label>
-      <TextArea
+      <Input.TextArea
         id="getting-started-idea"
         value={idea}
         onChange={(event) => setIdea(event.target.value)}
         placeholder="例如：一个能看见他人寿命的女孩，在修仙世界经营一家只在午夜营业的客栈"
         autoSize={{ minRows: 3, maxRows: 6 }}
         maxLength={2000}
-        disabled={creating || !modelReady}
+        disabled={creating}
       />
       <Space wrap>
-        <Button
-          type="primary"
-          size="large"
-          icon={<RocketOutlined />}
-          loading={creating}
-          disabled={!idea.trim() || !modelReady}
-          onClick={() => void createIdeas()}
-        >
+        <Button type="primary" size="large" icon={<RocketOutlined aria-hidden />} loading={creating}
+          disabled={!idea.trim()} onClick={() => void createIdeas()}>
           生成小说创意
         </Button>
-        <Button onClick={() => navigate('/dashboard')}>先看看作品库</Button>
+        <Button disabled={creating} onClick={() => navigate('/settings?section=ai')}>更换模型</Button>
+        <Button disabled={creating} onClick={() => navigate('/dashboard')}>先看看作品库</Button>
       </Space>
-      <Text type="secondary">当前使用的完整模型 ID 会显示在任务记录中；若免费模型发生切换，司命会明确记录。</Text>
-    </div>
+    </section>
   )
 }
 
 export function GettingStartedPanel() {
-  const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const statusQuery = useGettingStartedStatus()
-  const status = statusQuery.data as GettingStartedStatus | undefined
-  const loading = statusQuery.isLoading
-  const [job, setJob] = useState<ActivationJob | null>(null)
-  const [selectedModel, setSelectedModel] = useState<string>()
-  const [setupError, setSetupError] = useState('')
-  const [authCredential, setAuthCredential] = useState('')
-  const [mcpSetupRunning, setMcpSetupRunning] = useState(false)
-  const [mcpSetupError, setMcpSetupError] = useState('')
-  const [mcpConfigured, setMcpConfigured] = useState(false)
-  const [pathSetupRunning, setPathSetupRunning] = useState(false)
-  const [pathIntegrationResult, setPathIntegrationResult] = useState<PathIntegrationStatus>()
-  const pathPromptedJobs = useRef(new Set<string>())
-  const [mcpDeferred, setMcpDeferred] = useState(
-    () => localStorage.getItem('siming_getting_started_mcp_deferred') === '1',
-  )
-  const downloadRate = useDownloadRate({
-    active: job?.phase === 'downloading',
-    bytes: job?.bytes_downloaded,
-    source: job?.download_source,
-  })
+  const status = statusQuery.data
 
-  const fetchStatus = useCallback(async (refresh = false) => {
-    try {
-      const next = await getGettingStartedStatus(false, refresh) as GettingStartedStatus
-      queryClient.setQueryData(onboardingKeys.detail(), next)
-      void queryClient.invalidateQueries({ queryKey: onboardingKeys.summary() })
-      if (next.has_usable_models) setJob(null)
-      else if (next.activation_job && next.activation_job.status !== 'ready') setJob(next.activation_job)
-      setSelectedModel((current) => current || next.recommended_model || next.free_models?.[0]?.id)
-    } catch (error) {
-      setSetupError(errorText(error))
-    }
-  }, [queryClient])
-
-  const addOpenCodeToPath = useCallback(async () => {
-    setPathSetupRunning(true)
-    try {
-      const response = await apiClient.put<ApiEnvelope<PathIntegrationStatus>>(
-        '/config/getting-started/opencode/path',
-        { enabled: true },
-      )
-      setPathIntegrationResult(response.data.data)
-      message.success('已添加到当前用户 PATH；请打开一个新终端后运行 opencode。')
-      await fetchStatus(false)
-    } catch (error) {
-      message.error(`PATH 配置没有完成：${errorText(error)}`)
-      throw error
-    } finally {
-      setPathSetupRunning(false)
-    }
-  }, [fetchStatus])
-
-  const offerPathSetup = useCallback((activationJob: ActivationJob) => {
-    const path = activationJob.path_integration
-    if (!path?.supported || !path.managed_install || path.configured || !activationJob.command) return
-    if (pathPromptedJobs.current.has(activationJob.id)) return
-    pathPromptedJobs.current.add(activationJob.id)
-    Modal.confirm({
-      title: 'OpenCode 已安装，要加入 PATH 吗？',
-      width: 560,
-      content: (
-        <Space direction="vertical" size="small">
-          <Text>
-            添加后，可以在新打开的 PowerShell、CMD 或其他终端中直接输入 <Text code>opencode</Text> 启动。
-          </Text>
-          <Text type="secondary">只修改当前 Windows 用户，不需要管理员权限；不添加也不影响司命继续使用 OpenCode。</Text>
-          <Text type="secondary" copyable>{path.directory}</Text>
-        </Space>
-      ),
-      okText: '添加到 PATH',
-      cancelText: '暂不添加',
-      onOk: async () => {
-        await addOpenCodeToPath()
-      },
-    })
-  }, [addOpenCodeToPath])
-
-  useEffect(() => {
-    if (status?.opencode_mcp_configured) {
-      setMcpConfigured(true)
-      setMcpDeferred(false)
-      localStorage.removeItem('siming_getting_started_mcp_deferred')
-    }
-  }, [status?.opencode_mcp_configured])
-
-  useEffect(() => {
-    if (!status) return
-    if (status.has_usable_models) {
-      setJob(null)
-      return
-    }
-    const activationJob = status.activation_job || null
-    if (activationJob && activationJob.status !== 'ready') {
-      setJob(activationJob)
-      offerPathSetup(activationJob)
-    }
-    setSelectedModel((current) => current || status.recommended_model || status.free_models?.[0]?.id)
-  }, [offerPathSetup, status])
-
-  useEffect(() => {
-    if (status?.has_usable_models) return
-    const authRunning = ['running', 'submitted'].includes(job?.auth_status || '')
-    if (!job || (!['pending', 'running'].includes(job.status) && !authRunning)) return
-    const timer = window.setTimeout(async () => {
-      try {
-        const response = await apiClient.get<ApiEnvelope<ActivationJob>>(`/config/getting-started/opencode/jobs/${job.id}`)
-        const next = response.data.data
-        setJob(next)
-        offerPathSetup(next)
-        if (next.status === 'ready') {
-          localStorage.removeItem('siming_getting_started_deferred')
-          await fetchStatus(false)
-        }
-      } catch (error) {
-        setSetupError(errorText(error))
-      }
-    }, 1000)
-    return () => window.clearTimeout(timer)
-  }, [fetchStatus, job, offerPathSetup, status?.has_usable_models])
-
-  const startActivation = async () => {
-    setSetupError('')
-    try {
-      const response = await apiClient.post<ApiEnvelope<ActivationJob>>('/config/getting-started/opencode/activate', {
-        preferred_model: selectedModel || null,
-      })
-      const next = response.data.data
-      setPathIntegrationResult(undefined)
-      setJob(next)
-      offerPathSetup(next)
-    } catch (error) {
-      setSetupError(errorText(error))
-    }
+  if (statusQuery.isLoading) {
+    return <div className="getting-started-loading"><Spin tip="正在读取模型配置…"><div /></Spin></div>
+  }
+  if (!status || statusQuery.isError) {
+    return <Alert type="error" showIcon message="暂时无法读取模型配置"
+      description={statusQuery.error instanceof Error ? statusQuery.error.message : '请确认司命服务正在运行。'}
+      action={<Button aria-label="重试" loading={statusQuery.isFetching} onClick={() => void statusQuery.refetch()}>重试</Button>} />
   }
 
-  const retryActivation = async () => {
-    if (!job) return startActivation()
-    setSetupError('')
-    try {
-      const response = await apiClient.post<ApiEnvelope<ActivationJob>>(`/config/getting-started/opencode/jobs/${job.id}/retry`)
-      const next = response.data.data
-      setJob(next)
-      offerPathSetup(next)
-    } catch (error) {
-      setSetupError(errorText(error))
-    }
+  const activeModel = status.global_model || status.available_model
+  if (status.has_usable_models && activeModel) {
+    return <FirstIdea model={`${activeModel.provider}:${activeModel.model}`}
+      label={`${providerLabel(activeModel.provider)} · ${activeModel.model}`} />
   }
-
-  const openAuthentication = async () => {
-    if (!job) return
-    try {
-      const response = await apiClient.post<ApiEnvelope<ActivationJob>>(`/config/getting-started/opencode/jobs/${job.id}/authenticate`)
-      setJob(response.data.data)
-      message.info('官方登录已经启动，浏览器打开后完成登录即可。')
-    } catch (error) {
-      setSetupError(errorText(error))
-    }
-  }
-
-  const submitAuthCredential = async () => {
-    if (!job || !authCredential.trim()) return
-    try {
-      const response = await apiClient.post<ApiEnvelope<ActivationJob>>(
-        `/config/getting-started/opencode/jobs/${job.id}/credential`,
-        { credential: authCredential },
-      )
-      setAuthCredential('')
-      setJob(response.data.data)
-    } catch (error) {
-      setSetupError(errorText(error))
-    }
-  }
-
-  const configureMcp = async () => {
-    setMcpSetupRunning(true)
-    setMcpSetupError('')
-    try {
-      const response = await apiClient.post<ApiEnvelope<McpSetupResult>>(
-        '/config/getting-started/opencode/mcp/configure',
-      )
-      const result = response.data.data
-      if (!result.ready) {
-        setMcpSetupError(result.preflight?.detail || result.detail || 'MCP 配置检查未通过')
-        return
-      }
-      setMcpConfigured(true)
-      setMcpDeferred(false)
-      localStorage.removeItem('siming_getting_started_mcp_deferred')
-      message.success('OpenCode 与 Siming MCP 已配置并验证')
-      await fetchStatus(false)
-    } catch (error) {
-      setMcpSetupError(errorText(error))
-    } finally {
-      setMcpSetupRunning(false)
-    }
-  }
-
-  const deferMcpSetup = () => {
-    localStorage.setItem('siming_getting_started_mcp_deferred', '1')
-    setMcpDeferred(true)
-  }
-
-  const currentStep = useMemo(() => {
-    if (job?.status === 'ready' || status?.has_usable_models) return 2
-    if (job && ['discovering_models', 'testing', 'auth_required', 'authenticating', 'credential_required'].includes(job.phase)) return 1
-    return 0
-  }, [job, status])
-
-  if (loading && !status) return <div className="getting-started-loading" role="status">正在检查这台电脑...</div>
-  if (!status) {
-    return <Alert type="error" showIcon message="暂时无法检查电脑环境" description={setupError || (statusQuery.error instanceof Error ? statusQuery.error.message : '请确认司命仍在运行。')} action={<Button onClick={() => void fetchStatus(true)}>重新检查</Button>} />
-  }
-
-  const ready = job?.status === 'ready' || status.has_usable_models
-  const pathIntegration = pathIntegrationResult || job?.path_integration || status.path_integration
-  const shouldOfferPathSetup = Boolean(
-    ready
-      && pathIntegration?.supported
-      && pathIntegration.managed_install
-      && !pathIntegration.configured,
-  )
-  const pathSetupNotice = shouldOfferPathSetup ? (
-    <Alert
-      className="getting-started-path-notice"
-      type="info"
-      showIcon
-      message="需要在终端直接启动 OpenCode？"
-      description="可将司命托管的 OpenCode 目录添加到当前用户 PATH。添加后请打开新终端，再输入 opencode；暂不添加不会影响司命使用。"
-      action={(
-        <Button
-          loading={pathSetupRunning}
-          onClick={() => void addOpenCodeToPath().catch(() => undefined)}
-        >
-          添加到 PATH
-        </Button>
-      )}
-    />
-  ) : null
-  const availableModel = status.global_model || status.available_model
-  const activeModel = availableModel
-    ? `${availableModel.provider}:${availableModel.model}`
-    : job?.selected_model
-      ? `opencode_cli:${job.selected_model}`
-      : undefined
-  const shouldOfferMcp = Boolean(
-    ready
-      && activeModel?.startsWith('opencode_cli:')
-      && !status.opencode_mcp_configured
-      && !mcpConfigured
-      && !mcpDeferred,
-  )
-  if (shouldOfferMcp) {
-    return (
-      <div className="getting-started-panel">
-        <div className="getting-started-layout">
-          <section className="getting-started-work" aria-live="polite">
-            <CheckCircleOutlined className="getting-started-ready-icon" />
-            <Title level={3}>OpenCode 已可用，再完成一步即可启用完整 Agent</Title>
-            <Paragraph>
-              配置 Siming MCP 后，OpenCode 才能在作品建档等任务中把结构化结果正式写回司命。
-              司命只为托管建档回合开放读取作品镜像和专用建档工具，不会给 OpenCode 任意文件写入或命令执行权限。
-            </Paragraph>
-            <Alert
-              type="info"
-              showIcon
-              message="推荐完成配置"
-              description="司命会先写入 OpenCode 的 siming MCP 配置，再实际检查 MCP 连接和建档工具列表。你也可以暂时跳过，之后在系统设置中补配。"
-            />
-            {mcpSetupError && <Alert type="error" showIcon message="MCP 配置未完成" description={mcpSetupError} />}
-            <Space wrap>
-              <Button type="primary" loading={mcpSetupRunning} onClick={() => void configureMcp()}>
-                推荐：配置并验证 MCP
-              </Button>
-              <Button disabled={mcpSetupRunning} onClick={deferMcpSetup}>暂时跳过</Button>
-            </Space>
-            {pathSetupNotice}
-          </section>
-        </div>
-      </div>
-    )
-  }
-  if (ready) {
-    return (
-      <div className="getting-started-ready-stack">
-        {pathSetupNotice}
-        <FirstIdea modelReady model={activeModel} />
-      </div>
-    )
-  }
-
-  const running = Boolean(job && ['pending', 'running'].includes(job.status))
-  const downloaded = formatBytes(job?.bytes_downloaded)
-  const total = formatBytes(job?.bytes_total)
-  const remainingMinutes = job?.estimated_seconds_remaining
-    ? Math.max(1, Math.ceil(job.estimated_seconds_remaining / 60))
-    : null
-  const downloadRateText = formatRate(downloadRate)
-  const retryLabel = job?.failure_kind === 'network'
-    ? '继续下载'
-    : job?.failure_kind === 'download_rate_limit'
-      ? '稍后继续下载'
-    : job?.failure_kind === 'certificate_verification'
-      ? '重新验证连接'
-      : job?.failure_kind === 'disk_space'
-        ? '释放空间后重试'
-        : job?.failure_kind === 'permission_or_antivirus'
-          ? '允许后重试'
-          : job?.failure_kind === 'quota_or_rate_limit'
-            ? '重新检测免费模型'
-            : '重试'
-  const quotaLimited = job?.failure_kind === 'quota_or_rate_limit'
-  const modelTestResults = job?.free_models?.filter((model) => model.test_status && model.test_status !== 'untested') || []
-  const modelStatusLabel = (model: FreeModelOption) => {
-    if (model.test_status === 'ready') return '可用'
-    if (model.test_status === 'testing') return '正在测试'
-    if (model.test_status === 'rate_limited') return '第三方限流'
-    if (model.test_status === 'failed') return '不可用'
-    return '未测试'
-  }
-  const credentialRequired = job?.auth_status === 'credential_required' || job?.phase === 'credential_required'
-  const authenticationActive = ['running', 'submitted'].includes(job?.auth_status || '')
 
   return (
     <div className="getting-started-panel">
-      <div className="getting-started-promise" aria-label="免费开始的特点">
-        <span><ThunderboltOutlined /> 无需安装开发工具</span>
-        <span><SafetyCertificateOutlined /> 无需打开命令行</span>
-        <span><ToolOutlined /> 每一步都能看到进度</span>
+      <Steps size="small" current={0} className="getting-started-steps" items={[
+        { title: '获取 API Key' }, { title: '配置并测试模型' }, { title: '开始创作' },
+      ]} />
+      <div className="getting-started-intro">
+        <div>
+          <Title level={3}>通过 API 连接模型</Title>
+          <Paragraph type="secondary">准备好服务商的 API Key，连接并测试通过后，即可用于立项、写作和建档。</Paragraph>
+        </div>
+        <Button icon={<ReloadOutlined aria-hidden />} loading={statusQuery.isFetching} onClick={() => void statusQuery.refetch()}>
+          刷新配置状态
+        </Button>
       </div>
-
-      <div className="getting-started-layout">
-        <aside className="getting-started-steps" aria-label="设置进度">
-          <Text className="getting-started-route-label">免费体验</Text>
-          <Steps direction="vertical" size="small" current={currentStep} items={[
-            { title: '准备写作能力', description: '自动下载并校验' },
-            { title: '自动选择模型', description: '逐个测试当前免费模型' },
-            { title: '生成小说创意', description: '只需说一句故事想法' },
-          ]} />
-        </aside>
-
-        <section className="getting-started-work" aria-live="polite">
-          <Title level={3}>从一句故事想法开始</Title>
-          <Paragraph>司命会先为这台电脑准备写作所需的 AI。准备好后，你可以马上生成一套小说方向并继续对话调整。</Paragraph>
-
-          {running ? (
-            <div className="getting-started-progress">
-              {Boolean(job?.bytes_total)
-                ? <Progress percent={job?.percent || 0} status="active" />
-                : <div className="getting-started-indeterminate"><Spin /><Text>正在执行当前步骤，不估算虚假百分比</Text></div>}
-              <div className="getting-started-progress-meta">
-                <Text>{job?.message || '正在准备...'}</Text>
-                {job?.download_source && <Tag color="processing">当前线路：{job.download_source}</Tag>}
-                {Boolean(job?.bytes_total) && <Text type="secondary">{downloaded} / {total}</Text>}
-                {downloadRateText && <Text type="secondary">实时速度 {downloadRateText}</Text>}
-                {remainingMinutes && <Text type="secondary">预计还需约 {remainingMinutes} 分钟</Text>}
-              </div>
-            </div>
-          ) : (
-            <Button
-              type="primary"
-              size="large"
-              icon={<RocketOutlined />}
-              disabled={!status.platform_supported}
-              onClick={() => void startActivation()}
-            >
-              准备 AI 并开始构思
-            </Button>
-          )}
-
-          {(job?.status === 'auth_required' || authenticationActive) && (
-            <Alert
-              className="getting-started-alert"
-              type="info"
-              showIcon
-              message={credentialRequired ? '请输入官方页面给出的一次性凭据' : authenticationActive ? '正在等待官方登录完成' : '还差一次免费的官方登录'}
-              description={job?.auth_prompt || job?.next_action || '不需要购买，也不需要在司命中保存 API Key。登录完成后会自动继续检测。'}
-              action={credentialRequired ? (
-                <Space.Compact>
-                  <Input.Password
-                    value={authCredential}
-                    onChange={(event) => setAuthCredential(event.target.value)}
-                    placeholder="一次性验证码或令牌"
-                    aria-label="OpenCode 一次性验证码或令牌"
-                    onPressEnter={() => void submitAuthCredential()}
-                  />
-                  <Button type="primary" disabled={!authCredential.trim()} onClick={() => void submitAuthCredential()}>提交</Button>
-                </Space.Compact>
-              ) : (
-                <Space wrap>
-                  {!authenticationActive && job?.auth_status !== 'failed' && <Button type="primary" onClick={() => void openAuthentication()}>开始官方登录</Button>}
-                  {job?.auth_url && <Button href={job.auth_url} target="_blank">打开登录地址</Button>}
-                  {job?.auth_status === 'failed' && <Button onClick={() => void openAuthentication()}>重新登录</Button>}
-                </Space>
-              )}
-            />
-          )}
-
-          {(job?.status === 'failed' || setupError) && (
-            <Alert
-              className="getting-started-alert"
-              type={quotaLimited ? 'warning' : 'error'}
-              showIcon
-              message={quotaLimited
-                ? 'OpenCode 免费服务已限流（不是网络故障）'
-                : job?.failure_kind === 'download_rate_limit'
-                  ? 'OpenCode 下载服务暂时限流'
-                : job?.failure_kind === 'certificate_verification'
-                  ? 'Windows 证书验证没有完成'
-                  : '这次没有准备完成'}
-              description={job?.next_action || '司命会保留下载进度，可以直接重试。'}
-              action={quotaLimited ? (
-                <Space wrap>
-                  <Button type="primary" onClick={() => void openAuthentication()}>登录后验证个人免费额度</Button>
-                  <Button icon={<ReloadOutlined />} onClick={() => void retryActivation()}>{retryLabel}</Button>
-                  {status.official_links?.model_docs && <Button href={status.official_links.model_docs} target="_blank">查看官方免费模型说明</Button>}
-                </Space>
-              ) : <Button icon={<ReloadOutlined />} onClick={() => void retryActivation()}>{retryLabel}</Button>}
-            />
-          )}
-
-          {modelTestResults.length > 0 && (
-            <Collapse ghost items={[{
-              key: 'model-tests',
-              label: `免费模型检测结果（${modelTestResults.length}/${job?.free_models.length || 0}）`,
-              children: (
-                <Space wrap>
-                  {modelTestResults.map((model) => (
-                    <Tag
-                      key={model.id}
-                      color={model.test_status === 'ready' ? 'success' : model.test_status === 'testing' ? 'processing' : model.test_status === 'rate_limited' ? 'warning' : 'error'}
-                    >
-                      {model.display_name}：{modelStatusLabel(model)}
-                    </Tag>
-                  ))}
-                </Space>
-              ),
-            }]} />
-          )}
-
-          {(job?.error || setupError) && (
-            <Collapse ghost items={[{ key: 'technical', label: '查看技术详情', children: <Text type="secondary" copyable>{job?.error || setupError}</Text> }]} />
-          )}
-        </section>
-      </div>
-
-      <Alert
-        className="getting-started-free-note"
-        type="info"
-        showIcon
-        message="关于当前可免费使用的模型"
-        description="司命会读取 OpenCode 当前公开的免费模型池并逐个真实测试，不再只依赖单一模型。免费模型、额度和数据政策可能调整；小说内容会发送给所选云端模型处理，请勿提交私密或敏感内容。"
-      />
-
-      <Collapse ghost className="getting-started-alternatives" items={[{
-        key: 'advanced',
-        label: '高级选项',
-        children: (
-          <div className="getting-started-alternative-content">
-            <Paragraph>通常不需要修改。模型不可用时，司命会自动尝试列表中的其他免费模型。</Paragraph>
-            <Select
-              value={selectedModel}
-              onChange={setSelectedModel}
-              options={status.free_models.map((model) => ({ value: model.id, label: model.recommended ? `${model.display_name}（推荐）` : model.display_name }))}
-              placeholder="由司命自动选择"
-              allowClear
-              className="getting-started-model-select"
-            />
-            <Button icon={<SettingOutlined />} onClick={() => window.location.assign('/settings?section=ai')}>配置其他模型</Button>
+      {status.has_any_model && <Alert showIcon type="info" message="已有配置，还需完成可用性验证"
+        description="请到模型设置查看测试结果，并验证一个可用模型。"
+        action={<Button onClick={() => navigate('/settings?section=ai')}>查看并验证</Button>} />}
+      <section className="getting-started-api" aria-labelledby="setup-api-title">
+        <Title level={4} id="setup-api-title">1. 在官网获取 API Key</Title>
+        <Paragraph>选择一家服务商，登录官网后创建 API Key。已有 Key 可直接进行下一步。</Paragraph>
+        <div className="getting-started-api-portals">
+          {API_KEY_PORTALS.map(({ provider, url }) => (
+            <a key={provider} href={url} target="_blank" rel="noopener noreferrer"
+              aria-label={`${providerLabel(provider)} 官网获取 API Key`}>
+              <span><strong>{providerLabel(provider)}</strong><span>官网获取 API Key</span></span>
+              <ExportOutlined aria-hidden />
+            </a>
+          ))}
+        </div>
+        <Text type="secondary">费用和可用额度以各服务商官网为准；也支持其他 OpenAI 兼容 API。</Text>
+        <div className="getting-started-api-connect">
+          <div>
+            <Title level={4}>2. 在司命中配置并测试</Title>
+            <Paragraph>选择提供商，填写 API Key 和模型，保存后点击“测试并启用”。测试通过后返回这里开始创作。</Paragraph>
           </div>
-        ),
-      }]} />
+          <Button type="primary" size="large" icon={<ApiOutlined aria-hidden />}
+            onClick={() => navigate('/settings?section=ai&setup=api')}>配置 API</Button>
+        </div>
+      </section>
     </div>
   )
 }
 
 export default function GettingStartedPage() {
   const navigate = useNavigate()
-
   const deferSetup = () => {
     localStorage.setItem('siming_getting_started_deferred', 'true')
     navigate('/dashboard')
   }
-
   return (
     <PageWrapper maxWidth={1180} className="getting-started-page">
       <SystemNav current="getting-started" />
       <header className="siming-section-header getting-started-heading">
         <div>
           <span className="siming-section-kicker">第一次使用</span>
-          <Title level={2}><RocketOutlined /> 免费开始写第一本小说</Title>
-          <p className="siming-section-description">整个过程都在司命里完成，不要求你先学习任何技术设置。</p>
+          <Title level={2}><RocketOutlined aria-hidden /> 开始写第一本小说</Title>
+          <p className="siming-section-description">连接模型，再把故事想法变成作品。也可以稍后配置，先体验手动创作。</p>
         </div>
-        <Button icon={<ArrowRightOutlined />} onClick={deferSetup}>稍后设置</Button>
+        <Button icon={<ArrowRightOutlined aria-hidden />} onClick={deferSetup}>稍后设置</Button>
       </header>
       <GettingStartedPanel />
     </PageWrapper>

@@ -103,7 +103,7 @@ describe('NovelCreationWizardPage', () => {
     expect(await screen.findByText('当前没有可用模型')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /按我的设定立项/ }))
     expect(screen.getByRole('button', { name: /只保存草稿/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: '免费开始' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '配置模型' })).toBeInTheDocument()
   })
 
   it('opens the workbench without requiring a concept selection', async () => {

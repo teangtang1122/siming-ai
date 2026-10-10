@@ -21,42 +21,6 @@ from app.database.models_support import generate_uuid
 from app.database.session import Base
 
 
-class OpenCodeActivationJob(Base):
-    __tablename__ = "opencode_activation_jobs"
-
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    operation_id = Column(
-        String(36), ForeignKey("operation_runs.id", ondelete="SET NULL"), nullable=True
-    )
-    status = Column(String(30), nullable=False, default="pending")
-    phase = Column(String(40), nullable=False, default="checking")
-    percent = Column(Integer, nullable=False, default=0)
-    message = Column(Text, nullable=True)
-    error = Column(Text, nullable=True)
-    failure_kind = Column(String(50), nullable=True)
-    next_action = Column(Text, nullable=True)
-    auth_mode = Column(String(30), nullable=True)
-    auth_status = Column(String(30), nullable=True)
-    auth_prompt = Column(Text, nullable=True)
-    auth_url = Column(String(1000), nullable=True)
-    command = Column(String(500), nullable=True)
-    version = Column(String(100), nullable=True)
-    selected_model = Column(String(200), nullable=True)
-    preferred_model = Column(String(200), nullable=True)
-    free_models_json = Column(JSON, nullable=True)
-    download_url = Column(String(1000), nullable=True)
-    sha256 = Column(String(64), nullable=True)
-    bytes_downloaded = Column(Integer, nullable=False, default=0)
-    bytes_total = Column(Integer, nullable=False, default=0)
-    estimated_seconds_remaining = Column(Integer, nullable=True)
-    attempt_count = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
-
-    __table_args__ = (Index("ix_opencode_activation_jobs_status", "status"),)
-
-
 class LocalModel(Base):
     __tablename__ = "local_models"
 
@@ -201,7 +165,6 @@ class TrainingJob(Base):
 
 
 __all__ = [
-    "OpenCodeActivationJob",
     "LocalModel",
     "LocalRuntimeInstallation",
     "ModelDownloadTask",

@@ -390,13 +390,13 @@ describe('GuiAssistantChat new-book handoff', () => {
     expect(mockAgentTurn).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the free setup flow when no model is configured', async () => {
+  it('offers API setup when no model is configured', async () => {
     modelState.defaultModel = ''
     const user = userEvent.setup()
     render(<MemoryRouter><GuiAssistantChat /></MemoryRouter>)
 
     expect(await screen.findByText('还差一步：先连接一个模型')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '免费设置' }))
+    await user.click(screen.getByRole('button', { name: '配置模型' }))
     expect(mockNavigate).toHaveBeenCalledWith('/getting-started')
   })
 

@@ -29,9 +29,9 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前源码版本 3.5.0** 正式加入 Windows 司命桌宠：透明悬浮、点击说话、拎起拖动、贴边探头与五套姿势；保留 3.4.7 的立项、写作、大纲保存和本地模型修复。Android、PC 和 Gateway 同步版本号，桌宠仅在 Windows 桌面模式可用。完整变化及验证范围见 [3.5.0 发布说明](docs/release-notes-3.5.0.md)。
+> **当前版本 3.5.1**：快速开始简化为 API 接入，提供获取 API Key 的官网入口；改进手机书架、书内导航和立项编辑；修复 Windows 升级时旧运行库被占用的问题，并更新 OpenCode 模型发现。PC、Android 和 Gateway 同步版本号。完整变化见 [3.5.1 发布说明](docs/release-notes-3.5.1.md)。
 >
-> **测试范围：桌宠已验证 Windows 原生透明合成、点击区域、姿势切换和连续缩放；3.5.0 写作回归使用合成资料与模拟模型响应。此前已实际运行 DeepSeek API 和本机 Qwen3.8 27B Q3，覆盖部分立项、章节生成与下一章大纲流程；本地硬件、速度和验证边界见[本机评估](docs/qa/2026-09-24-qwen38-27b-local-evaluation.md)及下方[本地模型](#本地模型)。其他模型或 CLI 尚未完成同等范围的实机验证。**
+> **本地模型实测：Qwen3.8 27B Q3 在 64K 上下文配置下已成功完成立项、写作、建档等完整流程；这表示该配置跑通过全流程，不代表所有轮次都不会失败。硬件、速度及验证边界见[本机评估](docs/qa/2026-09-24-qwen38-27b-local-evaluation.md)和下方[本地模型](#本地模型)。其他模型与 CLI 的可用性以实际连接测试为准。**
 
 ## 它解决什么问题
 
@@ -54,19 +54,23 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 默认程序目录为 `%LOCALAPPDATA%\Programs\Siming`。程序文件和小说数据相互独立：小说数据默认仍使用 `%LOCALAPPDATA%\Siming`，旧版 `%LOCALAPPDATA%\Moshu` 和 `%LOCALAPPDATA%\NovelWritingAgent` 数据会兼容读取，不会被主动删除。
 
-### 2. 点击“准备 AI 并开始构思”
+### 2. 获取 API Key 并连接
 
-没有任何模型配置时，司命会为 Windows 自动下载、校验并测试 OpenCode，整个过程都在图形界面里完成。OpenCode 安装完成后，司命会询问是否将其目录添加到当前用户 PATH；这是可选操作，不需要管理员权限，添加后可在新打开的终端中直接运行 `opencode`。测试通过后才会把模型标记为可用。
+快速开始只提供 API 接入。先选择一家服务商，前往官网创建 API Key；已有 Key 可直接配置：
 
-司命会读取 OpenCode CLI 当前公布的模型列表，优先选择仍然可用的免费模型。当前内置回退推荐为 Big Pickle，运行时会显示完整模型 ID：
+| 服务商 | 获取 API Key 的官网 |
+| --- | --- |
+| DeepSeek | [DeepSeek 开放平台](https://platform.deepseek.com/api_keys) |
+| 通义千问 | [阿里云百炼](https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key) |
+| OpenAI | [OpenAI Platform](https://platform.openai.com/api-keys) |
+| Anthropic Claude | [Claude Platform](https://platform.claude.com/settings/keys) |
+| Google Gemini | [Google AI Studio](https://aistudio.google.com/apikey) |
 
-```text
-opencode_cli:opencode/big-pickle
-```
+获取后返回司命，点击“配置 API”，选择提供商，填写 API Key 和模型，保存后点击“测试并启用”。也支持自定义 OpenAI 兼容 API；费用和额度以服务商官网为准。通过真实对话测试后，返回快速开始即可输入故事想法。已有可用模型时直接进入创作；也可以选择“稍后设置”，先导入或手动编辑作品。
 
-免费模型、额度与数据政策由对应服务提供方决定，可能随时调整。若内置推荐不在本机 CLI 的实时列表中，司命会改选当前可用的免费模型，并在运行记录中明确显示实际模型；更多高质量模型仍需前往相应模型官网自行订阅。
+需要本地模型或已有 CLI 时，可分别前往“模型中心”或“模型设置”；详见[本地模型](#本地模型)。
 
-已有 API 可以在“系统设置”配置；希望使用自己电脑的 GPU，可以按下方[本地模型](#本地模型)步骤接入 GGUF。
+手机端可直接配置自己的 API 独立创作；使用电脑上的模型时，需显式连接自己的 Gateway。Docker Gateway 只提供云端 API 接入。
 
 ### 3. 说一句故事想法
 
@@ -76,8 +80,8 @@ opencode_cli:opencode/big-pickle
 
 | 首次准备 AI | 作品写作工作台 |
 | --- | --- |
-| [![司命首次使用页，展示准备 AI 并开始构思按钮](docs/images/readme/quick-start.png)](docs/images/readme/quick-start.png) | [![司命作品写作工作台，展示《雾海拾光》章节列表、摘要和正文编辑器](docs/images/readme/project-workspace.png)](docs/images/readme/project-workspace.png) |
-| 不需要开发工具或命令行，下载、校验和模型测试都有明确步骤。 | 章节、大纲节点、摘要、正文与版本历史在同一工作台内管理。 |
+| [![司命首次使用页，展示 API Key 官网入口与 API 配置步骤](docs/images/readme/quick-start.png)](docs/images/readme/quick-start.png) | [![司命作品写作工作台，展示《雾海拾光》章节列表、摘要和正文编辑器](docs/images/readme/project-workspace.png)](docs/images/readme/project-workspace.png) |
+| 从服务商官网获取 API Key，配置并测试后开始创作。 | 章节、大纲节点、摘要、正文与版本历史在同一工作台内管理。 |
 
 [![司命全局任务中心，展示《雾海拾光》正在处理第 138/600 章的作品建档任务](docs/images/readme/task-center.png)](docs/images/readme/task-center.png)
 
@@ -190,11 +194,13 @@ docker compose -f compose.gateway.yml up -d
 
 司命可以使用 OpenAI、Anthropic Claude、DeepSeek、Google Gemini、通义千问、OpenAI 兼容中转站，也可以调用 Claude Code、Codex、OpenCode、DeepSeek Harness（DSH）等本机 CLI，或使用 llama.cpp 运行本地 GGUF。仅“检测到命令”不等于可用；只有完成真实对话测试的模型才会进入新书、助手和写作流程。
 
+OpenCode 通过官方 CLI 调用用户配置的模型，但**免费标签不代表能在司命中使用**。当前接入实测收到 `OpenCode's free tier can only be used from within OpenCode`；[OpenCode 维护者说明免费层限制用于其他 Agent 执行框架](https://github.com/anomalyco/opencode/issues/49580#issuecomment-5723289721)。请选择获授权且测试通过的配置，费用、额度与适用范围以[官方说明](https://opencode.ai/docs/zen/)为准。快速开始已移除自动安装、轮试免费模型与恢复旧准备任务，模型 ID 不会被静默替换。
+
 - 作品数据库、文件镜像、快照和任务记录保存在你选择的本机目录。
 - 司命不会自主把整个作品库上传到项目服务器。
 - 使用云端 API 或需联网的 CLI 时，当前任务选中的提示词、正文片段和上下文会发送给对应提供方处理。
 - 使用司命管理的本地 GGUF 时，当前模型请求由本机 llama.cpp 处理；模型文件下载与作者选择的跨设备同步分别需要访问对应服务。
-- API Key 由本机配置使用；OpenCode 的一次性登录凭据仅传递给当前登录进程，不保存、不回显、不写日志。
+- API Key 由本机配置使用；CLI 使用用户已配置的登录与模型授权。
 
 请根据内容敏感程度阅读所选模型提供方的数据政策，不要向免费云端模型提交隐私或机密内容。
 

@@ -1,5 +1,12 @@
 package com.siming.mobile.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.Surface
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -39,7 +46,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -95,6 +101,10 @@ internal fun CreationScreen(
     var showDossier by rememberSaveable(ui.activeCreationId) { mutableStateOf(false) }
     var dossierStage by rememberSaveable(ui.activeCreationId) { mutableStateOf<String?>(null) }
 
+
+    BackHandler(enabled = active != null) {
+        if (showDossier) showDossier = false else viewModel.closeCreation()
+    }
 
     when {
         ui.activeCreationId != null && active == null -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -154,7 +164,7 @@ internal fun CreationScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun CreationLanding(
     modifier: Modifier,
@@ -191,79 +201,43 @@ private fun CreationLanding(
     var pacing by rememberSaveable { mutableStateOf("") }
     var writingStyle by rememberSaveable { mutableStateOf("") }
 
+    var showDrafts by rememberSaveable { mutableStateOf(false) }
+    var showRoute by rememberSaveable { mutableStateOf(false) }
+    Column(modifier.fillMaxSize().imePadding()) {
     LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(18.dp, 18.dp, 18.dp, 110.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.weight(1f).fillMaxWidth(),
+        contentPadding = PaddingValues(16.dp, 14.dp, 16.dp, 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { CreationHero() }
-        if (drafts.isNotEmpty()) {
-            item {
-                Text("继续上次立项", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text(
-                    "未完成的思路不会丢；回到 AI 上次停下的位置。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            items(drafts.take(3), key = { it.string("id") }) { draft ->
-                DraftResumeCard(draft, stages, onResume)
-            }
-            item { HorizontalDivider(Modifier.padding(vertical = 4.dp)) }
-        }
         item {
-            Text("AI 怎么参与", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Text(
-                "先选合作方式。这里只决定 AI 如何尊重你的素材，不是让你填完一张长表。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                ChoiceCard(
-                    selected = creationMode == "author_led",
-                    title = "按我的设定",
-                    detail = "AI 整理、补空白，不改写专名和已定方向",
-                    icon = Icons.Outlined.Lock,
-                    modifier = Modifier.weight(1f),
-                    onClick = { creationMode = "author_led" },
-                )
-                ChoiceCard(
-                    selected = creationMode == "explore",
-                    title = "帮我探索",
-                    detail = "AI 边聊边写入资料，与我一起找到可持续的创意",
-                    icon = Icons.Outlined.AutoAwesome,
-                    modifier = Modifier.weight(1f),
-                    onClick = { creationMode = "explore" },
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("开启新故事", style = MaterialTheme.typography.headlineSmall)
+                    Text("先说想法，再逐步完善。", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (drafts.isNotEmpty()) TextButton(onClick = { showDrafts = true }) { Text("立项记录") }
             }
         }
         item {
-            OutlinedTextField(
-                value = brief,
-                onValueChange = { brief = it },
-                label = { Text(if (creationMode == "author_led") "把已有想法告诉 AI" else "从一个念头开始") },
-                placeholder = {
-                    Text(
-                        if (creationMode == "author_led") {
-                            "例：主角能看见别人寿命，但每次救人都会忘掉一段记忆……"
-                        } else {
-                            "例：我想写都市悬疑，核心是亲密关系里的信任"
-                        }
-                    )
-                },
-                minLines = 5,
-                maxLines = 10,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-            )
+            OutlinedTextField(value = brief, onValueChange = { brief = it },
+                label = { Text("你想写什么故事？") },
+                placeholder = { Text("一个人物、一条设定，或一段已有构思…") },
+                minLines = 4, maxLines = 8, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium)
+        }
+        item {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(onClick = { creationMode = "author_led" }, label = { Text("按我的设定") },
+                    colors = AssistChipDefaults.assistChipColors(containerColor = if (creationMode == "author_led") MaterialTheme.colorScheme.primaryContainer else Color.Transparent))
+                AssistChip(onClick = { creationMode = "explore" }, label = { Text("帮我探索") },
+                    colors = AssistChipDefaults.assistChipColors(containerColor = if (creationMode == "explore") MaterialTheme.colorScheme.primaryContainer else Color.Transparent))
+            }
+            Text(if (creationMode == "author_led") "保留你的设定，AI 整理并补充空白。" else "和 AI 一起寻找创意与故事方向。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
             TextButton(onClick = { advanced = !advanced }) {
-                Icon(Icons.Outlined.Edit, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(7.dp))
-                Text(if (advanced) "收起可选约束" else "我还想锁定篇幅、平台或避雷项")
+                Text(if (advanced) "收起补充设定" else "补充题材、篇幅与要求（可选）")
             }
         }
         if (advanced) {
@@ -380,43 +354,16 @@ private fun CreationLanding(
                 }
             }
         }
-        item {
-            Text("选择 AI 线路", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Text(
-                "有 Gateway 时可随时选电脑配置或手机 Key；两条线路使用同一套对话式 Creation Agent 提示词、工具和建档结构。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                if (connection != null) {
-                    RouteCard(
-                        selected = route == CreationExecutionRoute.Pc,
-                        icon = Icons.Outlined.CloudQueue,
-                        title = "使用电脑线路",
-                        detail = "${connection.gatewayName} · 直接复用 PC 模型配置与可恢复任务",
-                        badge = "PC 同一 API",
-                        onClick = { route = CreationExecutionRoute.Pc },
-                    )
-                }
-                RouteCard(
-                    selected = route == CreationExecutionRoute.MobileKey,
-                    icon = if (directApi == null) Icons.Outlined.Key else Icons.Outlined.PhoneAndroid,
-                    title = "使用手机保存的 Key",
-                    detail = directApi?.let { "${it.displayName} · ${it.model} · 手机直接调用" }
-                        ?: "还没有配置；配置后无需 Gateway 也能完整立项",
-                    badge = when {
-                        directApi == null -> "去配置"
-                        else -> "手机独立运行"
-                    },
-                    onClick = {
-                        if (directApi == null) onConfigureApi() else route = CreationExecutionRoute.MobileKey
-                    },
-                )
+    }
+    Surface(color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            TextButton(onClick = { showRoute = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(when {
+                    route == CreationExecutionRoute.Pc -> "电脑模型 · 更换"
+                    directApi != null -> "${directApi.displayName} · 更换模型"
+                    else -> "选择 AI 模型"
+                }, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-        }
-        item {
             Button(
                 onClick = {
                     onStart(
@@ -450,119 +397,33 @@ private fun CreationLanding(
                 if (running) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else Icon(Icons.Outlined.AutoAwesome, null)
                 Spacer(Modifier.width(9.dp))
-                Text(if (running) activity.ifBlank { "AI 正在进入故事…" } else "让 AI 开始立项", fontWeight = FontWeight.Bold)
+                Text(if (running) activity.ifBlank { "正在立项…" } else "开始立项", fontWeight = FontWeight.Bold)
             }
         }
-        item {
-            Text(
-                "接下来可在对话与结构化建档页之间随时切换：聊天负责补想法，建档页负责像 PC 一样生成、编辑、确认每个阶段并建立正式作品。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CreationHero() {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        shape = RoundedCornerShape(28.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Box(
-            Modifier
-                .background(
-                    Brush.linearGradient(
-                        listOf(Color(0xFF20201F), Color(0xFF49332D), Color(0xFF873D35)),
-                    ),
-                )
-                .fillMaxWidth()
-                .padding(22.dp),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Surface(color = Color.White.copy(alpha = 0.12f), shape = RoundedCornerShape(20.dp)) {
-                    Text(
-                        "AI CO-AUTHOR STUDIO",
-                        color = Color(0xFFFFD8C7),
-                        fontSize = 11.sp,
-                        letterSpacing = 1.6.sp,
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                    )
-                }
-                Text("一句话，和 AI 一起立项", color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "不是空白纸，也不是手写建档。司命会像 PC 端一样边聊边读取和写入作品资料；你每确认一个事实，它就立即进入结构化草稿。",
-                    color = Color.White.copy(alpha = 0.82f),
-                    lineHeight = 22.sp,
-                )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    listOf("即时写入", "按需追问", "任意顺序", "一键建档").forEach {
-                        Surface(color = Color.White.copy(alpha = 0.1f), shape = RoundedCornerShape(12.dp)) {
-                            Text(it, color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp))
-                        }
-                    }
+    }
+    if (showDrafts) {
+        ModalBottomSheet(onDismissRequest = { showDrafts = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Text("立项记录", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(20.dp))
+            LazyColumn(contentPadding = PaddingValues(16.dp, 0.dp, 16.dp, 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(drafts, key = { it.string("id") }) { draft ->
+                    DraftResumeCard(draft, stages) { showDrafts = false; onResume(it) }
                 }
             }
         }
     }
-}
-
-@Composable
-private fun ChoiceCard(
-    selected: Boolean,
-    title: String,
-    detail: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    modifier: Modifier,
-    onClick: () -> Unit,
-) {
-    OutlinedCard(
-        onClick = onClick,
-        modifier = modifier,
-        colors = CardDefaults.outlinedCardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.White,
-        ),
-        border = BorderStroke(1.5.dp, if (selected) SimingCinnabar else MaterialTheme.colorScheme.outlineVariant),
-        shape = RoundedCornerShape(18.dp),
-    ) {
-        Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(icon, null, tint = if (selected) SimingCinnabar else MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(title, fontWeight = FontWeight.Bold)
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun RouteCard(
-    selected: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    detail: String,
-    badge: String,
-    onClick: () -> Unit,
-) {
-    OutlinedCard(
-        onClick = onClick,
-        colors = CardDefaults.outlinedCardColors(containerColor = if (selected) Color(0xFFF2F7F4) else Color.White),
-        border = BorderStroke(1.5.dp, if (selected) SimingGreen else MaterialTheme.colorScheme.outlineVariant),
-        shape = RoundedCornerShape(17.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = if (selected) SimingGreen else MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape) {
-                Icon(icon, null, tint = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(9.dp).size(20.dp))
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold)
-                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Surface(color = if (selected) SimingGreen.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp)) {
-                Text(badge, color = if (selected) SimingGreen else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp))
-            }
+    if (showRoute) {
+        ModalBottomSheet(onDismissRequest = { showRoute = false }) {
+            Text("使用哪个 AI？", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(20.dp))
+            WorkspaceActionRow("手机 AI", directApi?.let { "${it.displayName} · ${it.model}" } ?: "配置 API 后可独立使用",
+                Icons.Outlined.PhoneAndroid, {
+                    showRoute = false
+                    if (directApi == null) onConfigureApi() else route = CreationExecutionRoute.MobileKey
+                })
+            if (connection != null) WorkspaceActionRow("电脑模型", connection.gatewayName,
+                Icons.Outlined.CloudQueue, { route = CreationExecutionRoute.Pc; showRoute = false })
+            TextButton(onClick = { showRoute = false; onConfigureApi() }, modifier = Modifier.padding(16.dp)) { Text("管理手机 AI 配置") }
         }
     }
 }

@@ -140,11 +140,9 @@ def _resume_local_runtime_jobs() -> None:
     try:
         from ..services.local_runtime.model_jobs import resume_incomplete_downloads
         from ..services.local_runtime.training import resume_incomplete_training_jobs
-        from ..services.opencode_onboarding import resume_incomplete_opencode_activations
 
         resume_incomplete_downloads()
         resume_incomplete_training_jobs()
-        resume_incomplete_opencode_activations()
     except Exception as exc:
         logger.warning("Failed to resume local AI jobs: %s", exc)
 

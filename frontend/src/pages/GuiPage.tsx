@@ -79,9 +79,9 @@ const TAB_RENDERERS = {
     <div className="gui-embedded-page">
       <header className="siming-section-header">
         <div>
-          <span className="siming-section-kicker">免费体验</span>
+          <span className="siming-section-kicker">第一次使用</span>
           <Title level={3}><RocketOutlined /> 快速开始</Title>
-          <p className="siming-section-description">检查、安装并验证免费写作模型，然后直接开始第一本小说。</p>
+          <p className="siming-section-description">从服务商官网获取 API Key，连接并测试后开始创作。</p>
         </div>
       </header>
       <GettingStartedPanel />

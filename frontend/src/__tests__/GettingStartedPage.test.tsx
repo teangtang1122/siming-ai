@@ -1,347 +1,136 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { message, Modal } from 'antd'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { QueryClientProvider } from '@tanstack/react-query'
-import { createSimingQueryClient } from '../shared/query/client'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { GatewayRuntimeContext } from '../components/GatewayRuntimeContext'
 
-const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn() }))
+const { api, navigate } = vi.hoisted(() => ({
+  api: { get: vi.fn(), post: vi.fn(), put: vi.fn() }, navigate: vi.fn(),
+}))
 vi.mock('../api/client', () => ({ apiClient: api }))
-vi.mock('antd', async (importOriginal) => ({
-  ...await importOriginal<typeof import('antd')>(),
-  message: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+vi.mock('react-router-dom', async (original) => ({
+  ...await original<typeof import('react-router-dom')>(), useNavigate: () => navigate,
 }))
 
-import { GettingStartedPanel } from '../pages/GettingStartedPage'
+import GettingStartedPage, { GettingStartedPanel } from '../pages/GettingStartedPage'
 
-function renderPanel() {
-  const client = createSimingQueryClient()
+function renderPanel({ page = false, headless = false } = {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter><GettingStartedPanel /></MemoryRouter>
+      <GatewayRuntimeContext.Provider value={{ headless }}>
+        <MemoryRouter>{page ? <GettingStartedPage /> : <GettingStartedPanel />}</MemoryRouter>
+      </GatewayRuntimeContext.Provider>
     </QueryClientProvider>,
   )
 }
 
-const baseStatus = {
-  free_models: [],
-  recommended_model: null,
-  platform_supported: true,
-  configured: false,
-  configured_model: null,
-  is_global_default: false,
-  has_usable_models: false,
-  needs_setup: true,
-  global_model: null,
-  activation_job: null,
-  official_links: { model_docs: 'https://opencode.ai/docs/zen' },
+const emptyStatus = {
+  has_any_model: false, has_usable_models: false, needs_setup: true,
+  global_model: null, available_model: null,
 }
+const response = (data: unknown) => ({ data: { data } })
 
 describe('GettingStartedPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
+    api.get.mockResolvedValue(response(emptyStatus))
   })
 
-  afterEach(() => {
-    Modal.destroyAll()
-    document.querySelectorAll('.ant-modal-root').forEach((root) => root.remove())
-  })
-
-  it('offers one plain-language activation action', async () => {
-    api.get.mockResolvedValue({ data: { data: baseStatus } })
-    api.post.mockResolvedValue({ data: { data: {
-      id: 'job-1', status: 'pending', phase: 'checking', percent: 0,
-      message: '免费体验任务已创建', free_models: [],
-    } } })
-
+  it('offers API setup and official key portals without starting model operations', async () => {
     renderPanel()
-    expect(await screen.findByText('从一句故事想法开始')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /准备 AI 并开始构思/ }))
-
-    expect(screen.getByText('无需安装开发工具')).toBeInTheDocument()
-    expect(screen.getByText('无需打开命令行')).toBeInTheDocument()
-    expect(screen.getByText('每一步都能看到进度')).toBeInTheDocument()
-    expect(screen.getByText(/逐个真实测试/)).toBeInTheDocument()
-    expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/activate', { preferred_model: null })
-    expect(screen.queryByText(/先安装 Node.js/)).not.toBeInTheDocument()
-  })
-
-  it('asks before adding a newly installed managed OpenCode to the current-user PATH', async () => {
-    const pathIntegration = {
-      supported: true,
-      managed_install: true,
-      configured: false,
-      directory: String.raw`C:\Users\writer\AppData\Local\Siming\managed-cli\opencode\bin`,
-      scope: 'user',
-      requires_new_terminal: true,
+    expect(await screen.findByText('通过 API 连接模型')).toBeInTheDocument()
+    for (const [name, href] of [
+      ['DeepSeek', 'https://platform.deepseek.com/api_keys'],
+      ['通义千问', 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key'],
+      ['OpenAI', 'https://platform.openai.com/api-keys'],
+      ['Anthropic Claude', 'https://platform.claude.com/settings/keys'],
+      ['Google Gemini', 'https://aistudio.google.com/apikey'],
+    ]) {
+      const link = screen.getByRole('link', { name: `${name} 官网获取 API Key` })
+      expect(link).toHaveAttribute('href', href)
+      expect(link).toHaveAttribute('target', '_blank')
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     }
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus,
-      activation_job: {
-        id: 'job-installed',
-        status: 'running',
-        phase: 'discovering_models',
-        percent: 88,
-        message: '已找到当前可免费使用的模型',
-        command: `${pathIntegration.directory}\\opencode.exe`,
-        free_models: [],
-        path_integration: pathIntegration,
-      },
-    } } })
-    api.put.mockResolvedValue({ data: { data: {
-      ...pathIntegration,
-      configured: true,
-      changed: true,
-    } } })
-
-    renderPanel()
-
-    expect((await screen.findAllByText('OpenCode 已安装，要加入 PATH 吗？')).length).toBeGreaterThan(0)
-    expect(screen.getByText(/只修改当前 Windows 用户，不需要管理员权限/)).toBeInTheDocument()
-    expect(screen.getByText(/不添加也不影响司命继续使用 OpenCode/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '添加到 PATH' }))
-
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
-      '/config/getting-started/opencode/path',
-      { enabled: true },
-    ))
-    await waitFor(() => expect(message.success).toHaveBeenCalledWith(
-      '已添加到当前用户 PATH；请打开一个新终端后运行 opencode。',
-    ))
-  })
-
-  it('keeps a later PATH action on the ready screen when the install prompt was skipped', async () => {
-    const pathIntegration = {
-      supported: true,
-      managed_install: true,
-      configured: false,
-      directory: String.raw`C:\Users\writer\AppData\Local\Siming\managed-cli\opencode\bin`,
-      scope: 'user',
-      requires_new_terminal: true,
-    }
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus,
-      needs_setup: false,
-      configured: true,
-      is_global_default: true,
-      has_usable_models: true,
-      global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
-      opencode_mcp_configured: true,
-      path_integration: pathIntegration,
-    } } })
-    api.put.mockResolvedValue({ data: { data: {
-      ...pathIntegration,
-      configured: true,
-      changed: true,
-    } } })
-
-    renderPanel()
-
-    const noticeTitle = await screen.findByText('需要在终端直接启动 OpenCode？')
-    const notice = noticeTitle.closest('.ant-alert')
-    expect(notice).not.toBeNull()
-    fireEvent.click(within(notice as HTMLElement).getByRole('button', { name: '添加到 PATH' }))
-
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
-      '/config/getting-started/opencode/path',
-      { enabled: true },
-    ))
-  })
-
-  it('offers MCP setup for ready OpenCode and shows the first-idea prompt after verification', async () => {
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus,
-      needs_setup: false,
-      configured: true,
-      is_global_default: true,
-      has_usable_models: true,
-      global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
-      opencode_mcp_configured: false,
-    } } })
-    api.post.mockImplementation((url: string) => {
-      if (url === '/config/getting-started/opencode/mcp/configure') {
-        return Promise.resolve({ data: { data: {
-          ready: true,
-          detail: 'OpenCode 与 Siming MCP 已就绪',
-          preflight: { ready: true, detail: '建档工具已加载', missing_tools: [] },
-        } } })
-      }
-      return Promise.reject(new Error(`unexpected POST ${url}`))
-    })
-
-    renderPanel()
-
-    expect(await screen.findByText('OpenCode 已可用，再完成一步即可启用完整 Agent')).toBeInTheDocument()
-    expect(screen.queryByLabelText('你想写什么故事？')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /配置并验证 MCP/ }))
-
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/mcp/configure'))
-    expect(await screen.findByText('免费写作能力已经准备好')).toBeInTheDocument()
-    expect(screen.getByLabelText('你想写什么故事？')).toBeInTheDocument()
-  })
-
-  it('does not resume or poll a stale activation job after any model is usable', async () => {
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus,
-      needs_setup: false,
-      has_usable_models: true,
-      available_model: { provider: 'deepseek', model: 'deepseek-v4-flash' },
-      activation_job: {
-        id: 'stale-job', status: 'running', phase: 'testing', percent: 95,
-        message: '旧任务仍在检查', free_models: [],
-      },
-    } } })
-
-    renderPanel()
-
-    expect(await screen.findByText('免费写作能力已经准备好')).toBeInTheDocument()
-    await new Promise((resolve) => window.setTimeout(resolve, 1100))
+    expect(screen.queryByRole('button', { name: '打开本地模型中心' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '配置 CLI' })).not.toBeInTheDocument()
     expect(api.get).toHaveBeenCalledTimes(1)
-    expect(api.get).not.toHaveBeenCalledWith('/config/getting-started/opencode/jobs/stale-job')
+    expect(api.get).toHaveBeenCalledWith('/config/getting-started')
+    expect(api.post).not.toHaveBeenCalled()
+    expect(api.put).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '配置 API' }))
+    expect(navigate).toHaveBeenLastCalledWith('/settings?section=ai&setup=api')
   })
 
-  it('creates a session and starts one adjustable concept direction from one idea', async () => {
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus, needs_setup: false, is_global_default: true, has_usable_models: true,
-      global_model: { provider: 'opencode_cli', model: 'opencode/free-model' },
-      opencode_mcp_configured: true,
-    } } })
-    api.post.mockImplementation((url: string) => {
-      if (url === '/novel-creation/start') return Promise.resolve({ data: { data: { session_id: 'session-1' } } })
-      if (url === '/novel-creation/sessions/session-1/runs') return Promise.resolve({ data: { data: { run: { id: 'run-1', status: 'running' } } } })
-      return Promise.reject(new Error(`unexpected POST ${url}`))
-    })
+  it('shows saved unverified configurations as needing verification', async () => {
+    api.get.mockResolvedValue(response({ ...emptyStatus, has_any_model: true }))
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: '查看并验证' }))
+    expect(navigate).toHaveBeenCalledWith('/settings?section=ai')
+    expect(screen.queryByLabelText('你想写什么故事？')).not.toBeInTheDocument()
+  })
 
+  it('refreshes persisted readiness and moves directly to creation after setup', async () => {
+    api.get.mockResolvedValueOnce(response(emptyStatus)).mockResolvedValue(response({
+      ...emptyStatus, has_any_model: true, has_usable_models: true, needs_setup: false,
+      available_model: { provider: 'deepseek', model: 'author-model' },
+    }))
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: '刷新配置状态' }))
+    expect(await screen.findByText('模型已就绪，开始构思吧')).toBeInTheDocument()
+    expect(screen.getByText('本次使用：DeepSeek · author-model')).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledTimes(2)
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['deepseek', 'author-model'], ['opencode_cli', 'vendor/authorized-model'],
+    ['local_llama_cpp', 'local-writing-model'],
+  ])('starts one concept run with the displayed verified %s model', async (provider, model) => {
+    api.get.mockResolvedValue(response({
+      ...emptyStatus, has_any_model: true, has_usable_models: true, needs_setup: false,
+      global_model: { provider, model },
+      available_model: { provider: 'other', model: 'not-selected' },
+    }))
+    api.post.mockImplementation((url: string) => {
+      if (url === '/novel-creation/start') return Promise.resolve(response({ session_id: 'session-1' }))
+      if (url === '/novel-creation/sessions/session-1/runs') return Promise.resolve(response({ run: { id: 'run-1' } }))
+      return Promise.reject(new Error(`Unexpected POST ${url}`))
+    })
     renderPanel()
     fireEvent.change(await screen.findByLabelText('你想写什么故事？'), { target: { value: '午夜客栈里的修仙少女' } })
-    fireEvent.click(screen.getByRole('button', { name: /生成小说创意/ }))
-
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/novel-creation/start', expect.objectContaining({
+    fireEvent.click(screen.getByRole('button', { name: '生成小说创意' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs',
+      expect.objectContaining({ stage: 'concepts', model: `${provider}:${model}` })))
+    expect(api.post).toHaveBeenCalledWith('/novel-creation/start', expect.objectContaining({
       mode: 'internal_llm', user_brief: '午夜客栈里的修仙少女',
-    })))
-    expect(api.post).toHaveBeenCalledWith('/novel-creation/sessions/session-1/runs', expect.objectContaining({
-      stage: 'concepts', model: 'opencode_cli:opencode/free-model',
     }))
+    expect(api.post).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(navigate).toHaveBeenCalled())
   })
 
-  it('starts managed official login without relying on a window-focus retry', async () => {
-    const authJob = {
-      id: 'job-auth', status: 'auth_required', phase: 'auth_required', percent: 90,
-      message: '需要完成一次免费的官方登录', free_models: [],
-    }
-    api.get.mockResolvedValue({ data: { data: { ...baseStatus, activation_job: authJob } } })
-    api.post.mockImplementation((url: string) => {
-      if (url.endsWith('/authenticate')) return Promise.resolve({ data: { data: {
-        ...authJob,
-        status: 'running',
-        phase: 'authenticating',
-        auth_mode: 'managed_cli',
-        auth_status: 'running',
-        auth_prompt: '正在等待 OpenCode 官方登录',
-      } } })
-      return Promise.reject(new Error(`unexpected POST ${url}`))
-    })
-
+  it('supports retrying a failed status read without showing misleading setup success', async () => {
+    api.get.mockRejectedValueOnce(new Error('服务暂时不可达')).mockResolvedValue(response(emptyStatus))
     renderPanel()
-    fireEvent.click(await screen.findByRole('button', { name: '开始官方登录' }, { timeout: 10_000 }))
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/authenticate'))
-    expect(await screen.findByText('正在等待 OpenCode 官方登录')).toBeInTheDocument()
-    expect(api.post).not.toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-auth/retry')
+    expect(await screen.findByText('服务暂时不可达')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByText('通过 API 连接模型')).toBeInTheDocument()
   })
 
-  it('explains a Windows certificate-chain failure without suggesting unsafe TLS bypasses', async () => {
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus,
-      activation_job: {
-        id: 'job-cert', status: 'failed', phase: 'failed', percent: 4,
-        message: '免费写作能力暂时没有准备完成',
-        failure_kind: 'certificate_verification',
-        next_action: '请确认 Windows 日期和时间正确，并完成 Windows 更新后重试。司命会使用系统受信任证书，且不会关闭 HTTPS 校验。',
-        error: '<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED]>',
-        free_models: [],
-      },
-    } } })
-
-    renderPanel()
-
-    expect(await screen.findByText('Windows 证书验证没有完成')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /重新验证连接/ })).toBeInTheDocument()
-    expect(screen.getByText(/不会关闭 HTTPS 校验/)).toBeInTheDocument()
+  it('offers only API setup on a headless Gateway', async () => {
+    renderPanel({ headless: true })
+    expect(await screen.findByRole('button', { name: '配置 API' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '配置 CLI' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '打开本地模型中心' })).not.toBeInTheDocument()
   })
 
-  it('distinguishes third-party free-pool limits from network failures and offers recovery', async () => {
-    const quotaJob = {
-      id: 'job-quota', status: 'failed', phase: 'failed', percent: 98,
-      message: 'OpenCode 免费服务已限流',
-      failure_kind: 'quota_or_rate_limit',
-      next_action: '司命已实际测试 2 个免费模型，第三方均返回 403/429 或额度限制；这不是网络故障。',
-      error: 'HTTP Error 403: rate limit exceeded',
-      free_models: [
-        { id: 'opencode/first-free', display_name: 'First Free', recommended: true, test_status: 'rate_limited' },
-        { id: 'opencode/second-free', display_name: 'Second Free', recommended: false, test_status: 'rate_limited' },
-      ],
-    }
-    api.get.mockResolvedValue({ data: { data: { ...baseStatus, activation_job: quotaJob } } })
-    api.post.mockImplementation((url: string) => {
-      if (url.endsWith('/authenticate')) return Promise.resolve({ data: { data: {
-        ...quotaJob,
-        status: 'running',
-        phase: 'authenticating',
-        auth_status: 'running',
-      } } })
-      return Promise.reject(new Error(`unexpected POST ${url}`))
-    })
-
-    renderPanel()
-
-    expect(await screen.findByText('OpenCode 免费服务已限流（不是网络故障）')).toBeInTheDocument()
-    expect(screen.getByText(/已实际测试 2 个免费模型/)).toBeInTheDocument()
-    expect(screen.queryByText(/请检查网络/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /重新检测免费模型/ })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '查看官方免费模型说明' })).toHaveAttribute('href', 'https://opencode.ai/docs/zen')
-
-    fireEvent.click(screen.getByRole('button', { name: '登录后验证个人免费额度' }))
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/getting-started/opencode/jobs/job-quota/authenticate'))
-  })
-
-  it('keeps a download limit separate from free-model quota', async () => {
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus,
-      activation_job: {
-        id: 'job-download', status: 'failed', phase: 'failed', percent: 5,
-        message: '免费写作能力暂时没有准备完成',
-        failure_kind: 'download_rate_limit',
-        next_action: 'OpenCode 官方下载服务返回 403/429 限流；下载进度已保留。',
-        error: 'HTTP Error 403: rate limit exceeded',
-        free_models: [],
-      },
-    } } })
-
-    renderPanel()
-
-    expect(await screen.findByText('OpenCode 下载服务暂时限流')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /稍后继续下载/ })).toBeInTheDocument()
-    expect(screen.queryByText('OpenCode 免费服务已限流（不是网络故障）')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '登录后验证个人免费额度' })).not.toBeInTheDocument()
-  })
-
-  it('shows the source selected by smart download routing', async () => {
-    api.get.mockResolvedValue({ data: { data: {
-      ...baseStatus,
-      activation_job: {
-        id: 'job-download', status: 'running', phase: 'downloading', percent: 35,
-        message: '已选择国内加速源，正在下载 v1.18.4',
-        download_source: '国内加速源',
-        bytes_downloaded: 20 * 1024 * 1024,
-        bytes_total: 60 * 1024 * 1024,
-        free_models: [],
-      },
-    } } })
-
-    renderPanel()
-
-    expect(await screen.findByText('当前线路：国内加速源')).toBeInTheDocument()
-    expect(screen.getByText('20.0 MB / 60.0 MB')).toBeInTheDocument()
+  it('allows manual creation before configuring any model', async () => {
+    renderPanel({ page: true })
+    fireEvent.click(await screen.findByRole('button', { name: '稍后设置' }))
+    expect(localStorage.getItem('siming_getting_started_deferred')).toBe('true')
+    expect(navigate).toHaveBeenCalledWith('/dashboard')
+    expect(api.post).not.toHaveBeenCalled()
   })
 })

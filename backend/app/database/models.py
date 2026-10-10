@@ -95,7 +95,6 @@ from app.modules.model_runtime.infrastructure.legacy_models import (
     LocalRuntimeInstallation,
     ModelAdapter,
     ModelDownloadTask,
-    OpenCodeActivationJob,
     TrainingDataset,
     TrainingJob,
 )
@@ -141,7 +140,6 @@ __all__ = [
     "ChapterWorldbuilding",
     "ChapterSnapshot",
     "DeconstructionReport",
-    "OpenCodeActivationJob",
     "LocalModel",
     "LocalRuntimeInstallation",
     "ModelDownloadTask",
