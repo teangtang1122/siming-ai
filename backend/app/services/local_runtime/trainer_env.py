@@ -41,6 +41,18 @@ def _download(url: str, target: Path) -> None:
         shutil.copyfileobj(response, output)
 
 
+def _extract_archive_safely(bundle, target):
+    """Extract a zip bundle, refusing members that escape the target or are symlinks."""
+    target_resolved = target.resolve()
+    for member in bundle.infolist():
+        member_path = (target_resolved / member.filename).resolve()
+        if member_path != target_resolved and target_resolved not in member_path.parents:
+            raise RuntimeError(f"Refusing to extract unsafe archive member: {member.filename}")
+        if (member.external_attr >> 16) & 0o170000 == 0o120000:
+            raise RuntimeError(f"Refusing to extract symlink archive member: {member.filename}")
+    bundle.extractall(target)
+
+
 def ensure_uv() -> Path:
     existing = runtime_root() / "trainer" / "uv.exe"
     if existing.exists():
@@ -64,7 +76,7 @@ def ensure_uv() -> Path:
     target = runtime_root() / "trainer"
     target.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as bundle:
-        bundle.extractall(target)
+        _extract_archive_safely(bundle, target)
     found = next(target.rglob("uv.exe"), None)
     if not found:
         raise RuntimeError("uv 安装包中没有 uv.exe")
@@ -115,7 +127,7 @@ def ensure_llama_conversion_tools() -> Path:
         shutil.rmtree(extract_root)
     extract_root.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as bundle:
-        bundle.extractall(extract_root)
+        _extract_archive_safely(bundle, extract_root)
     source = next(extract_root.rglob("convert_lora_to_gguf.py"), None)
     if not source:
         raise RuntimeError("llama.cpp 源码中没有 LoRA 转换工具")
