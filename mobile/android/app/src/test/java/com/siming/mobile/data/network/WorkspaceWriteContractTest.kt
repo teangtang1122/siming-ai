@@ -46,9 +46,14 @@ class WorkspaceWriteContractTest {
                 server.start()
                 val api = DirectApiClient(allowCleartextForTests = true)
                 val config = DirectApiConfig("audit", server.url("/").toString(), "test-only", "audit", protocol = protocol)
-                assertFailsWith<DirectNativeToolProtocolException> {
+                val error = assertFailsWith<DirectIncompleteResponseException> {
                     api.agentTurn(config, emptyList(), JsonArray(emptyList()))
                 }
+                assertEquals(
+                    if (protocol == DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS) "length" else "max_output_tokens",
+                    error.finishReason,
+                )
+                assertEquals(true, error.outputLimited)
                 assertEquals(1, server.requestCount)
             }
         }

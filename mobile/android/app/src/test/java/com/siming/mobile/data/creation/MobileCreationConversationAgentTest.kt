@@ -6,6 +6,7 @@ import com.siming.mobile.data.agent.MobileConversationContextException
 import com.siming.mobile.data.agent.MobileToolTransactionState
 import com.siming.mobile.data.network.DirectApiClient
 import com.siming.mobile.data.network.DirectApiConfig
+import com.siming.mobile.data.network.DirectNativeToolProtocolException
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
@@ -1343,7 +1344,7 @@ class MobileCreationConversationAgentTest {
                 finalizeSession = { source -> source to "project-1" },
             )
 
-            val error = assertFailsWith<MobileConversationContextException> {
+            val error = assertFailsWith<DirectNativeToolProtocolException> {
                 runBlocking {
                     AgentHarness(standalone, store).run(
                         source = session(),
@@ -1353,7 +1354,7 @@ class MobileCreationConversationAgentTest {
                 }
             }
 
-            assertEquals(MobileConversationContextErrorCode.PROTOCOL_INVALID, error.code)
+            assertEquals(DirectNativeToolProtocolException.REASON, error.reason)
             assertEquals(0, persisted.get())
             assertEquals(2, requests.get())
         }
