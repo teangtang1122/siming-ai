@@ -238,7 +238,7 @@ def test_capacity_eviction_reuses_space_and_preserves_active_trace(tmp_path):
         bounded.close()
 
 
-def test_observed_provider_clients_keep_sdk_defaults():
+def test_observed_provider_clients_keep_sdk_defaults_except_connection_budget():
     from anthropic import AsyncAnthropic
     from openai import DefaultAsyncHttpxClient
 
@@ -252,7 +252,10 @@ def test_observed_provider_clients_keep_sdk_defaults():
             (original_anthropic._client, TracedAnthropicHttpClient()),
         ]
         for original, observed_client in pairs:
-            assert original.timeout == observed_client.timeout
+            from app.core.config import get_settings
+            assert observed_client.timeout.connect == get_settings().api_connect_timeout_seconds
+            for phase in ("read", "write", "pool"):
+                assert getattr(original.timeout, phase) == getattr(observed_client.timeout, phase)
             assert original.follow_redirects == observed_client.follow_redirects
             assert original._trust_env == observed_client._trust_env
             assert (

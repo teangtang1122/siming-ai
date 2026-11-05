@@ -106,6 +106,7 @@ def resolve_generation_model_binding(
                 "max_output_tokens": profile.max_output_tokens,
                 "safety_margin_tokens": profile.safety_margin_tokens,
                 "known": profile.known,
+                **({"request_parameters": profile.request_parameters} if getattr(profile, "request_parameters", None) else {}),
                 "task_type": task_type,
                 "protocol": protocol,
                 **({"chat_template_kwargs": extra_body["chat_template_kwargs"]}

@@ -61,4 +61,5 @@ class SqlAlchemyModelConfiguration(ModelConfigurationPort):
             provider_type=row.provider_type or "api",
             cli_command=row.cli_command,
             cli_args=row.cli_args,
+            model_request_parameters=getattr(row, "model_request_parameters", None) or {},
         )

@@ -141,6 +141,8 @@ internal fun CreationScreen(
             onBack = viewModel::closeCreation,
             onOpenDossier = { stage -> dossierStage = stage; showDossier = true },
             onSend = { message -> viewModel.sendCreationMessage(active.string("id"), message) },
+            onNewConversation = { viewModel.changeCreationConversation(active.string("id")) },
+            onSelectConversation = { id -> viewModel.changeCreationConversation(active.string("id"), id) },
             onDiscard = { viewModel.discardCreation(active.string("id")) },
             onContinueOnPhone = { viewModel.continueCreationOnPhone(active.string("id")) },
             onConfigureApi = onConfigureApi,

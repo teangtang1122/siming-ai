@@ -1,0 +1,251 @@
+[
+  {
+    "id": "responses_default_reasoning",
+    "url": "https://api.openai.com/v1",
+    "protocol": "responses",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200
+    },
+    "expected": {
+      "model": "gpt-6-luna",
+      "max_output_tokens": 1200
+    }
+  },
+  {
+    "id": "chat_default_reasoning",
+    "url": "https://api.openai.com/v1",
+    "protocol": "chat_completions",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_completion_tokens": 1200
+    },
+    "expected": {
+      "model": "gpt-6-luna",
+      "max_completion_tokens": 1200
+    }
+  },
+  {
+    "id": "responses_high",
+    "url": "https://api.openai.com/v1",
+    "protocol": "responses",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200,
+      "reasoning": {
+        "effort": "high"
+      },
+      "include": [
+        "reasoning.encrypted_content",
+        "message.output_text.logprobs"
+      ],
+      "top_logprobs": 4
+    },
+    "expected": {
+      "model": "gpt-6-luna",
+      "max_output_tokens": 1200,
+      "reasoning": {
+        "effort": "high"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ]
+    }
+  },
+  {
+    "id": "responses_none",
+    "url": "https://api.openai.com/v1",
+    "protocol": "responses",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200,
+      "reasoning": {
+        "effort": "none"
+      }
+    },
+    "expected": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200,
+      "reasoning": {
+        "effort": "none"
+      }
+    }
+  },
+  {
+    "id": "chat_none_tools",
+    "url": "https://api.openai.com/v1",
+    "protocol": "chat_completions",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_completion_tokens": 1200,
+      "reasoning_effort": "none",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read",
+            "parameters": {
+              "type": "object"
+            }
+          }
+        }
+      ]
+    },
+    "expected": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_completion_tokens": 1200,
+      "reasoning_effort": "none",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read",
+            "parameters": {
+              "type": "object"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "chat_reasoning_tools_blocked",
+    "url": "https://api.openai.com/v1",
+    "protocol": "chat_completions",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_completion_tokens": 1200,
+      "tools": [
+        {
+          "type": "function"
+        }
+      ]
+    },
+    "error": "Responses API"
+  },
+  {
+    "id": "astra_none_blocked",
+    "url": "https://api.openai.com/v1",
+    "protocol": "responses",
+    "model": "gpt-6-astra",
+    "payload": {
+      "model": "gpt-6-astra",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200,
+      "reasoning": {
+        "effort": "none"
+      }
+    },
+    "error": "推理档位"
+  },
+  {
+    "id": "terra_chat_tools_blocked",
+    "url": "https://api.openai.com/v1",
+    "protocol": "chat_completions",
+    "model": "gpt-6.1-terra",
+    "payload": {
+      "model": "gpt-6.1-terra",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_completion_tokens": 1200,
+      "reasoning_effort": "none",
+      "tools": [
+        {
+          "type": "function"
+        }
+      ]
+    },
+    "error": "Responses API"
+  },
+  {
+    "id": "wrong_reasoning_field_blocked",
+    "url": "https://api.openai.com/v1",
+    "protocol": "responses",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200,
+      "reasoning_effort": "high"
+    },
+    "error": "推理字段"
+  },
+  {
+    "id": "proxy_preserves_settings",
+    "url": "https://proxy.example/v1",
+    "protocol": "responses",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200
+    },
+    "expected": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200
+    }
+  },
+  {
+    "id": "unknown_alias_preserves_settings",
+    "url": "https://api.openai.com/v1",
+    "protocol": "responses",
+    "model": "gpt-6-luna-custom",
+    "payload": {
+      "model": "gpt-6-luna-custom",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200
+    },
+    "expected": {
+      "model": "gpt-6-luna-custom",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200
+    }
+  },
+  {
+    "id": "insecure_endpoint_not_official",
+    "url": "http://api.openai.com/v1",
+    "protocol": "responses",
+    "model": "gpt-6-luna",
+    "payload": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200
+    },
+    "expected": {
+      "model": "gpt-6-luna",
+      "temperature": 0.8,
+      "top_p": 0.9,
+      "max_output_tokens": 1200
+    }
+  }
+]

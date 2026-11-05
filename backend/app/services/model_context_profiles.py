@@ -18,6 +18,18 @@ from ..modules.context.infrastructure.models import ModelContextProfile
 
 
 @dataclass(frozen=True)
+class ResolvedModelContextProfile:
+    provider: str
+    model_name: str
+    context_window_tokens: int
+    max_output_tokens: int | None
+    safety_margin_tokens: int
+    known: bool
+    request_parameters: dict | None = None
+
+
+
+@dataclass(frozen=True)
 class VerifiedModelCapacity:
     context_window_tokens: int
     max_output_tokens: int | None

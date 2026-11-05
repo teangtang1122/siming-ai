@@ -423,6 +423,8 @@ internal object CreationAgentTurnRecords {
     private fun JsonObject.string(name: String): String = (get(name) as? JsonPrimitive)?.contentOrNull.orEmpty()
 
     private val INTERNAL_DRAFT_KEYS = setOf(
+        CreationConversations.ACTIVE,
+        CreationConversations.INDEX,
         STORAGE_KEY,
         GATEWAY_CONVERSATION_KEY,
         CONTEXT_STATE_KEY,

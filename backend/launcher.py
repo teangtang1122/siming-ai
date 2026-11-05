@@ -28,6 +28,7 @@ SYSTEM_TRUST_STATUS = configure_system_trust()
 import uvicorn  # noqa: E402,F401 - import only after native trust is configured
 
 from app.core.desktop_instance import DesktopInstanceCoordinator
+from app.core.desktop_pet_transparency import WindowsPetTransparency
 from app.core.uvicorn_controller import UvicornServerController
 from app.version import APP_VERSION
 
@@ -506,6 +507,7 @@ class _WindowsDesktopPetInputOverlay:
         self._Region = Region
         self._browser = None
         self._form = None
+        self._transparency = None
         self._handlers: list[object] = []
         self._dispatch_error_logged = False
         self._edge_motion = None
@@ -614,6 +616,8 @@ class _WindowsDesktopPetInputOverlay:
         native.FormClosed += handlers[6]
         native.HandleCreated += handlers[7]
 
+        self._transparency = WindowsPetTransparency(native)
+        _log("Desktop-pet system backdrop disabled; theme changes preserve transparency")
         native.Show()
         form.Show(native)
         form.BringToFront()
@@ -622,6 +626,8 @@ class _WindowsDesktopPetInputOverlay:
         # WinForms can replace its HWND; pointer transparency belongs to that
         # handle, not to the managed Form, and must be restored on recreation.
         _set_windows_pet_display_passthrough(self._native)
+        if self._transparency is not None:
+            self._transparency.apply()
 
     def _button(self, event) -> str:
         buttons = self._WinForms.MouseButtons
@@ -1047,6 +1053,7 @@ class _WindowsDesktopPetInputOverlay:
             if not self._native.Visible:
                 self._native.Show()
             _set_windows_pet_display_passthrough(self._native)
+            self._transparency.apply()
             if not self._form.Visible:
                 self._form.Show(self._native)
             self._form.Bounds = self._native.Bounds
@@ -1064,6 +1071,8 @@ class _WindowsDesktopPetInputOverlay:
         self._invoke_native(hide_on_ui_thread)
 
     def close(self) -> None:
+        if self._transparency is not None:
+            self._transparency.close()
         form = self._form
         if form is None:
             return

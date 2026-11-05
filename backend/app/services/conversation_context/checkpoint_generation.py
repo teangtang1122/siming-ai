@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
+
+from app.core.config import get_settings
+from app.core.exceptions import LLMIncompleteResponseError
 
 from app.ai.local_cli_adapter import is_local_cli_provider
 from app.modules.operations.application.trace_decorators import observed
@@ -63,7 +66,25 @@ from .transcript import (
     validate_transcript_snapshot,
 )
 
-_CHECKPOINT_OUTPUT_RESERVE = 4_096
+class CheckpointOutputLimitError(ConversationContextError):
+    def __init__(self) -> None:
+        super().__init__(ConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT,
+            "历史整理输出超限；完整历史与有效检查点已保留，请调整整理预算或新建对话。")
+
+
+@dataclass
+class CheckpointCallBudget:
+    remaining: int = 6
+
+    def consume(self) -> None:
+        if self.remaining <= 0:
+            raise ConversationContextError(ConversationContextErrorCode.CHECKPOINT_FAILED,
+                "历史整理重试耗尽（总调用上限 6）")
+        self.remaining -= 1
+
+
+def _checkpoint_output(binding: GenerationModelBinding) -> int:
+    return min(get_settings().checkpoint_output_tokens, max(1, binding.max_output_tokens))
 
 
 def _default_checkpoint_completion() -> CheckpointCompletion:
@@ -88,11 +109,9 @@ def _checkpoint_prompt_fits(
     binding: GenerationModelBinding,
     counter: TokenCounter,
     safety_margin_tokens: int,
+    output_tokens: int | None = None,
 ) -> bool:
-    output = min(
-        _CHECKPOINT_OUTPUT_RESERVE,
-        max(1, binding.max_output_tokens or _CHECKPOINT_OUTPUT_RESERVE),
-    )
+    output = output_tokens or _checkpoint_output(binding)
     body = _checkpoint_completion_body()
     rendered_request = {
         "messages": list(messages),
@@ -108,17 +127,7 @@ def _checkpoint_prompt_fits(
     )
 
 
-def _require_prior_quote_rollup_capacity(
-    *,
-    active: ActiveCheckpoint | None,
-    binding: GenerationModelBinding,
-    counter: TokenCounter,
-) -> None:
-    active_quotes = tuple(
-        quote
-        for quote in (active.checkpoint.author_quotes if active is not None else ())
-        if not quote.superseded
-    )
+def _prior_quote_output_tokens(quotes: Sequence[AuthorQuote], counter: TokenCounter) -> int:
     required_output = {
         "schema": "conversation_checkpoint_navigation.v1",
         "semantic_navigation": {
@@ -138,14 +147,25 @@ def _require_prior_quote_rollup_capacity(
                 "quote_sha256": quote.quote_sha256,
                 "status": "active",
             }
-            for quote in active_quotes
+            for quote in quotes if not quote.superseded
         ],
     }
-    required_tokens = counter.count_value(required_output)
-    output_limit = min(
-        _CHECKPOINT_OUTPUT_RESERVE,
-        max(1, binding.max_output_tokens or _CHECKPOINT_OUTPUT_RESERVE),
+    return counter.count_value(required_output)
+
+
+def _require_prior_quote_rollup_capacity(
+    *,
+    active: ActiveCheckpoint | None,
+    binding: GenerationModelBinding,
+    counter: TokenCounter,
+) -> int:
+    active_quotes = tuple(
+        quote
+        for quote in (active.checkpoint.author_quotes if active is not None else ())
+        if not quote.superseded
     )
+    required_tokens = _prior_quote_output_tokens(active_quotes, counter)
+    output_limit = max(1, binding.max_output_tokens)
     if required_tokens > output_limit:
         raise ConversationContextError(
             ConversationContextErrorCode.REQUIRED_STATE_OVER_CAPACITY,
@@ -156,6 +176,7 @@ def _require_prior_quote_rollup_capacity(
                 "checkpoint_output_limit": output_limit,
             },
         )
+    return required_tokens
 
 
 def _checkpoint_segment_that_fits(
@@ -168,7 +189,7 @@ def _checkpoint_segment_that_fits(
     safety_margin_tokens: int,
     execution_ledger: Sequence[ExecutionLedgerEntry] = (),
 ) -> tuple[tuple[ConversationTurn, ...], list[dict[str, str]]]:
-    _require_prior_quote_rollup_capacity(active=active, binding=binding, counter=counter)
+    minimum_output = _require_prior_quote_rollup_capacity(active=active, binding=binding, counter=counter)
     selected: list[ConversationTurn] = []
     selected_messages: list[dict[str, str]] | None = None
     for turn in desired_turns:
@@ -188,6 +209,7 @@ def _checkpoint_segment_that_fits(
             binding=binding,
             counter=counter,
             safety_margin_tokens=safety_margin_tokens,
+            output_tokens=max(_checkpoint_output(binding), minimum_output),
         ):
             break
         selected.append(turn)
@@ -213,6 +235,8 @@ async def _call_checkpoint_model(
     safety_margin_tokens: int,
     source_messages: Sequence[CheckpointSourceMessage] | None = None,
     previous_author_quotes: Sequence[AuthorQuote] = (),
+    call_budget: CheckpointCallBudget | None = None,
+    initial_output_tokens: int | None = None,
 ) -> Any:
     if is_local_cli_provider(binding.provider):
         # ``tools=[]`` controls an API request, but cannot remove the shell,
@@ -231,32 +255,58 @@ async def _call_checkpoint_model(
                 "请切换已验证的 API 模型后重试，或新建对话继续。"
             ),
         )
-    output = min(
-        _CHECKPOINT_OUTPUT_RESERVE,
-        max(1, binding.max_output_tokens or _CHECKPOINT_OUTPUT_RESERVE),
-    )
+    minimum_output = _prior_quote_output_tokens(previous_author_quotes, counter)
+    output = max(min(initial_output_tokens or _checkpoint_output(binding), binding.max_output_tokens), minimum_output)
+    if output > binding.max_output_tokens:
+        raise ConversationContextError(ConversationContextErrorCode.REQUIRED_STATE_OVER_CAPACITY,
+            "有效作者原话状态超过历史整理输出容量。")
+    while output > minimum_output and not _checkpoint_prompt_fits(
+        messages=messages, binding=binding, counter=counter,
+        safety_margin_tokens=safety_margin_tokens, output_tokens=output,
+    ):
+        output = max(minimum_output, output // 2)
     body = _checkpoint_completion_body()
 
+    call_budget = call_budget or CheckpointCallBudget()
+
     async def call(request_messages: list[dict[str, str]]) -> dict[str, Any]:
+        nonlocal output
         if not _checkpoint_prompt_fits(
             messages=request_messages,
             binding=binding,
             counter=counter,
             safety_margin_tokens=safety_margin_tokens,
+            output_tokens=output,
         ):
             raise ConversationContextError(
                 ConversationContextErrorCode.REQUIRED_STATE_OVER_CAPACITY,
                 "checkpoint 结构修复请求超过模型容量。",
             )
-        result = await completion(
-            messages=request_messages,
-            model=binding.normalized_model,
-            temperature=0,
-            max_tokens=output,
-            extra_body=body,
-            tools=[],
-            tool_choice="none",
-        )
+        for length_attempt in range(2):
+            call_budget.consume()
+            try:
+                result = await completion(
+                    messages=request_messages,
+                    model=binding.normalized_model,
+                    temperature=0,
+                    max_tokens=output,
+                    extra_body=body,
+                    tools=[],
+                    tool_choice="none",
+                )
+                break
+            except LLMIncompleteResponseError as error:
+                if str(error.reason).lower() not in {"length", "max_tokens", "max_output_tokens", "token_limit"}:
+                    raise
+                next_output = min(output * 2, binding.max_output_tokens)
+                if length_attempt or next_output <= output or not _checkpoint_prompt_fits(
+                    messages=request_messages, binding=binding, counter=counter,
+                    safety_margin_tokens=safety_margin_tokens, output_tokens=next_output,
+                ):
+                    exhausted = CheckpointOutputLimitError()
+                    exhausted.details["next_output_tokens"] = next_output
+                    raise exhausted from error
+                output = next_output
         if result.get("tool_calls"):
             raise ConversationContextError(
                 ConversationContextErrorCode.CHECKPOINT_FAILED,
@@ -307,6 +357,7 @@ class _GenerationRequest:
     reload_turns: TurnReloader
     completion: CheckpointCompletion
     event_sink: ContextEventSink | None
+    checkpoint_initial_output: int | None = None
 
 
 @dataclass(frozen=True)
@@ -847,7 +898,7 @@ async def _fail_attempt(
 
 
 @observed(kind="checkpoint", capture_output=False)
-async def generate_checkpoint_segment(request: _GenerationRequest) -> ActiveCheckpoint:
+async def _generate_checkpoint_attempt(request: _GenerationRequest, call_budget: CheckpointCallBudget) -> ActiveCheckpoint:
     """Generate one sealed segment across explicit DB/network/DB phases."""
 
     plan = _plan_generation(request)
@@ -864,6 +915,8 @@ async def generate_checkpoint_segment(request: _GenerationRequest) -> ActiveChec
             counter=request.counter,
             safety_margin_tokens=request.safety_margin_tokens,
             source_messages=plan.source_messages,
+            call_budget=call_budget,
+            initial_output_tokens=request.checkpoint_initial_output,
             previous_author_quotes=(
                 request.active.checkpoint.author_quotes if request.active else ()
             ),
@@ -883,7 +936,28 @@ async def generate_checkpoint_segment(request: _GenerationRequest) -> ActiveChec
         raise
     except Exception as exc:
         error = await _fail_attempt(request, attempt, exc)
+        if isinstance(exc, CheckpointOutputLimitError):
+            exc.details["source_turn_count"] = len(plan.segment_turns)
+            raise exc
         raise error from exc
+
+
+async def generate_checkpoint_segment(request: _GenerationRequest) -> ActiveCheckpoint:
+    budget = CheckpointCallBudget()
+    while True:
+        try:
+            return await _generate_checkpoint_attempt(request, budget)
+        except CheckpointOutputLimitError as error:
+            count = int(error.details.get("source_turn_count", len(request.desired_turns)))
+            next_output = int(error.details.get("next_output_tokens", 0))
+            previous_output = request.checkpoint_initial_output or _checkpoint_output(request.binding)
+            if budget.remaining <= 0 or (count <= 1 and next_output <= previous_output):
+                raise
+            state = request.store.context_state(
+                request.conversation.kind.value, request.conversation.id, owner_id=request.owner_id,
+            )
+            request = replace(request, desired_turns=request.desired_turns[:max(1, count // 2)], state=state,
+                checkpoint_initial_output=max(previous_output, next_output))
 
 
 __all__ = [

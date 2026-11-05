@@ -811,3 +811,58 @@ def test_prepare_rolls_completed_segments_across_multiple_exception_gaps() -> No
     assert positions[turns[3].messages[1].content] < next(
         index for index, content in enumerate(contents) if '"status":"error"' in content
     )
+
+
+def test_length_failure_shrinks_real_persisted_batch_then_publishes_valid_checkpoint():
+    from app.core.exceptions import LLMIncompleteResponseError
+    turns = tuple(_turn(index, size=300) for index in range(1, 21))
+    current = ConversationMessage(message_id="current", sequence_no=41,
+        role=ConversationRole.USER, content="continue")
+    store = _Store()
+    calls = []
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise LLMIncompleteResponseError("length", kwargs["max_tokens"])
+        return {"content": json.dumps({"schema": "conversation_checkpoint_navigation.v1",
+            "semantic_navigation": {"authority": "non_authoritative_navigation",
+                "current_objectives": [], "resolved_decisions": [], "superseded_directions": [],
+                "unresolved_questions": [], "next_context_needed": []},
+            "author_quote_positions": [], "prior_author_quote_states": []})}
+    prepared = asyncio.run(prepare_conversation_context(store=store,
+        orchestrator=_Orchestrator(known=True, window=8000),
+        conversation=ConversationIdentity(kind=ConversationKind.WORKSPACE, id="conversation", revision=41, project_id="project"),
+        owner_id="project", turns=turns, current_user_message=current, model="openai:test",
+        task_type="assistant", protocol="chat_completions", system_prompt="system", current_tools=(),
+        reload_turns=lambda: turns, checkpoint_completion=completion))
+    failed = [record for record in store.records if record.status == "failed"]
+    assert len(failed) == 1
+    first_ready = next(record for record in store.records if record.status in {"ready", "superseded"})
+    assert first_ready.source_last_sequence < failed[0].source_last_sequence
+    assert prepared.checkpoint is not None
+    assert prepared.provider_messages[-1]["content"] == "continue"
+    assert all(call["tools"] == [] for call in calls)
+
+
+def test_configured_parameters_are_budgeted_and_change_binding_fingerprint():
+    class ParametersOrchestrator(_Orchestrator):
+        def __init__(self, parameters):
+            super().__init__(known=True)
+            self.parameters = parameters
+        def resolve_model_profile(self, model, task_type):
+            profile = super().resolve_model_profile(model, task_type)
+            profile.request_parameters = self.parameters
+            return profile
+    turns = (_turn(1), _turn(2))
+    current = ConversationMessage(message_id="current", sequence_no=5, role=ConversationRole.USER, content="continue")
+    async def prepare(parameters):
+        return await prepare_conversation_context(store=_Store(), orchestrator=ParametersOrchestrator(parameters),
+            conversation=ConversationIdentity(kind=ConversationKind.WORKSPACE, id="conversation", revision=5, project_id="project"),
+            owner_id="project", turns=turns, current_user_message=current, model="openai:test", task_type="assistant",
+            protocol="responses", system_prompt="system", current_tools=(), reload_turns=lambda: turns)
+    plain = asyncio.run(prepare({}))
+    parameters = {"reasoning":{"effort":"high"},"temperature":None}
+    configured = asyncio.run(prepare(parameters))
+    assert configured.budget.message_wrapper_tokens > plain.budget.message_wrapper_tokens
+    assert configured.frame.model_binding.fingerprint != plain.frame.model_binding.fingerprint
+    assert configured.provider_messages == plain.provider_messages

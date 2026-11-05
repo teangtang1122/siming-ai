@@ -30,6 +30,7 @@ class APIConfig(Base):
     deconstruct_input_char_limit = Column(Integer, nullable=True)
     deconstruct_item_char_limit = Column(Integer, nullable=True)
     available_models_json = Column(JSON, nullable=True)
+    model_request_parameters = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

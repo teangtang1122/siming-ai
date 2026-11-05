@@ -588,3 +588,85 @@ def test_workspace_checkpoint_source_rejects_inconsistent_cross_project_run() ->
             )
     finally:
         engine.dispose()
+
+
+def test_checkpoint_length_recovery_uses_real_output_limit(monkeypatch):
+    from dataclasses import replace
+    from app.core.config import get_settings
+    from app.core.exceptions import LLMIncompleteResponseError
+    monkeypatch.setattr(get_settings(), "checkpoint_output_tokens", 1000)
+    calls = []
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise LLMIncompleteResponseError("length", kwargs["max_tokens"])
+        return _valid_checkpoint_result()
+    asyncio.run(_call_checkpoint_model(completion=completion,
+        messages=[{"role": "user", "content": "history"}],
+        binding=replace(_binding("openai"), max_output_tokens=8000),
+        counter=Utf8ByteTokenCounter(), safety_margin_tokens=512))
+    assert [call["max_tokens"] for call in calls] == [1000, 2000]
+    assert all(call["tools"] == [] for call in calls)
+
+
+def test_checkpoint_length_exhaustion_has_safe_stage_specific_error():
+    from app.core.exceptions import LLMIncompleteResponseError
+    from app.services.conversation_context.checkpoint_generation import CheckpointOutputLimitError
+    calls = []
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        raise LLMIncompleteResponseError("length", kwargs["max_tokens"])
+    with pytest.raises(CheckpointOutputLimitError) as caught:
+        asyncio.run(_call_checkpoint_model(completion=completion,
+            messages=[{"role": "user", "content": "history"}], binding=_binding("openai"),
+            counter=Utf8ByteTokenCounter(), safety_margin_tokens=512))
+    assert len(calls) == 1
+    assert "历史整理输出超限" in public_context_failure(caught.value).message
+
+
+def test_checkpoint_structure_and_length_recovery_share_call_budget(monkeypatch):
+    from dataclasses import replace
+    from app.core.config import get_settings
+    from app.core.exceptions import LLMIncompleteResponseError
+    from app.services.conversation_context.checkpoint_generation import CheckpointCallBudget
+    monkeypatch.setattr(get_settings(), "checkpoint_output_tokens", 1000)
+    calls = []
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise LLMIncompleteResponseError("length", kwargs["max_tokens"])
+        return {"content": "invalid JSON"}
+    budget = CheckpointCallBudget(remaining=2)
+    with pytest.raises(ConversationContextError, match="重试耗尽"):
+        asyncio.run(_call_checkpoint_model(completion=completion, call_budget=budget,
+            messages=[{"role": "user", "content": "history"}],
+            binding=replace(_binding("openai"), max_output_tokens=8000),
+            counter=Utf8ByteTokenCounter(), safety_margin_tokens=512))
+    assert len(calls) == 2
+
+
+def test_checkpoint_batch_shrink_shares_one_bounded_recovery_chain(monkeypatch):
+    from dataclasses import dataclass
+    from app.services.conversation_context import checkpoint_generation as generation
+    seen = []
+    class Store:
+        def context_state(self, *args, **kwargs):
+            return "refreshed revision"
+    @dataclass
+    class Request:
+        binding: object = None
+        checkpoint_initial_output: int | None = None
+        desired_turns: tuple = tuple(range(64))
+        store: object = Store()
+        conversation: object = None
+        owner_id: str = "owner"
+        state: object = "initial revision"
+    request = Request(binding=_binding("openai"), conversation=SimpleNamespace(kind=ConversationKind.CREATION, id="chat"))
+    async def attempt(current, budget):
+        budget.consume()
+        seen.append(len(current.desired_turns))
+        raise generation.CheckpointOutputLimitError()
+    monkeypatch.setattr(generation, "_generate_checkpoint_attempt", attempt)
+    with pytest.raises(generation.CheckpointOutputLimitError):
+        asyncio.run(generation.generate_checkpoint_segment(request))
+    assert seen == [64, 32, 16, 8, 4, 2]

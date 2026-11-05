@@ -40,10 +40,15 @@ def classify_failure(message: str | None) -> str | None:
     # branch so the UI can recommend switching models or retrying later.
     if "service temporarily overloaded" in lower or "temporarily overloaded" in lower:
         return "unavailable"
+    if re.search(
+        r"unknown[_\s]+parameter|unsupported[_\s]+parameter|\binvalid_request_error\b", lower
+    ):
+        return "request_parameters"
     if "timeout" in lower or "超时" in text:
         return "timeout"
     if re.search(
-        r"cannot connect|connection (?:failed|refused|reset)|network error|网络连接|无法连接|"
+        r"cannot connect|connection (?:failed|refused|reset|error)|network error|"
+        r"网络连接|无法连接|连接错误|连接模型服务失败|"
         r"upstream[_\s]+(?:request\s+)?failed|upstream_error|(?:http|error code:)\s*50[0234]",
         lower + " " + text,
     ):

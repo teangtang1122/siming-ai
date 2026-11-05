@@ -1865,6 +1865,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/novel-creation/sessions/{session_id}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Creation Conversations */
+        get: operations["list_creation_conversations_api_v1_novel_creation_sessions__session_id__conversations_get"];
+        put?: never;
+        /** Create Creation Conversation */
+        post: operations["create_creation_conversation_api_v1_novel_creation_sessions__session_id__conversations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/novel-creation/sessions/{session_id}/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Creation Conversation */
+        get: operations["get_creation_conversation_api_v1_novel_creation_sessions__session_id__conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/novel-creation/sessions/{session_id}/conversations/{conversation_id}/checkpoints": {
         parameters: {
             query?: never;
@@ -5558,6 +5593,12 @@ export interface components {
              * @description Max output tokens
              */
             max_output_tokens?: number | null;
+            /** Model Request Parameters */
+            model_request_parameters?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
             /**
              * Provider
              * @description Provider id
@@ -6805,10 +6846,21 @@ export interface components {
              */
             cli_command?: string | null;
             /**
+             * Max Output Tokens
+             * @description Connection probe output ceiling including reasoning
+             */
+            max_output_tokens?: number | null;
+            /**
              * Model
              * @description Model used by the real generation smoke test
              */
             model?: string | null;
+            /** Model Request Parameters */
+            model_request_parameters?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
             /**
              * Provider
              * @description Provider id
@@ -13798,6 +13850,100 @@ export interface operations {
             path: {
                 session_id: string;
                 stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_creation_conversations_api_v1_novel_creation_sessions__session_id__conversations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_creation_conversation_api_v1_novel_creation_sessions__session_id__conversations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_creation_conversation_api_v1_novel_creation_sessions__session_id__conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                conversation_id: string;
             };
             cookie?: never;
         };

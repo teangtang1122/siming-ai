@@ -6,6 +6,8 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.siming.mobile.data.network.DirectApiConfig
+import com.siming.mobile.data.network.DirectApiCatalog
+import com.siming.mobile.data.network.LegacyDirectApiMigration
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -15,32 +17,47 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /** Keeps a standalone provider credential out of Room, logs, and Android backups. */
-class SecureApiConfigStore(context: Context) {
+class SecureApiConfigStore(context: Context, preferencesName: String = "siming_direct_api_credentials") {
     private val preferences = context.applicationContext.getSharedPreferences(
-        "siming_direct_api_credentials",
+        preferencesName,
         Context.MODE_PRIVATE,
     )
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     private val json = Json { ignoreUnknownKeys = true }
 
-    @Synchronized
-    @SuppressLint("ApplySharedPref")
-    fun save(config: DirectApiConfig) {
-        val encoded = json.encodeToString(config)
-        check(preferences.edit().putString(CONFIG_KEY, encrypt(encoded)).commit()) {
-            "无法安全保存 API 配置"
+    init { migrateLegacyConfiguration() }
+
+    private fun migrateLegacyConfiguration(): Unit = synchronized(REGISTRY_LOCK) {
+        val legacy = preferences.getString(LEGACY_CONFIG_KEY, null) ?: return
+        if (preferences.contains(CONFIG_KEY)) {
+            catalog() // Never discard the migration source if the destination is invalid.
+            check(preferences.edit().remove(LEGACY_CONFIG_KEY).commit())
+            return
         }
+        val catalog = LegacyDirectApiMigration.convert(decrypt(legacy), json)
+        // Commit the new registry and remove the old key atomically; errors keep the original.
+        check(preferences.edit().putString(CONFIG_KEY, encrypt(json.encodeToString(catalog)))
+            .remove(LEGACY_CONFIG_KEY).commit()) { "无法迁移已保存的 API 配置" }
     }
 
-    @Synchronized
-    fun read(): DirectApiConfig? = runCatching {
-        val encrypted = preferences.getString(CONFIG_KEY, null) ?: return null
-        json.decodeFromString<DirectApiConfig>(decrypt(encrypted))
-    }.getOrNull()
+    fun catalog(): DirectApiCatalog = synchronized(REGISTRY_LOCK) {
+        val encrypted = preferences.getString(CONFIG_KEY, null) ?: return DirectApiCatalog()
+        return json.decodeFromString<DirectApiCatalog>(decrypt(encrypted))
+    }
 
-    @Synchronized
+    fun read(): DirectApiConfig? = catalog().defaultConfig()
+
     @SuppressLint("ApplySharedPref")
-    fun clear() {
+    fun update(transform: (DirectApiCatalog) -> DirectApiCatalog): DirectApiCatalog = synchronized(REGISTRY_LOCK) {
+        val updated = transform(catalog())
+        check(preferences.edit().putString(CONFIG_KEY, encrypt(json.encodeToString(updated))).commit()) {
+            "无法安全保存 API 配置"
+        }
+        return updated
+    }
+
+    @SuppressLint("ApplySharedPref")
+    fun clear(): Unit = synchronized(REGISTRY_LOCK) {
         check(preferences.edit().clear().commit()) { "无法清除 API 配置" }
     }
 
@@ -82,7 +99,9 @@ class SecureApiConfigStore(context: Context) {
     }
 
     companion object {
-        private const val CONFIG_KEY = "encrypted_config"
+        private val REGISTRY_LOCK = Any()
+        private const val CONFIG_KEY = "encrypted_catalog_v1"
+        private const val LEGACY_CONFIG_KEY = "encrypted_config"
         private const val KEY_ALIAS = "siming_mobile_direct_api_encryption"
         private const val IV_BYTES = 12
     }

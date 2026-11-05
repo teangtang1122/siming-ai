@@ -19,6 +19,17 @@ import okhttp3.mockwebserver.MockWebServer
 class CatalogingModelRequestTest {
     private val contract = CatalogingContract(Json.parseToJsonElement(File("src/main/assets/pc_workspace_prompt_contract.json").readText()).jsonObject)
 
+    @Test fun `failure display retains field path without dumping full candidate payloads`() {
+        val receipt = buildJsonObject {
+            put("status", "error")
+            put("data", buildJsonObject {
+                put("candidate_errors", JsonArray(listOf(buildJsonObject { put("message", "narrative_state.foreshadowing_planted[0].title 必填") })))
+                put("scene_repair", buildJsonObject { put("large_private_payload", "not for error banner") })
+            })
+        }
+        assertEquals("narrative_state.foreshadowing_planted[0].title 必填", catalogingFailureDetail(listOf(buildJsonObject { put("role", "tool"); put("content", receipt.toString()) })))
+    }
+
     @Test fun `flat model schema keeps strict candidate validation`() {
         val saveSchema = contract.schemas.first {
             it.jsonObject.getValue("function").jsonObject.text("name") == "save_external_cataloging_candidates"

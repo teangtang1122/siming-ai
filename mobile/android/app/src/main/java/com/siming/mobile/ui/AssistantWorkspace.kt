@@ -91,7 +91,9 @@ internal fun AssistantWorkspace(
     var showHistory by rememberSaveable { mutableStateOf(false) }
     val ui by viewModel.uiState
     val connection by viewModel.connection.collectAsStateWithLifecycle()
-    val directApi = ui.directApi
+    val directApi = (ui.directApiProfiles.firstOrNull {
+        it.id == ui.directApiTaskProfiles[com.siming.mobile.data.network.DirectApiConfig.TASK_ASSISTANT]
+    } ?: ui.directApi)?.let { it.copy(model = it.taskModels[com.siming.mobile.data.network.DirectApiConfig.TASK_ASSISTANT] ?: it.model) }
     var modelRoute by rememberSaveable { mutableStateOf("mobile") }
     val listState = rememberLazyListState()
 

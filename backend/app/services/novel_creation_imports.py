@@ -243,7 +243,7 @@ async def _model_extract_chunk(text: str, import_run: NovelCreationMaterialImpor
         extra_body=LLMGateway.local_cli_extra_body(
             model,
             cwd=str(content_root()),
-            base={"moshu_task_type": "planning", "storage_target": "creation_import"},
+            base={"moshu_task_type": "planning", "moshu_storage_target": "creation_import"},
         ) if is_local_cli_provider(LLMGateway.model_identity(model, {"moshu_task_type": "planning"})[0]) else None,
     )
     parsed = parse_json_object(_text(result.get("content")))

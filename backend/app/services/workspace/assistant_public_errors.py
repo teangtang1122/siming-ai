@@ -6,7 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.exceptions import LLMOutputLimitError
+from app.core.exceptions import LLMConnectionError, LLMOutputLimitError, LLMTimeoutError
+from app.core.provider_errors import provider_http_status
 from app.modules.operations.interfaces.failures import classify_failure
 from app.services.conversation_context import (
     ConversationContextError,
@@ -35,6 +36,7 @@ _CONTEXT_MESSAGES = {
     ),
 }
 _REMEDIATION = {
+    ConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT: "请调整历史整理输出预算和模型输出容量，或在同一立项下新建对话；资料与历史已保留。",
     ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY: (
         "请减少本轮查询范围，或使用更大上下文容量的模型后重试。"
     ),
@@ -56,11 +58,27 @@ _REMEDIATION = {
     ),
 }
 _RETRYABLE_FALSE = {
+    ConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT,
     ConversationContextErrorCode.CURRENT_USER_OVER_CAPACITY,
     ConversationContextErrorCode.TOOL_CAPABILITY_UNAVAILABLE,
     ConversationContextErrorCode.REQUIRED_STATE_OVER_CAPACITY,
 }
 _MODEL_FAILURE_RESPONSES: dict[str, tuple[str, str, bool]] = {
+    "request_parameters": (
+        "model_request_parameters_rejected",
+        "模型接口拒绝了请求参数，请检查模型设置后重试。",
+        False,
+    ),
+    "connection_failed": (
+        "model_connection_failed",
+        "连接模型服务失败，尚未收到响应；请检查代理和网络后重试。",
+        True,
+    ),
+    "connection_timeout": (
+        "model_connection_timeout",
+        "连接模型服务超时，尚未收到响应；请检查代理和网络后重试。",
+        True,
+    ),
     "quota_or_rate_limit": (
         "model_quota_or_rate_limit",
         "模型额度已耗尽或请求受限，请稍后重试或切换模型。",
@@ -152,14 +170,28 @@ def native_tool_name_failure_message(details: dict[str, Any]) -> str:
 
 def public_model_failure(error: Exception) -> PublicAssistantFailure:
     failure_class = (
+        "network" if isinstance(error, LLMConnectionError) else
         "output_limit" if isinstance(error, LLMOutputLimitError)
         else classify_failure(str(error)) or "unknown"
     )
+    kind = "connection_timeout" if isinstance(error, LLMTimeoutError) and error.phase == "connect" else failure_class
+    if isinstance(error, LLMConnectionError) and error.phase == "connect":
+        kind = "connection_failed"
     code, message, retryable = _MODEL_FAILURE_RESPONSES.get(
-        failure_class,
+        kind,
         ("model_request_failed", "模型调用失败，请检查模型状态后重试。", True),
     )
     details = {"failure_class": failure_class, "retryable": retryable}
+    if failure_class == "request_parameters":
+        details.update(_parameter_rejection_details(error))
+    if isinstance(error, LLMConnectionError):
+        details["connection_phase"] = error.phase
+    if getattr(error, "connection_recovery_exhausted", False):
+        details["connection_recovery_exhausted"] = True
+    if isinstance(error, LLMTimeoutError):
+        details["timeout_phase"] = error.phase
+        if error.timeout_seconds is not None:
+            details["timeout_seconds"] = error.timeout_seconds
     if isinstance(error, LLMOutputLimitError) and isinstance(error.max_tokens, int):
         details["max_tokens"] = error.max_tokens
     return PublicAssistantFailure(
@@ -168,6 +200,25 @@ def public_model_failure(error: Exception) -> PublicAssistantFailure:
         details=details,
         failure_class=failure_class,
     )
+
+
+def _parameter_rejection_details(error: BaseException) -> dict[str, Any]:
+    result: dict[str, Any] = {"provider_status": provider_http_status(error)}
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        body = getattr(current, "body", None)
+        if not isinstance(body, dict):
+            body = {}
+        if isinstance(body.get("error"), dict):
+            body = body["error"]
+        for source, target in (("param", "parameter"), ("code", "provider_error_code")):
+            value = getattr(current, source, None) or body.get(source)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.\[\]]{0,199}", value):
+                result[target] = value
+        current = current.__cause__ or current.__context__
+    return {key: value for key, value in result.items() if value is not None}
 
 
 def public_model_error_message(code: str) -> str | None:

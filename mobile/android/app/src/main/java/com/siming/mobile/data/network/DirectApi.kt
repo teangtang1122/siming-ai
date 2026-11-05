@@ -39,19 +39,27 @@ data class DirectApiConfig(
     val protocol: String = PROTOCOL_AUTO,
     val availableModels: List<String> = emptyList(),
     val taskModels: Map<String, String> = emptyMap(),
+    val modelRequestParameters: Map<String, JsonObject> = emptyMap(),
     /** Author-supplied capacity; null temporarily uses the bounded 128K fallback. */
     val contextWindowTokens: Int? = null,
     /** Provenance is persisted so the 128K fallback is never presented as a model profile. */
     val contextCapacitySource: String? = null,
     val maxOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
     val safetyMarginTokens: Int = DEFAULT_SAFETY_MARGIN_TOKENS,
+    val checkpointOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
+    /** Output capacity, distinct from the context window and business request budget. */
+    val modelMaxOutputTokens: Int? = null,
 ) {
     init {
+        ModelRequestPolicy.validateParameters(modelRequestParameters)
         require(contextWindowTokens == null || contextWindowTokens > 0) { "模型上下文窗口必须大于零" }
         require(contextCapacitySource == null || contextCapacitySource in contextCapacitySources) {
             "模型容量来源无效"
         }
         require(maxOutputTokens > 0) { "模型输出预留必须大于零" }
+        require(checkpointOutputTokens > 0 && (modelMaxOutputTokens == null || modelMaxOutputTokens > 0)) {
+            "整理预算与模型输出容量必须大于零"
+        }
         require(safetyMarginTokens >= 0) { "模型安全余量不能为负数" }
         contextWindowTokens?.let { window ->
             require(maxOutputTokens + safetyMarginTokens < window) {
@@ -64,6 +72,11 @@ data class DirectApiConfig(
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?: model
+
+    fun checkpointOutputCapacity(): Int = minOf(
+        MobileKnownModelCapacityCatalog.resolve(baseUrl, model)?.maxOutputTokens ?: Int.MAX_VALUE,
+        modelMaxOutputTokens ?: (MobileKnownModelCapacityCatalog.resolve(baseUrl, model)?.maxOutputTokens ?: maxOutputTokens),
+    )
 
     fun withContextWindowFallback(): DirectApiConfig {
         if (contextWindowTokens != null && contextCapacitySource != CONTEXT_CAPACITY_FALLBACK) {
@@ -102,6 +115,7 @@ data class DirectApiConfig(
                 model = selectedModel,
                 contextWindowTokens = null,
                 contextCapacitySource = null,
+                modelMaxOutputTokens = null,
             )
         }
         val bound = if (selected.contextWindowTokens != null) {
@@ -109,7 +123,10 @@ data class DirectApiConfig(
         } else {
             MobileKnownModelCapacityCatalog.applyIfKnown(selected)
         }
-        return (bound ?: selected).withContextWindowFallback()
+        val effective = (bound ?: selected).withContextWindowFallback()
+        return effective.copy(maxOutputTokens = minOf(effective.maxOutputTokens,
+            effective.modelMaxOutputTokens ?: Int.MAX_VALUE,
+            MobileKnownModelCapacityCatalog.resolve(effective.baseUrl, effective.model)?.maxOutputTokens ?: Int.MAX_VALUE))
     }
 
     fun summary() = DirectApiSummary(
@@ -119,10 +136,13 @@ data class DirectApiConfig(
         protocol = protocol,
         availableModels = availableModels,
         taskModels = taskModels,
+        modelRequestParameters = modelRequestParameters,
         contextWindowTokens = contextWindowTokens,
         contextCapacitySource = contextCapacitySource,
         maxOutputTokens = maxOutputTokens,
         safetyMarginTokens = safetyMarginTokens,
+        checkpointOutputTokens = checkpointOutputTokens,
+        modelMaxOutputTokens = modelMaxOutputTokens,
     )
 
     companion object {
@@ -163,16 +183,20 @@ data class DirectApiConfig(
 }
 
 data class DirectApiSummary(
+    val id: String = "",
     val displayName: String,
     val baseUrl: String,
     val model: String,
     val protocol: String,
     val availableModels: List<String> = emptyList(),
     val taskModels: Map<String, String> = emptyMap(),
+    val modelRequestParameters: Map<String, JsonObject> = emptyMap(),
     val contextWindowTokens: Int? = null,
     val contextCapacitySource: String? = null,
     val maxOutputTokens: Int = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS,
     val safetyMarginTokens: Int = DirectApiConfig.DEFAULT_SAFETY_MARGIN_TOKENS,
+    val checkpointOutputTokens: Int = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS,
+    val modelMaxOutputTokens: Int? = null,
 )
 
 data class DirectApiProbe(
@@ -195,7 +219,13 @@ data class DirectAgentTurn(
     val promptTokens: Int? = null,
 )
 
-class DirectNativeToolProtocolException(message: String) : IllegalStateException(message) {
+class DirectIncompleteResponseException(val finishReason: String) : IllegalStateException(
+    "模型响应未完成（$finishReason）",
+) {
+    val outputLimited: Boolean get() = finishReason in setOf("length", "max_tokens", "max_output_tokens", "token_limit")
+}
+
+open class DirectNativeToolProtocolException(message: String) : IllegalStateException(message) {
     val reason: String = REASON
 
     companion object {
@@ -257,6 +287,7 @@ private class DirectResumeHandshake(
 class DirectApiHttpException(
     val statusCode: Int,
     message: String,
+    val protocolMismatch: Boolean = false,
 ) : IOException(message)
 
 /** OpenAI-compatible client used only by Android standalone mode. */
@@ -281,13 +312,13 @@ class DirectApiClient(
         for (endpoint in endpoints) {
             try {
                 val response = execute(endpoint, apiKey, null)
-                if (response.statusCode in PATH_FALLBACK_STATUS_CODES) continue
+                if (response.statusCode in PATH_FALLBACK_STATUS_CODES && response.isEndpointMismatch()) continue
                 ensureSuccess(response)
                 return parseModels(response.body)
             } catch (error: Exception) {
-                if (error is CancellationException) throw error
+                if (error is CancellationException || error is DirectApiConnectionException) throw error
                 lastError = error
-                if (error !is DirectApiHttpException || error.statusCode !in PATH_FALLBACK_STATUS_CODES) break
+                if (error !is DirectApiHttpException || (!error.protocolMismatch || error.statusCode !in PATH_FALLBACK_STATUS_CODES)) break
             }
         }
         throw lastError ?: IOException("接口没有返回可用模型，请手动填写模型名")
@@ -295,13 +326,25 @@ class DirectApiClient(
 
     suspend fun test(config: DirectApiConfig): String = testAndResolve(config).response
 
-    suspend fun testAndResolve(config: DirectApiConfig): DirectApiProbe = completeResolved(
-        config,
-        systemPrompt = "你正在执行连接测试。请严格按要求简短回复。",
-        userPrompt = "只回复：连接成功",
-        maxOutputTokens = 64,
-        temperature = 0.0,
-    )
+    suspend fun testAndResolve(config: DirectApiConfig): DirectApiProbe {
+        val ceiling = minOf(config.maxOutputTokens, config.checkpointOutputCapacity(),
+            (config.contextWindowTokens ?: DirectApiConfig.DEFAULT_CONTEXT_WINDOW_TOKENS) - config.safetyMarginTokens - 1)
+        require(ceiling > 0) { "连接测试没有可用输出额度，请检查模型容量配置" }
+        var budget = minOf(1024, ceiling)
+        // At most one length recovery. Protocol discovery and transport retries are separately bounded.
+        for (attempt in 0..1) {
+            try {
+                return completeResolved(config, "你正在执行连接测试。请严格按要求简短回复。",
+                    "只回复：连接成功", budget, 0.0)
+            } catch (error: DirectIncompleteResponseException) {
+                if (error.finishReason !in setOf("length", "max_output_tokens", "max_tokens", "token_limit")) throw error
+                if (attempt == 1 || budget >= ceiling) throw IllegalStateException(
+                    "连接测试输出超限（包含推理消耗）；已到配置或模型容量上限，未保存配置，请调整额度后重试", error)
+                budget = ceiling
+            }
+        }
+        error("连接测试未完成")
+    }
 
     suspend fun complete(
         config: DirectApiConfig,
@@ -383,7 +426,7 @@ class DirectApiClient(
                 require(committed.isNotBlank()) { "模型返回了空内容，请检查模型名或切换 API 协议" }
                 return committed
             } catch (error: Exception) {
-                if (error is CancellationException) throw error
+                if (error is CancellationException || error is DirectApiConnectionException) throw error
                 if (error is DirectResumeProtocolRejected) throw error
                 val canTryProtocol = (
                     committed.isBlank() && !segmentProduced && protocolIndex < protocols.lastIndex &&
@@ -463,7 +506,7 @@ class DirectApiClient(
                         extraBody = extraBody,
                     )
                     val response = executeWithRetry(endpoint, config.apiKey, json.encodeToString(payload))
-                    if (response.statusCode in PATH_FALLBACK_STATUS_CODES) break
+                    if (response.statusCode in PATH_FALLBACK_STATUS_CODES && response.isEndpointMismatch()) break
                     ensureSuccess(response)
                     val root = json.parseToJsonElement(response.body).jsonObject
                     return if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
@@ -472,13 +515,13 @@ class DirectApiClient(
                         parseChatAgentTurn(root)
                     }
                 } catch (error: Exception) {
-                    if (error is CancellationException) throw error
+                    if (error is CancellationException || error is DirectApiConnectionException) throw error
                     lastError = error
                     if (effectiveToolChoice != null && error.isToolChoiceRejection()) {
                         effectiveToolChoice = null
                         continue
                     }
-                    if (error is DirectApiHttpException && error.statusCode in PATH_FALLBACK_STATUS_CODES) {
+                    if (error is DirectApiHttpException && error.protocolMismatch && error.statusCode in PATH_FALLBACK_STATUS_CODES) {
                         break
                     }
                     break@endpointLoop
@@ -569,7 +612,7 @@ class DirectApiClient(
                         onReasoningDelta = onReasoningDelta,
                     )
                 } catch (error: Exception) {
-                    if (error is CancellationException) throw error
+                    if (error is CancellationException || error is DirectApiConnectionException) throw error
                     lastError = error
                     if (
                         effectiveToolChoice != null &&
@@ -579,7 +622,7 @@ class DirectApiClient(
                         effectiveToolChoice = null
                         continue
                     }
-                    if (error is DirectApiHttpException && error.statusCode in PATH_FALLBACK_STATUS_CODES) {
+                    if (error is DirectApiHttpException && error.protocolMismatch && error.statusCode in PATH_FALLBACK_STATUS_CODES) {
                         break
                     }
                     val retryable = when (error) {
@@ -631,7 +674,7 @@ class DirectApiClient(
     ): JsonObject {
         val effectiveToolChoice = providerSafeToolChoice(config, toolChoice)
         val providerBody = ModelRequestPolicy.extraBody(config, config.protocol, extraBody, tools.isEmpty())
-        return if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+        val payload = if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
             responsesAgentPayload(
                 config = config,
                 messages = messages,
@@ -654,6 +697,8 @@ class DirectApiClient(
                 stream = stream,
             )
         }
+        return ModelRequestPolicy.normalize(config,
+            if (config.protocol == DirectApiConfig.PROTOCOL_RESPONSES) config.protocol else DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS, payload)
     }
 
     /** The exact non-streaming text payload used by [complete]. */
@@ -671,7 +716,7 @@ class DirectApiClient(
             DirectApiConfig.PROTOCOL_CHAT_COMPLETIONS,
         )) { "文本请求必须先解析为明确的 provider 协议" }
         val providerBody = ModelRequestPolicy.extraBody(config, protocol, extraBody, textOnly = true)
-        return if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+        val payload = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
             buildJsonObject {
                 put("model", config.model.trim())
                 put("instructions", systemPrompt)
@@ -695,11 +740,12 @@ class DirectApiClient(
                     })
                 })
                 put("temperature", temperature)
-                put("max_tokens", maxOutputTokens)
+                put(ModelRequestPolicy.outputLimitField(config), maxOutputTokens)
                 put("stream", false)
                 providerBody?.forEach { (key, value) -> put(key, value) }
             }
         }
+        return ModelRequestPolicy.normalize(config, protocol, payload)
     }
 
     private suspend fun completeResolved(
@@ -733,7 +779,7 @@ class DirectApiClient(
                 require(text.isNotBlank()) { "模型返回了空内容，请检查模型名或切换 API 协议" }
                 return DirectApiProbe(text, protocol)
             } catch (error: Exception) {
-                if (error is CancellationException) throw error
+                if (error is CancellationException || error is DirectApiConnectionException) throw error
                 lastError = error
                 val canTryNext = index < protocols.lastIndex && error.isProtocolMismatch()
                 if (!canTryNext) throw error
@@ -757,7 +803,7 @@ class DirectApiClient(
         put("tools", tools)
         toolChoice?.let { put("tool_choice", it) }
         put("temperature", temperature)
-        put("max_tokens", maxOutputTokens)
+        put(ModelRequestPolicy.outputLimitField(config), maxOutputTokens)
         put("stream", stream)
         extraBody?.forEach { (key, value) -> put(key, value) }
     }
@@ -838,7 +884,8 @@ class DirectApiClient(
         val reason = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) root.string("status")
             else ((root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject)?.string("finish_reason").orEmpty()
         if (reason.isNotBlank() && reason !in setOf("stop", "tool_calls", "function_call", "completed")) {
-            throw DirectNativeToolProtocolException("模型响应未完成（$reason），未交付正文或执行工具")
+            val detail = (root["incomplete_details"] as? JsonObject)?.string("reason").orEmpty()
+            throw DirectIncompleteResponseException(if (detail.isNotBlank()) detail else reason)
         }
     }
 
@@ -857,41 +904,18 @@ class DirectApiClient(
         val reasoning = listOf("reasoning_content", "reasoning", "reasoning_text")
             .firstNotNullOfOrNull { key -> (message[key] as? JsonPrimitive)?.contentOrNull }
             .orEmpty()
-        val calls = (message["tool_calls"] as? JsonArray).orEmpty().mapNotNull(::parseToolCall)
-        val canonicalToolCalls = buildJsonArray {
-            calls.forEach { call ->
-                add(buildJsonObject {
-                    put("id", call.id)
-                    put("type", "function")
-                    put("function", buildJsonObject {
-                        put("name", call.name)
-                        put("arguments", call.rawArgumentsJson)
-                    })
-                })
-            }
-        }
-        val canonical = buildJsonObject {
-            put("role", "assistant")
-            put("content", content)
-            if (reasoning.isNotBlank()) put("reasoning_content", reasoning)
-            if (calls.isNotEmpty()) {
-                put("tool_calls", canonicalToolCalls)
-            }
-        }
-        return DirectAgentTurn(content.trim(), reasoning, calls, canonical, promptTokens(root, "prompt_tokens"))
+        return rawAgentTurn(content, reasoning,
+            (message["tool_calls"] as? JsonArray).orEmpty(), emptyList(), promptTokens(root, "prompt_tokens"))
     }
 
     private fun parseResponsesAgentTurn(root: JsonObject): DirectAgentTurn {
         requireCompletedResponse(root, DirectApiConfig.PROTOCOL_RESPONSES)
         val output = (root["output"] as? JsonArray).orEmpty()
-        val calls = output.mapNotNull { item ->
+        val rawCalls = output.mapNotNull { item ->
             val value = item as? JsonObject ?: return@mapNotNull null
             if (value.string("type") != "function_call") return@mapNotNull null
-            parseFunctionCall(
-                id = value.string("call_id").ifBlank { value.string("id") },
-                name = value.string("name"),
-                rawArguments = value.string("arguments"),
-            )
+            rawNativeCall(value.string("call_id").ifBlank { value.string("id") },
+                value.string("name"), value.string("arguments"))
         }
         val content = parseResponsesText(root)
         val reasoning = output
@@ -914,26 +938,7 @@ class DirectApiClient(
                 it.string("type") == "reasoning" && it.string("encrypted_content").isNotBlank()
             }
         }
-        val toolCalls = buildJsonArray {
-            calls.forEach { call ->
-                add(buildJsonObject {
-                    put("id", call.id)
-                    put("type", "function")
-                    put("function", buildJsonObject {
-                        put("name", call.name)
-                        put("arguments", call.rawArgumentsJson)
-                    })
-                })
-            }
-        }
-        val canonical = buildJsonObject {
-            put("role", "assistant")
-            put("content", content)
-            if (reasoning.isNotBlank()) put("reasoning_content", reasoning)
-            if (providerState.isNotEmpty()) put("provider_state", JsonArray(providerState))
-            if (calls.isNotEmpty()) put("tool_calls", toolCalls)
-        }
-        return DirectAgentTurn(content.trim(), reasoning, calls, canonical, promptTokens(root, "input_tokens"))
+        return rawAgentTurn(content, reasoning, rawCalls, providerState, promptTokens(root, "input_tokens"))
     }
 
     private fun parseToolCall(element: JsonElement): DirectAgentToolCall? {
@@ -980,7 +985,7 @@ class DirectApiClient(
         onReasoningDelta: suspend (String) -> Unit,
         streamIdleTimeoutMillis: Long?,
         onActivity: suspend (DirectAgentStreamActivity) -> Unit,
-    ): DirectAgentTurn = withContext(Dispatchers.IO) {
+    ): DirectAgentTurn = recoverDirectConnection(retryDelaysMillis.firstOrNull() ?: 0L) { connection -> withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(endpoint)
             .header("Accept", "text/event-stream")
@@ -988,6 +993,7 @@ class DirectApiClient(
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val requestClient = client.newBuilder()
+            .eventListener(connection)
             // This runtime owns the bounded native-response restart policy.
             .retryOnConnectionFailure(false)
             .apply { if (streamIdleTimeoutMillis != null) {
@@ -1003,6 +1009,7 @@ class DirectApiClient(
         try {
             idleTimeout?.startWaiting()
             call.withCancellableResponse { response ->
+                connection.requestStarted.set(true)
                 responseReceived = true
                 if (!response.isSuccessful) {
                     val raw = response.body?.string().orEmpty()
@@ -1150,19 +1157,27 @@ class DirectApiClient(
 
                 idleTimeout?.stopWaiting()
                 if (!terminalSeen) throw IOException("AI 流式连接提前结束，未收到完成事件")
-                val parsedTerminal = terminalResponse?.let(::parseResponsesAgentTurn)
+                val parsedTerminal = try { terminalResponse?.let(::parseResponsesAgentTurn) }
+                catch (error: DirectToolArgumentsException) {
+                    val original = error.assistantMessage
+                    throw DirectToolArgumentsException(buildJsonObject {
+                        original.forEach { (key, value) -> put(key, value) }
+                        if (content.isNotEmpty()) put("content", content.toString())
+                        if (reasoning.isNotEmpty()) put("reasoning_content", reasoning.toString())
+                    }, error.validationErrors)
+                }
                 val finalContent = content.toString().ifBlank { parsedTerminal?.content.orEmpty() }
                 val finalReasoning = reasoning.toString().ifBlank { parsedTerminal?.reasoningContent.orEmpty() }
-                val finalCalls = calls.values.distinct().mapNotNull { buffer ->
-                    parseFunctionCall(buffer.id, buffer.name, buffer.arguments.toString())
-                }.ifEmpty { parsedTerminal?.toolCalls.orEmpty() }
+                val finalRawCalls = calls.values.distinct().map { buffer ->
+                    rawNativeCall(buffer.id, buffer.name, buffer.arguments.toString())
+                }.ifEmpty { (parsedTerminal?.assistantMessage?.get("tool_calls") as? JsonArray).orEmpty() }
                 val providerState = (parsedTerminal?.assistantMessage?.get("provider_state") as? JsonArray)
                     .orEmpty()
                     .mapNotNull { it as? JsonObject }
-                canonicalAgentTurn(
+                rawAgentTurn(
                     content = finalContent,
                     reasoning = finalReasoning,
-                    calls = finalCalls,
+                    rawCalls = finalRawCalls,
                     providerState = providerState,
                     promptTokens = promptTokens ?: parsedTerminal?.promptTokens,
                 )
@@ -1181,7 +1196,7 @@ class DirectApiClient(
         } finally {
             idleTimeout?.stop()
         }
-    }
+    } }
 
     private fun mergeResponseFunctionCall(
         calls: MutableMap<String, DirectAgentToolCallBuffer>,
@@ -1203,6 +1218,25 @@ class DirectApiClient(
         val arguments = item.string("arguments")
         if (replaceArguments) buffer.replaceArguments(arguments)
         else if (arguments.isNotBlank()) buffer.arguments.append(arguments)
+    }
+
+    private fun rawAgentTurn(
+        content: String, reasoning: String, rawCalls: List<JsonElement>,
+        providerState: List<JsonObject>, promptTokens: Int?,
+    ): DirectAgentTurn {
+        val assistant = buildJsonObject {
+            put("role", "assistant"); put("content", content)
+            if (reasoning.isNotBlank()) put("reasoning_content", reasoning)
+            if (providerState.isNotEmpty()) put("provider_state", JsonArray(providerState))
+            if (rawCalls.isNotEmpty()) put("tool_calls", JsonArray(rawCalls))
+        }
+        validateCompletedNativeArguments(assistant)
+        return canonicalAgentTurn(content, reasoning, rawCalls.mapNotNull(::parseToolCall), providerState, promptTokens)
+    }
+
+    private fun rawNativeCall(id: String, name: String, arguments: String) = buildJsonObject {
+        put("id", id); put("type", "function")
+        put("function", buildJsonObject { put("name", name); put("arguments", arguments) })
     }
 
     private fun canonicalAgentTurn(
@@ -1298,7 +1332,7 @@ class DirectApiClient(
         extraBody: JsonObject?,
     ): JsonObject {
         val providerBody = ModelRequestPolicy.extraBody(config, protocol, extraBody, textOnly = true)
-        return if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
+        val payload = if (protocol == DirectApiConfig.PROTOCOL_RESPONSES) {
             val instructions = messages
                 .filter { it.string("role") == "system" }
                 .joinToString("\n\n") { it.string("content") }
@@ -1323,11 +1357,12 @@ class DirectApiClient(
                 put("model", config.model.trim())
                 put("messages", JsonArray(messages))
                 put("temperature", temperature)
-                put("max_tokens", maxOutputTokens)
+                put(ModelRequestPolicy.outputLimitField(config), maxOutputTokens)
                 put("stream", true)
                 providerBody?.forEach { (key, value) -> put(key, value) }
             }
         }
+        return ModelRequestPolicy.normalize(config, protocol, payload)
     }
 
     private suspend fun streamTextSegment(
@@ -1350,10 +1385,10 @@ class DirectApiClient(
                 try {
                     return executeTextStream(endpoint, config.apiKey, body, protocol, onDelta)
                 } catch (error: Exception) {
-                    if (error is CancellationException) throw error
+                    if (error is CancellationException || error is DirectApiConnectionException) throw error
                     lastError = error
                     val status = (error as? DirectApiHttpException)?.statusCode
-                    if (status in PATH_FALLBACK_STATUS_CODES) break
+                    if (error is DirectApiHttpException && error.protocolMismatch && status in PATH_FALLBACK_STATUS_CODES) break
                     if (status in TRANSIENT_STATUS_CODES && transientAttempt < retryDelaysMillis.size) {
                         delay(retryDelaysMillis[transientAttempt++])
                         continue
@@ -1362,7 +1397,7 @@ class DirectApiClient(
                 }
             }
         }
-        throw lastError ?: DirectApiHttpException(404, "API 地址没有提供 $path 接口")
+        throw lastError ?: DirectApiHttpException(404, "API 地址没有提供 $path 接口", protocolMismatch = true)
     }
 
     private suspend fun executeTextStream(
@@ -1371,15 +1406,16 @@ class DirectApiClient(
         body: String,
         protocol: String,
         onDelta: suspend (String) -> Unit,
-    ): DirectStreamSegment = withContext(Dispatchers.IO) {
+    ): DirectStreamSegment = recoverDirectConnection(retryDelaysMillis.firstOrNull() ?: 0L) { connection -> withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(endpoint)
             .header("Accept", "text/event-stream")
             .header("Authorization", "Bearer ${apiKey.trim()}")
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val call = client.newCall(request)
+        val call = client.newBuilder().retryOnConnectionFailure(false).eventListener(connection).build().newCall(request)
         call.withCancellableResponse { response ->
+                connection.requestStarted.set(true)
             if (!response.isSuccessful) {
                 val raw = response.body?.string().orEmpty()
                 ensureSuccess(RawResponse(response.code, raw))
@@ -1406,7 +1442,7 @@ class DirectApiClient(
             }
             DirectStreamSegment(finishReason.ifBlank { "stop" }, terminalSeen)
         }
-    }
+    } }
 
     private fun parseDirectStreamEvent(root: JsonObject, protocol: String): DirectStreamEvent {
         val choice = (root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
@@ -1476,7 +1512,7 @@ class DirectApiClient(
                     config.apiKey,
                     json.encodeToString(payload),
                 )
-                if (response.statusCode in PATH_FALLBACK_STATUS_CODES) continue
+                if (response.statusCode in PATH_FALLBACK_STATUS_CODES && response.isEndpointMismatch()) continue
                 ensureSuccess(response)
                 val root = json.parseToJsonElement(response.body).jsonObject
                 requireCompletedResponse(root, protocol)
@@ -1486,12 +1522,12 @@ class DirectApiClient(
                     parseChatText(root)
                 }
             } catch (error: Exception) {
-                if (error is CancellationException) throw error
+                if (error is CancellationException || error is DirectApiConnectionException) throw error
                 lastError = error
-                if (error !is DirectApiHttpException || error.statusCode !in PATH_FALLBACK_STATUS_CODES) break
+                if (error !is DirectApiHttpException || (!error.protocolMismatch || error.statusCode !in PATH_FALLBACK_STATUS_CODES)) break
             }
         }
-        throw lastError ?: DirectApiHttpException(404, "API 地址没有提供 $path 接口")
+        throw lastError ?: DirectApiHttpException(404, "API 地址没有提供 $path 接口", protocolMismatch = true)
     }
 
     private suspend fun executeWithRetry(
@@ -1512,7 +1548,7 @@ class DirectApiClient(
         endpoint: HttpUrl,
         apiKey: String,
         body: String?,
-    ): RawResponse = withContext(Dispatchers.IO) {
+    ): RawResponse = recoverDirectConnection(retryDelaysMillis.firstOrNull() ?: 0L) { connection -> withContext(Dispatchers.IO) {
         val builder = Request.Builder()
             .url(endpoint)
             .header("Accept", "application/json")
@@ -1522,10 +1558,11 @@ class DirectApiClient(
         } else {
             builder.post(body.toRequestBody(JSON_MEDIA_TYPE))
         }
-        client.newCall(builder.build()).withCancellableResponse { response ->
+        client.newBuilder().retryOnConnectionFailure(false).eventListener(connection).build().newCall(builder.build()).withCancellableResponse { response ->
+                connection.requestStarted.set(true)
             RawResponse(response.code, response.body?.string().orEmpty())
         }
-    }
+    } }
 
     private fun endpointCandidates(baseUrl: String, path: String): List<HttpUrl> {
         val base = validateBaseUrl(baseUrl).toString().trimEnd('/')
@@ -1555,6 +1592,12 @@ class DirectApiClient(
         require(config.protocol in DirectApiConfig.supportedProtocols) { "不支持的 API 协议" }
     }
 
+    private fun RawResponse.isEndpointMismatch(): Boolean {
+        if (statusCode !in setOf(404, 405, 415)) return false
+        val error = runCatching { json.parseToJsonElement(body).jsonObject["error"] as? JsonObject }.getOrNull()
+        return error?.string("param").isNullOrBlank() && error?.string("code") != "model_not_found"
+    }
+
     private fun ensureSuccess(response: RawResponse) {
         if (response.statusCode in 200..299) return
         val message = parseError(response.body)
@@ -1566,6 +1609,7 @@ class DirectApiClient(
                 in TRANSIENT_STATUS_CODES -> "API 上游暂时不可用（HTTP ${response.statusCode}），系统已自动重试"
                 else -> message ?: "API 请求失败（HTTP ${response.statusCode}）"
             },
+            protocolMismatch = response.isEndpointMismatch(),
         )
     }
 
@@ -1620,7 +1664,7 @@ class DirectApiClient(
     }.getOrNull()
 
     private fun Throwable.isProtocolMismatch(): Boolean =
-        this is DirectApiHttpException && statusCode in setOf(400, 404, 405, 415, 422)
+        this is DirectApiHttpException && protocolMismatch
 
     private data class RawResponse(val statusCode: Int, val body: String)
 

@@ -17,11 +17,14 @@ from app.modules.operations.infrastructure.http_trace import ObservedHttpClient
 from ..core.exceptions import LLMError
 from .base import BaseAdapter
 from .completion_status import require_complete_response
+from .request_policy import MODEL_REQUEST_POLICY, provider_request_kwargs
+from .transport_timeouts import model_http_timeout, model_timeout_error, model_connection_error
+from .request_delivery import ModelDeliveryMixin
 
 
-class TracedAnthropicHttpClient(ObservedHttpClient):
+class TracedAnthropicHttpClient(ModelDeliveryMixin, ObservedHttpClient):
     def __init__(self, **kwargs):
-        super().__init__(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS, follow_redirects=True, **kwargs)
+        super().__init__(timeout=model_http_timeout(DEFAULT_TIMEOUT), limits=DEFAULT_LIMITS, follow_redirects=True, **kwargs)
 
 
 
@@ -259,6 +262,10 @@ class AnthropicAdapter(BaseAdapter):
                     kwargs["tool_choice"] = {"type": "tool", "name": tool_choice["function"]["name"]}
                 # "auto" is Anthropic's default — no parameter needed
 
+            parameters = {key: value for key, value in (extra_body or {}).items() if key in MODEL_REQUEST_POLICY["configurable_parameters"]}
+            if parameters:
+                kwargs["extra_body"] = parameters
+            kwargs = provider_request_kwargs(kwargs, self.base_url or "https://api.anthropic.com", "anthropic")
             response = await client.messages.create(**kwargs)
             require_complete_response(getattr(response, "stop_reason", None), max_tokens)
             (
@@ -282,9 +289,9 @@ class AnthropicAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"Anthropic API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"Anthropic 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"Anthropic 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"Anthropic API 错误: {e}")
         except LLMError:
@@ -314,6 +321,10 @@ class AnthropicAdapter(BaseAdapter):
             if system:
                 kwargs["system"] = system
 
+            parameters = {key: value for key, value in (extra_body or {}).items() if key in MODEL_REQUEST_POLICY["configurable_parameters"]}
+            if parameters:
+                kwargs["extra_body"] = parameters
+            kwargs = provider_request_kwargs(kwargs, self.base_url or "https://api.anthropic.com", "anthropic")
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
                     yield ""
@@ -326,9 +337,9 @@ class AnthropicAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"Anthropic API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"Anthropic 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"Anthropic 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"Anthropic API 错误: {e}")
         except LLMError:
@@ -370,6 +381,10 @@ class AnthropicAdapter(BaseAdapter):
             tool_index = 0
             finish_reason = "incomplete"
             usage = None
+            parameters = {key: value for key, value in (extra_body or {}).items() if key in MODEL_REQUEST_POLICY["configurable_parameters"]}
+            if parameters:
+                kwargs["extra_body"] = parameters
+            kwargs = provider_request_kwargs(kwargs, self.base_url or "https://api.anthropic.com", "anthropic")
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
                     if event.type == "text_delta":
@@ -424,9 +439,9 @@ class AnthropicAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"Anthropic API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"Anthropic 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"Anthropic 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"Anthropic API 错误: {e}")
         except LLMError:

@@ -539,4 +539,17 @@ describe('SettingsPage startup and update controls', () => {
     expect(screen.getByPlaceholderText('例如 openai/gpt-4o-mini 或 vendor-model-name')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /重新拉取/ })).toBeInTheDocument()
   })
+  it('saves current model advanced parameters through the API', async () => {
+    mockCustomModelConfig()
+    renderSettings()
+    fireEvent.click(await screen.findByText('检测到但尚未可用'))
+    fireEvent.click(await screen.findByRole('button', { name: /编辑/ }))
+    const parameters = await screen.findByLabelText('高级请求参数 · legacy-model')
+    fireEvent.change(parameters, { target: { value: '{"temperature":null,"reasoning_effort":"none"}' } })
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/ }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/config/models', expect.objectContaining({
+      model_request_parameters: { 'legacy-model': { temperature: null, reasoning_effort: 'none' } },
+    })))
+  })
+
 })

@@ -226,3 +226,28 @@ def test_incompatible_old_candidate_has_an_explicit_recovery_receipt(archive):
     }))
     assert result["data"]["candidate_set_complete"], result
     assert legacy.status == "rejected"
+
+
+def test_governance_entry_requires_explicit_title_before_summary_update(archive):
+    from copy import deepcopy
+    db, job, run = archive
+    rows = plan_rows()
+    submit(archive, [rows[0]], finalize=False)
+    original = db.query(CatalogingCandidate).filter_by(item_type="chapter_summary").one()
+    before = original.raw_payload
+    malformed = deepcopy(rows[0])
+    malformed["narrative_state"]["foreshadowing_planted"] = [{"content":"线索", "scene_number":1}]
+    result = submit(archive, [malformed], finalize=False)
+    assert result["status"] != "ok"
+    assert original.raw_payload == before
+    assert original.status == "pending"
+    assert "title" in str(result)
+    rejected = asyncio.run(save_external_cataloging_candidates(db, job.project_id, {
+        "job_id":job.id, "chapter_id":run.chapter_id, "candidates":[], "reject_candidate_ids":[original.id], "finalize":True}))
+    assert rejected["status"] != "ok"
+    assert "不能单独撤回" in str(rejected)
+    assert original.status == "pending"
+    malformed["narrative_state"]["foreshadowing_planted"] = [{"title":"线索", "scene_number":1}]
+    repaired = submit(archive, [malformed], finalize=False)
+    assert repaired["status"] == "ok", repaired
+    assert db.query(CatalogingCandidate).filter_by(item_type="chapter_summary", status="pending").one().id == original.id

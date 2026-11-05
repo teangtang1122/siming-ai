@@ -10,6 +10,7 @@ import com.siming.mobile.data.local.SimingDatabase
 import com.siming.mobile.data.network.DirectAgentTurn
 import com.siming.mobile.data.network.DirectAgentStreamActivity
 import com.siming.mobile.data.network.DirectApiClient
+import com.siming.mobile.data.network.DirectToolArgumentsException
 import com.siming.mobile.data.network.DirectApiConfig
 import java.time.Instant
 import java.util.UUID
@@ -88,18 +89,19 @@ internal class MobileCataloging(
         val history = CatalogingContext(contract.systemPrompt, buildJsonObject {
             put("task", "为当前已保存章节建档"); put("project_id", job.projectId); put("job_id", job.id)
             put("chapter_id", job.chapterId); put("chapter_run_id", job.id); put("chapter_version", job.chapterVersion)
-        }, saved)
+        }, plan.candidates)
         var chapterRead = false
         var failures = 0
         var toolNameRejections = 0
         var mixedWriteBatchRejections = 0
+        var argumentFailures = 0
         var selectedType: String? = null
         for (step in 1..contract.maxSteps) {
             checkActive(job)
             onProgress("正在等待建档模型（步骤 $step，连续 ${contract.modelRequest.idleTimeoutSeconds} 秒无有效输出将超时）")
             var lastActivity: DirectAgentStreamActivity? = null
             var lastActivityAt = 0L
-            val summaryRequired = plan.candidates.none { it.kind == "chapter_summary" }
+            val summaryRequired = plan.requiresSummary()
             if (summaryRequired) selectedType = null
             val linkedOutlineId = plan.chapter.text("outline_node_id").takeIf { id ->
                 id.isNotBlank() && records.any { it.recordType == "outline_node" && it.id == id &&
@@ -114,6 +116,7 @@ internal class MobileCataloging(
             val sceneCount = summary?.get("scenes")?.let { (it as? JsonArray)?.size }
             val offeredSchemas = contract.schemasForPlan(
                 summaryRequired, selectedType, linkedOutlineId, sectionOutlineIds, sceneCount, summary,
+                sceneCandidateIds = plan.sceneRepairContext().strings("expected_candidate_ids"),
             )
             val checkpointCount = history.checkpoints.size
             val messages = history.prepare(plan.candidates, selectedType, plan.diagnostics()) {
@@ -122,19 +125,31 @@ internal class MobileCataloging(
             if (history.checkpoints.size > checkpointCount) {
                 onProgress("已按当前候选整理建档工具历史，完整正文和已读档案均保留（步骤 $step）")
             }
-            val response = turn(messages, offeredSchemas) { activity ->
-                val now = System.nanoTime()
-                if (activity != lastActivity || now - lastActivityAt >= 1_000_000_000L) {
-                    checkActive(job)
-                    val detail = when (activity) {
-                        DirectAgentStreamActivity.REASONING -> "模型正在分析建档资料"
-                        DirectAgentStreamActivity.CONTENT -> "模型正在返回建档响应"
-                        DirectAgentStreamActivity.TOOL_ARGUMENTS -> "正在接收建档工具参数"
+            val response = try {
+                turn(messages, offeredSchemas) { activity ->
+                    val now = System.nanoTime()
+                    if (activity != lastActivity || now - lastActivityAt >= 1_000_000_000L) {
+                        checkActive(job)
+                        val detail = when (activity) {
+                            DirectAgentStreamActivity.REASONING -> "模型正在分析建档资料"
+                            DirectAgentStreamActivity.CONTENT -> "模型正在返回建档响应"
+                            DirectAgentStreamActivity.TOOL_ARGUMENTS -> "正在接收建档工具参数"
+                        }
+                        onProgress("$detail（步骤 $step）")
+                        lastActivity = activity
+                        lastActivityAt = now
                     }
-                    onProgress("$detail（步骤 $step）")
-                    lastActivity = activity
-                    lastActivityAt = now
                 }
+            } catch (error: DirectToolArgumentsException) {
+                checkActive(job)
+                argumentFailures++
+                history.append(catalogingToolArgumentFailure(error, offeredSchemas, argumentFailures, contract.maxErrors))
+                job = saveProgress(job, initial, plan, history)
+                onProgress("建档工具参数 JSON 无效，整批未执行；已保留原响应（$argumentFailures/${contract.maxErrors}）")
+                require(argumentFailures < contract.maxErrors) {
+                    "建档模型累计 ${contract.maxErrors} 次返回无效工具参数 JSON；候选和原始响应已保留，整批未执行：${error.message}"
+                }
+                continue
             }
             checkActive(job)
             val calls = response.toolCalls
@@ -186,6 +201,7 @@ internal class MobileCataloging(
                             selectedType = args.strings("types").single()
                             buildJsonObject {
                                 put("selected_types", jsonStrings(listOf(requireNotNull(selectedType))))
+                                put("scene_repair", plan.sceneRepairContext())
                                 put("instruction", "同类可分批提交，重新选择才切换字段格式")
                             }
                         }
@@ -213,14 +229,17 @@ internal class MobileCataloging(
                     if (batchError == null) failures++
                     buildJsonObject {
                         put("tool", call.name); put("status", "error"); put("detail", e.message.orEmpty())
-                        if (unavailable.isNotEmpty() || mixedWriteBatch) put("data", buildJsonObject {
-                            put("reason", if (mixedWriteBatch) "cataloging_tool_must_be_only_call" else "native_tool_not_open")
-                            if (unavailable.isNotEmpty()) put("unavailable_tools", jsonStrings(unavailable))
-                            if (mixedWriteBatch) put("tools", jsonStrings(calls.map { it.name }))
-                            put("available_tools", jsonStrings(allowed.sorted()))
-                            put("batch_call_count", calls.size); put("executed", false)
-                            put("retryable", if (mixedWriteBatch) mixedWriteBatchRejections < contract.maxErrors
-                                else toolNameRejections < contract.maxToolNameRejections)
+                        put("data", buildJsonObject {
+                            put("scene_repair", plan.sceneRepairContext())
+                            if (unavailable.isNotEmpty() || mixedWriteBatch) {
+                                put("reason", if (mixedWriteBatch) "cataloging_tool_must_be_only_call" else "native_tool_not_open")
+                                if (unavailable.isNotEmpty()) put("unavailable_tools", jsonStrings(unavailable))
+                                if (mixedWriteBatch) put("tools", jsonStrings(calls.map { it.name }))
+                                put("available_tools", jsonStrings(allowed.sorted()))
+                                put("batch_call_count", calls.size); put("executed", false)
+                                put("retryable", if (mixedWriteBatch) mixedWriteBatchRejections < contract.maxErrors
+                                    else toolNameRejections < contract.maxToolNameRejections)
+                            }
                         })
                     }
                 }
@@ -229,29 +248,35 @@ internal class MobileCataloging(
                 onProgress(if (result.text("status") == "error") "计划校验未通过，已将具体问题交给模型修正" else "已完成建档工具：${call.name}")
             }
             history.append(transaction)
-            job = job.copy(candidatesJson = JsonArray(plan.candidates.map(CatalogCandidate::toJson)).toString(), transcriptJson = buildJsonObject {
-                put("previous_attempt", Json.parseToJsonElement(initial.transcriptJson)); put("attempt", initial.attempt)
-                put("messages", JsonArray(history.auditMessages))
-                put("context_checkpoints", JsonArray(history.checkpoints))
-            }.toString(), updatedAt = Instant.now().toString())
-            database.withTransaction {
-                checkActive(job)
-                dao.saveCatalogingRun(job)
-            }
+            job = saveProgress(job, initial, plan, history)
             require(toolNameRejections < contract.maxToolNameRejections) {
                 "模型累计 ${contract.maxToolNameRejections} 次调用本步骤未开放的工具 ${unavailable.joinToString("、")}；整批未执行，候选已保留"
             }
             require(mixedWriteBatchRejections < contract.maxErrors) {
                 "模型累计 ${contract.maxErrors} 次混合调用建档保存工具；整批未执行，正文和候选已保留，可重试。" +
-                    transaction.lastOrNull()?.text("content").orEmpty().take(5000)
+                    catalogingFailureDetail(transaction)
             }
             if (complete) { commit(job, plan); return }
             require(failures < contract.maxErrors) {
-                "建档连续 ${contract.maxErrors} 次未通过工具校验；正文和候选已保留，可重试。" +
-                    transaction.lastOrNull()?.text("content").orEmpty().take(5000)
+                "建档连续 ${contract.maxErrors} 次未通过工具校验：${catalogingFailureDetail(transaction)}。正文和候选已保留，可重试。"
             }
         }
         error("建档已达到 ${contract.maxSteps} 步上限；正文和候选已保留，可重试")
+    }
+
+    private suspend fun saveProgress(
+        job: LocalCatalogingRun, initial: LocalCatalogingRun,
+        plan: CatalogingPlan, history: CatalogingContext,
+    ): LocalCatalogingRun {
+        val updated = job.copy(
+            candidatesJson = JsonArray(plan.snapshotCandidates().map(CatalogCandidate::toJson)).toString(),
+            transcriptJson = buildJsonObject {
+                put("previous_attempt", Json.parseToJsonElement(initial.transcriptJson)); put("attempt", initial.attempt)
+                put("messages", JsonArray(history.auditMessages)); put("context_checkpoints", JsonArray(history.checkpoints))
+            }.toString(), updatedAt = Instant.now().toString(),
+        )
+        database.withTransaction { checkActive(updated); dao.saveCatalogingRun(updated) }
+        return updated
     }
 
     private suspend fun checkActive(run: LocalCatalogingRun) {
@@ -303,10 +328,14 @@ internal class MobileCataloging(
     }
 
     private fun candidates(plan: CatalogingPlan, args: JsonObject, job: LocalCatalogingRun): JsonObject {
-        val rows = plan.candidates.filter { args.text("item_type").isBlank() || it.kind == args.text("item_type") }
+        val rows = plan.snapshotCandidates().filter {
+            (args.text("item_type").isBlank() || it.kind == args.text("item_type")) &&
+                (args.text("status").isBlank() || it.status == args.text("status"))
+        }
         val offset = args.number("offset")
         val page = rows.drop(offset).take(args.number("limit", 2))
         return buildJsonObject {
+            put("scene_repair", plan.sceneRepairContext())
             put("items", JsonArray(page.map(CatalogCandidate::toJson))); put("total", rows.size); put("has_more", offset + page.size < rows.size)
             put("next_arguments", if (offset + page.size < rows.size) JsonObject(args + mapOf("job_id" to JsonPrimitive(job.id), "offset" to JsonPrimitive(offset + page.size))) else JsonNull)
         }
@@ -324,4 +353,19 @@ internal class MobileCataloging(
             } }
         }
     }
+}
+
+
+/** Full receipts remain in the audit log; the UI displays the actionable validation reason. */
+internal fun catalogingFailureDetail(transaction: List<JsonObject>): String {
+    for (message in transaction.asReversed()) {
+        val content = message.text("content")
+        val result = runCatching { Json.parseToJsonElement(content).jsonObject }.getOrNull() ?: continue
+        if (result.text("status") != "error") continue
+        val data = result.obj("data")
+        return (listOf(result.text("detail")) + data.objects("candidate_errors").map { it.text("message") } +
+            data.objects("validation_errors").map { it.text("message") } +
+            data.strings("missing_required_items")).filter(String::isNotBlank).distinct().joinToString("；").take(1200)
+    }
+    return "模型未提交符合当前字段契约的完整计划"
 }

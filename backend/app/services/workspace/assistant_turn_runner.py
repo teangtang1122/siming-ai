@@ -214,9 +214,11 @@ class WorkspaceAssistantTurnRunner:
         except LLMError as exc:
             public_error = public_model_failure(exc)
             logger.error(
-                "Workspace model request failed run=%s class=%s",
+                "Workspace model request failed run=%s class=%s provider_status=%s parameter=%s",
                 getattr(state.assistant_run, "id", None),
                 public_error.failure_class,
+                public_error.details.get("provider_status"),
+                public_error.details.get("parameter"),
             )
             self._persist_failure(state, public_error, phase="llm_error")
             yield state.event({"type": "error", **public_error.to_dict()})
@@ -394,7 +396,7 @@ class WorkspaceAssistantTurnRunner:
         if state.local_cli_selected:
             self._configure_local_cli(state)
         if state.assistant_run.operation_id:
-            state.local_cli_extra_body["operation_id"] = state.assistant_run.operation_id
+            state.local_cli_extra_body["moshu_operation_id"] = state.assistant_run.operation_id
         state.selected_text = (
             payload.selected_text
             if payload.selected_text and payload.selected_text.strip()

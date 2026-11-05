@@ -15,6 +15,15 @@ from app.services import application_settings
 
 
 class LauncherDataDirectoryTestCase(unittest.TestCase):
+    def test_pet_theme_policy_is_restored_even_when_owned_input_form_is_disposed(self):
+        overlay = object.__new__(launcher._WindowsDesktopPetInputOverlay)
+        overlay._transparency = MagicMock()
+        overlay._form = types.SimpleNamespace(IsDisposed=True)
+        overlay._invoke_form = MagicMock()  # a disposed form skips its UI callback.
+        overlay.close()
+        overlay._transparency.close.assert_called_once_with()
+        self.assertIsNone(overlay._form)
+
     def test_windows_pet_display_is_pointer_transparent_without_changing_other_styles(self):
         hwnd = 0x123456789 if launcher.ctypes.sizeof(launcher.ctypes.c_void_p) == 8 else 0x123456
         native = types.SimpleNamespace(Handle=types.SimpleNamespace(ToInt64=lambda: hwnd))
@@ -409,11 +418,12 @@ class LauncherDataDirectoryTestCase(unittest.TestCase):
         }
         with patch.dict("sys.modules", modules), patch.object(
             launcher, "_set_windows_pet_display_passthrough"
-        ) as passthrough:
+        ) as passthrough, patch.object(launcher, "WindowsPetTransparency") as transparency:
             overlay = launcher._WindowsDesktopPetInputOverlay(
                 types.SimpleNamespace(native=native)
             )
             passthrough.assert_called_once_with(native)
+            transparency.assert_called_once_with(native)
             native.HandleCreated.handlers[0](None, None)
             self.assertEqual(passthrough.call_count, 2)
 

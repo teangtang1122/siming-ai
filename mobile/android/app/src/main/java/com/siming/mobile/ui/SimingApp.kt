@@ -1,5 +1,8 @@
 package com.siming.mobile.ui
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.WindowInsets
@@ -198,9 +201,8 @@ fun SimingApp(
     }
 
     if (showDirectApiSetup) {
-        DirectApiSetupScreen(
+        DirectApiManagerScreen(
             viewModel = viewModel,
-            existing = ui.directApi,
             onBack = { showDirectApiSetup = false },
             onConfigured = { showDirectApiSetup = false },
             snackbar = snackbar,
@@ -1473,7 +1475,7 @@ private fun PairingScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun DirectApiSetupScreen(
+internal fun DirectApiProfileEditor(
     viewModel: MainViewModel,
     existing: DirectApiSummary?,
     onBack: () -> Unit,
@@ -1507,6 +1509,12 @@ private fun DirectApiSetupScreen(
     var maxOutputTokens by rememberSaveable(existing?.baseUrl) {
         mutableStateOf((existing?.maxOutputTokens ?: DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS).toString())
     }
+    var checkpointOutputTokens by rememberSaveable(existing?.baseUrl) {
+        mutableStateOf((existing?.checkpointOutputTokens ?: DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS).toString())
+    }
+    var modelMaxOutputTokens by rememberSaveable(existing?.baseUrl) {
+        mutableStateOf(existing?.modelMaxOutputTokens?.toString().orEmpty())
+    }
     var safetyMarginTokens by rememberSaveable(existing?.baseUrl) {
         mutableStateOf((existing?.safetyMarginTokens ?: DirectApiConfig.DEFAULT_SAFETY_MARGIN_TOKENS).toString())
     }
@@ -1520,17 +1528,13 @@ private fun DirectApiSetupScreen(
             },
         )
     }
-    val taskModels = remember(existing?.baseUrl) {
-        mutableStateMapOf<String, String>().apply {
-            putAll(existing?.taskModels.orEmpty())
-        }
-    }
-    var taskModelPicker by rememberSaveable(existing?.baseUrl) { mutableStateOf<String?>(null) }
+    var parameterDrafts by rememberSaveable(existing?.id) { mutableStateOf(hashMapOf<String, String>()) }
+    val parameterJson = parameterDrafts[model] ?: existing?.modelRequestParameters?.get(model)?.toString() ?: "{}"
+    val parsedParameters = remember(parameterJson) { runCatching { Json.parseToJsonElement(parameterJson).jsonObject } }
     val modelChoices = (
         listOf(model) +
             ui.discoveredModels +
-            existing?.availableModels.orEmpty() +
-            taskModels.values
+            existing?.availableModels.orEmpty()
         )
         .map(String::trim)
         .filter(String::isNotBlank)
@@ -1561,46 +1565,6 @@ private fun DirectApiSetupScreen(
             maxOutputTokens = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS.toString()
             contextProfileIdentity = null
         }
-    }
-
-    taskModelPicker?.let { taskType ->
-        AlertDialog(
-            onDismissRequest = { taskModelPicker = null },
-            title = { Text("选择${DirectApiConfig.taskModelLabels[taskType] ?: taskType}模型") },
-            text = {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().height(360.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    item {
-                        TextButton(
-                            onClick = {
-                                taskModels.remove(taskType)
-                                taskModelPicker = null
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("跟随 API 默认模型 · ${model.ifBlank { "尚未选择" }}")
-                        }
-                    }
-                    items(modelChoices, key = { it }) { candidate ->
-                        TextButton(
-                            onClick = {
-                                if (candidate == model) taskModels.remove(taskType)
-                                else taskModels[taskType] = candidate
-                                taskModelPicker = null
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(candidate, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { taskModelPicker = null }) { Text("取消") }
-            },
-        )
     }
 
     Scaffold(
@@ -1732,7 +1696,7 @@ private fun DirectApiSetupScreen(
                 OutlinedTextField(
                     value = maxOutputTokens,
                     onValueChange = { maxOutputTokens = it.filter(Char::isDigit).take(8) },
-                    label = { Text("输出预留") },
+                    label = { Text("业务输出预留") },
                     singleLine = true,
                     enabled = !ui.busy,
                     modifier = Modifier.weight(1f),
@@ -1746,8 +1710,36 @@ private fun DirectApiSetupScreen(
                     modifier = Modifier.weight(1f),
                 )
             }
+            OutlinedTextField(
+                value = checkpointOutputTokens,
+                onValueChange = { checkpointOutputTokens = it.filter(Char::isDigit).take(8) },
+                label = { Text("历史整理初始输出额度") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true, enabled = !ui.busy,
+                supportingText = { Text("与业务输出独立；截断后按模型容量有界增长或缩小完整回合批次。") },
+            )
+            OutlinedTextField(
+                value = modelMaxOutputTokens,
+                onValueChange = { modelMaxOutputTokens = it.filter(Char::isDigit).take(8) },
+                label = { Text("模型最大输出容量（默认模型）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true, enabled = !ui.busy,
+                supportingText = { Text("按提供商文档填写，包含推理占用；1M 上下文不等于输出容量。留空按业务输出保守限制。") },
+            )
+            HorizontalDivider()
+            Text("高级请求参数 · ${model.ifBlank { "当前模型" }}", style = MaterialTheme.typography.titleMedium)
+            Text("按 API 和模型独立保存。{} 使用自动适配；null 表示省略该参数。输出额度仍由上面的容量设置控制。", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(
+                value = parameterJson,
+                onValueChange = { value -> parameterDrafts = HashMap(parameterDrafts).apply { put(model, value) } },
+                label = { Text("请求参数 JSON") },
+                placeholder = { Text("{\"temperature\":null}") },
+                modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 8,
+                enabled = model.isNotBlank() && !ui.busy, isError = parsedParameters.isFailure,
+                supportingText = { Text("OpenAI Responses 示例：{\"reasoning\":{\"effort\":\"none\"},\"temperature\":0.8}。Chat Completions 使用 reasoning_effort；其他服务按其文档填写。") },
+            )
             OutlinedButton(
-                onClick = { viewModel.discoverDirectModels(baseUrl, apiKey) },
+                onClick = { viewModel.discoverDirectModels(baseUrl, apiKey, existing?.id) },
                 enabled = baseUrl.isNotBlank() && (apiKey.isNotBlank() || existing != null) && !ui.busy,
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -1776,31 +1768,6 @@ private fun DirectApiSetupScreen(
                     )
                 }
             }
-            HorizontalDivider()
-            Text("按任务选择模型", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(
-                "显式选择优先于任务默认；没有单独设置的任务会使用上面的 API 默认模型。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            DirectApiConfig.taskModelLabels.forEach { (taskType, label) ->
-                OutlinedButton(
-                    onClick = { taskModelPicker = taskType },
-                    enabled = modelChoices.isNotEmpty() && !ui.busy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(label, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            taskModels[taskType]?.let { "单独使用 · $it" }
-                                ?: "跟随默认 · ${model.ifBlank { "尚未选择" }}",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            }
             Button(
                 onClick = {
                     viewModel.configureDirectApi(
@@ -1810,14 +1777,21 @@ private fun DirectApiSetupScreen(
                         model,
                         protocol,
                         modelChoices,
-                        taskModels.toMap(),
                         contextWindowTokens.toIntOrNull(),
                         maxOutputTokens.toIntOrNull() ?: 0,
                         safetyMarginTokens.toIntOrNull() ?: -1,
                         onConfigured,
+                        checkpointOutputTokens.toIntOrNull() ?: 0,
+                        modelMaxOutputTokens.toIntOrNull(),
+                        profileId = existing?.id,
+                        modelRequestParameters = parameterDrafts.filterKeys { it.isNotBlank() }.mapKeys { it.key.trim() }.mapValues { Json.parseToJsonElement(it.value).jsonObject } +
+                            (if (model.isNotBlank()) mapOf(model.trim() to parsedParameters.getOrThrow()) else emptyMap()),
                     )
                 },
-                enabled = baseUrl.isNotBlank() &&
+                enabled = parsedParameters.isSuccess && parameterDrafts.values.all { runCatching { Json.parseToJsonElement(it).jsonObject }.isSuccess } &&
+                    (checkpointOutputTokens.toIntOrNull() ?: 0) > 0 &&
+                    (modelMaxOutputTokens.isBlank() || (modelMaxOutputTokens.toIntOrNull() ?: 0) > 0) &&
+                    baseUrl.isNotBlank() &&
                     (apiKey.isNotBlank() || existing != null) &&
                     (contextWindowTokens.isBlank() ||
                         (contextWindowTokens.toIntOrNull() ?: 0) > 0) &&

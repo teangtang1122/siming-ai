@@ -112,6 +112,14 @@ class APIConfigCreate(BaseModel):
         description="Models discovered from this exact provider configuration",
     )
 
+    model_request_parameters: dict[str, dict] = Field(default_factory=dict)
+
+    @field_validator("model_request_parameters")
+    @classmethod
+    def _validate_request_parameters(cls, value):
+        from ..ai.request_policy import validate_model_request_parameters
+        return validate_model_request_parameters(value)
+
     @field_validator("provider")
     @classmethod
     def _validate_provider(cls, provider: str) -> str:
@@ -195,12 +203,21 @@ class ConnectionTestRequest(BaseModel):
     cli_command: Optional[str] = Field(None, max_length=500, description="Local CLI command")
     cli_args: Optional[str] = Field(None, max_length=2000, description="Local CLI args")
     model: Optional[str] = Field(None, max_length=MODEL_IDENTIFIER_MAX_LENGTH, description="Model used by the real generation smoke test")
+    max_output_tokens: Optional[int] = Field(None, ge=1, le=10_000_000, description="Connection probe output ceiling including reasoning")
     timeout_seconds: Optional[int] = Field(
         None,
         ge=15,
         le=180,
         description="Optional model connection smoke-test timeout",
     )
+
+    model_request_parameters: dict[str, dict] = Field(default_factory=dict)
+
+    @field_validator("model_request_parameters")
+    @classmethod
+    def _validate_request_parameters(cls, value):
+        from ..ai.request_policy import validate_model_request_parameters
+        return validate_model_request_parameters(value)
 
     @field_validator("provider")
     @classmethod

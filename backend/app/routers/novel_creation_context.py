@@ -44,6 +44,26 @@ _BASE = (
 _CONVERSATION_KIND = "creation"
 
 
+@router.get("/novel-creation/sessions/{session_id}/conversations")
+async def list_creation_conversations(session_id: str, db: DbSession, conversations: ConversationStore):
+    if novel_creation_session_store(db).session(session_id) is None:
+        raise NotFoundError("立项草稿不存在")
+    return ApiResponse.success(data=conversations.list(scope_type="creation", scope_id=session_id))
+
+
+@router.post("/novel-creation/sessions/{session_id}/conversations")
+async def create_creation_conversation(session_id: str, db: DbSession, conversations: ConversationStore):
+    if novel_creation_session_store(db).session(session_id) is None:
+        raise NotFoundError("立项草稿不存在")
+    return ApiResponse.success(data=conversations.create("新立项对话", scope_type="creation", scope_id=session_id))
+
+
+@router.get(_BASE)
+async def get_creation_conversation(session_id: str, conversation_id: str, db: DbSession, conversations: ConversationStore):
+    _creation_context_store(db, conversations, session_id=session_id, conversation_id=conversation_id)
+    return ApiResponse.success(data=conversations.get(conversation_id))
+
+
 def _creation_context_store(
     db: Session,
     conversations: SystemConversationStore,

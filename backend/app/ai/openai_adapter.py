@@ -13,16 +13,21 @@ from openai import (
     DefaultAsyncHttpxClient,
 )
 
-from app.modules.operations.infrastructure.http_trace import ObservedHttpClient, TraceHttpMixin
+from app.modules.operations.infrastructure.http_trace import TraceHttpMixin
 
 from ..core.exceptions import LLMError
 from .base import BaseAdapter
 from .completion_status import require_complete_response
-from .request_policy import provider_extra_body, provider_tool_choice
+from .request_policy import provider_extra_body, provider_tool_choice, provider_request_kwargs
+from .transport_timeouts import model_http_timeout, model_timeout_error, model_connection_error
+from .request_delivery import ModelDeliveryMixin
 
 
-class TracedOpenAIHttpClient(TraceHttpMixin, DefaultAsyncHttpxClient):
-    pass
+class TracedOpenAIHttpClient(ModelDeliveryMixin, TraceHttpMixin, DefaultAsyncHttpxClient):
+    def __init__(self, **kwargs):
+        from openai._constants import DEFAULT_TIMEOUT
+        kwargs.setdefault("timeout", model_http_timeout(DEFAULT_TIMEOUT))
+        super().__init__(**kwargs)
 
 
 class OpenAIClientProxy:
@@ -39,7 +44,7 @@ class OpenAIClientProxy:
 def create_openai_compatible_client(api_key: str, base_url: str | None = None):
     """Create an AsyncOpenAI-compatible client with normalized display metadata."""
     kwargs = {"api_key": api_key, "max_retries": 0, "http_client": (
-        ObservedHttpClient(trust_env=False) if base_url and _is_loopback_url(base_url)
+        TracedOpenAIHttpClient(trust_env=False) if base_url and _is_loopback_url(base_url)
         else TracedOpenAIHttpClient()
     )}
     if base_url:
@@ -170,11 +175,33 @@ def _responses_message_content(content: object) -> object:
     return converted
 
 
+def _receipted_argument_rejection(messages: list[dict], index: int) -> bool:
+    """Only a whole, explicitly unexecuted error transaction can replay bad JSON."""
+    calls = messages[index].get("tool_calls") or []
+    ids = [call.get("id") for call in calls]
+    if not ids or len(set(ids)) != len(ids) or not all(isinstance(i, str) and i for i in ids):
+        return False
+    receipts = messages[index + 1:index + 1 + len(calls)]
+    if len(receipts) != len(calls) or {r.get("tool_call_id") for r in receipts} != set(ids):
+        return False
+    for receipt in receipts:
+        if receipt.get("role") != "tool":
+            return False
+        try:
+            result = _json.loads(receipt.get("content") or "")
+            data = result.get("data") or {}
+            if result.get("status") != "error" or data.get("executed") is not False or data.get("reason") != "native_tool_arguments_invalid":
+                return False
+        except (ValueError, TypeError, AttributeError):
+            return False
+    return True
+
+
 def _responses_input(messages: list[dict]) -> list[dict]:
     """Convert Chat Completions history into stateless Responses input items."""
 
     items: list[dict] = []
-    for message in messages:
+    for index, message in enumerate(messages):
         role = str(message.get("role") or "user")
         if role == "tool":
             output = message.get("content")
@@ -216,12 +243,13 @@ def _responses_input(messages: list[dict]) -> list[dict]:
                 raise ValueError("Responses tool call requires a non-empty function name")
             if not isinstance(arguments, str):
                 raise ValueError("Responses tool call arguments must be a JSON string")
-            try:
-                parsed_arguments = _json.loads(arguments)
-            except _json.JSONDecodeError as exc:
-                raise ValueError("Responses tool call arguments must be valid JSON") from exc
-            if not isinstance(parsed_arguments, dict):
-                raise ValueError("Responses tool call arguments must be a JSON object")
+            if not _receipted_argument_rejection(messages, index):
+                try:
+                    parsed_arguments = _json.loads(arguments)
+                except _json.JSONDecodeError as exc:
+                    raise ValueError("Responses tool call arguments must be valid JSON") from exc
+                if not isinstance(parsed_arguments, dict):
+                    raise ValueError("Responses tool call arguments must be a JSON object")
             items.append({
                 "type": "function_call",
                 "call_id": call_id,
@@ -365,7 +393,7 @@ class OpenAIAdapter(BaseAdapter):
                 extra_body, self.base_url, "responses", text_only=not tools,
             ),
         })
-        return kwargs
+        return provider_request_kwargs(kwargs, self.base_url, "responses")
 
     async def _responses_chat_completion(
         self,
@@ -386,7 +414,9 @@ class OpenAIAdapter(BaseAdapter):
             tools=tools,
             tool_choice=tool_choice,
         ))
-        require_complete_response(getattr(response, "status", None), max_tokens)
+        require_complete_response(
+            getattr(getattr(response, "incomplete_details", None), "reason", None)
+            or getattr(response, "status", None), max_tokens)
         return {
             "content": str(getattr(response, "output_text", "") or ""),
             "reasoning_content": responses_reasoning_content(response),
@@ -552,7 +582,7 @@ class OpenAIAdapter(BaseAdapter):
             if provider_body:
                 kwargs["extra_body"] = provider_body
 
-            response = await client.chat.completions.create(**kwargs)
+            response = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url, "chat_completions"))
             choice = response.choices[0]
             require_complete_response(getattr(choice, "finish_reason", None), max_tokens)
             return {
@@ -569,9 +599,9 @@ class OpenAIAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"OpenAI API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"OpenAI 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"OpenAI 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"OpenAI API 错误: {e}")
         except LLMError:
@@ -619,7 +649,7 @@ class OpenAIAdapter(BaseAdapter):
             provider_body = provider_extra_body(extra_body, self.base_url, text_only=True)
             if provider_body:
                 kwargs["extra_body"] = provider_body
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url, "chat_completions"))
             async for chunk in stream:
                 yield ""
                 choices = getattr(chunk, "choices", None) or []
@@ -634,9 +664,9 @@ class OpenAIAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"OpenAI API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"OpenAI 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"OpenAI 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"OpenAI API 错误: {e}")
         except LLMError:
@@ -684,7 +714,7 @@ class OpenAIAdapter(BaseAdapter):
             if provider_body:
                 kwargs["extra_body"] = provider_body
 
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url, "chat_completions"))
             # Track tool call accumulation across chunks
             tool_call_buffers: dict[int, dict] = {}
             finish_reason = None
@@ -745,9 +775,9 @@ class OpenAIAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"OpenAI API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"OpenAI 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"OpenAI 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"OpenAI API 错误: {e}")
         except LLMError:

@@ -22,6 +22,7 @@ class ModelProviderConfig:
     context_window_tokens: int | None = None
     max_output_tokens: int | None = None
     safety_margin_tokens: int | None = None
+    model_request_parameters: dict | None = None
     capacity_assurance: Literal["exact", "conservative", "unverified"] = "conservative"
 
 

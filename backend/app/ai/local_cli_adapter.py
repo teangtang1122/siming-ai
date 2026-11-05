@@ -1172,7 +1172,7 @@ class LocalCLIAdapter(BaseAdapter):
             cleanup_codex_output_file=cleanup_codex_output_file,
             request_started_at=time.monotonic(),
             request_timeout=self._timeout_seconds(runtime_body),
-            operation_id=str(runtime_body.get("operation_id") or "") or None,
+            operation_id=str(runtime_body.get("moshu_operation_id") or "") or None,
         )
 
     @staticmethod

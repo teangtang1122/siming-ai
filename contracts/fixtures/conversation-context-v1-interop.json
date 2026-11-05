@@ -5,6 +5,7 @@
     "current_user_message_over_capacity",
     "conversation_checkpoint_required",
     "conversation_checkpoint_failed",
+    "conversation_checkpoint_output_limit",
     "conversation_checkpoint_cancelled",
     "conversation_checkpoint_superseded",
     "conversation_source_changed",

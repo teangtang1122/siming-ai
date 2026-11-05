@@ -36,6 +36,7 @@ export interface SharedModelConfig {
   effective_deconstruct_input_char_limit?: number
   deconstruct_item_char_limit?: number | null
   effective_deconstruct_item_char_limit?: number
+  model_request_parameters?: Record<string, Record<string, unknown>>
   available_models?: Array<{
     id: string
     display_name?: string | null

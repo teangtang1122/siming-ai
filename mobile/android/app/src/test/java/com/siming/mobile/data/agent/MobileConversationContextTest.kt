@@ -932,7 +932,8 @@ class MobileConversationContextTest {
             val probe = generator(100_000)
             val initialInputTokens = probe.requestInputTokens(request)
             assertTrue(generator(initialInputTokens + maxOutputTokens).promptFits(request), protocol)
-            assertFalse(generator(initialInputTokens + maxOutputTokens - 1).promptFits(request), protocol)
+            assertTrue(generator(initialInputTokens + maxOutputTokens - 1).promptFits(request), protocol)
+            assertFalse(generator(initialInputTokens).promptFits(request), protocol)
 
             val repairPrompt = "repair\n" + "无效输出".repeat(256)
             val repairInputTokens = probe.requestInputTokens(repairPrompt)

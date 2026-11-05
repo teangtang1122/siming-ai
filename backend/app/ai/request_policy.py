@@ -9,10 +9,35 @@ from copy import deepcopy
 from urllib.parse import urlparse
 
 MODEL_REQUEST_POLICY = {
+    # Unprefixed application metadata must never become provider request fields.
+    "internal_parameters": ["storage_target", "operation_id"],
+    "configurable_parameters": ["temperature", "top_p", "top_k", "min_p", "seed", "presence_penalty", "frequency_penalty",
+        "repetition_penalty", "reasoning", "reasoning_effort", "thinking", "enable_thinking", "thinking_budget", "output_config", "verbosity"],
+    # Exact first-party IDs only. Source: OpenAI GPT-6 migration guide, 2026-11-04.
+    "model_capabilities": {
+        "api.anthropic.com": {
+            model: {"kind": "anthropic", "sampling_always_restricted": True}
+            for model in ("claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-mythos-preview", "claude-mythos-5", "claude-fable-5")
+        },
+        "api.openai.com": {
+            model: {
+                "default_reasoning_effort": "medium",
+                "reasoning_efforts": (["none"] if allow_none else []) + ["low", "medium", "high", "xhigh", "max"],
+                "chat_tools": "requires_none" if model in {"gpt-6-sol", "gpt-6-luna"} else "unavailable",
+            }
+            for model, allow_none in (
+                ("gpt-6-astra", False), ("gpt-6.1-sol", False),
+                ("gpt-6.1-terra", True), ("gpt-6-sol", True), ("gpt-6-luna", True),
+            )
+        },
+    },
     "explicit_thinking_fields": [
         "thinking", "reasoning", "reasoning_effort", "enable_thinking", "thinking_budget",
     ],
     "endpoints": {
+        "api.openai.com": {
+            "chat_completions": {"output_limit_field": "max_completion_tokens"},
+        },
         "api.deepseek.com": {
             "chat_completions": {
                 "non_thinking_modes": ["text", "cataloging", "tool_recovery"],
@@ -83,6 +108,111 @@ def provider_extra_body(
     )
     payload = {
         key: value for key, value in metadata.items()
-        if not key.startswith(("moshu_", "local_cli_"))
+        if key not in MODEL_REQUEST_POLICY["internal_parameters"]
+        and not key.startswith(("moshu_", "local_cli_"))
     }
     return {**non_thinking_defaults(base_url, protocol, mode, payload), **payload} or None
+
+
+def provider_output_kwargs(kwargs: dict, base_url: str | None) -> dict:
+    field = endpoint_request_policy(base_url or "https://api.openai.com/v1", "chat_completions").get("output_limit_field", "max_tokens")
+    if field == "max_tokens" or "max_tokens" not in kwargs:
+        return kwargs
+    result = dict(kwargs)
+    result[field] = result.pop("max_tokens")
+    return result
+
+
+def validate_model_request_parameters(profiles: dict | None) -> dict:
+    """User parameters cannot replace request identity, budgets, tools, or credentials."""
+    import json
+    profiles = profiles or {}
+    if not isinstance(profiles, dict) or len(profiles) > 5000:
+        raise ValueError("模型请求参数必须是按模型 ID 保存的对象")
+    allowed = set(MODEL_REQUEST_POLICY["configurable_parameters"])
+    for model, params in profiles.items():
+        if not isinstance(model, str) or not model.strip() or model != model.strip() or len(model) > 512:
+            raise ValueError("请求参数的模型 ID 无效")
+        if not isinstance(params, dict) or set(params) - allowed:
+            raise ValueError("请求参数包含不支持的字段；模型、消息、工具、密钥及输出额度由专用设置管理")
+    if len(json.dumps(profiles, allow_nan=False).encode()) > 65536:
+        raise ValueError("模型请求参数过大")
+    return deepcopy(profiles)
+
+
+def configured_request_body(extra_body: dict | None, profiles: dict | None, model: str, *, base_url: str | None = None, protocol: str = "responses") -> dict | None:
+    overrides = validate_model_request_parameters(profiles).get(model, {})
+    merged = {**(extra_body or {}), **overrides} or None
+    if overrides and base_url:
+        wire = provider_request_kwargs({"model": model, "extra_body": merged}, base_url, "responses" if protocol == "auto" else protocol)
+        effective = {**wire, **(wire.get("extra_body") or {})}
+        if any(value is not None and key not in effective for key, value in overrides.items()):
+            raise ValueError("model_request_incompatible: 自定义采样参数与当前推理档位不兼容；请用 null 省略该参数，或显式调整推理设置")
+    return merged
+
+
+def provider_request_kwargs(kwargs: dict, base_url: str | None, protocol: str) -> dict:
+    """Normalize final SDK arguments, including overrides in extra_body, without changing reasoning."""
+    result = deepcopy(provider_output_kwargs(kwargs, base_url) if protocol == "chat_completions" else kwargs)
+    extra = result.get("extra_body") or {}
+    # JSON null explicitly removes a parameter even if a business default supplied it.
+    for key in MODEL_REQUEST_POLICY["configurable_parameters"]:
+        if key in extra and extra[key] is None:
+            extra.pop(key)
+            result.pop(key, None)
+    if "extra_body" in result:
+        result["extra_body"] = extra
+    try:
+        url = urlparse((base_url or "https://api.openai.com/v1").strip())
+        rule = (MODEL_REQUEST_POLICY["model_capabilities"].get((url.hostname or "").rstrip("."), {})
+                .get(str(result.get("model", "")))) if url.scheme == "https" and url.port in (None, 443) else None
+    except ValueError:
+        rule = None
+    if not rule:
+        return result
+    extra = result.get("extra_body") or {}
+    effective = {**result, **extra}
+    if rule.get("kind") == "anthropic":
+        if protocol != "anthropic":
+            return result
+        for target in (result, extra):
+            for key in ("temperature", "top_p", "top_k"):
+                if target.get(key) is not None and (key == "top_k" or target[key] != (0.99 if key == "top_p" else 1)):
+                    target.pop(key, None)
+        remaining = {**result, **extra}
+        if "temperature" in remaining and "top_p" in remaining:
+            # An explicit supported parameter replaces an incompatible business default.
+            remove = {"temperature", "top_p"} if "temperature" in extra and "top_p" in extra else (
+                {"temperature"} if "top_p" in extra else {"top_p"})
+            for target in (result, extra):
+                for key in remove:
+                    target.pop(key, None)
+        return result
+    other_field = "reasoning_effort" if protocol == "responses" else "reasoning"
+    if other_field in effective:
+        raise ValueError(f"model_request_incompatible: {protocol} 不接受 {other_field}，请使用该协议的推理字段")
+    if protocol == "responses":
+        reasoning = effective.get("reasoning", {})
+        if not isinstance(reasoning, dict):
+            raise ValueError("model_request_incompatible: reasoning 必须是对象")
+        effort = reasoning.get("effort", rule["default_reasoning_effort"])
+    else:
+        effort = effective.get("reasoning_effort", rule["default_reasoning_effort"])
+    if effort not in rule["reasoning_efforts"]:
+        raise ValueError(f"model_request_incompatible: 当前模型不支持推理档位 {effort}")
+    if protocol == "chat_completions" and effective.get("tools") and (
+        rule["chat_tools"] == "unavailable" or effort != "none"
+    ):
+        raise ValueError("model_request_incompatible: 当前模型及推理设置的工具调用需要 Responses API；请调整协议，推理设置未更改")
+    if effort != "none":
+        removed = {"temperature", "top_p", "top_logprobs"}
+        if protocol == "chat_completions":
+            removed.add("logprobs")
+        for target in (result, extra):
+            for key in removed:
+                target.pop(key, None)
+            if protocol == "responses" and isinstance(target.get("include"), list):
+                target["include"] = [item for item in target["include"] if item != "message.output_text.logprobs"]
+    if "extra_body" in result:
+        result["extra_body"] = extra
+    return result

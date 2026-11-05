@@ -20,12 +20,12 @@ import com.siming.mobile.data.agent.MobileConversationContextErrorCode
 import com.siming.mobile.data.agent.MobileConversationContextException
 import com.siming.mobile.data.agent.MobileTranscriptImportReceipt
 import com.siming.mobile.data.agent.mobileCanonicalJson
-import com.siming.mobile.data.agent.mobileCapacityBoundTaskConfig
 import com.siming.mobile.data.agent.mobileConversationContextStatePayload
 import com.siming.mobile.data.agent.mobileOutlineTreeHash
 import com.siming.mobile.data.creation.CreationExecutionRoute
 import com.siming.mobile.data.creation.CreationAgentProgressEvent
 import com.siming.mobile.data.creation.CreationStartInput
+import com.siming.mobile.data.creation.CreationConversations
 import com.siming.mobile.data.creation.CreationAgentTurnRecords
 import com.siming.mobile.data.creation.MobileCreationAgent
 import com.siming.mobile.data.creation.MobileCreationConversationAgent
@@ -47,6 +47,8 @@ import com.siming.mobile.data.local.syncStatus
 import com.siming.mobile.data.network.GatewayApi
 import com.siming.mobile.data.network.GatewayHttpException
 import com.siming.mobile.data.network.DirectApiClient
+import com.siming.mobile.data.network.retainedDirectApiKey
+import com.siming.mobile.data.network.DirectApiCatalog
 import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
 import com.siming.mobile.data.network.MobileKnownModelCapacityCatalog
@@ -127,7 +129,8 @@ class SimingRepository(
     private val directApi = DirectApiClient(allowCleartextForTests = BuildConfig.DEBUG)
     private val mobileAssistantConversationStore = MobileAssistantConversationStore(appContext)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
-    private val mobileWorkspaceAgent by lazy {
+    private val mobileWorkspaceAgent by lazy { createMobileWorkspaceAgent(directApiStore.catalog()) }
+    private fun createMobileWorkspaceAgent(catalog: DirectApiCatalog): MobileWorkspaceAgent =
         MobileWorkspaceAgent(
             context = appContext,
             directApi = directApi,
@@ -136,8 +139,8 @@ class SimingRepository(
             saveEntity = { projectId, entityType, entityId, payload ->
                 saveEntity(projectId, entityType, entityId, payload)
             },
+            resolveTaskConfig = { _, task -> catalog.resolve(task) ?: error("请先配置手机 API") },
         )
-    }
     private val mobileCreationAgent by lazy { MobileCreationAgent(appContext, directApi) }
     private val mobileCreationConversationAgent by lazy {
         MobileCreationConversationAgent(
@@ -145,7 +148,7 @@ class SimingRepository(
             stageAgent = mobileCreationAgent,
             directApi = directApi,
             conversationStore = mobileAssistantConversationStore,
-            persistSession = ::saveCreationSession,
+            persistSession = { saveCreationSession(it) },
             finalizeSession = { session ->
                 saveCreationSession(session)
                 val projectId = archiveCreation(session.string("id")) {}
@@ -167,14 +170,23 @@ class SimingRepository(
             orderReplicaEntities(entityType, records)
         }
 
-    fun directApiSummary(): DirectApiSummary? = directApiStore.read()?.summary()
+    fun directApiSummary(): DirectApiSummary? {
+        val catalog = directApiStore.catalog()
+        return catalog.summaries().firstOrNull { it.id == catalog.defaultProfileId }
+    }
+    fun directApiProfiles(): List<DirectApiSummary> = directApiStore.catalog().summaries()
+    fun directApiTaskProfiles(): Map<String, String> = directApiStore.catalog().taskProfileIds
+    fun selectDirectApi(id: String) { directApiStore.update { it.selectDefault(id) } }
+    fun bindDirectApiTask(task: String, id: String?, model: String?) { directApiStore.update { it.bind(task, id, model) } }
+    fun deleteDirectApi(id: String) { directApiStore.update { it.remove(id) } }
 
     fun catalogingRuns(projectId: String) = dao.observeCatalogingRuns(projectId)
 
     suspend fun recoverInterruptedCataloging() = MobileCataloging.recoverInterrupted(database)
 
-    suspend fun discoverDirectModels(baseUrl: String, apiKey: String): List<String> {
-        val effectiveKey = apiKey.trim().ifBlank { directApiStore.read()?.apiKey.orEmpty() }
+    suspend fun discoverDirectModels(baseUrl: String, apiKey: String, profileId: String? = null): List<String> {
+        val existing = profileId?.let { directApiStore.catalog().profile(it).config }
+        val effectiveKey = retainedDirectApiKey(baseUrl, apiKey, existing)
         return directApi.discoverModels(baseUrl, effectiveKey)
     }
 
@@ -185,41 +197,32 @@ class SimingRepository(
         model: String,
         protocol: String,
         availableModels: List<String>,
-        taskModels: Map<String, String>,
         contextWindowTokens: Int?,
         maxOutputTokens: Int,
         safetyMarginTokens: Int,
+        checkpointOutputTokens: Int = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS,
+        modelMaxOutputTokens: Int? = null,
+        profileId: String? = null,
+        modelRequestParameters: Map<String, JsonObject> = emptyMap(),
     ): DirectApiSummary {
-        val existing = directApiStore.read()
+        val existing = profileId?.let { directApiStore.catalog().profile(it).config }
+        val id = profileId ?: UUID.randomUUID().toString()
         val normalizedDefault = model.trim()
-        val normalizedCatalog = (listOf(normalizedDefault) + availableModels + taskModels.values)
-            .map(String::trim)
-            .filter(String::isNotBlank)
-            .distinct()
-        val normalizedTasks = taskModels.mapNotNull { (taskType, taskModel) ->
-            val normalizedModel = taskModel.trim()
-            if (
-                taskType !in DirectApiConfig.taskModelLabels ||
-                normalizedModel.isBlank() ||
-                normalizedModel == normalizedDefault ||
-                normalizedModel !in normalizedCatalog
-            ) {
-                null
-            } else {
-                taskType to normalizedModel
-            }
-        }.toMap()
+        val normalizedCatalog = (listOf(normalizedDefault) + availableModels)
+            .map(String::trim).filter(String::isNotBlank).distinct()
         val unboundConfig = DirectApiConfig(
             displayName = displayName.trim().ifBlank { "自定义 API" },
             baseUrl = baseUrl.trim().trimEnd('/'),
-            apiKey = apiKey.trim().ifBlank { existing?.apiKey.orEmpty() },
+            apiKey = retainedDirectApiKey(baseUrl, apiKey, existing),
             model = normalizedDefault,
+            modelRequestParameters = existing?.modelRequestParameters.orEmpty() + modelRequestParameters,
             protocol = protocol,
             availableModels = normalizedCatalog,
-            taskModels = normalizedTasks,
             contextWindowTokens = contextWindowTokens,
             maxOutputTokens = maxOutputTokens,
             safetyMarginTokens = safetyMarginTokens,
+            checkpointOutputTokens = checkpointOutputTokens,
+            modelMaxOutputTokens = modelMaxOutputTokens,
         )
         val documentedCapacity = MobileKnownModelCapacityCatalog.resolve(
             unboundConfig.baseUrl,
@@ -236,20 +239,27 @@ class SimingRepository(
         }
         val probe = directApi.testAndResolve(config)
         val resolved = config.copy(protocol = probe.protocol)
-        directApiStore.save(resolved)
-        return resolved.summary()
+        val saved = directApiStore.update { catalog ->
+            if (profileId != null) check(catalog.profile(profileId).config == existing) { "API 配置已变化，请重新打开后保存" }
+            catalog.upsert(id, resolved)
+        }
+        return saved.summaries().single { it.id == id }
     }
 
-    suspend fun testDirectApi(): DirectApiSummary {
-        val config = directApiStore.read() ?: error("请先配置手机直连 API")
+    suspend fun testDirectApi(profileId: String? = null): DirectApiSummary {
+        val catalog = directApiStore.catalog()
+        val id = profileId ?: catalog.defaultProfileId ?: error("请先配置手机直连 API")
+        val config = catalog.profile(id).config
         val probe = directApi.testAndResolve(config)
-        val resolved = config.copy(protocol = probe.protocol)
-        directApiStore.save(resolved)
-        return resolved.summary()
+        val saved = directApiStore.update {
+            check(it.profile(id).config == config) { "API 配置已变化，请重新测试" }
+            it.upsert(id, config.copy(protocol = probe.protocol))
+        }
+        return saved.summaries().single { it.id == id }
     }
 
     fun clearDirectApi() {
-        directApiStore.clear()
+        directApiStore.catalog().defaultProfileId?.let(::deleteDirectApi)
     }
 
     fun verifyPairing(raw: String): VerifiedPairing = PairingSecurity.verify(raw)
@@ -1420,8 +1430,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             return AssistantRoute.GatewayPc
         }
 
-        val directConfig = directApiStore.read()?.let {
-            resolvedAssistantDirectConfig(conversationId, onEvent)
+        val apiCatalog = directApiStore.catalog()
+        val directConfig = apiCatalog.defaultConfig()?.let {
+            resolvedAssistantDirectConfig(conversationId, onEvent, apiCatalog)
         }
         if (directConfig != null) {
             val turnContext = mobileAssistantConversationStore.beginTurn(
@@ -1450,7 +1461,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                 onEvent(raw)
             }
             try {
-                mobileWorkspaceAgent.run(
+                createMobileWorkspaceAgent(apiCatalog).run(
                     projectId = projectId,
                     prompt = prompt,
                     config = directConfig,
@@ -2012,7 +2023,9 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             status = status,
             detail = when (status) {
                 "compressing" -> "正在整理较早上下文；完成容量检查后继续当前任务"
-                "failed" -> "上下文准备受阻；后续步骤已暂停，完整聊天记录仍保留"
+                "failed" -> if (latest?.errorCode == MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT)
+                    "历史整理输出超限；后续步骤已暂停，完整历史与有效检查点已保留"
+                    else "上下文准备受阻；后续步骤已暂停，完整聊天记录仍保留"
                 else -> if (snapshot.activeCheckpoint == null) {
                     "当前完整会话仍在模型容量内"
                 } else {
@@ -2023,7 +2036,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             checkpointId = selectedId,
             errorCode = latest?.errorCode,
             errorDetail = latest?.errorDetail,
-            retryable = status == "failed",
+            retryable = status == "failed" && latest?.errorCode != MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT,
         )
     }
 
@@ -2146,18 +2159,34 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
 
     /** Refreshes the Gateway-owned creation session and its auditable context detail. */
     suspend fun refreshCreationConversationContext(sessionId: String): JsonObject {
+        check(creationConversationMutex.tryLock()) { "立项任务处理中，请稍后刷新对话" }
+        try { return refreshCreationConversationContextLocked(sessionId) }
+        finally { creationConversationMutex.unlock() }
+    }
+
+    private suspend fun refreshCreationConversationContextLocked(sessionId: String): JsonObject {
         val stored = loadCreationSession(sessionId)
         if (creationHost(stored) != CREATION_HOST_GATEWAY) return stored
         val connection = requireConnection()
         val route = creationRoute(stored)
         val conversationId = CreationAgentTurnRecords.gatewayConversationId(stored)
+        var indexed = stored
+        val listed = api.creationConversations(connection, sessionId)["items"] as? JsonArray
+        listed.orEmpty().forEach { value ->
+            val entry = value as? JsonObject ?: error("Gateway 对话目录结构无效")
+            val id = entry.string("id")
+            require(entry.string("scope_type") == "creation" && entry.string("scope_id") == sessionId)
+            if (CreationConversations.entries(indexed).none { it.string("id") == id }) {
+                indexed = CreationConversations.select(CreationConversations.add(indexed, id, true), conversationId)
+            }
+        }
         val fresh = tagCreationRoute(
             api.getNovelCreationSession(connection, sessionId),
             route,
             CREATION_HOST_GATEWAY,
         )
         val merged = CreationAgentTurnRecords.withTurns(
-            fresh,
+            CreationConversations.preserveIndex(fresh, indexed),
             CreationAgentTurnRecords.turns(stored),
             gatewayConversationId = conversationId,
         )
@@ -2166,14 +2195,73 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             connection = connection,
             conversationId = conversationId,
         )
-        saveCreationSession(enriched)
-        return enriched
+        val projected = projectGatewayCreationConversation(enriched)
+        saveCreationSession(projected)
+        return projected
+    }
+
+    private suspend fun projectGatewayCreationConversation(session: JsonObject): JsonObject {
+        val id = CreationConversations.active(session)
+        val connection = requireConnection()
+        val detail = api.creationConversation(connection, session.string("id"), id)
+        val records = mutableListOf<JsonObject>()
+        var pending: JsonObject? = null
+        (detail["messages"] as? JsonArray).orEmpty().forEach { value ->
+            val message = value as? JsonObject ?: error("Gateway 对话消息结构无效")
+            when (message.string("role")) {
+                "user" -> {
+                    check(pending == null) { "Gateway 回合消息不完整" }
+                    pending = CreationAgentTurnRecords.pending(message.string("content"),
+                        id = message.string("id"), createdAt = message.string("created_at"))
+                }
+                "assistant" -> {
+                    val user = pending ?: error("Gateway 回合缺少作者消息")
+                    records += CreationAgentTurnRecords.complete(user, message.string("content"),
+                        modelMessages = JsonArray(emptyList()), toolResults = JsonArray(emptyList()),
+                        replayable = false, status = message.string("status"), executionRoute = "pc")
+                    pending = null
+                }
+            }
+        }
+        pending?.let(records::add)
+        return enrichGatewayCreationConversationContext(
+            CreationAgentTurnRecords.withTurns(session, records, gatewayConversationId = id),
+            connection, id,
+        )
+    }
+
+    suspend fun changeCreationConversation(sessionId: String, conversationId: String? = null): JsonObject {
+        check(creationConversationMutex.tryLock()) { "立项任务处理中，请等待结束后切换对话" }
+        try {
+            val current = loadCreationSession(sessionId)
+            val gateway = creationHost(current) == CREATION_HOST_GATEWAY
+            val updated = if (conversationId != null) CreationConversations.select(current, conversationId) else {
+                val id = if (gateway) api.createCreationConversation(requireConnection(), sessionId)
+                    .objectValue("conversation").string("id") else UUID.randomUUID().toString()
+                require(id.isNotBlank()) { "创建对话没有返回 ID" }
+                if (!gateway) mobileAssistantConversationStore.ensureConversationArchive(
+                    creationConversationStorageId(sessionId), id, "creation", sessionId, "立项对话", emptyList(),
+                )
+                CreationConversations.add(current, id, gateway)
+            }
+            val projected = if (gateway) projectGatewayCreationConversation(updated) else updated
+            saveCreationSession(projected, allowConversationChange = true)
+            return loadCreationSession(sessionId)
+        } finally { creationConversationMutex.unlock() }
     }
 
     suspend fun runCreationAgentTurn(
         sessionId: String,
         message: String,
         onProgress: suspend (CreationAgentProgressEvent) -> Unit = {},
+    ): JsonObject {
+        check(creationConversationMutex.tryLock()) { "立项任务处理中，请等待结束" }
+        try { return runCreationAgentTurnLocked(sessionId, message, onProgress) }
+        finally { creationConversationMutex.unlock() }
+    }
+
+    private suspend fun runCreationAgentTurnLocked(
+        sessionId: String, message: String, onProgress: suspend (CreationAgentProgressEvent) -> Unit,
     ): JsonObject {
         require(message.isNotBlank()) { "请输入你想告诉 AI 的内容" }
         val loaded = loadCreationSession(sessionId)
@@ -2192,15 +2280,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         val standaloneStorageId = if (standaloneExecution) creationConversationStorageId(sessionId) else null
         var standaloneTurnContext: MobileAssistantTurnContext? = null
         val pendingTurn = if (standaloneStorageId != null) {
-            val conversationId = standaloneStorageId
-            mobileAssistantConversationStore.ensureConversationArchive(
-                projectId = standaloneStorageId,
-                conversationId = conversationId,
-                conversationKind = "creation",
-                creationSessionId = sessionId,
-                title = current.string("display_title").ifBlank { "立项会话" },
-                archivedTurns = CreationAgentTurnRecords.archivedTurns(current),
-            )
+            val conversationId = CreationConversations.active(current)
             val context = mobileAssistantConversationStore.beginTurn(
                 projectId = standaloneStorageId,
                 conversationId = conversationId,
@@ -2416,7 +2496,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
                             }.getOrNull(),
                             errorCode = error.code,
                             errorDetail = detail,
-                            retryable = true,
+                            retryable = error.code != MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT,
                         )
                     }
                 }
@@ -2693,8 +2773,18 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         val current = loadCreationSession(sessionId)
         require(current.string("status") != "completed" && current.string("created_project_id").isBlank()) { "此立项已生成正式作品" }
         if (creationRoute(current) == CreationExecutionRoute.MobileKey) return@withTransaction current
+        var imported = CreationConversations.capture(current)
+        val originalId = CreationConversations.active(current)
+        CreationConversations.entries(current).forEach { entry ->
+            imported = CreationConversations.select(imported, entry.string("id"))
+            imported = CreationAgentTurnRecords.recoverInterruptedTurns(CreationAgentTurnRecords.detachGatewayContext(imported))
+            mobileAssistantConversationStore.ensureConversationArchive(creationConversationStorageId(sessionId),
+                entry.string("id"), "creation", sessionId, entry.string("title"), CreationAgentTurnRecords.archivedTurns(imported))
+            imported = CreationConversations.capture(imported)
+        }
+        imported = CreationConversations.select(imported, originalId)
         val local = tagCreationRoute(
-            CreationAgentTurnRecords.recoverInterruptedTurns(CreationAgentTurnRecords.detachGatewayContext(current)),
+            imported,
             CreationExecutionRoute.MobileKey, CREATION_HOST_DEVICE,
         )
         saveCreationSession(local)
@@ -2751,10 +2841,13 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         return CreationAgentTurnRecords.withConversationContext(session, state, detail)
     }
 
-    private suspend fun saveCreationSession(session: JsonObject) {
+    private suspend fun saveCreationSession(session: JsonObject, allowConversationChange: Boolean = false): Unit = database.withTransaction {
         val sessionId = session.string("id")
         require(sessionId.isNotBlank()) { "立项会话缺少 id" }
-        val encoded = json.encodeToString(session)
+        val previous = storedCreationSession(sessionId)
+        previous?.let { CreationConversations.requireWriteTarget(it, session, allowConversationChange) }
+        val indexed = if (previous == null) session else CreationConversations.preserveIndex(session, previous)
+        val encoded = json.encodeToString(CreationConversations.capture(indexed))
         val key = ReplicaEntity.key(CREATION_REPLICA_PROJECT, "creation_session", sessionId)
         dao.saveEntity(
             ReplicaEntity(
@@ -2775,19 +2868,61 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
 
     private suspend fun loadCreationSession(sessionId: String): JsonObject {
         val stored = storedCreationSession(sessionId) ?: error("立项草稿不存在或已删除")
-        val migrated = CreationAgentTurnRecords.migrateLegacyHistory(stored)
+        val migrated = if (CreationConversations.active(stored).isBlank()) {
+            migrateCreationConversationDirectory(stored)
+        } else stored
         val standaloneExecution = creationRoute(migrated) == CreationExecutionRoute.MobileKey &&
             creationHost(migrated) == CREATION_HOST_DEVICE
         val recovered = if (standaloneExecution) {
             val storageId = creationConversationStorageId(sessionId)
-            mobileAssistantConversationStore.snapshot(storageId, storageId)?.let { canonical ->
-                CreationAgentTurnRecords.reconcileWithCanonicalConversation(migrated, canonical)
-            } ?: CreationAgentTurnRecords.recoverInterruptedTurns(migrated)
+            mobileAssistantConversationStore.snapshot(storageId, CreationConversations.active(migrated))?.let { canonical ->
+                val reconciled = CreationAgentTurnRecords.reconcileWithCanonicalConversation(migrated, canonical)
+                val state = requireNotNull(assistantContextState(storageId, canonical.conversationId))
+                val checkpoint = if (state.string("status") == "ready") canonical.activeCheckpoint
+                    else canonical.checkpoints.lastOrNull()
+                CreationAgentTurnRecords.withConversationContext(reconciled, state, checkpoint?.toJson())
+            } ?: throw MobileConversationContextException(MobileConversationContextErrorCode.SOURCE_CHANGED,
+                "当前立项对话的规范化历史缺失；已停止处理，不能从其他对话补入历史")
         } else {
             migrated
         }
         if (recovered != stored) saveCreationSession(recovered)
         return recovered
+    }
+
+    /** One-time directory migration; daily reads never import display history. */
+    private suspend fun migrateCreationConversationDirectory(source: JsonObject): JsonObject {
+        val sessionId = source.string("id")
+        var migrated = CreationAgentTurnRecords.migrateLegacyHistory(source)
+        if (CreationConversations.active(migrated).isBlank()) {
+            val gateway = creationHost(migrated) == CREATION_HOST_GATEWAY
+            val storageId = creationConversationStorageId(sessionId)
+            val id = if (gateway) CreationAgentTurnRecords.gatewayConversationId(migrated).ifBlank {
+                val connection = requireConnection()
+                val listed = api.creationConversations(connection, sessionId)["items"] as? JsonArray
+                (listed?.firstOrNull() as? JsonObject)?.string("id").orEmpty().ifBlank {
+                    api.createCreationConversation(connection, sessionId).objectValue("conversation").string("id")
+                }
+            } else storageId
+            require(id.isNotBlank())
+            if (!gateway) {
+                val canonical = mobileAssistantConversationStore.snapshot(storageId, id)
+                migrated = if (canonical != null) {
+                    CreationAgentTurnRecords.reconcileWithCanonicalConversation(migrated, canonical)
+                } else {
+                    CreationAgentTurnRecords.recoverInterruptedTurns(migrated).also { legacy ->
+                        mobileAssistantConversationStore.ensureConversationArchive(
+                            storageId, id, "creation", sessionId, "原有立项对话",
+                            CreationAgentTurnRecords.archivedTurns(legacy))
+                    }
+                }
+            }
+            migrated = CreationConversations.migrate(migrated, id)
+            if (gateway) migrated = CreationAgentTurnRecords.withTurns(migrated,
+                CreationAgentTurnRecords.turns(migrated), gatewayConversationId = id)
+            saveCreationSession(migrated)
+        }
+        return migrated
     }
 
     private suspend fun storedCreationSession(sessionId: String): JsonObject? {
@@ -3029,23 +3164,20 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
             .filter(String::isNotBlank)
     private fun JsonObject.int(name: String): Int = (get(name) as? JsonPrimitive)?.intOrNull ?: 0
 
-    private suspend fun resolvedDirectConfig(taskType: String): DirectApiConfig {
-        val stored = directApiStore.read() ?: error("请先在设置中配置手机 API Key")
-        val selected = mobileCapacityBoundTaskConfig(stored, taskType)
-        if (stored.protocol != DirectApiConfig.PROTOCOL_AUTO) return selected
-        val resolved = stored.copy(protocol = directApi.testAndResolve(selected).protocol)
-        directApiStore.save(resolved)
-        return mobileCapacityBoundTaskConfig(resolved, taskType)
+    private suspend fun resolvedDirectConfig(taskType: String, catalog: DirectApiCatalog = directApiStore.catalog()): DirectApiConfig {
+        val selected = catalog.resolve(taskType) ?: error("请先在设置中配置手机 API Key")
+        return if (selected.protocol != DirectApiConfig.PROTOCOL_AUTO) selected
+            else selected.copy(protocol = directApi.testAndResolve(selected).protocol)
     }
 
     private suspend fun resolvedAssistantDirectConfig(
         conversationId: String?,
         onEvent: suspend (String) -> Unit,
+        catalog: DirectApiCatalog = directApiStore.catalog(),
     ): DirectApiConfig {
-        val selectedModel = directApiStore.read()
-            ?.modelForTask(DirectApiConfig.TASK_ASSISTANT)
+        val selectedModel = catalog.resolve(DirectApiConfig.TASK_ASSISTANT)?.model
         return try {
-            resolvedDirectConfig(DirectApiConfig.TASK_ASSISTANT)
+            resolvedDirectConfig(DirectApiConfig.TASK_ASSISTANT, catalog)
         } catch (error: MobileConversationContextException) {
             onEvent(
                 mobileAssistantContextFailureEvent(
@@ -3137,6 +3269,7 @@ suspend fun exportProjectPackage(projectId: String, profile: String): MobileExpo
         private val activeAuthoringProjects = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         private val syncMutex = Mutex()
         private val canonicalCommandMutex = Mutex()
+        private val creationConversationMutex = Mutex()
         private val draftSaveMutex = Mutex()
     }
 }

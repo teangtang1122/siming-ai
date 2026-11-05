@@ -3,6 +3,7 @@ package com.siming.mobile.data
 import com.siming.mobile.data.network.GatewayHttpException
 import com.siming.mobile.data.network.DirectApiHttpException
 import com.siming.mobile.data.network.DirectApiTimeoutException
+import com.siming.mobile.data.network.DirectApiConnectionException
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -10,6 +11,7 @@ import java.net.UnknownHostException
 import kotlinx.serialization.SerializationException
 
 internal fun Throwable.toUserFacingMessage(): String = when (this) {
+    is DirectApiConnectionException -> requireNotNull(message)
     is DirectApiTimeoutException -> requireNotNull(message)
     is DirectApiHttpException -> message?.takeIf(String::isNotBlank) ?: "API 请求没有完成，请稍后重试"
     is GatewayHttpException -> message.ifBlank { "Gateway 请求没有完成，请稍后重试" }

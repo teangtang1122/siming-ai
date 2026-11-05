@@ -3,6 +3,119 @@ package com.siming.mobile.data.network
 
 internal const val MODEL_REQUEST_POLICY_JSON = """
 {
+  "internal_parameters": [
+    "storage_target",
+    "operation_id"
+  ],
+  "configurable_parameters": [
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "seed",
+    "presence_penalty",
+    "frequency_penalty",
+    "repetition_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "thinking",
+    "enable_thinking",
+    "thinking_budget",
+    "output_config",
+    "verbosity"
+  ],
+  "model_capabilities": {
+    "api.anthropic.com": {
+      "claude-opus-4-7": {
+        "kind": "anthropic",
+        "sampling_always_restricted": true
+      },
+      "claude-opus-4-8": {
+        "kind": "anthropic",
+        "sampling_always_restricted": true
+      },
+      "claude-opus-5": {
+        "kind": "anthropic",
+        "sampling_always_restricted": true
+      },
+      "claude-sonnet-5": {
+        "kind": "anthropic",
+        "sampling_always_restricted": true
+      },
+      "claude-mythos-preview": {
+        "kind": "anthropic",
+        "sampling_always_restricted": true
+      },
+      "claude-mythos-5": {
+        "kind": "anthropic",
+        "sampling_always_restricted": true
+      },
+      "claude-fable-5": {
+        "kind": "anthropic",
+        "sampling_always_restricted": true
+      }
+    },
+    "api.openai.com": {
+      "gpt-6-astra": {
+        "default_reasoning_effort": "medium",
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "chat_tools": "unavailable"
+      },
+      "gpt-6.1-sol": {
+        "default_reasoning_effort": "medium",
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "chat_tools": "unavailable"
+      },
+      "gpt-6.1-terra": {
+        "default_reasoning_effort": "medium",
+        "reasoning_efforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "chat_tools": "unavailable"
+      },
+      "gpt-6-sol": {
+        "default_reasoning_effort": "medium",
+        "reasoning_efforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "chat_tools": "requires_none"
+      },
+      "gpt-6-luna": {
+        "default_reasoning_effort": "medium",
+        "reasoning_efforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "chat_tools": "requires_none"
+      }
+    }
+  },
   "explicit_thinking_fields": [
     "thinking",
     "reasoning",
@@ -11,6 +124,11 @@ internal const val MODEL_REQUEST_POLICY_JSON = """
     "thinking_budget"
   ],
   "endpoints": {
+    "api.openai.com": {
+      "chat_completions": {
+        "output_limit_field": "max_completion_tokens"
+      }
+    },
     "api.deepseek.com": {
       "chat_completions": {
         "non_thinking_modes": [

@@ -121,7 +121,7 @@ class MobileChapterLengthInstrumentedTest {
         val api = DirectApiClient(OkHttpClient.Builder().proxy(Proxy.NO_PROXY).build(), allowCleartextForTests = true)
         val agent = MobileWorkspaceAgent(context, api, store, loadSnapshot = { snapshot }, saveEntity = { _, _, _, _ ->
             error("Draft generation must not write formal entities")
-        })
+        }, resolveTaskConfig = { config, task -> config.forTask(task) })
         try {
             val prompt = "写第一章，希望正文有3000个汉字。"
             val turn = store.beginTurn(projectId, null, prompt)

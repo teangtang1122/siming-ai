@@ -14,7 +14,8 @@ from .openai_adapter import (
     normalize_openai_tool_call_delta,
 )
 from .completion_status import require_complete_response
-from .request_policy import provider_extra_body, provider_tool_choice
+from .request_policy import provider_extra_body, provider_tool_choice, provider_request_kwargs
+from .transport_timeouts import model_timeout_error, model_connection_error
 
 
 class DeepSeekAdapter(OpenAIAdapter):
@@ -61,7 +62,7 @@ class DeepSeekAdapter(OpenAIAdapter):
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
         try:
-            response = await client.chat.completions.create(**kwargs)
+            response = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url, "chat_completions"))
             choice = response.choices[0]
             require_complete_response(getattr(choice, "finish_reason", None), max_tokens)
             content = choice.message.content or ""
@@ -85,9 +86,9 @@ class DeepSeekAdapter(OpenAIAdapter):
         except AuthenticationError as e:
             raise LLMError(f"DeepSeek API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"DeepSeek 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"DeepSeek 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"DeepSeek API 错误: {e}")
         except LLMError:
@@ -117,7 +118,7 @@ class DeepSeekAdapter(OpenAIAdapter):
         if provider_body:
             kwargs["extra_body"] = provider_body
         try:
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url, "chat_completions"))
             content_emitted = False
             reasoning_received = False
             async for chunk in stream:
@@ -145,9 +146,9 @@ class DeepSeekAdapter(OpenAIAdapter):
         except AuthenticationError as e:
             raise LLMError(f"DeepSeek API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"DeepSeek 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"DeepSeek 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"DeepSeek API 错误: {e}")
         except LLMError:
@@ -183,7 +184,7 @@ class DeepSeekAdapter(OpenAIAdapter):
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
         try:
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url, "chat_completions"))
             tool_call_buffers: dict[int, dict] = {}
             finish_reason = None
             usage = None
@@ -233,9 +234,9 @@ class DeepSeekAdapter(OpenAIAdapter):
         except AuthenticationError as e:
             raise LLMError(f"DeepSeek API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"DeepSeek 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"DeepSeek 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"DeepSeek API 错误: {e}")
         except LLMError:

@@ -27,6 +27,7 @@ internal object MobileConversationContextErrorCode {
     const val CAPACITY_UNKNOWN = "conversation_capacity_unknown"
     const val CURRENT_USER_OVER_CAPACITY = "current_user_message_over_capacity"
     const val CHECKPOINT_REQUIRED = "conversation_checkpoint_required"
+    const val CHECKPOINT_OUTPUT_LIMIT = "conversation_checkpoint_output_limit"
     const val CHECKPOINT_FAILED = "conversation_checkpoint_failed"
     const val CHECKPOINT_CANCELLED = "conversation_checkpoint_cancelled"
     const val CHECKPOINT_SUPERSEDED = "conversation_checkpoint_superseded"
@@ -45,6 +46,7 @@ internal object MobileConversationContextErrorCode {
         CURRENT_USER_OVER_CAPACITY,
         CHECKPOINT_REQUIRED,
         CHECKPOINT_FAILED,
+        CHECKPOINT_OUTPUT_LIMIT,
         CHECKPOINT_CANCELLED,
         CHECKPOINT_SUPERSEDED,
         SOURCE_CHANGED,
@@ -65,7 +67,9 @@ internal class MobileConversationContextException(
     override val message: String,
 ) : IllegalStateException(message) {
     val userFacingDetail: String
-        get() = if (code == MobileConversationContextErrorCode.PROTOCOL_INVALID) {
+        get() = if (code == MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT) {
+            "历史整理输出超限；完整历史与有效检查点已保留，本次任务未执行。请调整整理预算或新建对话。"
+        } else if (code == MobileConversationContextErrorCode.PROTOCOL_INVALID) {
             "模型工具调用或对话协议校验未通过；本批次未执行，此前进度已保留。"
         } else {
             "会话上下文校验失败；此前进度已保留。"

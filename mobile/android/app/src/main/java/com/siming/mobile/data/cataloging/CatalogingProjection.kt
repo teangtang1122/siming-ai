@@ -26,17 +26,23 @@ internal class CatalogingProjection(val plan: CatalogingPlan, val runId: String,
             { it.payload.number("sort_order") },
         )).forEach { candidate ->
             val p = candidate.payload
-            when (candidate.kind) {
-                "chapter_summary" -> catalogSummary(p)
-                "character_create", "character_update", "character_state_update" -> character(candidate)
-                "character_timeline" -> timeline(candidate, false)
-                "worldbuilding_create", "worldbuilding_update" -> world(candidate)
-                "worldbuilding_timeline" -> timeline(candidate, true)
-                "character_relationship" -> relationship(p)
-                "character_merge_candidate" -> mergeCharacter(p)
-                "outline_create", "outline_update" -> outline(candidate)
-                "chapter_link" -> chapterLinks(p)
-                else -> error("建档候选没有实际执行器：${candidate.kind}")
+            try {
+                when (candidate.kind) {
+                    "chapter_summary" -> catalogSummary(p)
+                    "character_create", "character_update", "character_state_update" -> character(candidate)
+                    "character_timeline" -> timeline(candidate, false)
+                    "worldbuilding_create", "worldbuilding_update" -> world(candidate)
+                    "worldbuilding_timeline" -> timeline(candidate, true)
+                    "character_relationship" -> relationship(p)
+                    "character_merge_candidate" -> mergeCharacter(p)
+                    "outline_create", "outline_update" -> outline(candidate)
+                    "chapter_link" -> chapterLinks(p)
+                    else -> error("建档候选没有实际执行器：${candidate.kind}")
+                }
+            } catch (error: IllegalArgumentException) {
+                throw IllegalArgumentException("候选 ${candidate.id}（${candidate.kind}）应用预检未通过：${error.message}", error)
+            } catch (error: IllegalStateException) {
+                throw IllegalArgumentException("候选 ${candidate.id}（${candidate.kind}）应用预检未通过：${error.message}", error)
             }
         }
         reconcileScenes()

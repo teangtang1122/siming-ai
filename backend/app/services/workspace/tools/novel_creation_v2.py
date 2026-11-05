@@ -402,7 +402,7 @@ async def _generate_compact_concepts(
                 cwd=str(content_root()),
                 base={
                     "moshu_task_type": "planning",
-                    "storage_target": "session_draft",
+                    "moshu_storage_target": "session_draft",
                     "local_cli_retry_attempts": 1,
                     "moshu_context_manifest_rendered": True,
                 },
@@ -438,7 +438,7 @@ async def _generate_compact_concepts(
                     cwd=str(content_root()),
                     base={
                         "moshu_task_type": "planning",
-                        "storage_target": "session_draft",
+                        "moshu_storage_target": "session_draft",
                         "local_cli_retry_attempts": 1,
                     },
                 ),
@@ -517,7 +517,7 @@ async def _enhance_with_model(
                 cwd=str(content_root()),
                 base={
                     "moshu_task_type": "planning",
-                    "storage_target": "session_draft",
+                    "moshu_storage_target": "session_draft",
                     "local_cli_retry_attempts": 1,
                     "moshu_context_manifest_rendered": True,
                 },
@@ -560,7 +560,7 @@ async def _enhance_with_model(
                     cwd=str(content_root()),
                     base={
                         "moshu_task_type": "planning",
-                        "storage_target": "session_draft",
+                        "moshu_storage_target": "session_draft",
                         "local_cli_retry_attempts": 1,
                     },
                 ),

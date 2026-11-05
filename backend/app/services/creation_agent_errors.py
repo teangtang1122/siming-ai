@@ -3,12 +3,23 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.exceptions import LLMConnectionError, LLMTimeoutError
 from app.services.conversation_context import ConversationContextError, ConversationContextErrorCode
 from app.services.conversation_context.checkpoint_state import safe_public_error_detail
 from app.services.observability.run_events import classify_failure
 
 
 def safe_creation_agent_error(exc: Exception) -> tuple[str, dict[str, Any]]:
+    if isinstance(exc, (LLMConnectionError, LLMTimeoutError)):
+        from .workspace.assistant_public_errors import public_model_failure
+
+        failure = public_model_failure(exc)
+        return failure.message, {
+            "error_type": type(exc).__name__, "failure_class": failure.failure_class,
+            **failure.to_dict(),
+            "next_action": ("请检查本机代理、代理节点和网络连接后重试。"
+                            if exc.phase == "connect" else "此前状态已保留，可稍后重试。"),
+        }
     if isinstance(exc, ConversationContextError):
         if exc.code is ConversationContextErrorCode.TOOL_TRANSACTION_OVER_CAPACITY:
             from .workspace.assistant_public_errors import public_context_failure
@@ -49,6 +60,12 @@ def safe_creation_agent_error(exc: Exception) -> tuple[str, dict[str, Any]]:
             "next_action": next_action,
         }
     failure_class = classify_failure(str(exc)) or "unknown"
+    if failure_class == "request_parameters":
+        from .workspace.assistant_public_errors import public_model_failure
+
+        failure = public_model_failure(exc)
+        return failure.message, {"error_type": type(exc).__name__, "failure_class": failure.failure_class,
+                                 **failure.to_dict(), "next_action": "请检查模型参数设置，或提供错误编号和参数名。"}
     message, next_action = {
         "quota_or_rate_limit": (
             "模型额度已耗尽或请求受限",

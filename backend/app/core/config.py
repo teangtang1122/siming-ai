@@ -20,6 +20,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
     
+    checkpoint_output_tokens: int = Field(default=6_000, ge=1)
+    api_connect_timeout_seconds: float = Field(default=20, ge=1, le=120, validation_alias="MODEL_CONNECT_TIMEOUT_SECONDS")
+
     database_url: str = "sqlite:///./novel_agent.db"
     secret_key: str = "change-me-in-production"
     cors_origins: str = "http://localhost:5173"

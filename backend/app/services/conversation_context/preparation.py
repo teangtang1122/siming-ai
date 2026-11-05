@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -171,7 +171,9 @@ async def _generate_required_checkpoint(
             state=state,
             binding=binding,
             counter=counter,
-            safety_margin_tokens=safety_margin_tokens,
+            safety_margin_tokens=safety_margin_tokens + (
+                counter.count_value(request.provider_wrapper.get("configured_request_parameters", {}))
+                if isinstance(request.provider_wrapper, dict) and "configured_request_parameters" in request.provider_wrapper else 0),
             trusted_execution_ledger=tuple(request.trusted_execution_ledger),
             effective_execution_ledger=tuple(request.effective_execution_ledger),
             execution_source_hashes=request.execution_source_hashes,
@@ -251,6 +253,13 @@ async def _prepare(request: _PreparationRequest) -> PreparedConversationContext:
         system_prompt=request.system_prompt,
         current_tools=request.current_tools,
     )
+    profile = request.orchestrator.resolve_model_profile(request.model, request.task_type)
+    parameters = getattr(profile, "request_parameters", None) or {}
+    if parameters:
+        request = replace(request, provider_wrapper={"request": request.provider_wrapper,
+            "provider": binding.provider, "protocol": binding.protocol, "model": binding.model_name,
+            "request_fields": ["messages", "temperature", "max_tokens", "tools", "tool_choice"],
+            "configured_request_parameters": parameters})
     state, active = load_active_checkpoint_with_stale_recovery(
         store=request.store,
         conversation=request.conversation,

@@ -22,7 +22,7 @@ from ..ai.local_cli_adapter import (
 from ..ai.local_runtime_policy import local_runtime_disabled, local_runtime_disabled_message
 from ..core.config import get_settings
 from ..core.crypto import decrypt, encrypt
-from ..core.exceptions import AppException, LLMError, NotFoundError, ValidationError
+from ..core.exceptions import AppException, LLMConnectionError, LLMError, LLMTimeoutError, NotFoundError, ValidationError
 from ..core.model_capacity_catalog import uses_documented_model_catalog
 from ..core.model_limits import limits_payload
 from ..core.response import ApiResponse
@@ -316,6 +316,7 @@ def _config_payload(
         "cli_command": getattr(cfg, "cli_command", None),
         "cli_args": getattr(cfg, "cli_args", None),
         "available_models": _available_model_options(cfg, db),
+        "model_request_parameters": getattr(cfg, "model_request_parameters", None) or {},
         "api_key_configured": bool(getattr(cfg, "api_key_encrypted", None)),
         "created_at": cfg.created_at.isoformat() if cfg.created_at else None,
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
@@ -565,6 +566,8 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         existing.deconstruct_input_char_limit = payload.deconstruct_input_char_limit
         existing.deconstruct_item_char_limit = payload.deconstruct_item_char_limit
         existing.available_models_json = available_models
+        if "model_request_parameters" in payload.model_fields_set:
+            existing.model_request_parameters = payload.model_request_parameters
         mark_model_unverified(existing, source="manual_edit")
         _save_default_model_capacity(
             db,
@@ -596,6 +599,7 @@ def create_or_update_model_config(payload: APIConfigCreate, db: Session = Depend
         deconstruct_input_char_limit=payload.deconstruct_input_char_limit,
         deconstruct_item_char_limit=payload.deconstruct_item_char_limit,
         available_models_json=available_models,
+        model_request_parameters=payload.model_request_parameters,
     )
     _save_default_model_capacity(
         db,
@@ -781,6 +785,8 @@ async def test_connection(payload: ConnectionTestRequest, db: Session = Depends(
             cli_command=command,
             cli_args=payload.cli_args or getattr(saved, "cli_args", None) or (_default_cli_args(payload.provider) if is_cli else None),
             timeout_seconds=payload.timeout_seconds,
+            max_output_tokens=payload.max_output_tokens or getattr(saved, "max_output_tokens", None),
+            model_request_parameters=(payload.model_request_parameters if "model_request_parameters" in payload.model_fields_set else getattr(saved, "model_request_parameters", None)),
             content_root=resolve_content_root(),
         )
     )
@@ -823,6 +829,7 @@ async def verify_saved_model_config(provider: str, db: Session = Depends(get_db)
         cli_command=config.cli_command,
         cli_args=config.cli_args,
         model=config.default_model,
+        model_request_parameters=getattr(config, "model_request_parameters", None) or {},
     )
     try:
         test_result = await test_connection(payload, db)
@@ -889,6 +896,8 @@ async def chat_completion(payload: ChatCompletionRequest):
             extra_body=payload.extra_body,
         )
     except AppException as exc:
+        if isinstance(exc, LLMError):
+            raise
         raise LLMError(exc.message)
     return ApiResponse.success(data=result)
 
@@ -907,7 +916,12 @@ async def chat_completion_stream(payload: ChatCompletionRequest):
                 data = json.dumps({"type": "token", "content": chunk}, ensure_ascii=False, separators=(",", ":"))
                 yield f"data: {data}\n\n"
         except AppException as exc:
-            data = json.dumps({"type": "error", "message": exc.message}, ensure_ascii=False, separators=(",", ":"))
+            error = {"type": "error", "message": exc.message}
+            if isinstance(exc, LLMTimeoutError):
+                error.update(timeout_phase=exc.phase, timeout_seconds=exc.timeout_seconds)
+            if isinstance(exc, LLMConnectionError):
+                error.update(connection_phase=exc.phase)
+            data = json.dumps(error, ensure_ascii=False, separators=(",", ":"))
             yield f"data: {data}\n\n"
         yield "data: [DONE]\n\n"
 

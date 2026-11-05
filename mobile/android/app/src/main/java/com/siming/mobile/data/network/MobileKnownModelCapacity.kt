@@ -21,6 +21,7 @@ internal object MobileKnownModelCapacityCatalog {
     private const val GEMINI_SOURCE = "gemini_model_docs_2026_08_30"
     private const val QWEN_SOURCE = "qwen_model_docs_2026_08_30"
 
+    private val openAiGpt6 = setOf("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna")
     private val openAi1050k = setOf(
         "gpt-5.6",
         "gpt-5.6-sol",
@@ -87,6 +88,8 @@ internal object MobileKnownModelCapacityCatalog {
         val provider = providerForOfficialEndpoint(baseUrl) ?: return null
         val normalizedModel = canonicalModel(provider, model)
         return when {
+            provider == "openai" && normalizedModel in openAiGpt6 ->
+                MobileKnownModelCapacity(1_050_000, 128_000, "openai_model_docs_2026_11_04")
             provider == "openai" && normalizedModel in openAi1050k ->
                 MobileKnownModelCapacity(1_050_000, 128_000, OPENAI_SOURCE)
             provider == "openai" && normalizedModel in openAi400k ->

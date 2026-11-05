@@ -360,7 +360,7 @@ def test_completed_invalid_tool_json_is_not_retried_as_a_transport_interruption(
 
     assert received == []
     assert isinstance(error, LLMError)
-    assert "工具参数格式无效" in str(error)
+    assert "工具参数 JSON 无效" in str(error)
     assert TimeoutBoundaryAdapter.tool_calls == 1
 
 

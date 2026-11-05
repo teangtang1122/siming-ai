@@ -8,6 +8,7 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TypeVar
 
 from app.ai.anthropic_adapter import AnthropicAdapter
@@ -26,11 +27,12 @@ from app.ai.gemini_adapter import GeminiAdapter
 from app.ai.local_runtime_adapter import LocalRuntimeAdapter
 from app.ai.openai_adapter import OpenAIAdapter
 from app.ai.qwen_adapter import QwenAdapter
-from app.ai.request_policy import non_thinking_defaults
+from app.ai.request_policy import configured_request_body, non_thinking_defaults
 from app.core.exceptions import (
     LLMError,
     LLMIncompleteResponseError,
     LLMOutputLimitError,
+    LLMToolArgumentsError,
     NotFoundError,
 )
 from app.core.provider_errors import provider_http_status, provider_protocol_rejected
@@ -65,6 +67,7 @@ from app.modules.model_runtime.infrastructure.stream_resume import (
 )
 from app.modules.operations.interfaces.trace_observer import observed
 
+from .connection_recovery import call_with_connection_recovery, stream_with_connection_recovery
 from .local_cli import (
     LOCAL_CLI_TIMEOUT_GRACE_SECONDS,
     CLIPermissionRequiredError,
@@ -103,6 +106,20 @@ MAX_RETRIES = 3
 DEFAULT_STREAM_RESUMES = 8
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
+
+
+def _configured_adapter_body(extra_body, config, model_name, provider, adapter):
+    base_url = adapter.base_url or getattr(adapter, "DEFAULT_BASE_URL", None)
+    if not base_url:
+        base_url = {
+            "openai": "https://api.openai.com/v1",
+            "anthropic": "https://api.anthropic.com",
+        }.get(provider)
+    return configured_request_body(
+        extra_body, getattr(config, "model_request_parameters", None), model_name,
+        base_url=base_url,
+        protocol="anthropic" if provider == "anthropic" else adapter.api_protocol,
+    )
 
 
 @dataclass
@@ -174,6 +191,10 @@ def _validate_tool_stream_completion(
         raise _ResumeHandshakeError("模型输出达到单次长度上限，正在从检查点继续")
     require_complete_response(finish_reason)
     if not _tool_delta_events_complete(buffered_tool_events):
+        from .tool_argument_errors import completed_tool_argument_error
+        error = completed_tool_argument_error(buffered_tool_events)
+        if error is not None:
+            raise error
         raise _ToolResponseProtocolError("模型返回的工具参数格式无效，未执行任何工具")
     if handshake and not content_seen and not buffered_tool_events:
         handshake.require_verified()
@@ -186,10 +207,14 @@ def _is_auth_error(error: BaseException) -> bool:
 
 
 def _is_non_retryable(error: BaseException) -> bool:
+    if getattr(error, "phase", None) == "connect" and not getattr(error, "request_not_sent", False):
+        return True
+    if getattr(error, "connection_recovery_exhausted", False):
+        return True
     if isinstance(error, LLMIncompleteResponseError):
         return True
     if isinstance(error, (CLIPermissionRequiredError, _ResumeProtocolRejected,
-                          _ToolResponseProtocolError)):
+                          _ToolResponseProtocolError, LLMToolArgumentsError)):
         return True
     text = str(error)
     if "InvalidToken" in text or "登录凭据无效" in text:
@@ -382,8 +407,10 @@ class LLMGateway:
         for attempt in range(1, attempts + 1):
             try:
                 if timeout_seconds is None:
-                    return await call_factory()
-                return await asyncio.wait_for(call_factory(), timeout=timeout_seconds)
+                    return await call_with_connection_recovery(call_factory)
+                return await asyncio.wait_for(
+                    call_with_connection_recovery(call_factory), timeout=timeout_seconds
+                )
             except TimeoutError:
                 last_error = LLMError(f"请求超时（{timeout_seconds}秒）")
             except LLMError as exc:
@@ -413,7 +440,7 @@ class LLMGateway:
 
             operation_id = current_operation_id()
             if operation_id:
-                body.setdefault("operation_id", operation_id)
+                body.setdefault("moshu_operation_id", operation_id)
         except Exception:
             pass
         raw_grace_seconds = body.pop("local_cli_timeout_grace_seconds", None)
@@ -470,6 +497,9 @@ class LLMGateway:
             cli_command=getattr(config, "cli_command", None),
             cli_args=getattr(config, "cli_args", None),
             api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
+        )
+        extra_body = _configured_adapter_body(
+            extra_body, config, model_name, provider, adapter,
         )
         safe_tools, safe_tool_choice, notes = sanitize_tool_request(
             provider, tools, tool_choice,
@@ -556,6 +586,9 @@ class LLMGateway:
             cli_args=getattr(config, "cli_args", None),
             api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
         )
+        extra_body = _configured_adapter_body(
+            extra_body, config, model_name, provider, adapter,
+        )
         timeout_seconds = cls._timeout_value(timeout)
         call_extra_body, wait_timeout_seconds = cls._local_cli_timeout_body(
             adapter_cls,
@@ -581,13 +614,13 @@ class LLMGateway:
             gen: AsyncGenerator[str, None] | None = None
             try:
                 adapter.last_stream_finish_reason = None
-                gen = adapter.stream_chat_completion(
+                gen = stream_with_connection_recovery(partial(adapter.stream_chat_completion,
                     messages=request_messages,
                     model=model_name,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     extra_body=call_extra_body,
-                )
+                ))
                 while True:
                     try:
                         chunk = await cls._next_stream_item(gen, wait_timeout_seconds)
@@ -685,6 +718,9 @@ class LLMGateway:
             cli_command=getattr(config, "cli_command", None),
             cli_args=getattr(config, "cli_args", None),
             api_protocol=getattr(config, "api_protocol", None) or "chat_completions",
+        )
+        extra_body = _configured_adapter_body(
+            extra_body, config, model_name, provider, adapter,
         )
         safe_tools, safe_tool_choice, notes = sanitize_tool_request(
             provider, tools, tool_choice,
@@ -786,7 +822,8 @@ class LLMGateway:
             request_corrected = False
             gen: AsyncGenerator[dict, None] | None = None
             try:
-                gen = adapter.stream_chat_completion_with_tools(
+                stream_factory = partial(
+                    adapter.stream_chat_completion_with_tools,
                     messages=request_messages,
                     model=model_name,
                     temperature=temperature,
@@ -795,6 +832,7 @@ class LLMGateway:
                     tools=safe_tools,
                     tool_choice=safe_tool_choice,
                 )
+                gen = stream_with_connection_recovery(stream_factory)
                 async for chunk in cls._tool_stream_events(
                     gen, wait_timeout_seconds, handshake, committed_parts,
                     attempt, bool(safe_tools),
@@ -906,14 +944,24 @@ def _complete_tool_stream(
     resume_attempt: int, notes: list[str], provider: str, model_name: str,
     continuation: dict | None, atomic_response: bool,
 ):
-    has_usage = _validate_tool_stream_completion(
-        attempt.done_event,
-        attempt.tool_events,
-        handshake,
-        attempt.content_seen,
-        usage_totals,
-        has_usage,
-    )
+    try:
+        has_usage = _validate_tool_stream_completion(
+            attempt.done_event, attempt.tool_events, handshake,
+            attempt.content_seen, usage_totals, has_usage,
+        )
+    except LLMToolArgumentsError as error:
+        error.assistant_message["content"] = "".join(
+            str(e.get("delta") or "") for e in attempt.content_events
+        )
+        reasoning = (attempt.done_event or {}).get("reasoning_content") or "".join(
+            attempt.reasoning
+        )
+        if reasoning:
+            error.assistant_message["reasoning_content"] = reasoning
+        provider_state = (attempt.done_event or {}).get("provider_state")
+        if provider_state:
+            error.assistant_message["provider_state"] = provider_state
+        raise
 
     yield from attempt.content_events
     yield from attempt.tool_events

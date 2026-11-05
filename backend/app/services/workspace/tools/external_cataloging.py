@@ -349,6 +349,16 @@ async def save_external_cataloging_candidates(db: Session, project_id: str, args
     if any(row is None or row.chapter_run_id != run.id or row.project_id != effective_project_id
            or row.status not in {"pending", "apply_failed", "rejected"} or row.edited_payload for row in rejected):
         return external_tool_failure(tool, "只能撤回本章未应用、未经作者编辑或确认的候选")
+    if any(row.item_type == "chapter_summary" and row.status != "rejected" for row in rejected):
+        if summary_in_batch is None:
+            return external_tool_failure(tool, "不能单独撤回唯一 chapter_summary；请直接提交修正的 chapter_summary 更新原候选")
+        try:
+            from ....modules.continuity.domain.candidate_contract import validate_candidate_fields
+            from ...cataloging.plan_contract import validate_plan_references
+            validate_candidate_fields("chapter_summary", summary_in_batch)
+            validate_plan_references(db, effective_project_id, run, {"item_type":"chapter_summary", "payload":summary_in_batch})
+        except ValueError as exc:
+            return external_tool_failure(tool, str(exc))
     for row in rejected:
         row.status = "rejected"
         row.error = "当前建档 Agent 在修正计划时明确撤回"

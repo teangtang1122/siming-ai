@@ -18,6 +18,7 @@ from .runtime_types import CONVERSATION_CONTEXT_POLICY_VERSION, ConversationCont
 from .store_phases import commit_context_phase, refresh_context_phase
 
 _PUBLIC_ERROR_DETAIL = {
+    ConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT.value: "历史整理输出超限；完整历史与有效检查点已保留，本次任务未执行。请调整整理预算或新建对话。",
     ConversationContextErrorCode.PROTOCOL_INVALID.value: (
         "模型返回的工具调用未通过协议校验，本批次未执行；此前进度已保留。请重试本轮。"
     ),

@@ -250,3 +250,25 @@ def test_creation_context_routes_publish_typed_openapi(creation_context_api) -> 
             if "$ref" in item
         )
         assert schemas[data_ref.rsplit("/", 1)[-1]]["title"] == expected
+
+
+def test_multiple_creation_conversations_share_session_but_not_history(creation_context_api):
+    client, factory = creation_context_api
+    base = "/api/v1/novel-creation/sessions/creation-session-1/conversations"
+    ids = []
+    for _ in range(2):
+        response = client.post(base)
+        assert response.status_code == 200
+        ids.append(response.json()["data"]["conversation"]["id"])
+    assert len(set(ids)) == 2
+    listing = client.get(base).json()["data"]["items"]
+    assert set(ids) <= {item["id"] for item in listing}
+    for id in ids:
+        assert client.get(f"{base}/{id}").json()["data"]["messages"] == []
+        assert client.get(f"{base}/{id}/checkpoints").json()["data"]["total"] == 0
+    old = client.get(f"{base}/creation-conversation-1").json()["data"]
+    assert len(old["messages"]) == 2
+    assert client.get(f"{base}/creation-conversation-2").status_code == 404
+    assert client.post("/api/v1/novel-creation/sessions/missing/conversations").status_code == 404
+    with factory() as db:
+        assert db.get(NovelCreationSession, "creation-session-1").status == "drafting"

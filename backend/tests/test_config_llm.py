@@ -642,6 +642,21 @@ class TestAPIConfigCreateAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
+    def test_model_request_parameters_roundtrip_and_protected_fields(self):
+        parameters = {"gpt-6-luna": {"temperature": None}, "other": {"temperature": 0.8}}
+        payload = {"provider":"openai", "api_key":"fake-key", "default_model":"gpt-6-luna", "model_request_parameters":parameters}
+        response = self.client.post(f"{API_PREFIX}/config/models", json=payload)
+        self.assertEqual(response.status_code, 200, response.text)
+        detail = self.client.get(f"{API_PREFIX}/config/models/openai")
+        self.assertEqual(detail.json()["data"]["model_request_parameters"], parameters)
+        # An unrelated update must not clear existing per-model settings.
+        response = self.client.post(f"{API_PREFIX}/config/models", json={"provider":"openai", "default_model":"other"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["model_request_parameters"], parameters)
+        rejected = self.client.post(f"{API_PREFIX}/config/models", json={**payload,"model_request_parameters":{"gpt-6-luna":{"max_tokens":1}}})
+        self.assertEqual(rejected.status_code, 422)
+
+
 
 class TestAPIConfigDetailAPI(unittest.TestCase):
     """Test cases for GET /api/v1/config/models/{provider} (detail with masked key)."""

@@ -84,7 +84,11 @@ def check_native_composition(window, api, label):
           for(let y=1;y<innerHeight;y+=2) for(let x=1;x<innerWidth;x+=2) {
             if(b && x>b.left-16 && x<b.right+16 && y>b.top-16 && y<b.bottom+16) continue;
             const px=Math.floor(x*c.width/innerWidth), py=Math.floor(y*c.height/innerHeight);
-            if(p[(py*c.width+px)*4+3]===0) points.push([x,y]);
+            const clear=[-4,0,4].every(dy=>[-4,0,4].every(dx=> {
+              const xx=px+dx, yy=py+dy;
+              return xx>=0 && yy>=0 && xx<c.width && yy<c.height && p[(yy*c.width+xx)*4+3]===0;
+            }));
+            if(clear) points.push([x,y]);
           }
           return {width:innerWidth,height:innerHeight,points};
         })()""")
@@ -100,13 +104,18 @@ def check_native_composition(window, api, label):
                 bitmap.Save(str(path), ImageFormat.Png)
                 sx, sy = int(bounds.Width) / blanks["width"], int(bounds.Height) / blanks["height"]
                 dark = []
+                backdrop_samples = 0
                 for x, y in blanks["points"]:
                     color = bitmap.GetPixel(min(int(bounds.Width)-1, int(x*sx)),
                                             min(int(bounds.Height)-1, int(y*sy)))
-                    if max(int(color.R), int(color.G), int(color.B)) < 24:
+                    rgb = (int(color.R), int(color.G), int(color.B))
+                    if all(abs(actual-expected) <= 3 for actual, expected in zip(rgb, (203, 221, 196))):
+                        backdrop_samples += 1
+                    if max(rgb) < 64:
                         dark.append([x, y])
                 result.append({"path": str(path), "blank_samples": len(blanks["points"]),
-                               "black_blank_samples": len(dark), "first_black_points": dark[:10]})
+                               "black_blank_samples": len(dark), "first_black_points": dark[:10],
+                               "backdrop_blank_samples": backdrop_samples})
             finally:
                 graphics.Dispose()
                 bitmap.Dispose()
@@ -119,7 +128,66 @@ def check_native_composition(window, api, label):
         overlay._invoke_native(close_backdrop)
     assert result[0]["blank_samples"] > 100, result
     assert result[0]["black_blank_samples"] == 0, result
+    assert result[0]["backdrop_blank_samples"] >= result[0]["blank_samples"] // 2, result
     return result[0]
+
+
+def check_transparent_theme_updates(window, api):
+    """Exercise the actual PyWebView theme callback, without changing OS settings."""
+    if sys.getwindowsversion().build < 22621:
+        return {"system_backdrop_supported": False}
+    import ctypes
+    from ctypes import wintypes
+
+    overlay = api._pet_input_overlay
+    native, main = overlay._native, api._window.native
+    dwm = ctypes.WinDLL("dwmapi")
+    dwm.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    dwm.DwmSetWindowAttribute.argtypes = dwm.DwmGetWindowAttribute.argtypes
+    original_theme = native.is_dark_theme
+    report = {"system_backdrop_supported": True, "cycles": []}
+
+    def attribute(form, key):
+        value = ctypes.c_int()
+        assert dwm.DwmGetWindowAttribute(int(form.Handle.ToInt64()), key, ctypes.byref(value), 4) == 0
+        return value.value
+
+    before = []
+    overlay._invoke_native(lambda: before.append(attribute(main, 38)))
+    try:
+        # The original test's <24 threshold missed the actual #202020 black.
+        # Deliberately reintroduce Mica in our own preview to prove rejection.
+        def enable_mica():
+            value = ctypes.c_int(2)
+            assert dwm.DwmSetWindowAttribute(int(native.Handle.ToInt64()), 38, ctypes.byref(value), 4) == 0
+        overlay._invoke_native(enable_mica)
+        rejected = False
+        try:
+            check_native_composition(window, api, "negative-mica-control")
+        except AssertionError:
+            rejected = True
+        finally:
+            overlay._invoke_native(overlay._transparency.apply)
+        assert rejected, "Native composition QA must reject an opaque Mica background"
+        report["opaque_mica_rejected"] = True
+        for index, dark in enumerate((False, True, False, True)):
+            state = {}
+            def change_theme():
+                native.is_dark_theme = lambda: dark
+                native.on_system_theme_changed(None, None)
+                state.update(dark=dark, dark_attribute=attribute(native, 20), backdrop=attribute(native, 38))
+                assert state["backdrop"] == 1
+                assert bool(state["dark_attribute"]) == dark
+                assert attribute(main, 38) == before[0]
+            overlay._invoke_native(change_theme)
+            state["composition"] = check_native_composition(window, api, f"theme-{index}-{'dark' if dark else 'light'}")
+            report["cycles"].append(state)
+    finally:
+        def restore():
+            native.is_dark_theme = original_theme
+            native.update_title_bar_theme()
+        overlay._invoke_native(restore)
+    return report
 
 
 def check_compact_preview(window, api, *, check_composition=False):
@@ -231,6 +299,7 @@ def check_compact_preview(window, api, *, check_composition=False):
         assert normal["bubble"] is None, "Speech must be hidden on startup"
         report["standing_input"] = check_hit_region()
         if check_composition:
+            report["theme_updates"] = check_transparent_theme_updates(window, api)
             report["standing_composition"] = check_native_composition(window, api, "standing")
         # Exercise the production tap handler through app-local pointer events,
         # not system mouse injection. Then verify the real native region shrinks.
@@ -261,7 +330,9 @@ def check_compact_preview(window, api, *, check_composition=False):
         def pickup_event(kind, *, start=False):
             window.evaluate_js(f"""document.querySelector('.desktop-pet__character')
               .dispatchEvent(new PointerEvent({json.dumps(kind)},{{bubbles:true,button:0,
-                pointerId:92,screenX:{100 if start else 125},screenY:{100 if start else 110},
+                pointerId:92,buttons:{1 if kind in ('pointerdown', 'pointermove') else 0},
+                pointerType:'mouse',isPrimary:true,
+                screenX:{100 if start else 125},screenY:{100 if start else 110},
                 clientX:180,clientY:80}}));""")
         pickup_event('pointerdown', start=True)
         pickup_event('pointermove')

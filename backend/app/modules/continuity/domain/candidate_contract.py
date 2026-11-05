@@ -159,20 +159,54 @@ _OUTLINE = {
     "unresolved_actions": {"type": "array"},
 }
 
+# Projected narrative entries have one explicit display/content field. Other fields are retained.
+NARRATIVE_TITLE_FIELDS = {
+    "events",
+    "timeline_events",
+    "foreshadowing_planted",
+    "foreshadowing_resolved",
+    "storyline_progress",
+    "new_storylines",
+    "reader_known_facts",
+    "unresolved_actions",
+}
+NARRATIVE_ENTRY = {
+    "type": ["string", "object"],
+    "minLength": 1,
+    "pattern": r"\S",
+    "properties": {"title": {"type": "string", "minLength": 1, "pattern": r"\S"}},
+    "required": ["title"],
+    "additionalProperties": True,
+    "description": (
+        "非空字符串，或包含非空 title 的对象；"
+        "对象须由模型直接填写 title，其他结构化细节原样保留。"
+    ),
+}
+
 CANDIDATE_FIELDS = {
     "chapter_summary": {
         "scenes": {"type": "array", "minItems": 1, "items": TEXT},
-        **{key: {"type": "array", "items": _object({
-            "name": {"type": "string", "minLength": 1},
-            "id": {
-                "type": "string",
-                "description": "Existing ID, or a new canonical UUID reused as client_id.",
-            },
-            "decision": _enum("existing", "new"),
-            "source_labels": _strings(),
-            "reason": {"type": "string", "minLength": 1},
-        }, ("name", "id", "decision", "reason"))}
-           for key in ("character_bindings", "worldbuilding_bindings")},
+        **{
+            key: {
+                "type": "array",
+                "items": _object(
+                    {
+                        "name": {"type": "string", "minLength": 1},
+                        "id": {
+                            "type": "string",
+                            "description": (
+                                "Existing ID, or a new canonical UUID reused as client_id."
+                            ),
+                        },
+                        "decision": _enum("existing", "new"),
+                        "source_labels": _strings(),
+                        "reason": {"type": "string", "minLength": 1},
+                    },
+                    ("name", "id", "decision", "reason"),
+                ),
+            }
+            for key in ("character_bindings", "worldbuilding_bindings")
+        },
         "summary_text": TEXT,
         "key_events": _strings(),
         "characters": _strings(),
@@ -181,7 +215,10 @@ CANDIDATE_FIELDS = {
         "coverage_manifest_mode": _enum("replace"),
         "narrative_state": _object(
             {
-                name: {"type": "array"}
+                name: {
+                    "type": "array",
+                    **({"items": NARRATIVE_ENTRY} if name in NARRATIVE_TITLE_FIELDS else {}),
+                }
                 for name in (
                     "events",
                     "timeline_events",
@@ -215,8 +252,13 @@ CANDIDATE_FIELDS = {
     "character_state_update": _STATE,
     "character_timeline": {"name": TEXT, "event_description": TEXT, "emotional_state_change": TEXT},
     "character_relationship": {**RELATIONSHIP["properties"], "description": TEXT},
-    "character_merge_candidate": {"primary_name": TEXT, "secondary_name": TEXT, "reason": TEXT,
-                                  "aliases": _strings(), "background_append": TEXT},
+    "character_merge_candidate": {
+        "primary_name": TEXT,
+        "secondary_name": TEXT,
+        "reason": TEXT,
+        "aliases": _strings(),
+        "background_append": TEXT,
+    },
     "worldbuilding_create": _WORLD,
     "worldbuilding_update": _WORLD,
     "worldbuilding_timeline": {**_WORLD, "event_description": TEXT},

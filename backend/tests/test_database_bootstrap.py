@@ -18,7 +18,7 @@ from alembic import command
 from app.database.bootstrap import SCHEMA_EPOCH, alembic_config, bootstrap_database
 from app.database.models import AssistantRun, AssistantRunStep, Project
 
-HEAD_REVISION = "300a40_recycle_bin"
+HEAD_REVISION = "300a41_model_request_parameters"
 
 
 def _database_url(path: Path) -> str:
@@ -802,3 +802,26 @@ def test_importing_application_does_not_create_or_migrate_database():
         )
         assert result.returncode == 0, result.stderr
         assert database_path.exists() is False
+
+
+def test_request_parameter_upgrade_preserves_config_and_repeated_upgrade_is_idempotent():
+    with TemporaryDirectory() as temp_dir:
+        url = _database_url(Path(temp_dir) / "parameters.db")
+        engine = create_engine(url)
+        try:
+            bootstrap_database(engine, database_url=url)
+            config = alembic_config(url)
+            with engine.begin() as connection:
+                config.attributes["connection"] = connection
+                command.downgrade(config, "300a40_recycle_bin")
+                connection.execute(text("INSERT INTO api_configs (id,provider,api_key_encrypted,default_model,api_protocol,provider_type,readiness_status,created_at,updated_at) VALUES ('p','openai','encrypted','gpt-6-luna','responses','api','ready',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"))
+            upgraded = bootstrap_database(engine, database_url=url)
+            assert upgraded.schema_revision == HEAD_REVISION
+            with engine.begin() as connection:
+                assert connection.execute(text("SELECT default_model,api_key_encrypted,model_request_parameters FROM api_configs WHERE id='p'")).one() == ("gpt-6-luna", "encrypted", None)
+                connection.execute(text("UPDATE api_configs SET model_request_parameters=:parameters WHERE id='p'"), {"parameters":json.dumps({"gpt-6-luna":{"temperature":None}})})
+            assert bootstrap_database(engine, database_url=url).schema_revision == HEAD_REVISION
+            with engine.connect() as connection:
+                assert json.loads(connection.execute(text("SELECT model_request_parameters FROM api_configs WHERE id='p'")).scalar_one()) == {"gpt-6-luna":{"temperature":None}}
+        finally:
+            engine.dispose()

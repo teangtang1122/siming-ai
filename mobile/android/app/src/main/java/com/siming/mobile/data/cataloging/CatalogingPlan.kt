@@ -3,13 +3,13 @@ package com.siming.mobile.data.cataloging
 import java.util.UUID
 import kotlinx.serialization.json.*
 
-internal data class CatalogCandidate(val id: String, val payload: JsonObject) {
+internal data class CatalogCandidate(val id: String, val payload: JsonObject, val status: String = "pending") {
     val kind: String get() = payload.text("type")
     fun toJson() = buildJsonObject {
-        put("id", id); put("item_type", kind); put("status", "pending"); put("payload", payload)
+        put("id", id); put("item_type", kind); put("status", status); put("payload", payload)
     }
     companion object {
-        fun fromJson(value: JsonObject) = CatalogCandidate(value.text("id"), value.getValue("payload").jsonObject)
+        fun fromJson(value: JsonObject) = CatalogCandidate(value.text("id"), value.getValue("payload").jsonObject, value.text("status").ifBlank { "pending" })
     }
 }
 
@@ -22,7 +22,13 @@ internal class CatalogingPlan(
     initial: List<CatalogCandidate> = emptyList(),
 ) {
     val chapter: JsonObject = record("chapter", chapterId).payload
-    val candidates = initial.toMutableList()
+    private val retired = initial.filter { it.status == "rejected" }.toMutableList()
+    val candidates = initial.filter { it.status != "rejected" }.toMutableList()
+    fun snapshotCandidates(): List<CatalogCandidate> = retired + candidates
+    fun requiresSummary(): Boolean {
+        val summary = candidates.singleOrNull { it.kind == "chapter_summary" } ?: return true
+        return runCatching { contract.validateCandidate(summary.payload); validate(summary.payload) }.isFailure
+    }
     private val summary: JsonObject get() = candidates.singleOrNull { it.kind == "chapter_summary" }?.payload
         ?: error("先提交唯一的 chapter_summary 建档计划")
 
@@ -51,9 +57,16 @@ internal class CatalogingPlan(
         val numbers = sections.map { it.number("scene_number") }.filter { it > 0 }
         require(numbers.distinct().size == numbers.size) { "同一批场景小节的 scene_number 重复；每个场景只提交一条" }
         val rejected = args.strings("reject_candidate_ids")
-        require(rejected.toSet().size == rejected.size && rejected.all { id -> candidates.any { it.id == id } }) {
+        require(rejected.toSet().size == rejected.size && rejected.all { id -> snapshotCandidates().any { it.id == id } }) {
             "reject_candidate_ids 必须引用本章尚未应用的候选 ID"
         }
+        if (candidates.any { it.id in rejected && it.kind == "chapter_summary" }) {
+            val replacement = submitted.singleOrNull { it.text("type") == "chapter_summary" }
+                ?: error("不能单独撤回唯一 chapter_summary；请直接提交修正的 chapter_summary 更新原候选")
+            contract.validateCandidate(replacement)
+            validate(replacement)
+        }
+        candidates.filter { it.id in rejected }.forEach { retired += it.copy(status = "rejected") }
         candidates.removeAll { it.id in rejected }
         var saved = 0
         args.objects("candidates").forEach { raw ->
@@ -67,6 +80,8 @@ internal class CatalogingPlan(
         val finalize = args["finalize"] == JsonPrimitive(true)
         val missing = if (finalize) diagnostics() else emptyList()
         return buildJsonObject {
+            put("scene_repair", sceneRepairContext())
+            put("rejected_candidate_ids", jsonStrings(retired.map { it.id }))
             put("candidates_saved", saved)
             put("candidate_errors", JsonArray(errors))
             put("missing_required_items", jsonStrings(missing))
@@ -89,9 +104,22 @@ internal class CatalogingPlan(
         if (old == null) candidates += staged else candidates[candidates.indexOf(old)] = staged
     }
 
+    fun sceneRepairContext(): JsonObject {
+        val sections = candidates.filter { it.kind in OUTLINE_TYPES && it.payload.text("node_type") == "section" }
+        return buildJsonObject {
+            put("expected_candidate_ids", jsonStrings(sections.map { it.id }))
+            put("section_candidates", JsonArray(sections.map { buildJsonObject {
+                put("candidate_id", it.id); put("payload", it.payload)
+            } }))
+            put("instruction", "expected_candidate_ids 仅引用本次建档的待提交候选 ID，不是正式场景大纲 ID；列表为空时使用场景创建/更新候选，不能调用 scene_outline_replace。")
+        }
+    }
+
     private fun replaceScenes(raw: JsonObject) {
         val current = candidates.filter { it.kind in OUTLINE_TYPES && it.payload.text("node_type") == "section" }
-        require(raw.strings("expected_candidate_ids").toSet() == current.map { it.id }.toSet()) { "场景替换必须引用当前全部场景候选 ID" }
+        val expected = raw.strings("expected_candidate_ids")
+        require(expected.isNotEmpty() && expected.distinct().size == expected.size) { "场景替换必须引用非空且不重复的待提交候选 ID" }
+        require(expected.toSet() == current.map { it.id }.toSet()) { "场景替换必须引用当前全部场景候选 ID" }
         val replacements = raw.objects("sections")
         require(replacements.map { it.number("scene_number") }.sorted() == (1..summary.objectsOrScenesCount()).toList()) {
             "场景替换必须完整覆盖 1..${summary.objectsOrScenesCount()}"
@@ -242,6 +270,10 @@ internal class CatalogingPlan(
     }
 
     fun diagnostics(): List<String> {
+        candidates.singleOrNull { it.kind == "chapter_summary" }?.let { candidate ->
+            val failure = runCatching { contract.validateCandidate(candidate.payload); validate(candidate.payload) }.exceptionOrNull()
+            if (failure != null) return listOf("chapter_summary 候选 ${candidate.id} 字段无效：${failure.message}；请直接提交修正的 chapter_summary")
+        }
         val missing = mutableListOf<String>()
         candidates.forEach { row -> runCatching { validate(row.payload) }.exceptionOrNull()?.let {
             missing += "候选 ${row.id}（${row.kind}）：${it.message}"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from urllib.parse import urlsplit
 
 import httpx
@@ -23,10 +24,19 @@ from openai import (
 )
 
 from ....ai.anthropic_adapter import AnthropicAdapter
+from ....ai.completion_status import require_complete_response
 from ....ai.local_runtime_adapter import LocalRuntimeAdapter
-from ....ai.openai_adapter import message_reasoning_content, responses_reasoning_content
-from ....core.exceptions import LLMError, ValidationError
+from ....ai.openai_adapter import (
+    TracedOpenAIHttpClient,
+    message_reasoning_content,
+    responses_reasoning_content,
+)
+from ....ai.request_policy import configured_request_body, provider_request_kwargs
+from ....ai.transport_timeouts import model_connection_error, model_timeout_error
+from ....core.exceptions import LLMError, LLMIncompleteResponseError, ValidationError
+from ....core.model_capacity_catalog import known_model_capacity, uses_documented_model_catalog
 from ..application.verification import ModelProbeRequest
+from .connection_recovery import call_with_connection_recovery
 from .local_cli import (
     DEFAULT_CLI_MODELS,
     DEFAULT_LOCAL_CLI_TIMEOUT,
@@ -116,10 +126,99 @@ def _error_status(error: BaseException) -> int | None:
 
 
 def _openai_client(*, api_key: str, base_url: str) -> AsyncOpenAI:
-    kwargs: dict[str, object] = {"api_key": api_key, "base_url": base_url}
-    if urlsplit(base_url).hostname in {"127.0.0.1", "localhost", "::1"}:
-        kwargs["http_client"] = httpx.AsyncClient(trust_env=False)
+    kwargs: dict[str, object] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "max_retries": 0,
+        "http_client": TracedOpenAIHttpClient(
+            trust_env=urlsplit(base_url).hostname not in {"127.0.0.1", "localhost", "::1"}
+        ),
+    }
     return AsyncOpenAI(**kwargs)
+
+
+async def _model_probe_request(method, **kwargs):
+    try:
+        return await method(**kwargs)
+    except OpenAITimeoutError as exc:
+        raise model_timeout_error(exc) from exc
+    except OpenAIConnectionError as exc:
+        raise model_connection_error(exc) from exc
+
+
+async def _probe_completion(
+    client, request: ModelProbeRequest, base_url: str, protocol: str, timeout: int
+):
+    provider = "openai" if uses_documented_model_catalog("openai", base_url) else request.provider
+    capacity = (
+        known_model_capacity(provider, request.model)
+        if uses_documented_model_catalog(provider, base_url)
+        else None
+    )
+    ceiling = min(
+        request.max_output_tokens or 4096, capacity.max_output_tokens if capacity else 512
+    )
+    if ceiling <= 0:
+        raise LLMError("连接测试没有可用输出额度")
+    budgets = list(dict.fromkeys([min(1024, ceiling), ceiling]))
+    for index, budget in enumerate(budgets):
+        kwargs = {"model": request.model}
+        if protocol == API_PROTOCOL_RESPONSES:
+            kwargs.update(input="Reply with exactly: OK", max_output_tokens=budget, store=False)
+            method = client.responses.create
+        else:
+            kwargs.update(
+                messages=[{"role": "user", "content": "Reply with exactly: OK"}], max_tokens=budget
+            )
+            method = client.chat.completions.create
+        body = configured_request_body(
+            None,
+            request.model_request_parameters,
+            request.model or "",
+            base_url=base_url,
+            protocol=protocol,
+        )
+        if body:
+            kwargs["extra_body"] = body
+        response = await asyncio.wait_for(
+            call_with_connection_recovery(
+                partial(
+                    _model_probe_request,
+                    method,
+                    **provider_request_kwargs(kwargs, base_url, protocol),
+                )
+            ),
+            timeout=timeout,
+        )
+        try:
+            if protocol == API_PROTOCOL_RESPONSES:
+                status = getattr(response, "status", None)
+                detail = getattr(response, "incomplete_details", None)
+                reason = (
+                    (
+                        detail.get("reason")
+                        if isinstance(detail, dict)
+                        else getattr(detail, "reason", None)
+                    )
+                    if status == "incomplete"
+                    else status
+                )
+                require_complete_response(reason or status, budget)
+                return str(
+                    getattr(response, "output_text", "") or ""
+                ).strip(), responses_reasoning_content(response).strip()
+            choice = response.choices[0]
+            require_complete_response(getattr(choice, "finish_reason", None), budget)
+            return str(choice.message.content or "").strip(), message_reasoning_content(
+                choice.message
+            ).strip()
+        except LLMIncompleteResponseError as exc:
+            if exc.reason not in {"length", "max_output_tokens", "max_tokens", "token_limit"}:
+                raise
+            if index + 1 == len(budgets):
+                raise LLMError(
+                    "连接测试输出超限（包含推理消耗）；已到配置或模型容量上限，请调整额度后重试"
+                ) from exc
 
 
 async def _probe_openai(request: ModelProbeRequest) -> dict:
@@ -129,33 +228,17 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
         request.base_url,
         allow_v1_fallback=_is_custom(request.provider),
     ):
-        for protocol in _protocol_candidates(request.api_protocol):
+        for protocol in (
+            [API_PROTOCOL_RESPONSES, API_PROTOCOL_CHAT]
+            if request.api_protocol == API_PROTOCOL_AUTO
+            and uses_documented_model_catalog("openai", base_url)
+            else _protocol_candidates(request.api_protocol)
+        ):
             client = _openai_client(api_key=request.api_key, base_url=base_url)
             try:
-                if protocol == API_PROTOCOL_RESPONSES:
-                    response = await asyncio.wait_for(
-                        client.responses.create(
-                            model=request.model,
-                            input="Reply with exactly: OK",
-                            max_output_tokens=512,
-                            store=False,
-                        ),
-                        timeout=timeout_seconds,
-                    )
-                    reply = str(getattr(response, "output_text", "") or "").strip()
-                    reasoning = responses_reasoning_content(response).strip()
-                else:
-                    response = await asyncio.wait_for(
-                        client.chat.completions.create(
-                            model=request.model,
-                            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
-                            max_tokens=512,
-                        ),
-                        timeout=timeout_seconds,
-                    )
-                    message = response.choices[0].message
-                    reply = str(message.content or "").strip()
-                    reasoning = message_reasoning_content(message).strip()
+                reply, reasoning = await _probe_completion(
+                    client, request, base_url, protocol, timeout_seconds
+                )
                 if not reply and not reasoning:
                     raise LLMError(f"{_protocol_label(protocol)} returned an empty response")
                 return {
@@ -167,10 +250,10 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
                 }
             except OpenAIAuthError as exc:
                 raise LLMError(f"{_provider_label(request.provider)} API key is invalid") from exc
-            except OpenAIConnectionError as exc:
-                raise LLMError(f"无法连接到 {_provider_label(request.provider)}") from exc
             except (TimeoutError, OpenAITimeoutError) as exc:
-                raise LLMError(f"{_provider_label(request.provider)} request timed out") from exc
+                raise model_timeout_error(exc) from exc
+            except OpenAIConnectionError as exc:
+                raise model_connection_error(exc) from exc
             except OpenAIAPIError as exc:
                 status = _error_status(exc)
                 if status in {402, 429} or detect_cli_quota_error(str(exc)):
@@ -181,10 +264,19 @@ async def _probe_openai(request: ModelProbeRequest) -> dict:
                     raise LLMError(
                         f"{_provider_label(request.provider)} API key is invalid"
                     ) from exc
+                body = getattr(exc, "body", None) or {}
+                error = body.get("error", body) if isinstance(body, dict) else {}
+                field_error = isinstance(error, dict) and (
+                    error.get("param") or error.get("code") == "model_not_found"
+                )
+                if status not in {404, 405, 415} or field_error:
+                    raise LLMError(
+                        f"{_provider_label(request.provider)} API 参数或请求错误: {exc}"
+                    ) from exc
                 prefix = f"HTTP {status}: " if status else ""
                 attempts.append(f"{_protocol_label(protocol)} @ {base_url}: {prefix}{exc}"[:600])
-            except LLMError as exc:
-                attempts.append(f"{_protocol_label(protocol)} @ {base_url}: {exc}")
+            except LLMError:
+                raise
             finally:
                 await client.close()
     detail = "; ".join(attempts[-4:]) or "no compatible endpoint responded"
@@ -199,21 +291,24 @@ async def _list_openai(request: ModelProbeRequest) -> list[dict]:
     ):
         client = _openai_client(api_key=request.api_key, base_url=base_url)
         try:
-            result = await asyncio.wait_for(client.models.list(), timeout=20)
+            result = await asyncio.wait_for(
+                call_with_connection_recovery(partial(_model_probe_request, client.models.list)),
+                timeout=20,
+            )
             models = sorted({item.id for item in result.data})
             return [{"id": model, "display_name": model} for model in models]
         except OpenAIAuthError as exc:
             raise LLMError(f"{_provider_label(request.provider)} API key is invalid") from exc
+        except (TimeoutError, OpenAITimeoutError) as exc:
+            raise model_timeout_error(exc) from exc
         except OpenAIConnectionError as exc:
-            raise LLMError(f"无法连接到 {_provider_label(request.provider)}") from exc
+            raise model_connection_error(exc) from exc
         except OpenAIAPIError as exc:
             status = _error_status(exc)
             if _is_custom(request.provider) and status in {404, 405}:
                 attempts.append(f"HTTP {status} @ {base_url}")
                 continue
             raise LLMError(f"{_provider_label(request.provider)} API error: {exc}") from exc
-        except (TimeoutError, OpenAITimeoutError) as exc:
-            raise LLMError("Request timed out") from exc
         finally:
             await client.close()
     detail = "; ".join(attempts) or "no compatible model endpoint responded"
@@ -305,7 +400,14 @@ class ProviderModelVerification:
                     messages=[{"role": "user", "content": "Reply with exactly: OK"}],
                     model=request.model or "",
                     temperature=0,
-                    max_tokens=32,
+                    max_tokens=min(request.max_output_tokens or 1024, 1024),
+                    extra_body=configured_request_body(
+                        None,
+                        request.model_request_parameters,
+                        request.model or "",
+                        base_url=request.base_url or "https://api.anthropic.com",
+                        protocol="anthropic",
+                    ),
                 ),
                 timeout=30,
             )

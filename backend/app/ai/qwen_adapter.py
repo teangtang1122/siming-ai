@@ -5,6 +5,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, Authentication
 
 from ..core.exceptions import LLMError
 from .base import BaseAdapter
+from .transport_timeouts import model_timeout_error, model_connection_error
 from .completion_status import require_complete_response
 from .openai_adapter import (
     _extract_tool_calls,
@@ -13,7 +14,7 @@ from .openai_adapter import (
     message_reasoning_content,
     normalize_openai_tool_call_delta,
 )
-from .request_policy import provider_extra_body, provider_tool_choice
+from .request_policy import provider_extra_body, provider_tool_choice, provider_request_kwargs
 
 
 class QwenAdapter(BaseAdapter):
@@ -62,7 +63,7 @@ class QwenAdapter(BaseAdapter):
             if provider_body:
                 kwargs["extra_body"] = provider_body
 
-            response = await client.chat.completions.create(**kwargs)
+            response = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url or self.DEFAULT_BASE_URL, "chat_completions"))
             choice = response.choices[0]
             require_complete_response(getattr(choice, "finish_reason", None), max_tokens)
             return {
@@ -79,9 +80,9 @@ class QwenAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"通义千问 API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"通义千问 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"通义千问 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"通义千问 API 错误: {e}")
         except LLMError:
@@ -114,7 +115,7 @@ class QwenAdapter(BaseAdapter):
             if provider_body:
                 kwargs["extra_body"] = provider_body
 
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url or self.DEFAULT_BASE_URL, "chat_completions"))
             async for chunk in stream:
                 yield ""
                 finish_reason = getattr(chunk.choices[0], "finish_reason", None)
@@ -127,9 +128,9 @@ class QwenAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"通义千问 API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"通义千问 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"通义千问 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"通义千问 API 错误: {e}")
         except LLMError:
@@ -169,7 +170,7 @@ class QwenAdapter(BaseAdapter):
             if provider_body:
                 kwargs["extra_body"] = provider_body
 
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await client.chat.completions.create(**provider_request_kwargs(kwargs, self.base_url or self.DEFAULT_BASE_URL, "chat_completions"))
             tool_call_buffers: dict[int, dict] = {}
             finish_reason = None
             usage = None
@@ -211,9 +212,9 @@ class QwenAdapter(BaseAdapter):
         except AuthenticationError as e:
             raise LLMError(f"通义千问 API Key 无效: {e}")
         except APITimeoutError as e:
-            raise LLMError(f"通义千问 请求超时: {e}")
+            raise model_timeout_error(e) from e
         except APIConnectionError as e:
-            raise LLMError(f"通义千问 连接错误: {e}")
+            raise model_connection_error(e) from e
         except APIError as e:
             raise LLMError(f"通义千问 API 错误: {e}")
         except LLMError:

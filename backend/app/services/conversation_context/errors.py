@@ -10,6 +10,7 @@ class ConversationContextErrorCode(StrEnum):
     CAPACITY_UNKNOWN = "conversation_capacity_unknown"
     CURRENT_USER_OVER_CAPACITY = "current_user_message_over_capacity"
     CHECKPOINT_REQUIRED = "conversation_checkpoint_required"
+    CHECKPOINT_OUTPUT_LIMIT = "conversation_checkpoint_output_limit"
     CHECKPOINT_FAILED = "conversation_checkpoint_failed"
     CHECKPOINT_CANCELLED = "conversation_checkpoint_cancelled"
     CHECKPOINT_SUPERSEDED = "conversation_checkpoint_superseded"

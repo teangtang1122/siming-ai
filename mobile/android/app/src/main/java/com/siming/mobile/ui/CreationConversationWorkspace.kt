@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.siming.mobile.data.agent.MobileConversationContextErrorCode
+import com.siming.mobile.data.creation.CreationConversations
 import com.siming.mobile.data.creation.CreationAgentTurnRecords
 import com.siming.mobile.data.creation.CreationAgentProgressEvent
 import kotlinx.serialization.json.JsonArray
@@ -85,10 +86,12 @@ internal fun CreationConversationWorkspace(
     onContinueOnPhone: () -> Unit,
     onConfigureApi: () -> Unit,
     onOpenProject: (String) -> Unit,
+    onNewConversation: () -> Unit = {},
+    onSelectConversation: (String) -> Unit = {},
 ) {
     val draft = session.objectValue("draft")
     val messages = CreationAgentTurnRecords.displayMessages(session)
-    var input by rememberSaveable(session.string("id")) { mutableStateOf("") }
+    var input by rememberSaveable(session.string("id"), CreationConversations.active(session)) { mutableStateOf("") }
     val projectId = session.string("created_project_id")
     val route = draft.string("execution_route")
     val capacityUnknown = creationNeedsCapacityConfiguration(progressEvents)
@@ -102,7 +105,7 @@ internal fun CreationConversationWorkspace(
     var showDetails by rememberSaveable(session.string("id")) { mutableStateOf(false) }
     var showStages by rememberSaveable(session.string("id")) { mutableStateOf(false) }
     val confirmedCount = stages.count { session.stageState(it.first).string("status") == "confirmed" }
-    LaunchedEffect(session.string("id"), messages.size, running) {
+    LaunchedEffect(session.string("id"), CreationConversations.active(session), messages.size, running) {
         // Scroll on a new turn, never on each token while the author reads history.
         snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
         listState.scrollToItem(Int.MAX_VALUE)
@@ -119,6 +122,13 @@ internal fun CreationConversationWorkspace(
             TextButton(onClick = { showStages = true }) { Text("资料 $confirmedCount/${stages.size}") }
             IconButton(onClick = { showDetails = !showDetails }) {
                 Icon(if (showDetails) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown, "立项详情与管理")
+            }
+        }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 16.dp)) {
+            item { TextButton(onClick = onNewConversation, enabled = !running) { Text("新建对话") } }
+            items(CreationConversations.entries(session), key = { it.string("id") }) { entry ->
+                AssistChip(onClick = { onSelectConversation(entry.string("id")) }, enabled = !running,
+                    label = { Text((if (CreationConversations.active(session) == entry.string("id")) "当前 · " else "") + entry.string("title")) })
             }
         }
         HorizontalDivider()
@@ -148,7 +158,7 @@ internal fun CreationConversationWorkspace(
                 if (showDetails || state.status in setOf("failed", "compressing", "pending")) {
                     item {
                         CreationConversationContextCard(state, onConfigureApi,
-                            onRetry = { lastAuthorRequest?.let(onSend) }, onNewCreation = onBack,
+                            onRetry = { lastAuthorRequest?.let(onSend) }, onNewConversation = onNewConversation,
                             canRetry = !running && !lastAuthorRequest.isNullOrBlank())
                     }
                 }
@@ -255,7 +265,7 @@ private fun CreationConversationContextCard(
     state: MobileAssistantContextState,
     onConfigureApi: () -> Unit,
     onRetry: () -> Unit,
-    onNewCreation: () -> Unit,
+    onNewConversation: () -> Unit,
     canRetry: Boolean,
 ) {
     var expanded by rememberSaveable(
@@ -272,7 +282,9 @@ private fun CreationConversationContextCard(
             Text(
                 when (state.status) {
                     "compressing", "pending" -> "正在整理较早立项对话"
-                    "failed" -> if (state.errorCode == MobileConversationContextErrorCode.PROTOCOL_INVALID) {
+                    "failed" -> if (state.errorCode == MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT) {
+                        "历史整理输出超限"
+                    } else if (state.errorCode == MobileConversationContextErrorCode.PROTOCOL_INVALID) {
                         "工具调用或对话协议校验未通过"
                     } else "立项对话上下文整理失败"
                     else -> "立项对话上下文"
@@ -297,6 +309,9 @@ private fun CreationConversationContextCard(
                 HorizontalDivider()
                 ConversationContextDetail(state)
             }
+            if (state.errorCode == MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT) {
+                OutlinedButton(onClick = onConfigureApi) { Text("调整历史整理输出预算") }
+            }
             if (requiresDirectContextCapacityConfiguration(state)) {
                 OutlinedButton(onClick = onConfigureApi) { Text("配置上下文容量") }
             }
@@ -310,7 +325,7 @@ private fun CreationConversationContextCard(
                     if (state.retryable) {
                         Button(onClick = onRetry, enabled = canRetry) { Text("重试本轮要求") }
                     }
-                    OutlinedButton(onClick = onNewCreation) { Text("新建立项") }
+                    OutlinedButton(onClick = onNewConversation, enabled = canRetry) { Text("新建对话") }
                 }
             }
         }

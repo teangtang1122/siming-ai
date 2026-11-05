@@ -36,6 +36,7 @@ internal class MobileWorkspaceAgent(
     private val conversationStore: MobileAssistantConversationStore,
     private val loadSnapshot: suspend (String) -> List<ReplicaEntity>,
     private val saveEntity: suspend (String, String, String, JsonObject) -> String,
+    private val resolveTaskConfig: (DirectApiConfig, String) -> DirectApiConfig,
 ) {
     private val contract = PcPromptContract(context.applicationContext)
     private val contextPolicies = PcContextManifestPolicy(context.applicationContext)
@@ -887,23 +888,23 @@ internal class MobileWorkspaceAgent(
         "chapter_writer" -> chapterWriter(
             projectId,
             args,
-            mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_WRITING),
+            resolveTaskConfig(config, DirectApiConfig.TASK_WRITING),
             onEvent,
         )
         "character_writer" -> characterWriter(
             projectId,
             args,
-            mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_PLANNING),
+            resolveTaskConfig(config, DirectApiConfig.TASK_PLANNING),
         )
         "outline_writer" -> outlineWriter(
             projectId,
             args,
-            mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_PLANNING),
+            resolveTaskConfig(config, DirectApiConfig.TASK_PLANNING),
         )
         "worldbuilding_writer" -> worldbuildingWriter(
             projectId,
             args,
-            mobileCapacityBoundTaskConfig(config, DirectApiConfig.TASK_PLANNING),
+            resolveTaskConfig(config, DirectApiConfig.TASK_PLANNING),
         )
         "create_character" -> createCharacter(projectId, args)
         "update_character" -> updateCharacter(projectId, args)
@@ -2286,7 +2287,7 @@ internal class MobileWorkspaceAgent(
     )
 
     private fun contextTaskConfig(config: DirectApiConfig, taskType: String): DirectApiConfig =
-        mobileCapacityBoundTaskConfig(
+        resolveTaskConfig(
             config,
             if (taskType == "outline_planning") {
                 DirectApiConfig.TASK_PLANNING

@@ -216,6 +216,8 @@ internal class MobileDirectConversationContextRuntime(
                 put("context_window_tokens", contextWindow)
                 put("max_output_tokens", maxOutputTokens)
                 put("safety_margin_tokens", effectiveConfig.safetyMarginTokens)
+                put("checkpoint_output_tokens", effectiveConfig.checkpointOutputTokens)
+                put("model_output_capacity", effectiveConfig.checkpointOutputCapacity())
                 put("tool_choice", toolChoice?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
                 put("temperature", temperature)
                 put("extra_body", extraBody ?: JsonObject(emptyMap()))
@@ -223,6 +225,9 @@ internal class MobileDirectConversationContextRuntime(
         )
         val systemContract = MobileSystemContract(promptHash, toolSchemaHash)
         var current = conversation
+        var checkpointCalls = MobileCheckpointCallBudget()
+        var batchLimit = Int.MAX_VALUE
+        var checkpointInitialOutput = effectiveConfig.checkpointOutputTokens
         while (true) {
             val emptyBudget = buildMobileRequestBudget(
                 binding = binding,
@@ -352,10 +357,11 @@ internal class MobileDirectConversationContextRuntime(
                 config = effectiveConfig,
                 counter = counter,
                 contextWindowTokens = contextWindow,
-                maxOutputTokens = minOf(maxOutputTokens, CHECKPOINT_OUTPUT_TOKENS),
+                maxOutputTokens = minOf(checkpointInitialOutput, effectiveConfig.checkpointOutputCapacity()),
                 safetyMarginTokens = effectiveConfig.safetyMarginTokens,
+                callBudget = checkpointCalls,
             )
-            val sourceTurns = largestCheckpointPrefix(generator, current, range, binding)
+            val sourceTurns = largestCheckpointPrefix(generator, current, range.take(batchLimit), binding)
             val sourceFirst = sourceTurns.first().firstSequence
             val sourceLast = sourceTurns.last().lastSequence
             val originalTokens = sourceTurns.sumOf { counter.countValue(it.toContextJson()) }
@@ -455,16 +461,32 @@ internal class MobileDirectConversationContextRuntime(
                         conversationId = current.conversationId,
                         checkpointId = pending.checkpoint.id,
                         expectedContextStateRevision = compressing.contextStateRevision,
+                        errorCode = if (error is MobileCheckpointOutputLimitException) MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT
+                            else MobileConversationContextErrorCode.CHECKPOINT_FAILED,
                         errorDetail = error.message ?: "checkpoint 生成失败",
                     )
                 }
+                if (error is MobileCheckpointOutputLimitException && checkpointCalls.remaining > 0 &&
+                    (sourceTurns.size > 1 || (error.nextOutputTokens ?: 0) > checkpointInitialOutput)) {
+                    batchLimit = maxOf(1, sourceTurns.size / 2)
+                    checkpointInitialOutput = maxOf(checkpointInitialOutput, error.nextOutputTokens ?: 0)
+                    current = conversationStore.snapshot(storageId, current.conversationId)
+                        ?: error("整理失败后会话丢失")
+                    continue
+                }
                 throw MobileConversationContextException(
-                    MobileConversationContextErrorCode.CHECKPOINT_FAILED,
+                    if (error is MobileCheckpointOutputLimitException) MobileConversationContextErrorCode.CHECKPOINT_OUTPUT_LIMIT
+                    else MobileConversationContextErrorCode.CHECKPOINT_FAILED,
                     "上下文准备受阻，后续步骤已暂停：${error.message}",
                 )
             }
             current = conversationStore.snapshot(storageId, current.conversationId)
                 ?: error("checkpoint 发布后会话丢失")
+            // A newly published segment ends this recovery chain. Further source
+            // segments have their own bounded chain, as on PC/API.
+            checkpointCalls = MobileCheckpointCallBudget()
+            batchLimit = Int.MAX_VALUE
+            checkpointInitialOutput = effectiveConfig.checkpointOutputTokens
         }
     }
 
@@ -504,7 +526,4 @@ internal class MobileDirectConversationContextRuntime(
         return accepted
     }
 
-    private companion object {
-        const val CHECKPOINT_OUTPUT_TOKENS = 4_000
-    }
 }

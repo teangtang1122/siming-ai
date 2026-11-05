@@ -265,7 +265,20 @@ private fun renderMobileCheckpointReference(checkpoint: MobileConversationCheckp
     "[/HISTORICAL_REFERENCE_DATA]",
 ).joinToString("\n")
 
-/** Isolated, tool-free checkpoint model adapter with one bounded repair. */
+internal class MobileCheckpointOutputLimitException(val nextOutputTokens: Int? = null) : IllegalStateException(
+    "历史整理输出超限；完整历史与有效检查点已保留，请提高整理预算/模型输出容量，或新建对话",
+)
+
+internal class MobileCheckpointCallBudget(private val limit: Int = 6) {
+    var remaining: Int = limit
+        private set
+    fun consume() {
+        check(remaining > 0) { "历史整理重试耗尽（总调用上限 $limit）" }
+        remaining--
+    }
+}
+
+/** Tool-free adapter; structure repair and length recovery share a hard call budget. */
 internal class MobileDirectCheckpointGenerator(
     private val directApi: DirectApiClient,
     private val config: DirectApiConfig,
@@ -273,45 +286,66 @@ internal class MobileDirectCheckpointGenerator(
     private val contextWindowTokens: Int,
     private val maxOutputTokens: Int,
     private val safetyMarginTokens: Int,
+    private val callBudget: MobileCheckpointCallBudget = MobileCheckpointCallBudget(),
 ) : MobileConversationCheckpointGenerator {
     override suspend fun generate(
         request: MobileCheckpointGenerationRequest,
     ): MobileCheckpointSemanticDraft {
         val prompt = checkpointPrompt(request)
-        requirePriorQuoteRollupFits(request)
-        requireCheckpointPromptFits(prompt)
-        val first = directApi.complete(
-            config = config,
-            systemPrompt = CHECKPOINT_SYSTEM,
-            userPrompt = prompt,
-            maxOutputTokens = maxOutputTokens,
-            temperature = 0.0,
-        )
-        return runCatching { parseAndValidateCheckpointDraft(first, request) }.getOrElse { firstError ->
-            val repairPrompt = listOf(
-                prompt,
-                "上一次输出未通过确定性校验。只修复 JSON 结构或引用位置，不得添加来源中不存在的事实。",
-                mobileCanonicalJson(buildJsonObject {
-                    put("validation_error", firstError.message.orEmpty().take(1_000))
-                    put("invalid_output", first.take(16_000))
-                    put("output_schema", CHECKPOINT_OUTPUT_SCHEMA)
-                }),
-            ).joinToString("\n")
-            requireCheckpointPromptFits(repairPrompt)
-            val repaired = directApi.complete(
-                config = config,
-                systemPrompt = CHECKPOINT_SYSTEM,
-                userPrompt = repairPrompt,
-                maxOutputTokens = maxOutputTokens,
-                temperature = 0.0,
-            )
-            runCatching { parseAndValidateCheckpointDraft(repaired, request) }.getOrElse { secondError ->
-                throw MobileConversationContextException(
-                    MobileConversationContextErrorCode.CHECKPOINT_FAILED,
-                    "checkpoint 模型两次返回无效结构：${secondError.message}",
+        var output = initialOutputTokens(request, prompt)
+        requireCheckpointPromptFits(prompt, output)
+        var repairUsed = false
+        var requestPrompt = prompt
+        var lengthAttempts = 0
+        while (true) {
+            callBudget.consume()
+            val raw = try {
+                directApi.complete(
+                    config = config, systemPrompt = CHECKPOINT_SYSTEM,
+                    userPrompt = requestPrompt, maxOutputTokens = output, temperature = 0.0,
                 )
+            } catch (error: com.siming.mobile.data.network.DirectIncompleteResponseException) {
+                if (!error.outputLimited) throw error
+                val capacity = minOf(config.checkpointOutputCapacity(),
+                    contextWindowTokens - safetyMarginTokens - requestInputTokens(requestPrompt))
+                val next = minOf(output.toLong() * 2, capacity.toLong()).toInt()
+                if (++lengthAttempts >= 2 || next <= output || callBudget.remaining == 0) {
+                    throw MobileCheckpointOutputLimitException(minOf(output.toLong() * 2, config.checkpointOutputCapacity().toLong()).toInt())
+                }
+                if (requestInputTokens(requestPrompt, next) + next + safetyMarginTokens > contextWindowTokens) {
+                    throw MobileCheckpointOutputLimitException(minOf(output.toLong() * 2, config.checkpointOutputCapacity().toLong()).toInt())
+                }
+                output = next
+                continue
+            }
+            try {
+                return parseAndValidateCheckpointDraft(raw, request)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                if (repairUsed || callBudget.remaining == 0) throw MobileConversationContextException(
+                    MobileConversationContextErrorCode.CHECKPOINT_FAILED,
+                    "历史整理结构或引用校验失败：${error.message}",
+                )
+                repairUsed = true
+                requestPrompt = listOf(prompt,
+                    "上一次输出未通过校验；只修复结构与引用，不得丢弃有效事项。",
+                    mobileCanonicalJson(buildJsonObject {
+                        put("validation_error", error.message.orEmpty().take(1_000))
+                        put("invalid_output", raw)
+                    })).joinToString("\n")
+                requireCheckpointPromptFits(requestPrompt, output)
             }
         }
+    }
+
+    private fun initialOutputTokens(request: MobileCheckpointGenerationRequest, prompt: String): Int {
+        val minimum = requirePriorQuoteRollupFits(request)
+        val capacity = minOf(config.checkpointOutputCapacity(),
+            contextWindowTokens - safetyMarginTokens - requestInputTokens(prompt))
+        if (capacity < minimum) throw MobileConversationContextException(
+            MobileConversationContextErrorCode.REQUIRED_STATE_OVER_CAPACITY,
+            "完整来源和有效作者原话状态无法共同放入历史整理容量")
+        return minOf(maxOf(maxOutputTokens, minimum), capacity)
     }
 
     internal fun parseAndValidateCheckpointDraft(
@@ -338,8 +372,8 @@ internal class MobileDirectCheckpointGenerator(
     }
 
     fun promptFits(request: MobileCheckpointGenerationRequest): Boolean = runCatching {
-        requirePriorQuoteRollupFits(request)
-        requireCheckpointPromptFits(checkpointPrompt(request))
+        val prompt = checkpointPrompt(request)
+        requireCheckpointPromptFits(prompt, initialOutputTokens(request, prompt))
     }.isSuccess
 
     internal fun promptFits(userPrompt: String): Boolean = runCatching {
@@ -349,7 +383,7 @@ internal class MobileDirectCheckpointGenerator(
     internal fun requestInputTokens(request: MobileCheckpointGenerationRequest): Int =
         requestInputTokens(checkpointPrompt(request))
 
-    internal fun requestInputTokens(userPrompt: String): Int {
+    internal fun requestInputTokens(userPrompt: String, outputTokens: Int = maxOutputTokens): Int {
         val protocols = when (config.protocol) {
             DirectApiConfig.PROTOCOL_AUTO -> listOf(
                 DirectApiConfig.PROTOCOL_RESPONSES,
@@ -364,7 +398,7 @@ internal class MobileDirectCheckpointGenerator(
                     protocol = protocol,
                     systemPrompt = CHECKPOINT_SYSTEM,
                     userPrompt = userPrompt,
-                    maxOutputTokens = maxOutputTokens,
+                    maxOutputTokens = outputTokens,
                     temperature = 0.0,
                     extraBody = null,
                 ),
@@ -372,7 +406,7 @@ internal class MobileDirectCheckpointGenerator(
         }
     }
 
-    private fun requirePriorQuoteRollupFits(request: MobileCheckpointGenerationRequest) {
+    private fun requirePriorQuoteRollupFits(request: MobileCheckpointGenerationRequest): Int {
         val activeQuotes = request.priorSegments.lastOrNull()?.authorQuotes.orEmpty()
             .filterNot { it.superseded }
         val minimumOutput = buildJsonObject {
@@ -391,17 +425,19 @@ internal class MobileDirectCheckpointGenerator(
                 }
             })
         }
-        if (counter.countValue(minimumOutput) > maxOutputTokens) {
+        val required = counter.countValue(minimumOutput)
+        if (required > config.checkpointOutputCapacity()) {
             throw MobileConversationContextException(
                 MobileConversationContextErrorCode.REQUIRED_STATE_OVER_CAPACITY,
                 "仍有效的作者原话状态无法完整放入 checkpoint 模型输出预算",
             )
         }
+        return required
     }
 
-    private fun requireCheckpointPromptFits(userPrompt: String) {
-        val used = requestInputTokens(userPrompt)
-        val limit = contextWindowTokens - maxOutputTokens - safetyMarginTokens
+    private fun requireCheckpointPromptFits(userPrompt: String, outputTokens: Int = maxOutputTokens) {
+        val used = requestInputTokens(userPrompt, outputTokens)
+        val limit = contextWindowTokens - outputTokens - safetyMarginTokens
         if (limit < 0 || used > limit) {
             throw MobileConversationContextException(
                 MobileConversationContextErrorCode.CHECKPOINT_FAILED,

@@ -117,6 +117,10 @@ REMOTE_ANDROID_AUTHORING_PATHS: dict[str, frozenset[str]] = {
     # wizard or a second persistence shape.
     "/api/v1/novel-creation/presets": frozenset({"GET"}),
     "/api/v1/novel-creation/sessions": frozenset({"GET"}),
+    "/api/v1/novel-creation/sessions/{session_id}/conversations/{conversation_id}": frozenset(
+        {"GET"}
+    ),
+    "/api/v1/novel-creation/sessions/{session_id}/conversations": frozenset({"GET", "POST"}),
     "/api/v1/novel-creation/start": frozenset({"POST"}),
     "/api/v1/novel-creation/finalize": frozenset({"POST"}),
     "/api/v1/novel-creation/sessions/{session_id}": frozenset({"GET", "PATCH", "DELETE"}),

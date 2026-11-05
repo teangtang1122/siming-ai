@@ -12,6 +12,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ...architecture.tool_spec import ToolInputSchemaValidationError, _validate_exported_schema
+from ...core.exceptions import LLMToolArgumentsError
+from .tool_argument_recovery import record_tool_argument_failure
 from ...database.models import (
     CatalogingCandidate,
     CatalogingChapterRun,
@@ -87,7 +89,7 @@ def _selection_context(
 ) -> tuple[list[str], dict[str, list[str]], int | None, dict[str, int], dict[str, list[str]]]:
     """Scope outline IDs to this saved chapter; prose never selects them here."""
     from .candidate_io import candidate_payload
-    from .scene_contract import plan_scene_count
+    from .scene_contract import plan_scene_count, active_scene_candidates
 
     chapter = db.get(Chapter, run.chapter_id)
     linked_id = chapter.outline_node_id if chapter is not None else None
@@ -102,6 +104,8 @@ def _selection_context(
             OutlineNode.node_type == "section",
         ).all() if row.source_chapter_id in (None, run.chapter_id)]
     choices = list(CATALOGING_SELECTION_TYPES)
+    if not active_scene_candidates(db, run):
+        choices.remove("scene_outline_replace")
     choices.remove("outline_create_chapter" if linked is not None else "outline_update_chapter")
     if not sections:
         choices.remove("outline_update_section")
@@ -148,6 +152,7 @@ def cataloging_agent_tool_schemas(
     scene_count: int | None = None,
     candidate_limits: dict[str, int] | None = None,
     link_names: dict[str, list[str]] | None = None,
+    scene_candidate_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Expose only the one candidate shape selected for this model step."""
     from ..workspace.registry import registry
@@ -171,6 +176,13 @@ def cataloging_agent_tool_schemas(
                 link_worldbuilding=(link_names or {}).get("worldbuilding"),
             )
         )
+        if selected_type == "scene_outline_replace" and scene_candidate_ids is not None:
+            candidate_array["items"]["properties"]["expected_candidate_ids"] = {
+                "type": "array", "uniqueItems": True,
+                "minItems": len(scene_candidate_ids), "maxItems": len(scene_candidate_ids),
+                "items": {"type": "string", "enum": scene_candidate_ids},
+                "description": "逐项复制当前待提交场景候选 ID；不是正式大纲 ID。",
+            }
         candidate_array["description"] = (
             f"本步骤只提交 {item_type} 类型；同类可一次或分批提交，格式保持到你重新选择类型。"
         )
@@ -232,6 +244,9 @@ async def _execute_cataloging_call(
         }
     except (ValueError, TypeError) as exc:
         result = {"tool": name, "status": "error", "detail": str(exc)}
+    if result.get("status") == "error" or name == CATALOGING_SELECT_TYPES_TOOL:
+        from .scene_contract import scene_repair_context
+        result.setdefault("data", {})["scene_repair"] = scene_repair_context(db, run)
     return result
 
 
@@ -322,6 +337,7 @@ def _cataloging_step_contract(
     selection_types, target_ids, scene_count, candidate_limits, link_names = (
         _selection_context(db, run) if not summary_required else (None, None, None, None, None)
     )
+    from .scene_contract import active_scene_candidates
     return cataloging_agent_tool_schemas(
         summary_required=summary_required,
         selected_type=selected_type,
@@ -330,6 +346,7 @@ def _cataloging_step_contract(
         scene_count=scene_count,
         candidate_limits=candidate_limits,
         link_names=link_names,
+        scene_candidate_ids=[row.id for row in active_scene_candidates(db, run)],
     ), selected_type
 
 
@@ -357,6 +374,7 @@ async def run_cataloging_agent(
     text_only_responses = 0
     batch_rejections: dict[str, int] = {}
     selected_type: str | None = None
+    argument_failures = 0
     for step in range(48):
         check_active(db, job)
         schemas, selected_type = _cataloging_step_contract(db, run, selected_type)
@@ -369,18 +387,21 @@ async def run_cataloging_agent(
         if request.checkpointed and not checkpointed:
             yield request.checkpoint_event(step + 1)
         checkpointed = request.checkpointed
-        response = await collect_tool_turn(
-            gateway,
-            messages=request.messages,
-            tools=schemas,
-            tool_choice="auto",
-            model=job.model,
-            temperature=CATALOGING_TEMPERATURE,
-            max_tokens=request.budget.output_reserve_tokens,
-            timeout=CATALOGING_TIMEOUT_SECONDS,
-            retry=1,
-            extra_body=cataloging_extra_body(job.model),
-        )
+        try:
+            response = await collect_tool_turn(
+                gateway, messages=request.messages, tools=schemas, tool_choice="auto",
+                model=job.model, temperature=CATALOGING_TEMPERATURE,
+                max_tokens=request.budget.output_reserve_tokens,
+                timeout=CATALOGING_TIMEOUT_SECONDS, retry=1,
+                extra_body=cataloging_extra_body(job.model),
+            )
+        except LLMToolArgumentsError as error:
+            check_active(db, job)
+            argument_failures += 1
+            yield record_tool_argument_failure(
+                db, run, messages, error, argument_failures, allowed, step + 1,
+            )
+            continue
         check_active(db, job)
         assistant = {
             key: response[key]

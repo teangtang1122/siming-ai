@@ -37,6 +37,7 @@ internal class CatalogingContract(root: JsonObject) {
         sectionOutlineIds: List<String> = emptyList(),
         sceneCount: Int? = null,
         summary: JsonObject? = null,
+        sceneCandidateIds: List<String> = emptyList(),
     ): JsonArray {
         val scopedType = if (summaryRequired) "chapter_summary" else selectedType
         val characters = summary?.objects("character_bindings").orEmpty()
@@ -79,6 +80,14 @@ internal class CatalogingContract(root: JsonObject) {
                         "scene_number" to JsonObject(properties.getValue("scene_number").jsonObject +
                             ("maximum" to JsonPrimitive(sceneCount)))
                     ) else emptyMap()))
+                if (selectedType == "scene_outline_replace") {
+                    scopedProperties = JsonObject(scopedProperties + ("expected_candidate_ids" to buildJsonObject {
+                        put("type", "array"); put("uniqueItems", true)
+                        put("minItems", sceneCandidateIds.size); put("maxItems", sceneCandidateIds.size)
+                        put("items", buildJsonObject { put("type", "string"); put("enum", jsonStrings(sceneCandidateIds)) })
+                        put("description", "逐项复制当前待提交场景候选 ID；不是正式大纲 ID。")
+                    }))
+                }
                 if (selectedType == "chapter_link" && summary != null) {
                     val characterNames = characters.map { it.text("name") }
                     val worldNames = worldbuilding.map { it.text("name") }
@@ -149,6 +158,7 @@ internal class CatalogingContract(root: JsonObject) {
                     "outline_create_chapter" -> chapterOutlineId == null
                     "outline_update_chapter" -> chapterOutlineId != null
                     "outline_update_section" -> sectionOutlineIds.isNotEmpty()
+                    "scene_outline_replace" -> sceneCandidateIds.isNotEmpty()
                     else -> true
                 }
             }

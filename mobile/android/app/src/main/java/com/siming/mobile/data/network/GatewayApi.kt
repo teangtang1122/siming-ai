@@ -41,6 +41,18 @@ class GatewayHttpException(val status: Int, override val message: String) : IOEx
 
 @OptIn(ExperimentalSerializationApi::class)
 class GatewayApi(private val tokenStore: SecureTokenStore) {
+    suspend fun creationConversations(connection: GatewayConnection, sessionId: String): JsonObject =
+        request<ApiEnvelope<JsonObject>>(connection.baseUrl,
+            "${PcApiPaths.novelCreationSession(sessionId)}/conversations", "GET").data
+
+    suspend fun creationConversation(connection: GatewayConnection, sessionId: String, conversationId: String): JsonObject =
+        request<ApiEnvelope<JsonObject>>(connection.baseUrl,
+            PcApiPaths.novelCreationConversation(sessionId, conversationId), "GET").data
+
+    suspend fun createCreationConversation(connection: GatewayConnection, sessionId: String): JsonObject =
+        request<ApiEnvelope<JsonObject>>(connection.baseUrl,
+            "${PcApiPaths.novelCreationSession(sessionId)}/conversations", "POST", "{}").data
+
     internal suspend fun contextTraceRequest(
         connection: GatewayConnection, suffix: String, method: String = "GET", body: JsonObject? = null,
     ): JsonObject = request<ApiEnvelope<JsonObject>>(

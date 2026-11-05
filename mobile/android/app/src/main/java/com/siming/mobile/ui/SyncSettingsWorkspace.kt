@@ -348,7 +348,8 @@ internal fun MobileSettingsWorkspace(
                         Column(Modifier.weight(1f)) {
                             Text(directApi?.displayName ?: "手机直连 API", fontWeight = FontWeight.SemiBold)
                             Text(
-                                directApi?.model ?: "未配置；仍可连接 Gateway 使用 PC 模型",
+                                directApi?.let { "默认：${it.model} · 已保存 ${ui.directApiProfiles.size} 组 API" }
+                                    ?: "未配置；仍可连接 Gateway 使用 PC 模型",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -360,7 +361,7 @@ internal fun MobileSettingsWorkspace(
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = viewModel::testDirectApi, enabled = !ui.busy, modifier = Modifier.weight(1f)) { Text("测试") }
-                            OutlinedButton(onClick = onConfigureApi, modifier = Modifier.weight(1f)) { Text("编辑") }
+                            OutlinedButton(onClick = onConfigureApi, modifier = Modifier.weight(1f)) { Text("管理") }
                             OutlinedButton(onClick = { showApiDetails = true }, modifier = Modifier.weight(1f)) { Text("详情") }
                         }
                     }
@@ -432,7 +433,7 @@ internal fun MobileSettingsWorkspace(
                 TextButton(onClick = { showClearApi = true }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.DeleteOutline, null, tint = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.width(7.dp))
-                    Text("移除手机 API 配置", color = MaterialTheme.colorScheme.error)
+                    Text("移除默认手机 API 配置", color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -458,8 +459,8 @@ internal fun MobileSettingsWorkspace(
     if (showClearApi) {
         AlertDialog(
             onDismissRequest = { showClearApi = false },
-            title = { Text("移除手机 API 配置？") },
-            text = { Text("只会删除 Android Keystore 保护的 API 配置；本机作品和 Gateway 配对不会受影响。") },
+            title = { Text("移除默认手机 API 配置？") },
+            text = { Text("删除当前默认 API；如还有其他配置或任务绑定，请先在 API 管理中调整。本机作品和 Gateway 配对不受影响。") },
             confirmButton = {
                 TextButton(onClick = { showClearApi = false; viewModel.clearDirectApi() }) {
                     Text("确认移除", color = MaterialTheme.colorScheme.error)

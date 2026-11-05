@@ -131,10 +131,10 @@ internal fun ProjectToolsPanel(
                             "interrupted" -> "上次建档已中断"
                             else -> "建档失败"
                         }, style = MaterialTheme.typography.bodySmall)
-                        run.error?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                         if (run.status in setOf("failed", "cancelled", "interrupted")) {
                             TextButton(onClick = { viewModel.startCataloging(project.projectId, listOf(run.chapterId)) }, enabled = canCatalog && !ui.catalogingRunning) { Text("重试本章建档") }
                         }
+                        run.error?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                     }
                 }
             }

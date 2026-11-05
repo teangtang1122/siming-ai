@@ -1,3 +1,4 @@
+import { parseModelRequestParameters } from './modelRequestParameters'
 import { formatApiDateTime } from '../../utils/dateTime'
 import { useState, useCallback, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -199,6 +200,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [form] = Form.useForm()
   const modalProvider = Form.useWatch('provider', form)
+  const parameterModel = Form.useWatch('default_model', form)
   const contextProfileSource = Form.useWatch('context_profile_source', form)
 
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
@@ -558,6 +560,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
           default_model: defaultModel,
           base_url_override: cfg.base_url_override || '',
           api_protocol: cfg.api_protocol || 'auto',
+          model_request_parameter_drafts: Object.fromEntries(Object.entries(cfg.model_request_parameters || {}).map(([id, parameters]) => [id, JSON.stringify(parameters, null, 2)])),
           provider_type: cfg.provider_type || (isLocalCliProvider(cfg.provider) ? 'local_cli' : 'api'),
           cli_command: cfg.cli_command || DEFAULT_CLI_COMMANDS[cfg.provider] || '',
           cli_args: cfg.cli_args || DEFAULT_CLI_ARGS[cfg.provider] || '',
@@ -619,6 +622,7 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         deconstruct_input_char_limit: values.deconstruct_input_char_limit || null,
         deconstruct_item_char_limit: values.deconstruct_item_char_limit || null,
         available_models: modelOptions,
+        model_request_parameters: isCli ? {} : parseModelRequestParameters(values.model_request_parameter_drafts),
       })
       message.success('配置已保存')
       setModalOpen(false)
@@ -782,6 +786,8 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
         cli_command: isCli ? values.cli_command || DEFAULT_CLI_COMMANDS[provider] : undefined,
         cli_args: isCli ? values.cli_args || DEFAULT_CLI_ARGS[provider] : undefined,
         model: values.default_model,
+        max_output_tokens: values.max_output_tokens || undefined,
+        model_request_parameters: isCli ? {} : parseModelRequestParameters(values.model_request_parameter_drafts),
       })
       const protocol = response.data.data?.api_protocol
       const protocolLabel = protocol === 'responses' ? 'Responses API' : 'Chat Completions'
@@ -1481,6 +1487,15 @@ function SettingsPage({ embedded = false }: SettingsPageProps = {}) {
                 { value: 'responses', label: 'Responses API' },
               ]}
             />
+          </Form.Item>
+          <Form.Item
+            name={['model_request_parameter_drafts', parameterModel || '__new__']}
+            label={`高级请求参数 · ${parameterModel || '先选择模型'}`}
+            initialValue="{}"
+            extra={'按 API 与模型独立保存。{} 使用自动适配；{"temperature":null} 省略温度。推理字段按所选协议和服务商文档填写；输出额度使用专用设置。'}
+            rules={[{ validator: async (_, value) => { parseModelRequestParameters({ [parameterModel || '__new__']: value || '{}' }) } }]}
+          >
+            <Input.TextArea disabled={!parameterModel} autoSize={{ minRows: 3, maxRows: 10 }} placeholder={'{"temperature":null}'} />
           </Form.Item>
           {modalProvider && (
             <Alert

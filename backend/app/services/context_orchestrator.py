@@ -90,6 +90,7 @@ from .context_semantics import (
     unpack_float32 as _unpack_float32,
 )
 from .model_context_profiles import (
+    ResolvedModelContextProfile as ResolvedModelContextProfile,
     configured_model_context_profile,
     local_context_task_type,
     resolved_cloud_model_capacity,
@@ -236,16 +237,6 @@ TASK_CONTEXT_CONTRACTS: dict[str, TaskContextContract] = {
         output_ratio=0.30,
     ),
 }
-
-
-@dataclass(frozen=True)
-class ResolvedModelContextProfile:
-    provider: str
-    model_name: str
-    context_window_tokens: int
-    max_output_tokens: int | None
-    safety_margin_tokens: int
-    known: bool
 
 
 def _project_style_text(
@@ -629,6 +620,7 @@ class ContextOrchestrator:
             .filter(func.lower(func.trim(APIConfig.provider)) == provider)
             .first()
         )
+        request_parameters = (getattr(provider_config, "model_request_parameters", None) or {}).get(model_name, {})
         configured_output_limit = (
             int(provider_config.max_output_tokens)
             if provider_config and provider_config.max_output_tokens
@@ -648,6 +640,7 @@ class ContextOrchestrator:
                 int(profile.context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS),
             )
             return ResolvedModelContextProfile(
+                request_parameters=request_parameters,
                 provider=provider,
                 model_name=model_name,
                 context_window_tokens=(
@@ -666,6 +659,7 @@ class ContextOrchestrator:
             )
         if request_capacity is not None and request_capacity.known:
             return ResolvedModelContextProfile(
+                request_parameters=request_parameters,
                 provider=provider,
                 model_name=model_name,
                 context_window_tokens=request_capacity.context_window_tokens,
@@ -675,6 +669,7 @@ class ContextOrchestrator:
             )
         if local_context:
             return ResolvedModelContextProfile(
+                request_parameters=request_parameters,
                 provider=provider,
                 model_name=model_name,
                 context_window_tokens=local_context,
@@ -690,6 +685,7 @@ class ContextOrchestrator:
         )
         if cloud_capacity is not None:
             return ResolvedModelContextProfile(
+                request_parameters=request_parameters,
                 provider=provider,
                 model_name=model_name,
                 context_window_tokens=cloud_capacity.context_window_tokens,
@@ -699,6 +695,7 @@ class ContextOrchestrator:
             )
         if request_capacity is not None:
             return ResolvedModelContextProfile(
+                request_parameters=request_parameters,
                 provider=provider,
                 model_name=model_name,
                 context_window_tokens=request_capacity.context_window_tokens,
@@ -714,6 +711,7 @@ class ContextOrchestrator:
             max(1, fallback_window - DEFAULT_SAFETY_MARGIN_TOKENS - 1),
         )
         return ResolvedModelContextProfile(
+            request_parameters=request_parameters,
             provider=provider,
             model_name=model_name,
             context_window_tokens=fallback_window,

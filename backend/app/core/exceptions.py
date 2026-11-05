@@ -50,12 +50,49 @@ class LLMError(AppException):
         super().__init__(code=502, message=message, status_code=502)
 
 
+class LLMConnectionError(LLMError):
+    """A provider SDK connection failure with a known transport phase."""
+
+    def __init__(self, phase: str, *, request_not_sent: bool = False):
+        self.phase = phase
+        self.request_not_sent = request_not_sent
+        self.connection_recovery_exhausted = False
+        super().__init__(
+            "连接模型服务失败，尚未收到响应；请检查代理和网络后重试。"
+            if phase == "connect" else "模型网络连接中断，请检查代理和网络后重试。"
+        )
+
+
+class LLMTimeoutError(LLMError):
+    """Transport phase survives SDK wrapping and safe public projection."""
+
+    def __init__(self, phase: str, timeout_seconds: float | None = None, *, request_not_sent: bool = False):
+        self.phase = phase
+        self.request_not_sent = request_not_sent
+        self.connection_recovery_exhausted = False
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            "连接模型服务超时，尚未收到响应；请检查代理和网络后重试。"
+            if phase == "connect" else "等待模型响应超时，请稍后重试。"
+        )
+
+
 class LLMOutputLimitError(LLMError):
     """A model exhausted one response before completing a usable tool call."""
 
     def __init__(self, max_tokens: int | None):
         self.max_tokens = max_tokens
         super().__init__("模型单次输出额度已用尽，仍未形成完整工具调用")
+
+
+class LLMToolArgumentsError(LLMError):
+    """Completed native identities with invalid arguments; never executable."""
+
+    def __init__(self, assistant_message: dict, validation_errors: list[dict]):
+        self.assistant_message = assistant_message
+        self.validation_errors = validation_errors
+        super().__init__("模型返回的工具参数 JSON 无效，整批未执行：" +
+                         "；".join(item["message"] for item in validation_errors))
 
 
 class LLMIncompleteResponseError(LLMError):
@@ -69,9 +106,11 @@ class LLMIncompleteResponseError(LLMError):
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """Handle custom application exceptions."""
+    data = {"timeout_phase": exc.phase, "timeout_seconds": exc.timeout_seconds} if isinstance(exc, LLMTimeoutError) else (
+        {"connection_phase": exc.phase} if isinstance(exc, LLMConnectionError) else None)
     return JSONResponse(
         status_code=exc.status_code,
-        content=ApiResponse.error(code=exc.code, message=exc.message).model_dump()
+        content=ApiResponse.error(code=exc.code, message=exc.message, data=data).model_dump()
     )
 
 

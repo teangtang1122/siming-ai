@@ -29,9 +29,9 @@ Siming is a free and open-source, local-first AI workspace for planning, writing
 
 *新书立项工作台：先形成一套故事方向，再通过对话持续调整角色、世界观、卷纲和前 3 章细纲。图中内容均为虚构演示数据。*
 
-> **当前版本 3.5.3**：桌宠新增朱红常服，优化眨眼、注视、轻点回应和拖动反馈；右键菜单可再次右键收起，修复退出贴边偷瞧时角色顶部被裁切的问题。PC、Android 和 Gateway 同步版本号；桌面悬浮窗仅限 Windows。完整变化见 [3.5.3 发布说明](docs/release-notes-3.5.3.md)。
+> **当前版本 3.5.4**：手机支持保存多组 API、同一立项新建和切换对话；修复历史整理输出超限恢复、模型请求参数兼容、建档工具参数修正和桌宠黑底问题。PC、Android 和 Gateway 同步版本号。完整变化见 [3.5.4 发布说明](docs/release-notes-3.5.4.md)。
 >
-> **本地模型实测：Qwen3.8 27B Q3 在 64K 上下文配置下已成功完成立项、写作、建档等完整流程；这表示该配置跑通过全流程，不代表所有轮次都不会失败。硬件、速度及验证边界见[本机评估](docs/qa/2026-09-24-qwen38-27b-local-evaluation.md)和下方[本地模型](#本地模型)。其他模型与 CLI 的可用性以实际连接测试为准。**
+> **模型实测：OpenAI GPT-6-Luna 已通过 PC 立项、章节草稿生成及用户复测；DeepSeek 已通过 PC 建档实测；本地 Qwen3.8 27B Q3 在 64K 上下文配置下已完成立项、写作、建档流程。各项测试的范围见下方[已实测模型](#已实测模型)，不代表所有轮次都不会失败。**
 
 ## 它解决什么问题
 
@@ -207,6 +207,20 @@ docker compose -f compose.gateway.yml up -d
 司命可以使用 OpenAI、Anthropic Claude、DeepSeek、Google Gemini、通义千问、OpenAI 兼容中转站，也可以调用 Claude Code、Codex、OpenCode、DeepSeek Harness（DSH）等本机 CLI，或使用 llama.cpp 运行本地 GGUF。仅“检测到命令”不等于可用；只有完成真实对话测试的模型才会进入新书、助手和写作流程。
 
 API 思考参数按实际接口地址、协议和任务设置：官方 DeepSeek 的纯文本请求与建档、硅基流动的 Chat Completions 建档默认关闭思考；显式参数优先。其他地址不会因为模型名称含 DeepSeek 就自动关闭思考，CLI 自身的思考配置也不由这套 HTTP 策略修改。工具流中断后只在完整响应校验通过时执行工具，重试次数有界；供应商持续超时仍可能暂停任务。详情见[模型请求参数策略](docs/model-request-policy.md)。
+
+PC 和手机均可为每个 API 的不同模型保存高级采样与推理参数，自动适配仍受实际端点、协议和模型能力约束。配置方法、连接恢复及错误边界见[模型请求参数与推理兼容性](docs/reference/model-request-parameters.md)。手机可保存多组 API，并为不同任务显式选择 API 与模型。
+
+### 已实测模型
+
+以下记录的是实际完成的测试范围，模型列表可拉取、连接测试通过不等于完整创作流程通过。
+
+| 模型与接入方式 | 已通过范围 | 验证边界 |
+| --- | --- | --- |
+| OpenAI `gpt-6-luna`，官方 API，PC Responses | 立项方向与前 3 章细纲生成；作品助手读取真实大纲、准备上下文并生成独立未保存章节草稿；安装版真实请求与用户复测通过 | 未将草稿自动写入正式章节；未据此宣称 Android 或所有协议、推理档位的完整流程均已通过 |
+| DeepSeek API，PC | 章节建档与工具参数格式修正后完成提交 | 本轮不把该结果外推到所有 DeepSeek 型号、代理端点或参数组合 |
+| 本地 Qwen3.8 27B UD-Q3_K_XL，llama.cpp，64K 上下文 | 立项、正文生成、作者保存与建档，以及后续章节大纲规划 | RTX 4060 Ti 16GB、约 32GB 系统内存；配置和测试边界见[本机评估](docs/qa/2026-09-24-qwen38-27b-local-evaluation.md) |
+
+GPT-6-Luna 的本轮验证覆盖 2026-11-04 至 2026-11-05，DeepSeek 建档记录来自 2026-11-04，本地 Qwen 的记录来自 2026-09-24。其他型号仍需使用自己的端点、凭据与参数完成真实对话测试。
 
 OpenCode 通过官方 CLI 调用用户配置的模型，但**免费标签不代表能在司命中使用**。当前接入实测收到 `OpenCode's free tier can only be used from within OpenCode`；[OpenCode 维护者说明免费层限制用于其他 Agent 执行框架](https://github.com/anomalyco/opencode/issues/49580#issuecomment-5723289721)。请选择获授权且测试通过的配置，费用、额度与适用范围以[官方说明](https://opencode.ai/docs/zen/)为准。快速开始已移除自动安装、轮试免费模型与恢复旧准备任务，模型 ID 不会被静默替换。
 

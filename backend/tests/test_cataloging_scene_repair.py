@@ -202,3 +202,44 @@ def test_middle_section_failure_rolls_back_the_entire_plan(archive, monkeypatch)
     result = original(db, job, run, raw, 10)
     assert "simulated later validation" in result["error"]
     assert snapshot(db) == before
+
+
+def test_scene_replacement_menu_and_schema_use_only_staged_candidate_ids(archive):
+    from app.services.cataloging.agent import _selection_context, _cataloging_step_contract, _execute_cataloging_call
+    from app.services.cataloging.scene_contract import active_scene_candidates
+
+    db, chapter, _, job, run = archive
+    result = create_candidate_from_raw(db, job, run,
+        {"type": "chapter_summary", **summary_payload(scene_count=4)}, 0)
+    assert "candidate" in result, result
+    assert "scene_outline_replace" not in _selection_context(db, run)[0]
+    before = snapshot(db)
+    schemas, _ = _cataloging_step_contract(db, run, None)
+    offered = {row["function"]["name"]: row for row in schemas}
+    rejected = asyncio.run(_execute_cataloging_call(db, job, run, "select_cataloging_candidate_types",
+        {"types": ["scene_outline_replace"]}, offered))
+    assert rejected["status"] == "error"
+    assert rejected["data"]["scene_repair"]["expected_candidate_ids"] == []
+    assert snapshot(db) == before
+    for number in range(1, 5):
+        assert "candidate" in create_candidate_from_raw(db, job, run, section(number), number)
+    assert "scene_outline_replace" in _selection_context(db, run)[0]
+    schemas, selected = _cataloging_step_contract(db, run, "scene_outline_replace")
+    assert selected == "scene_outline_replace"
+    save = next(row["function"] for row in schemas
+        if row["function"]["name"] == "save_external_cataloging_candidates")
+    expected = save["parameters"]["properties"]["candidates"]["items"]["properties"]["expected_candidate_ids"]
+    ids = [row.id for row in active_scene_candidates(db, run)]
+    assert expected["items"]["enum"] == ids
+    assert expected["minItems"] == expected["maxItems"] == len(ids) == 4
+    assert expected["uniqueItems"] is True
+    assert chapter.outline_node_id not in ids
+    before = snapshot(db)
+    raw = replacement(db, run)
+    raw["expected_candidate_ids"] = ["formal-outline-id"] * 4
+    offered = {row["function"]["name"]: row for row in schemas}
+    rejected = asyncio.run(_execute_cataloging_call(db, job, run, "save_external_cataloging_candidates",
+        {"job_id": job.id, "chapter_id": chapter.id, "candidates": [raw]}, offered))
+    assert rejected["status"] == "error"
+    assert rejected["data"]["scene_repair"]["expected_candidate_ids"] == ids
+    assert snapshot(db) == before

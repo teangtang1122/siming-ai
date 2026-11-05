@@ -39,6 +39,10 @@ _QWEN = "qwen_model_docs_2026_08_30"
 _CAPACITIES: dict[tuple[str, str], KnownModelCapacity] = {
     # OpenAI model pages: https://developers.openai.com/api/docs/models
     **{
+        ("openai", model): _capacity(1_050_000, 128_000, "openai_model_docs_2026_11_04")
+        for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna")
+    },
+    **{
         ("openai", model): _capacity(1_050_000, 128_000, _OPENAI)
         for model in (
             "gpt-5.6",

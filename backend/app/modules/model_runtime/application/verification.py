@@ -18,6 +18,8 @@ class ModelProbeRequest:
     cli_args: str | None = None
     timeout_seconds: int | None = None
     content_root: Path | None = None
+    max_output_tokens: int | None = None
+    model_request_parameters: dict | None = None
 
 
 class ModelVerificationPort(Protocol):

@@ -24,6 +24,7 @@ import com.siming.mobile.data.local.LocalConflict
 import com.siming.mobile.data.local.ReplicaEntity
 import com.siming.mobile.data.local.ProjectDeletionResult
 import com.siming.mobile.security.VerifiedPairing
+import com.siming.mobile.data.network.DirectApiConfig
 import com.siming.mobile.data.network.DirectApiSummary
 import java.time.Instant
 import java.util.UUID
@@ -72,6 +73,8 @@ data class MobileUiState(
     val pendingOutlineDraft: MobilePendingOutlineDraft? = null,
     val pendingAssistantRequest: String? = null,
     val directApi: DirectApiSummary? = null,
+    val directApiProfiles: List<DirectApiSummary> = emptyList(),
+    val directApiTaskProfiles: Map<String, String> = emptyMap(),
     val connectionSetupDeferred: Boolean = false,
     val discoveredModels: List<String> = emptyList(),
     val activeCreationId: String? = null,
@@ -333,6 +336,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var uiState = androidx.compose.runtime.mutableStateOf(
         MobileUiState(
             directApi = repository.directApiSummary(),
+            directApiProfiles = repository.directApiProfiles(),
+            directApiTaskProfiles = repository.directApiTaskProfiles(),
             connectionSetupDeferred = startupPreferences.getBoolean("connection_setup_deferred", false),
         ),
     )
@@ -363,6 +368,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resumeCreation(sessionId: String) {
+        if (uiState.value.creationRunning) return
         uiState.value = uiState.value.copy(activeCreationId = sessionId, error = null)
         viewModelScope.launch {
             runCatching { repository.refreshCreationConversationContext(sessionId) }
@@ -375,6 +381,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeCreation() {
+        if (uiState.value.creationRunning) return
         uiState.value = uiState.value.copy(activeCreationId = null, creationActivity = "")
     }
 
@@ -385,6 +392,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "本轮对话已结束，请查看回复和资料状态"
         }
     }
+
+    fun changeCreationConversation(sessionId: String, conversationId: String? = null) =
+        launchCreation("正在切换立项对话…") {
+            repository.changeCreationConversation(sessionId, conversationId)
+            "已切换对话；立项资料和阶段进度继续共享"
+        }
 
     fun generateCreationStage(
         sessionId: String,
@@ -503,7 +516,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         uiState.value = uiState.value.copy(connectionSetupDeferred = true)
     }
 
-    fun discoverDirectModels(baseUrl: String, apiKey: String) {
+    fun discoverDirectModels(baseUrl: String, apiKey: String, profileId: String? = null) {
         viewModelScope.launch {
             uiState.value = uiState.value.copy(
                 busy = true,
@@ -512,7 +525,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 discoveredModels = emptyList(),
             )
             try {
-                val models = repository.discoverDirectModels(baseUrl, apiKey)
+                val models = repository.discoverDirectModels(baseUrl, apiKey, profileId)
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
@@ -541,11 +554,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         model: String,
         protocol: String,
         availableModels: List<String>,
-        taskModels: Map<String, String>,
         contextWindowTokens: Int?,
         maxOutputTokens: Int,
         safetyMarginTokens: Int,
         onConfigured: () -> Unit,
+        checkpointOutputTokens: Int = DirectApiConfig.DEFAULT_AGENT_OUTPUT_TOKENS,
+        modelMaxOutputTokens: Int? = null,
+        profileId: String? = null,
+        modelRequestParameters: Map<String, JsonObject> = emptyMap(),
     ) {
         viewModelScope.launch {
             uiState.value = uiState.value.copy(
@@ -556,28 +572,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 var discovered = uiState.value.discoveredModels
                 val effectiveModel = model.trim().ifBlank {
-                    val models = repository.discoverDirectModels(baseUrl, apiKey)
+                    val models = repository.discoverDirectModels(baseUrl, apiKey, profileId)
                     discovered = models
                     uiState.value = uiState.value.copy(discoveredModels = models)
                     models.firstOrNull()
                         ?: error("接口没有返回可用模型，请手动填写模型名后重试")
                 }
-                val summary = repository.configureDirectApi(
+                repository.configureDirectApi(
                     displayName,
                     baseUrl,
                     apiKey,
                     effectiveModel,
                     protocol,
                     (availableModels + discovered + effectiveModel).distinct(),
-                    taskModels,
                     contextWindowTokens,
                     maxOutputTokens,
                     safetyMarginTokens,
+                    checkpointOutputTokens,
+                    modelMaxOutputTokens,
+                    profileId,
+                    modelRequestParameters,
                 )
                 uiState.value = uiState.value.copy(
                     busy = false,
                     activity = "",
-                    directApi = summary,
+                    directApi = repository.directApiSummary(),
+                    directApiProfiles = repository.directApiProfiles(),
+                    directApiTaskProfiles = repository.directApiTaskProfiles(),
                     discoveredModels = emptyList(),
                     notice = "API 已加密保存，手机独立模式可以使用",
                 )
@@ -597,9 +618,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun refreshDirectApiState() {
+        uiState.value = uiState.value.copy(directApi = repository.directApiSummary(),
+            directApiProfiles = repository.directApiProfiles(), directApiTaskProfiles = repository.directApiTaskProfiles())
+    }
+    fun resetDirectModelDiscovery() { uiState.value = uiState.value.copy(discoveredModels = emptyList(), error = null) }
+    fun selectDirectApi(id: String) { runCatching { repository.selectDirectApi(id); refreshDirectApiState() }.onFailure(::showError) }
+    fun bindDirectApiTask(task: String, id: String?, model: String?) {
+        runCatching { repository.bindDirectApiTask(task, id, model); refreshDirectApiState() }.onFailure(::showError)
+    }
+    fun deleteDirectApi(id: String) { runCatching { repository.deleteDirectApi(id); refreshDirectApiState() }.onFailure(::showError) }
+    fun testDirectApiProfile(id: String) = launchActivity("正在测试 API…") {
+        val summary = repository.testDirectApi(id); refreshDirectApiState()
+        "${summary.displayName} · ${summary.model} 对话测试成功"
+    }
+
     fun testDirectApi() = launchActivity("正在测试手机直连 API…") {
         val summary = repository.testDirectApi()
-        uiState.value = uiState.value.copy(directApi = summary)
+        refreshDirectApiState()
         "${summary.displayName} · ${summary.model} 基础对话探测成功；" +
             "长任务仍可能受到临时限流或服务容量影响"
     }
@@ -608,7 +644,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { repository.clearDirectApi() }
             .onSuccess {
                 uiState.value = uiState.value.copy(
-                    directApi = null,
+                    directApi = repository.directApiSummary(),
+                    directApiProfiles = repository.directApiProfiles(),
+                    directApiTaskProfiles = repository.directApiTaskProfiles(),
                     discoveredModels = emptyList(),
                     assistantOutput = "",
                     notice = "已清除手机直连 API 配置",
@@ -1570,6 +1608,8 @@ private fun updateCatalogingProgress(
     }
 
     private fun launchCreation(label: String, action: suspend () -> String) {
+        if (uiState.value.creationRunning) return
+        uiState.value = uiState.value.copy(creationRunning = true)
         viewModelScope.launch {
             uiState.value = uiState.value.copy(
                 creationRunning = true,
