@@ -23,6 +23,16 @@ Gateway 是单用户、自托管同步中枢，不是多租户 SaaS。所有者�
 | 外部 API 的临时 provider 引入 SSRF | Gateway 的临时 provider 协议继续校验密文、作用域和有效期，并拒绝私网目标；当前 Android 手机 API 不使用该转发协议 | DNS 重绑定和上游代理风险不能完全消除；生产环境还应限制 Gateway 出站网络 |
 | 云端模型泄漏 | 显式 Gateway 模型线路与手机独立线路都只发送当前任务选择的项目上下文；Docker 不运行本地 CLI；API Key 不进入同步实体 | 第三方模型的数据政策不受司命控制，不要提交机密内容 |
 
+## 密钥用途与升级兼容
+
+旧配置项 `SECRET_KEY` 未用于加密、签名或会话验证，现已移除。旧 `.env` 或进程环境中保留该项不会阻止启动，但它不再生效；无需为它生成替代密钥。源码运行仍读取当前工作目录的 `.env`（通常为 `backend/.env`），打包程序仍只读取启动器准备的进程环境，不读取调用方工作目录的 `.env`。
+
+真正的本地加密密钥由 `app/core/crypto.py` 管理：优先使用 `SIMING_KEY`，否则读取已有密钥文件，文件不存在时才生成 Fernet 随机密钥。文件路径优先使用 `SIMING_KEY_FILE`，其次为 `SIMING_HOME/.crypto_key`，源码默认位置为 `backend/.crypto_key`；桌面启动器将文件放在应用数据目录的 `.crypto_key`。旧 `MOSHU_*`、`NOVEL_AGENT_*` 密钥和路径别名的兼容顺序保持不变。
+
+该密钥保护已保存的 API 凭据以及 Gateway 的 Ed25519 身份私钥；移动 provider 的 X25519 加密身份也从该身份私钥派生。升级或迁移时必须保留原密钥（环境变量或文件）和数据库，不要删除或轮换 `.crypto_key` 来处理旧 `SECRET_KEY`。备份密钥应与数据库分开安全保存；丢失密钥可能导致已有凭据和 Gateway 身份无法解密。
+
+Gateway 管理口令 `SIMING_GATEWAY_BOOTSTRAP_KEY` 是独立配置；访问/刷新令牌使用随机不透明令牌并保存哈希，不依赖旧 `SECRET_KEY`。
+
 ## 网络部署要求
 
 Android 只允许私有、link-local、loopback、Tailscale 地址使用 HTTP；公共地址必须 HTTPS。可信局域网 HTTP 是兼容选项，不提供传输加密。公网部署必须使用 TLS 终止代理，限制 Host，更新证书并避免在访问日志记录正文、Cookie、Authorization 或请求体。
